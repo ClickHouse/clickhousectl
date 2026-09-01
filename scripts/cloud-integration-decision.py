@@ -58,6 +58,9 @@ class Decision:
     title: str
     summary: str
     details_url: str
+    # True when the environment-bearing job did not run, so no live suite
+    # evidence backs this decision whatever its conclusion is.
+    planner_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -268,7 +271,9 @@ def waiting_decision(pull_request: dict[str, Any], repository: str) -> Decision:
     )
 
 
-def failed_decision(run: dict[str, Any], reason: str) -> Decision:
+def failed_decision(
+    run: dict[str, Any], reason: str, *, planner_only: bool = False
+) -> Decision:
     sha = run["head_sha"]
     return Decision(
         conclusion="failure",
@@ -281,6 +286,7 @@ def failed_decision(run: dict[str, Any], reason: str) -> Decision:
             "subsequent exact-SHA override."
         ),
         details_url=run["html_url"],
+        planner_only=planner_only,
     )
 
 
@@ -316,6 +322,7 @@ def authorization_required_decision(
             "push), or have a maintainer record a one-shot override."
         ),
         details_url=run["html_url"],
+        planner_only=True,
     )
 
 
@@ -330,6 +337,7 @@ def successful_no_suite_decision(run: dict[str, Any]) -> Decision:
             f"`{LIVE_JOB_NAME}` job was skipped."
         ),
         details_url=run["html_url"],
+        planner_only=True,
     )
 
 
@@ -514,24 +522,45 @@ def evaluate_workflow_run(
     plan_job = one_job(jobs, PLAN_JOB_NAME)
     if plan_job is None or plan_job.get("conclusion") == "skipped":
         return None
-    if not source_workflow_unchanged:
-        return failed_decision(run, "the PR changes the trusted Cloud workflow")
-    if plan_job.get("conclusion") != "success":
-        return failed_decision(
-            run, f"planner job concluded {plan_job.get('conclusion')!r}"
-        )
-    if selection is None:
-        return failed_decision(run, "trusted suite selection was unavailable")
 
     live_job = one_job(jobs, LIVE_JOB_NAME)
+    # Planner-only is a property of the run, not of the conclusion it yields:
+    # an absent or skipped environment-bearing job means no live suite ran,
+    # whether the planner itself succeeded, failed, or was untrusted.
+    planner_only = live_job is None or live_job.get("conclusion") == "skipped"
+
+    if not source_workflow_unchanged:
+        return failed_decision(
+            run,
+            "the PR changes the trusted Cloud workflow",
+            planner_only=planner_only,
+        )
+    if plan_job.get("conclusion") != "success":
+        return failed_decision(
+            run,
+            f"planner job concluded {plan_job.get('conclusion')!r}",
+            planner_only=planner_only,
+        )
+    if selection is None:
+        return failed_decision(
+            run,
+            "trusted suite selection was unavailable",
+            planner_only=planner_only,
+        )
     if live_job is None:
-        return failed_decision(run, "the environment-bearing job was missing")
+        return failed_decision(
+            run,
+            "the environment-bearing job was missing",
+            planner_only=planner_only,
+        )
 
     expected_suites = tuple(selection.suites)
     if live_job.get("conclusion") == "skipped":
         if run.get("conclusion") != "success":
             return failed_decision(
-                run, f"workflow concluded {run.get('conclusion')!r}"
+                run,
+                f"workflow concluded {run.get('conclusion')!r}",
+                planner_only=planner_only,
             )
         if expected_suites:
             # A planner-only run (no run-cloud-integration labeled event)
@@ -618,16 +647,17 @@ def reconcile(api: GitHubAPI, event: dict[str, Any], repository: str) -> None:
     if decision is None:
         print("Cloud run did not change the current decision")
         return
-    if decision.conclusion == "action_required":
-        # A planner-only run must not downgrade a settled decision for the
-        # same exact head (a passed live run, an override, or a recorded
-        # failure that a maintainer must waive explicitly).
+    if decision.planner_only:
+        # A planner-only run observed no live suite, so it must not replace a
+        # settled decision for the same exact head (a passed live run, an
+        # override, or a recorded failure that a maintainer must waive
+        # explicitly) with an authorization prompt or with its own failure.
         existing = api.find_decision_check(head_sha)
         if existing is not None and existing.get("conclusion") not in (
             None,
             "action_required",
         ):
-            print("Keeping the settled decision over an authorization prompt")
+            print("Keeping the settled decision over a planner-only run")
             return
     check = api.upsert_decision(head_sha, decision)
     print(

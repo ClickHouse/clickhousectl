@@ -34,7 +34,9 @@ maintainer decision. Include why the failure is accepted or link the successful
 run that covers the change.
 
 An override is not sticky for the same SHA. A later admitted Cloud Integration
-run replaces it as the current decision. If that run fails, the decision stays
+run replaces it as the current decision. A planner-only run, whose
+environment-bearing job never ran, never replaces a settled decision for that
+SHA whatever it concludes. If that run fails, the decision stays
 failing until the run succeeds or a maintainer records a subsequent override.
 
 A PR that changes `.github/workflows/cloud-integration.yml` cannot use that

@@ -269,14 +269,18 @@ class ControllerFlowTests(unittest.TestCase):
             ],
         )
 
-    def reconcile_planner_only_run(self, existing_check):
+    def reconcile_planner_only_run(self, existing_check, *, workflow_changed=False):
         api = mock.Mock()
         api.get_pull.return_value = pull_request()
         api.list_run_jobs.return_value = [
             plan_job(),
             live_job((), conclusion="skipped"),
         ]
-        api.content_blob_sha.side_effect = ("workflow-blob", "workflow-blob")
+        api.content_blob_sha.side_effect = (
+            ("base-blob", "head-blob")
+            if workflow_changed
+            else ("workflow-blob", "workflow-blob")
+        )
         api.list_pull_files.return_value = []
         api.find_decision_check.return_value = existing_check
         api.upsert_decision.return_value = {"id": 42}
@@ -309,6 +313,48 @@ class ControllerFlowTests(unittest.TestCase):
                     {"id": 42, "conclusion": conclusion}
                 )
                 api.upsert_decision.assert_not_called()
+
+    def test_planner_only_failure_cannot_downgrade_a_settled_decision(self):
+        api = self.reconcile_planner_only_run(
+            {"id": 42, "conclusion": "success"}, workflow_changed=True
+        )
+
+        api.upsert_decision.assert_not_called()
+
+    def test_planner_only_failure_is_recorded_without_a_settled_decision(self):
+        api = self.reconcile_planner_only_run(None, workflow_changed=True)
+
+        sha, result = api.upsert_decision.call_args.args
+        self.assertEqual(sha, HEAD_SHA)
+        self.assertEqual(result.conclusion, "failure")
+        self.assertIn("changes the trusted Cloud workflow", result.summary)
+
+    def test_failed_live_run_replaces_a_settled_decision(self):
+        api = mock.Mock()
+        api.get_pull.return_value = pull_request()
+        api.list_run_jobs.return_value = [
+            plan_job(),
+            live_job(("service",), conclusion="failure"),
+        ]
+        api.content_blob_sha.side_effect = ("workflow-blob", "workflow-blob")
+        api.list_pull_files.return_value = []
+        api.find_decision_check.return_value = {"id": 42, "conclusion": "success"}
+        api.upsert_decision.return_value = {"id": 42}
+
+        with (
+            mock.patch.object(
+                decision,
+                "selection_from_pull_files",
+                return_value=selection("service"),
+            ),
+            mock.patch("builtins.print"),
+        ):
+            decision.reconcile(api, {"workflow_run": workflow_run()}, REPO)
+
+        sha, result = api.upsert_decision.call_args.args
+        self.assertEqual(sha, HEAD_SHA)
+        self.assertEqual(result.conclusion, "failure")
+        self.assertIn("environment-bearing job concluded", result.summary)
 
     def test_record_override_updates_check_and_posts_audit_comment(self):
         api = mock.Mock()
@@ -432,6 +478,22 @@ class CloudIntegrationDecisionTests(unittest.TestCase):
         )
         self.assertEqual(result.conclusion, "failure")
         self.assertIn("concluded 'failure'", result.summary)
+
+    def test_planner_only_is_structural_not_derived_from_the_conclusion(self):
+        untrusted = self.evaluate(
+            [plan_job(), live_job((), conclusion="skipped")],
+            selection("organization"),
+            source_unchanged=False,
+        )
+        self.assertEqual(untrusted.conclusion, "failure")
+        self.assertTrue(untrusted.planner_only)
+
+        live = self.evaluate(
+            [plan_job(), live_job(("service",), conclusion="failure")],
+            selection("service"),
+        )
+        self.assertEqual(live.conclusion, "failure")
+        self.assertFalse(live.planner_only)
 
     def test_unrelated_label_with_skipped_admission_is_ignored(self):
         result = self.evaluate(
