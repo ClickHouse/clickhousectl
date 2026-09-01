@@ -6977,7 +6977,7 @@ async fn recorded_put_body(mock: &MockServer) -> Value {
 async fn clickpipe_settings_update_omits_kafka_only_settings_for_non_kafka_pipes() {
     for source in [
         serde_json::json!({ "objectStorage": { "type": "s3", "format": "JSONEachRow" } }),
-        serde_json::json!({ "postgres": { "host": "db.example.com" } }),
+        serde_json::json!({ "kinesis": { "stream": "events" } }),
         // A response that drops `source` entirely is treated as non-Kafka.
         serde_json::json!({}),
     ] {
@@ -7085,6 +7085,171 @@ async fn clickpipe_settings_update_preserves_or_defaults_kafka_read_committed() 
                 "streaming_max_insert_wait_ms": 1000,
                 "kafka_read_committed": expected,
             })
+        );
+    }
+}
+
+// ── ClickPipe ingestion settings apply to some pipe types only (#643) ──────
+//
+// The ingestion settings endpoints exist for streaming and object-storage pipes
+// only. For a database CDC pipe the API answers `NOT_FOUND: ingestion for pipe
+// "<id>" not found`, which reads as "the pipe is gone". Both settings commands
+// therefore classify the pipe's source first and refuse before touching the
+// settings endpoint.
+
+/// The settings GET the CLI must not reach for a database CDC pipe. Mounted so
+/// the assertion is "the CLI never called it", not "the mock had no route".
+async fn mount_clickpipe_settings_get(mock: &MockServer) {
+    let settings = serde_json::json!({
+        "result": { "streaming_max_insert_wait_ms": 1000 },
+        "status": 200,
+        "requestId": "stub-settings-get",
+    });
+    Mock::given(method("GET"))
+        .and(path(CLICKPIPE_SETTINGS_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settings))
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn clickpipe_settings_get_refuses_database_pipes_before_calling_the_endpoint() {
+    for (source, label) in [
+        (
+            serde_json::json!({ "postgres": { "host": "db.example.com" } }),
+            "Postgres CDC",
+        ),
+        (
+            serde_json::json!({ "mysql": { "host": "db.example.com" } }),
+            "MySQL CDC",
+        ),
+        (
+            serde_json::json!({ "mongodb": { "host": "db.example.com" } }),
+            "MongoDB CDC",
+        ),
+        (
+            serde_json::json!({ "bigquery": { "projectId": "proj" } }),
+            "BigQuery",
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, source.clone()).await;
+        mount_clickpipe_settings_get(&mock).await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "get",
+                "svc-id",
+                "pipe-id",
+                "--org-id",
+                "org",
+            ],
+        );
+
+        assert_eq!(output.status.code(), Some(1), "source {source}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!(
+                "Error: ClickPipe pipe-id is a {label} pipe; `clickpipe settings get` and \
+                 `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
+                 pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
+                 itself: see `clickhousectl cloud clickpipe get svc-id pipe-id`.\n"
+            ),
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).is_empty(),
+            "a refusal must print no settings for source {source}"
+        );
+        // Only the pipe read: the settings endpoint is never called.
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![("GET".to_string(), CLICKPIPE_PATH.to_string())],
+            "unexpected requests for source {source}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_refuses_database_pipes_before_calling_the_endpoint() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(
+        &mock,
+        serde_json::json!({ "postgres": { "host": "db.example.com" } }),
+    )
+    .await;
+    mount_clickpipe_settings_get(&mock).await;
+    mount_clickpipe_settings_put(&mock, serde_json::json!({})).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "settings",
+            "update",
+            "svc-id",
+            "pipe-id",
+            "--streaming-max-insert-wait-ms",
+            "1000",
+            "--org-id",
+            "org",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("ClickPipe pipe-id is a Postgres CDC pipe;"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        recorded_request_shape(&mock).await,
+        vec![("GET".to_string(), CLICKPIPE_PATH.to_string())],
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_settings_get_reads_settings_for_pipes_that_have_them() {
+    for source in [
+        serde_json::json!({ "kafka": { "type": "kafka", "brokers": "b:9092" } }),
+        serde_json::json!({ "kinesis": { "stream": "events" } }),
+        serde_json::json!({ "objectStorage": { "type": "s3", "format": "JSONEachRow" } }),
+        // An unclassifiable pipe proceeds: the API stays the authority.
+        serde_json::json!({}),
+    ] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, source.clone()).await;
+        mount_clickpipe_settings_get(&mock).await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "get",
+                "svc-id",
+                "pipe-id",
+                "--org-id",
+                "org",
+            ],
+        );
+        assert_success(&output);
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            serde_json::json!({ "streaming_max_insert_wait_ms": 1000 }),
+            "unexpected output for source {source}"
+        );
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![
+                ("GET".to_string(), CLICKPIPE_PATH.to_string()),
+                ("GET".to_string(), CLICKPIPE_SETTINGS_PATH.to_string()),
+            ],
+            "unexpected requests for source {source}"
         );
     }
 }

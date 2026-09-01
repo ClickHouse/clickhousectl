@@ -802,6 +802,13 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
   --streaming-max-insert-wait-ms 10000
 ```
 
+`settings get` and `settings update` apply to streaming (Kafka, Kinesis) and
+object-storage pipes only, because ingestion settings exist for those pipes
+alone. Database CDC pipes (Postgres, MySQL, MongoDB, BigQuery) are refused with
+an explanation instead of the API's `NOT_FOUND`: their settings, such as the
+sync interval and pull batch size, live on the pipe itself, so read them with
+`clickhousectl cloud clickpipe get <service-id> <clickpipe-id>`.
+
 `settings update` only sends the settings you name on the command line, and it
 first reads the pipe to find its source type: settings that the API supports for
 one source only — currently the Kafka `kafka_read_committed` setting, which the

@@ -183,7 +183,15 @@ pub enum ClickPipeCommands {
         org_id: Option<String>,
     },
 
-    /// Manage ClickPipe settings
+    /// Manage ClickPipe ingestion settings (streaming and object-storage pipes only)
+    #[command(long_about = "\
+Manage ClickPipe ingestion settings.
+
+Ingestion settings apply only to streaming (Kafka, Kinesis) and object-storage
+pipes. Database CDC pipes (Postgres, MySQL, MongoDB, BigQuery) have no ingestion
+settings: their settings, such as the sync interval and pull batch size, live on
+the pipe itself, so read them with `clickhousectl cloud clickpipe get <service>
+<clickpipe>`.")]
     Settings {
         #[command(subcommand)]
         command: ClickPipeSettingsCommands,
@@ -259,7 +267,7 @@ pub enum ClickPipeSchemaDiscoverCommands {
 
 #[derive(Subcommand)]
 pub enum ClickPipeSettingsCommands {
-    /// Get ClickPipe settings
+    /// Get ClickPipe ingestion settings (streaming and object-storage pipes only)
     Get {
         /// Service ID
         service_id: String,
@@ -272,7 +280,7 @@ pub enum ClickPipeSettingsCommands {
         org_id: Option<String>,
     },
 
-    /// Update ClickPipe settings
+    /// Update ClickPipe ingestion settings (streaming and object-storage pipes only)
     Update {
         /// Service ID
         service_id: String,
@@ -1702,6 +1710,13 @@ async fn clickpipe_settings_get(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
+    // The settings endpoint only exists for streaming and object-storage pipes,
+    // so the pipe is fetched first to classify its source and refuse a database
+    // CDC pipe with an applicability error rather than the API's NOT_FOUND.
+    let clickpipe = client
+        .get_clickpipe(&org_id, service_id, clickpipe_id)
+        .await?;
+    ensure_clickpipe_has_ingestion_settings(&clickpipe, service_id, clickpipe_id)?;
     let settings = client
         .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
         .await?;
@@ -1734,16 +1749,108 @@ struct ClickPipeSettingsValues {
     clickhouse_parallel_view_processing: Option<bool>,
 }
 
-/// True when the fetched pipe reads from a Kafka (or Kafka-compatible) source.
+/// Which source a fetched pipe reads from, as a closed vocabulary.
 ///
-/// A pipe whose `source` is absent from the response is treated as non-Kafka:
-/// Kafka-only settings are then omitted, which is the safe direction because
-/// sending one to a non-Kafka pipe fails the whole request.
-fn clickpipe_source_is_kafka(clickpipe: &clickhouse_cloud_api::models::ClickPipe) -> bool {
-    clickpipe
-        .source
-        .as_ref()
-        .is_some_and(|source| source.kafka.is_some())
+/// Two decisions hang off this: whether the Kafka-only `kafka_read_committed`
+/// setting may appear in a settings PUT at all, and whether the ingestion
+/// settings endpoints exist for the pipe in the first place. The endpoints are
+/// only implemented for streaming and object-storage pipes, so a database CDC
+/// pipe gets `NOT_FOUND: ingestion for pipe "<id>" not found`, which reads like
+/// the pipe is gone (#643).
+///
+/// [`ClickPipeSourceKind::Absent`] covers a response that carries no `source`
+/// (or an unrecognized source arm). Both settings commands proceed in that
+/// case: the API is then the authority, which is the safe direction because
+/// refusing locally on a shape the CLI does not understand would block a pipe
+/// the endpoint does serve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClickPipeSourceKind {
+    Kafka,
+    Kinesis,
+    PubSub,
+    ObjectStorage,
+    Postgres,
+    MySql,
+    MongoDb,
+    BigQuery,
+    Absent,
+}
+
+impl ClickPipeSourceKind {
+    /// Kafka is the only source whose settings include `kafka_read_committed`.
+    fn is_kafka(self) -> bool {
+        self == Self::Kafka
+    }
+
+    /// The human label for a database CDC source, or `None` for a source that
+    /// does have ingestion settings.
+    ///
+    /// The label is a literal owned by this enum, never anything read out of an
+    /// API response body, so no response text can reach the error message.
+    fn database_source_label(self) -> Option<&'static str> {
+        match self {
+            Self::Postgres => Some("Postgres CDC"),
+            Self::MySql => Some("MySQL CDC"),
+            Self::MongoDb => Some("MongoDB CDC"),
+            Self::BigQuery => Some("BigQuery"),
+            Self::Kafka | Self::Kinesis | Self::PubSub | Self::ObjectStorage | Self::Absent => None,
+        }
+    }
+}
+
+/// Classify the source of a fetched pipe.
+///
+/// Exactly one arm of `source` is populated in practice. The streaming and
+/// object-storage arms are matched first anyway, so a response that somehow
+/// sets several arms resolves to the kind that keeps the settings commands
+/// working rather than to a refusal.
+fn classify_clickpipe_source(
+    clickpipe: &clickhouse_cloud_api::models::ClickPipe,
+) -> ClickPipeSourceKind {
+    let Some(source) = clickpipe.source.as_ref() else {
+        return ClickPipeSourceKind::Absent;
+    };
+    if source.kafka.is_some() {
+        ClickPipeSourceKind::Kafka
+    } else if source.kinesis.is_some() {
+        ClickPipeSourceKind::Kinesis
+    } else if source.pubsub.is_some() {
+        ClickPipeSourceKind::PubSub
+    } else if source.object_storage.is_some() {
+        ClickPipeSourceKind::ObjectStorage
+    } else if source.postgres.is_some() {
+        ClickPipeSourceKind::Postgres
+    } else if source.mysql.is_some() {
+        ClickPipeSourceKind::MySql
+    } else if source.mongodb.is_some() {
+        ClickPipeSourceKind::MongoDb
+    } else if source.bigquery.is_some() {
+        ClickPipeSourceKind::BigQuery
+    } else {
+        ClickPipeSourceKind::Absent
+    }
+}
+
+/// Refuse a `clickpipe settings` command that cannot apply to this pipe.
+///
+/// The ingestion settings endpoints exist for streaming and object-storage
+/// pipes only. Calling them for a database CDC pipe returns a bare `NOT_FOUND`
+/// about the pipe, so the CLI classifies the source first and explains
+/// applicability instead of relaying that (#643).
+fn ensure_clickpipe_has_ingestion_settings(
+    clickpipe: &clickhouse_cloud_api::models::ClickPipe,
+    service_id: &str,
+    clickpipe_id: &str,
+) -> CloudResult<()> {
+    let Some(label) = classify_clickpipe_source(clickpipe).database_source_label() else {
+        return Ok(());
+    };
+    Err(CloudError::new(format!(
+        "ClickPipe {clickpipe_id} is a {label} pipe; `clickpipe settings get` and \
+         `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
+         pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
+         itself: see `clickhousectl cloud clickpipe get {service_id} {clickpipe_id}`."
+    )))
 }
 
 /// Build the settings PUT body from the flags the user passed.
@@ -1788,11 +1895,14 @@ async fn clickpipe_settings_update(
     // The source decides which settings may appear in the body at all: sending
     // `kafka_read_committed` for a non-Kafka pipe fails the entire request, so
     // the pipe is fetched to classify it, and its current value is only read
-    // back (a PUT that omits it would reset it) for a Kafka pipe.
+    // back (a PUT that omits it would reset it) for a Kafka pipe. The same
+    // classification refuses a database CDC pipe, whose settings endpoint does
+    // not exist at all.
     let clickpipe = client
         .get_clickpipe(&org_id, service_id, clickpipe_id)
         .await?;
-    let kafka_read_committed = if clickpipe_source_is_kafka(&clickpipe) {
+    ensure_clickpipe_has_ingestion_settings(&clickpipe, service_id, clickpipe_id)?;
+    let kafka_read_committed = if classify_clickpipe_source(&clickpipe).is_kafka() {
         Some(
             client
                 .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
@@ -3152,6 +3262,10 @@ mod tests {
             "first reads the pipe to find its source type",
             "`kafka_read_committed`",
             "omitted for every other source",
+            // Applicability by pipe type (#643).
+            "apply to streaming (Kafka, Kinesis) and\nobject-storage pipes only",
+            "Database CDC pipes (Postgres, MySQL, MongoDB, BigQuery) are refused",
+            "`clickhousectl cloud clickpipe get <service-id> <clickpipe-id>`",
         ] {
             assert!(
                 clickpipes.contains(expected),
@@ -3161,21 +3275,141 @@ mod tests {
     }
 
     #[test]
-    fn classifies_clickpipe_source_as_kafka_only_for_kafka_pipes() {
+    fn classifies_every_clickpipe_source_and_an_absent_one() {
         use clickhouse_cloud_api::models::{
-            ClickPipe, ClickPipeKafkaSource, ClickPipeObjectStorageSource, ClickPipePostgresSource,
-            ClickPipeSource,
+            ClickPipe, ClickPipeBigQuerySource, ClickPipeKafkaSource, ClickPipeKinesisSource,
+            ClickPipeMongoDBSource, ClickPipeMySQLSource, ClickPipeObjectStorageSource,
+            ClickPipePostgresSource, ClickPipePubSubSource, ClickPipeSource,
         };
 
-        let kafka = ClickPipe {
+        fn pipe(source: ClickPipeSource) -> ClickPipe {
+            ClickPipe {
+                source: Some(source),
+                ..Default::default()
+            }
+        }
+
+        let cases: Vec<(ClickPipe, ClickPipeSourceKind)> = vec![
+            (
+                pipe(ClickPipeSource {
+                    kafka: Some(ClickPipeKafkaSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::Kafka,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    kinesis: Some(ClickPipeKinesisSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::Kinesis,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    pubsub: Some(ClickPipePubSubSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::PubSub,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    object_storage: Some(ClickPipeObjectStorageSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::ObjectStorage,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    postgres: Some(ClickPipePostgresSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::Postgres,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    mysql: Some(ClickPipeMySQLSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::MySql,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    mongodb: Some(ClickPipeMongoDBSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::MongoDb,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    bigquery: Some(ClickPipeBigQuerySource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::BigQuery,
+            ),
+            // An absent source, and a source object with no arm set, are both
+            // unclassifiable: the API stays the authority for those.
+            (ClickPipe::default(), ClickPipeSourceKind::Absent),
+            (
+                pipe(ClickPipeSource::default()),
+                ClickPipeSourceKind::Absent,
+            ),
+        ];
+
+        for (clickpipe, expected) in &cases {
+            assert_eq!(classify_clickpipe_source(clickpipe), *expected);
+        }
+
+        // Only Kafka carries the Kafka-only settings key.
+        for (clickpipe, expected) in &cases {
+            assert_eq!(
+                classify_clickpipe_source(clickpipe).is_kafka(),
+                *expected == ClickPipeSourceKind::Kafka,
+            );
+        }
+    }
+
+    #[test]
+    fn only_database_sources_have_no_ingestion_settings() {
+        for (kind, label) in [
+            (ClickPipeSourceKind::Postgres, Some("Postgres CDC")),
+            (ClickPipeSourceKind::MySql, Some("MySQL CDC")),
+            (ClickPipeSourceKind::MongoDb, Some("MongoDB CDC")),
+            (ClickPipeSourceKind::BigQuery, Some("BigQuery")),
+            (ClickPipeSourceKind::Kafka, None),
+            (ClickPipeSourceKind::Kinesis, None),
+            (ClickPipeSourceKind::PubSub, None),
+            (ClickPipeSourceKind::ObjectStorage, None),
+            (ClickPipeSourceKind::Absent, None),
+        ] {
+            assert_eq!(kind.database_source_label(), label, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn settings_refusal_names_the_source_and_points_at_clickpipe_get() {
+        use clickhouse_cloud_api::models::{
+            ClickPipe, ClickPipeMySQLSource, ClickPipeObjectStorageSource, ClickPipeSource,
+        };
+
+        let mysql = ClickPipe {
             source: Some(ClickPipeSource {
-                kafka: Some(ClickPipeKafkaSource::default()),
+                mysql: Some(ClickPipeMySQLSource::default()),
                 ..Default::default()
             }),
             ..Default::default()
         };
-        assert!(clickpipe_source_is_kafka(&kafka));
+        let error = ensure_clickpipe_has_ingestion_settings(&mysql, "svc-1", "pipe-1")
+            .expect_err("a MySQL CDC pipe has no ingestion settings");
+        assert_eq!(
+            error.message,
+            "ClickPipe pipe-1 is a MySQL CDC pipe; `clickpipe settings get` and \
+             `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
+             pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
+             itself: see `clickhousectl cloud clickpipe get svc-1 pipe-1`."
+        );
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
 
+        // Streaming, object-storage and unclassifiable pipes are not refused.
         let object_storage = ClickPipe {
             source: Some(ClickPipeSource {
                 object_storage: Some(ClickPipeObjectStorageSource::default()),
@@ -3183,23 +3417,46 @@ mod tests {
             }),
             ..Default::default()
         };
-        assert!(!clickpipe_source_is_kafka(&object_storage));
+        assert!(
+            ensure_clickpipe_has_ingestion_settings(&object_storage, "svc-1", "pipe-1").is_ok()
+        );
+        assert!(
+            ensure_clickpipe_has_ingestion_settings(&ClickPipe::default(), "svc-1", "pipe-1")
+                .is_ok()
+        );
+    }
 
-        let postgres = ClickPipe {
-            source: Some(ClickPipeSource {
-                postgres: Some(ClickPipePostgresSource::default()),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        assert!(!clickpipe_source_is_kafka(&postgres));
+    #[test]
+    fn settings_help_states_which_pipe_types_it_applies_to() {
+        use clap::CommandFactory;
 
-        // An absent source (or an absent kafka arm) is treated as non-Kafka.
-        assert!(!clickpipe_source_is_kafka(&ClickPipe::default()));
-        assert!(!clickpipe_source_is_kafka(&ClickPipe {
-            source: Some(ClickPipeSource::default()),
-            ..Default::default()
-        }));
+        let mut command = Cli::command();
+        let settings = command
+            .find_subcommand_mut("cloud")
+            .expect("cloud subcommand")
+            .find_subcommand_mut("clickpipe")
+            .expect("clickpipe subcommand")
+            .find_subcommand_mut("settings")
+            .expect("settings subcommand");
+        let help = settings.render_long_help().to_string();
+        for expected in [
+            "apply only to streaming (Kafka, Kinesis) and object-storage",
+            "Database CDC pipes (Postgres, MySQL, MongoDB, BigQuery) have no ingestion",
+            "clickhousectl cloud clickpipe get <service>",
+        ] {
+            assert!(help.contains(expected), "missing `{expected}`:\n{help}");
+        }
+        for subcommand in ["get", "update"] {
+            let subcommand_help = settings
+                .find_subcommand_mut(subcommand)
+                .expect("settings subcommand")
+                .render_long_help()
+                .to_string();
+            assert!(
+                subcommand_help.contains("streaming and object-storage pipes only"),
+                "missing applicability in `settings {subcommand}` help:\n{subcommand_help}"
+            );
+        }
     }
 
     #[test]
