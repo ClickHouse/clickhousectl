@@ -82,6 +82,12 @@ pub enum PostgresCommands {
     },
 
     /// Delete a Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Permanently deletes a managed Postgres service. This action is irreversible.
+  Unlike `cloud service delete`, no stop is needed first: the Cloud API deletes a
+  Postgres service from any state, including 'running'.
+  Related: `clickhousectl cloud postgres list` for service IDs.")]
     Delete {
         postgres_id: String,
         #[arg(long)]

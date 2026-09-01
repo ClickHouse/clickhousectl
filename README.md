@@ -700,7 +700,7 @@ clickhousectl cloud postgres update <pg-id> \
   --size m7i.4xlarge \
   --add-tag env=prod --remove-tag legacy
 
-# Delete
+# Delete (works from any state, including running; no stop needed first)
 clickhousectl cloud postgres delete <pg-id>
 
 # CA certificates
