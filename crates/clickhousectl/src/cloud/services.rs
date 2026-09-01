@@ -970,7 +970,7 @@ fn validate_private_endpoint_id(value: &str) -> std::result::Result<(), String> 
     {
         return Err(format!(
             "invalid AWS VPC endpoint ID '{value}': expected exactly '{AWS_VPC_ENDPOINT_PREFIX}' \
-             followed by 17 lowercase hex characters (for example vpce-0123456789abcdef0). GCP \
+             followed by 8 or 17 lowercase hex characters (for example vpce-0123456789abcdef0). GCP \
              uses the numeric Private Service Connect connection ID and Azure the private \
              endpoint Resource ID or resourceGuid"
         ));
