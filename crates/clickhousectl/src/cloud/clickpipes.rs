@@ -568,12 +568,12 @@ pub struct KafkaSourceFields {
     #[arg(long)]
     pub ca_certificate: Option<String>,
 
-    /// Path to client certificate file (for MUTUAL_TLS auth)
-    #[arg(long)]
+    /// Path to client certificate file (for MUTUAL_TLS auth; requires --client-key)
+    #[arg(long, requires = "client_key")]
     pub client_certificate: Option<String>,
 
-    /// Path to client private key file (for MUTUAL_TLS auth)
-    #[arg(long)]
+    /// Path to client private key file (for MUTUAL_TLS auth; requires --client-certificate)
+    #[arg(long, requires = "client_certificate")]
     pub client_key: Option<String>,
 
     /// Path to schema registry CA certificate file
@@ -2472,6 +2472,44 @@ mod tests {
         .unwrap_or_else(|| panic!("expected parse failure for: {}", args.join(" ")))
     }
 
+    /// Minimal `clickpipe create kafka` invocation, before any auth flags.
+    fn kafka_create_cli_args() -> Vec<&'static str> {
+        vec![
+            "create",
+            "kafka",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ]
+    }
+
+    /// Minimal `clickpipe schema-discover <SERVICE_ID> kafka` invocation, before
+    /// any auth flags. `KafkaSourceFields` is flattened into both commands, so
+    /// credential-pairing rules must hold for each.
+    fn kafka_discover_cli_args() -> Vec<&'static str> {
+        vec![
+            "schema-discover",
+            "svc-1",
+            "kafka",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+        ]
+    }
+
     fn postgres_cli_args(mapping: Option<&str>) -> Vec<&str> {
         let mut args = vec![
             "create",
@@ -3316,6 +3354,54 @@ mod tests {
         assert!(args.source.reverse_private_endpoint_ids.is_empty());
         assert!(args.columns.is_empty());
         assert_eq!(args.org_id, None);
+    }
+
+    #[test]
+    fn kafka_credential_flags_must_be_given_in_pairs() {
+        // Every Kafka credential pair is joined with clap `requires`. Half a
+        // pair must be a usage error: since `--auth` is now optional and the
+        // mechanism is inferred only from a *complete* pair, an unpaired flag
+        // would otherwise infer nothing and silently send an unauthenticated
+        // create that exits 0 (issue #606).
+        let bases: [fn() -> Vec<&'static str>; 2] =
+            [kafka_create_cli_args, kafka_discover_cli_args];
+        for base in bases {
+            for (half, missing) in [
+                (["--username", "user"], "--password"),
+                (["--password", "password"], "--username"),
+                (["--access-key-id", "access"], "--secret-key"),
+                (["--secret-key", "secret"], "--access-key-id"),
+                (["--client-certificate", "/tmp/client.pem"], "--client-key"),
+                (["--client-key", "/tmp/client.key"], "--client-certificate"),
+            ] {
+                let mut args = base();
+                args.extend(half);
+                let error = clickpipe_parse_error(&args);
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "{}",
+                    args.join(" ")
+                );
+                assert_eq!(error.exit_code(), 2, "{}", args.join(" "));
+                assert!(error.to_string().contains(missing), "{error}");
+            }
+
+            for pair in [
+                ["--username", "user", "--password", "password"],
+                ["--access-key-id", "access", "--secret-key", "secret"],
+                [
+                    "--client-certificate",
+                    "/tmp/client.pem",
+                    "--client-key",
+                    "/tmp/client.key",
+                ],
+            ] {
+                let mut args = base();
+                args.extend(pair);
+                parse_clickpipe(&args);
+            }
+        }
     }
 
     #[test]
@@ -5015,8 +5101,12 @@ mod tests {
 
     #[test]
     fn infer_kafka_authentication_ignores_half_specified_credentials() {
-        // Half a credential pair is not enough to infer a mechanism; clap
-        // rejects these pairings, so absence keeps the fallback honest.
+        // Half a credential pair is not enough to infer a mechanism. Every
+        // pair is also paired with clap `requires`, so a half-specified
+        // invocation never reaches this function (see
+        // `kafka_credential_flags_must_be_given_in_pairs`); these assertions
+        // pin the defensive behaviour of the inference itself, so a future
+        // caller cannot turn half a pair into an unintended mechanism.
         let mut args = kafka_args().source;
         args.username = Some("user".into());
         assert_eq!(infer_kafka_authentication(&args), None);

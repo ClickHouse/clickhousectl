@@ -833,7 +833,9 @@ clickhousectl cloud clickpipe create kafka <service-id> \
 # credential flags you passed (`--username`/`--password` → PLAIN,
 # `--access-key-id`/`--secret-key` → IAM_USER, `--iam-role` → IAM_ROLE,
 # `--client-certificate`/`--client-key` → MUTUAL_TLS), and no authentication is
-# sent when none were passed.
+# sent when none were passed. Each credential pair must be given in full — half
+# a pair (e.g. `--client-certificate` without `--client-key`) is a usage error,
+# not a request with no authentication.
 clickhousectl cloud clickpipe create kafka <service-id> \
   --name my-kafka-pipe \
   --brokers 'broker:9092' --topics events \
