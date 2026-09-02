@@ -764,8 +764,9 @@ clickhousectl cloud postgres create \
   --tag env=prod \
   --pg-config-file ./pg.json
 
-# Update size, HA, or tags (all flags optional)
+# Update name, size, HA, or tags (all flags optional)
 clickhousectl cloud postgres update <pg-id> \
+  --name renamed-pg \
   --size m7i.4xlarge \
   --add-tag env=prod --remove-tag legacy
 

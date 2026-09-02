@@ -3,7 +3,7 @@ use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_line};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
-    ApiResponse, PgBouncerConfig, PgConfig, PgHaType, PgIdProperty, PgProvider, PgVersion,
+    ApiResponse, PgBouncerConfig, PgConfig, PgHaType, PgIdProperty, PgProvider, PgSize, PgVersion,
     PostgresInstanceConfig, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
     PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
     PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
@@ -69,6 +69,9 @@ pub enum PostgresCommands {
     /// Update an existing Postgres service (metadata only)
     Update {
         postgres_id: String,
+        /// New service name
+        #[arg(long)]
+        name: Option<String>,
         #[arg(long)]
         size: Option<String>,
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
@@ -322,6 +325,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
         }
         PostgresCommands::Update {
             postgres_id,
+            name,
             size,
             ha_type,
             add_tag,
@@ -329,6 +333,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             org_id,
         } => {
             let opts = PostgresUpdateOptions {
+                name: name.as_deref(),
                 size: size.as_deref(),
                 ha_type: ha_type.as_deref(),
                 add_tag: &add_tag,
@@ -816,6 +821,7 @@ pub struct PostgresCreateOptions<'a> {
 }
 
 pub struct PostgresUpdateOptions<'a> {
+    pub name: Option<&'a str>,
     pub size: Option<&'a str>,
     pub ha_type: Option<&'a str>,
     pub add_tag: &'a [String],
@@ -1054,6 +1060,23 @@ pub async fn postgres_create(
     Ok(())
 }
 
+/// Builds the `postgres update` PATCH body from the already-parsed pieces
+/// (name, size, HA type, merged tags). Kept separate from `postgres_update`
+/// so the shape sent on the wire is unit-testable without a mock server.
+fn build_postgres_update_request(
+    name: Option<&str>,
+    size: Option<PgSize>,
+    ha_type: Option<PgHaType>,
+    tags: Option<Vec<ResourceTagsV1>>,
+) -> PostgresServicePatchRequest {
+    PostgresServicePatchRequest {
+        name: name.map(str::to_string),
+        size,
+        ha_type,
+        tags,
+    }
+}
+
 pub async fn postgres_update(
     client: &CloudClient,
     postgres_id: &str,
@@ -1082,12 +1105,7 @@ pub async fn postgres_update(
         None
     };
 
-    let req = PostgresServicePatchRequest {
-        name: None,
-        size,
-        ha_type,
-        tags,
-    };
+    let req = build_postgres_update_request(opts.name, size, ha_type, tags);
 
     let resp = client
         .api()
@@ -2031,13 +2049,38 @@ mod tests {
     fn parses_postgres_update_no_fields() {
         let cmd = parse_postgres(&["clickhousectl", "cloud", "postgres", "update", "pg-1"]);
         let PostgresCommands::Update {
-            postgres_id, size, ..
+            postgres_id,
+            name,
+            size,
+            ..
         } = cmd
         else {
             panic!("expected update");
         };
         assert_eq!(postgres_id, "pg-1");
+        assert!(name.is_none());
         assert!(size.is_none());
+    }
+
+    #[test]
+    fn parses_postgres_update_name() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "update",
+            "pg-1",
+            "--name",
+            "renamed-pg",
+        ]);
+        let PostgresCommands::Update {
+            postgres_id, name, ..
+        } = cmd
+        else {
+            panic!("expected update");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(name.as_deref(), Some("renamed-pg"));
     }
 
     #[test]
@@ -2742,6 +2785,32 @@ mod tests {
         }];
         let out = merge_response_tags(Some(vec![]), &add, &[]).unwrap();
         assert_eq!(out, add);
+    }
+
+    #[test]
+    fn build_postgres_update_request_omits_name_when_not_given() {
+        let req = build_postgres_update_request(None, None, None, None);
+        assert!(req.name.is_none());
+        assert!(req.size.is_none());
+        assert!(req.ha_type.is_none());
+        assert!(req.tags.is_none());
+    }
+
+    #[test]
+    fn build_postgres_update_request_sets_name_when_given() {
+        let req = build_postgres_update_request(
+            Some("renamed-pg"),
+            Some(PgSize::C6gd_large),
+            Some(PgHaType::Sync),
+            Some(vec![ResourceTagsV1 {
+                key: "env".into(),
+                value: Some("prod".into()),
+            }]),
+        );
+        assert_eq!(req.name.as_deref(), Some("renamed-pg"));
+        assert!(req.size.is_some());
+        assert_eq!(req.ha_type, Some(PgHaType::Sync));
+        assert_eq!(req.tags.unwrap().len(), 1);
     }
 
     #[test]

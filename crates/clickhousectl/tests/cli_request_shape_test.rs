@@ -871,6 +871,63 @@ async fn postgres_delete_json_emits_the_resource_object_not_the_envelope() {
     );
 }
 
+// ── Postgres update --name (issue #663) ────────────────────────────────────
+
+/// `postgres update --name` must PATCH the API with only `name` set: no
+/// `size`, `haType`, or `tags` key should appear when only `--name` is
+/// passed, and no discovery `GET` is issued (no tag diff was requested).
+#[tokio::test]
+async fn postgres_update_name_sends_only_the_name_field() {
+    let mock = MockServer::start().await;
+    let postgres_id = "11111111-2222-3333-4444-555555555555";
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{postgres_id}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": postgres_id,
+                "name": "renamed-pg",
+                "state": "running",
+            },
+            "status": 200,
+            "requestId": "stub-postgres-update",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            postgres_id,
+            "--org-id",
+            "org-1",
+            "--name",
+            "renamed-pg",
+        ],
+    );
+
+    assert_success(&output);
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "expected only the PATCH, no discovery GET"
+    );
+    assert_eq!(requests[0].method, wiremock::http::Method::PATCH);
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
+    assert_eq!(body["name"], "renamed-pg");
+    assert!(
+        body.get("size").is_none() && body.get("haType").is_none() && body.get("tags").is_none(),
+        "unexpected keys in PATCH body: {body}"
+    );
+}
+
 // ── Postgres list --filter validation (issue #603) ────────────────────────
 
 fn postgres_list_response() -> ResponseTemplate {
