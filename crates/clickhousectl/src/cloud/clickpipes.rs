@@ -501,7 +501,16 @@ DOCUMENTATION:
     Postgres(PostgresCreateArgs),
 
     /// Create a ClickPipe from MySQL
-    #[command(name = "mysql")]
+    #[command(
+        name = "mysql",
+        after_help = "\
+MYSQL INPUT RULES:
+  --auth basic requires --username and --password, which must be given
+  together.
+  --auth IAM_ROLE requires --iam-role, and rejects --username and --password
+  instead of silently ignoring them: the role ARN is the whole credential.
+  --iam-role is rejected with --auth basic instead of being silently ignored."
+    )]
     MySQL(MySqlCreateArgs),
 
     /// Create a ClickPipe from MongoDB
@@ -1053,11 +1062,11 @@ pub struct MySqlCreateArgs {
     #[arg(long, default_value = "3306")]
     pub port: u16,
 
-    /// Username (basic auth only; invalid with --auth IAM_ROLE)
+    /// Username (required with --auth basic; invalid with --auth IAM_ROLE)
     #[arg(long, requires = "password")]
     pub username: Option<String>,
 
-    /// Password (basic auth only; invalid with --auth IAM_ROLE)
+    /// Password (required with --auth basic; invalid with --auth IAM_ROLE)
     #[arg(long, requires = "username")]
     pub password: Option<String>,
 
@@ -5753,13 +5762,89 @@ mod tests {
     }
 
     #[test]
+    fn mysql_help_documents_input_rules() {
+        // The credential pair is `Option` so IAM_ROLE auth can omit it, which
+        // takes it out of the usage line; the help text is what tells a user
+        // basic auth still needs both flags.
+        let error = clickpipe_parse_error(&["create", "mysql", "--help"]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        assert!(help.contains("MYSQL INPUT RULES:"), "{help}");
+        assert!(
+            help.contains("--auth basic requires --username and --password"),
+            "{help}"
+        );
+        assert!(help.contains("must be given"), "{help}");
+        assert!(
+            help.contains("--auth IAM_ROLE requires --iam-role"),
+            "{help}"
+        );
+        assert!(help.contains("rejects --username and --password"), "{help}");
+        assert!(
+            help.contains("the role ARN is the whole credential"),
+            "{help}"
+        );
+        assert!(
+            help.contains("--iam-role is rejected with --auth basic"),
+            "{help}"
+        );
+        assert!(help.contains("silently ignored"), "{help}");
+        for flag in [
+            "--username <USERNAME>",
+            "--password <PASSWORD>",
+            "--iam-role <IAM_ROLE>",
+        ] {
+            assert!(help.contains(flag), "missing `{flag}`:\n{help}");
+        }
+    }
+
+    /// `main` formats the `clickpipe create` usage error against the source
+    /// subcommand named by `clickpipe_create_validation_error`, so every name
+    /// that hook can return has to resolve in the real clap command tree.
+    #[test]
+    fn every_clickpipe_create_validation_source_resolves_to_a_subcommand() {
+        use clap::CommandFactory;
+
+        // One failing invocation per source whose flag relationships are
+        // validated after parsing. The match in
+        // `clickpipe_create_validation_error` is exhaustive, so a new source
+        // that gains checks has to be added here too.
+        let mut postgres = postgres_cli_args(Some("public.events:events"));
+        postgres.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
+        let sources: Vec<&'static str> = [postgres, mysql_create_cli_args()]
+            .iter()
+            .map(|args| {
+                parse_clickpipe(args)
+                    .clickpipe_create_validation_error()
+                    .unwrap_or_else(|| panic!("expected a validation error for: {args:?}"))
+                    .0
+            })
+            .collect();
+        assert_eq!(sources, ["postgres", "mysql"]);
+
+        let mut command = Cli::command();
+        let create = command
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
+            .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
+            .expect("clickpipe create command must exist");
+        for source in sources {
+            assert!(
+                create.find_subcommand(source).is_some(),
+                "`clickpipe create {source}` must exist for the usage error to name it"
+            );
+        }
+    }
+
+    #[test]
     fn readme_documents_postgres_tls_and_cdc_prerequisites() {
         let readme = include_str!("../../../../README.md");
         let postgres = readme
             .split_once("### ClickPipes")
             .expect("ClickPipes section")
             .1
-            .split_once("#### Discovering a source schema")
+            .split_once("#### MySQL ClickPipe authentication")
             .expect("next ClickPipes section")
             .0;
 
@@ -5808,10 +5893,10 @@ mod tests {
 
         for expected in [
             "`--auth IAM_ROLE` requires `--iam-role`",
-            "rejects `--iam-role` with\nbasic auth",
-            "`--username` and `--password` are\nbasic-auth only and must be given together",
+            "rejects `--iam-role` with",
+            "basic-auth only and must be given together",
             "no `credentials` object is sent",
-            "usage\nerror (exit code 2)",
+            "(exit code 2) before any request is made",
         ] {
             assert!(mysql.contains(expected), "missing `{expected}`:\n{mysql}");
         }
@@ -5820,7 +5905,10 @@ mod tests {
         let examples = readme
             .split_once("# From MySQL (CDC)")
             .expect("MySQL create example")
-            .1;
+            .1
+            .split_once("# From MongoDB (CDC)")
+            .expect("next create example")
+            .0;
         for expected in [
             "clickhousectl cloud clickpipe create mysql <service-id>",
             "--auth IAM_ROLE --iam-role \"$MYSQL_IAM_ROLE_ARN\"",

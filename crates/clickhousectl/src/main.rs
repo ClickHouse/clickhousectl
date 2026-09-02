@@ -177,15 +177,24 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
     let Some((source, message)) = args.clickpipe_create_validation_error() else {
         return Ok(());
     };
-    let create_source = cmd
+    let create = cmd
         .find_subcommand_mut("cloud")
         .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
         .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
-        .and_then(|create| create.find_subcommand_mut(source))
-        .unwrap_or_else(|| panic!("clickpipe create {source} command must exist"));
+        .expect("clickpipe create command must exist");
+    // The usage error belongs to the source subcommand. If the returned literal
+    // ever drifts from a `#[command(name)]`, report it against `clickpipe
+    // create` instead of panicking on a valid invocation.
+    let owner = if create.find_subcommand(source).is_some() {
+        create
+            .find_subcommand_mut(source)
+            .expect("presence checked immediately above")
+    } else {
+        create
+    };
     // ArgumentConflict is intentional for invalid relationships between valid
     // values, matching existing CLI validation and preserving exit code 2.
-    Err(create_source.error(ErrorKind::ArgumentConflict, message))
+    Err(owner.error(ErrorKind::ArgumentConflict, message))
 }
 
 /// Run a successfully parsed invocation to completion and report the exit
