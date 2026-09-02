@@ -138,15 +138,15 @@ CONTEXT FOR AGENTS:
         command: BackupCommands,
     },
 
-    // Clickpipe commands
+    /// Manage ClickPipes for data ingestion
     #[command(
         name = "clickpipe",
         after_help = "\
 CONTEXT FOR AGENTS:
-    Manage ClickPipes for ingesting data into ClickHouse Cloud.
-    Subcommands: list, get, delete, start, stop, resync, scale, settings, create,
-    reverse-private-endpoint (PrivateLink connectivity for sources).
-    Requires a service ID — get it from `clickhousectl cloud service list`."
+  Manage ClickPipes for ingesting data into ClickHouse Cloud.
+  Subcommands: list, get, delete, start, stop, resync, scale, settings, create,
+  reverse-private-endpoint (PrivateLink connectivity for sources).
+  Requires a service ID — get it from `clickhousectl cloud service list`."
     )]
     ClickPipe {
         #[command(subcommand)]
@@ -479,5 +479,24 @@ mod tests {
             ],
             true,
         );
+    }
+
+    #[test]
+    fn every_cloud_subcommand_has_a_help_about() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let cloud = command
+            .find_subcommand_mut("cloud")
+            .expect("cloud subcommand");
+
+        for sub in cloud.get_subcommands() {
+            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+            assert!(
+                !about.trim().is_empty(),
+                "cloud subcommand `{}` has no about text",
+                sub.get_name()
+            );
+        }
     }
 }
