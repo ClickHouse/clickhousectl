@@ -905,11 +905,11 @@ pub struct PostgresCreateArgs {
     pub pg_database: String,
 
     /// Username (basic auth only; invalid with --auth IAM_ROLE)
-    #[arg(long, required_unless_present = "iam_role")]
+    #[arg(long, requires = "password")]
     pub username: Option<String>,
 
     /// Password (basic auth only; invalid with --auth IAM_ROLE)
-    #[arg(long, required_unless_present = "iam_role")]
+    #[arg(long, requires = "username")]
     pub password: Option<String>,
 
     /// Table mappings as schema.table:target_table (repeatable)
@@ -2869,7 +2869,9 @@ fn validate_postgres_create_args(
             "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
         ));
     }
-    // Clap enforces this for parsed input; hand-built args reach it here.
+    // clap joins --username and --password with `requires`, so half a pair is
+    // already a usage error; this owns the "basic auth needs the pair at all"
+    // rule, which clap cannot express because it depends on --auth's value.
     if args.auth == "basic" && (args.username.is_none() || args.password.is_none()) {
         return Err(CloudError::new(
             "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
@@ -2939,7 +2941,8 @@ fn build_postgres_request(
     args: &PostgresCreateArgs,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
-        ClickPipeMutatePostgresSource, ClickPipePostRequest, ClickPipePostSource, PLAIN,
+        ClickPipeMutatePostgresSource, ClickPipeMutatePostgresSourceAuthentication,
+        ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
 
     let table_mappings = validate_postgres_create_args(args)?;
@@ -2948,16 +2951,28 @@ fn build_postgres_request(
         .as_deref()
         .map(std::fs::read_to_string)
         .transpose()?;
-    // `validate_postgres_create_args` has already tied the pair to the auth
-    // mode: basic auth has both flags, IAM_ROLE has neither. So the pair being
-    // absent means IAM_ROLE, where `iamRole` is the whole credential and the
-    // `credentials` object must stay off the wire entirely.
-    let credentials = match (args.username.as_deref(), args.password.as_deref()) {
-        (Some(username), Some(password)) => Some(PLAIN {
-            username: username.to_string(),
-            password: password.to_string(),
-        }),
-        _ => None,
+    // Match the parsed authentication mode, not the raw `--auth` string, so a
+    // new mode added to the library enum is a compile error here rather than a
+    // silent credential-less create.
+    let authentication: ClickPipeMutatePostgresSourceAuthentication = parse_enum(&args.auth)?;
+    let credentials = match &authentication {
+        // `validate_postgres_create_args` has already required the pair for
+        // basic auth, so `zip` yields `Some` for every invocation that reaches
+        // here.
+        ClickPipeMutatePostgresSourceAuthentication::Basic => args
+            .username
+            .as_deref()
+            .zip(args.password.as_deref())
+            .map(|(username, password)| PLAIN {
+                username: username.to_string(),
+                password: password.to_string(),
+            }),
+        // The role ARN is the whole credential: the `credentials` object must
+        // stay off the wire entirely.
+        ClickPipeMutatePostgresSourceAuthentication::IAM_ROLE => None,
+        // Unreachable for parsed input, since --auth is restricted to
+        // DB_AUTHS; an unknown mode has no credential shape to send.
+        ClickPipeMutatePostgresSourceAuthentication::Unknown(_) => None,
     };
     let source = ClickPipeMutatePostgresSource {
         r#type: Some(parse_enum(&args.postgres_type)?),
@@ -2967,7 +2982,7 @@ fn build_postgres_request(
         database: args.pg_database.clone(),
         disable_tls: false,
         skip_cert_verification: false,
-        authentication: parse_enum(&args.auth)?,
+        authentication,
         iam_role: args.iam_role.clone(),
         tls_host: args.tls_host.clone(),
         ca_certificate,
@@ -3750,17 +3765,18 @@ mod tests {
             "postgres.example",
             "--pg-database",
             "source-db",
-            "--username",
-            "user",
-            "--password",
-            "password",
             "--table-mapping",
             "public.events:events",
             flag,
             value,
         ];
+        // Each auth mode gets only its own credential flags: the CLI rejects
+        // --username/--password with IAM_ROLE, so pairing them here would
+        // assert an invocation the CLI refuses to run.
         if flag == "--auth" && value == "IAM_ROLE" {
             args.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
+        } else {
+            args.extend(["--username", "user", "--password", "password"]);
         }
         parse_clickpipe(&args);
     }
@@ -5402,7 +5418,77 @@ mod tests {
     }
 
     #[test]
+    fn postgres_iam_role_only_error_names_the_role_flag_and_not_the_pair() {
+        // --username/--password used to be `required_unless_present =
+        // "iam_role"`, so `--auth IAM_ROLE` on its own made clap demand all
+        // three flags, and following that advice landed on the "cannot be
+        // used with --auth IAM_ROLE" rejection. Only --iam-role is missing.
+        let args = vec![
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--table-mapping",
+            "public.events:events",
+            "--auth",
+            "IAM_ROLE",
+        ];
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let message = error.to_string();
+        assert!(message.contains("--iam-role"), "{message}");
+        assert!(!message.contains("--username"), "{message}");
+        assert!(!message.contains("--password"), "{message}");
+    }
+
+    #[test]
+    fn postgres_basic_auth_without_any_credentials_is_a_validation_error() {
+        // clap only pairs the two flags now, so neither being present parses
+        // cleanly and `validate_postgres_create_args` owns the basic-auth
+        // rule: it depends on --auth's value, which clap cannot express.
+        let args = vec![
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--table-mapping",
+            "public.events:events",
+        ];
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(parsed.auth, "basic");
+        assert_eq!(parsed.username, None);
+        assert_eq!(parsed.password, None);
+
+        let command = parse_clickpipe(&args);
+        assert_eq!(
+            command.postgres_create_validation_error().as_deref(),
+            Some("--auth basic requires --username <USERNAME> and --password <PASSWORD>")
+        );
+    }
+
+    #[test]
     fn postgres_basic_auth_still_requires_username_and_password() {
+        // The two flags are joined with clap `requires`, the same pairing the
+        // Kafka credential flags use (issue #606), so half a pair is a usage
+        // error naming the missing half rather than the whole set.
         for omitted in ["--username", "--password"] {
             let args: Vec<&str> = [
                 "create",
@@ -5517,13 +5603,7 @@ mod tests {
             help.contains("--auth basic requires --username and --password"),
             "{help}"
         );
-        assert!(
-            help.contains(
-                "the role ARN is the whole
-  credential"
-            ),
-            "{help}"
-        );
+        assert!(help.contains("the role ARN is the whole"), "{help}");
         assert!(help.contains("silently ignored"), "{help}");
         assert!(help.contains("--replication-mode cdc_only"), "{help}");
         assert!(
@@ -5603,6 +5683,7 @@ mod tests {
             "https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips",
             // IAM role authentication takes no username or password.
             "`--username` and `--password` are basic-auth only",
+            "must be given together",
             "no `credentials` object is sent",
             "--auth IAM_ROLE --iam-role \"$POSTGRES_IAM_ROLE_ARN\"",
         ] {
