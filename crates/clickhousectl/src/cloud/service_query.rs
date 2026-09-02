@@ -421,17 +421,30 @@ async fn restore_repair_endpoint(
     Ok(())
 }
 
+/// Everything a failed repair needs to undo itself: the key it created, the
+/// endpoint configuration it read, the record it started from and the lock
+/// that record is held under.
+struct RepairRollback<'a> {
+    new_api_key_id: &'a str,
+    endpoint_state: &'a RepairEndpointState,
+    old_api_key_id: &'a str,
+    lock: &'a credentials::QueryProvisioningLock,
+}
+
 async fn fail_after_repair_binding<T>(
     client: &CloudClient,
     org_id: &str,
     service_id: &str,
-    new_api_key_id: &str,
-    endpoint_state: &RepairEndpointState,
+    rollback: &RepairRollback<'_>,
     mut repair_error: CloudError,
 ) -> CloudResult<T> {
+    let new_api_key_id = rollback.new_api_key_id;
     if let Err(rollback_error) =
-        restore_repair_endpoint(client, org_id, service_id, endpoint_state).await
+        restore_repair_endpoint(client, org_id, service_id, rollback.endpoint_state).await
     {
+        // The endpoint may still bind the new key, and a key deleted while
+        // bound leaves a dangling UUID that can fail every later upsert, so
+        // the key is kept and named rather than scheduled for deletion.
         repair_error.message = format!(
             "{repair_error}; additionally, failed to restore the original query endpoint \
              bindings: {rollback_error}. Newly created API key {new_api_key_id} was retained \
@@ -443,10 +456,39 @@ async fn fail_after_repair_binding<T>(
         .delete_api_key_if_exists(org_id, new_api_key_id)
         .await
     {
-        repair_error.message = format!(
-            "{repair_error}; additionally, failed to delete newly created API key \
-             {new_api_key_id}: {cleanup_error}"
+        // The binding is back to what it was, so the new key is unbound and
+        // grants nothing, but it exists. Its ID must not live only in this
+        // message (#527): it is recorded on the record the repair started
+        // from, guarded on that record's active key, so the next query
+        // retries the deletion (#658).
+        let recorded = credentials::add_pending_cleanup_if_api_key_matches(
+            service_id,
+            rollback.old_api_key_id,
+            new_api_key_id,
+            rollback.lock,
         );
+        repair_error.message = match recorded {
+            Ok(true) => format!(
+                "{repair_error}; additionally, failed to delete newly created API key \
+                 {new_api_key_id}: {cleanup_error}. Its ID was recorded under \
+                 service_query_keys.{service_id}.pending_cleanup_api_key_ids in \
+                 .clickhouse/credentials.json and deletion is retried automatically by the \
+                 next `clickhousectl cloud service query --id {service_id} --org-id {org_id} \
+                 ...`"
+            ),
+            Ok(false) => format!(
+                "{repair_error}; additionally, failed to delete newly created API key \
+                 {new_api_key_id}: {cleanup_error}. The stored record changed meanwhile, so \
+                 the ID was not recorded; to delete the key now, run `clickhousectl cloud key \
+                 delete {new_api_key_id} --org-id {org_id}`"
+            ),
+            Err(record_error) => format!(
+                "{repair_error}; additionally, failed to delete newly created API key \
+                 {new_api_key_id}: {cleanup_error}, and its ID could not be recorded for a \
+                 later retry: {record_error}. To delete the key now, run `clickhousectl cloud \
+                 key delete {new_api_key_id} --org-id {org_id}`"
+            ),
+        };
     }
     Err(repair_error)
 }
@@ -539,6 +581,12 @@ pub async fn repair_service_query_key(
     // nothing has been retired.
     let endpoint_request =
         build_repair_endpoint_request(&endpoint_state, &retired_api_key_ids, &new_api_key_id);
+    let rollback = RepairRollback {
+        new_api_key_id: &new_api_key_id,
+        endpoint_state: &endpoint_state,
+        old_api_key_id: &old_api_key_id,
+        lock: &provisioning_lock,
+    };
     let repaired_endpoint = match client
         .bind_created_query_key(org_id, service_id, &endpoint_request, KEY_PROPAGATION)
         .await
@@ -549,8 +597,7 @@ pub async fn repair_service_query_key(
                 client,
                 org_id,
                 service_id,
-                &new_api_key_id,
-                &endpoint_state,
+                &rollback,
                 error.at_stage(FailureStage::EndpointUpsert),
             )
             .await;
@@ -565,8 +612,7 @@ pub async fn repair_service_query_key(
                 client,
                 org_id,
                 service_id,
-                &new_api_key_id,
-                &endpoint_state,
+                &rollback,
                 error.at_stage(FailureStage::EndpointUpsert),
             )
             .await;
@@ -579,8 +625,7 @@ pub async fn repair_service_query_key(
             client,
             org_id,
             service_id,
-            &new_api_key_id,
-            &endpoint_state,
+            &rollback,
             CloudError::new(format!(
                 "query endpoint repair returned endpoint {repaired_endpoint_id}, expected owned \
                  endpoint {endpoint_id}"
@@ -606,15 +651,7 @@ pub async fn repair_service_query_key(
     if let Err(error) =
         credentials::set_service_query_key(service_id, replacement.clone(), &provisioning_lock)
     {
-        return fail_after_repair_binding(
-            client,
-            org_id,
-            service_id,
-            &new_api_key_id,
-            &endpoint_state,
-            error,
-        )
-        .await;
+        return fail_after_repair_binding(client, org_id, service_id, &rollback, error).await;
     }
 
     // The replacement is the credential of record and unbound keys grant

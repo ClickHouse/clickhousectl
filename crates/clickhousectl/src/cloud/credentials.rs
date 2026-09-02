@@ -282,6 +282,56 @@ fn retain_uncleaned_pending_if_api_key_matches(
     true
 }
 
+/// Record `pending_api_key_id` as awaiting deletion on the record for
+/// `service_id`, but only while that record still names `api_key_id` as its
+/// active key: a rolled-back repair's replacement key whose delete failed
+/// belongs on the record the repair started from, not on a concurrent
+/// repair's fresh one (#658). The ID is appended once. Returns whether the
+/// record was updated.
+pub(crate) fn add_pending_cleanup_if_api_key_matches(
+    service_id: &str,
+    api_key_id: &str,
+    pending_api_key_id: &str,
+    _lock: &QueryProvisioningLock,
+) -> CloudResult<bool> {
+    let _mutation_lock = lock_credentials_mutation()?;
+    let Some(mut creds) = try_load_credentials()? else {
+        return Ok(false);
+    };
+    if !push_pending_if_api_key_matches(&mut creds, service_id, api_key_id, pending_api_key_id) {
+        return Ok(false);
+    }
+    save_credentials(&creds)?;
+    Ok(true)
+}
+
+/// The compare-and-append behind [`add_pending_cleanup_if_api_key_matches`].
+/// The active key itself is never listed as pending: a record that marks its
+/// own key for deletion is refused by repair, so it must not be produced here.
+fn push_pending_if_api_key_matches(
+    creds: &mut Credentials,
+    service_id: &str,
+    api_key_id: &str,
+    pending_api_key_id: &str,
+) -> bool {
+    let Some(stored) = creds.service_query_keys.get_mut(service_id) else {
+        return false;
+    };
+    if stored.api_key_id.as_deref() != Some(api_key_id) || pending_api_key_id == api_key_id {
+        return false;
+    }
+    if !stored
+        .pending_cleanup_api_key_ids
+        .iter()
+        .any(|pending| pending == pending_api_key_id)
+    {
+        stored
+            .pending_cleanup_api_key_ids
+            .push(pending_api_key_id.to_string());
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -492,5 +542,71 @@ mod tests {
             &["retired-2".to_string()],
         ));
         assert!(empty.service_query_keys.is_empty());
+    }
+
+    #[test]
+    fn pending_cleanup_is_appended_only_while_the_active_key_matches() {
+        let mut creds = Credentials::default();
+        creds.service_query_keys.insert(
+            "svc-1".into(),
+            ServiceQueryKey {
+                organization_id: Some("org-1".into()),
+                api_key_id: Some("active-key".into()),
+                key_id: "kid".into(),
+                key_secret: "sec".into(),
+                endpoint_id: Some("ep".into()),
+                pending_cleanup_api_key_ids: vec!["retired-1".into()],
+                service_name: "demo".into(),
+                created_at: Utc::now(),
+            },
+        );
+
+        // The rolled-back key joins the list once, after what was there.
+        assert!(push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "active-key",
+            "rolled-back",
+        ));
+        assert!(push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "active-key",
+            "rolled-back",
+        ));
+        assert_eq!(
+            creds.service_query_keys["svc-1"].pending_cleanup_api_key_ids,
+            ["retired-1", "rolled-back"]
+        );
+
+        // Never the active key itself: repair refuses such a record.
+        assert!(!push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "active-key",
+            "active-key",
+        ));
+        assert_eq!(
+            creds.service_query_keys["svc-1"].pending_cleanup_api_key_ids,
+            ["retired-1", "rolled-back"]
+        );
+
+        // A concurrent repair replaced the active key: not this run's record.
+        assert!(!push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "previous-active-key",
+            "other",
+        ));
+        assert!(!push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-missing",
+            "active-key",
+            "other",
+        ));
+        assert_eq!(
+            creds.service_query_keys["svc-1"].pending_cleanup_api_key_ids,
+            ["retired-1", "rolled-back"]
+        );
     }
 }

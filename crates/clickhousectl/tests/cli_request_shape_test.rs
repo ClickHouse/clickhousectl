@@ -6280,6 +6280,102 @@ async fn failed_repair_retains_new_key_when_endpoint_rollback_fails() {
     assert_eq!(stored, original);
 }
 
+#[tokio::test]
+async fn failed_repair_records_the_new_key_for_retry_when_its_rollback_delete_fails() {
+    // The upsert fails, the original binding is restored, and then the delete
+    // of the never-bound replacement key fails. The key exists and grants
+    // nothing, and its ID must not live only in the error text (#527): it is
+    // appended to the untouched record's pending list so the next query
+    // retries the deletion (#658). Everything else on disk stays as it was.
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let control = MockServer::start().await;
+    let endpoint_path = mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(move |_: &wiremock::Request| {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                    "error": "binding replacement failed",
+                    "status": 500,
+                    "requestId": "stub-repair-failure"
+                }))
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": "ep-1" },
+                    "status": 200,
+                    "requestId": "stub-rollback"
+                }))
+            }
+        })
+        .expect(2)
+        .mount(&control)
+        .await;
+    mount_key_delete(
+        &control,
+        QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "error": "key service unavailable",
+            "status": 500,
+            "requestId": "stub-new-key-delete-failure"
+        })),
+    )
+    .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let original = write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_without_notes(&output);
+    assert!(stderr.contains("binding replacement failed"), "{stderr}");
+    assert!(stderr.contains("key service unavailable"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "failed to delete newly created API key {QUERY_TEST_KEY_UUID}"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "service_query_keys.{QUERY_TEST_SERVICE_ID}.pending_cleanup_api_key_ids"
+        )),
+        "the error says where the ID went: {stderr}"
+    );
+    assert!(
+        stderr.contains("retried automatically by the next `clickhousectl cloud service query"),
+        "{stderr}"
+    );
+
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![QUERY_TEST_KEY_UUID.to_string()],
+        "only the rolled-back key was attempted; the superseded key stays"
+    );
+    let mut expected = original.clone();
+    expected["service_query_keys"][QUERY_TEST_SERVICE_ID]["pending_cleanup_api_key_ids"] =
+        serde_json::json!([QUERY_TEST_KEY_UUID]);
+    assert_eq!(
+        read_credentials(project.path()),
+        expected,
+        "the record still names the old key and now lists the rolled-back one as pending"
+    );
+}
+
 const PENDING_QUERY_TEST_KEY_UUID: &str = "77777777-6666-5555-4444-333333333333";
 const THIRD_QUERY_TEST_KEY_UUID: &str = "33333333-4444-5555-6666-777777777777";
 
