@@ -2035,13 +2035,14 @@ async fn service_query_key_repair(
 /// The repair is committed before this runs and nothing here undoes it. The
 /// outcome is reported, not acted on: `Verified` when a probe succeeded;
 /// `Skipped` when the key was not probed (no Query API host configured, the
-/// service not `running` or its state unreadable, the record replaced by a
-/// concurrent repair, or the probe answered idle/stopped); `Failed` when the
-/// probe failed for a reason unrelated to readiness. Only a key the Query API
-/// kept rejecting for the whole readiness window is an error, and even then
-/// the message says the repair stands and points at `cloud service query`,
-/// which classifies the rejection — never at rerunning the repair, which
-/// would rotate a key that may simply not have propagated yet.
+/// service not `running` or its state unreadable, the record unreadable or
+/// replaced by a concurrent repair, or the probe answered idle/stopped);
+/// `Failed` when the probe failed for a reason unrelated to readiness. Only a
+/// key the Query API kept rejecting for the whole readiness window is an
+/// error, and even then the message says the repair stands and points at
+/// `cloud service query`, which classifies the rejection — never at rerunning
+/// the repair, which would rotate a key that may simply not have propagated
+/// yet.
 async fn verify_repaired_query_key(
     client: &CloudClient,
     org_id: &str,
@@ -2049,17 +2050,14 @@ async fn verify_repaired_query_key(
     api_key_id: &str,
     readiness: QueryEndpointReadiness,
 ) -> CloudResult<RepairVerification> {
-    let stored = credentials::try_get_service_query_key(service_id)?;
-    let Some((key_id, key_secret)) = repaired_query_credential(stored, api_key_id) else {
-        return Ok(skip_repair_verification(
-            org_id,
-            service_id,
-            api_key_id,
-            &format!(
-                "the stored query key for service {service_id} changed before the replacement \
-                 could be probed"
-            ),
-        ));
+    let stored = credentials::try_get_service_query_key(service_id);
+    let (key_id, key_secret) = match repaired_query_credential(stored, service_id, api_key_id) {
+        Ok(credential) => credential,
+        Err(reason) => {
+            return Ok(skip_repair_verification(
+                org_id, service_id, api_key_id, &reason,
+            ));
+        }
     };
     probe_repaired_query_key(
         client,
@@ -2074,17 +2072,30 @@ async fn verify_repaired_query_key(
 }
 
 /// The credential pair to probe with, if the record still names the key the
-/// repair just stored. A record that vanished or that a concurrent repair
-/// replaced is not this run's to verify.
+/// repair just stored. A record that vanished, that a concurrent repair
+/// replaced, or that could not be read back at all is not this run's to
+/// verify; the `Err` carries the reason the probe is skipped. The repair is
+/// already committed, so re-reading it is never what turns the run into a
+/// failure.
 fn repaired_query_credential(
-    stored: Option<credentials::ServiceQueryKey>,
+    stored: CloudResult<Option<credentials::ServiceQueryKey>>,
+    service_id: &str,
     api_key_id: &str,
-) -> Option<(String, String)> {
-    let stored = stored?;
+) -> Result<(String, String), String> {
+    let stored = stored.map_err(|error| {
+        format!("the stored query key for service {service_id} could not be read ({error})")
+    })?;
+    let changed = || {
+        format!(
+            "the stored query key for service {service_id} changed before the replacement could \
+             be probed"
+        )
+    };
+    let stored = stored.ok_or_else(changed)?;
     if stored.api_key_id.as_deref() != Some(api_key_id) {
-        return None;
+        return Err(changed());
     }
-    Some((stored.key_id, stored.key_secret))
+    Ok((stored.key_id, stored.key_secret))
 }
 
 fn next_query_command(service_id: &str, org_id: &str) -> String {
@@ -5275,15 +5286,39 @@ mod tests {
             created_at: chrono::Utc::now(),
         };
         assert_eq!(
-            repaired_query_credential(Some(stored("new")), "new"),
-            Some(("kid".to_string(), "sec".to_string()))
+            repaired_query_credential(Ok(Some(stored("new"))), "svc-1", "new"),
+            Ok(("kid".to_string(), "sec".to_string()))
         );
         // A concurrent repair replaced the key, or the record vanished.
+        let changed = "the stored query key for service svc-1 changed before the replacement \
+                       could be probed";
         assert_eq!(
-            repaired_query_credential(Some(stored("newer")), "new"),
-            None
+            repaired_query_credential(Ok(Some(stored("newer"))), "svc-1", "new"),
+            Err(changed.to_string())
         );
-        assert_eq!(repaired_query_credential(None, "new"), None);
+        assert_eq!(
+            repaired_query_credential(Ok(None), "svc-1", "new"),
+            Err(changed.to_string())
+        );
+    }
+
+    #[test]
+    fn a_credentials_read_error_after_a_committed_repair_skips_rather_than_fails() {
+        // The repair is committed by the time the record is re-read, so an
+        // unreadable or unparsable credentials file skips the probe like every
+        // other "not this run's to verify" case. Only a full-window Query API
+        // rejection may exit 1.
+        let reason = repaired_query_credential(
+            Err(CloudError::new("credentials.json is not valid JSON")),
+            "svc-1",
+            "new",
+        )
+        .unwrap_err();
+        assert_eq!(
+            reason,
+            "the stored query key for service svc-1 could not be read (credentials.json is not \
+             valid JSON)"
+        );
     }
 
     #[tokio::test]
