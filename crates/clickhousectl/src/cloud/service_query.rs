@@ -8,7 +8,7 @@
 
 use crate::cloud::client::{CloudClient, CloudError, CloudErrorKind, Result as CloudResult};
 use crate::cloud::credentials::{self, ServiceQueryKey};
-use crate::cloud::output::{CloudErrorCode, CloudErrorDetail};
+use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, eprint_line};
 use crate::failure::{ApiFailure, FailureKind, FailureStage};
 use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
@@ -648,7 +648,8 @@ fn pending_cleanup_warning(
 
 /// Retry the pending retirements of the stored key for `service_id` before a
 /// query runs (#527). Quiet on success; a failure is a warning on stderr and
-/// never a query failure, and every undeleted ID stays stored.
+/// never a query failure, and every undeleted ID stays stored. A write failure
+/// on stderr is discarded, so a closed stderr cannot stop the query (#598).
 ///
 /// The record is re-read under the provisioning lock, and the list is edited
 /// only while the record still names `stored`'s active key: a concurrent
@@ -665,12 +666,12 @@ pub(crate) async fn retry_pending_query_key_cleanup(
     }
     match retire_pending_query_keys(client, stored, service_id, org_id).await {
         Ok(None) => {}
-        Ok(Some(warning)) => eprintln!("{warning}"),
-        Err(error) => eprintln!(
+        Ok(Some(warning)) => eprint_line(warning),
+        Err(error) => eprint_line(format!(
             "Warning: could not retry the deletion of superseded query API keys for service \
              {service_id}: {error}. Their IDs remain stored and the retry runs again on the \
              next query"
-        ),
+        )),
     }
 }
 

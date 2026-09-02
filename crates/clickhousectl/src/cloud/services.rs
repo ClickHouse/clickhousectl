@@ -1951,7 +1951,7 @@ async fn service_query_key_repair(
     // replacement is active and its ID is stored for the retry (#527). The
     // warning goes to stderr in both modes; the JSON result carries the IDs.
     if let Some(warning) = &result.cleanup_warning {
-        eprintln!("{warning}");
+        eprint_line(warning);
     }
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);

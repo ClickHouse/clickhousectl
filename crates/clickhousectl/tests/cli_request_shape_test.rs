@@ -5526,6 +5526,61 @@ async fn a_failed_retirement_retry_warns_keeps_the_id_and_still_runs_the_query()
     );
 }
 
+/// #598, for the retirement-retry warning: the retry runs before the query, so
+/// a stderr nobody is reading must not panic the process at exit 101 and leave
+/// the query unrun.
+#[tokio::test]
+async fn a_failed_retirement_retry_survives_a_closed_stderr() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_delete(
+        &control,
+        OLD_QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_string("still failing"),
+    )
+    .await;
+
+    let query_host = start_mock_query_host().await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[OLD_QUERY_TEST_KEY_UUID],
+    );
+    let mut child = service_query_process(project.path(), &control, &query_host)
+        // The fixture's env credentials are shadowed by its file credentials,
+        // which emits the precedence `note:` first; dropping them makes the
+        // retry warning the first thing written to the closed stderr.
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+    // The reader of stderr walks away before the warning is written.
+    drop(child.stderr.take().expect("stderr was piped"));
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a closed stderr must not turn a warned-about retry into a panic"
+    );
+    // Not just "didn't panic": the query the warning precedes still ran, and
+    // the ID that could not be deleted is still pending.
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    let record = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(
+        record["pending_cleanup_api_key_ids"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+}
+
 #[tokio::test]
 async fn a_retirement_retry_never_deletes_the_active_key() {
     // A record that lists its own active key as pending is contradictory.
@@ -5990,6 +6045,83 @@ async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
     let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
     assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
     assert_eq!(repaired["key_id"], "replacement-key-id");
+    assert_eq!(
+        repaired["pending_cleanup_api_key_ids"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+}
+
+/// #598, for the repair's cleanup warning: the replacement key is already
+/// created, bound and committed to the record by the time the warning is
+/// written, so a stderr nobody is reading must not turn a completed repair
+/// into a panic and exit 101.
+#[tokio::test]
+async fn repair_with_a_failed_final_cleanup_survives_a_closed_stderr() {
+    let control = MockServer::start().await;
+    let endpoint_path = mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-repair"
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    mount_key_delete(
+        &control,
+        OLD_QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "error": "temporary cleanup failure",
+            "status": 500,
+            "requestId": "stub-old-key-delete-failure"
+        })),
+    )
+    .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let mut child = service_query_key_repair_process(project.path(), &control)
+        // As above: only file credentials, so the cleanup warning is the first
+        // thing written to the closed stderr.
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+    // The reader of stderr walks away before the warning is written.
+    drop(child.stderr.take().expect("stderr was piped"));
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a closed stderr must not turn a committed repair into a panic"
+    );
+    // Not just "didn't panic": the repair still reported its result, and the
+    // exact retired ID is still stored for the next query to retry.
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(
+        result["pendingCleanupApiKeyIds"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+    let repaired = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
     assert_eq!(
         repaired["pending_cleanup_api_key_ids"],
         serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
