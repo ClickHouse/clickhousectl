@@ -938,6 +938,18 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --publication-name clickpipes \
   --table-mapping "public.users:public_users"
 
+# From PostgreSQL, tuning the CDC and initial-load settings
+clickhousectl cloud clickpipe create postgres <service-id> \
+  --name my-tuned-pg-pipe \
+  --host db.example.com --pg-database mydb \
+  --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --publication-name clickpipes \
+  --table-mapping "public.users:public_users" \
+  --sync-interval-seconds 30 --pull-batch-size 50000 \
+  --initial-load-parallelism 4 \
+  --snapshot-rows-per-partition 1000000 --snapshot-parallel-tables 3 \
+  --allow-nullable-columns true --delete-on-merge false
+
 # From MySQL (CDC)
 # --server-id sets the replication server ID (useful when multiple pipes read
 # from the same MySQL instance, or to avoid colliding with existing replicas)
@@ -1016,6 +1028,34 @@ PostgreSQL ClickPipes require one or more complete
 `1..=65535`. `--auth IAM_ROLE` requires `--iam-role`; the CLI rejects
 `--iam-role` with basic auth rather than silently ignoring it.
 `--replication-slot-name` is valid only with `--replication-mode cdc_only`.
+
+#### PostgreSQL CDC pipe settings
+
+`clickpipe create postgres` accepts the full set of CDC and initial-load
+settings. Each flag maps to exactly one request field, and an omitted flag is
+left out of the request:
+
+| Flag | Meaning |
+| --- | --- |
+| `--sync-interval-seconds <SECONDS>` | Interval in seconds to sync data from Postgres during CDC replication. |
+| `--pull-batch-size <ROWS>` | Number of rows to pull in each batch during CDC replication. |
+| `--initial-load-parallelism <WORKERS>` | Number of parallel workers to use per table in the initial snapshot phase. |
+| `--snapshot-rows-per-partition <ROWS>` | Number of rows per partition during the snapshot phase. |
+| `--snapshot-parallel-tables <TABLES>` | Number of tables to snapshot in parallel during the initial load phase. |
+| `--allow-nullable-columns <true\|false>` | Preserve Postgres nullability in the destination table, creating columns without `NOT NULL` as `Nullable(...)`. Nullable types carry a performance cost in ClickHouse. |
+| `--enable-failover-slots <true\|false>` | Enable failover support for the replication slot on PG17 and newer. Applies only when ClickPipes creates the slot, so not with `--replication-slot-name`. |
+| `--delete-on-merge <true\|false>` | Enable hard delete behaviour in `ReplacingMergeTree` for PostgreSQL `DELETE` operations. |
+
+The three boolean flags take an explicit `true` or `false` value; when omitted
+they send `false`, which is the API default.
+
+These are create-time decisions. The Cloud API can patch only
+`syncIntervalSeconds` and `pullBatchSize` after the pipe exists, so the
+snapshot and initial-load settings cannot be changed later on a pipe that was
+created without them. `clickpipe settings update` is a different endpoint for
+streaming and object-storage pipes and does not cover these settings.
+
+The same settings are not yet exposed on `clickpipe create mysql`.
 
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
 

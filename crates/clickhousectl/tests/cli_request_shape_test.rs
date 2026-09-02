@@ -3589,6 +3589,106 @@ async fn postgres_multiple_table_mappings_serialize_as_array() {
     assert!(target_tables.contains(&"t3_dst"));
 }
 
+// ── Postgres CDC pipe settings (issue #565) ────────────────────────────────
+//
+// The snapshot and initial-load settings are create-time-only at the API, so
+// the create body is the only chance to set them. These tests pin the exact
+// key set of `source.postgres.settings`: no flag may leak a zero value, and
+// no passed flag may be dropped.
+
+fn postgres_settings_keys(settings: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = settings
+        .as_object()
+        .unwrap_or_else(|| panic!("settings should be an object, got: {settings}"))
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+#[tokio::test]
+async fn postgres_cdc_settings_are_absent_unless_their_flags_are_passed() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = postgres_args_minimal();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    // `allowNullableColumns`, `deleteOnMerge` and `enableFailoverSlots` are
+    // required by the schema, so they always serialize; every other setting
+    // must be omitted when its flag is omitted.
+    assert_eq!(
+        postgres_settings_keys(&body["source"]["postgres"]["settings"]),
+        [
+            "allowNullableColumns",
+            "deleteOnMerge",
+            "enableFailoverSlots",
+            "replicationMode",
+        ],
+        "unexpected settings shape: {}",
+        body["source"]["postgres"]["settings"]
+    );
+    let settings = &body["source"]["postgres"]["settings"];
+    assert_eq!(settings["allowNullableColumns"], false);
+    assert_eq!(settings["deleteOnMerge"], false);
+    assert_eq!(settings["enableFailoverSlots"], false);
+}
+
+#[tokio::test]
+async fn postgres_cdc_settings_serialize_exactly_the_flags_that_were_passed() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    for arg in [
+        "--sync-interval-seconds",
+        "30",
+        "--pull-batch-size",
+        "50000",
+        "--initial-load-parallelism",
+        "4",
+        "--snapshot-rows-per-partition",
+        "1000000",
+        "--snapshot-parallel-tables",
+        "3",
+        "--allow-nullable-columns",
+        "true",
+        "--enable-failover-slots",
+        "false",
+        "--delete-on-merge",
+        "true",
+    ] {
+        args.push(arg.into());
+    }
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    let settings = &body["source"]["postgres"]["settings"];
+    assert_eq!(
+        postgres_settings_keys(settings),
+        [
+            "allowNullableColumns",
+            "deleteOnMerge",
+            "enableFailoverSlots",
+            "initialLoadParallelism",
+            "pullBatchSize",
+            "replicationMode",
+            "snapshotNumRowsPerPartition",
+            "snapshotNumberOfParallelTables",
+            "syncIntervalSeconds",
+        ],
+        "unexpected settings shape: {settings}"
+    );
+    assert_eq!(settings["replicationMode"], "cdc");
+    assert_eq!(settings["syncIntervalSeconds"], 30);
+    assert_eq!(settings["pullBatchSize"], 50000);
+    assert_eq!(settings["initialLoadParallelism"], 4);
+    assert_eq!(settings["snapshotNumRowsPerPartition"], 1000000);
+    assert_eq!(settings["snapshotNumberOfParallelTables"], 3);
+    assert_eq!(settings["allowNullableColumns"], true);
+    // An explicit `false` is sent, not dropped.
+    assert_eq!(settings["enableFailoverSlots"], false);
+    assert_eq!(settings["deleteOnMerge"], true);
+}
+
 // Each --postgres-type value should serialize to the matching enum string.
 // The OpenAPI enum has 11 variants; the CLI accepts them via PossibleValuesParser
 // and the handler uses parse_enum to convert. A regression here would

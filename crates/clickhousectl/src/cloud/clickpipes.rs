@@ -359,6 +359,17 @@ POSTGRES INPUT RULES:
   instead of being silently ignored.
   --replication-slot-name is valid only with --replication-mode cdc_only.
 
+POSTGRES CDC SETTINGS:
+  Every CDC setting is applied when the pipe is created. The API can patch only
+  syncIntervalSeconds and pullBatchSize afterwards, so the snapshot and
+  initial-load settings (--initial-load-parallelism,
+  --snapshot-rows-per-partition, --snapshot-parallel-tables,
+  --allow-nullable-columns, --enable-failover-slots, --delete-on-merge) cannot
+  be changed after creation. `clickpipe settings update` is a different
+  endpoint for streaming and object-storage pipes and does not cover them.
+  The boolean settings take an explicit true or false; omitting one sends
+  false, which is the API default.
+
 POSTGRES TLS:
   TLS and certificate verification are enabled by default. A source whose
   certificate chain is publicly trusted needs no CA file. For a private or
@@ -813,6 +824,40 @@ pub struct PostgresCreateArgs {
     /// Replication slot name (only with --replication-mode cdc_only)
     #[arg(long)]
     pub replication_slot_name: Option<String>,
+
+    /// Interval in seconds to sync data from Postgres during CDC replication
+    #[arg(long, value_name = "SECONDS")]
+    pub sync_interval_seconds: Option<i64>,
+
+    /// Number of rows to pull in each batch during CDC replication
+    #[arg(long, value_name = "ROWS")]
+    pub pull_batch_size: Option<i64>,
+
+    /// Parallel workers per table in the initial snapshot phase (create-time only)
+    #[arg(long, value_name = "WORKERS")]
+    pub initial_load_parallelism: Option<i64>,
+
+    /// Number of rows per partition during the snapshot phase (create-time only)
+    #[arg(long, value_name = "ROWS")]
+    pub snapshot_rows_per_partition: Option<i64>,
+
+    /// Tables to snapshot in parallel during the initial load phase (create-time only)
+    #[arg(long, value_name = "TABLES")]
+    pub snapshot_parallel_tables: Option<i64>,
+
+    /// Preserve Postgres nullability in the destination table (create-time only)
+    #[arg(long, value_name = "true|false")]
+    pub allow_nullable_columns: Option<bool>,
+
+    /// Enable failover for the replication slot on PG17 and newer, when
+    /// ClickPipes creates the slot (create-time only)
+    #[arg(long, value_name = "true|false")]
+    pub enable_failover_slots: Option<bool>,
+
+    /// Enable hard deletes in ReplacingMergeTree for Postgres DELETEs
+    /// (create-time only)
+    #[arg(long, value_name = "true|false")]
+    pub delete_on_merge: Option<bool>,
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
@@ -2221,12 +2266,44 @@ fn validate_postgres_create_args(
         .collect()
 }
 
+/// Build the Postgres pipe settings sent at create time.
+///
+/// Every field the API models is wired here, because the settings are
+/// create-time decisions: `ClickPipePatchPostgresPipeSettings` can only patch
+/// `syncIntervalSeconds` and `pullBatchSize`, so anything else not set now can
+/// never be applied to the pipe.
+///
+/// `allowNullableColumns`, `deleteOnMerge` and `enableFailoverSlots` are
+/// required by the schema and therefore always serialized: absence is not
+/// representable on the wire, so an omitted flag sends `false` — the request
+/// shape the CLI has always sent. Every other setting is omitted when its flag
+/// is omitted, via `skip_serializing_if`.
+fn build_postgres_pipe_settings(
+    args: &PostgresCreateArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostgresPipeSettings> {
+    Ok(
+        clickhouse_cloud_api::models::ClickPipePostgresPipeSettings {
+            replication_mode: parse_enum(&args.replication_mode)?,
+            publication_name: args.publication_name.clone(),
+            replication_slot_name: args.replication_slot_name.clone(),
+            sync_interval_seconds: args.sync_interval_seconds,
+            pull_batch_size: args.pull_batch_size,
+            initial_load_parallelism: args.initial_load_parallelism,
+            snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
+            snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
+            allow_nullable_columns: args.allow_nullable_columns.unwrap_or(false),
+            delete_on_merge: args.delete_on_merge.unwrap_or(false),
+            enable_failover_slots: args.enable_failover_slots.unwrap_or(false),
+        },
+    )
+}
+
 fn build_postgres_request(
     args: &PostgresCreateArgs,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
         ClickPipeMutatePostgresSource, ClickPipePostRequest, ClickPipePostSource,
-        ClickPipePostgresPipeSettings, ClickPipePostgresPipeTableMapping, PLAIN,
+        ClickPipePostgresPipeTableMapping, PLAIN,
     };
 
     let mappings = validate_postgres_create_args(args)?;
@@ -2261,12 +2338,7 @@ fn build_postgres_request(
         iam_role: args.iam_role.clone(),
         tls_host: args.tls_host.clone(),
         ca_certificate,
-        settings: ClickPipePostgresPipeSettings {
-            replication_mode: parse_enum(&args.replication_mode)?,
-            publication_name: args.publication_name.clone(),
-            replication_slot_name: args.replication_slot_name.clone(),
-            ..Default::default()
-        },
+        settings: build_postgres_pipe_settings(args)?,
         table_mappings,
     };
 
@@ -4218,7 +4290,65 @@ mod tests {
         assert_eq!(args.ca_certificate, None);
         assert_eq!(args.publication_name, None);
         assert_eq!(args.replication_slot_name, None);
+        assert_eq!(args.sync_interval_seconds, None);
+        assert_eq!(args.pull_batch_size, None);
+        assert_eq!(args.initial_load_parallelism, None);
+        assert_eq!(args.snapshot_rows_per_partition, None);
+        assert_eq!(args.snapshot_parallel_tables, None);
+        assert_eq!(args.allow_nullable_columns, None);
+        assert_eq!(args.enable_failover_slots, None);
+        assert_eq!(args.delete_on_merge, None);
         assert_eq!(args.org_id, None);
+    }
+
+    #[test]
+    fn parses_postgres_cdc_settings_flags() {
+        let mut cli_args = postgres_cli_args(Some("public.events:events"));
+        cli_args.extend([
+            "--sync-interval-seconds",
+            "30",
+            "--pull-batch-size",
+            "50000",
+            "--initial-load-parallelism",
+            "4",
+            "--snapshot-rows-per-partition",
+            "1000000",
+            "--snapshot-parallel-tables",
+            "3",
+            "--allow-nullable-columns",
+            "true",
+            "--enable-failover-slots",
+            "false",
+            "--delete-on-merge",
+            "true",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&cli_args)
+        else {
+            panic!("expected postgres create");
+        };
+
+        assert_eq!(args.sync_interval_seconds, Some(30));
+        assert_eq!(args.pull_batch_size, Some(50_000));
+        assert_eq!(args.initial_load_parallelism, Some(4));
+        assert_eq!(args.snapshot_rows_per_partition, Some(1_000_000));
+        assert_eq!(args.snapshot_parallel_tables, Some(3));
+        // Tri-state booleans: an explicit `false` is distinguishable from an
+        // omitted flag at the clap layer.
+        assert_eq!(args.allow_nullable_columns, Some(true));
+        assert_eq!(args.enable_failover_slots, Some(false));
+        assert_eq!(args.delete_on_merge, Some(true));
+    }
+
+    #[test]
+    fn postgres_cdc_settings_booleans_require_an_explicit_value() {
+        let mut cli_args = postgres_cli_args(Some("public.events:events"));
+        cli_args.push("--allow-nullable-columns");
+        let error = clickpipe_parse_error(&cli_args);
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        let message = error.to_string();
+        assert!(message.contains("--allow-nullable-columns"), "{message}");
     }
 
     #[test]
@@ -4323,6 +4453,30 @@ mod tests {
         assert!(help.contains("silently ignored"), "{help}");
         assert!(help.contains("--replication-mode cdc_only"), "{help}");
         assert!(
+            help.contains("cannot\n  be changed after creation"),
+            "{help}"
+        );
+        assert!(
+            help.contains("can patch only\n  syncIntervalSeconds and pullBatchSize"),
+            "{help}"
+        );
+        assert!(
+            help.contains("omitting one sends\n  false, which is the API default"),
+            "{help}"
+        );
+        for flag in [
+            "--sync-interval-seconds <SECONDS>",
+            "--pull-batch-size <ROWS>",
+            "--initial-load-parallelism <WORKERS>",
+            "--snapshot-rows-per-partition <ROWS>",
+            "--snapshot-parallel-tables <TABLES>",
+            "--allow-nullable-columns <true|false>",
+            "--enable-failover-slots <true|false>",
+            "--delete-on-merge <true|false>",
+        ] {
+            assert!(help.contains(flag), "missing `{flag}`:\n{help}");
+        }
+        assert!(
             help.contains("TLS and certificate verification are enabled by default"),
             "{help}"
         );
@@ -4382,9 +4536,40 @@ mod tests {
 
         assert_eq!(
             postgres.matches("--publication-name clickpipes").count(),
-            2,
-            "both PostgreSQL examples must use the publication created in the prerequisites"
+            3,
+            "every PostgreSQL example must use the publication created in the prerequisites"
         );
+    }
+
+    #[test]
+    fn readme_documents_postgres_cdc_settings_flags() {
+        let readme = include_str!("../../../../README.md");
+        let settings = readme
+            .split_once("#### PostgreSQL CDC pipe settings")
+            .expect("PostgreSQL CDC pipe settings section")
+            .1
+            .split_once("Use `clickhousectl cloud clickpipe create <source> --help`")
+            .expect("end of the CDC settings section")
+            .0;
+
+        for expected in [
+            "--sync-interval-seconds <SECONDS>",
+            "--pull-batch-size <ROWS>",
+            "--initial-load-parallelism <WORKERS>",
+            "--snapshot-rows-per-partition <ROWS>",
+            "--snapshot-parallel-tables <TABLES>",
+            "--allow-nullable-columns <true\\|false>",
+            "--enable-failover-slots <true\\|false>",
+            "--delete-on-merge <true\\|false>",
+            "they send `false`, which is the API default",
+            "cannot be changed later",
+            "not yet exposed on `clickpipe create mysql`",
+        ] {
+            assert!(
+                settings.contains(expected),
+                "missing `{expected}`:\n{settings}"
+            );
+        }
     }
 
     #[test]
@@ -5169,6 +5354,14 @@ mod tests {
             ca_certificate: None,
             publication_name: None,
             replication_slot_name: None,
+            sync_interval_seconds: None,
+            pull_batch_size: None,
+            initial_load_parallelism: None,
+            snapshot_rows_per_partition: None,
+            snapshot_parallel_tables: None,
+            allow_nullable_columns: None,
+            enable_failover_slots: None,
+            delete_on_merge: None,
             destination_roles: DestinationRoleArgs::default(),
             org_id: None,
         }
@@ -5257,6 +5450,14 @@ mod tests {
         args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
         args.publication_name = Some("clickpipe_publication".into());
         args.replication_slot_name = Some("clickpipe_slot".into());
+        args.sync_interval_seconds = Some(30);
+        args.pull_batch_size = Some(50_000);
+        args.initial_load_parallelism = Some(4);
+        args.snapshot_rows_per_partition = Some(1_000_000);
+        args.snapshot_parallel_tables = Some(3);
+        args.allow_nullable_columns = Some(true);
+        args.enable_failover_slots = Some(true);
+        args.delete_on_merge = Some(true);
         args.destination_roles = DestinationRoleArgs {
             roles: vec!["analytics_reader".into(), "analytics_writer".into()],
         };
@@ -5296,6 +5497,17 @@ mod tests {
             source.settings.replication_slot_name.as_deref(),
             Some("clickpipe_slot")
         );
+        assert_eq!(source.settings.sync_interval_seconds, Some(30));
+        assert_eq!(source.settings.pull_batch_size, Some(50_000));
+        assert_eq!(source.settings.initial_load_parallelism, Some(4));
+        assert_eq!(
+            source.settings.snapshot_num_rows_per_partition,
+            Some(1_000_000)
+        );
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(3));
+        assert!(source.settings.allow_nullable_columns);
+        assert!(source.settings.enable_failover_slots);
+        assert!(source.settings.delete_on_merge);
         assert_eq!(source.table_mappings.len(), 2);
         assert_eq!(source.table_mappings[0].source_schema_name, "public");
         assert_eq!(source.table_mappings[0].source_table, "users");
@@ -5303,6 +5515,55 @@ mod tests {
         assert_eq!(source.table_mappings[1].source_schema_name, "audit");
         assert_eq!(source.table_mappings[1].source_table, "events");
         assert_eq!(source.table_mappings[1].target_table, "audit_events");
+    }
+
+    #[test]
+    fn build_postgres_pipe_settings_omits_unset_settings_and_sends_explicit_false() {
+        let mut args = postgres_builder_args();
+        args.sync_interval_seconds = Some(15);
+        args.allow_nullable_columns = Some(false);
+        args.delete_on_merge = Some(false);
+        args.enable_failover_slots = Some(false);
+
+        let settings = build_postgres_pipe_settings(&args).unwrap();
+        assert_eq!(settings.sync_interval_seconds, Some(15));
+        assert!(!settings.allow_nullable_columns);
+        assert!(!settings.delete_on_merge);
+        assert!(!settings.enable_failover_slots);
+        assert_eq!(settings.pull_batch_size, None);
+        assert_eq!(settings.initial_load_parallelism, None);
+        assert_eq!(settings.snapshot_num_rows_per_partition, None);
+        assert_eq!(settings.snapshot_number_of_parallel_tables, None);
+
+        // The three schema-required booleans always serialize; every other
+        // unset setting is omitted rather than sent as a zero value.
+        let value = serde_json::to_value(&settings).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("settings object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "allowNullableColumns",
+                "deleteOnMerge",
+                "enableFailoverSlots",
+                "replicationMode",
+                "syncIntervalSeconds",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_postgres_pipe_settings_defaults_optional_booleans_to_false() {
+        let settings = build_postgres_pipe_settings(&postgres_builder_args()).unwrap();
+
+        assert!(!settings.allow_nullable_columns);
+        assert!(!settings.delete_on_merge);
+        assert!(!settings.enable_failover_slots);
     }
 
     #[test]
