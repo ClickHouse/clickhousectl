@@ -373,14 +373,14 @@ impl AuthSource {
     }
 }
 
-// ── by-identifier reads (issue #666) ───────────────────────────────────────
+// ── by-identifier requests (issue #666) ───────────────────────────────────
 //
 // The API answers HTTP 400 `Invalid <thing> id string:"<id>"` for a
 // syntactically valid UUID that resolves to nothing, so `cloud postgres get
 // 00000000-0000-0000-0000-000000000000` reported a bad request rather than a
 // missing resource. The fix is structural, not textual: nothing here reads the
 // response prose (the message interpolates the id, so it could never become a
-// typed library variant either). A GET-by-identifier request has exactly one
+// typed library variant either). A by-identifier request has exactly one
 // class of user-controlled input — the identifiers the CLI itself formatted
 // into the URL path — so when every one of those is a well-formed UUID, "the
 // identifier is invalid" is not what happened.
@@ -407,46 +407,82 @@ impl ResourceKind {
     }
 
     /// The command that lists what does exist, for the structured detail.
-    /// Carries an organization id at most, which the message already names.
-    fn list_command(self, org_id: Option<&str>) -> String {
+    /// Takes the organization the request was scoped to, which the message
+    /// already names.
+    fn list_command(self, org_id: &str) -> String {
         let base = match self {
             ResourceKind::Service => "clickhousectl cloud service list",
             ResourceKind::PostgresService => "clickhousectl cloud postgres list",
             ResourceKind::Organization => "clickhousectl cloud org list",
         };
-        match (self, org_id) {
+        match self {
             // The organization *is* the identifier being looked up, so the
             // command that lists the alternatives takes no scope flag.
-            (ResourceKind::Organization, _) | (_, None) => base.to_string(),
-            (_, Some(org_id)) => format!("{base} --org-id {org_id}"),
+            ResourceKind::Organization => base.to_string(),
+            _ => format!("{base} --org-id {org_id}"),
         }
     }
 }
 
-/// The identifiers a by-identifier read put into its request path.
+/// The identifiers a by-identifier request put into its request path.
+///
+/// Built only through [`ResourceLookup::in_org`] and
+/// [`ResourceLookup::organization`], so the kind and the organization id
+/// cannot disagree: an organization lookup is always scoped to itself, and
+/// every other kind is always scoped to the organization it was read from.
 pub struct ResourceLookup<'a> {
-    pub kind: ResourceKind,
+    kind: ResourceKind,
     /// The resource's own identifier, as the user supplied it.
-    pub id: &'a str,
+    id: &'a str,
     /// The organization the request was scoped to. Equal to `id` for an
     /// organization lookup, whose only path identifier is the organization.
-    pub org_id: Option<&'a str>,
+    org_id: &'a str,
 }
 
-impl ResourceLookup<'_> {
+impl<'a> ResourceLookup<'a> {
+    /// A resource looked up inside an organization: both identifiers are in
+    /// the request path.
+    pub fn in_org(kind: ResourceKind, id: &'a str, org_id: &'a str) -> Self {
+        Self { kind, id, org_id }
+    }
+
+    /// An organization looked up by its own identifier, which is therefore
+    /// also the only scope the request had.
+    pub fn organization(id: &'a str) -> Self {
+        Self {
+            kind: ResourceKind::Organization,
+            id,
+            org_id: id,
+        }
+    }
+
+    /// Whether the API rejected a request whose every path identifier is a
+    /// well-formed UUID, which is how it answers "no such resource" for a
+    /// request that has no other user-controlled input (#666).
+    ///
+    /// The single implementation of that judgement: both
+    /// [`CloudClient::convert_error_for_lookup`] and the callers that turn
+    /// the rejection into an absent resource read it from here.
+    pub fn rejected_well_formed_ids(&self, err: &clickhouse_cloud_api::Error) -> bool {
+        matches!(err, clickhouse_cloud_api::Error::Api { status: 400, .. })
+            && self
+                .identifiers()
+                .all(|id| uuid::Uuid::parse_str(id).is_ok())
+    }
+
     /// Every identifier the CLI formatted into the request path.
     fn identifiers(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.id).chain(self.org_id)
+        [self.id, self.org_id].into_iter()
     }
 
     /// The trailing scope clause, when the request was scoped to something
     /// other than the resource being looked up.
     fn scope_clause(&self) -> String {
-        match self.org_id {
-            // Skipped when the organization is the resource, so the message
-            // never reads "organization X (organization X)".
-            Some(org_id) if org_id != self.id => format!(" (organization {org_id})"),
-            _ => String::new(),
+        match self.kind {
+            // Keyed on the kind, not on the two ids being equal, so the
+            // message never reads "organization X (organization X)".
+            ResourceKind::Organization => String::new(),
+            _ => format!(" (organization {})", self.org_id),
         }
     }
 }
@@ -579,11 +615,12 @@ impl CloudClient {
         self.convert_error_with_organization(err, Some(org_id))
     }
 
-    /// Re-present a by-identifier read's failure as a not-found when the API
-    /// rejected identifiers that are all well-formed UUIDs (#666).
+    /// Re-present a by-identifier request's failure as a not-found when the
+    /// API rejected identifiers that are all well-formed UUIDs (#666).
     ///
     /// The discriminator is structural: the HTTP status the library reported,
-    /// plus `Uuid::parse_str` over inputs the CLI already held. No part of it
+    /// plus `Uuid::parse_str` over inputs the CLI already held, both read
+    /// through [`ResourceLookup::rejected_well_formed_ids`]. No part of it
     /// comes from the response message, which is appended verbatim so nothing
     /// the server said is lost.
     ///
@@ -596,12 +633,8 @@ impl CloudClient {
         err: clickhouse_cloud_api::Error,
         lookup: ResourceLookup<'_>,
     ) -> CloudError {
-        let rejected_well_formed_ids =
-            matches!(&err, clickhouse_cloud_api::Error::Api { status: 400, .. })
-                && lookup
-                    .identifiers()
-                    .all(|id| uuid::Uuid::parse_str(id).is_ok());
-        let error = self.convert_error_with_organization(err, lookup.org_id);
+        let rejected_well_formed_ids = lookup.rejected_well_formed_ids(&err);
+        let error = self.convert_error_with_organization(err, Some(lookup.org_id));
         if !rejected_well_formed_ids {
             return error;
         }
@@ -967,11 +1000,7 @@ mod tests {
     fn lookup_400_over_well_formed_ids_reads_as_a_missing_service() {
         let err = test_client().convert_error_for_lookup(
             invalid_id_400("service", NIL_UUID),
-            ResourceLookup {
-                kind: ResourceKind::Service,
-                id: NIL_UUID,
-                org_id: Some(ORG_UUID),
-            },
+            ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID),
         );
         assert_eq!(
             err.message,
@@ -988,11 +1017,7 @@ mod tests {
     fn lookup_400_over_well_formed_ids_reads_as_a_missing_postgres_service() {
         let err = test_client().convert_error_for_lookup(
             invalid_id_400("Postgres service", NIL_UUID),
-            ResourceLookup {
-                kind: ResourceKind::PostgresService,
-                id: NIL_UUID,
-                org_id: Some(ORG_UUID),
-            },
+            ResourceLookup::in_org(ResourceKind::PostgresService, NIL_UUID, ORG_UUID),
         );
         assert_eq!(
             err.message,
@@ -1010,11 +1035,7 @@ mod tests {
     fn lookup_400_over_a_well_formed_id_reads_as_a_missing_organization() {
         let err = test_client().convert_error_for_lookup(
             invalid_id_400("organization", NIL_UUID),
-            ResourceLookup {
-                kind: ResourceKind::Organization,
-                id: NIL_UUID,
-                org_id: Some(NIL_UUID),
-            },
+            ResourceLookup::organization(NIL_UUID),
         );
         assert_eq!(
             err.message,
@@ -1027,17 +1048,40 @@ mod tests {
         assert!(!err.message.contains("(organization"));
     }
 
+    /// The organization parenthetical is keyed on the kind, not on the two
+    /// identifiers happening to be equal: an organization lookup never names
+    /// an organization as the scope it was read from, however it was built.
+    #[test]
+    fn an_organization_lookup_never_names_a_scope() {
+        let client = test_client();
+        for lookup in [
+            ResourceLookup::organization(NIL_UUID),
+            ResourceLookup::in_org(ResourceKind::Organization, NIL_UUID, ORG_UUID),
+        ] {
+            let err =
+                client.convert_error_for_lookup(invalid_id_400("organization", NIL_UUID), lookup);
+            assert_eq!(
+                err.message,
+                format!(
+                    "No such organization: {NIL_UUID}. \
+                     The API rejected the identifier: \
+                     BAD_REQUEST: Invalid organization id string:\"{NIL_UUID}\""
+                )
+            );
+            assert_eq!(
+                err.details.as_deref().unwrap().command.as_deref(),
+                Some("clickhousectl cloud org list")
+            );
+        }
+    }
+
     /// Only the message changes: the server did answer 400, so the telemetry
     /// classification must stay exactly what the status says (#450).
     #[test]
     fn lookup_refinement_keeps_the_failure_classification() {
         let err = test_client().convert_error_for_lookup(
             invalid_id_400("service", NIL_UUID),
-            ResourceLookup {
-                kind: ResourceKind::Service,
-                id: NIL_UUID,
-                org_id: Some(ORG_UUID),
-            },
+            ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID),
         );
         assert_eq!(
             err.failure,
@@ -1052,11 +1096,7 @@ mod tests {
         let client = test_client();
         let err = client.convert_error_for_lookup(
             invalid_id_400("Postgres service", NIL_UUID),
-            ResourceLookup {
-                kind: ResourceKind::PostgresService,
-                id: NIL_UUID,
-                org_id: Some(ORG_UUID),
-            },
+            ResourceLookup::in_org(ResourceKind::PostgresService, NIL_UUID, ORG_UUID),
         );
         let details = err.details.as_deref().expect("a structured detail");
         assert_eq!(details.code, CloudErrorCode::ResourceNotFound);
@@ -1071,11 +1111,7 @@ mod tests {
         // An organization lookup has no scope flag to suggest.
         let err = client.convert_error_for_lookup(
             invalid_id_400("organization", NIL_UUID),
-            ResourceLookup {
-                kind: ResourceKind::Organization,
-                id: NIL_UUID,
-                org_id: Some(NIL_UUID),
-            },
+            ResourceLookup::organization(NIL_UUID),
         );
         assert_eq!(
             err.details.as_deref().unwrap().command.as_deref(),
@@ -1089,11 +1125,7 @@ mod tests {
     fn lookup_400_over_a_malformed_id_is_left_alone() {
         let err = test_client().convert_error_for_lookup(
             invalid_id_400("service", "not-a-uuid"),
-            ResourceLookup {
-                kind: ResourceKind::Service,
-                id: "not-a-uuid",
-                org_id: Some(ORG_UUID),
-            },
+            ResourceLookup::in_org(ResourceKind::Service, "not-a-uuid", ORG_UUID),
         );
         assert_eq!(
             err.message,
@@ -1108,11 +1140,7 @@ mod tests {
     fn lookup_400_with_a_malformed_organization_is_left_alone() {
         let err = test_client().convert_error_for_lookup(
             invalid_id_400("organization", "org-1"),
-            ResourceLookup {
-                kind: ResourceKind::Service,
-                id: NIL_UUID,
-                org_id: Some("org-1"),
-            },
+            ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, "org-1"),
         );
         assert_eq!(
             err.message,
@@ -1126,11 +1154,7 @@ mod tests {
     #[test]
     fn lookup_leaves_every_other_status_unchanged() {
         let client = test_client();
-        let lookup = || ResourceLookup {
-            kind: ResourceKind::Service,
-            id: NIL_UUID,
-            org_id: Some(ORG_UUID),
-        };
+        let lookup = || ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID);
 
         let err = client.convert_error_for_lookup(
             clickhouse_cloud_api::Error::Api {

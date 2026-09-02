@@ -495,9 +495,11 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Every Postgres path reports an empty body the same way the rest of the
+/// cloud surface does, so moving one onto a `CloudClient` wrapper cannot
+/// change the message a caller sees.
 fn unwrap_api<T>(resp: ApiResponse<T>) -> CloudResult<T> {
-    resp.result
-        .ok_or_else(|| CloudError::new("API response was missing a result body"))
+    CloudClient::unwrap_response(resp)
 }
 
 fn parse_pg_size(value: &str) -> CloudResult<clickhouse_cloud_api::models::PgSize> {
@@ -1477,11 +1479,7 @@ impl CloudClient {
                 // missing Postgres service, not a bad request (#666).
                 self.convert_error_for_lookup(
                     error,
-                    ResourceLookup {
-                        kind: ResourceKind::PostgresService,
-                        id: postgres_id,
-                        org_id: Some(org_id),
-                    },
+                    ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id),
                 )
             })?;
         Self::unwrap_response(response)

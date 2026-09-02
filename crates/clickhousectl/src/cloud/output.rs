@@ -71,10 +71,6 @@ pub(crate) fn print_line(line: impl std::fmt::Display) {
 /// API sends: the vocabulary is this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-// The shared `Query` prefix is part of the wire value (`query_timeout`,
-// `query_key_*`), which names the command family the code belongs to; it is
-// not a Rust naming accident to strip.
-#[allow(clippy::enum_variant_names)]
 pub enum CloudErrorCode {
     /// The Query API gateway stopped waiting for the statement (#644).
     QueryTimeout,

@@ -479,6 +479,8 @@ clickhousectl cloud --debug service list
 
 Manage ClickHouse, Postgres, and other ClickHouse Cloud resources via the API.
 
+Any command that reads or deletes a cloud resource by identifier reports an identifier no resource has as not found. The API answers `400 BAD_REQUEST: Invalid ... id` for a syntactically valid UUID that resolves to nothing, so the CLI re-presents that as `No such service: <id> (organization <org-id>)` and keeps the server's own text as a trailing detail. In `--json` mode the failure carries the stable code `resource_not_found` and the `list` command for the same scope. An identifier that is not a well-formed UUID keeps the API's `invalid` message unchanged, because there it is both true and the more useful answer.
+
 ### Organizations
 
 ```bash
@@ -1471,8 +1473,6 @@ The schema and meanings of existing codes are stable. New optional fields or cod
 | `postgres_error` | A Postgres validation or state error; the message carries its recovery guidance |
 | `io_error` | A local filesystem, metadata, or serialization operation failed |
 | `local_error` | A redacted fallback for failures whose text cannot be rendered safely |
-
-Cloud failures use their own codes rather than this local schema. A by-id read (`cloud service get`, `cloud postgres get`, `cloud org get`) that names a well-formed UUID no resource has is reported as not found instead of as the API's `BAD_REQUEST: Invalid ... id`, keeping the server's own text as a trailing detail, and in `--json` mode it carries the stable code `resource_not_found` plus the matching `list` command for the same scope. A malformed identifier keeps the API's `invalid` message unchanged, because there that is both true and the more useful answer.
 
 ### Exit codes
 

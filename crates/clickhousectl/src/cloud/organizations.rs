@@ -1,6 +1,4 @@
-use crate::cloud::client::{
-    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
-};
+use crate::cloud::client::{CloudClient, CloudError, ResourceLookup, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
@@ -763,14 +761,7 @@ impl CloudClient {
         let response = self.api().organization_get(org_id).await.map_err(|error| {
             // A read by identifier: a 400 over a well-formed UUID is a
             // missing organization, not a bad request (#666).
-            self.convert_error_for_lookup(
-                error,
-                ResourceLookup {
-                    kind: ResourceKind::Organization,
-                    id: org_id,
-                    org_id: Some(org_id),
-                },
-            )
+            self.convert_error_for_lookup(error, ResourceLookup::organization(org_id))
         })?;
         Self::unwrap_response(response)
     }

@@ -2153,7 +2153,7 @@ async fn probe_repaired_query_key(
                 org_id,
                 service_id,
                 api_key_id,
-                &format!("could not read the state of service {service_id} ({error})"),
+                &format!("could not read service {service_id}: {error}"),
             ));
         }
     };
@@ -3056,11 +3056,7 @@ impl CloudClient {
                 // missing service, not a bad request (#666).
                 self.convert_error_for_lookup(
                     error,
-                    ResourceLookup {
-                        kind: ResourceKind::Service,
-                        id: service_id,
-                        org_id: Some(org_id),
-                    },
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
                 )
             })?;
         Self::unwrap_response(response)
@@ -3071,10 +3067,17 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
     ) -> crate::cloud::client::Result<Option<Service>> {
+        let lookup = ResourceLookup::in_org(ResourceKind::Service, service_id, org_id);
         match self.api().instance_get(org_id, service_id).await {
             Ok(response) => Self::unwrap_response(response).map(Some),
             Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
-            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+            // The API answers 400 rather than 404 for a well-formed id no
+            // service has, and this GET has no other user-controlled input,
+            // so that rejection is its way of saying the same thing (#666).
+            // Without this, `service delete --force` aborted on an id
+            // `service get` reports as missing.
+            Err(error) if lookup.rejected_well_formed_ids(&error) => Ok(None),
+            Err(error) => Err(self.convert_error_for_lookup(error, lookup)),
         }
     }
 
@@ -3100,7 +3103,15 @@ impl CloudClient {
             .api()
             .instance_delete(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                // A delete by identifier carries the same single class of
+                // user input as the read, so the same 400 means the same
+                // thing (#666).
+                self.convert_error_for_lookup(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,

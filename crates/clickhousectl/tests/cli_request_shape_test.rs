@@ -7303,7 +7303,7 @@ async fn repair_skips_verification_when_the_service_state_cannot_be_read() {
     let stderr = stderr_without_notes(&output);
     assert!(
         stderr.contains(&format!(
-            "Note: could not read the state of service {QUERY_TEST_SERVICE_ID}"
+            "Note: could not read service {QUERY_TEST_SERVICE_ID}:"
         )),
         "{stderr}"
     );
@@ -11765,14 +11765,18 @@ const UNKNOWN_UUID: &str = "00000000-0000-0000-0000-000000000000";
 const LOOKUP_ORG_ID: &str = "00000000-0000-4000-8000-000000000001";
 
 /// The 400 the API really answers for a well-formed id it cannot resolve.
+fn invalid_id_400_response(thing: &str, id: &str) -> ResponseTemplate {
+    ResponseTemplate::new(400).set_body_json(serde_json::json!({
+        "status": 400,
+        "error": format!("BAD_REQUEST: Invalid {thing} id string:\"{id}\""),
+        "requestId": "stub-invalid-id",
+    }))
+}
+
 async fn mount_invalid_id_400(mock: &MockServer, api_path: String, thing: &str, id: &str) {
     Mock::given(method("GET"))
         .and(path(api_path))
-        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
-            "status": 400,
-            "error": format!("BAD_REQUEST: Invalid {thing} id string:\"{id}\""),
-            "requestId": "stub-invalid-id",
-        })))
+        .respond_with(invalid_id_400_response(thing, id))
         .mount(mock)
         .await;
 }
@@ -11939,4 +11943,129 @@ async fn by_id_read_keeps_the_servers_message_for_a_malformed_id() {
             format!("Error: BAD_REQUEST: Invalid {thing} id string:\"{MALFORMED_ID}\"\n"),
         );
     }
+}
+
+/// `--json` mode must not invent a code for a failure the CLI did not
+/// classify: a malformed id keeps the API's prose, as it does in human mode.
+#[tokio::test]
+async fn by_id_read_in_json_mode_keeps_the_servers_message_for_a_malformed_id() {
+    const MALFORMED_ID: &str = "not-a-uuid";
+    for (api_path, thing, args) in [
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{MALFORMED_ID}"),
+            "Postgres service",
+            vec!["postgres", "get", MALFORMED_ID, "--org-id", LOOKUP_ORG_ID],
+        ),
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{MALFORMED_ID}"),
+            "service",
+            vec!["service", "get", MALFORMED_ID, "--org-id", LOOKUP_ORG_ID],
+        ),
+        (
+            format!("/v1/organizations/{MALFORMED_ID}"),
+            "organization",
+            vec!["org", "get", MALFORMED_ID],
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        mount_invalid_id_400(&mock, api_path, thing, MALFORMED_ID).await;
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(1), "args {args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr,
+            format!("Error: BAD_REQUEST: Invalid {thing} id string:\"{MALFORMED_ID}\"\n"),
+        );
+        assert!(
+            !stderr.contains("\"code\""),
+            "no structured code for an unclassified failure: {stderr}"
+        );
+    }
+}
+
+/// A `service delete` for an id no service has, with the organization id also
+/// a well-formed UUID so every path identifier passes the structural test.
+fn invoke_unknown_service_delete(mock: &MockServer, force: bool) -> std::process::Output {
+    let mut args = vec!["service", "delete", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID];
+    if force {
+        args.push("--force");
+    }
+    invoke_cli_human(mock, &args)
+}
+
+/// `--force` reads the service first to decide whether to stop it. That read
+/// must treat the 400 the way it treats a 404 (see
+/// `forced_service_delete_surfaces_not_found_for_an_absent_service`): carry
+/// on to the delete, rather than aborting on an id `service get` reports as
+/// missing.
+#[tokio::test]
+async fn forced_service_delete_proceeds_when_the_read_rejects_a_well_formed_id() {
+    let mock = MockServer::start().await;
+    let service_path = format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}");
+    Mock::given(method("GET"))
+        .and(path(service_path.clone()))
+        .respond_with(invalid_id_400_response("service", UNKNOWN_UUID))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(service_path.clone()))
+        .respond_with(invalid_id_400_response("service", UNKNOWN_UUID))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_unknown_service_delete(&mock, true);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+    // The read did not abort the command: the delete was still attempted.
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("GET".to_string(), service_path.clone()),
+            ("DELETE".to_string(), service_path),
+        ]
+    );
+}
+
+/// Without `--force` there is no read at all, so the delete's own 400 is what
+/// has to be refined.
+#[tokio::test]
+async fn service_delete_reports_a_well_formed_unknown_id_as_not_found() {
+    let mock = MockServer::start().await;
+    let service_path = format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}");
+    Mock::given(method("DELETE"))
+        .and(path(service_path.clone()))
+        .respond_with(invalid_id_400_response("service", UNKNOWN_UUID))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_unknown_service_delete(&mock, false);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("DELETE".to_string(), service_path)]
+    );
 }
