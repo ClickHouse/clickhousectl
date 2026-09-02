@@ -48,8 +48,12 @@ const EXPIRY_LEAD: Duration = Duration::from_secs(90);
 const EXPIRY_MARGIN: Duration = Duration::from_secs(15);
 /// Repairs run back to back by the propagation stress case (#658).
 const DEFAULT_REPAIR_STRESS_ITERATIONS: u64 = 6;
-/// First-use provisioning rounds run by the propagation stress case (#658).
-const DEFAULT_PROVISION_STRESS_ITERATIONS: u64 = 2;
+/// Deleted-key recovery rounds (delete, classify, repair, query) run by the
+/// propagation stress case (#658).
+const DEFAULT_RECOVERY_STRESS_ITERATIONS: u64 = 2;
+/// Pure first-use provisioning rounds run by the propagation stress case: the
+/// create-then-bind path of `cloud service query` itself (#658).
+const DEFAULT_FIRST_USE_STRESS_ITERATIONS: u64 = 1;
 /// The CLI's stderr notice while it waits for a new key to propagate (#658).
 const KEY_PROPAGATION_NOTICE: &str =
     "Waiting for the new API key to become visible to the Query API endpoint...";
@@ -777,9 +781,13 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
         "CLICKHOUSE_CLOUD_TEST_REPAIR_STRESS_ITERATIONS",
         DEFAULT_REPAIR_STRESS_ITERATIONS,
     )?;
-    let provision_iterations = count_from_env_or(
-        "CLICKHOUSE_CLOUD_TEST_PROVISION_STRESS_ITERATIONS",
-        DEFAULT_PROVISION_STRESS_ITERATIONS,
+    let recovery_iterations = count_from_env_or(
+        "CLICKHOUSE_CLOUD_TEST_RECOVERY_STRESS_ITERATIONS",
+        DEFAULT_RECOVERY_STRESS_ITERATIONS,
+    )?;
+    let first_use_iterations = count_from_env_or(
+        "CLICKHOUSE_CLOUD_TEST_FIRST_USE_STRESS_ITERATIONS",
+        DEFAULT_FIRST_USE_STRESS_ITERATIONS,
     )?;
     let rejection_timeout = duration_from_env_or(
         "CLICKHOUSE_CLOUD_TEST_TIMEOUT_QUERY_KEY_REJECTION_SECS",
@@ -909,29 +917,25 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
             current_api_key_id = new_api_key_id;
         }
 
-        // ── First-use provisioning after the key was deleted ────────
+        // ── Deleted key: the query classifies, repair handles everything ──
         //
-        // The documented recovery path: the key is deleted out from under
-        // the CLI, a query classifies the rejection as `query_key_deleted`
-        // and forgets the record, and the next query provisions afresh —
-        // creating a key and binding it, the same create-then-bind.
-        //
-        // The deleting administrator here also unbinds the key from the
-        // endpoint. A deleted key whose UUID is left in `openApiKeys` makes
-        // every later upsert fail with the same 400 (observed live on
-        // 2026-09-02); the `query_key_deleted` verdict does not remove that
-        // binding yet, which is tracked as a follow-up to #658.
+        // An administrator deletes the stored key and touches nothing else,
+        // so the key's UUID stays in the endpoint's `openApiKeys`. The query
+        // must report `query_key_deleted` without changing the record; the
+        // record is what lets `repair-query-key` find that UUID. Repair then
+        // drops the dead binding and binds a replacement in one upsert (which
+        // may hit the propagation window), and a query succeeds at once.
 
         log_phase(&format!(
-            "{provision_iterations} first-use provisioning rounds after the key is deleted"
+            "{recovery_iterations} deleted-key recoveries: delete, classify, repair, query"
         ));
 
-        for round in 1..=provision_iterations {
-            unbind_key(&client, &ctx.org_id, &service_id, &current_api_key_id).await?;
+        for round in 1..=recovery_iterations {
             client
                 .openapi_key_delete(&ctx.org_id, &current_api_key_id)
                 .await?;
             cleanup.unregister_api_key(&current_api_key_id);
+            let before = cli.credentials_file()?;
             let rejected = cli
                 .poll_for_rejection(
                     &service_id,
@@ -941,14 +945,105 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
                 )
                 .await?;
             eprintln!(
-                "  step: round {round}: the deleted key was classified: {}",
+                "  step: recovery {round}: the deleted key was classified: {}",
                 rejected["error"]["code"]
             );
-            let credentials: Value = serde_json::from_slice(&cli.credentials_file()?)?;
-            assert!(
-                credentials["service_query_keys"].get(&service_id).is_none(),
-                "the record of a deleted key is forgotten: {credentials}"
+            assert_eq!(
+                rejected["error"]["api_key_id"], current_api_key_id,
+                "{rejected}"
             );
+            let command = rejected["error"]["command"]
+                .as_str()
+                .ok_or("the deleted verdict suggests no command")?;
+            assert!(
+                command.starts_with("clickhousectl cloud service repair-query-key"),
+                "{rejected}"
+            );
+            assert_eq!(
+                cli.credentials_file()?,
+                before,
+                "the deleted verdict changes nothing locally"
+            );
+            let bound = bound_keys(&client, &ctx.org_id, &service_id).await?;
+            assert_eq!(
+                bound,
+                [current_api_key_id.clone()],
+                "deleting the key leaves its UUID on the endpoint; the CLI must not touch it here"
+            );
+
+            let started = std::time::Instant::now();
+            let repaired = cli.repair(&service_id)?;
+            let repair_elapsed = started.elapsed();
+            let waited = String::from_utf8_lossy(&repaired.stderr).contains(KEY_PROPAGATION_NOTICE);
+            if !repaired.status.success() {
+                if let Ok(stored) = cli.stored_key(&service_id) {
+                    for pending in stored.pending_cleanup_api_key_ids {
+                        cleanup.register_api_key(pending);
+                    }
+                }
+                summary.print(repair_iterations);
+                return Err(
+                    cli_failure("service repair-query-key (deleted key)", &repaired).into(),
+                );
+            }
+            let result: Value = serde_json::from_slice(&repaired.stdout)?;
+            assert_eq!(result["status"], "repaired", "{result}");
+            assert_eq!(result["replacedApiKeyId"], current_api_key_id, "{result}");
+            let new_api_key_id = result["apiKeyId"]
+                .as_str()
+                .ok_or("repair result has no apiKeyId")?
+                .to_string();
+            cleanup.register_api_key(new_api_key_id.clone());
+            assert!(
+                result["pendingCleanupApiKeyIds"].is_null(),
+                "an already-deleted key is retired without a pending entry: {result}"
+            );
+
+            let started = std::time::Instant::now();
+            let query = cli.query(&service_id, true)?;
+            let query_elapsed = started.elapsed();
+            let first_try = query.status.success();
+            if !first_try {
+                eprintln!(
+                    "  diag: recovery {round}: the query right after the repair failed: {}",
+                    String::from_utf8_lossy(&query.stderr).trim()
+                );
+            }
+            summary.note_recovery(round, repair_elapsed, waited, first_try, query_elapsed);
+            if !first_try {
+                summary.print(repair_iterations);
+                return Err(cli_failure("service query (after deleted-key repair)", &query).into());
+            }
+            assert_single_owned_key(
+                &client,
+                &ctx.org_id,
+                &service_id,
+                &key_name,
+                &new_api_key_id,
+            )
+            .await?;
+            current_api_key_id = new_api_key_id;
+        }
+
+        // ── Pure first-use provisioning ─────────────────────────────
+        //
+        // The other create-then-bind path is `cloud service query` itself
+        // when no record exists. To reach it with a clean endpoint, the test
+        // acts as an administrator who cleaned up fully (unbound and deleted
+        // the key) and then drops the local record by hand, as the README
+        // tells a user with a legacy record to do.
+
+        log_phase(&format!(
+            "{first_use_iterations} first-use provisioning rounds"
+        ));
+
+        for round in 1..=first_use_iterations {
+            unbind_key(&client, &ctx.org_id, &service_id, &current_api_key_id).await?;
+            client
+                .openapi_key_delete(&ctx.org_id, &current_api_key_id)
+                .await?;
+            cleanup.unregister_api_key(&current_api_key_id);
+            cli.forget_stored_key(&service_id)?;
 
             let started = std::time::Instant::now();
             let provisioned = cli.query(&service_id, false)?;
@@ -959,8 +1054,12 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
             }
             if !provisioned.status.success() {
                 summary.print(repair_iterations);
-                return Err(cli_failure("service query (re-provisioning)", &provisioned).into());
+                return Err(cli_failure("service query (first use)", &provisioned).into());
             }
+            eprintln!(
+                "  step: first-use round {round}: provisioned in {:.1}s",
+                elapsed.as_secs_f64()
+            );
             summary.note_provision(&provisioned, elapsed);
             current_api_key_id = stored?.api_key_id;
             assert_single_owned_key(
@@ -1126,6 +1225,22 @@ impl Cli {
 
     fn credentials_file(&self) -> TestResult<Vec<u8>> {
         Ok(std::fs::read(self.credentials_path())?)
+    }
+
+    /// Drop the service's record from the credentials file, the way a user
+    /// with a legacy record is told to, so the next query provisions afresh.
+    fn forget_stored_key(&self, service_id: &str) -> TestResult<()> {
+        let mut credentials: Value = serde_json::from_slice(&self.credentials_file()?)?;
+        credentials["service_query_keys"]
+            .as_object_mut()
+            .ok_or("service_query_keys is not an object")?
+            .remove(service_id)
+            .ok_or("the CLI stored no per-service query key")?;
+        std::fs::write(
+            self.credentials_path(),
+            serde_json::to_vec_pretty(&credentials)?,
+        )?;
+        Ok(())
     }
 
     fn stored_key(&self, service_id: &str) -> TestResult<StoredQueryKey> {
@@ -1529,6 +1644,16 @@ async fn unbind_key(
     Ok(())
 }
 
+/// The keys the service's query endpoint currently binds.
+async fn bound_keys(client: &Client, org_id: &str, service_id: &str) -> TestResult<Vec<String>> {
+    let endpoint = client
+        .instance_query_endpoint_get(org_id, service_id)
+        .await?
+        .result
+        .ok_or("query endpoint get returned no result")?;
+    Ok(endpoint.open_api_keys.unwrap_or_default())
+}
+
 /// The management IDs of every key in the organization.
 async fn key_inventory(
     client: &Client,
@@ -1547,6 +1672,7 @@ async fn key_inventory(
 #[derive(Default)]
 struct StressSummary {
     repairs: Vec<(u64, Duration, bool, bool, Duration)>,
+    recoveries: Vec<(u64, Duration, bool, bool, Duration)>,
     provisions: Vec<(bool, Duration)>,
 }
 
@@ -1560,6 +1686,23 @@ impl StressSummary {
         query_elapsed: Duration,
     ) {
         self.repairs.push((
+            round,
+            repair_elapsed,
+            waited,
+            query_first_try,
+            query_elapsed,
+        ));
+    }
+
+    fn note_recovery(
+        &mut self,
+        round: u64,
+        repair_elapsed: Duration,
+        waited: bool,
+        query_first_try: bool,
+        query_elapsed: Duration,
+    ) {
+        self.recoveries.push((
             round,
             repair_elapsed,
             waited,
@@ -1600,6 +1743,23 @@ impl StressSummary {
         eprintln!(
             "  summary: {waited} repairs waited on key propagation; {rejected} follow-up queries were rejected first time"
         );
+        for (round, repair, waited, first_try, query) in &self.recoveries {
+            eprintln!(
+                "  summary: deleted-key recovery {round}: repair {:.1}s{}; query right after: {} in {:.1}s",
+                repair.as_secs_f64(),
+                if *waited {
+                    " (waited on key propagation)"
+                } else {
+                    ""
+                },
+                if *first_try {
+                    "ok first time"
+                } else {
+                    "REJECTED first time"
+                },
+                query.as_secs_f64(),
+            );
+        }
         for (index, (waited, elapsed)) in self.provisions.iter().enumerate() {
             eprintln!(
                 "  summary: provision {}: {:.1}s{}",
@@ -1615,7 +1775,13 @@ impl StressSummary {
     }
 
     fn assert_every_query_succeeded_first_time(&self) -> TestResult<()> {
-        let rejected: Vec<u64> = self.repairs.iter().filter(|r| !r.3).map(|r| r.0).collect();
+        let rejected: Vec<u64> = self
+            .repairs
+            .iter()
+            .chain(&self.recoveries)
+            .filter(|r| !r.3)
+            .map(|r| r.0)
+            .collect();
         if rejected.is_empty() {
             Ok(())
         } else {
