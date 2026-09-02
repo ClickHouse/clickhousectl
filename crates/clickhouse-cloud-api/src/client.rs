@@ -243,16 +243,26 @@ impl Client {
         self
     }
 
+    /// The Query API host this client would use, when one is actually
+    /// configured: the explicit override, else the `CLICKHOUSE_CLOUD_QUERY_HOST`
+    /// env var, else the host derived from the base URL. `None` means none of
+    /// those apply and a query would go to the production default. A caller
+    /// that talks to a non-production control plane (a local mock, say) can
+    /// use that to avoid sending anything to production by accident.
+    pub fn configured_query_host(&self) -> Option<String> {
+        if let Some(host) = &self.query_host {
+            return Some(host.clone());
+        }
+        if let Ok(host) = std::env::var("CLICKHOUSE_CLOUD_QUERY_HOST") {
+            return Some(host);
+        }
+        derive_query_host(&self.base_url)
+    }
+
     /// Resolve the Query API host: explicit override, then env var, then
     /// derivation from the base URL, then the production default.
     fn resolved_query_host(&self) -> String {
-        if let Some(host) = &self.query_host {
-            return host.clone();
-        }
-        if let Ok(host) = std::env::var("CLICKHOUSE_CLOUD_QUERY_HOST") {
-            return host;
-        }
-        derive_query_host(&self.base_url)
+        self.configured_query_host()
             .unwrap_or_else(|| "https://queries.clickhouse.cloud".to_string())
     }
 
