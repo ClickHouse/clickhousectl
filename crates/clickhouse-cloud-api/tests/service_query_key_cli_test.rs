@@ -125,7 +125,7 @@ async fn cloud_service_query_key_disabled_and_expired_are_never_replaced() -> Te
 
         log_phase("First query provisions a per-service key");
 
-        let stored = failures
+        let first_query = failures
             .run(
                 &ctx,
                 StepKind::Blocking,
@@ -133,28 +133,30 @@ async fn cloud_service_query_key_disabled_and_expired_are_never_replaced() -> Te
                 || {
                     let cli = cli.clone();
                     let service_id = service_id.clone();
-                    async move {
-                        let output = cli.query(&service_id, &[])?;
-                        if !output.status.success() {
-                            return Err(cli_failure("service query (first use)", &output).into());
-                        }
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        if stdout.trim() != "1" {
-                            return Err(
-                                format!("expected `SELECT 1` to print 1, got {stdout:?}").into()
-                            );
-                        }
-                        cli.stored_key(&service_id)
-                    }
+                    async move { cli.query(&service_id, false) }
                 },
             )
             .await?
             .expect("blocking steps always return a value");
+        // Register whatever the CLI provisioned *before* judging the run, so a
+        // failed assertion below never leaves the key behind. The endpoint
+        // binding dies with the service; the key does not.
+        cleanup.register_query_endpoint(service_id.clone());
+        let stored = cli.stored_key(&service_id);
+        if let Ok(stored) = &stored {
+            cleanup.register_api_key(stored.api_key_id.clone());
+        }
+        if !first_query.status.success() {
+            return Err(cli_failure("service query (first use)", &first_query).into());
+        }
+        let stdout = String::from_utf8_lossy(&first_query.stdout);
+        if stdout.trim() != "1" {
+            return Err(format!("expected `SELECT 1` to print 1, got {stdout:?}").into());
+        }
         // The record must carry the exact ownership metadata the classifier
         // and the repair command rely on.
+        let stored = stored?;
         let api_key_id = stored.api_key_id.clone();
-        cleanup.register_query_endpoint(service_id.clone());
-        cleanup.register_api_key(api_key_id.clone());
         let credentials_before = cli.credentials_file()?;
 
         // ── Disabled ────────────────────────────────────────────────
@@ -336,6 +338,7 @@ async fn cloud_service_query_key_disabled_and_expired_are_never_replaced() -> Te
 
         log_phase("Explicit repair");
 
+        eprintln!("  step: stored management key id before repair: {api_key_id}");
         let repaired = failures
             .run(
                 &ctx,
@@ -343,9 +346,47 @@ async fn cloud_service_query_key_disabled_and_expired_are_never_replaced() -> Te
                 "repair-query-key replaces the expired key deliberately",
                 || {
                     let cli = cli.clone();
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
                     let service_id = service_id.clone();
+                    let api_key_id = api_key_id.clone();
                     async move {
-                        let output = cli.repair(&service_id)?;
+                        let mut output = cli.repair(&service_id)?;
+                        if !output.status.success() {
+                            eprintln!(
+                                "  diag: first repair attempt failed: {}",
+                                cli_failure("service repair-query-key", &output)
+                            );
+                            match client
+                                .instance_query_endpoint_get(&org_id, &service_id)
+                                .await
+                            {
+                                Ok(resp) => eprintln!(
+                                    "  diag: endpoint binding now: {:?}",
+                                    resp.result.and_then(|e| e.open_api_keys)
+                                ),
+                                Err(e) => eprintln!("  diag: endpoint get failed: {e}"),
+                            }
+                            match client.openapi_key_get(&org_id, &api_key_id).await {
+                                Ok(resp) => eprintln!(
+                                    "  diag: old key now: state={:?} expireAt={:?}",
+                                    resp.result.as_ref().and_then(|k| k.state.clone()),
+                                    resp.result.as_ref().and_then(|k| k.expire_at)
+                                ),
+                                Err(e) => eprintln!("  diag: old key get failed: {e}"),
+                            }
+                            // Observed once on 2026-09-02: the endpoint upsert
+                            // inside repair answered `400 BAD_REQUEST: OpenAPI
+                            // key <id> does not belong to the organization`
+                            // right after the replacement key was created, and
+                            // an identical run passed. The CLI itself does not
+                            // retry, so the diagnostics above are printed to
+                            // make a recurrence visible in CI logs; one retry
+                            // keeps a transient from failing the suite.
+                            eprintln!("  diag: retrying repair once after 20s");
+                            tokio::time::sleep(Duration::from_secs(20)).await;
+                            output = cli.repair(&service_id)?;
+                        }
                         if !output.status.success() {
                             return Err(cli_failure("service repair-query-key", &output).into());
                         }
@@ -417,7 +458,7 @@ async fn cloud_service_query_key_disabled_and_expired_are_never_replaced() -> Te
                                 let cli = cli.clone();
                                 let service_id = service_id.clone();
                                 async move {
-                                    let output = cli.query(&service_id, &[])?;
+                                    let output = cli.query(&service_id, false)?;
                                     if output.status.success() {
                                         Ok(Some(()))
                                     } else {
@@ -498,7 +539,10 @@ impl Cli {
             .output()?)
     }
 
-    fn query(&self, service_id: &str, extra: &[&str]) -> TestResult<Output> {
+    /// `SELECT 1` against the service. The output format is always pinned:
+    /// the CLI switches to JSON on its own when it detects a coding agent in
+    /// the environment, and this harness may well run under one.
+    fn query(&self, service_id: &str, json: bool) -> TestResult<Output> {
         let mut args = vec![
             "service",
             "query",
@@ -509,7 +553,11 @@ impl Cli {
             "--query",
             "SELECT 1",
         ];
-        args.extend_from_slice(extra);
+        if json {
+            args.push("--json");
+        } else {
+            args.extend_from_slice(&["--format", "TabSeparated"]);
+        }
         self.command(&args)
     }
 
@@ -560,7 +608,7 @@ impl Cli {
                 let service_id = service_id.to_string();
                 let expected_code = expected_code.to_string();
                 async move {
-                    let output = cli.query(&service_id, &["--json"])?;
+                    let output = cli.query(&service_id, true)?;
                     if output.status.success() {
                         eprintln!("  poll: the Query API still accepts the key");
                         return Ok(None);
