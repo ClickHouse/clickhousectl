@@ -47,7 +47,7 @@ Local clap definitions live in `src/local/cli.rs`. Cloud clap definitions, handl
        print_human(&data)?;
    }
    ```
-   List views stay as `tabled` tables, and short action confirmations (e.g. "Service X starting") stay as plain `println!`.
+   List views stay as `tabled` tables, and short action confirmations (e.g. "Service X starting") stay as plain `println!`. Human output through `print_human` also summarises a PEM-framed string (a certificate, a key) instead of printing its body, so a hand-written `println!` line or a `tabled` cell bypasses that and dumps the whole PEM.
 
    Every field of a library response type is `Option` (see Request and response models), so never `unwrap()`/`expect()` one. Render absence with `crate::cloud::output::or_absent` (`-`) or `ABSENT` in `tabled` cells and plain output, and have `--filter`-style predicates treat an absent field as non-matching. `print_human` and `--json` serialize the model and need no per-field work.
 8. Add `Cli::try_parse_from` coverage next to the domain command definition for the new command's body-related flags, asserting parsed values.

@@ -205,8 +205,9 @@ fn is_scalar(value: &Value) -> bool {
 
 fn scalar_string(value: &Value) -> Option<String> {
     match value {
-        // The single place a string scalar becomes human text, so eliding here
-        // covers object fields, nested objects and arrays of strings alike.
+        // The single place a string scalar becomes human text, so summarizing
+        // PEM here covers object fields, nested objects and arrays of strings
+        // alike.
         Value::String(s) => Some(pem_summary(s).unwrap_or_else(|| s.clone())),
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
@@ -214,56 +215,109 @@ fn scalar_string(value: &Value) -> Option<String> {
     }
 }
 
-// ── PEM elision in human output (issue #665) ─────────────────────────────
+// ── PEM summaries in human output (issue #665) ────────────────────────────
 //
 // A Postgres ClickPipe's `source.postgres.caCertificate` is a whole PEM block:
 // roughly 1.5 KB of base64 that scrolls the rest of `clickpipe get` off the
-// screen while telling the reader nothing. Human output therefore renders a
-// PEM-framed string as a one-line summary. `--json` is untouched: it
-// serializes the model directly, so a caller that needs the certificate still
-// gets the bytes verbatim.
+// screen while telling the reader nothing. Human output therefore replaces
+// every well-formed RFC 7468 block *in place* with a one-line summary of that
+// block, keeping whatever text surrounds it — a bundle's header comments, an
+// `openssl x509 -text` dump, prose between two blocks — so nothing the value
+// carried is silently dropped. `--json` is untouched: it serializes the model
+// directly, so a caller that needs the certificate still gets the bytes
+// verbatim.
 //
 // The test is the value's *format*, not its key name. A client certificate, a
 // private key, or a certificate nested anywhere else in any response gets the
-// same treatment with no per-field allowlist to keep in sync, and a string
-// that merely happens to carry PEM framing is exactly what should be elided.
+// same treatment with no per-field allowlist to keep in sync.
 
 /// The framing prefix that opens an RFC 7468 block.
 const PEM_BEGIN: &str = "-----BEGIN ";
-/// The five-dash run that closes a framing line and opens an `END` marker.
+/// The five-dash run that opens and closes every framing line.
 const PEM_DASHES: &str = "-----";
+/// The longest label treated as a label. RFC 7468 sets no limit; this one, with
+/// [`is_pem_label`], bounds how much of its own text a hostile value can paste
+/// into a summary line.
+const PEM_LABEL_MAX_LEN: usize = 64;
+/// The labels whose body is an X.509 structure, and so the only labels this
+/// module fingerprints: the digest is the one `openssl x509`, `openssl req` or
+/// `openssl crl` prints with `-fingerprint -sha256`, so a reader can check the
+/// value against the file they hold. Every other label — a private key above
+/// all — is reported by size only. A stable identifier of secret material left
+/// in scrollback is not something any caller needs.
+const PEM_CERTIFICATE_LABELS: &[&str] = &[
+    "CERTIFICATE",
+    "TRUSTED CERTIFICATE",
+    "CERTIFICATE REQUEST",
+    "NEW CERTIFICATE REQUEST",
+    "X509 CRL",
+];
 
-/// One RFC 7468 block: its label and the raw text between the framing lines.
+/// One well-formed RFC 7468 block found inside a string.
 struct PemBlock<'a> {
+    /// Byte range of the whole block, both framing lines included, in the
+    /// string it was found in. Summarizing substitutes over exactly this span.
+    span: std::ops::Range<usize>,
     label: &'a str,
+    /// The raw text between the framing lines, base64 and any line breaks or
+    /// RFC 1421 headers included. Never printed.
     body: &'a str,
 }
 
-/// Split `text` into the RFC 7468 blocks it contains, stopping at the first
-/// unterminated or unlabelled frame. Only well-formed `BEGIN`/`END` pairs with
-/// matching labels count as blocks.
+/// RFC 7468 section 3's `label`, tightened for terminal output.
+///
+/// The grammar is `label = [ labelchar *( ["-" / SP ] labelchar ) ]` with
+/// `labelchar = %x21-2C / %x2E-7E`: printable ASCII except the hyphen-minus the
+/// framing itself is made of, with single hyphens and spaces allowed between
+/// label characters. This accepts exactly that character set, rejects the empty
+/// label the grammar permits, rejects a leading or trailing hyphen or space,
+/// and caps the length.
+///
+/// The label is the one part of a block that reaches the summary line, so the
+/// bound matters: a value carrying a newline, a control character, an ANSI
+/// escape, non-ASCII bytes or a kilobyte of text where a label belongs is not a
+/// block at all, and the string is then printed unchanged as it always was.
+fn is_pem_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= PEM_LABEL_MAX_LEN
+        && label.chars().all(|c| c == ' ' || c.is_ascii_graphic())
+        && !label.starts_with([' ', '-'])
+        && !label.ends_with([' ', '-'])
+}
+
+/// Find every well-formed RFC 7468 block in `text`, in order.
+///
+/// A block is a `BEGIN` frame with a valid label followed by an `END` frame
+/// carrying the same label. A frame that fails either test is not a block: the
+/// scan steps past that `-----BEGIN ` and keeps looking, so one malformed frame
+/// cannot hide the blocks after it.
 fn pem_blocks(text: &str) -> Vec<PemBlock<'_>> {
     let mut blocks = Vec::new();
-    let mut rest = text;
-    while let Some(begin) = rest.find(PEM_BEGIN) {
-        let after_begin = &rest[begin + PEM_BEGIN.len()..];
-        let Some(label_len) = after_begin.find(PEM_DASHES) else {
-            break;
+    let mut cursor = 0;
+    while let Some(offset) = text[cursor..].find(PEM_BEGIN) {
+        let begin = cursor + offset;
+        let label_start = begin + PEM_BEGIN.len();
+        // Whatever this frame turns out to be, never look at it again.
+        cursor = label_start;
+        let Some(label_len) = text[label_start..].find(PEM_DASHES) else {
+            continue;
         };
-        let label = &after_begin[..label_len];
-        if label.is_empty() {
-            break;
+        let label = &text[label_start..label_start + label_len];
+        if !is_pem_label(label) {
+            continue;
         }
-        let after_label = &after_begin[label_len + PEM_DASHES.len()..];
-        let end_marker = format!("-----END {label}-----");
-        let Some(body_len) = after_label.find(&end_marker) else {
-            break;
+        let body_start = label_start + label_len + PEM_DASHES.len();
+        let end_marker = format!("{PEM_DASHES}END {label}{PEM_DASHES}");
+        let Some(body_len) = text[body_start..].find(&end_marker) else {
+            continue;
         };
+        let body_end = body_start + body_len;
         blocks.push(PemBlock {
+            span: begin..body_end + end_marker.len(),
             label,
-            body: &after_label[..body_len],
+            body: &text[body_start..body_end],
         });
-        rest = &after_label[body_len + end_marker.len()..];
+        cursor = body_end + end_marker.len();
     }
     blocks
 }
@@ -287,29 +341,65 @@ fn sha256_fingerprint(der: &[u8]) -> String {
         .join(":")
 }
 
-/// Summarize a PEM text for human output, or return `None` when `value` is not
-/// PEM and should be printed as-is.
+/// Summarize one block as `<PEM {label}, …>`.
 ///
-/// The body is never part of the result. The fingerprint identifies the *first*
-/// block, which is the leaf certificate of a chain; when that block's base64
-/// does not decode the summary reports the text's size instead, so the value is
-/// still accounted for without printing it.
+/// A certificate-family block is identified by the SHA-256 fingerprint of its
+/// own DER, so each block of a bundle is checkable on its own terms and a
+/// mixed bundle never mislabels one block with another's label. Anything else,
+/// and a certificate whose base64 does not decode, is reported as the size of
+/// the block's body text. The body itself is never part of the result.
+fn pem_block_summary(block: &PemBlock<'_>) -> String {
+    let label = block.label;
+    if PEM_CERTIFICATE_LABELS.contains(&label)
+        && let Some(der) = pem_body_der(block.body)
+    {
+        return format!(
+            "<PEM {label}, SHA-256 fingerprint {}>",
+            sha256_fingerprint(&der)
+        );
+    }
+    format!("<PEM {label}, {} bytes>", block.body.len())
+}
+
+/// Whether `blocks` account for all of `value` apart from whitespace.
+fn pem_blocks_are_the_whole_value(value: &str, blocks: &[PemBlock<'_>]) -> bool {
+    let mut cursor = 0;
+    for block in blocks {
+        if !value[cursor..block.span.start].trim().is_empty() {
+            return false;
+        }
+        cursor = block.span.end;
+    }
+    value[cursor..].trim().is_empty()
+}
+
+/// Summarize the PEM blocks in `value` for human output, or return `None` when
+/// `value` holds no well-formed block and should be printed as-is.
+///
+/// A value that is nothing but blocks and whitespace — the common case, a
+/// single certificate or a chain — becomes one line of comma-separated
+/// summaries. Any other value keeps its text and has each block replaced where
+/// it stood, since text a bundle carries around its blocks (a `cacert.pem`
+/// header, an `openssl x509 -text` dump, a byte-order mark) is the reader's to
+/// keep and rendered as-is before this existed.
 fn pem_summary(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if !trimmed.starts_with(PEM_BEGIN) {
+    let blocks = pem_blocks(value);
+    if blocks.is_empty() {
         return None;
     }
-    let blocks = pem_blocks(trimmed);
-    let first = blocks.first()?;
-    let count = blocks.len();
-    let label = first.label;
-    Some(match pem_body_der(first.body) {
-        Some(der) => format!(
-            "<PEM: {count} {label} block(s), SHA-256 fingerprint {}>",
-            sha256_fingerprint(&der)
-        ),
-        None => format!("<PEM: {count} {label} block(s), {} bytes>", trimmed.len()),
-    })
+    let summaries = blocks.iter().map(pem_block_summary);
+    if pem_blocks_are_the_whole_value(value, &blocks) {
+        return Some(summaries.collect::<Vec<_>>().join(", "));
+    }
+    let mut summarized = String::new();
+    let mut cursor = 0;
+    for (block, summary) in blocks.iter().zip(summaries) {
+        summarized.push_str(&value[cursor..block.span.start]);
+        summarized.push_str(&summary);
+        cursor = block.span.end;
+    }
+    summarized.push_str(&value[cursor..]);
+    Some(summarized)
 }
 
 /// Render any value at `indent`. The first line emitted (if any) is the natural
@@ -559,7 +649,7 @@ mod tests {
         );
     }
 
-    // ── PEM elision (issue #665) ───────────────────────────────────────────
+    // ── PEM summaries (issue #665) ─────────────────────────────────────────
 
     /// A real self-signed EC certificate. Its SHA-256 fingerprint below was
     /// taken from `openssl x509 -fingerprint -sha256`, so the assertion pins
@@ -582,16 +672,25 @@ LaBMf6qZANMrXRQaETxhIA==
     const PEM_FIXTURE_FINGERPRINT: &str = "5A:6D:67:FD:14:1B:1E:61:4A:F4:E2:7D:F1:F8:67:E2:75:85:DF:92:E3:66:31:85:75:AB:2C:C3:F4:8C:9A:D8";
 
     /// A distinctive run from the middle of the fixture's base64 body: if this
-    /// ever appears in human output, the certificate was not elided.
+    /// ever appears in human output, the certificate was not summarized.
     const PEM_FIXTURE_BODY_MARKER: &str =
         "ByqGSM49AgEGCCqGSM49AwEHA0IABNTPygUG2umVvTqod5jJXCgp1o9qwrx2wLf7";
 
+    /// A private key over the four bytes `01 02 03 04`, whose SHA-256 is the
+    /// constant below. Its presence in a summary would mean a key was
+    /// fingerprinted.
+    const PEM_KEY_FIXTURE: &str =
+        "-----BEGIN EC PRIVATE KEY-----\nAQIDBA==\n-----END EC PRIVATE KEY-----\n";
+    const FINGERPRINT_OF_01020304: &str = "9F:64:A7:47:E1:B9:7F:13:1F:AB:B6:B4:47:29:6C:9B:6F:02:01:E7:9F:B3:C5:35:6E:6C:77:E8:9B:6A:80:6A";
+
+    /// The summary [`PEM_FIXTURE`] renders as, wherever it appears.
+    fn fixture_summary() -> String {
+        format!("<PEM CERTIFICATE, SHA-256 fingerprint {PEM_FIXTURE_FINGERPRINT}>")
+    }
+
     #[test]
-    fn pem_summary_reports_count_label_and_openssl_fingerprint() {
-        assert_eq!(
-            pem_summary(PEM_FIXTURE).unwrap(),
-            format!("<PEM: 1 CERTIFICATE block(s), SHA-256 fingerprint {PEM_FIXTURE_FINGERPRINT}>")
-        );
+    fn pem_summary_reports_the_label_and_the_openssl_fingerprint() {
+        assert_eq!(pem_summary(PEM_FIXTURE).unwrap(), fixture_summary());
     }
 
     #[test]
@@ -601,52 +700,132 @@ LaBMf6qZANMrXRQaETxhIA==
             !summary.contains(PEM_FIXTURE_BODY_MARKER),
             "body leaked: {summary}"
         );
-        assert!(!summary.contains("-----BEGIN"), "framing leaked: {summary}");
+        assert!(!summary.contains(PEM_DASHES), "framing leaked: {summary}");
     }
 
     #[test]
-    fn pem_summary_counts_concatenated_blocks_and_fingerprints_the_first() {
-        // A chain: leaf then issuer. The count reports both, the fingerprint
-        // identifies the leaf.
-        let chain = format!("{PEM_FIXTURE}{PEM_FIXTURE}");
+    fn pem_summary_puts_a_whitespace_separated_chain_on_one_line() {
+        // The common case: nothing but blocks, so the reader gets one line
+        // with one summary per certificate of the chain.
+        let chain = format!("{PEM_FIXTURE}\n{PEM_FIXTURE}\n{PEM_FIXTURE}");
+        let summary = pem_summary(&chain).unwrap();
+        let expected = fixture_summary();
+        assert_eq!(summary, format!("{expected}, {expected}, {expected}"));
+        assert!(!summary.contains('\n'), "chain spans lines: {summary}");
+    }
+
+    #[test]
+    fn pem_summary_never_fingerprints_a_key_in_a_mixed_bundle() {
+        // Each block is summarized on its own terms: the certificate by its
+        // own fingerprint, the key by size and never by digest.
+        let bundle = format!("{PEM_FIXTURE}{PEM_KEY_FIXTURE}");
+        let summary = pem_summary(&bundle).unwrap();
         assert_eq!(
-            pem_summary(&chain).unwrap(),
-            format!("<PEM: 2 CERTIFICATE block(s), SHA-256 fingerprint {PEM_FIXTURE_FINGERPRINT}>")
+            summary,
+            format!("{}, <PEM EC PRIVATE KEY, 10 bytes>", fixture_summary())
+        );
+        assert!(
+            !summary.contains(FINGERPRINT_OF_01020304),
+            "the key was fingerprinted: {summary}"
         );
     }
 
     #[test]
-    fn pem_summary_uses_the_blocks_own_label() {
-        // Elision is not certificate-specific: a private key that somehow
-        // reached human output is summarized the same way, body withheld.
-        // `AQIDBA==` is the four bytes 01 02 03 04; the fingerprint is their
-        // SHA-256, so the expected hex is a constant.
-        let key = "-----BEGIN PRIVATE KEY-----\nAQIDBA==\n-----END PRIVATE KEY-----";
-        const FINGERPRINT_OF_01020304: &str = "9F:64:A7:47:E1:B9:7F:13:1F:AB:B6:B4:47:29:6C:9B:6F:02:01:E7:9F:B3:C5:35:6E:6C:77:E8:9B:6A:80:6A";
-        assert_eq!(
-            pem_summary(key).unwrap(),
-            format!("<PEM: 1 PRIVATE KEY block(s), SHA-256 fingerprint {FINGERPRINT_OF_01020304}>")
+    fn pem_summary_keeps_text_before_a_block() {
+        // A `cacert.pem`-style bundle: header comments, then the block. The
+        // comments are the reader's to keep; only the block is summarized.
+        let bundle = format!(
+            "## Bundle of CA Root Certificates\n## Certificate data from Mozilla\n\n{PEM_FIXTURE}"
         );
+        assert_eq!(
+            pem_summary(&bundle).unwrap(),
+            format!(
+                "## Bundle of CA Root Certificates\n## Certificate data from Mozilla\n\n{}\n",
+                fixture_summary()
+            )
+        );
+    }
+
+    #[test]
+    fn pem_summary_keeps_text_between_two_blocks() {
+        let bundle = format!(
+            "{}\nissued by the internal CA\n{}\n",
+            PEM_FIXTURE.trim(),
+            PEM_FIXTURE.trim()
+        );
+        let expected = fixture_summary();
+        assert_eq!(
+            pem_summary(&bundle).unwrap(),
+            format!("{expected}\nissued by the internal CA\n{expected}\n")
+        );
+    }
+
+    #[test]
+    fn pem_summary_keeps_a_byte_order_mark() {
+        // A BOM is not whitespace, so the value is not blocks-only: the mark
+        // survives and the block is still summarized where it stood.
+        let bom_prefixed = format!("\u{feff}{PEM_FIXTURE}");
+        assert_eq!(
+            pem_summary(&bom_prefixed).unwrap(),
+            format!("\u{feff}{}\n", fixture_summary())
+        );
+    }
+
+    #[test]
+    fn a_frame_whose_label_is_not_a_label_is_not_a_block() {
+        // The label is the only part of a block that reaches the summary line.
+        // A newline, a control character or an unbounded run of text where a
+        // label belongs must not produce a summary at all: no synthesized
+        // line, nothing of the value's own injected into one.
+        let long_label = "A".repeat(200);
+        for value in [
+            "-----BEGIN CERTIFICATE\nx-----\nAQIDBA==\n-----END CERTIFICATE\nx-----".to_string(),
+            "-----BEGIN \u{1b}[31mCERTIFICATE-----\nAQIDBA==\n-----END \u{1b}[31mCERTIFICATE-----"
+                .to_string(),
+            format!("-----BEGIN {long_label}-----\nAQIDBA==\n-----END {long_label}-----"),
+        ] {
+            assert_eq!(
+                pem_summary(&value),
+                None,
+                "unexpectedly summarized {value:?}"
+            );
+            let rendered = render_to_string(&json!({ "caCertificate": value }));
+            assert!(
+                !rendered.contains("<PEM"),
+                "synthesized a summary: {rendered}"
+            );
+            assert_eq!(rendered, format!("caCertificate: {value}"));
+        }
+    }
+
+    #[test]
+    fn pem_summary_handles_crlf_line_endings() {
+        let crlf = PEM_FIXTURE.replace('\n', "\r\n");
+        assert_eq!(pem_summary(&crlf).unwrap(), fixture_summary());
     }
 
     #[test]
     fn pem_summary_tolerates_surrounding_whitespace() {
         let padded = format!("\n  {}\n\n", PEM_FIXTURE.trim());
-        assert!(
-            pem_summary(&padded)
-                .unwrap()
-                .starts_with("<PEM: 1 CERTIFICATE block(s),")
-        );
+        assert_eq!(pem_summary(&padded).unwrap(), fixture_summary());
     }
 
     #[test]
     fn pem_summary_falls_back_to_a_byte_count_when_the_body_is_not_base64() {
         let broken = "-----BEGIN CERTIFICATE-----\n**not base64**\n-----END CERTIFICATE-----";
-        assert_eq!(broken.len(), 68);
-        assert_eq!(
-            pem_summary(broken).unwrap(),
-            "<PEM: 1 CERTIFICATE block(s), 68 bytes>"
-        );
+        assert_eq!(pem_summary(broken).unwrap(), "<PEM CERTIFICATE, 16 bytes>");
+    }
+
+    #[test]
+    fn pem_summary_reports_rfc_1421_headers_as_a_byte_count_only() {
+        // An encrypted key carries `Proc-Type`/`DEK-Info` headers before the
+        // base64, so the body does not decode. The count stands in for it and
+        // no header text reaches the summary.
+        let encrypted = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,0123456789ABCDEF\n\nAQIDBA==\n-----END RSA PRIVATE KEY-----";
+        let summary = pem_summary(encrypted).unwrap();
+        assert_eq!(summary, "<PEM RSA PRIVATE KEY, 73 bytes>");
+        assert!(!summary.contains("Proc-Type"), "header leaked: {summary}");
+        assert!(!summary.contains("DEK-Info"), "header leaked: {summary}");
     }
 
     #[test]
@@ -661,16 +840,19 @@ LaBMf6qZANMrXRQaETxhIA==
             "-----BEGIN CERTIFICATE-----\nAQIDBA==\n-----END PRIVATE KEY-----",
             // An unlabelled frame is not a block.
             "-----BEGIN -----\nAQIDBA==\n-----END -----",
-            // PEM further in is not the value's format; only a leading frame
-            // makes the whole string a certificate.
-            "see attached: -----BEGIN CERTIFICATE-----\nAQIDBA==\n-----END CERTIFICATE-----",
+            // No space after `BEGIN`, so there is no frame at all.
+            "-----BEGIN-----\nAQIDBA==\n-----END-----",
         ] {
-            assert_eq!(pem_summary(value), None, "unexpectedly elided {value:?}");
+            assert_eq!(
+                pem_summary(value),
+                None,
+                "unexpectedly summarized {value:?}"
+            );
         }
     }
 
     #[test]
-    fn render_elides_a_certificate_field_and_keeps_its_siblings() {
+    fn render_summarizes_a_certificate_field_and_keeps_its_siblings() {
         let v = json!({
             "source": {
                 "postgres": {
@@ -684,27 +866,25 @@ LaBMf6qZANMrXRQaETxhIA==
         assert_eq!(
             rendered,
             format!(
-                "source:\n  postgres:\n    host: db.example.com\n    caCertificate: <PEM: 1 CERTIFICATE block(s), SHA-256 fingerprint {PEM_FIXTURE_FINGERPRINT}>\n    database: postgres"
+                "source:\n  postgres:\n    host: db.example.com\n    caCertificate: {}\n    database: postgres",
+                fixture_summary()
             )
         );
         assert!(
-            !rendered.contains("-----BEGIN"),
+            !rendered.contains(PEM_BEGIN),
             "certificate body rendered: {rendered}"
         );
     }
 
     #[test]
-    fn render_elides_certificates_inside_arrays_and_bullets() {
+    fn render_summarizes_certificates_inside_arrays_and_bullets() {
         let v = json!({
             "trustChain": [PEM_FIXTURE, PEM_FIXTURE],
             "endpoints": [{ "clientCertificate": PEM_FIXTURE }],
         });
         let rendered = render_to_string(&v);
-        assert!(
-            !rendered.contains("-----BEGIN"),
-            "body rendered: {rendered}"
-        );
-        assert_eq!(rendered.matches("<PEM: 1 CERTIFICATE block(s)").count(), 3);
+        assert!(!rendered.contains(PEM_BEGIN), "body rendered: {rendered}");
+        assert_eq!(rendered.matches(&fixture_summary()).count(), 3);
     }
 
     #[test]

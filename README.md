@@ -1331,12 +1331,6 @@ clickhousectl cloud clickpipe schema-discover <service-id> pubsub \
 
 Add `--json` (or run as a coding agent) for machine-readable output.
 
-Human-readable output summarises any PEM certificate or key a pipe returns, such
-as `source.postgres.caCertificate`, as a one-line
-`<PEM: 1 CERTIFICATE block(s), SHA-256 fingerprint AB:CD:...>` (the fingerprint
-`openssl x509 -fingerprint -sha256` prints for the first block) instead of
-printing the ~1.5 KB body; `--json` still returns the certificate verbatim.
-
 ### Members
 
 Role IDs used by member, invitation, and API-key commands currently come from the ClickHouse Cloud Console or API.
@@ -1389,6 +1383,8 @@ clickhousectl cloud --json service get <service-id>
 ```
 
 `clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `cloud org prometheus` and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
+
+Human-readable detail views (`cloud clickpipe get` and every other `get`-style command) never print PEM-framed material. Each well-formed PEM block in a value is replaced, where it stands, by a one-line summary of that block: `<PEM CERTIFICATE, SHA-256 fingerprint AB:CD:...>` for a certificate, certificate request or CRL, using the fingerprint `openssl x509 -fingerprint -sha256` prints for that block, and `<PEM EC PRIVATE KEY, 121 bytes>` for any other label, because a private key is reported by size and never fingerprinted. Text around the blocks, such as a bundle's header comments, is kept as it was. This affects human output only: `--json` still returns the value verbatim, and `cloud postgres certs get` deliberately still prints the raw PEM, since emitting the certificate is that command's purpose.
 
 Local runtime failures also use structured output when `local --json` is set or a coding agent is detected. The CLI writes exactly one error object to stderr and preserves the documented exit code:
 

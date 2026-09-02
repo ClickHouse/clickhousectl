@@ -11668,8 +11668,9 @@ async fn reverse_private_endpoint_help_explains_how_pipes_reference_it() {
 //
 // A Postgres ClickPipe's `source.postgres.caCertificate` is a whole PEM block.
 // Rendered verbatim it pushed every other field of `clickpipe get` off the
-// screen. Human output summarizes it; `--json` still carries the bytes, so a
-// caller that needs the certificate has not lost anything.
+// screen. Human output replaces each block with a one-line summary of that
+// block; `--json` still carries the bytes, so a caller that needs the
+// certificate has not lost anything.
 
 /// A real self-signed EC certificate, the same fixture the `cloud::output`
 /// unit tests use. The fingerprint came from
@@ -11688,7 +11689,7 @@ LaBMf6qZANMrXRQaETxhIA==
 -----END CERTIFICATE-----
 ";
 
-const CA_CERTIFICATE_SUMMARY: &str = "caCertificate: <PEM: 1 CERTIFICATE block(s), SHA-256 fingerprint 5A:6D:67:FD:14:1B:1E:61:4A:F4:E2:7D:F1:F8:67:E2:75:85:DF:92:E3:66:31:85:75:AB:2C:C3:F4:8C:9A:D8>";
+const CA_CERTIFICATE_SUMMARY: &str = "caCertificate: <PEM CERTIFICATE, SHA-256 fingerprint 5A:6D:67:FD:14:1B:1E:61:4A:F4:E2:7D:F1:F8:67:E2:75:85:DF:92:E3:66:31:85:75:AB:2C:C3:F4:8C:9A:D8>";
 
 fn postgres_source_with_certificate() -> Value {
     serde_json::json!({
