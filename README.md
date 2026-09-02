@@ -1331,6 +1331,12 @@ clickhousectl cloud clickpipe schema-discover <service-id> pubsub \
 
 Add `--json` (or run as a coding agent) for machine-readable output.
 
+Human-readable output summarises any PEM certificate or key a pipe returns, such
+as `source.postgres.caCertificate`, as a one-line
+`<PEM: 1 CERTIFICATE block(s), SHA-256 fingerprint AB:CD:...>` (the fingerprint
+`openssl x509 -fingerprint -sha256` prints for the first block) instead of
+printing the ~1.5 KB body; `--json` still returns the certificate verbatim.
+
 ### Members
 
 Role IDs used by member, invitation, and API-key commands currently come from the ClickHouse Cloud Console or API.

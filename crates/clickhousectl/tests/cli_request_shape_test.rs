@@ -11663,3 +11663,89 @@ async fn reverse_private_endpoint_help_explains_how_pipes_reference_it() {
     assert!(help.contains("reached the Ready status"), "{help}");
     assert!(help.contains("PendingAcceptance"), "{help}");
 }
+
+// ── PEM certificates are elided from human output (issue #665) ─────────────
+//
+// A Postgres ClickPipe's `source.postgres.caCertificate` is a whole PEM block.
+// Rendered verbatim it pushed every other field of `clickpipe get` off the
+// screen. Human output summarizes it; `--json` still carries the bytes, so a
+// caller that needs the certificate has not lost anything.
+
+/// A real self-signed EC certificate, the same fixture the `cloud::output`
+/// unit tests use. The fingerprint came from
+/// `openssl x509 -noout -fingerprint -sha256`.
+const CA_CERTIFICATE_PEM: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIBjDCCATOgAwIBAgIUajES1wl65zexYYPuWX8ShldYw4YwCgYIKoZIzj0EAwIw
+HDEaMBgGA1UEAwwRY2hjdGwtcGVtLWZpeHR1cmUwHhcNMjYwOTAyMTc1NDI3WhcN
+NDYwODI4MTc1NDI3WjAcMRowGAYDVQQDDBFjaGN0bC1wZW0tZml4dHVyZTBZMBMG
+ByqGSM49AgEGCCqGSM49AwEHA0IABNTPygUG2umVvTqod5jJXCgp1o9qwrx2wLf7
+p+2PyHYm5ZdIS+kqT25Xm2SGM3th4dB43l3fd5kF0g6CzvGNt42jUzBRMB0GA1Ud
+DgQWBBQcL9JNezOJ8vzT0lR1Pj4sMoH2STAfBgNVHSMEGDAWgBQcL9JNezOJ8vzT
+0lR1Pj4sMoH2STAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIAhv
+iLjfMqcnJ10gmKoyEIMDDRJP2UwtGRcJZU/FnaIEAiBeUmN+nJBGIq0tFHIxz1Xl
+LaBMf6qZANMrXRQaETxhIA==
+-----END CERTIFICATE-----
+";
+
+const CA_CERTIFICATE_SUMMARY: &str = "caCertificate: <PEM: 1 CERTIFICATE block(s), SHA-256 fingerprint 5A:6D:67:FD:14:1B:1E:61:4A:F4:E2:7D:F1:F8:67:E2:75:85:DF:92:E3:66:31:85:75:AB:2C:C3:F4:8C:9A:D8>";
+
+fn postgres_source_with_certificate() -> Value {
+    serde_json::json!({
+        "postgres": {
+            "host": "db.example.com",
+            "port": 5432,
+            "database": "postgres",
+            "caCertificate": CA_CERTIFICATE_PEM,
+        }
+    })
+}
+
+#[tokio::test]
+async fn clickpipe_get_human_output_summarizes_the_ca_certificate() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(&mock, postgres_source_with_certificate()).await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(CA_CERTIFICATE_SUMMARY),
+        "certificate not summarized:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("-----BEGIN"),
+        "certificate body dumped:\n{stdout}"
+    );
+    // The point of eliding is that the surrounding fields stay readable.
+    assert!(stdout.contains("host: db.example.com"), "{stdout}");
+    assert!(stdout.contains("name: test-pipe"), "{stdout}");
+}
+
+#[tokio::test]
+async fn clickpipe_get_json_output_keeps_the_full_ca_certificate() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(&mock, postgres_source_with_certificate()).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let pipe: Value = serde_json::from_str(stdout.trim()).expect("stdout should be JSON");
+    assert_eq!(
+        pipe["source"]["postgres"]["caCertificate"],
+        Value::String(CA_CERTIFICATE_PEM.to_string()),
+        "--json must carry the certificate verbatim: {stdout}"
+    );
+    assert!(
+        stdout.contains("-----BEGIN CERTIFICATE-----"),
+        "--json must not elide: {stdout}"
+    );
+}

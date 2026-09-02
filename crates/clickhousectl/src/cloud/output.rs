@@ -205,11 +205,111 @@ fn is_scalar(value: &Value) -> bool {
 
 fn scalar_string(value: &Value) -> Option<String> {
     match value {
-        Value::String(s) => Some(s.clone()),
+        // The single place a string scalar becomes human text, so eliding here
+        // covers object fields, nested objects and arrays of strings alike.
+        Value::String(s) => Some(pem_summary(s).unwrap_or_else(|| s.clone())),
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
+}
+
+// ── PEM elision in human output (issue #665) ─────────────────────────────
+//
+// A Postgres ClickPipe's `source.postgres.caCertificate` is a whole PEM block:
+// roughly 1.5 KB of base64 that scrolls the rest of `clickpipe get` off the
+// screen while telling the reader nothing. Human output therefore renders a
+// PEM-framed string as a one-line summary. `--json` is untouched: it
+// serializes the model directly, so a caller that needs the certificate still
+// gets the bytes verbatim.
+//
+// The test is the value's *format*, not its key name. A client certificate, a
+// private key, or a certificate nested anywhere else in any response gets the
+// same treatment with no per-field allowlist to keep in sync, and a string
+// that merely happens to carry PEM framing is exactly what should be elided.
+
+/// The framing prefix that opens an RFC 7468 block.
+const PEM_BEGIN: &str = "-----BEGIN ";
+/// The five-dash run that closes a framing line and opens an `END` marker.
+const PEM_DASHES: &str = "-----";
+
+/// One RFC 7468 block: its label and the raw text between the framing lines.
+struct PemBlock<'a> {
+    label: &'a str,
+    body: &'a str,
+}
+
+/// Split `text` into the RFC 7468 blocks it contains, stopping at the first
+/// unterminated or unlabelled frame. Only well-formed `BEGIN`/`END` pairs with
+/// matching labels count as blocks.
+fn pem_blocks(text: &str) -> Vec<PemBlock<'_>> {
+    let mut blocks = Vec::new();
+    let mut rest = text;
+    while let Some(begin) = rest.find(PEM_BEGIN) {
+        let after_begin = &rest[begin + PEM_BEGIN.len()..];
+        let Some(label_len) = after_begin.find(PEM_DASHES) else {
+            break;
+        };
+        let label = &after_begin[..label_len];
+        if label.is_empty() {
+            break;
+        }
+        let after_label = &after_begin[label_len + PEM_DASHES.len()..];
+        let end_marker = format!("-----END {label}-----");
+        let Some(body_len) = after_label.find(&end_marker) else {
+            break;
+        };
+        blocks.push(PemBlock {
+            label,
+            body: &after_label[..body_len],
+        });
+        rest = &after_label[body_len + end_marker.len()..];
+    }
+    blocks
+}
+
+/// Decode a block body to its DER bytes, or `None` when the base64 is not
+/// decodable (an encrypted key with RFC 1421 headers, a truncated paste).
+fn pem_body_der(body: &str) -> Option<Vec<u8>> {
+    let base64: String = body.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    let der = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &base64).ok()?;
+    if der.is_empty() { None } else { Some(der) }
+}
+
+/// SHA-256 of `der` as colon-separated uppercase hex, the form
+/// `openssl x509 -fingerprint -sha256` prints.
+fn sha256_fingerprint(der: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(der)
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect::<Vec<_>>()
+        .join(":")
+}
+
+/// Summarize a PEM text for human output, or return `None` when `value` is not
+/// PEM and should be printed as-is.
+///
+/// The body is never part of the result. The fingerprint identifies the *first*
+/// block, which is the leaf certificate of a chain; when that block's base64
+/// does not decode the summary reports the text's size instead, so the value is
+/// still accounted for without printing it.
+fn pem_summary(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if !trimmed.starts_with(PEM_BEGIN) {
+        return None;
+    }
+    let blocks = pem_blocks(trimmed);
+    let first = blocks.first()?;
+    let count = blocks.len();
+    let label = first.label;
+    Some(match pem_body_der(first.body) {
+        Some(der) => format!(
+            "<PEM: {count} {label} block(s), SHA-256 fingerprint {}>",
+            sha256_fingerprint(&der)
+        ),
+        None => format!("<PEM: {count} {label} block(s), {} bytes>", trimmed.len()),
+    })
 }
 
 /// Render any value at `indent`. The first line emitted (if any) is the natural
@@ -457,6 +557,154 @@ mod tests {
                 }
             })
         );
+    }
+
+    // ── PEM elision (issue #665) ───────────────────────────────────────────
+
+    /// A real self-signed EC certificate. Its SHA-256 fingerprint below was
+    /// taken from `openssl x509 -fingerprint -sha256`, so the assertion pins
+    /// the CLI's output against the tool a user would reach for to check it.
+    const PEM_FIXTURE: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIBjDCCATOgAwIBAgIUajES1wl65zexYYPuWX8ShldYw4YwCgYIKoZIzj0EAwIw
+HDEaMBgGA1UEAwwRY2hjdGwtcGVtLWZpeHR1cmUwHhcNMjYwOTAyMTc1NDI3WhcN
+NDYwODI4MTc1NDI3WjAcMRowGAYDVQQDDBFjaGN0bC1wZW0tZml4dHVyZTBZMBMG
+ByqGSM49AgEGCCqGSM49AwEHA0IABNTPygUG2umVvTqod5jJXCgp1o9qwrx2wLf7
+p+2PyHYm5ZdIS+kqT25Xm2SGM3th4dB43l3fd5kF0g6CzvGNt42jUzBRMB0GA1Ud
+DgQWBBQcL9JNezOJ8vzT0lR1Pj4sMoH2STAfBgNVHSMEGDAWgBQcL9JNezOJ8vzT
+0lR1Pj4sMoH2STAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIAhv
+iLjfMqcnJ10gmKoyEIMDDRJP2UwtGRcJZU/FnaIEAiBeUmN+nJBGIq0tFHIxz1Xl
+LaBMf6qZANMrXRQaETxhIA==
+-----END CERTIFICATE-----
+";
+
+    /// `openssl x509 -in fixture.crt -noout -fingerprint -sha256`.
+    const PEM_FIXTURE_FINGERPRINT: &str = "5A:6D:67:FD:14:1B:1E:61:4A:F4:E2:7D:F1:F8:67:E2:75:85:DF:92:E3:66:31:85:75:AB:2C:C3:F4:8C:9A:D8";
+
+    /// A distinctive run from the middle of the fixture's base64 body: if this
+    /// ever appears in human output, the certificate was not elided.
+    const PEM_FIXTURE_BODY_MARKER: &str =
+        "ByqGSM49AgEGCCqGSM49AwEHA0IABNTPygUG2umVvTqod5jJXCgp1o9qwrx2wLf7";
+
+    #[test]
+    fn pem_summary_reports_count_label_and_openssl_fingerprint() {
+        assert_eq!(
+            pem_summary(PEM_FIXTURE).unwrap(),
+            format!("<PEM: 1 CERTIFICATE block(s), SHA-256 fingerprint {PEM_FIXTURE_FINGERPRINT}>")
+        );
+    }
+
+    #[test]
+    fn pem_summary_never_contains_the_body() {
+        let summary = pem_summary(PEM_FIXTURE).unwrap();
+        assert!(
+            !summary.contains(PEM_FIXTURE_BODY_MARKER),
+            "body leaked: {summary}"
+        );
+        assert!(!summary.contains("-----BEGIN"), "framing leaked: {summary}");
+    }
+
+    #[test]
+    fn pem_summary_counts_concatenated_blocks_and_fingerprints_the_first() {
+        // A chain: leaf then issuer. The count reports both, the fingerprint
+        // identifies the leaf.
+        let chain = format!("{PEM_FIXTURE}{PEM_FIXTURE}");
+        assert_eq!(
+            pem_summary(&chain).unwrap(),
+            format!("<PEM: 2 CERTIFICATE block(s), SHA-256 fingerprint {PEM_FIXTURE_FINGERPRINT}>")
+        );
+    }
+
+    #[test]
+    fn pem_summary_uses_the_blocks_own_label() {
+        // Elision is not certificate-specific: a private key that somehow
+        // reached human output is summarized the same way, body withheld.
+        // `AQIDBA==` is the four bytes 01 02 03 04; the fingerprint is their
+        // SHA-256, so the expected hex is a constant.
+        let key = "-----BEGIN PRIVATE KEY-----\nAQIDBA==\n-----END PRIVATE KEY-----";
+        const FINGERPRINT_OF_01020304: &str = "9F:64:A7:47:E1:B9:7F:13:1F:AB:B6:B4:47:29:6C:9B:6F:02:01:E7:9F:B3:C5:35:6E:6C:77:E8:9B:6A:80:6A";
+        assert_eq!(
+            pem_summary(key).unwrap(),
+            format!("<PEM: 1 PRIVATE KEY block(s), SHA-256 fingerprint {FINGERPRINT_OF_01020304}>")
+        );
+    }
+
+    #[test]
+    fn pem_summary_tolerates_surrounding_whitespace() {
+        let padded = format!("\n  {}\n\n", PEM_FIXTURE.trim());
+        assert!(
+            pem_summary(&padded)
+                .unwrap()
+                .starts_with("<PEM: 1 CERTIFICATE block(s),")
+        );
+    }
+
+    #[test]
+    fn pem_summary_falls_back_to_a_byte_count_when_the_body_is_not_base64() {
+        let broken = "-----BEGIN CERTIFICATE-----\n**not base64**\n-----END CERTIFICATE-----";
+        assert_eq!(broken.len(), 68);
+        assert_eq!(
+            pem_summary(broken).unwrap(),
+            "<PEM: 1 CERTIFICATE block(s), 68 bytes>"
+        );
+    }
+
+    #[test]
+    fn pem_summary_leaves_non_pem_strings_alone() {
+        for value in [
+            "",
+            "running",
+            "us-east-1",
+            // Framing that never closes is not a block.
+            "-----BEGIN CERTIFICATE-----\nAQIDBA==\n",
+            // A mismatched END label does not close the BEGIN.
+            "-----BEGIN CERTIFICATE-----\nAQIDBA==\n-----END PRIVATE KEY-----",
+            // An unlabelled frame is not a block.
+            "-----BEGIN -----\nAQIDBA==\n-----END -----",
+            // PEM further in is not the value's format; only a leading frame
+            // makes the whole string a certificate.
+            "see attached: -----BEGIN CERTIFICATE-----\nAQIDBA==\n-----END CERTIFICATE-----",
+        ] {
+            assert_eq!(pem_summary(value), None, "unexpectedly elided {value:?}");
+        }
+    }
+
+    #[test]
+    fn render_elides_a_certificate_field_and_keeps_its_siblings() {
+        let v = json!({
+            "source": {
+                "postgres": {
+                    "host": "db.example.com",
+                    "caCertificate": PEM_FIXTURE,
+                    "database": "postgres",
+                }
+            }
+        });
+        let rendered = render_to_string(&v);
+        assert_eq!(
+            rendered,
+            format!(
+                "source:\n  postgres:\n    host: db.example.com\n    caCertificate: <PEM: 1 CERTIFICATE block(s), SHA-256 fingerprint {PEM_FIXTURE_FINGERPRINT}>\n    database: postgres"
+            )
+        );
+        assert!(
+            !rendered.contains("-----BEGIN"),
+            "certificate body rendered: {rendered}"
+        );
+    }
+
+    #[test]
+    fn render_elides_certificates_inside_arrays_and_bullets() {
+        let v = json!({
+            "trustChain": [PEM_FIXTURE, PEM_FIXTURE],
+            "endpoints": [{ "clientCertificate": PEM_FIXTURE }],
+        });
+        let rendered = render_to_string(&v);
+        assert!(
+            !rendered.contains("-----BEGIN"),
+            "body rendered: {rendered}"
+        );
+        assert_eq!(rendered.matches("<PEM: 1 CERTIFICATE block(s)").count(), 3);
     }
 
     #[test]
