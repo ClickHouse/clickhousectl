@@ -1278,6 +1278,41 @@ fn serialize_clickpipe_object_storage_ingestion_controls() {
 }
 
 #[test]
+fn serialize_clickpipe_mutate_postgres_source_omits_absent_credentials() {
+    // IAM_ROLE authentication has no username or password: `iamRole` is the
+    // whole credential, so the `credentials` object must not reach the wire.
+    let iam_role = ClickPipeMutatePostgresSource {
+        authentication: ClickPipeMutatePostgresSourceAuthentication::IAM_ROLE,
+        credentials: None,
+        iam_role: Some("arn:aws:iam::123456789012:role/clickpipe".to_string()),
+        host: "postgres.example".to_string(),
+        port: 5432,
+        database: "source-db".to_string(),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&iam_role).unwrap();
+    assert!(
+        json.get("credentials").is_none(),
+        "credentials must be omitted, got {json}"
+    );
+    assert_eq!(json["iamRole"], "arn:aws:iam::123456789012:role/clickpipe");
+    assert_eq!(json["authentication"], "IAM_ROLE");
+
+    // Basic auth still sends the pair verbatim.
+    let basic = ClickPipeMutatePostgresSource {
+        authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
+        credentials: Some(PLAIN {
+            username: "user".to_string(),
+            password: "secret".to_string(),
+        }),
+        ..iam_role.clone()
+    };
+    let json = serde_json::to_value(&basic).unwrap();
+    assert_eq!(json["credentials"]["username"], "user");
+    assert_eq!(json["credentials"]["password"], "secret");
+}
+
+#[test]
 fn deserialize_scaling_schedule_entry_fixed_scaling_fields() {
     let json = r#"{
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",

@@ -389,10 +389,10 @@ async fn run_variant(
                 postgres: Some(ClickPipeMutatePostgresSource {
                     r#type: Some(ClickPipeMutatePostgresSourceType::Postgres),
                     authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
-                    credentials: PLAIN {
+                    credentials: Some(PLAIN {
                         username: clickpipe_user.to_string(),
                         password: clickpipe_pass.to_string(),
-                    },
+                    }),
                     host: host_ip.to_string(),
                     port: 5432,
                     database: db_name.to_string(),

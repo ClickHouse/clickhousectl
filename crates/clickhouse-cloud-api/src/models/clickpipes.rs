@@ -2374,7 +2374,14 @@ pub struct ClickPipeMutatePostgresSource {
     // `Option<String>` so callers can omit it.
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    pub credentials: PLAIN,
+    // credentials is the basic-auth username/password pair. The schema carries
+    // no `required[]`, so requiredness resolves from the description heuristic
+    // and the field reads as required, but IAM_ROLE authentication has no
+    // username or password: the role ARN in `iamRole` is the whole credential.
+    // Modeled as `Option<PLAIN>` so an IAM_ROLE request can omit the object
+    // entirely instead of sending an empty `{"username":"","password":""}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<PLAIN>,
     pub database: String,
     #[serde(rename = "disableTls")]
     pub disable_tls: bool,

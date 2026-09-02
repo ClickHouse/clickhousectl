@@ -117,6 +117,14 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ClickPipeMutatePostgresSource", "caCertificate"),
     ("ClickPipeMutatePostgresSource", "iamRole"),
     ("ClickPipeMutatePostgresSource", "tlsHost"),
+    // IAM_ROLE authentication has no username or password: `iamRole` is the
+    // whole credential. The schema carries no `required[]`, so requiredness
+    // resolves from the description heuristic and `credentials` reads as
+    // required, but an IAM_ROLE pipe has nothing to put in it and the sibling
+    // MySQL schema (which does carry `required[]`) leaves it out. Keeping this
+    // `T` would force every IAM_ROLE request to send an empty username and
+    // password pair.
+    ("ClickPipeMutatePostgresSource", "credentials"),
     // Deprecated roles and opt-in pre-hashed keys must stay off the wire when unused.
     ("ApiKeyPostRequest", "roles"),
     ("ApiKeyPostRequest", "hashData"),
