@@ -62,11 +62,15 @@ impl CloudArgs {
             )
     }
 
-    pub fn postgres_clickpipe_validation_error(&self) -> Option<String> {
+    /// The `clickpipe create <source>` validation message and the source
+    /// subcommand it belongs to, if the flags cannot describe the chosen
+    /// `--auth`. Covers both database sources whose credential flags depend on
+    /// `--auth`'s value: `postgres` and `mysql`.
+    pub fn clickpipe_create_validation_error(&self) -> Option<(&'static str, String)> {
         let CloudCommands::ClickPipe { command } = &self.command else {
             return None;
         };
-        command.postgres_create_validation_error()
+        command.clickpipe_create_validation_error()
     }
 
     /// The `clickpipe reverse-private-endpoint create` validation message, if

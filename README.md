@@ -1009,6 +1009,15 @@ clickhousectl cloud clickpipe create mysql <service-id> \
   --table-mapping "mydb.users:mydb_users" \
   --server-id 4242
 
+# From an RDS or Aurora MySQL with IAM role authentication (CDC)
+# IAM_ROLE auth takes no --username/--password: the role ARN is the credential
+clickhousectl cloud clickpipe create mysql <service-id> \
+  --name my-rds-mysql-pipe \
+  --host mysql.abcdefg.us-east-1.rds.amazonaws.com \
+  --mysql-type rdsmysql \
+  --auth IAM_ROLE --iam-role "$MYSQL_IAM_ROLE_ARN" \
+  --table-mapping "mydb.users:mydb_users"
+
 # From MongoDB (CDC)
 clickhousectl cloud clickpipe create mongodb <service-id> \
   --name my-mongo-pipe \
@@ -1213,6 +1222,19 @@ must be between 10 and 600, and `--filter` takes a Pub/Sub CEL subscription
 filter of at most 256 characters. Both are checked before the request is sent.
 
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
+
+#### MySQL ClickPipe authentication
+
+`clickpipe create mysql` authenticates with either a username and password
+(the default `--auth basic`) or an AWS IAM role on an RDS or Aurora MySQL
+source (`--auth IAM_ROLE`).
+
+`--auth IAM_ROLE` requires `--iam-role`; the CLI rejects `--iam-role` with
+basic auth rather than silently ignoring it. `--username` and `--password` are
+basic-auth only and must be given together: they are required for the default
+`--auth basic`, and rejected with `--auth IAM_ROLE`, where the role ARN is the
+whole credential and no `credentials` object is sent. Each rule is a usage
+error (exit code 2) before any request is made.
 
 #### Reverse private endpoints (PrivateLink, Private Service Connect)
 

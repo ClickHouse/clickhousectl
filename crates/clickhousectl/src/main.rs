@@ -172,19 +172,20 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
     }
 
     // clap can require --iam-role for one auth value, but cannot express the
-    // inverse conflict or condition --replication-slot-name on another value.
-    let Some(message) = args.postgres_clickpipe_validation_error() else {
+    // inverse conflict, require the credential pair only for basic auth, or
+    // condition --replication-slot-name on another value.
+    let Some((source, message)) = args.clickpipe_create_validation_error() else {
         return Ok(());
     };
-    let postgres = cmd
+    let create_source = cmd
         .find_subcommand_mut("cloud")
         .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
         .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
-        .and_then(|create| create.find_subcommand_mut("postgres"))
-        .expect("clickpipe create postgres command must exist");
+        .and_then(|create| create.find_subcommand_mut(source))
+        .unwrap_or_else(|| panic!("clickpipe create {source} command must exist"));
     // ArgumentConflict is intentional for invalid relationships between valid
     // values, matching existing CLI validation and preserving exit code 2.
-    Err(postgres.error(ErrorKind::ArgumentConflict, message))
+    Err(create_source.error(ErrorKind::ArgumentConflict, message))
 }
 
 /// Run a successfully parsed invocation to completion and report the exit

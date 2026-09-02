@@ -3657,6 +3657,138 @@ async fn postgres_credentials_with_iam_role_auth_are_rejected() {
     );
 }
 
+/// The minimal `clickpipe create mysql` argument set for basic auth.
+fn mysql_args_minimal() -> Vec<String> {
+    [
+        "clickpipe",
+        "create",
+        "mysql",
+        "svc-id",
+        "--name",
+        "t",
+        "--host",
+        "mysql",
+        "--port",
+        "3306",
+        "--table-mapping",
+        "mydb.t:t",
+        "--replication-mode",
+        "cdc",
+        "--org-id",
+        "org",
+        "--username",
+        "u",
+        "--password",
+        "p",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// The same set for IAM_ROLE authentication: no `--username`/`--password`,
+/// because the role ARN is the whole credential.
+fn mysql_args_iam_role() -> Vec<String> {
+    [
+        "clickpipe",
+        "create",
+        "mysql",
+        "svc-id",
+        "--name",
+        "t",
+        "--host",
+        "mysql",
+        "--port",
+        "3306",
+        "--table-mapping",
+        "mydb.t:t",
+        "--replication-mode",
+        "cdc",
+        "--org-id",
+        "org",
+        "--auth",
+        "IAM_ROLE",
+        "--iam-role",
+        "arn:aws:iam::123:role/x",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[tokio::test]
+async fn mysql_iam_role_create_omits_the_credentials_object() {
+    // IAM_ROLE authentication has no username or password: the role ARN is the
+    // whole credential, so `credentials` must be absent from the wire rather
+    // than sent as an empty username/password pair.
+    let mock = start_mock_clickpipes_api().await;
+    let args = mysql_args_iam_role();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert!(
+        body["source"]["mysql"].get("credentials").is_none(),
+        "credentials must not be sent for IAM_ROLE auth, got {}",
+        body["source"]["mysql"]
+    );
+    assert_eq!(
+        body["source"]["mysql"]["iamRole"], "arn:aws:iam::123:role/x",
+        "iamRole should round-trip the user-provided value"
+    );
+    assert_eq!(body["source"]["mysql"]["authentication"], "IAM_ROLE");
+}
+
+#[tokio::test]
+async fn mysql_basic_auth_create_sends_the_credentials_object() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = mysql_args_minimal();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(body["source"]["mysql"]["credentials"]["username"], "u");
+    assert_eq!(body["source"]["mysql"]["credentials"]["password"], "p");
+    assert_eq!(body["source"]["mysql"]["authentication"], "basic");
+}
+
+#[tokio::test]
+async fn mysql_credentials_with_iam_role_auth_are_rejected() {
+    let mock = MockServer::start().await;
+    let mut args = mysql_args_iam_role();
+    args.push("--username".into());
+    args.push("u".into());
+    args.push("--password".into());
+    args.push("p".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+    // Reported as a usage error against the owning command, the same way
+    // `--iam-role` with basic auth is: clap cannot express "forbidden for this
+    // value of another argument", so the check runs after parsing.
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic"
+        ),
+        "{stderr}"
+    );
+    // The usage line names the source subcommand the flags belong to.
+    assert!(stderr.contains("clickpipe create mysql"), "{stderr}");
+}
+
+#[tokio::test]
+async fn mysql_iam_role_with_basic_auth_is_rejected() {
+    let mock = MockServer::start().await;
+    let mut args = mysql_args_minimal();
+    args.push("--iam-role".into());
+    args.push("arn:aws:iam::123:role/x".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--iam-role cannot be used with --auth basic; use --auth IAM_ROLE"),
+        "{stderr}"
+    );
+}
+
 #[tokio::test]
 async fn postgres_ca_certificate_file_contents_flow_to_body() {
     use std::io::Write;

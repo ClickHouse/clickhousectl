@@ -286,17 +286,33 @@ impl ClickPipeCommands {
         }
     }
 
-    pub(crate) fn postgres_create_validation_error(&self) -> Option<String> {
-        let ClickPipeCommands::Create {
-            command: ClickPipeCreateCommands::Postgres(args),
-        } = self
-        else {
+    /// The `clickpipe create` validation message for a database source whose
+    /// flags cannot describe the chosen `--auth`, paired with the source
+    /// subcommand the usage error belongs to. clap cannot express "forbidden
+    /// for this value of another argument", so these checks run after parsing.
+    pub(crate) fn clickpipe_create_validation_error(&self) -> Option<(&'static str, String)> {
+        let ClickPipeCommands::Create { command } = self else {
             return None;
         };
 
-        validate_postgres_create_args(args)
-            .err()
-            .map(|error| error.message)
+        // Exhaustive so a new database source has to decide whether its flag
+        // relationships need checking here.
+        let (source, error) = match command {
+            ClickPipeCreateCommands::Postgres(args) => {
+                ("postgres", validate_postgres_create_args(args).err())
+            }
+            ClickPipeCreateCommands::MySQL(args) => {
+                ("mysql", validate_mysql_create_args(args).err())
+            }
+            ClickPipeCreateCommands::ObjectStorage(_)
+            | ClickPipeCreateCommands::Kafka(_)
+            | ClickPipeCreateCommands::Kinesis(_)
+            | ClickPipeCreateCommands::MongoDB(_)
+            | ClickPipeCreateCommands::BigQuery(_)
+            | ClickPipeCreateCommands::PubSub(_) => return None,
+        };
+
+        error.map(|error| (source, error.message))
     }
 
     pub(crate) fn reverse_private_endpoint_create_validation_error(&self) -> Option<String> {
@@ -1037,13 +1053,13 @@ pub struct MySqlCreateArgs {
     #[arg(long, default_value = "3306")]
     pub port: u16,
 
-    /// Username
-    #[arg(long)]
-    pub username: String,
+    /// Username (basic auth only; invalid with --auth IAM_ROLE)
+    #[arg(long, requires = "password")]
+    pub username: Option<String>,
 
-    /// Password
-    #[arg(long)]
-    pub password: String,
+    /// Password (basic auth only; invalid with --auth IAM_ROLE)
+    #[arg(long, requires = "username")]
+    pub password: Option<String>,
 
     /// Table mappings as schema.table:target_table (repeatable)
     #[arg(long = "table-mapping")]
@@ -1081,8 +1097,8 @@ pub struct MySqlCreateArgs {
     )]
     pub auth: String,
 
-    /// IAM role ARN
-    #[arg(long)]
+    /// IAM role ARN (required with --auth IAM_ROLE; invalid with basic auth)
+    #[arg(long, required_if_eq("auth", "IAM_ROLE"))]
     pub iam_role: Option<String>,
 
     /// TLS hostname
@@ -3054,23 +3070,58 @@ async fn clickpipe_create_postgres(
     Ok(())
 }
 
-async fn clickpipe_create_mysql(
-    client: &CloudClient,
+/// Check the `clickpipe create mysql` flag relationships clap cannot express,
+/// because each one depends on the value of `--auth` rather than its presence.
+fn validate_mysql_create_args(args: &MySqlCreateArgs) -> CloudResult<()> {
+    // Clap enforces this for parsed input via `required_if_eq`; hand-built
+    // args reach it here.
+    if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
+        return Err(CloudError::new(
+            "--auth IAM_ROLE requires --iam-role <IAM_ROLE>",
+        ));
+    }
+    if args.auth == "basic" && args.iam_role.is_some() {
+        return Err(CloudError::new(
+            "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE",
+        ));
+    }
+    // IAM_ROLE authentication has no username or password: the role ARN is the
+    // whole credential. Reject the pair rather than silently dropping it, the
+    // same way basic auth rejects --iam-role.
+    if args.auth == "IAM_ROLE" && (args.username.is_some() || args.password.is_some()) {
+        return Err(CloudError::new(
+            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
+        ));
+    }
+    // clap joins --username and --password with `requires`, so half a pair is
+    // already a usage error; this owns the "basic auth needs the pair at all"
+    // rule, which clap cannot express because it depends on --auth's value.
+    if args.auth == "basic" && (args.username.is_none() || args.password.is_none()) {
+        return Err(CloudError::new(
+            "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
+        ));
+    }
+
+    Ok(())
+}
+
+fn build_mysql_request(
     args: &MySqlCreateArgs,
-    json: bool,
-) -> CloudResult<()> {
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
-        ClickPipeMutateMySQLSource, ClickPipeMySQLPipeSettings, ClickPipeMySQLPipeTableMapping,
-        ClickPipePostRequest, ClickPipePostSource, PLAIN,
+        ClickPipeMutateMySQLSource, ClickPipeMutateMySQLSourceAuthentication,
+        ClickPipeMySQLPipeSettings, ClickPipeMySQLPipeTableMapping, ClickPipePostRequest,
+        ClickPipePostSource, PLAIN,
     };
 
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    validate_mysql_create_args(args)?;
     let mappings = parse_db_table_mappings(&args.table_mappings)?;
 
-    let ca_certificate = match args.ca_certificate.as_deref() {
-        Some(path) => Some(std::fs::read_to_string(path)?),
-        None => None,
-    };
+    let ca_certificate = args
+        .ca_certificate
+        .as_deref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
 
     let table_mappings = mappings
         .into_iter()
@@ -3084,15 +3135,35 @@ async fn clickpipe_create_mysql(
         )
         .collect();
 
+    // Match the parsed authentication mode, not the raw `--auth` string, so a
+    // new mode added to the library enum is a compile error here rather than a
+    // silent credential-less create.
+    let authentication: ClickPipeMutateMySQLSourceAuthentication = parse_enum(&args.auth)?;
+    let credentials = match &authentication {
+        // `validate_mysql_create_args` has already required the pair for basic
+        // auth, so `zip` yields `Some` for every invocation that reaches here.
+        ClickPipeMutateMySQLSourceAuthentication::Basic => args
+            .username
+            .as_deref()
+            .zip(args.password.as_deref())
+            .map(|(username, password)| PLAIN {
+                username: username.to_string(),
+                password: password.to_string(),
+            }),
+        // The role ARN is the whole credential: the `credentials` object must
+        // stay off the wire entirely.
+        ClickPipeMutateMySQLSourceAuthentication::IAM_ROLE => None,
+        // Unreachable for parsed input, since --auth is restricted to
+        // DB_AUTHS; an unknown mode has no credential shape to send.
+        ClickPipeMutateMySQLSourceAuthentication::Unknown(_) => None,
+    };
+
     let source = ClickPipeMutateMySQLSource {
         r#type: Some(parse_enum(&args.mysql_type)?),
-        credentials: Some(PLAIN {
-            username: args.username.clone(),
-            password: args.password.clone(),
-        }),
+        credentials,
         host: args.host.clone(),
         port: i64::from(args.port),
-        authentication: Some(parse_enum(&args.auth)?),
+        authentication: Some(authentication),
         iam_role: args.iam_role.clone(),
         tls_host: args.tls_host.clone(),
         ca_certificate,
@@ -3111,7 +3182,7 @@ async fn clickpipe_create_mysql(
         table_mappings,
     };
 
-    let request = ClickPipePostRequest {
+    Ok(ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             mysql: Some(source),
@@ -3124,7 +3195,16 @@ async fn clickpipe_create_mysql(
             build_destination_roles(&args.destination_roles.roles),
         ),
         ..Default::default()
-    };
+    })
+}
+
+async fn clickpipe_create_mysql(
+    client: &CloudClient,
+    args: &MySqlCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_mysql_request(args)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
 
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
@@ -3455,6 +3535,14 @@ mod tests {
         *command
     }
 
+    /// The `clickpipe create` validation message for a parsed command,
+    /// dropping the source subcommand the usage error is reported against.
+    fn clickpipe_validation_message(command: &ClickPipeCommands) -> Option<String> {
+        command
+            .clickpipe_create_validation_error()
+            .map(|(_, message)| message)
+    }
+
     fn assert_rejected(args: &[&str]) {
         assert!(
             Cli::try_parse_from(
@@ -3782,7 +3870,7 @@ mod tests {
     }
 
     fn assert_mysql_value(flag: &str, value: &str) {
-        parse_clickpipe(&[
+        let mut args = vec![
             "create",
             "mysql",
             "svc-1",
@@ -3790,13 +3878,18 @@ mod tests {
             "pipe-1",
             "--host",
             "mysql.example",
-            "--username",
-            "user",
-            "--password",
-            "password",
             flag,
             value,
-        ]);
+        ];
+        // Each auth mode gets only its own credential flags: the CLI rejects
+        // --username/--password with IAM_ROLE, so pairing them here would
+        // assert an invocation the CLI refuses to run.
+        if flag == "--auth" && value == "IAM_ROLE" {
+            args.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
+        } else {
+            args.extend(["--username", "user", "--password", "password"]);
+        }
+        parse_clickpipe(&args);
     }
 
     fn assert_mongodb_value(flag: &str, value: &str) {
@@ -5353,10 +5446,12 @@ mod tests {
         let command = parse_clickpipe(&cli_args);
         assert_eq!(
             command
-                .postgres_create_validation_error()
-                .as_deref()
-                .map(|message| message.contains("--table-mapping-json #1: invalid JSON")),
-            Some(true)
+                .clickpipe_create_validation_error()
+                .map(|(source, message)| (
+                    source,
+                    message.contains("--table-mapping-json #1: invalid JSON")
+                )),
+            Some(("postgres", true))
         );
     }
 
@@ -5412,7 +5507,7 @@ mod tests {
         args.extend(["--username", "user", "--password", "password"]);
         let command = parse_clickpipe(&args);
         assert_eq!(
-            command.postgres_create_validation_error().as_deref(),
+            clickpipe_validation_message(&command).as_deref(),
             Some("--username and --password cannot be used with --auth IAM_ROLE; use --auth basic")
         );
     }
@@ -5479,7 +5574,7 @@ mod tests {
 
         let command = parse_clickpipe(&args);
         assert_eq!(
-            command.postgres_create_validation_error().as_deref(),
+            clickpipe_validation_message(&command).as_deref(),
             Some("--auth basic requires --username <USERNAME> and --password <PASSWORD>")
         );
     }
@@ -5529,7 +5624,7 @@ mod tests {
         basic_with_role.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
         let command = parse_clickpipe(&basic_with_role);
         assert_eq!(
-            command.postgres_create_validation_error().as_deref(),
+            clickpipe_validation_message(&command).as_deref(),
             Some("--iam-role cannot be used with --auth basic; use --auth IAM_ROLE")
         );
 
@@ -5543,7 +5638,7 @@ mod tests {
             ]);
             let command = parse_clickpipe(&args);
             assert_eq!(
-                command.postgres_create_validation_error().as_deref(),
+                clickpipe_validation_message(&command).as_deref(),
                 Some("--replication-slot-name can only be used with --replication-mode cdc_only")
             );
         }
@@ -5701,6 +5796,44 @@ mod tests {
     }
 
     #[test]
+    fn readme_documents_mysql_iam_role_authentication() {
+        let readme = include_str!("../../../../README.md");
+        let mysql = readme
+            .split_once("#### MySQL ClickPipe authentication")
+            .expect("MySQL ClickPipe authentication section")
+            .1
+            .split_once("#### Reverse private endpoints")
+            .expect("next ClickPipes section")
+            .0;
+
+        for expected in [
+            "`--auth IAM_ROLE` requires `--iam-role`",
+            "rejects `--iam-role` with\nbasic auth",
+            "`--username` and `--password` are\nbasic-auth only and must be given together",
+            "no `credentials` object is sent",
+            "usage\nerror (exit code 2)",
+        ] {
+            assert!(mysql.contains(expected), "missing `{expected}`:\n{mysql}");
+        }
+
+        // The example the section describes is in the create block above it.
+        let examples = readme
+            .split_once("# From MySQL (CDC)")
+            .expect("MySQL create example")
+            .1;
+        for expected in [
+            "clickhousectl cloud clickpipe create mysql <service-id>",
+            "--auth IAM_ROLE --iam-role \"$MYSQL_IAM_ROLE_ARN\"",
+            "--mysql-type rdsmysql",
+        ] {
+            assert!(
+                examples.contains(expected),
+                "missing `{expected}`:\n{examples}"
+            );
+        }
+    }
+
+    #[test]
     fn readme_documents_the_json_table_mapping_form() {
         let readme = include_str!("../../../../README.md");
         let mappings = readme
@@ -5819,10 +5952,6 @@ mod tests {
             "mysql.example",
             "--port",
             "3307",
-            "--username",
-            "user",
-            "--password",
-            "password",
             "--table-mapping",
             "source.one:one",
             "--table-mapping",
@@ -5855,8 +5984,9 @@ mod tests {
         assert_eq!(args.name, "pipe-1");
         assert_eq!(args.host, "mysql.example");
         assert_eq!(args.port, 3307);
-        assert_eq!(args.username, "user");
-        assert_eq!(args.password, "password");
+        // IAM_ROLE authentication takes the role ARN, not a credential pair.
+        assert_eq!(args.username, None);
+        assert_eq!(args.password, None);
         assert_eq!(args.table_mappings, ["source.one:one", "source.two:two"]);
         assert_eq!(args.mysql_type, "mariadb");
         assert_eq!(args.replication_mode, "cdc_only");
@@ -5891,6 +6021,8 @@ mod tests {
             panic!("expected mysql create");
         };
         assert_eq!(args.port, 3306);
+        assert_eq!(args.username.as_deref(), Some("user"));
+        assert_eq!(args.password.as_deref(), Some("password"));
         assert!(args.table_mappings.is_empty());
         assert_eq!(args.mysql_type, "mysql");
         assert_eq!(args.replication_mode, "cdc");
@@ -5921,6 +6053,145 @@ mod tests {
                 invalid,
             ]);
         }
+    }
+
+    /// Minimal `clickpipe create mysql` invocation, before any auth flags.
+    fn mysql_create_cli_args() -> Vec<&'static str> {
+        vec![
+            "create",
+            "mysql",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "mysql.example",
+            "--table-mapping",
+            "source.events:events",
+        ]
+    }
+
+    #[test]
+    fn mysql_iam_role_auth_does_not_require_username_or_password() {
+        // IAM_ROLE authentication has no username or password: the role ARN is
+        // the whole credential, so clap must not demand the pair.
+        let mut args = mysql_create_cli_args();
+        args.extend([
+            "--auth",
+            "IAM_ROLE",
+            "--iam-role",
+            "arn:aws:iam::123456789012:role/clickpipe",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::MySQL(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected mysql create");
+        };
+        assert_eq!(parsed.username, None);
+        assert_eq!(parsed.password, None);
+        assert_eq!(parsed.auth, "IAM_ROLE");
+        assert_eq!(
+            parsed.iam_role.as_deref(),
+            Some("arn:aws:iam::123456789012:role/clickpipe")
+        );
+        assert_eq!(clickpipe_validation_message(&parse_clickpipe(&args)), None);
+
+        // The pair is rejected rather than silently dropped, the same way
+        // basic auth rejects --iam-role.
+        args.extend(["--username", "user", "--password", "password"]);
+        assert_eq!(
+            parse_clickpipe(&args).clickpipe_create_validation_error(),
+            Some((
+                "mysql",
+                "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic"
+                    .to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn mysql_iam_role_only_error_names_the_role_flag_and_not_the_pair() {
+        // `--auth IAM_ROLE` on its own must ask for --iam-role only: asking for
+        // the credential pair would send the user into the "cannot be used with
+        // --auth IAM_ROLE" rejection.
+        let mut args = mysql_create_cli_args();
+        args.extend(["--auth", "IAM_ROLE"]);
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let message = error.to_string();
+        assert!(message.contains("--iam-role"), "{message}");
+        assert!(!message.contains("--username"), "{message}");
+        assert!(!message.contains("--password"), "{message}");
+    }
+
+    #[test]
+    fn mysql_basic_auth_without_any_credentials_is_a_validation_error() {
+        // clap only pairs the two flags, so neither being present parses
+        // cleanly and `validate_mysql_create_args` owns the basic-auth rule:
+        // it depends on --auth's value, which clap cannot express.
+        let args = mysql_create_cli_args();
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::MySQL(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected mysql create");
+        };
+        assert_eq!(parsed.auth, "basic");
+        assert_eq!(parsed.username, None);
+        assert_eq!(parsed.password, None);
+
+        assert_eq!(
+            parse_clickpipe(&args).clickpipe_create_validation_error(),
+            Some((
+                "mysql",
+                "--auth basic requires --username <USERNAME> and --password <PASSWORD>".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn mysql_basic_auth_still_requires_username_and_password() {
+        // The two flags are joined with clap `requires`, so half a pair is a
+        // usage error naming the missing half rather than the whole set.
+        for omitted in ["--username", "--password"] {
+            let mut args = mysql_create_cli_args();
+            args.extend(["--username", "user", "--password", "password"]);
+            let position = args.iter().position(|arg| *arg == omitted).unwrap();
+            args.drain(position..position + 2);
+
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "omitting {omitted} should be a usage error"
+            );
+            assert!(error.to_string().contains(omitted), "{error}");
+        }
+    }
+
+    #[test]
+    fn mysql_iam_role_with_basic_auth_is_a_validation_error() {
+        // The reverse of the credential rule, and the guard MySQL previously
+        // lacked entirely: basic auth has no use for a role ARN.
+        let mut args = mysql_create_cli_args();
+        args.extend([
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--iam-role",
+            "arn:aws:iam::123456789012:role/clickpipe",
+        ]);
+        assert_eq!(
+            parse_clickpipe(&args).clickpipe_create_validation_error(),
+            Some((
+                "mysql",
+                "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -7868,6 +8139,183 @@ mod tests {
 
         for (args, diagnostic) in cases {
             let error = build_postgres_request(&args).unwrap_err();
+            assert!(error.message.contains(diagnostic), "{}", error.message);
+        }
+    }
+
+    fn mysql_builder_args() -> MySqlCreateArgs {
+        MySqlCreateArgs {
+            service_id: "svc-1".into(),
+            name: "pipe-1".into(),
+            host: "mysql.example".into(),
+            port: 3306,
+            username: Some("user".into()),
+            password: Some("password".into()),
+            table_mappings: vec!["source.events:events".into()],
+            mysql_type: "mysql".into(),
+            replication_mode: "cdc".into(),
+            replication_mechanism: "GTID".into(),
+            auth: "basic".into(),
+            iam_role: None,
+            tls_host: None,
+            ca_certificate: None,
+            disable_tls: false,
+            skip_cert_verification: false,
+            server_id: None,
+            destination_roles: DestinationRoleArgs::default(),
+            org_id: None,
+        }
+    }
+
+    #[test]
+    fn build_mysql_request_sends_basic_credentials() {
+        let request = build_mysql_request(&mysql_builder_args()).unwrap();
+
+        assert_eq!(request.name, "pipe-1");
+        assert_eq!(request.destination.database, "default");
+        assert_eq!(request.destination.table, None);
+        assert_eq!(request.destination.roles, None);
+        assert!(request.source.postgres.is_none());
+        assert!(request.source.kafka.is_none());
+
+        let source = request.source.mysql.as_ref().expect("mysql source");
+        assert_eq!(source.r#type.as_ref().unwrap().to_string(), "mysql");
+        assert_eq!(source.authentication.as_ref().unwrap().to_string(), "basic");
+        let credentials = source.credentials.as_ref().expect("basic credentials");
+        assert_eq!(credentials.username, "user");
+        assert_eq!(credentials.password, "password");
+        assert_eq!(source.host, "mysql.example");
+        assert_eq!(source.port, 3306);
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.tls_host, None);
+        assert_eq!(source.ca_certificate, None);
+        assert_eq!(source.disable_tls, None);
+        assert_eq!(source.skip_cert_verification, None);
+        assert_eq!(source.server_id, None);
+        assert_eq!(source.settings.replication_mode.to_string(), "cdc");
+        assert_eq!(
+            source
+                .settings
+                .replication_mechanism
+                .as_ref()
+                .unwrap()
+                .to_string(),
+            "GTID"
+        );
+        assert_eq!(source.table_mappings.len(), 1);
+        assert_eq!(source.table_mappings[0].source_schema_name, "source");
+        assert_eq!(source.table_mappings[0].source_table, "events");
+        assert_eq!(source.table_mappings[0].target_table, "events");
+    }
+
+    #[test]
+    fn build_mysql_request_omits_the_credentials_object_for_iam_role() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca_certificate = directory.path().join("mysql-ca.pem");
+        std::fs::write(&ca_certificate, "MYSQL_CA").unwrap();
+        let mut args = mysql_builder_args();
+        args.name = "maximal-pipe".into();
+        args.host = "rds.example".into();
+        args.port = 3307;
+        // IAM_ROLE auth has no username or password: the role ARN is the whole
+        // credential, so the `credentials` object is omitted entirely.
+        args.username = None;
+        args.password = None;
+        args.table_mappings = vec!["source.users:users_raw".into(), "audit.log:audit".into()];
+        args.mysql_type = "rdsmysql".into();
+        args.replication_mode = "cdc_only".into();
+        args.replication_mechanism = "FILE_POS".into();
+        args.auth = "IAM_ROLE".into();
+        args.iam_role = Some("arn:aws:iam::123456789012:role/clickpipe".into());
+        args.tls_host = Some("database.internal".into());
+        args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
+        args.disable_tls = true;
+        args.skip_cert_verification = true;
+        args.server_id = Some(4_294_967_295);
+        args.destination_roles = DestinationRoleArgs {
+            roles: vec!["analytics_reader".into()],
+        };
+        args.org_id = Some("org-1".into());
+
+        let request = build_mysql_request(&args).unwrap();
+        assert_eq!(request.name, "maximal-pipe");
+        assert_eq!(
+            request.destination.roles,
+            Some(vec!["analytics_reader".to_string()])
+        );
+
+        let source = request.source.mysql.as_ref().expect("mysql source");
+        assert_eq!(source.r#type.as_ref().unwrap().to_string(), "rdsmysql");
+        assert_eq!(
+            source.authentication.as_ref().unwrap().to_string(),
+            "IAM_ROLE"
+        );
+        assert_eq!(source.credentials, None);
+        assert_eq!(
+            source.iam_role.as_deref(),
+            Some("arn:aws:iam::123456789012:role/clickpipe")
+        );
+        assert_eq!(source.host, "rds.example");
+        assert_eq!(source.port, 3307);
+        assert_eq!(source.tls_host.as_deref(), Some("database.internal"));
+        // The file contents are sent, not the path.
+        assert_eq!(source.ca_certificate.as_deref(), Some("MYSQL_CA"));
+        assert_eq!(source.disable_tls, Some(true));
+        assert_eq!(source.skip_cert_verification, Some(true));
+        assert_eq!(source.server_id, Some(4_294_967_295));
+        assert_eq!(source.settings.replication_mode.to_string(), "cdc_only");
+        assert_eq!(
+            source
+                .settings
+                .replication_mechanism
+                .as_ref()
+                .unwrap()
+                .to_string(),
+            "FILE_POS"
+        );
+        assert_eq!(source.table_mappings.len(), 2);
+    }
+
+    #[test]
+    fn build_mysql_request_defensively_rejects_invalid_credential_combinations() {
+        let cases = [
+            {
+                let mut args = mysql_builder_args();
+                args.auth = "IAM_ROLE".into();
+                (args, "--auth IAM_ROLE requires --iam-role <IAM_ROLE>")
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.iam_role = Some("arn:role".into());
+                (args, "--iam-role cannot be used with --auth basic")
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.auth = "IAM_ROLE".into();
+                args.iam_role = Some("arn:role".into());
+                (
+                    args,
+                    "--username and --password cannot be used with --auth IAM_ROLE",
+                )
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.username = None;
+                args.password = None;
+                (
+                    args,
+                    "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
+                )
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.table_mappings = vec!["source.events".into()];
+                (args, "Invalid table mapping")
+            },
+        ];
+
+        for (args, diagnostic) in cases {
+            let error = build_mysql_request(&args).unwrap_err();
             assert!(error.message.contains(diagnostic), "{}", error.message);
         }
     }
