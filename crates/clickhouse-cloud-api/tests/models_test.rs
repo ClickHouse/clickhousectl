@@ -606,6 +606,33 @@ fn clickpipe_state_all_variants() {
 }
 
 #[test]
+fn postgres_table_mapping_table_engines_round_trip_and_match_values() {
+    // The CLI validates `--table-mapping-json`'s `tableEngine` against
+    // `VALUES`, so the const must stay equal to the wire values the enum
+    // actually accepts.
+    assert_eq!(
+        ClickPipePostgresPipeTableMappingTableengine::VALUES,
+        &["MergeTree", "ReplacingMergeTree", "Null"]
+    );
+    for value in ClickPipePostgresPipeTableMappingTableengine::VALUES {
+        let parsed: ClickPipePostgresPipeTableMappingTableengine =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(
+                parsed,
+                ClickPipePostgresPipeTableMappingTableengine::Unknown(_)
+            ),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            format!(r#""{value}""#)
+        );
+    }
+}
+
+#[test]
 fn deserialize_activity() {
     let json = r#"{
         "actorType": "api",

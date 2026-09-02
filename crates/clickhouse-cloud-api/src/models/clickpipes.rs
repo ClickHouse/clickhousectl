@@ -1480,6 +1480,11 @@ impl std::fmt::Display for ClickPipePostgresPipeTableMappingTableengine {
     }
 }
 
+impl ClickPipePostgresPipeTableMappingTableengine {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["MergeTree", "ReplacingMergeTree", "Null"];
+}
+
 /// Inline enum for `ClickPipePostgresSource.authentication`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickPipePostgresSourceAuthentication {
