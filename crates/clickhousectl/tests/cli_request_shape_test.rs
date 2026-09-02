@@ -6187,6 +6187,9 @@ async fn failed_repair_restores_bindings_deletes_new_key_and_preserves_records()
         .expect("failed to spawn clickhousectl");
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("binding replacement failed"));
+    // A 5xx is not key propagation: no wait, no notice, straight to rollback
+    // (#658). The two upserts below are the attempt and the rollback.
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Waiting for the new API key"));
 
     let requests = control.received_requests().await.unwrap();
     let endpoint_posts = requests
@@ -6518,6 +6521,329 @@ async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list()
     assert!(
         repaired.get("pending_cleanup_api_key_ids").is_none(),
         "{repaired}"
+    );
+}
+
+// ── Key propagation (issue #658) ────────────────────────────────────────────
+//
+// `POST /keys` and the endpoint upsert are answered by different services, and
+// the upsert can reject a key created moments earlier with
+// `400 OpenAPI key <id> does not belong to the organization` while
+// `GET /keys/{id}` already returns it. Provisioning and repair both create a
+// key and then bind it, so both wait that out: the upsert alone is retried,
+// with the same body, inside a bounded window; the notice below is printed
+// once; a success ends the wait. The condition is structural (a typed
+// `Error::Api` with status 400), never the message text.
+
+const KEY_PROPAGATION_NOTICE: &str =
+    "Waiting for the new API key to become visible to the Query API endpoint...";
+
+/// The control plane's answer while the new key has not propagated yet.
+fn key_not_in_organization_response(api_key_uuid: &str) -> ResponseTemplate {
+    ResponseTemplate::new(400).set_body_json(serde_json::json!({
+        "error": format!("OpenAPI key {api_key_uuid} does not belong to the organization"),
+        "status": 400,
+        "requestId": "stub-key-propagation"
+    }))
+}
+
+/// The endpoint upsert bodies the control plane received, in order.
+async fn endpoint_upserts_received(control: &MockServer) -> Vec<Value> {
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::POST
+                && request.url.path() == query_endpoint_path()
+        })
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect()
+}
+
+/// The endpoint upsert answering `first` on the first attempt and binding
+/// `open_api_keys` on every later one.
+async fn mount_endpoint_upsert_failing_once(
+    control: &MockServer,
+    first: ResponseTemplate,
+    open_api_keys: Vec<&str>,
+    expected_calls: u64,
+) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let open_api_keys: Vec<String> = open_api_keys.iter().map(|key| key.to_string()).collect();
+    Mock::given(method("POST"))
+        .and(path(query_endpoint_path()))
+        .respond_with(move |_: &wiremock::Request| {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                first.clone()
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": "ep-1", "openApiKeys": open_api_keys },
+                    "status": 200,
+                    "requestId": "stub-endpoint-upsert"
+                }))
+            }
+        })
+        .expect(expected_calls)
+        .mount(control)
+        .await;
+}
+
+#[tokio::test]
+async fn repair_waits_for_the_new_key_to_propagate_before_binding_it() {
+    let control = MockServer::start().await;
+    mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    mount_endpoint_upsert_failing_once(
+        &control,
+        key_not_in_organization_response(QUERY_TEST_KEY_UUID),
+        vec!["unrelated-key", QUERY_TEST_KEY_UUID],
+        2,
+    )
+    .await;
+    mount_key_delete(&control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["replacedApiKeyId"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        result["deletedApiKeyIds"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+    let stderr = stderr_without_notes(&output);
+    assert_eq!(
+        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
+        1,
+        "the notice is printed exactly once: {stderr}"
+    );
+    assert!(!stderr.contains("Warning:"), "{stderr}");
+
+    // Exactly one key was created; the retried upsert carried the same body;
+    // the superseded key was retired and the new one was never deleted.
+    let requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/organizations/org-1/keys"
+            })
+            .count(),
+        1
+    );
+    let upserts = endpoint_upserts_received(&control).await;
+    assert_eq!(upserts.len(), 2);
+    assert_eq!(upserts[0], upserts[1], "the retry resends the same body");
+    assert_eq!(
+        upserts[0]["openApiKeys"],
+        serde_json::json!(["unrelated-key", QUERY_TEST_KEY_UUID])
+    );
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![OLD_QUERY_TEST_KEY_UUID.to_string()]
+    );
+    let stored = read_credentials(project.path());
+    let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(repaired["key_id"], "replacement-key-id");
+    assert!(repaired.get("pending_cleanup_api_key_ids").is_none());
+}
+
+#[tokio::test]
+async fn a_400_that_outlives_the_propagation_window_rolls_the_repair_back() {
+    // The control plane keeps refusing the new key for the whole window (this
+    // test waits out the real 30 s deadline, so the shipped policy is what is
+    // pinned). The repair then fails exactly as an unretried failure did:
+    // original binding restored, new key deleted, record untouched, and the
+    // error the user sees is the upsert's own last answer.
+    let control = MockServer::start().await;
+    mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    Mock::given(method("POST"))
+        .and(path(query_endpoint_path()))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let binds_new_key = body["openApiKeys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|key| key == QUERY_TEST_KEY_UUID);
+            if binds_new_key {
+                key_not_in_organization_response(QUERY_TEST_KEY_UUID)
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": "ep-1" },
+                    "status": 200,
+                    "requestId": "stub-rollback"
+                }))
+            }
+        })
+        .mount(&control)
+        .await;
+    mount_key_delete(&control, QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let original = write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let started = std::time::Instant::now();
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        stderr_without_notes(&output)
+    );
+    assert!(
+        started.elapsed() >= std::time::Duration::from_secs(30),
+        "the whole window is waited out before giving up"
+    );
+    let stderr = stderr_without_notes(&output);
+    assert_eq!(
+        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
+        1,
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "OpenAPI key {QUERY_TEST_KEY_UUID} does not belong to the organization"
+        )),
+        "the last 400 is the error reported: {stderr}"
+    );
+
+    let upserts = endpoint_upserts_received(&control).await;
+    assert!(
+        upserts.len() >= 3,
+        "several attempts then a rollback: {upserts:?}"
+    );
+    let (rollback, attempts) = upserts.split_last().unwrap();
+    for attempt in attempts {
+        assert_eq!(
+            attempt["openApiKeys"],
+            serde_json::json!(["unrelated-key", QUERY_TEST_KEY_UUID])
+        );
+    }
+    assert_eq!(
+        rollback["openApiKeys"],
+        serde_json::json!(["unrelated-key", OLD_QUERY_TEST_KEY_UUID])
+    );
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![QUERY_TEST_KEY_UUID.to_string()],
+        "only the new key is deleted; the superseded key is untouched"
+    );
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn first_use_provisioning_waits_for_the_new_key_to_propagate_before_binding_it() {
+    // The first-use path creates a key, reads the endpoint and binds the key:
+    // the same create-then-bind the repair does, so the same wait applies.
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret"
+        }),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(query_endpoint_path()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get"
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    mount_endpoint_upsert_failing_once(
+        &control,
+        key_not_in_organization_response(QUERY_TEST_KEY_UUID),
+        vec![QUERY_TEST_KEY_UUID],
+        2,
+    )
+    .await;
+    let query_host = start_mock_query_host_for_provisioning().await;
+
+    let project = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(project.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
+        1,
+        "{stderr}"
+    );
+
+    let upserts = endpoint_upserts_received(&control).await;
+    assert_eq!(upserts.len(), 2);
+    assert_eq!(upserts[0], upserts[1]);
+    assert_eq!(
+        upserts[0]["openApiKeys"],
+        serde_json::json!([QUERY_TEST_KEY_UUID])
+    );
+    assert!(
+        recorded_key_deletes(&control).await.is_empty(),
+        "a key that was eventually bound is never deleted"
+    );
+    let stored = read_credentials(project.path());
+    assert_eq!(
+        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["api_key_id"],
+        QUERY_TEST_KEY_UUID
     );
 }
 

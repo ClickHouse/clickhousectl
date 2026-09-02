@@ -17,6 +17,7 @@ use clickhouse_cloud_api::models::{
     ServiceQueryAPIEndpoint,
 };
 use serde::Serialize;
+use std::time::Duration;
 
 /// Default `allowedOrigins` for the query endpoint. The CLI is a non-browser
 /// caller so CORS doesn't apply, but the API still requires a value.
@@ -76,6 +77,83 @@ fn build_query_api_key_request(service_name: &str) -> ApiKeyPostRequest {
         #[cfg(feature = "deprecated-fields")]
         roles: None,
         state: ApiKeyPostRequestState::Enabled,
+    }
+}
+
+/// How long a key created by this invocation may take to become visible to
+/// the service behind the query-endpoint upsert (#658).
+///
+/// `POST /keys` and `PUT .../serviceQueryEndpoint` are answered by different
+/// services, and the second can answer `400` for a key the first has just
+/// created and `GET /keys/{id}` already returns. The wait is bounded and
+/// exponential like [`QUERY_ENDPOINT_READINESS`](super::services): observed
+/// live on 2026-09-02, one retry after 20 s always succeeded.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct KeyPropagation {
+    pub(crate) timeout: Duration,
+    pub(crate) initial_backoff: Duration,
+    pub(crate) max_backoff: Duration,
+}
+
+pub(crate) const KEY_PROPAGATION: KeyPropagation = KeyPropagation {
+    timeout: Duration::from_secs(30),
+    initial_backoff: Duration::from_secs(1),
+    max_backoff: Duration::from_secs(8),
+};
+
+/// Whether an upsert failure can be the endpoint service not yet seeing a key
+/// created moments ago. Structural: the status of the typed [`Error::Api`]
+/// variant, never the message text (#450). The propagation failure is a
+/// `400` whose body names the key ID; because that ID varies, no fixed
+/// message could tell it apart honestly, so *every* `400` inside the window
+/// is retried. The request body is built by this module from constants plus
+/// the key list it just read, so a genuine `400` is rare, and it costs
+/// exactly the window before it fails with the same rollback as before.
+///
+/// [`Error::Api`]: clickhouse_cloud_api::Error::Api
+fn key_propagation_error(error: &clickhouse_cloud_api::Error) -> bool {
+    matches!(error, clickhouse_cloud_api::Error::Api { status: 400, .. })
+}
+
+/// The upsert notice, printed once per run on the first retry. Stderr in every
+/// output mode, like the readiness notice, so `--json` stdout stays one value.
+const KEY_PROPAGATION_NOTICE: &str =
+    "Waiting for the new API key to become visible to the Query API endpoint...";
+
+/// Run `upsert` until it succeeds, fails for a reason other than key
+/// propagation, or `propagation.timeout` elapses. Only the upsert is repeated,
+/// with the same body each time; a success is never followed by another
+/// attempt. Each retry is noted for telemetry so a dashboard sees that the
+/// run waited on propagation, the same way the readiness loop does (#450).
+async fn upsert_until_key_propagates<T, F, Fut>(
+    propagation: KeyPropagation,
+    mut upsert: F,
+) -> Result<T, clickhouse_cloud_api::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, clickhouse_cloud_api::Error>>,
+{
+    let deadline = tokio::time::Instant::now() + propagation.timeout;
+    let mut backoff = propagation.initial_backoff;
+    let mut waiting = false;
+
+    loop {
+        let error = match upsert().await {
+            Ok(value) => return Ok(value),
+            Err(error) if key_propagation_error(&error) => error,
+            Err(error) => return Err(error),
+        };
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Err(error);
+        }
+        if !waiting {
+            eprintln!("{KEY_PROPAGATION_NOTICE}");
+            waiting = true;
+        }
+        crate::failure::note_retry();
+        tokio::time::sleep(backoff.min(remaining)).await;
+        backoff = backoff.saturating_mul(2).min(propagation.max_backoff);
     }
 }
 
@@ -455,12 +533,14 @@ pub async fn repair_service_query_key(
     };
 
     // One upsert does all the endpoint work: the retired keys leave
-    // `openApiKeys` and the replacement joins it. If it fails, the original
-    // bindings are restored and nothing has been retired.
+    // `openApiKeys` and the replacement joins it. The freshly created key may
+    // not be visible to the endpoint service yet, so the upsert waits that
+    // out (#658). If it still fails, the original bindings are restored and
+    // nothing has been retired.
     let endpoint_request =
         build_repair_endpoint_request(&endpoint_state, &retired_api_key_ids, &new_api_key_id);
     let repaired_endpoint = match client
-        .create_query_endpoint(org_id, service_id, &endpoint_request)
+        .bind_created_query_key(org_id, service_id, &endpoint_request, KEY_PROPAGATION)
         .await
     {
         Ok(endpoint) => endpoint,
@@ -1200,12 +1280,33 @@ async fn bind_query_endpoint(
     };
 
     client
-        .create_query_endpoint(org_id, service_id, &endpoint_request)
+        .bind_created_query_key(org_id, service_id, &endpoint_request, KEY_PROPAGATION)
         .await
         .map_err(|error| error.at_stage(FailureStage::EndpointUpsert))
 }
 
 impl CloudClient {
+    /// Upsert the endpoint configuration that binds a key created by this
+    /// invocation, waiting out key propagation (#658). The caller owns the
+    /// key it just created; everything else about the request is its business.
+    /// Rollbacks and unbinds use [`Self::create_query_endpoint`] directly:
+    /// they bind no fresh key, so there is nothing to wait for.
+    pub(crate) async fn bind_created_query_key(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &InstanceServiceQueryApiEndpointsPostRequest,
+        propagation: KeyPropagation,
+    ) -> CloudResult<ServiceQueryAPIEndpoint> {
+        let response = upsert_until_key_propagates(propagation, || {
+            self.api()
+                .instance_query_endpoint_upsert(org_id, service_id, request)
+        })
+        .await
+        .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     /// The management record of one API key, or `None` when the organization
     /// no longer has it. Only a 404 means "gone": any other failure is
     /// reported, because it says nothing about the key.
@@ -1256,6 +1357,169 @@ impl CloudClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── key propagation wait (issue #658) ───────────────────────────────
+
+    /// A policy that finishes within a test: real sleeps of a few
+    /// milliseconds, so the loop's own timing is what is exercised.
+    const FAST_PROPAGATION: KeyPropagation = KeyPropagation {
+        timeout: Duration::from_millis(60),
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(4),
+    };
+
+    fn propagation_400() -> clickhouse_cloud_api::Error {
+        clickhouse_cloud_api::Error::Api {
+            status: 400,
+            message: "OpenAPI key aaaa does not belong to the organization".into(),
+        }
+    }
+
+    #[test]
+    fn only_a_400_counts_as_key_propagation() {
+        assert!(key_propagation_error(&propagation_400()));
+        // Any 400 qualifies: the ID in the message varies, so the message is
+        // not what is matched.
+        assert!(key_propagation_error(&clickhouse_cloud_api::Error::Api {
+            status: 400,
+            message: "invalid roles".into(),
+        }));
+        for status in [401, 403, 404, 409, 422, 429, 500, 503] {
+            assert!(
+                !key_propagation_error(&clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "OpenAPI key aaaa does not belong to the organization".into(),
+                }),
+                "{status} is not a propagation failure"
+            );
+        }
+        assert!(!key_propagation_error(
+            &clickhouse_cloud_api::Error::AuthMismatch("read-only".into())
+        ));
+        assert!(!key_propagation_error(&clickhouse_cloud_api::Error::Sql {
+            status: 400,
+            code: "62".into(),
+            details: "syntax".into(),
+        }));
+    }
+
+    #[tokio::test]
+    async fn the_upsert_is_retried_on_400_and_stops_at_the_first_success() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&attempts);
+        let result = upsert_until_key_propagates(FAST_PROPAGATION, move || {
+            let attempt = counter.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(if attempt < 2 {
+                Err(propagation_400())
+            } else {
+                Ok("bound")
+            })
+        })
+        .await;
+        assert_eq!(result.unwrap(), "bound");
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn a_non_400_failure_is_not_retried() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        for status in [401, 403, 404, 500] {
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let counter = Arc::clone(&attempts);
+            let result = upsert_until_key_propagates(FAST_PROPAGATION, move || {
+                counter.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err::<(), _>(clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "no".into(),
+                }))
+            })
+            .await;
+            assert!(
+                matches!(result, Err(clickhouse_cloud_api::Error::Api { status: s, .. }) if s == status)
+            );
+            assert_eq!(attempts.load(Ordering::SeqCst), 1, "{status} was retried");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_persisting_400_fails_with_the_last_error_once_the_deadline_passes() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&attempts);
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            upsert_until_key_propagates(FAST_PROPAGATION, move || {
+                let attempt = counter.fetch_add(1, Ordering::SeqCst);
+                std::future::ready(Err::<(), _>(clickhouse_cloud_api::Error::Api {
+                    status: 400,
+                    message: format!("attempt {attempt}"),
+                }))
+            }),
+        )
+        .await
+        .expect("the deadline must bound the wait");
+        let attempts = attempts.load(Ordering::SeqCst);
+        assert!(attempts >= 2, "at least one retry before the deadline");
+        assert!(started.elapsed() >= FAST_PROPAGATION.timeout);
+        // The error is the last attempt's, not a made-up timeout: the upsert
+        // itself said no, and that is what the user must see.
+        match result {
+            Err(clickhouse_cloud_api::Error::Api { status, message }) => {
+                assert_eq!(status, 400);
+                assert_eq!(message, format!("attempt {}", attempts - 1));
+            }
+            other => panic!("expected the last 400, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_backoff_is_capped_and_never_sleeps_past_the_deadline() {
+        use std::sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let propagation = KeyPropagation {
+            timeout: Duration::from_millis(40),
+            initial_backoff: Duration::from_millis(5),
+            max_backoff: Duration::from_millis(10),
+        };
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let stamps = Arc::new(Mutex::new(Vec::new()));
+        let counter = Arc::clone(&attempts);
+        let recorder = Arc::clone(&stamps);
+        let started = std::time::Instant::now();
+        let _ = upsert_until_key_propagates(propagation, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            recorder.lock().unwrap().push(started.elapsed());
+            std::future::ready(Err::<(), _>(propagation_400()))
+        })
+        .await;
+        let stamps = stamps.lock().unwrap();
+        // Sleeps of 5, 10, 10, 10, ... ms: at most one attempt per capped
+        // backoff, and the last one lands at or before the deadline.
+        assert!(stamps.len() >= 3, "{stamps:?}");
+        assert!(
+            stamps.last().unwrap() <= &(propagation.timeout + Duration::from_millis(20)),
+            "{stamps:?}"
+        );
+        for pair in stamps.windows(2) {
+            assert!(
+                pair[1] - pair[0] <= propagation.max_backoff + Duration::from_millis(20),
+                "{stamps:?}"
+            );
+        }
+    }
 
     fn key_response(key_id: Option<&str>, key_secret: Option<&str>) -> ApiKeyPostResponse {
         ApiKeyPostResponse {

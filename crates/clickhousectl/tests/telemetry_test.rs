@@ -2055,6 +2055,151 @@ async fn a_failed_owned_key_deletion_during_service_delete_names_the_key_delete_
 }
 
 #[tokio::test]
+async fn a_repair_that_waited_on_key_propagation_counts_the_retry() {
+    // The endpoint upsert refuses the just-created key once (#658), the CLI
+    // waits and retries, and the retried upsert answers with a foreign
+    // endpoint ID, so the repair rolls back and fails at the upsert stage.
+    // The payload shows one retry, the upsert stage, and nothing else: no
+    // key ID, no endpoint ID, no message text.
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    const OLD_KEY: &str = "00000000-0000-0000-0000-0000000000bb";
+    const NEW_KEY: &str = "00000000-0000-0000-0000-0000000000cc";
+    let control = start_control_plane(200).await;
+    let endpoint_path =
+        format!("/v1/organizations/org-1/services/{QUERY_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "ep-1",
+                "openApiKeys": [OLD_KEY],
+                "roles": ["sql_console_admin"],
+                "allowedOrigins": "*"
+            },
+            "status": 200,
+            "requestId": "stub-endpoint-get"
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": NEW_KEY },
+                "keyId": "new-key-id-SECRET-ISH",
+                "keySecret": "new-key-secret-SUPER-SECRET"
+            },
+            "status": 200,
+            "requestId": "stub-key-create"
+        })))
+        .mount(&control)
+        .await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(
+            move |_: &wiremock::Request| match attempts.fetch_add(1, Ordering::SeqCst) {
+                0 => ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                    "error": format!("OpenAPI key {NEW_KEY} does not belong to the organization"),
+                    "status": 400,
+                    "requestId": "stub-key-propagation"
+                })),
+                1 => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": "ep-FOREIGN" },
+                    "status": 200,
+                    "requestId": "stub-endpoint-upsert"
+                })),
+                _ => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": "ep-1" },
+                    "status": 200,
+                    "requestId": "stub-rollback"
+                })),
+            },
+        )
+        .mount(&control)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("/v1/organizations/org-1/keys/{NEW_KEY}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-new-key-cleanup"
+        })))
+        .mount(&control)
+        .await;
+
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    let clickhouse_dir = project.path().join(".clickhouse");
+    std::fs::create_dir_all(&clickhouse_dir).unwrap();
+    std::fs::write(
+        clickhouse_dir.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "service_query_keys": {
+                QUERY_SERVICE_ID: {
+                    "organization_id": "org-1",
+                    "api_key_id": OLD_KEY,
+                    "key_id": "stored-key-id-SECRET-ISH",
+                    "key_secret": "stored-key-secret-SUPER-SECRET",
+                    "endpoint_id": "ep-1",
+                    "service_name": "demo",
+                    "created_at": "2026-05-11T12:00:00Z"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let url = control.uri();
+    let output = sandbox
+        .command(&[
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "repair-query-key",
+            QUERY_SERVICE_ID,
+            "--org-id",
+            "org-1",
+        ])
+        .current_dir(project.path())
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .output()
+        .expect("failed to spawn binary");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+    assert!(
+        stderr_of(&output).contains("Waiting for the new API key"),
+        "{}",
+        stderr_of(&output)
+    );
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "endpoint_upsert");
+    assert_eq!(event["failure_kind"], "other");
+    assert_eq!(event["retry_bucket"], "1");
+    let raw = serde_json::to_string(&event).unwrap();
+    for secret in [
+        OLD_KEY,
+        NEW_KEY,
+        "ep-FOREIGN",
+        "ep-1",
+        "does not belong",
+        "new-key-id-SECRET-ISH",
+        "new-key-secret-SUPER-SECRET",
+        "stored-key-id-SECRET-ISH",
+        "stored-key-secret-SUPER-SECRET",
+        QUERY_SERVICE_ID,
+    ] {
+        assert!(!raw.contains(secret), "payload leaked {secret}: {raw}");
+    }
+}
+
+#[tokio::test]
 async fn a_failed_key_lookup_for_a_rejected_stored_key_names_the_key_get_stage() {
     // The stored key is rejected by the query host, and the management
     // lookup that would classify the rejection (#528) fails with a 5xx. The
