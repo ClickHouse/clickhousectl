@@ -62,6 +62,10 @@ pub enum FailureStage {
     EndpointGet,
     /// Writing (upserting) the query-endpoint configuration.
     EndpointUpsert,
+    /// Deleting a superseded or no-longer-needed auto-provisioned Query API
+    /// key: the retired key after a repair, a pending retirement retried on a
+    /// later run, or the owned keys of a service being deleted (#527).
+    KeyDelete,
     /// Streaming a statement's response body to stdout.
     ResponseStream,
 }
@@ -79,6 +83,7 @@ impl FailureStage {
             Self::KeyGet => "key_get",
             Self::EndpointGet => "endpoint_get",
             Self::EndpointUpsert => "endpoint_upsert",
+            Self::KeyDelete => "key_delete",
             Self::ResponseStream => "response_stream",
         }
     }
@@ -94,6 +99,7 @@ impl FailureStage {
         Self::KeyGet,
         Self::EndpointGet,
         Self::EndpointUpsert,
+        Self::KeyDelete,
         Self::ResponseStream,
     ];
 }
@@ -452,6 +458,7 @@ mod tests {
                 "key_get",
                 "endpoint_get",
                 "endpoint_upsert",
+                "key_delete",
                 "response_stream",
             ]
         );

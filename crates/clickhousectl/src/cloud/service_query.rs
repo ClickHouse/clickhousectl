@@ -195,6 +195,18 @@ pub struct QueryKeyRepairResult {
     pub(crate) replaced_api_key_id: Option<String>,
     pub(crate) api_key_id: String,
     pub(crate) endpoint_id: String,
+    /// Every retired owned key this run deleted: the superseded key and any
+    /// earlier retirement whose deletion had been pending (#527).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) deleted_api_key_ids: Vec<String>,
+    /// Retired owned keys whose deletion failed. Their exact IDs stay in the
+    /// stored record and are retried on the next query (#527).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) pending_cleanup_api_key_ids: Vec<String>,
+    /// The stderr warning that goes with `pending_cleanup_api_key_ids`. Prose
+    /// for a human; the JSON result carries the IDs themselves.
+    #[serde(skip)]
+    pub(crate) cleanup_warning: Option<String>,
 }
 
 #[derive(Clone)]
@@ -274,9 +286,13 @@ fn inspect_repair_endpoint(
     })
 }
 
+/// The endpoint configuration after a repair: every retired owned key (the
+/// superseded one and any earlier retirement still pending) is unbound and the
+/// replacement is bound; nothing else about the endpoint changes. Only IDs
+/// taken from the stored record are ever removed (#527).
 fn build_repair_endpoint_request(
     state: &RepairEndpointState,
-    old_api_key_id: &str,
+    retired_api_key_ids: &[String],
     new_api_key_id: &str,
 ) -> InstanceServiceQueryApiEndpointsPostRequest {
     match state {
@@ -286,7 +302,7 @@ fn build_repair_endpoint_request(
             let mut request = original_request.clone();
             request
                 .open_api_keys
-                .retain(|key_id| key_id != old_api_key_id);
+                .retain(|key_id| !retired_api_key_ids.contains(key_id));
             if !request
                 .open_api_keys
                 .iter()
@@ -382,7 +398,7 @@ pub async fn repair_service_query_key(
     require_owned_query_key(&expected_stale, org_id, service_id)?;
 
     let provisioning_lock = credentials::lock_query_provisioning().await?;
-    let mut old_key = credentials::try_get_service_query_key(service_id)?.ok_or_else(|| {
+    let old_key = credentials::try_get_service_query_key(service_id)?.ok_or_else(|| {
         CloudError::new(format!(
             "the stored query key for service {service_id} was removed while waiting to repair it"
         ))
@@ -392,32 +408,6 @@ pub async fn repair_service_query_key(
     let old_api_key_id = old_api_key_id.to_string();
     let expected_endpoint_id = expected_endpoint_id.to_string();
 
-    if !old_key.pending_cleanup_api_key_ids.is_empty() {
-        for pending_id in &old_key.pending_cleanup_api_key_ids {
-            client
-                .delete_api_key_if_exists(org_id, pending_id)
-                .await
-                .map_err(|mut error| {
-                    error.message = format!(
-                        "failed to finish query-key repair for service {service_id}: could not \
-                         delete superseded API key {pending_id}: {}",
-                        error.message
-                    );
-                    error
-                })?;
-        }
-        let cleaned_ids = std::mem::take(&mut old_key.pending_cleanup_api_key_ids);
-        credentials::set_service_query_key(service_id, old_key, &provisioning_lock)?;
-        return Ok(QueryKeyRepairResult {
-            status: "cleanup_completed",
-            service_id: service_id.to_string(),
-            organization_id: org_id.to_string(),
-            replaced_api_key_id: cleaned_ids.last().cloned(),
-            api_key_id: old_api_key_id,
-            endpoint_id: expected_endpoint_id,
-        });
-    }
-
     if repair_state_changed(&expected_stale, &old_key) {
         return Ok(QueryKeyRepairResult {
             status: "already_repaired",
@@ -426,7 +416,19 @@ pub async fn repair_service_query_key(
             replaced_api_key_id: None,
             api_key_id: old_api_key_id,
             endpoint_id: expected_endpoint_id,
+            deleted_api_key_ids: vec![],
+            pending_cleanup_api_key_ids: vec![],
+            cleanup_warning: None,
         });
+    }
+
+    // Every owned key this repair retires: the superseded key and any earlier
+    // retirement whose deletion is still pending. All of them come from the
+    // stored record read under the lock, never from a name match or a scan of
+    // the organization's keys (#527).
+    let mut retired_api_key_ids = old_key.pending_cleanup_api_key_ids.clone();
+    if !retired_api_key_ids.contains(&old_api_key_id) {
+        retired_api_key_ids.push(old_api_key_id.clone());
     }
 
     let endpoint = client
@@ -452,8 +454,11 @@ pub async fn repair_service_query_key(
         }
     };
 
+    // One upsert does all the endpoint work: the retired keys leave
+    // `openApiKeys` and the replacement joins it. If it fails, the original
+    // bindings are restored and nothing has been retired.
     let endpoint_request =
-        build_repair_endpoint_request(&endpoint_state, &old_api_key_id, &new_api_key_id);
+        build_repair_endpoint_request(&endpoint_state, &retired_api_key_ids, &new_api_key_id);
     let repaired_endpoint = match client
         .create_query_endpoint(org_id, service_id, &endpoint_request)
         .await
@@ -505,6 +510,9 @@ pub async fn repair_service_query_key(
         .await;
     }
 
+    // Commit the replacement with every retired ID still listed as pending
+    // *before* deleting anything: from here on the only copy of each retired
+    // ID is on disk, so a crash or a failed delete can never lose one.
     let mut replacement = build_service_query_key(
         org_id,
         &new_api_key_id,
@@ -514,9 +522,7 @@ pub async fn repair_service_query_key(
         &old_key.service_name,
         Utc::now(),
     );
-    replacement
-        .pending_cleanup_api_key_ids
-        .push(old_api_key_id.clone());
+    replacement.pending_cleanup_api_key_ids = retired_api_key_ids.clone();
     if let Err(error) =
         credentials::set_service_query_key(service_id, replacement.clone(), &provisioning_lock)
     {
@@ -531,22 +537,26 @@ pub async fn repair_service_query_key(
         .await;
     }
 
-    if let Err(mut error) = client
-        .delete_api_key_if_exists(org_id, &old_api_key_id)
-        .await
-    {
-        error.message = format!(
-            "the replacement query key for service {service_id} is active, but the superseded \
-             API key {old_api_key_id} could not be deleted: {}. Its exact ID remains stored; \
-             rerun `{}` to finish cleanup",
-            error.message,
-            repair_command(service_id, org_id)
-        );
-        return Err(error);
-    }
-
-    replacement.pending_cleanup_api_key_ids.clear();
-    credentials::set_service_query_key(service_id, replacement, &provisioning_lock)?;
+    // The replacement is the credential of record and unbound keys grant
+    // nothing, so deleting the retired keys is best effort: a failure keeps
+    // the ID pending, is reported, and is retried by the next query (#527).
+    let outcome = delete_retired_query_keys(client, org_id, &retired_api_key_ids).await;
+    let pending_cleanup_api_key_ids = outcome.failed_ids();
+    replacement.pending_cleanup_api_key_ids = pending_cleanup_api_key_ids.clone();
+    credentials::set_service_query_key(service_id, replacement, &provisioning_lock).map_err(
+        |mut error| {
+            error.message = format!(
+                "the query key for service {service_id} was repaired (new API key \
+                 {new_api_key_id}), but the credentials file could not be updated after \
+                 cleanup: {}. The retired key IDs stay listed as pending and are retried on the \
+                 next query",
+                error.message
+            );
+            error
+        },
+    )?;
+    let cleanup_warning = (!outcome.failed.is_empty())
+        .then(|| pending_cleanup_warning(service_id, org_id, &outcome.failed));
     Ok(QueryKeyRepairResult {
         status: "repaired",
         service_id: service_id.to_string(),
@@ -554,7 +564,161 @@ pub async fn repair_service_query_key(
         replaced_api_key_id: Some(old_api_key_id),
         api_key_id: new_api_key_id,
         endpoint_id: repaired_endpoint_id,
+        deleted_api_key_ids: outcome.deleted,
+        pending_cleanup_api_key_ids,
+        cleanup_warning,
     })
+}
+
+// ── retired key cleanup (issue #527) ────────────────────────────────────────
+//
+// A repair retires the superseded key: the endpoint upsert unbinds it and the
+// key is then deleted. Deletion is best effort. The retired ID is written to
+// the record's `pending_cleanup_api_key_ids` before the delete is attempted,
+// so a failure never loses the only copy of the ID; the next query for the
+// service retries the deletion quietly, and `cloud service delete` deletes
+// pending retirements alongside the current key. Only IDs taken from the
+// stored record are ever deleted.
+
+/// The result of one best-effort pass over retired owned key IDs.
+struct RetirementOutcome {
+    /// Keys that are now gone (deleted, or already absent).
+    deleted: Vec<String>,
+    /// Keys whose deletion failed, with the failure. Their IDs stay pending.
+    failed: Vec<(String, CloudError)>,
+}
+
+impl RetirementOutcome {
+    fn failed_ids(&self) -> Vec<String> {
+        self.failed.iter().map(|(id, _)| id.clone()).collect()
+    }
+}
+
+/// Delete each retired key, continuing past failures so one unreachable key
+/// does not leave the others behind. A key that is already gone counts as
+/// deleted: the point is that it no longer exists.
+async fn delete_retired_query_keys(
+    client: &CloudClient,
+    org_id: &str,
+    api_key_ids: &[String],
+) -> RetirementOutcome {
+    let mut outcome = RetirementOutcome {
+        deleted: vec![],
+        failed: vec![],
+    };
+    for api_key_id in api_key_ids {
+        match client
+            .delete_api_key_if_exists(org_id, api_key_id)
+            .await
+            .map_err(|error| error.at_stage(FailureStage::KeyDelete))
+        {
+            Ok(_) => outcome.deleted.push(api_key_id.clone()),
+            Err(error) => outcome.failed.push((api_key_id.clone(), error)),
+        }
+    }
+    outcome
+}
+
+/// The warning for retired keys that could not be deleted: names every key
+/// ID and failure, where the IDs are kept, and how the deletion is retried.
+fn pending_cleanup_warning(
+    service_id: &str,
+    org_id: &str,
+    failed: &[(String, CloudError)],
+) -> String {
+    let failures = failed
+        .iter()
+        .map(|(api_key_id, error)| format!("{api_key_id}: {error}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let noun = if failed.len() == 1 {
+        "superseded API key"
+    } else {
+        "superseded API keys"
+    };
+    format!(
+        "Warning: the query key for service {service_id} is active, but the {noun} could not be \
+         deleted ({failures}). The exact key IDs remain in .clickhouse/credentials.json under \
+         service_query_keys.{service_id}.pending_cleanup_api_key_ids and deletion is retried \
+         automatically by the next `clickhousectl cloud service query --id {service_id} --org-id \
+         {org_id} ...`. To delete a key now, run `clickhousectl cloud key delete <key-id> --org-id \
+         {org_id}`"
+    )
+}
+
+/// Retry the pending retirements of the stored key for `service_id` before a
+/// query runs (#527). Quiet on success; a failure is a warning on stderr and
+/// never a query failure, and every undeleted ID stays stored.
+///
+/// The record is re-read under the provisioning lock, and the list is edited
+/// only while the record still names `stored`'s active key: a concurrent
+/// repair's fresh record, and its list, are not this run's to touch. The
+/// active key itself is never deleted, whatever the list says.
+pub(crate) async fn retry_pending_query_key_cleanup(
+    client: &CloudClient,
+    stored: &ServiceQueryKey,
+    service_id: &str,
+    org_id: &str,
+) {
+    if stored.pending_cleanup_api_key_ids.is_empty() {
+        return;
+    }
+    match retire_pending_query_keys(client, stored, service_id, org_id).await {
+        Ok(None) => {}
+        Ok(Some(warning)) => eprintln!("{warning}"),
+        Err(error) => eprintln!(
+            "Warning: could not retry the deletion of superseded query API keys for service \
+             {service_id}: {error}. Their IDs remain stored and the retry runs again on the \
+             next query"
+        ),
+    }
+}
+
+async fn retire_pending_query_keys(
+    client: &CloudClient,
+    stored: &ServiceQueryKey,
+    service_id: &str,
+    org_id: &str,
+) -> CloudResult<Option<String>> {
+    let Some(active_api_key_id) = stored.api_key_id.as_deref() else {
+        return Ok(Some(format!(
+            "Warning: the stored query key for service {service_id} lists superseded API keys \
+             awaiting deletion ({}) but names no active management key, so the list cannot be \
+             reconciled safely and was left alone",
+            stored.pending_cleanup_api_key_ids.join(", ")
+        )));
+    };
+    // The keys live in the organization that provisioned them.
+    let org_id = stored.organization_id.as_deref().unwrap_or(org_id);
+
+    let lock = credentials::lock_query_provisioning().await?;
+    let Some(current) = credentials::try_get_service_query_key(service_id)? else {
+        return Ok(None);
+    };
+    if current.api_key_id.as_deref() != Some(active_api_key_id) {
+        return Ok(None);
+    }
+    let retired: Vec<String> = current
+        .pending_cleanup_api_key_ids
+        .iter()
+        .filter(|pending| pending.as_str() != active_api_key_id)
+        .cloned()
+        .collect();
+    if retired.is_empty() {
+        return Ok(None);
+    }
+
+    let outcome = delete_retired_query_keys(client, org_id, &retired).await;
+    if !outcome.deleted.is_empty() {
+        credentials::remove_pending_cleanup_if_api_key_matches(
+            service_id,
+            active_api_key_id,
+            &outcome.deleted,
+            &lock,
+        )?;
+    }
+    Ok((!outcome.failed.is_empty())
+        .then(|| pending_cleanup_warning(service_id, org_id, &outcome.failed)))
 }
 
 async fn fail_after_key_creation<T>(
@@ -1239,7 +1403,7 @@ mod tests {
         )
         .unwrap();
 
-        let request = build_repair_endpoint_request(&state, "old-key", "new-key");
+        let request = build_repair_endpoint_request(&state, &["old-key".to_string()], "new-key");
         assert_eq!(request.roles, vec![QueryEndpointRole::SqlConsoleReadOnly]);
         assert_eq!(request.open_api_keys, vec!["other-key", "new-key"]);
         assert_eq!(request.allowed_origins, "https://example.com");
@@ -1260,7 +1424,7 @@ mod tests {
     #[test]
     fn repair_endpoint_request_can_recreate_a_missing_owned_endpoint() {
         let state = inspect_repair_endpoint(None, "deleted-endpoint", "service-1").unwrap();
-        let request = build_repair_endpoint_request(&state, "old-key", "new-key");
+        let request = build_repair_endpoint_request(&state, &["old-key".to_string()], "new-key");
         assert_eq!(request.roles, vec![QueryEndpointRole::SqlConsoleAdmin]);
         assert_eq!(request.open_api_keys, vec!["new-key"]);
         assert_eq!(request.allowed_origins, "*");
@@ -1697,5 +1861,102 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    // ── retired key cleanup (issue #527) ─────────────────────────────
+
+    #[test]
+    fn repair_endpoint_request_unbinds_every_retired_key_and_keeps_the_rest() {
+        let state = inspect_repair_endpoint(
+            Some(ServiceQueryAPIEndpoint {
+                id: Some("endpoint-1".into()),
+                roles: Some(vec![QueryEndpointRole::SqlConsoleAdmin]),
+                open_api_keys: Some(vec![
+                    "other-key".into(),
+                    "pending-key".into(),
+                    "old-key".into(),
+                ]),
+                allowed_origins: Some("*".into()),
+            }),
+            "endpoint-1",
+            "service-1",
+        )
+        .unwrap();
+
+        // The superseded key and an earlier retirement still pending both go;
+        // a key the record does not own stays.
+        let retired = ["pending-key".to_string(), "old-key".to_string()];
+        let request = build_repair_endpoint_request(&state, &retired, "new-key");
+        assert_eq!(request.open_api_keys, vec!["other-key", "new-key"]);
+
+        // A retired key the endpoint no longer lists is simply not there.
+        let retired = ["absent-key".to_string(), "old-key".to_string()];
+        let request = build_repair_endpoint_request(&state, &retired, "new-key");
+        assert_eq!(
+            request.open_api_keys,
+            vec!["other-key", "pending-key", "new-key"]
+        );
+    }
+
+    #[test]
+    fn the_pending_cleanup_warning_names_every_key_the_record_and_the_retry() {
+        let failed = vec![
+            ("key-a".to_string(), CloudError::new("HTTP 500")),
+            ("key-b".to_string(), CloudError::new("timed out")),
+        ];
+        let warning = pending_cleanup_warning("service-1", "org-1", &failed);
+        assert!(warning.starts_with("Warning:"), "{warning}");
+        assert!(
+            warning.contains(
+                "the superseded API keys could not be deleted (key-a: HTTP 500; key-b: timed out)"
+            ),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("service_query_keys.service-1.pending_cleanup_api_key_ids"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("clickhousectl cloud service query --id service-1 --org-id org-1"),
+            "{warning}"
+        );
+        assert!(
+            warning.contains("clickhousectl cloud key delete <key-id> --org-id org-1"),
+            "{warning}"
+        );
+
+        let single = pending_cleanup_warning("service-1", "org-1", &failed[..1]);
+        assert!(
+            single.contains("the superseded API key could not be deleted (key-a: HTTP 500)"),
+            "{single}"
+        );
+    }
+
+    #[test]
+    fn a_retirement_outcome_keeps_only_the_failed_ids_pending() {
+        let outcome = RetirementOutcome {
+            deleted: vec!["gone".into()],
+            failed: vec![("stuck".into(), CloudError::new("boom"))],
+        };
+        assert_eq!(outcome.failed_ids(), ["stuck"]);
+    }
+
+    #[test]
+    fn the_repair_result_serializes_the_ids_and_omits_the_prose_warning() {
+        let result = QueryKeyRepairResult {
+            status: "repaired",
+            service_id: "service-1".into(),
+            organization_id: "org-1".into(),
+            replaced_api_key_id: Some("old".into()),
+            api_key_id: "new".into(),
+            endpoint_id: "ep".into(),
+            deleted_api_key_ids: vec![],
+            pending_cleanup_api_key_ids: vec!["old".into()],
+            cleanup_warning: Some("Warning: prose".into()),
+        };
+        let json = serde_json::to_value(&result).unwrap();
+        assert_eq!(json["pendingCleanupApiKeyIds"], serde_json::json!(["old"]));
+        assert!(json.get("deletedApiKeyIds").is_none(), "{json}");
+        assert!(json.get("cleanupWarning").is_none(), "{json}");
     }
 }

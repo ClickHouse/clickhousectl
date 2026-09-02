@@ -1575,6 +1575,90 @@ async fn service_delete_also_removes_exact_pending_repair_cleanup_keys() {
 }
 
 #[tokio::test]
+async fn service_delete_attempts_every_owned_key_and_reports_the_ones_that_failed() {
+    // The pending retirement cannot be deleted but the current key can: both
+    // are attempted, the failure names exactly the key that is left, and the
+    // record is kept so its ID is not lost (#527).
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{DELETE_TEST_PENDING_API_KEY_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "status": 500,
+            "error": "pending cleanup failed",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-key-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_service_query_key(dir.path(), Some("org-1"), Some(DELETE_TEST_API_KEY_ID));
+    let credentials_path = dir.path().join(".clickhouse/credentials.json");
+    let mut stored: Value =
+        serde_json::from_slice(&std::fs::read(&credentials_path).unwrap()).unwrap();
+    stored["service_query_keys"][DELETE_TEST_SERVICE_ID]["pending_cleanup_api_key_ids"] =
+        serde_json::json!([DELETE_TEST_PENDING_API_KEY_ID]);
+    std::fs::write(&credentials_path, serde_json::to_vec(&stored).unwrap()).unwrap();
+
+    let output = invoke_service_delete(&mock, dir.path(), false);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "({DELETE_TEST_PENDING_API_KEY_ID}: pending cleanup failed)"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains(&format!("{DELETE_TEST_API_KEY_ID}:")),
+        "a key that was deleted is not reported as failed: {stderr}"
+    );
+    assert!(
+        stderr.contains("clickhousectl cloud key delete <key-id> --org-id org-1"),
+        "{stderr}"
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            (
+                "DELETE".to_string(),
+                format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
+            ),
+            (
+                "DELETE".to_string(),
+                format!("/v1/organizations/org-1/keys/{DELETE_TEST_PENDING_API_KEY_ID}")
+            ),
+            (
+                "DELETE".to_string(),
+                format!("/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}")
+            ),
+        ]
+    );
+    let stored: Value = serde_json::from_slice(&std::fs::read(credentials_path).unwrap()).unwrap();
+    assert_eq!(
+        stored["service_query_keys"][DELETE_TEST_SERVICE_ID]["pending_cleanup_api_key_ids"],
+        serde_json::json!([DELETE_TEST_PENDING_API_KEY_ID])
+    );
+}
+
+#[tokio::test]
 async fn service_delete_without_a_stored_query_key_only_deletes_the_service() {
     let mock = MockServer::start().await;
     Mock::given(method("DELETE"))
@@ -1888,7 +1972,9 @@ async fn service_delete_cleanup_failure_preserves_credentials_for_retry() {
         String::from_utf8_lossy(&output.stderr),
         format!(
             "Error: failed to delete the auto-provisioned query API key for service \
-             {DELETE_TEST_SERVICE_ID}: cleanup failed\n"
+             {DELETE_TEST_SERVICE_ID} ({DELETE_TEST_API_KEY_ID}: cleanup failed). The local \
+             record was kept so the exact IDs are not lost; delete each key with \
+             `clickhousectl cloud key delete <key-id> --org-id org-1`\n"
         )
     );
 
@@ -5238,6 +5324,244 @@ async fn a_deleted_stored_query_key_is_reported_and_never_replaced() {
 }
 
 #[tokio::test]
+async fn a_deleted_stored_query_key_with_pending_cleanup_keeps_its_record() {
+    // The record still names a superseded key awaiting deletion (#527). The
+    // query first retries that deletion; here the retry fails, so a warning
+    // names the leftover key. The deleted verdict then keeps the record like
+    // always, and repair is the way to finish both.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_string("boom"),
+    )
+    .await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[PENDING_QUERY_TEST_KEY_UUID],
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Warning:"), "{stderr}");
+    assert!(stderr.contains(PENDING_QUERY_TEST_KEY_UUID), "{stderr}");
+    assert!(
+        stderr.contains("no longer exists in organization org-1"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [PENDING_QUERY_TEST_KEY_UUID],
+        "the retry is the only write, and it names the stored retired key"
+    );
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn a_deleted_stored_query_key_whose_pending_retry_succeeds_keeps_its_record() {
+    // Same record, but the retried deletion succeeds: the pending list is
+    // emptied quietly, and the deleted verdict still keeps the record itself,
+    // so repair can drop the dead key's endpoint binding.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        key_deleted_response(),
+    )
+    .await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[PENDING_QUERY_TEST_KEY_UUID],
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("Warning:"), "{stderr}");
+    assert!(
+        stderr.contains("no longer exists in organization org-1"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [PENDING_QUERY_TEST_KEY_UUID]
+    );
+    let stored = read_credentials(project.path());
+    // An empty pending list is omitted from the file, so the record differs
+    // from the original in exactly that key.
+    let mut expected = original.clone();
+    expected["service_query_keys"][QUERY_TEST_SERVICE_ID]
+        .as_object_mut()
+        .unwrap()
+        .remove("pending_cleanup_api_key_ids");
+    assert_eq!(stored, expected, "only the pending list changed");
+}
+
+// ── Pending retirement retry on the query path (issue #527) ────────────────
+//
+// A repair whose final key deletion failed leaves the retired key's ID on the
+// record. The next query for the service retries the deletion before it runs:
+// quietly when it works, with a warning when it does not, and never at the
+// expense of the query itself.
+
+/// Run `cloud service query` with a working stored key whose record lists
+/// `pending_cleanup_api_key_ids`. Returns the output and the project dir.
+async fn run_query_with_pending_retirements(
+    control: &MockServer,
+    pending_cleanup_api_key_ids: &[&str],
+) -> (std::process::Output, tempfile::TempDir) {
+    let query_host = start_mock_query_host().await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        pending_cleanup_api_key_ids,
+    );
+    let output = service_query_process(project.path(), control, &query_host)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    (output, project)
+}
+
+#[tokio::test]
+async fn a_query_retries_pending_key_retirements_quietly_before_running() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_delete(&control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        key_deleted_response(),
+    )
+    .await;
+
+    let (output, project) = run_query_with_pending_retirements(
+        &control,
+        &[OLD_QUERY_TEST_KEY_UUID, PENDING_QUERY_TEST_KEY_UUID],
+    )
+    .await;
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    assert_eq!(
+        stderr_without_notes(&output),
+        "",
+        "a successful retry is silent"
+    );
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [OLD_QUERY_TEST_KEY_UUID, PENDING_QUERY_TEST_KEY_UUID]
+    );
+    let record = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(record["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(record["key_id"], "stored-key-id");
+    assert!(
+        record.get("pending_cleanup_api_key_ids").is_none(),
+        "{record}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_retirement_retry_warns_keeps_the_id_and_still_runs_the_query() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_delete(
+        &control,
+        OLD_QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_string("still failing"),
+    )
+    .await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        key_deleted_response(),
+    )
+    .await;
+
+    let (output, project) = run_query_with_pending_retirements(
+        &control,
+        &[OLD_QUERY_TEST_KEY_UUID, PENDING_QUERY_TEST_KEY_UUID],
+    )
+    .await;
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    let stderr = stderr_without_notes(&output);
+    assert!(stderr.starts_with("Warning:"), "{stderr}");
+    assert!(stderr.contains(OLD_QUERY_TEST_KEY_UUID), "{stderr}");
+    assert!(
+        !stderr.contains(PENDING_QUERY_TEST_KEY_UUID),
+        "a key that was deleted is not reported as failed: {stderr}"
+    );
+    assert!(stderr.contains("still failing"), "{stderr}");
+    assert!(
+        stderr.contains("clickhousectl cloud key delete <key-id> --org-id org-1"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("stored-key-secret"), "{stderr}");
+    // Only the key that could not be deleted stays pending.
+    let record = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(
+        record["pending_cleanup_api_key_ids"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+}
+
+#[tokio::test]
+async fn a_retirement_retry_never_deletes_the_active_key() {
+    // A record that lists its own active key as pending is contradictory.
+    // The retry deletes the genuinely retired key and leaves the active one
+    // alone, whatever the list says.
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_delete(&control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+
+    let (output, project) = run_query_with_pending_retirements(
+        &control,
+        &[QUERY_TEST_KEY_UUID, OLD_QUERY_TEST_KEY_UUID],
+    )
+    .await;
+    assert_success(&output);
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [OLD_QUERY_TEST_KEY_UUID]
+    );
+    let record = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(record["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        record["pending_cleanup_api_key_ids"],
+        serde_json::json!([QUERY_TEST_KEY_UUID])
+    );
+}
+
+#[tokio::test]
+async fn a_query_without_pending_retirements_makes_no_control_plane_writes() {
+    let control = start_mock_control_plane_with_service().await;
+    let (output, _project) = run_query_with_pending_retirements(&control, &[]).await;
+    assert_success(&output);
+    assert!(key_deletes_received(&control).await.is_empty());
+    assert_control_plane_only_read(&control, "no pending retirements").await;
+}
+
+#[tokio::test]
 async fn an_unbound_stored_query_key_is_reported_and_never_replaced() {
     // The endpoint exists but lists another key.
     let control = start_mock_control_plane_with_service().await;
@@ -5588,6 +5912,9 @@ async fn service_query_key_repair_replaces_exact_binding_and_preserves_credentia
 
 #[tokio::test]
 async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
+    // The replacement is active and bound, so a failed delete of the
+    // superseded key is a warning, not a failure (#527): the exact ID stays
+    // on the record for the next query to retry, and the warning says so.
     let control = MockServer::start().await;
     let endpoint_path = mount_repair_endpoint_get(&control).await;
     mount_replacement_key_create(&control).await;
@@ -5627,11 +5954,30 @@ async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
         .output()
         .await
         .expect("failed to spawn clickhousectl");
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("replacement query key"), "{stderr}");
-    assert!(stderr.contains("is active"), "{stderr}");
-    assert!(stderr.contains("rerun"), "{stderr}");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["replacedApiKeyId"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        result["pendingCleanupApiKeyIds"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+    assert!(result.get("deletedApiKeyIds").is_none(), "{result}");
+    let stderr = stderr_without_notes(&output);
+    assert!(stderr.starts_with("Warning:"), "{stderr}");
+    assert!(stderr.contains(OLD_QUERY_TEST_KEY_UUID), "{stderr}");
+    assert!(stderr.contains("temporary cleanup failure"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "clickhousectl cloud service query --id {QUERY_TEST_SERVICE_ID} --org-id org-1"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("clickhousectl cloud key delete <key-id> --org-id org-1"),
+        "{stderr}"
+    );
 
     let stored: Value = serde_json::from_slice(
         &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
@@ -5643,6 +5989,7 @@ async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
     );
     let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
     assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(repaired["key_id"], "replacement-key-id");
     assert_eq!(
         repaired["pending_cleanup_api_key_ids"],
         serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
@@ -5798,55 +6145,247 @@ async fn failed_repair_retains_new_key_when_endpoint_rollback_fails() {
     assert_eq!(stored, original);
 }
 
-#[tokio::test]
-async fn repair_cleanup_retry_deletes_only_pending_key_without_reprovisioning() {
-    let control = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path(format!(
-            "/v1/organizations/org-1/keys/{OLD_QUERY_TEST_KEY_UUID}"
-        )))
+const PENDING_QUERY_TEST_KEY_UUID: &str = "77777777-6666-5555-4444-333333333333";
+const THIRD_QUERY_TEST_KEY_UUID: &str = "33333333-4444-5555-6666-777777777777";
+
+/// `GET serviceQueryEndpoint` listing exactly `open_api_keys`, with the
+/// read-only role and origin the repair must preserve.
+async fn mount_repair_endpoint_get_listing(control: &MockServer, open_api_keys: &[&str]) {
+    Mock::given(method("GET"))
+        .and(path(query_endpoint_path()))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "ep-1",
+                "openApiKeys": open_api_keys,
+                "roles": ["sql_console_read_only"],
+                "allowedOrigins": "https://example.com"
+            },
             "status": 200,
-            "requestId": "stub-pending-cleanup"
+            "requestId": "stub-endpoint-get"
         })))
         .expect(1)
-        .mount(&control)
+        .mount(control)
         .await;
+}
+
+/// `POST /keys` answering with `api_key_uuid` as the new key's resource ID.
+async fn mount_key_create_returning(control: &MockServer, api_key_uuid: &str) {
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": api_key_uuid },
+                "keyId": format!("key-id-for-{api_key_uuid}"),
+                "keySecret": format!("key-secret-for-{api_key_uuid}")
+            },
+            "status": 200,
+            "requestId": "stub-key-create"
+        })))
+        .expect(1)
+        .mount(control)
+        .await;
+}
+
+/// The endpoint upsert the repair must send: the read-only role and origin
+/// preserved, exactly `open_api_keys` bound.
+async fn expect_repair_endpoint_upsert(control: &MockServer, open_api_keys: &[&str]) {
+    Mock::given(method("POST"))
+        .and(path(query_endpoint_path()))
+        .and(body_json(serde_json::json!({
+            "roles": ["sql_console_read_only"],
+            "openApiKeys": open_api_keys,
+            "allowedOrigins": "https://example.com"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1", "openApiKeys": open_api_keys },
+            "status": 200,
+            "requestId": "stub-endpoint-repair"
+        })))
+        .expect(1)
+        .mount(control)
+        .await;
+}
+
+async fn mount_key_delete(control: &MockServer, api_key_uuid: &str, response: ResponseTemplate) {
+    Mock::given(method("DELETE"))
+        .and(path(format!("/v1/organizations/org-1/keys/{api_key_uuid}")))
+        .respond_with(response)
+        .expect(1)
+        .mount(control)
+        .await;
+}
+
+fn key_deleted_response() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": 200,
+        "requestId": "stub-key-delete"
+    }))
+}
+
+/// The `DELETE /keys/{id}` paths the control plane received, in order.
+async fn key_deletes_received(control: &MockServer) -> Vec<String> {
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.method == wiremock::http::Method::DELETE)
+        .filter_map(|request| {
+            request
+                .url
+                .path()
+                .strip_prefix("/v1/organizations/org-1/keys/")
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// Stderr without the credential-precedence `note:` line the fixture's file
+/// credentials plus the env credentials always produce.
+fn stderr_without_notes(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter(|line| !line.starts_with("note:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn repair_with_a_pending_retirement_replaces_the_key_and_deletes_every_retired_key() {
+    // An earlier repair could not delete its superseded key, so the record
+    // lists it as pending (#527). This repair replaces the current key,
+    // unbinds both retired keys in the one endpoint upsert, deletes both, and
+    // leaves nothing pending. The unrelated binding survives.
+    let control = MockServer::start().await;
+    mount_repair_endpoint_get_listing(
+        &control,
+        &[
+            "unrelated-key",
+            OLD_QUERY_TEST_KEY_UUID,
+            PENDING_QUERY_TEST_KEY_UUID,
+        ],
+    )
+    .await;
+    mount_key_create_returning(&control, QUERY_TEST_KEY_UUID).await;
+    expect_repair_endpoint_upsert(&control, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        key_deleted_response(),
+    )
+    .await;
+    mount_key_delete(&control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
 
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
         Some("org-1"),
-        Some(QUERY_TEST_KEY_UUID),
+        Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
-        &[OLD_QUERY_TEST_KEY_UUID],
+        &[PENDING_QUERY_TEST_KEY_UUID],
     );
     let output = service_query_key_repair_process(project.path(), &control)
         .output()
         .await
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
+    assert_eq!(
+        stderr_without_notes(&output),
+        "",
+        "a fully successful cleanup prints no warning"
+    );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["status"], "cleanup_completed");
+    assert_eq!(result["status"], "repaired");
     assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["replacedApiKeyId"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        result["deletedApiKeyIds"],
+        serde_json::json!([PENDING_QUERY_TEST_KEY_UUID, OLD_QUERY_TEST_KEY_UUID])
+    );
+    assert!(result.get("pendingCleanupApiKeyIds").is_none(), "{result}");
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [PENDING_QUERY_TEST_KEY_UUID, OLD_QUERY_TEST_KEY_UUID],
+        "exactly the stored retired keys are deleted, never the unrelated or the new one"
+    );
 
-    let requests = control.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].method, wiremock::http::Method::DELETE);
-    let stored: Value = serde_json::from_slice(
-        &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
-    )
-    .unwrap();
+    let stored = read_credentials(project.path());
     assert_eq!(stored["api_key"], original["api_key"]);
     assert_eq!(
         stored["service_query_keys"][PRESERVED_QUERY_SERVICE_ID],
         original["service_query_keys"][PRESERVED_QUERY_SERVICE_ID]
     );
+    let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
     assert!(
-        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]
-            .get("pending_cleanup_api_key_ids")
-            .is_none()
+        repaired.get("pending_cleanup_api_key_ids").is_none(),
+        "{repaired}"
+    );
+}
+
+#[tokio::test]
+async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list() {
+    // Two repairs in a row against the same project: each one retires the key
+    // the previous one installed, so the endpoint always binds exactly the
+    // unrelated key plus the current one and nothing is ever left pending.
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+
+    let first = MockServer::start().await;
+    mount_repair_endpoint_get_listing(&first, &["unrelated-key", OLD_QUERY_TEST_KEY_UUID]).await;
+    mount_key_create_returning(&first, QUERY_TEST_KEY_UUID).await;
+    expect_repair_endpoint_upsert(&first, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
+    mount_key_delete(&first, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+    let output = service_query_key_repair_process(project.path(), &first)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    assert_eq!(
+        key_deletes_received(&first).await,
+        [OLD_QUERY_TEST_KEY_UUID]
+    );
+
+    let second = MockServer::start().await;
+    mount_repair_endpoint_get_listing(&second, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
+    mount_key_create_returning(&second, THIRD_QUERY_TEST_KEY_UUID).await;
+    expect_repair_endpoint_upsert(&second, &["unrelated-key", THIRD_QUERY_TEST_KEY_UUID]).await;
+    mount_key_delete(&second, QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+    let output = service_query_key_repair_process(project.path(), &second)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["replacedApiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["apiKeyId"], THIRD_QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        result["deletedApiKeyIds"],
+        serde_json::json!([QUERY_TEST_KEY_UUID])
+    );
+    assert_eq!(
+        key_deletes_received(&second).await,
+        [QUERY_TEST_KEY_UUID],
+        "the second repair deletes only the key the first one installed"
+    );
+
+    let repaired = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], THIRD_QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        repaired["key_id"],
+        format!("key-id-for-{THIRD_QUERY_TEST_KEY_UUID}")
+    );
+    assert!(
+        repaired.get("pending_cleanup_api_key_ids").is_none(),
+        "{repaired}"
     );
 }
 

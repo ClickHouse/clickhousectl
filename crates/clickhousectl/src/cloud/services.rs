@@ -1947,14 +1947,16 @@ async fn service_query_key_repair(
     let org_id = resolve_org_id(client, org_id).await?;
     let result =
         crate::cloud::service_query::repair_service_query_key(client, &org_id, service_id).await?;
+    // A retired key that could not be deleted is a warning, not a failure: the
+    // replacement is active and its ID is stored for the retry (#527). The
+    // warning goes to stderr in both modes; the JSON result carries the IDs.
+    if let Some(warning) = &result.cleanup_warning {
+        eprintln!("{warning}");
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         match result.status {
-            "cleanup_completed" => println!(
-                "Finished query-key cleanup for service {} (active API key: {})",
-                result.service_id, result.api_key_id
-            ),
             "already_repaired" => println!(
                 "Query key for service {} was already repaired by another process (active API key: {})",
                 result.service_id, result.api_key_id
@@ -1967,6 +1969,18 @@ async fn service_query_key_repair(
                 );
                 println!("  New API key: {}", result.api_key_id);
                 println!("  Query endpoint: {}", result.endpoint_id);
+                if !result.deleted_api_key_ids.is_empty() {
+                    println!(
+                        "  Deleted API keys: {}",
+                        result.deleted_api_key_ids.join(", ")
+                    );
+                }
+                if !result.pending_cleanup_api_key_ids.is_empty() {
+                    println!(
+                        "  API keys awaiting deletion: {}",
+                        result.pending_cleanup_api_key_ids.join(", ")
+                    );
+                }
             }
         }
     }
@@ -2251,6 +2265,17 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             .map_err(|error| error.at_stage(FailureStage::QueryRequest))?
         {
             failure::set_provisioning_state(ProvisioningState::StoredKey);
+            // A repair that could not delete a superseded key left its ID on
+            // the record; finish that here, quietly, before the query (#527).
+            // The list is empty on every ordinary run, so this costs nothing
+            // unless a retirement is actually outstanding.
+            crate::cloud::service_query::retry_pending_query_key_cleanup(
+                client,
+                &key,
+                &service_id,
+                &org_id,
+            )
+            .await;
             match run_basic_service_query(
                 client,
                 &service_id,

@@ -1957,6 +1957,104 @@ async fn a_failed_endpoint_read_during_provisioning_names_the_endpoint_get_stage
 }
 
 #[tokio::test]
+async fn a_failed_owned_key_deletion_during_service_delete_names_the_key_delete_stage() {
+    // The service is deleted, then its owned query keys: the pending
+    // retirement (#527) cannot be deleted. The stage is the deletion's own,
+    // the kind and status are the failed DELETE's, and no key ID, secret or
+    // path reaches the payload.
+    let control = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{QUERY_SERVICE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-service-delete",
+        })))
+        .mount(&control)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/keys/00000000-0000-0000-0000-0000000000cc",
+        ))
+        .respond_with(ResponseTemplate::new(502).set_body_string("bad gateway"))
+        .mount(&control)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/keys/00000000-0000-0000-0000-0000000000bb",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-key-delete",
+        })))
+        .mount(&control)
+        .await;
+
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    let clickhouse_dir = project.path().join(".clickhouse");
+    std::fs::create_dir_all(&clickhouse_dir).unwrap();
+    std::fs::write(
+        clickhouse_dir.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "service_query_keys": {
+                QUERY_SERVICE_ID: {
+                    "organization_id": "org-1",
+                    "api_key_id": "00000000-0000-0000-0000-0000000000bb",
+                    "key_id": "stored-key-id-SECRET-ISH",
+                    "key_secret": "stored-key-secret-SUPER-SECRET",
+                    "endpoint_id": "ep-1",
+                    "pending_cleanup_api_key_ids": ["00000000-0000-0000-0000-0000000000cc"],
+                    "service_name": "demo",
+                    "created_at": "2026-05-11T12:00:00Z"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let url = control.uri();
+    let output = sandbox
+        .command(&[
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "delete",
+            QUERY_SERVICE_ID,
+            "--org-id",
+            "org-1",
+        ])
+        .env_clear()
+        .env("HOME", sandbox.home.path())
+        .env("CHCTL_TELEMETRY_URL", sandbox.telemetry_url())
+        .current_dir(project.path())
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .output()
+        .expect("failed to spawn binary");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "key_delete");
+    assert_eq!(event["failure_kind"], "http_5xx");
+    assert_eq!(event["http_status"], 502);
+    let raw = serde_json::to_string(&event).unwrap();
+    for secret in [
+        "stored-key-id-SECRET-ISH",
+        "stored-key-secret-SUPER-SECRET",
+        "00000000-0000-0000-0000-0000000000cc",
+        "00000000-0000-0000-0000-0000000000bb",
+        "credentials.json",
+    ] {
+        assert!(!raw.contains(secret), "payload leaked {secret}: {raw}");
+    }
+}
+
+#[tokio::test]
 async fn a_failed_key_lookup_for_a_rejected_stored_key_names_the_key_get_stage() {
     // The stored key is rejected by the query host, and the management
     // lookup that would classify the rejection (#528) fails with a 5xx. The
