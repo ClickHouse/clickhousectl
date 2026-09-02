@@ -40,6 +40,9 @@ const DEFAULT_REJECTION_TIMEOUT_SECS: u64 = 300;
 const EXPIRY_LEAD: Duration = Duration::from_secs(90);
 /// Clock-skew margin waited after `expireAt` before expecting rejection.
 const EXPIRY_MARGIN: Duration = Duration::from_secs(15);
+/// The CLI's stderr notice while it waits for a new key to propagate (#658).
+const KEY_PROPAGATION_NOTICE: &str =
+    "Waiting for the new API key to become visible to the Query API endpoint...";
 
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
@@ -296,7 +299,7 @@ async fn cloud_service_query_key_disabled_and_expired_are_never_replaced() -> Te
         log_phase("Explicit repair");
 
         eprintln!("  step: stored management key id before repair: {api_key_id}");
-        let repaired = repair_with_one_retry(
+        let repaired = repair(
             &ctx,
             &cli,
             &client,
@@ -481,7 +484,7 @@ async fn cloud_service_query_key_repairs_retire_keys_and_service_delete_cleans_u
         for round in 1..=2 {
             log_phase(&format!("Repair {round} retires the key it replaces"));
 
-            let repaired = repair_with_one_retry(
+            let repaired = repair(
                 &ctx,
                 &cli,
                 &client,
@@ -1079,16 +1082,15 @@ async fn create_running_service(
     Ok(service_id)
 }
 
-/// Run `repair-query-key` and return its JSON result, retrying once on
-/// failure.
+/// Run `repair-query-key` and return its JSON result.
 ///
-/// Observed once on 2026-09-02: the endpoint upsert inside repair answered
-/// `400 BAD_REQUEST: OpenAPI key <id> does not belong to the organization`
-/// right after the replacement key was created, and an identical run passed.
-/// The CLI itself does not retry, so the diagnostics are printed to make a
-/// recurrence visible in CI logs; one retry keeps a transient from failing
-/// the suite.
-async fn repair_with_one_retry(
+/// The CLI waits out key propagation itself (#658): the endpoint upsert can
+/// answer `400 OpenAPI key <id> does not belong to the organization` right
+/// after the replacement key is created, and the CLI retries it inside a
+/// bounded window. This harness no longer retries, so a transient that
+/// escapes that window fails the suite; the diagnostics printed on failure
+/// show what the endpoint and the old key looked like at that moment.
+async fn repair(
     ctx: &TestContext,
     cli: &Cli,
     client: &Client,
@@ -1106,10 +1108,14 @@ async fn repair_with_one_retry(
             let service_id = service_id.to_string();
             let api_key_id = api_key_id.to_string();
             async move {
-                let mut output = cli.repair(&service_id)?;
+                let output = cli.repair(&service_id)?;
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if stderr.contains(KEY_PROPAGATION_NOTICE) {
+                    eprintln!("  diag: the CLI waited for the new key to propagate");
+                }
                 if !output.status.success() {
                     eprintln!(
-                        "  diag: first repair attempt failed: {}",
+                        "  diag: repair failed: {}",
                         cli_failure("service repair-query-key", &output)
                     );
                     match client
@@ -1130,11 +1136,6 @@ async fn repair_with_one_retry(
                         ),
                         Err(e) => eprintln!("  diag: old key get failed: {e}"),
                     }
-                    eprintln!("  diag: retrying repair once after 20s");
-                    tokio::time::sleep(Duration::from_secs(20)).await;
-                    output = cli.repair(&service_id)?;
-                }
-                if !output.status.success() {
                     return Err(cli_failure("service repair-query-key", &output).into());
                 }
                 let result: Value = serde_json::from_slice(&output.stdout)?;
