@@ -1,14 +1,17 @@
-//! Subprocess coverage for PID agreement between the project-scoped and the
-//! `--global` server list (issue #664).
+//! Subprocess coverage for the watchdog PID: the project-scoped and the
+//! `--global` server list must agree on it, and stopping it must take the
+//! server it supervises with it (issue #664).
 //!
-//! ClickHouse spawns a watchdog that re-execs the server if it dies, so the
-//! process `server start` records is the watchdog while `pgrep -x clickhouse`
-//! only ever matches the server it supervises. Both views must report the PID
-//! that stops the server for good.
+//! ClickHouse spawns a watchdog that owns the lifetime of the server process,
+//! so the process `server start` records is the watchdog while
+//! `pgrep -x clickhouse` only ever matches the server it supervises. Both views
+//! must report the PID that stops the server for good, and `stop` must leave
+//! neither process behind: the watchdog forwards SIGTERM, but a SIGKILL it
+//! cannot catch would otherwise strand the server.
 //!
 //! Strategy: an isolated `HOME`, a fake ClickHouse that really forks a child so
-//! there is a genuine parent/child pair to resolve, and deterministic
-//! `pgrep`/`lsof`/`ps` stand-ins on `PATH` (the same technique as
+//! there is a genuine parent/child pair to resolve and to kill, and
+//! deterministic `pgrep`/`lsof`/`ps` stand-ins on `PATH` (the same technique as
 //! `local_server_state_machine_test.rs`) so process discovery only ever sees
 //! this fixture's processes and does not depend on platform process names.
 
@@ -19,9 +22,22 @@ use std::process::{Command, Output};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const VERSION: &str = "26.9.1.531";
-const HTTP_PORT: u16 = 18923;
-const TCP_PORT: u16 = 19923;
+const HTTP_PORT_BASE: u16 = 18900;
+const TCP_PORT_BASE: u16 = 19900;
 const WAIT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Ports for a fixture, derived from its label so two of these tests running in
+/// parallel never claim the same pair. Nothing binds them (the fake binary only
+/// sleeps), but a shared pair would make two fixtures indistinguishable.
+fn ports_for(label: &str) -> (u16, u16) {
+    let mut hash: u32 = 2166136261;
+    for byte in label.bytes() {
+        hash ^= u32::from(byte);
+        hash = hash.wrapping_mul(16777619);
+    }
+    let offset = (hash % 50) as u16;
+    (HTTP_PORT_BASE + offset, TCP_PORT_BASE + offset)
+}
 
 fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
@@ -31,8 +47,26 @@ fn clickhousectl_binary() -> PathBuf {
 /// does, or runs the "server" in the process the CLI spawned.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Supervision {
+    /// A watchdog that forwards SIGTERM to the server and exits with it, like
+    /// ClickHouse's own.
     Watchdog,
+    /// A watchdog started with `CLICKHOUSE_WATCHDOG_NO_FORWARD=1`: it neither
+    /// handles SIGTERM nor passes it on, so `stop` has to escalate to SIGKILL,
+    /// which the watchdog cannot forward either.
+    WatchdogIgnoringSigterm,
+    /// `CLICKHOUSE_WATCHDOG_ENABLE=0`: the process the CLI spawned is the
+    /// server, with no supervising parent.
     None,
+}
+
+impl Supervision {
+    fn forks_a_child(self) -> bool {
+        self != Supervision::None
+    }
+
+    fn ignores_sigterm(self) -> bool {
+        self == Supervision::WatchdogIgnoringSigterm
+    }
 }
 
 struct ProcessGuard {
@@ -64,10 +98,13 @@ struct Fixture {
     pid_file: PathBuf,
     path: String,
     supervision: Supervision,
+    http_port: u16,
+    tcp_port: u16,
 }
 
 impl Fixture {
     fn new(label: &str, supervision: Supervision) -> Self {
+        let (http_port, tcp_port) = ports_for(label);
         let root = tempfile::Builder::new()
             .prefix(&format!("clickhousectl-watchdog-pid-{label}-"))
             .tempdir()
@@ -91,12 +128,19 @@ impl Fixture {
             &binary,
             r#"#!/bin/sh
 if [ "$FAKE_CLICKHOUSE_WATCHDOG" = 1 ]; then
+  if [ "$FAKE_CLICKHOUSE_IGNORE_SIGTERM" = 1 ]; then
+    trap '' TERM
+  fi
+  # The watchdog records itself before forking, so the test's ProcessGuard can
+  # always reach it and an assertion that fails early cannot leak a process.
+  printf 'watchdog|%s|1|%s\n' "$$" "$PWD" >> "$FAKE_CLICKHOUSE_PID_FILE"
   /bin/sleep 300 &
   child=$!
-  {
-    printf 'watchdog|%s|1|%s\n' "$$" "$PWD"
-    printf 'server|%s|%s|%s\n' "$child" "$$" "$PWD"
-  } >> "$FAKE_CLICKHOUSE_PID_FILE"
+  printf 'server|%s|%s|%s\n' "$child" "$$" "$PWD" >> "$FAKE_CLICKHOUSE_PID_FILE"
+  if [ "$FAKE_CLICKHOUSE_IGNORE_SIGTERM" != 1 ]; then
+    # The real watchdog forwards SIGTERM to the server it supervises.
+    trap 'kill "$child" 2>/dev/null' TERM
+  fi
   wait "$child"
 else
   printf 'server|%s|1|%s\n' "$$" "$PWD" >> "$FAKE_CLICKHOUSE_PID_FILE"
@@ -109,17 +153,35 @@ fi
         seed_update_cache(&home);
 
         // `pgrep -x clickhouse` matches the server, never the watchdog, which
-        // is the whole reason the two views disagreed.
+        // is the whole reason the two views disagreed. `pgrep -P <ppid>` is the
+        // child lookup in the SIGKILL escalation path: it goes to the real
+        // pgrep, so the escalation resolves the actual process tree, and falls
+        // back to the recorded parent/child pairs on a platform that keeps
+        // pgrep elsewhere.
         write_executable(
             &tools.join("pgrep"),
             r#"#!/bin/sh
+parent=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -P) parent="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$parent" ] && [ -x /usr/bin/pgrep ]; then
+  exec /usr/bin/pgrep -P "$parent"
+fi
 [ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
 found=1
 while IFS='|' read -r role pid ppid cwd; do
-  if [ "$role" = server ] && kill -0 "$pid" 2>/dev/null; then
-    printf '%s\n' "$pid"
-    found=0
+  if [ -n "$parent" ]; then
+    [ "$ppid" = "$parent" ] || continue
+  else
+    [ "$role" = server ] || continue
   fi
+  kill -0 "$pid" 2>/dev/null || continue
+  printf '%s\n' "$pid"
+  found=0
 done < "$FAKE_CLICKHOUSE_PID_FILE"
 exit "$found"
 "#,
@@ -135,19 +197,18 @@ while IFS='|' read -r role pid ppid cwd; do
 done < "$FAKE_CLICKHOUSE_PID_FILE"
 "#,
         );
-        // Two shapes are used by discovery: `ps -o args= -p <pid>` for one
-        // process's command line, and `ps -o pid=,ppid=,args= -p <pid,...>`
-        // for batched parent resolution. The watchdog's `argv[0]` is the
-        // rewritten name the real one uses; the server's is its binary path.
+        // Discovery reads `ps -o pid=,ppid=,args= -p <pid,...>` for both the
+        // parent resolution and the command lines. The watchdog row is the
+        // rewritten `argv[0]` alone, padded with the trailing spaces the real
+        // one shows for the rest of the zeroed `argv` region and carrying no
+        // arguments; the server's is its binary path and flags.
         write_executable(
             &tools.join("ps"),
             &format!(
                 r#"#!/bin/sh
-fields=""
 targets=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    -o) fields="$2"; shift 2 ;;
     -p) targets="$2"; shift 2 ;;
     *) shift ;;
   esac
@@ -160,21 +221,21 @@ while IFS='|' read -r role pid ppid cwd; do
     *) continue ;;
   esac
   if [ "$role" = watchdog ]; then
-    args="clickhouse-watchdog server -- --path=./ --http_port={HTTP_PORT} --tcp_port={TCP_PORT}"
+    args="clickhouse-watchdog     "
   else
-    args="$HOME/.clickhouse/versions/{VERSION}/clickhouse server -- --path=./ --http_port={HTTP_PORT} --tcp_port={TCP_PORT}"
+    args="$HOME/.clickhouse/versions/{VERSION}/clickhouse server -- --path=./ --http_port={http_port} --tcp_port={tcp_port}"
   fi
-  if [ "$fields" = "args=" ]; then
-    printf '%s\n' "$args"
-  else
-    printf '%5s %5s %s\n' "$pid" "$ppid" "$args"
-  fi
+  printf '%5s %5s %s\n' "$pid" "$ppid" "$args"
   found=0
 done < "$FAKE_CLICKHOUSE_PID_FILE"
 exit "$found"
 "#
             ),
         );
+        // The stand-ins come first, and the rest of `PATH` deliberately omits
+        // /usr/local/bin and /opt/homebrew/bin so a `docker` on the developer's
+        // machine is unreachable: orphan recovery must not take its Postgres
+        // leg during these tests.
         let path = format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.display());
 
         Self {
@@ -187,6 +248,8 @@ exit "$found"
             pid_file,
             path,
             supervision,
+            http_port,
+            tcp_port,
         }
     }
 
@@ -201,7 +264,15 @@ exit "$found"
             .env("FAKE_CLICKHOUSE_PID_FILE", &self.pid_file)
             .env(
                 "FAKE_CLICKHOUSE_WATCHDOG",
-                if self.supervision == Supervision::Watchdog {
+                if self.supervision.forks_a_child() {
+                    "1"
+                } else {
+                    "0"
+                },
+            )
+            .env(
+                "FAKE_CLICKHOUSE_IGNORE_SIGTERM",
+                if self.supervision.ignores_sigterm() {
                     "1"
                 } else {
                     "0"
@@ -223,9 +294,9 @@ exit "$found"
             "start",
             name,
             "--http-port",
-            &HTTP_PORT.to_string(),
+            &self.http_port.to_string(),
             "--tcp-port",
-            &TCP_PORT.to_string(),
+            &self.tcp_port.to_string(),
             "--no-wait",
         ]);
         assert_eq!(
@@ -238,7 +309,7 @@ exit "$found"
         let pid = body["pid"].as_u64().expect("start PID") as u32;
         // Discovery reads the stand-ins' records, so wait until the fake
         // binary has registered every process it owns.
-        let expected_records = if self.supervision == Supervision::Watchdog {
+        let expected_records = if self.supervision.forks_a_child() {
             2
         } else {
             1
@@ -312,6 +383,25 @@ fn wait_for_records(pid_file: &Path, expected: usize) {
     panic!("fake ClickHouse never recorded {expected} process(es)");
 }
 
+fn is_alive(pid: u32) -> bool {
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Poll for `pid` to be gone. Only the fake watchdog's own ordering needs the
+/// timeout: it forwards the signal and exits without waiting for the child to
+/// die. The CLI's SIGKILL path verifies both processes itself, so tests of it
+/// assert directly.
+fn wait_for_exit(pid: u32) -> bool {
+    let deadline = Instant::now() + WAIT_TIMEOUT;
+    while Instant::now() < deadline {
+        if !is_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    !is_alive(pid)
+}
+
 const PROJECT_LIST: &[&str] = &["local", "--json", "server", "list"];
 const GLOBAL_LIST: &[&str] = &["local", "--json", "server", "list", "--global"];
 
@@ -335,7 +425,8 @@ fn both_list_views_report_the_watchdog_pid() {
     assert_eq!(global_pid, watchdog);
     assert_ne!(
         global_pid, server,
-        "reporting the supervised child hands users a PID that restarts itself"
+        "reporting the supervised child hands users a PID whose watchdog \
+         outlives it"
     );
 }
 
@@ -369,4 +460,73 @@ fn a_server_without_a_watchdog_reports_its_own_pid() {
     assert_eq!(started, server);
     assert_eq!(fixture.listed_pid(PROJECT_LIST), server);
     assert_eq!(fixture.listed_pid(GLOBAL_LIST), server);
+}
+
+#[test]
+fn each_fixture_label_gets_its_own_port_pair() {
+    let labels = ["agree", "recovery", "no-watchdog", "stop", "escalate"];
+    let mut pairs: Vec<_> = labels.iter().map(|label| ports_for(label)).collect();
+    pairs.sort_unstable();
+    pairs.dedup();
+
+    assert_eq!(
+        pairs.len(),
+        labels.len(),
+        "two of these tests would claim the same ports: {pairs:?}"
+    );
+}
+
+#[test]
+fn stop_terminates_the_watchdog_and_the_server_it_supervises() {
+    let fixture = Fixture::new("stop", Supervision::Watchdog);
+    fixture.start("pidcheck");
+    let watchdog = fixture.recorded_pid("watchdog");
+    let server = fixture.recorded_pid("server");
+
+    let output = fixture.run(&["local", "--json", "server", "stop", "pidcheck"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stop stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body: Value = serde_json::from_slice(&output.stdout).expect("parse stop JSON");
+    assert_eq!(body["already_stopped"], Value::Bool(false), "{body}");
+
+    assert!(wait_for_exit(watchdog), "the signalled watchdog must exit");
+    assert!(
+        wait_for_exit(server),
+        "the watchdog forwards the SIGTERM, so the server goes with it"
+    );
+}
+
+#[test]
+fn stop_escalating_to_sigkill_takes_the_supervised_server_with_it() {
+    // The watchdog ignores SIGTERM, so `stop` has to escalate. A SIGKILL is
+    // not forwarded either, which used to leave the server running, reparented
+    // to init and still holding the ports and the data directory, while the
+    // command reported success.
+    let fixture = Fixture::new("escalate", Supervision::WatchdogIgnoringSigterm);
+    fixture.start("pidcheck");
+    let watchdog = fixture.recorded_pid("watchdog");
+    let server = fixture.recorded_pid("server");
+
+    let output = fixture.run(&["local", "--json", "server", "stop", "pidcheck"]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stop stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let body: Value = serde_json::from_slice(&output.stdout).expect("parse stop JSON");
+    assert_eq!(body["already_stopped"], Value::Bool(false), "{body}");
+
+    // Success is only reported once the CLI has verified both processes, so
+    // these need no polling.
+    assert!(!is_alive(watchdog), "the watchdog must be SIGKILLed");
+    assert!(
+        !is_alive(server),
+        "a SIGKILLed watchdog cannot forward the signal, so the server it \
+         supervised has to be killed with it"
+    );
 }

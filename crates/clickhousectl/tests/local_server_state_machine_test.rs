@@ -82,16 +82,52 @@ impl Fixture {
         // dependence on platform process names or unrelated user processes.
         write_executable(
             &tools.join("pgrep"),
-            "#!/bin/sh\n[ -f \"$FAKE_CLICKHOUSE_PID_FILE\" ] || exit 1\nfound=1\nwhile IFS='|' read -r pid cwd; do\n  if kill -0 \"$pid\" 2>/dev/null; then\n    printf '%s\\n' \"$pid\"\n    found=0\n  fi\ndone < \"$FAKE_CLICKHOUSE_PID_FILE\"\nexit \"$found\"\n",
+            // `-P <ppid>` is the child lookup in the SIGKILL escalation path.
+            // These fake servers `exec` a sleep and have no children, so there
+            // is nothing to report.
+            r#"#!/bin/sh
+[ "$1" = "-P" ] && exit 1
+[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
+found=1
+while IFS='|' read -r pid cwd; do
+  if kill -0 "$pid" 2>/dev/null; then
+    printf '%s\n' "$pid"
+    found=0
+  fi
+done < "$FAKE_CLICKHOUSE_PID_FILE"
+exit "$found"
+"#,
         );
         write_executable(
             &tools.join("lsof"),
             "#!/bin/sh\n[ -f \"$FAKE_CLICKHOUSE_PID_FILE\" ] || exit 1\nwhile IFS='|' read -r pid cwd; do\n  if kill -0 \"$pid\" 2>/dev/null; then\n    printf 'p%s\\nfcwd\\nn%s\\n' \"$pid\" \"$cwd\"\n  fi\ndone < \"$FAKE_CLICKHOUSE_PID_FILE\"\n",
         );
+        // `ps -o pid=,ppid=,args= -p <pid,...>`: one batched call is the only
+        // shape discovery uses. The fake servers are reparented to init once
+        // the CLI that spawned them exits, so their PPID is 1.
         write_executable(
             &tools.join("ps"),
             &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$HOME/.clickhouse/versions/{VERSION}/clickhouse server\"\n"
+                r#"#!/bin/sh
+targets=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) targets="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
+found=1
+while IFS='|' read -r pid cwd; do
+  case ",$targets," in
+    *",$pid,"*) ;;
+    *) continue ;;
+  esac
+  printf '%5s %5s %s\n' "$pid" 1 "$HOME/.clickhouse/versions/{VERSION}/clickhouse server"
+  found=0
+done < "$FAKE_CLICKHOUSE_PID_FILE"
+exit "$found"
+"#
             ),
         );
         let path = format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.display());

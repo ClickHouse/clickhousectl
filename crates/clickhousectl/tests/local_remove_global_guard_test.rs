@@ -97,17 +97,52 @@ impl Fixture {
         // the machine, and does not depend on platform process names.
         write_executable(
             &tools.join("pgrep"),
-            "#!/bin/sh\n[ -f \"$FAKE_CLICKHOUSE_PID_FILE\" ] || exit 1\nfound=1\nwhile IFS='|' read -r pid cwd version; do\n  if kill -0 \"$pid\" 2>/dev/null; then\n    printf '%s\\n' \"$pid\"\n    found=0\n  fi\ndone < \"$FAKE_CLICKHOUSE_PID_FILE\"\nexit \"$found\"\n",
+            // `-P <ppid>` is the child lookup in the SIGKILL escalation path.
+            // These fake servers `exec` a sleep and have no children, so there
+            // is nothing to report.
+            r#"#!/bin/sh
+[ "$1" = "-P" ] && exit 1
+[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
+found=1
+while IFS='|' read -r pid cwd version; do
+  if kill -0 "$pid" 2>/dev/null; then
+    printf '%s\n' "$pid"
+    found=0
+  fi
+done < "$FAKE_CLICKHOUSE_PID_FILE"
+exit "$found"
+"#,
         );
         write_executable(
             &tools.join("lsof"),
             "#!/bin/sh\n[ -f \"$FAKE_CLICKHOUSE_PID_FILE\" ] || exit 1\nwhile IFS='|' read -r pid cwd version; do\n  if kill -0 \"$pid\" 2>/dev/null; then\n    printf 'p%s\\nfcwd\\nn%s\\n' \"$pid\" \"$cwd\"\n  fi\ndone < \"$FAKE_CLICKHOUSE_PID_FILE\"\n",
         );
-        // `ps -o args= -p <pid>`: the version is what the guard matches on, so
-        // it has to come from the requested PID's own record.
+        // `ps -o pid=,ppid=,args= -p <pid,...>`: one batched call is the only
+        // shape discovery uses. The version is what the guard matches on, so
+        // each row's command line comes from that PID's own record, and the
+        // PPID is 1 because the CLI that spawned these exits immediately.
         write_executable(
             &tools.join("ps"),
-            "#!/bin/sh\nfor arg in \"$@\"; do target=\"$arg\"; done\n[ -f \"$FAKE_CLICKHOUSE_PID_FILE\" ] || exit 1\nwhile IFS='|' read -r pid cwd version; do\n  if [ \"$pid\" = \"$target\" ]; then\n    printf '%s\\n' \"$HOME/.clickhouse/versions/$version/clickhouse server --http_port=8123 --tcp_port=9000\"\n    exit 0\n  fi\ndone < \"$FAKE_CLICKHOUSE_PID_FILE\"\nexit 1\n",
+            r#"#!/bin/sh
+targets=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p) targets="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -f "$FAKE_CLICKHOUSE_PID_FILE" ] || exit 1
+found=1
+while IFS='|' read -r pid cwd version; do
+  case ",$targets," in
+    *",$pid,"*) ;;
+    *) continue ;;
+  esac
+  printf '%5s %5s %s\n' "$pid" 1 "$HOME/.clickhouse/versions/$version/clickhouse server --http_port=8123 --tcp_port=9000"
+  found=0
+done < "$FAKE_CLICKHOUSE_PID_FILE"
+exit "$found"
+"#,
         );
         let path = format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", tools.display());
 

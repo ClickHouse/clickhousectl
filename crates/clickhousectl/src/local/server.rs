@@ -611,27 +611,89 @@ fn send_signal(pid: u32, signal: i32) -> Result<()> {
     }
 }
 
+/// How long a SIGTERM is given before the escalation to SIGKILL: the 500 ms
+/// grace period and the 2 s extension the fixed sleeps used to add up to.
+const TERM_TIMEOUT: Duration = Duration::from_millis(2500);
+/// How long a SIGKILLed process is given to be reaped before it is reported as
+/// still running.
+const KILL_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Poll until `pid` is gone, returning whether it went within `timeout`.
+fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !is_process_alive(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return !is_process_alive(pid);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The direct children of `pid`, read while it is still alive.
+///
+/// The ClickHouse watchdog forwards SIGHUP, SIGINT, SIGQUIT and SIGTERM to the
+/// server it supervises, but a SIGKILL it cannot catch leaves that server
+/// running: the kernel reparents it to init and it keeps holding the ports and
+/// the data directory (issue #664). So the escalation path has to kill the pair,
+/// and it has to read the children before the parent dies, because afterwards
+/// the relation is gone. A process-group kill is not an alternative:
+/// `Command::spawn` leaves the watchdog in clickhousectl's own process group.
+fn child_pids(pid: u32) -> Vec<u32> {
+    let output = std::process::Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+            .filter(|&child| child != 0 && child != pid)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Attempt to terminate a process: SIGTERM, wait, SIGKILL if needed, then verify exit.
+///
+/// `pid` is normally a watchdog, which stops the server it supervises with it.
+/// That holds for the SIGTERM it forwards, but not for a SIGKILL, so the
+/// escalation path signals the supervised processes too and reports success only
+/// once every one of them is gone.
 fn kill_process(pid: u32) -> Result<()> {
     send_signal(pid, libc::SIGTERM)?;
 
-    // Wait briefly for graceful shutdown
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // A watchdog that takes the SIGTERM passes it to the server and exits with
+    // it, so waiting on the watchdog waits on the pair.
+    if wait_for_exit(pid, TERM_TIMEOUT) {
+        return Ok(());
+    }
 
-    if is_process_alive(pid) {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        if is_process_alive(pid) {
-            send_signal(pid, libc::SIGKILL)?;
-            // Give the kernel a moment to reap the process
-            std::thread::sleep(std::time::Duration::from_millis(100));
+    let supervised = child_pids(pid);
+    send_signal(pid, libc::SIGKILL)?;
+    for &child in &supervised {
+        // Losing the race to a child that exited with its parent is not a
+        // failure; the verification below is what decides.
+        if is_process_alive(child) {
+            let _ = send_signal(child, libc::SIGKILL);
         }
     }
 
-    if is_process_alive(pid) {
+    if !wait_for_exit(pid, KILL_TIMEOUT) {
         return Err(Error::Exec(format!(
             "Process {} did not exit after SIGKILL",
             pid
         )));
+    }
+    for child in supervised {
+        if !wait_for_exit(child, KILL_TIMEOUT) {
+            return Err(Error::Exec(format!(
+                "Process {} exited but the server it supervised (PID {}) did not exit after SIGKILL",
+                pid, child
+            )));
+        }
     }
 
     Ok(())
@@ -1094,9 +1156,11 @@ pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
 /// Both sources are consulted because each covers a gap in the other: metadata
 /// is project-scoped but survives a failed process scan, while discovery spans
 /// projects but depends on `pgrep`/`lsof`/`/proc`. The same server appears in
-/// both, so entries are de-duplicated by PID — metadata for a running server
-/// always carries the live PID of the discovered process, because discovery
-/// reports the supervising watchdog that `server start` recorded (issue #664).
+/// both, so entries are de-duplicated by PID: when the watchdog is resolved,
+/// metadata for a running server carries the live PID of the discovered
+/// process, because discovery reports the supervising watchdog that
+/// `server start` recorded (issue #664). Identity is the fallback, so a server
+/// whose watchdog only one of the two sources resolved is still listed once.
 pub(crate) fn select_version_users(
     project_servers: &[ServerInfo],
     global: &[GlobalServerEntry],
@@ -1120,7 +1184,12 @@ pub(crate) fn select_version_users(
         if entry.version.as_deref() != Some(version) {
             continue;
         }
-        if users.iter().any(|user| user.pid == entry.pid) {
+        // `(name, project)` names a server uniquely, so it settles the case
+        // the PID cannot: a heuristic that resolved the watchdog on one side
+        // only would otherwise list the same server twice.
+        if users.iter().any(|user| {
+            user.pid == entry.pid || (user.name == entry.name && user.project == entry.project)
+        }) {
             continue;
         }
         users.push(VersionUser {
@@ -1552,6 +1621,83 @@ mod tests {
         ensure_stopped_by_pid(pid).expect("an already-exited blocker must not abort the removal");
     }
 
+    // ── kill_process escalation (issue #664) ───────────────────────────
+
+    /// SIGKILLs whatever the escalation test still owns, so a failed
+    /// assertion cannot leak a sleeping process.
+    struct KillOnDrop(Vec<u32>);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            for &pid in &self.0 {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    /// A stand-in for a watchdog started with `CLICKHOUSE_WATCHDOG_NO_FORWARD=1`:
+    /// it ignores SIGTERM and supervises a child that a SIGKILL to the parent
+    /// would leave running. Double-forked so both processes belong to init and
+    /// are reaped, instead of lingering as zombies of the test process, which
+    /// `kill(pid, 0)` cannot tell from a running server.
+    ///
+    /// Returns `(watchdog, supervised server)`.
+    fn spawn_sigterm_ignoring_pair() -> (u32, u32) {
+        use std::io::BufRead;
+
+        let mut spawner = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sh -c \"$FAKE_WATCHDOG\" &")
+            .env(
+                "FAKE_WATCHDOG",
+                r#"trap '' TERM; sleep 30 & printf '%s %s\n' "$$" "$!"; wait"#,
+            )
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn the fake watchdog pair");
+        let stdout = spawner.stdout.take().expect("piped stdout");
+        spawner.wait().expect("reap the intermediate shell");
+
+        let mut line = String::new();
+        std::io::BufReader::new(stdout)
+            .read_line(&mut line)
+            .expect("read the pair's PIDs");
+        let mut pids = line
+            .split_whitespace()
+            .map(|pid| pid.parse::<u32>().expect("a PID per field"));
+        let watchdog = pids.next().expect("the watchdog PID");
+        let server = pids.next().expect("the supervised PID");
+        (watchdog, server)
+    }
+
+    #[test]
+    fn the_escalation_path_kills_the_server_the_watchdog_supervised() {
+        let (watchdog, server) = spawn_sigterm_ignoring_pair();
+        let _cleanup = KillOnDrop(vec![watchdog, server]);
+
+        assert_ne!(watchdog, server, "the fixture must fork a real child");
+        assert!(
+            child_pids(watchdog).contains(&server),
+            "the child lookup must see the supervised process"
+        );
+
+        kill_process(watchdog).expect("stopping a server that ignores SIGTERM must succeed");
+
+        assert!(!is_process_alive(watchdog));
+        assert!(
+            !is_process_alive(server),
+            "a SIGKILLed watchdog cannot forward the signal, so the server it \
+             supervised has to be killed with it"
+        );
+    }
+
+    #[test]
+    fn a_process_with_no_children_has_no_supervised_pids() {
+        assert!(child_pids(exited_pid()).is_empty());
+    }
+
     // ── select_version_users / describe_version_users (issue #600) ──────
 
     fn named_info(name: &str, pid: u32, version: &str, project: &str) -> ServerInfo {
@@ -1627,6 +1773,47 @@ mod tests {
                 current_project: true,
             }],
             "the current project's metadata entry wins, so --force can stop it by name"
+        );
+    }
+
+    #[test]
+    fn one_server_reported_under_two_pids_is_still_listed_once() {
+        // Discovery resolved the watchdog and the metadata file still carries
+        // the supervised child (written before this CLI version, or by a
+        // recovery that could not read the parent), so the PIDs differ while
+        // the server is one and the same.
+        let users = select_version_users(
+            &[named_info("default", 4211, "26.9.1.217", "/here")],
+            &[global_entry("default", 4210, Some("26.9.1.217"), "/here")],
+            "26.9.1.217",
+        );
+
+        assert_eq!(
+            users,
+            vec![VersionUser {
+                name: "default".into(),
+                project: "/here".into(),
+                pid: 4211,
+                current_project: true,
+            }],
+            "the VersionInUse message must not name the same server twice"
+        );
+    }
+
+    #[test]
+    fn servers_of_the_same_name_in_different_projects_are_both_listed() {
+        let users = select_version_users(
+            &[named_info("default", 1, "26.9.1.217", "/here")],
+            &[global_entry("default", 2, Some("26.9.1.217"), "/there")],
+            "26.9.1.217",
+        );
+
+        assert_eq!(
+            users
+                .iter()
+                .map(|user| (user.name.as_str(), user.project.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("default", "/here"), ("default", "/there")]
         );
     }
 
