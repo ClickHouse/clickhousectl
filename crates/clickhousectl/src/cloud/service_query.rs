@@ -86,8 +86,9 @@ fn build_query_api_key_request(service_name: &str) -> ApiKeyPostRequest {
 /// `POST /keys` and `PUT .../serviceQueryEndpoint` are answered by different
 /// services, and the second can answer `400` for a key the first has just
 /// created and `GET /keys/{id}` already returns. The wait is bounded and
-/// exponential like [`QUERY_ENDPOINT_READINESS`](super::services): observed
-/// live on 2026-09-02, one retry after 20 s always succeeded.
+/// exponential like the query-endpoint readiness wait in `services.rs`. Live
+/// on 2026-09-02, 1 of 20 back-to-back repairs hit it and the first retry,
+/// one second later, succeeded; the 30 s deadline leaves ample headroom.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct KeyPropagation {
     pub(crate) timeout: Duration,

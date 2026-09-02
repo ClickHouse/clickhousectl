@@ -512,9 +512,12 @@ CONTEXT FOR AGENTS:
 Repairs only the stored credential for SERVICE_ID. The command verifies the
 saved organization, exact management API key ID, and query endpoint ID; it
 then replaces only that key's endpoint binding while preserving all other
-bindings and project credentials. Legacy or non-owned records without this
-metadata are refused. This is an explicit write operation and is never run
-automatically after a query fails.")]
+bindings and project credentials, and deletes the key it replaced. The new key
+can take a few seconds to become visible to the query endpoint and the Query
+API; the command waits that out, and on a running service exits 0 only once a
+probe query with the new key succeeds. Legacy or non-owned records without
+this metadata are refused. This is an explicit write operation and
+is never run automatically after a query fails.")]
     RepairQueryKey {
         /// Service ID whose stored Query API key should be replaced
         service_id: String,
@@ -1953,6 +1956,16 @@ async fn service_query_key_repair(
     if let Some(warning) = &result.cleanup_warning {
         eprint_line(warning);
     }
+    if result.status == "repaired" {
+        verify_repaired_query_key(
+            client,
+            &org_id,
+            service_id,
+            &result.api_key_id,
+            QUERY_ENDPOINT_READINESS,
+        )
+        .await?;
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
@@ -1985,6 +1998,94 @@ async fn service_query_key_repair(
         }
     }
     Ok(())
+}
+
+/// Confirm that the Query API accepts the key a repair just committed (#658).
+///
+/// The new binding reaches the Query API host a moment after the upsert; a
+/// query issued in between is rejected, and the stored-key classifier (#528)
+/// would then read an enabled, bound key as "IP allowlist or secret
+/// mismatch", a verdict that is wrong and points nowhere useful. So repair
+/// probes the endpoint with the new key the way first-use provisioning does,
+/// and exits 0 only once the key works. Only a `running` service is probed:
+/// the probe would wake an idle one, and a stopped one cannot answer at all;
+/// in those cases the next query is the verification, and a note says so. A
+/// concurrent repair's replacement is not this run's to verify.
+async fn verify_repaired_query_key(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_id: &str,
+    readiness: QueryEndpointReadiness,
+) -> CloudResult<()> {
+    let stored_note = format!(
+        "the replacement (API key {api_key_id}) is stored in .clickhouse/credentials.json and \
+         will be verified by the next `clickhousectl cloud service query --id {service_id} \
+         --org-id {org_id} ...`"
+    );
+    let state = match client.get_service(org_id, service_id).await {
+        Ok(service) => service.state,
+        Err(error) => {
+            eprintln!(
+                "Note: could not read the state of service {service_id} to verify the repaired \
+                 query key ({error}); {stored_note}"
+            );
+            return Ok(());
+        }
+    };
+    if state != Some(ServiceState::Running) {
+        eprintln!(
+            "Note: service {service_id} is {}, so the repaired query key was not probed; \
+             {stored_note}",
+            state
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "in an unknown state".to_string()),
+        );
+        return Ok(());
+    }
+    let Some(stored) = credentials::try_get_service_query_key(service_id)? else {
+        return Ok(());
+    };
+    if stored.api_key_id.as_deref() != Some(api_key_id) {
+        return Ok(());
+    }
+
+    wait_for_query_endpoint_readiness(readiness, || {
+        client.api().run_query(
+            service_id,
+            &stored.key_id,
+            &stored.key_secret,
+            "SELECT 1",
+            None,
+            "TabSeparated",
+            false,
+        )
+    })
+    .await
+    .map(|_| ())
+    .map_err(|error| {
+        let repaired = format!(
+            "the query key for service {service_id} was replaced (new API key {api_key_id}) and \
+             stored in .clickhouse/credentials.json"
+        );
+        match error {
+            QueryReadinessError::TimedOut(timeout) => CloudError::new(format!(
+                "{repaired}, but the Query API did not accept it within {timeout:?}; run \
+                 `clickhousectl cloud service query --id {service_id} --org-id {org_id} ...` to \
+                 try again"
+            ))
+            .with_failure(ApiFailure::new(FailureKind::Timeout)),
+            QueryReadinessError::Api(error) => {
+                let converted = client.convert_error(error);
+                CloudError {
+                    message: format!("{repaired}, but verifying it failed: {}", converted.message),
+                    ..converted
+                }
+            }
+        }
+        .at_stage(FailureStage::QueryRequest)
+    })
 }
 
 struct ServiceQueryOptions {
@@ -3073,6 +3174,11 @@ mod tests {
         assert!(help.contains("Legacy or non-owned records"), "{help}");
         assert!(help.contains("is never run"), "{help}");
         assert!(help.contains("automatically after a query fails"), "{help}");
+        assert!(help.contains("the command waits that out"), "{help}");
+        assert!(
+            help.contains("probe query with the new key succeeds"),
+            "{help}"
+        );
     }
 
     #[test]
