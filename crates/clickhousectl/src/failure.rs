@@ -249,6 +249,10 @@ pub fn classify_api_error(error: &clickhouse_cloud_api::Error) -> ApiFailure {
             FailureKind::Transport
         }),
         E::ServiceStopped => ApiFailure::new(FailureKind::ServiceStopped),
+        // The Query API gateway stopped waiting (#644). It is a timeout even
+        // though the transport succeeded, and the status is not invented: the
+        // variant is produced from an HTTP 500 and nothing else.
+        E::QueryTimeout => ApiFailure::with_status(FailureKind::Timeout, 500),
         // An idle service is normally handled by re-sending with the wake
         // confirmation; if the error escapes anyway it is a state problem,
         // not a transport or SQL one.
@@ -549,6 +553,9 @@ mod tests {
             ),
             (E::ServiceStopped, FailureKind::ServiceStopped, None),
             (E::ServiceIdle, FailureKind::Other, None),
+            // The gateway timeout is a timeout, classified from the variant
+            // and not from the 500 status it arrives with (#644).
+            (E::QueryTimeout, FailureKind::Timeout, Some(500)),
             (E::AuthMismatch("nope".into()), FailureKind::Other, None),
             // A status outside the allowlist keeps its class and drops the
             // exact value.

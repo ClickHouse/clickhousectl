@@ -54,4 +54,18 @@ pub enum Error {
     /// service is never woken by the Query API; it must be started explicitly.
     #[error("service is stopped; it must be started before it can be queried")]
     ServiceStopped,
+
+    /// The Query API gateway stopped waiting for the statement (HTTP 500 with
+    /// the body `{"error": "Timeout error."}`).
+    ///
+    /// Only the HTTP response is lost: the statement keeps running on the
+    /// service. That is why this is a variant of its own rather than an
+    /// [`Error::Api`] a caller would have to recognise by its status — a
+    /// caller that treats it as a transient 500 and resends the request runs
+    /// the statement twice, which for an `INSERT` means loading the data
+    /// twice.
+    #[error(
+        "the query timed out at the Query API gateway; the statement may still be running on the service"
+    )]
+    QueryTimeout,
 }

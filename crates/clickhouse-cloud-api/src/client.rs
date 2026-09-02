@@ -88,6 +88,9 @@ fn query_api_sql_error(body: &str) -> Option<(String, String)> {
 /// only print the error see no change; callers that need to know *what kind of
 /// failure this was* read the variant instead of the message.
 fn query_api_error(status: reqwest::StatusCode, body: &str) -> Error {
+    if query_api_reports_timeout(status, body) {
+        return Error::QueryTimeout;
+    }
     if let Some((code, details)) = query_api_sql_error(body) {
         return Error::Sql {
             status: status.as_u16(),
@@ -103,6 +106,25 @@ fn query_api_error(status: reqwest::StatusCode, body: &str) -> Error {
             format!("Query API returned HTTP {status}: {body}")
         },
     }
+}
+
+/// Whether a Query API failure is the gateway giving up on the statement:
+/// HTTP 500 whose body is exactly `{"error": "Timeout error."}`.
+///
+/// The body is parsed as JSON and the `error` field compared in full, the same
+/// shape as [`query_api_reports_stopped_service`]. A substring match on
+/// `Timeout` would also fire on a ClickHouse error *about* a timeout that the
+/// service itself reported, which is a different failure with a different
+/// remedy.
+fn query_api_reports_timeout(status: reqwest::StatusCode, body: &str) -> bool {
+    const TIMEOUT_MESSAGE: &str = "Timeout error.";
+
+    status == reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                value.get("error").and_then(serde_json::Value::as_str) == Some(TIMEOUT_MESSAGE)
+            })
 }
 
 fn query_api_reports_stopped_service(status: reqwest::StatusCode, body: &str) -> bool {
@@ -529,6 +551,64 @@ mod tests {
             error.to_string(),
             "API error (status 502): Query API returned HTTP 502 Bad Gateway: upstream failed"
         );
+    }
+
+    #[test]
+    fn query_api_error_recognizes_the_gateway_timeout() {
+        let error = query_api_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":"Timeout error."}"#,
+        );
+        assert!(
+            matches!(&error, Error::QueryTimeout),
+            "the gateway timeout must be its own variant, got {error:?}"
+        );
+        // The text is what a user sees, so it is pinned: it says the response
+        // was lost, not that the statement was.
+        assert_eq!(
+            error.to_string(),
+            "the query timed out at the Query API gateway; the statement may still be running on \
+             the service"
+        );
+    }
+
+    #[test]
+    fn query_api_error_keeps_other_500s_generic() {
+        for body in [
+            // A different gateway message.
+            r#"{"error":"Internal error."}"#,
+            // A body that merely mentions a timeout: the service reported it,
+            // the gateway did not give up.
+            r#"{"error":"Timeout exceeded while reading from socket"}"#,
+            // Right message, wrong shape.
+            r#"{"error":{"message":"Timeout error."}}"#,
+            // Not JSON at all.
+            "Timeout error.",
+            "",
+        ] {
+            let error = query_api_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body);
+            assert!(
+                matches!(&error, Error::Api { status: 500, .. }),
+                "only the exact gateway timeout body may become QueryTimeout: {body} -> {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn query_api_error_only_reads_the_timeout_out_of_a_500() {
+        // The same body under any other status is not the gateway timeout.
+        for status in [
+            reqwest::StatusCode::PARTIAL_CONTENT,
+            reqwest::StatusCode::BAD_REQUEST,
+            reqwest::StatusCode::BAD_GATEWAY,
+            reqwest::StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            let error = query_api_error(status, r#"{"error":"Timeout error."}"#);
+            assert!(
+                matches!(&error, Error::Api { .. }),
+                "status {status} must not produce QueryTimeout: {error:?}"
+            );
+        }
     }
 
     #[test]
