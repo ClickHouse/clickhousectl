@@ -102,9 +102,14 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
 }
 
 fn cloud_error_to_top_level(e: CloudError) -> Error {
-    match e.kind {
-        CloudErrorKind::Auth => Error::AuthRequired(e.message),
-        CloudErrorKind::Generic => Error::Cloud(e.message),
+    match (e.kind, e.details) {
+        // Auth failures own the exit code (4) and have their own remediation
+        // text, so a structured detail never displaces them.
+        (CloudErrorKind::Auth, _) => Error::AuthRequired(e.message),
+        // A structured detail replaces the prose *only* in JSON mode; its
+        // `message` is the same text, so human output is unchanged (#644).
+        (CloudErrorKind::Generic, Some(details)) => Error::CloudDetailed(details),
+        (CloudErrorKind::Generic, None) => Error::Cloud(e.message),
     }
 }
 
@@ -194,6 +199,49 @@ mod runtime_tests {
         assert!(matches!(&generic, Error::Cloud(message) if message == "boom"));
         assert_eq!(generic.exit_code(), 1);
         assert_eq!(CloudError::new("x").kind, CloudErrorKind::Generic);
+    }
+
+    /// A structured detail travels to the top level, where JSON mode emits
+    /// it; human mode keeps rendering the same message (#644).
+    #[test]
+    fn cloud_error_details_reach_the_top_level_error() {
+        let detail = crate::cloud::output::CloudErrorDetail {
+            code: crate::cloud::output::CloudErrorCode::QueryTimeout,
+            message: "timed out".into(),
+            host: Some("demo.clickhouse.cloud".into()),
+            port: Some(9440),
+            command: Some("clickhouse client".into()),
+        };
+        let error = cloud_error_to_top_level(CloudError::new("timed out").with_details(detail));
+        match &error {
+            Error::CloudDetailed(details) => {
+                assert_eq!(
+                    details.code,
+                    crate::cloud::output::CloudErrorCode::QueryTimeout
+                );
+                assert_eq!(details.host.as_deref(), Some("demo.clickhouse.cloud"));
+            }
+            other => panic!("expected CloudDetailed, got {other:?}"),
+        }
+        // Human output is unchanged, and the exit code is the ordinary 1.
+        assert_eq!(error.to_string(), "timed out");
+        assert_eq!(error.exit_code(), 1);
+    }
+
+    /// An auth failure owns exit code 4 and its own remediation, so a detail
+    /// never displaces it.
+    #[test]
+    fn auth_errors_are_not_displaced_by_details() {
+        let detail = crate::cloud::output::CloudErrorDetail {
+            code: crate::cloud::output::CloudErrorCode::QueryTimeout,
+            message: "nope".into(),
+            host: None,
+            port: None,
+            command: None,
+        };
+        let error = cloud_error_to_top_level(CloudError::auth("nope").with_details(detail));
+        assert!(matches!(&error, Error::AuthRequired(message) if message == "nope"));
+        assert_eq!(error.exit_code(), 4);
     }
 
     #[test]

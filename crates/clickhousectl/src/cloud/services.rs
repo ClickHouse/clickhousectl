@@ -2,7 +2,9 @@ use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanu
 use crate::cloud::backups::BackupConfigCommands;
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials;
-use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
+use crate::cloud::output::{
+    ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
+};
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
@@ -12,11 +14,11 @@ use clickhouse_cloud_api::models::{
     AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
     InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole,
     ServicPrivateEndpointePostRequest, Service, ServiceEndpoint, ServiceEndpointChange,
-    ServiceEndpointChangeProtocol, ServicePasswordPatchRequest, ServicePatchRequest,
-    ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
-    ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
-    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
-    ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
+    ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
+    ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
+    ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
+    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
+    ServiceState, ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
 };
 #[cfg(test)]
 use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Response};
@@ -441,9 +443,12 @@ CONTEXT FOR AGENTS:
   With OAuth (cloud auth login): sends your own bearer token — SQL runs as
   your cloud user with read-only access (SELECT only, no writes); no key
   provisioning and no query endpoint required on the service.
-  For queries that may exceed Query API timeouts, `clickhousectl local use latest`
-  puts the standard `clickhouse` binary on PATH; use `clickhouse client` to connect
-  to the service instead.
+  The Query API times out after about 30 seconds; the statement keeps running
+  on the service but the result is lost. For anything longer (large INSERTs,
+  backfills, `url()` loads), run it over the native protocol instead:
+  `clickhousectl local use latest` puts the standard `clickhouse` binary on
+  PATH, then `clickhouse client --host <host> --secure --port 9440 --user
+  default --password <password>`.
   SQL sources: --query and --queries-file are mutually exclusive. When neither
   is supplied, SQL is read from stdin. --query never reads stdin, so data
   redirected or piped alongside it is an error rather than a silent no-op:
@@ -2075,19 +2080,17 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn run_just_provisioned_service_query(
     client: &CloudClient,
-    service_id: &str,
     key_id: &str,
     key_secret: &str,
     sql: &str,
     database: Option<&str>,
     format: &str,
-    service_name: &str,
-    org_id: &str,
+    target: QueryTarget<'_>,
     readiness: QueryEndpointReadiness,
 ) -> CloudResult<reqwest::Response> {
     let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
         client.api().run_query(
-            service_id,
+            target.service_id,
             key_id,
             key_secret,
             "SELECT 1",
@@ -2099,24 +2102,22 @@ async fn run_just_provisioned_service_query(
     .await
     .map_err(|error| match error {
         QueryReadinessError::TimedOut(timeout) => query_readiness_timeout_error(timeout),
-        QueryReadinessError::Api(error) => {
-            convert_query_error(client, error, service_name, service_id, org_id)
-        }
+        QueryReadinessError::Api(error) => convert_query_error(client, error, target),
     })?;
 
     run_basic_service_query(
         client,
-        service_id,
+        target.service_id,
         key_id,
         key_secret,
         sql,
         database,
         format,
-        service_name,
+        target.service_name,
         confirmed_idle,
     )
     .await
-    .map_err(|error| convert_query_error(client, error, service_name, service_id, org_id))
+    .map_err(|error| convert_query_error(client, error, target))
 }
 
 /// Whether an error means "the Query API endpoint is not (yet) usable by this
@@ -2200,6 +2201,17 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         })?,
     };
     let service_name = or_absent(service.name.as_deref());
+    // Resolved once, from the `GET service` response the query already needed:
+    // the gateway-timeout hint spells out a `clickhouse client` command, and
+    // it must use the service's real native endpoint when the API returned
+    // one (#644).
+    let native = native_secure_endpoint(service.endpoints.as_deref());
+    let target = QueryTarget {
+        service_name: &service_name,
+        service_id: &service_id,
+        org_id: &org_id,
+        native: native.as_ref(),
+    };
 
     let format = options.format.unwrap_or_else(|| {
         if options.json {
@@ -2237,13 +2249,11 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             other => other,
         };
         result.map_err(|error| {
-            convert_query_error(client, error, &service_name, &service_id, &org_id)
-                .at_stage(FailureStage::QueryRequest)
+            convert_query_error(client, error, target).at_stage(FailureStage::QueryRequest)
         })?
     } else {
-        let convert = |error: clickhouse_cloud_api::Error| {
-            convert_query_error(client, error, &service_name, &service_id, &org_id)
-        };
+        let convert =
+            |error: clickhouse_cloud_api::Error| convert_query_error(client, error, target);
         let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)
             .map_err(|error| error.at_stage(FailureStage::QueryRequest))?
         {
@@ -2311,14 +2321,12 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                     failure::set_provisioning_state(ProvisioningState::Provisioned);
                     run_just_provisioned_service_query(
                         client,
-                        &service_id,
                         &key.key_id,
                         &key.key_secret,
                         &sql,
                         options.database.as_deref(),
                         &format,
-                        &service_name,
-                        &org_id,
+                        target,
                         QUERY_ENDPOINT_READINESS,
                     )
                     .await
@@ -2401,20 +2409,132 @@ fn eprint_waking_service(service_name: &str) {
     eprintln!("Service '{service_name}' is idle; waking it (this may take a minute)...");
 }
 
+/// A service's native-protocol (`nativesecure`) endpoint.
+///
+/// Both halves are required. A hint that named the real host but guessed the
+/// port would hand the user a command that does not connect, which is worse
+/// than a command that visibly needs filling in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeEndpoint {
+    host: String,
+    port: i64,
+}
+
+/// What the query path knows about its target service when it has to render
+/// an error: enough to name the service, to point at `service start`, and to
+/// spell out the native-protocol command that routes around the Query API
+/// gateway timeout (#644).
+#[derive(Debug, Clone, Copy)]
+struct QueryTarget<'a> {
+    service_name: &'a str,
+    service_id: &'a str,
+    org_id: &'a str,
+    /// The service's `nativesecure` endpoint, when the `GET service`
+    /// response carried a complete one.
+    native: Option<&'a NativeEndpoint>,
+}
+
+/// The service's `nativesecure` endpoint, when the API returned a complete
+/// one.
+///
+/// Every field of a response model is optional, so a partial endpoint (a host
+/// with no port, or the reverse) counts as absent here rather than being
+/// half-rendered into a command.
+fn native_secure_endpoint(endpoints: Option<&[ServiceEndpoint]>) -> Option<NativeEndpoint> {
+    endpoints?.iter().find_map(|endpoint| {
+        if endpoint.protocol != Some(ServiceEndpointProtocol::Nativesecure) {
+            return None;
+        }
+        Some(NativeEndpoint {
+            host: endpoint.host.clone()?,
+            port: endpoint.port?,
+        })
+    })
+}
+
+/// Stand-in for a host the API did not return. A placeholder, never a guess.
+const NATIVE_HOST_PLACEHOLDER: &str = "<host>";
+
+/// The standard native-protocol TLS port. Only used in the placeholder
+/// command, where there is no endpoint to read a real port from.
+const DEFAULT_NATIVE_SECURE_PORT: i64 = 9440;
+
+/// The `clickhouse client` command that reruns the statement over the native
+/// protocol.
+///
+/// The SQL and the password are always literal placeholders: the user's
+/// statement is never echoed back into an error message, and no credential is
+/// ever rendered.
+fn native_client_command(native: Option<&NativeEndpoint>) -> String {
+    let (host, port) = match native {
+        Some(endpoint) => (endpoint.host.as_str(), endpoint.port),
+        None => (NATIVE_HOST_PLACEHOLDER, DEFAULT_NATIVE_SECURE_PORT),
+    };
+    format!(
+        "clickhouse client --host {host} --secure --port {port} --user default \
+         --password '<password>' --query '<your SQL>'"
+    )
+}
+
+/// The Query API gateway stopped waiting for the statement (#644).
+///
+/// The statement itself is unaffected, so the message leads with that and
+/// points at `system.processes` *before* offering the native-protocol route:
+/// re-running an `INSERT` that is still executing loads the data twice. There
+/// is deliberately no retry anywhere on this path.
+fn query_timeout_error(target: QueryTarget<'_>) -> CloudError {
+    let command = native_client_command(target.native);
+    let endpoint_guidance = if target.native.is_some() {
+        String::new()
+    } else {
+        format!(
+            "\nThe API response carried no native endpoint for this service; read the host and \
+             port from `clickhousectl cloud service get {} --org-id {}`.",
+            target.service_id, target.org_id
+        )
+    };
+    let message = format!(
+        "the query timed out at the Query API gateway, which stops waiting after about 30 \
+         seconds.\nThe statement may still be running on the service; check `SELECT query_id, \
+         elapsed FROM system.processes` before running it again.\n\nHint: run long statements \
+         over the native protocol instead. Install the client with\n  clickhousectl local use \
+         latest\nthen rerun the query with\n  {command}{endpoint_guidance}\nThe password is the \
+         one shown when the service was created; `clickhousectl cloud service reset-password {}` \
+         issues a new one.",
+        target.service_id
+    );
+
+    CloudError::new(message.clone())
+        // Rewriting the message must not lose the classification the variant
+        // already established, and the classification still comes only from
+        // the variant (#450).
+        .with_failure(failure::classify_api_error(
+            &clickhouse_cloud_api::Error::QueryTimeout,
+        ))
+        // The same failure, machine-readable, for `--json` mode.
+        .with_details(CloudErrorDetail {
+            code: CloudErrorCode::QueryTimeout,
+            message,
+            host: target.native.map(|native| native.host.clone()),
+            port: target.native.map(|native| native.port),
+            command: Some(command),
+        })
+}
+
 fn convert_query_error(
     client: &CloudClient,
     error: clickhouse_cloud_api::Error,
-    service_name: &str,
-    service_id: &str,
-    org_id: &str,
+    target: QueryTarget<'_>,
 ) -> CloudError {
     match error {
         clickhouse_cloud_api::Error::ServiceStopped => CloudError::new(format!(
-            "service '{service_name}' is stopped; start it with `clickhousectl cloud service start {service_id} --org-id {org_id}` and retry"
+            "service '{}' is stopped; start it with `clickhousectl cloud service start {} --org-id {}` and retry",
+            target.service_name, target.service_id, target.org_id
         ))
         // Rewriting the message must not lose the classification the variant
         // already established (#450).
         .with_failure(ApiFailure::new(FailureKind::ServiceStopped)),
+        clickhouse_cloud_api::Error::QueryTimeout => query_timeout_error(target),
         other => client.convert_error(other),
     }
 }
@@ -2879,8 +2999,19 @@ mod tests {
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        assert!(help.contains("Query API timeouts"), "{help}");
+        // The gateway limit is named, not alluded to, and so is what happens
+        // to the statement when it fires (#644).
+        assert!(help.contains("times out after about 30 seconds"), "{help}");
+        assert!(help.contains("the statement keeps running"), "{help}");
+        assert!(help.contains("native protocol"), "{help}");
         assert!(help.contains("`clickhousectl local use latest`"), "{help}");
+        // The native-client command, which clap wraps across lines.
+        assert!(
+            help.contains("clickhouse client --host <host> --secure"),
+            "{help}"
+        );
+        assert!(help.contains("--port 9440 --user"), "{help}");
+        assert!(help.contains("--password <password>"), "{help}");
         assert!(help.contains("`clickhouse client`"), "{help}");
         assert!(
             help.contains("--query and --queries-file are mutually exclusive"),
@@ -4743,6 +4874,216 @@ mod tests {
         );
     }
 
+    /// A query target for the error-rendering tests. `native` decides whether
+    /// the timeout hint has a real endpoint to name.
+    fn test_query_target(native: Option<&NativeEndpoint>) -> QueryTarget<'_> {
+        QueryTarget {
+            service_name: "demo",
+            service_id: "svc-1",
+            org_id: "org-1",
+            native,
+        }
+    }
+
+    #[test]
+    fn native_secure_endpoint_picks_the_native_protocol_endpoint() {
+        let endpoints = vec![
+            ServiceEndpoint {
+                host: Some("demo.gcp.clickhouse.cloud".into()),
+                port: Some(8443),
+                protocol: Some(ServiceEndpointProtocol::Https),
+                username: None,
+            },
+            ServiceEndpoint {
+                host: Some("demo.gcp.clickhouse.cloud".into()),
+                port: Some(9440),
+                protocol: Some(ServiceEndpointProtocol::Nativesecure),
+                username: Some("default".into()),
+            },
+        ];
+        assert_eq!(
+            native_secure_endpoint(Some(&endpoints)),
+            Some(NativeEndpoint {
+                host: "demo.gcp.clickhouse.cloud".into(),
+                port: 9440,
+            })
+        );
+    }
+
+    #[test]
+    fn native_secure_endpoint_is_absent_when_the_response_is_incomplete() {
+        // No endpoints at all, and an empty list.
+        assert_eq!(native_secure_endpoint(None), None);
+        assert_eq!(native_secure_endpoint(Some(&[])), None);
+        // Only the HTTPS endpoint.
+        assert_eq!(
+            native_secure_endpoint(Some(&[ServiceEndpoint {
+                host: Some("demo.clickhouse.cloud".into()),
+                port: Some(8443),
+                protocol: Some(ServiceEndpointProtocol::Https),
+                username: None,
+            }])),
+            None
+        );
+        // Every response field is optional, so a half-returned endpoint is
+        // absent rather than half-rendered into a command.
+        for partial in [
+            ServiceEndpoint {
+                host: Some("demo.clickhouse.cloud".into()),
+                port: None,
+                protocol: Some(ServiceEndpointProtocol::Nativesecure),
+                username: None,
+            },
+            ServiceEndpoint {
+                host: None,
+                port: Some(9440),
+                protocol: Some(ServiceEndpointProtocol::Nativesecure),
+                username: None,
+            },
+            ServiceEndpoint {
+                host: Some("demo.clickhouse.cloud".into()),
+                port: Some(9440),
+                protocol: None,
+                username: None,
+            },
+        ] {
+            assert_eq!(
+                native_secure_endpoint(Some(std::slice::from_ref(&partial))),
+                None
+            );
+        }
+    }
+
+    /// The gateway timeout names the limit, warns before a rerun, and hands
+    /// over a native-protocol command built from the service's own endpoint
+    /// (#644).
+    #[test]
+    fn query_timeout_error_hints_the_native_endpoint() {
+        let native = NativeEndpoint {
+            host: "demo.gcp.clickhouse.cloud".into(),
+            port: 9440,
+        };
+        let error = query_timeout_error(test_query_target(Some(&native)));
+
+        assert!(
+            error.message.contains("about 30 seconds"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .contains("SELECT query_id, elapsed FROM system.processes"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("clickhousectl local use latest"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains(
+                "clickhouse client --host demo.gcp.clickhouse.cloud --secure --port 9440 \
+                 --user default --password '<password>' --query '<your SQL>'"
+            ),
+            "{}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .contains("clickhousectl cloud service reset-password svc-1"),
+            "{}",
+            error.message
+        );
+        // With a real endpoint there is nothing to look up.
+        assert!(
+            !error.message.contains("cloud service get"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("<host>"), "{}", error.message);
+
+        // A timeout is exit code 1 (Generic), never an auth failure, and the
+        // classification is the variant's (#450).
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure,
+            Some(ApiFailure::with_status(FailureKind::Timeout, 500))
+        );
+
+        let details = error.details.as_deref().expect("json details");
+        assert_eq!(details.code, CloudErrorCode::QueryTimeout);
+        assert_eq!(details.message, error.message);
+        assert_eq!(details.host.as_deref(), Some("demo.gcp.clickhouse.cloud"));
+        assert_eq!(details.port, Some(9440));
+        assert_eq!(
+            details.command.as_deref(),
+            Some(
+                "clickhouse client --host demo.gcp.clickhouse.cloud --secure --port 9440 --user \
+                 default --password '<password>' --query '<your SQL>'"
+            )
+        );
+    }
+
+    #[test]
+    fn query_timeout_error_falls_back_to_a_host_placeholder() {
+        let error = query_timeout_error(test_query_target(None));
+
+        assert!(
+            error.message.contains(
+                "clickhouse client --host <host> --secure --port 9440 --user default \
+                 --password '<password>' --query '<your SQL>'"
+            ),
+            "{}",
+            error.message
+        );
+        // No endpoint in the response, so the message says where to get one.
+        assert!(
+            error
+                .message
+                .contains("clickhousectl cloud service get svc-1 --org-id org-1"),
+            "{}",
+            error.message
+        );
+
+        let details = error.details.as_deref().expect("json details");
+        // Absent means omitted: no fabricated host or port.
+        assert_eq!(details.host, None);
+        assert_eq!(details.port, None);
+        assert!(
+            details
+                .command
+                .as_deref()
+                .is_some_and(|command| command.contains("--host <host>")),
+            "{details:?}"
+        );
+        let json = serde_json::to_value(details).expect("details serialize");
+        assert_eq!(json["code"], "query_timeout");
+        assert!(json.get("host").is_none(), "{json}");
+        assert!(json.get("port").is_none(), "{json}");
+    }
+
+    /// The message is rendered from the target and fixed placeholders only,
+    /// so neither the statement nor any credential can reach it.
+    #[test]
+    fn query_timeout_error_never_echoes_sql_or_credentials() {
+        let native = NativeEndpoint {
+            host: "demo.gcp.clickhouse.cloud".into(),
+            port: 9440,
+        };
+        for target in [test_query_target(Some(&native)), test_query_target(None)] {
+            let error = query_timeout_error(target);
+            assert!(error.message.contains("'<your SQL>'"), "{}", error.message);
+            assert!(
+                error.message.contains("--password '<password>'"),
+                "{}",
+                error.message
+            );
+        }
+    }
+
     /// Every query-path error a boundary rewrites keeps a classification
     /// derived from what actually failed, not from its message (#450).
     #[test]
@@ -4759,9 +5100,7 @@ mod tests {
         let stopped = convert_query_error(
             &client,
             clickhouse_cloud_api::Error::ServiceStopped,
-            "demo",
-            "svc-1",
-            "org-1",
+            test_query_target(None),
         );
         assert!(stopped.message.contains("is stopped"));
         assert_eq!(
@@ -4776,9 +5115,7 @@ mod tests {
                 code: "62".into(),
                 details: "Syntax error".into(),
             },
-            "demo",
-            "svc-1",
-            "org-1",
+            test_query_target(None),
         );
         assert_eq!(
             sql.failure,

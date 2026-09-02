@@ -1,3 +1,4 @@
+use crate::cloud::output::CloudErrorDetail;
 use crate::dotenv::DotenvVars;
 use crate::failure::{ApiFailure, FailureKind, FailureStage};
 use std::env;
@@ -21,6 +22,11 @@ pub struct CloudError {
     /// message. `None` when no boundary claimed it, which
     /// [`CloudError::at_stage`] reports as [`FailureKind::Other`].
     pub failure: Option<ApiFailure>,
+    /// Machine-readable form of this failure, for `--json` mode (#644).
+    /// `None` for the ordinary case, where the message is the whole error;
+    /// `Some` when the remedy is structured enough that an agent should not
+    /// have to parse prose for it.
+    pub details: Option<Box<CloudErrorDetail>>,
 }
 
 impl CloudError {
@@ -29,6 +35,7 @@ impl CloudError {
             message: message.into(),
             kind: CloudErrorKind::Generic,
             failure: None,
+            details: None,
         }
     }
 
@@ -37,12 +44,20 @@ impl CloudError {
             message: message.into(),
             kind: CloudErrorKind::Auth,
             failure: None,
+            details: None,
         }
     }
 
     /// Attach the classification of the failure this error stands for.
     pub fn with_failure(mut self, failure: ApiFailure) -> Self {
         self.failure = Some(failure);
+        self
+    }
+
+    /// Attach the machine-readable form of this failure, which `--json` mode
+    /// emits instead of the prose message.
+    pub fn with_details(mut self, details: CloudErrorDetail) -> Self {
+        self.details = Some(Box::new(details));
         self
     }
 

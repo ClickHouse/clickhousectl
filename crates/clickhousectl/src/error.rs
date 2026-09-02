@@ -678,6 +678,14 @@ pub enum Error {
     #[error("{0}")]
     Cloud(String),
 
+    /// A cloud failure that also carries a machine-readable detail (#644).
+    ///
+    /// Human mode prints exactly what [`Error::Cloud`] would — the detail's
+    /// own message — so the two modes never disagree; `--json` emits the
+    /// detail instead of the prose.
+    #[error("{}", .0.message)]
+    CloudDetailed(Box<crate::cloud::output::CloudErrorDetail>),
+
     #[error("{0}")]
     AuthRequired(String),
 

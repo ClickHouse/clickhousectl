@@ -665,6 +665,34 @@ printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
 
 Only real input counts as a conflict. A redirected file, a closed pipe, `/dev/null` and a pipe that already holds data are all answered immediately, and a pipe that is open but silent is given 250 ms to produce its first byte before the CLI treats stdin as empty and runs the query. So an empty non-terminal stdin, which is what CI runners and coding agents normally have, leaves `--query` working as before, a pipe nobody writes to can never hang the command, and a producer that is merely slow to start still gets caught. The residual is narrow and deliberate: a producer that has written nothing within those 250 ms is indistinguishable from no input at all.
 
+The Query API gateway stops waiting after about 30 seconds. When it does, the request fails (exit code `1`) but **the statement keeps running on the service** — only the HTTP response is lost. The error says so, points at `SELECT query_id, elapsed FROM system.processes` so a still-running statement is not started a second time, and prints the `clickhouse client` command for the service's own native endpoint. Nothing is retried automatically: re-sending a large `INSERT` would load the data twice.
+
+For anything that may run longer than that — large `INSERT`s, backfills, `url()` loads — use the native protocol from the start:
+
+```bash
+clickhousectl local use latest   # puts the standard `clickhouse` binary on PATH
+clickhouse client --host <nativesecure-host> --secure --port 9440 \
+  --user default --password '<password>' --query '<your SQL>'
+```
+
+`clickhousectl cloud service get <service-id>` lists the service endpoints, including the `nativesecure` host and port. The password is the one shown when the service was created; `clickhousectl cloud service reset-password <service-id>` issues a new one.
+
+Under `--json` (or when a coding agent is detected) that failure is emitted as one JSON object on stderr, in the same envelope local errors use:
+
+```json
+{
+  "error": {
+    "code": "query_timeout",
+    "message": "the query timed out at the Query API gateway, ...",
+    "host": "my-service.us-east-1.aws.clickhouse.cloud",
+    "port": 9440,
+    "command": "clickhouse client --host my-service.us-east-1.aws.clickhouse.cloud --secure --port 9440 --user default --password '<password>' --query '<your SQL>'"
+  }
+}
+```
+
+`code` is a stable machine-readable identifier. `host` and `port` are omitted when the API response carried no native endpoint, in which case `command` names the `<host>` placeholder instead. The suggested command never contains your SQL or your password: both are placeholders. Cloud failures that have no structured remedy stay prose on stderr (`Error: <message>`).
+
 Whatever the source, the SQL must be a single statement. The Query API runs exactly one statement per request, so a multi-statement `.sql` script is rejected by ClickHouse (error 62, `Multi-statements are not allowed`). Run statements one invocation at a time, or put a real client on PATH with `clickhousectl local use latest` and run the script through `clickhouse client` connected to the service.
 
 Private endpoint IDs supplied to `private-endpoint create --endpoint-id` and `service update --add-private-endpoint-id` are format-checked before the request is sent, because adding one registers it for the whole organization and a typo has to be unpicked from both the service and the organization. Each provider uses its own format — AWS a `vpce-` VPC endpoint ID, GCP the numeric Private Service Connect connection ID, Azure the private endpoint Resource ID or `resourceGuid` — and the provider is not known when the flag is parsed, so only provider-independent mistakes are rejected (exit code `2`): empty values, values containing whitespace, and any value carrying `vpce-` that is not exactly a well-formed AWS VPC endpoint ID (`vpce-` plus 8 or 17 lowercase hex characters) — which also catches a pasted VPC endpoint ARN or endpoint service name. Azure Resource IDs (values starting with `/`) are exempt from that check, since an Azure resource may itself be named `vpce-...`. Whether the endpoint actually exists and belongs to you is not validated by the CLI or, currently, by the Cloud API. Removal flags are never format-checked, so an already-registered bogus ID stays removable.

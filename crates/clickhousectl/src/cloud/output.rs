@@ -57,6 +57,66 @@ pub(crate) fn print_line(line: impl std::fmt::Display) {
     let _ = writeln!(std::io::stdout(), "{line}");
 }
 
+// ── structured errors (issue #644) ─────────────────────────────────────────
+//
+// Cloud failures are prose on stderr: `Error: <message>`. That is fine for a
+// human, but an agent asked to recover from one has to parse it. A failure
+// whose remedy is a concrete command therefore also carries a machine-readable
+// detail, emitted under `--json` in the same envelope local errors use
+// (#475/#608): one object on stderr, `{"error": {"code": ..., "message": ...}}`,
+// with a `command` a caller can run.
+
+/// Stable machine-readable code for a cloud failure that carries structured
+/// remediation. Literal wire values only, and never widened by anything the
+/// API sends: the vocabulary is this enum.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudErrorCode {
+    /// The Query API gateway stopped waiting for the statement (#644).
+    QueryTimeout,
+}
+
+/// One cloud failure, as `--json` reports it.
+///
+/// `message` is the same text human mode prints, so the two modes never
+/// disagree. The remaining fields are the structured form of the hint: absent
+/// fields are omitted rather than serialized as `null`, matching the response
+/// models.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CloudErrorDetail {
+    pub code: CloudErrorCode,
+    pub message: String,
+    /// Native-protocol host to reconnect to, when the API returned one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// Native-protocol port paired with `host`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub port: Option<i64>,
+    /// A command that acts on the failure. Never carries the user's SQL or
+    /// any credential: both are placeholders.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct CloudErrorOutput<'a> {
+    error: &'a CloudErrorDetail,
+}
+
+/// Write exactly one cloud error object to stderr, for `--json` mode.
+///
+/// Serialization failure is swallowed for the same reason [`eprint_line`]
+/// swallows a write failure: the exit code reports the outcome, so a closed
+/// stderr must not become a panic.
+pub fn print_error(detail: &CloudErrorDetail) {
+    use std::io::Write;
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    if serde_json::to_writer_pretty(&mut stderr, &CloudErrorOutput { error: detail }).is_ok() {
+        let _ = writeln!(stderr);
+    }
+}
+
 /// Serialize `value` and print it as an indented, human-readable tree.
 ///
 /// - Object keys are printed verbatim (camelCase, as the API returns them).

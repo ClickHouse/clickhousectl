@@ -446,13 +446,14 @@ impl LocalErrorOutput {
 
             // ── bounded fallback ────────────────────────────────────────────
             // Subprocess text and `Postgres` (OS text from a failed psql
-            // exec) are foreign output. `Cloud`, `AuthRequired` and `Skills`
-            // belong to other command surfaces and are never printed through
-            // this envelope; `ChildExit` passes the child's status through
+            // exec) are foreign output. `Cloud`, `CloudDetailed`,
+            // `AuthRequired` and `Skills` belong to other command surfaces
+            // and are never printed through this envelope; `ChildExit` passes the child's status through
             // without an error object at all.
             Error::Exec(_)
             | Error::Postgres(_)
             | Error::Cloud(_)
+            | Error::CloudDetailed(_)
             | Error::AuthRequired(_)
             | Error::Skills(_)
             | Error::ChildExit(_) => {

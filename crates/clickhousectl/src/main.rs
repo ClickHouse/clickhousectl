@@ -209,6 +209,10 @@ async fn run_parsed(cli: Cli) -> (i32, bool, bool) {
         Commands::Local(args) => json_output(args.json),
         _ => false,
     };
+    let cloud_json = match &cli.command {
+        Commands::Cloud(args) => json_output(args.json),
+        _ => false,
+    };
 
     let result = run(cli.command).await;
 
@@ -223,17 +227,33 @@ async fn run_parsed(cli: Cli) -> (i32, bool, bool) {
         Ok(()) => (0, false, false),
         Err(e) => {
             let is_child_exit = matches!(&e, Error::ChildExit(_));
+            // A cloud failure that carries a machine-readable detail is
+            // emitted as one JSON object on stderr in JSON mode (#644),
+            // matching the envelope local errors use. Cloud failures without
+            // a detail stay prose: nothing structured has been resolved for
+            // them, and inventing a code per message is exactly the
+            // text-derived vocabulary this codebase avoids.
+            let structured_cloud_error =
+                cloud_json && matches!(&e, Error::CloudDetailed(_)) && !is_child_exit;
             if !is_child_exit {
-                if local_json {
-                    local::output::print_error(&e);
-                } else {
-                    use std::io::Write;
-                    // Not `eprintln!`, which panics on a closed stderr — see
-                    // `telemetry::print_first_run_notice`.
-                    let _ = writeln!(std::io::stderr(), "Error: {}", e);
+                match &e {
+                    _ if local_json => local::output::print_error(&e),
+                    Error::CloudDetailed(details) if cloud_json => {
+                        cloud::output::print_error(details);
+                    }
+                    _ => {
+                        use std::io::Write;
+                        // Not `eprintln!`, which panics on a closed stderr — see
+                        // `telemetry::print_first_run_notice`.
+                        let _ = writeln!(std::io::stderr(), "Error: {}", e);
+                    }
                 }
             }
-            (e.exit_code(), is_child_exit, local_json && !is_child_exit)
+            (
+                e.exit_code(),
+                is_child_exit,
+                (local_json && !is_child_exit) || structured_cloud_error,
+            )
         }
     };
 

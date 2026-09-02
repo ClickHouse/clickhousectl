@@ -7975,3 +7975,285 @@ async fn clickpipe_scale_with_a_single_flag_sends_the_request() {
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
     assert_eq!(body["replicas"], 4);
 }
+
+// ── the Query API gateway timeout (issue #644) ─────────────────────────────
+//
+// The gateway stops waiting after roughly 30 seconds and answers HTTP 500
+// with `{"error":"Timeout error."}`. The statement keeps running on the
+// service, so the CLI must (a) say so, (b) point at `system.processes` before
+// a rerun, (c) hand over the native-protocol command built from the service's
+// own `nativesecure` endpoint, and (d) never resend the statement itself.
+
+/// The gateway's timeout body, verbatim.
+const QUERY_GATEWAY_TIMEOUT_BODY: &str = r#"{"error":"Timeout error."}"#;
+
+const QUERY_TEST_NATIVE_HOST: &str = "demo.gcp.clickhouse.cloud";
+
+/// A control plane whose `GET service` response carries both endpoints, the
+/// shape a real service has.
+async fn start_mock_control_plane_with_native_endpoint() -> MockServer {
+    let mock = MockServer::start().await;
+    let stub_service = serde_json::json!({
+        "result": {
+            "id": QUERY_TEST_SERVICE_ID,
+            "name": "demo",
+            "endpoints": [
+                { "protocol": "https", "host": QUERY_TEST_NATIVE_HOST, "port": 8443 },
+                {
+                    "protocol": "nativesecure",
+                    "host": QUERY_TEST_NATIVE_HOST,
+                    "port": 9440,
+                    "username": "default",
+                },
+            ],
+        },
+        "status": 200,
+        "requestId": "stub-service-get",
+    });
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_service))
+        .mount(&mock)
+        .await;
+    mock
+}
+
+/// Run `cloud service query` with API-key auth against a query host that
+/// fails with `status`/`body`. Returns the process output and the query host,
+/// so a test can count how many times the statement was actually sent.
+async fn invoke_service_query_against_failing_query_host(
+    control: &MockServer,
+    status: u16,
+    body: &str,
+    extra_args: &[&str],
+) -> (std::process::Output, MockServer) {
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(status).set_body_string(body))
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("home")).unwrap();
+    let mut command = service_query_process(dir.path(), control, &query_host);
+    command.args(extra_args);
+    let output = command
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+
+    (output, query_host)
+}
+
+#[tokio::test]
+async fn query_gateway_timeout_hints_the_native_client_without_retrying() {
+    let control = start_mock_control_plane_with_native_endpoint().await;
+    let (output, query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        QUERY_GATEWAY_TIMEOUT_BODY,
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stops waiting after about 30 seconds"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("The statement may still be running on the service"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("SELECT query_id, elapsed FROM system.processes"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("clickhousectl local use latest"),
+        "{stderr}"
+    );
+    // The host and port come from the mocked service response, not from a
+    // placeholder or a guess.
+    assert!(
+        stderr.contains(&format!(
+            "clickhouse client --host {QUERY_TEST_NATIVE_HOST} --secure --port 9440 --user \
+             default --password '<password>' --query '<your SQL>'"
+        )),
+        "{stderr}"
+    );
+    // The user's SQL is never echoed back, and no credential appears.
+    assert!(!stderr.contains("SELECT 1"), "{stderr}");
+    assert!(!stderr.contains("fake-secret-for-tests"), "{stderr}");
+    // The anonymous 500 the old code surfaced is gone.
+    assert!(
+        !stderr.contains("Internal Server Error"),
+        "the gateway timeout must not be reported as a bare 500: {stderr}"
+    );
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+
+    // Exactly one attempt: a statement that may still be running is never
+    // resent.
+    assert_eq!(
+        query_host.received_requests().await.unwrap().len(),
+        1,
+        "the gateway timeout must not be retried"
+    );
+}
+
+#[tokio::test]
+async fn query_gateway_timeout_without_endpoints_points_at_service_get() {
+    // The default stub service carries no `endpoints` at all.
+    let control = start_mock_control_plane_with_service().await;
+    let (output, query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        QUERY_GATEWAY_TIMEOUT_BODY,
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("clickhouse client --host <host> --secure --port 9440"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "clickhousectl cloud service get 11111111-2222-3333-4444-555555555555 --org-id org-1"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn query_gateway_timeout_json_emits_a_structured_error() {
+    let control = start_mock_control_plane_with_native_endpoint().await;
+    let (output, _query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        QUERY_GATEWAY_TIMEOUT_BODY,
+        &["--json"],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error: Value = serde_json::from_str(stderr.trim())
+        .unwrap_or_else(|e| panic!("stderr is not one JSON object ({e}): {stderr}"));
+    assert_eq!(error["error"]["code"], "query_timeout");
+    assert_eq!(error["error"]["host"], QUERY_TEST_NATIVE_HOST);
+    assert_eq!(error["error"]["port"], 9440);
+    assert_eq!(
+        error["error"]["command"],
+        format!(
+            "clickhouse client --host {QUERY_TEST_NATIVE_HOST} --secure --port 9440 --user \
+             default --password '<password>' --query '<your SQL>'"
+        )
+    );
+    let message = error["error"]["message"]
+        .as_str()
+        .expect("message is a string");
+    assert!(message.contains("about 30 seconds"), "{message}");
+    assert!(
+        message.contains("SELECT query_id, elapsed FROM system.processes"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn query_gateway_timeout_json_omits_an_absent_endpoint() {
+    let control = start_mock_control_plane_with_service().await;
+    let (output, _query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        QUERY_GATEWAY_TIMEOUT_BODY,
+        &["--json"],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error: Value = serde_json::from_str(stderr.trim())
+        .unwrap_or_else(|e| panic!("stderr is not one JSON object ({e}): {stderr}"));
+    assert_eq!(error["error"]["code"], "query_timeout");
+    // Absent means omitted, never a fabricated host or a `null`.
+    assert!(error["error"].get("host").is_none(), "{stderr}");
+    assert!(error["error"].get("port").is_none(), "{stderr}");
+    assert!(
+        error["error"]["command"]
+            .as_str()
+            .is_some_and(|command| command.contains("--host <host>")),
+        "{stderr}"
+    );
+}
+
+/// The control case: a 500 that is *not* the gateway timeout keeps the
+/// generic API error, in both output modes.
+#[tokio::test]
+async fn other_query_500s_keep_the_generic_api_error() {
+    let control = start_mock_control_plane_with_native_endpoint().await;
+    let (output, query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        r#"{"error":"Internal error."}"#,
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            r#"Query API returned HTTP 500 Internal Server Error: {"error":"Internal error."}"#
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("30 seconds"), "{stderr}");
+    assert!(!stderr.contains("clickhouse client"), "{stderr}");
+    assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
+
+    // In JSON mode it stays prose too: no structured detail was resolved for
+    // it, so no code is invented.
+    let (json_output, _) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        r#"{"error":"Internal error."}"#,
+        &["--json"],
+    )
+    .await;
+    let stderr = String::from_utf8_lossy(&json_output.stderr);
+    assert!(stderr.starts_with("Error: "), "{stderr}");
+    assert!(
+        serde_json::from_str::<Value>(stderr.trim()).is_err(),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
+async fn service_query_help_names_the_gateway_timeout() {
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .args(["cloud", "service", "query", "--help"])
+        .output()
+        .expect("render service query help");
+
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("times out after about 30 seconds"), "{help}");
+    assert!(help.contains("the statement keeps running"), "{help}");
+    assert!(help.contains("clickhousectl local use latest"), "{help}");
+    assert!(
+        help.contains("clickhouse client --host <host> --secure"),
+        "{help}"
+    );
+    assert!(help.contains("--port 9440 --user"), "{help}");
+}
