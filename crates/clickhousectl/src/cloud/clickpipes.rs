@@ -418,6 +418,9 @@ POSTGRES INPUT RULES:
   or one --table-mapping-json.
   --auth IAM_ROLE requires --iam-role. With basic auth, --iam-role is rejected
   instead of being silently ignored.
+  --auth basic requires --username and --password. With IAM_ROLE auth they are
+  rejected instead of being silently ignored: the role ARN is the whole
+  credential.
   --replication-slot-name is valid only with --replication-mode cdc_only.
 
 POSTGRES TABLE MAPPINGS:
@@ -901,13 +904,13 @@ pub struct PostgresCreateArgs {
     #[arg(long)]
     pub pg_database: String,
 
-    /// Username
-    #[arg(long)]
-    pub username: String,
+    /// Username (basic auth only; invalid with --auth IAM_ROLE)
+    #[arg(long, required_unless_present = "iam_role")]
+    pub username: Option<String>,
 
-    /// Password
-    #[arg(long)]
-    pub password: String,
+    /// Password (basic auth only; invalid with --auth IAM_ROLE)
+    #[arg(long, required_unless_present = "iam_role")]
+    pub password: Option<String>,
 
     /// Table mappings as schema.table:target_table (repeatable)
     ///
@@ -2858,6 +2861,20 @@ fn validate_postgres_create_args(
             "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE",
         ));
     }
+    // IAM_ROLE authentication has no username or password: the role ARN is the
+    // whole credential. Reject the pair rather than silently dropping it, the
+    // same way basic auth rejects --iam-role.
+    if args.auth == "IAM_ROLE" && (args.username.is_some() || args.password.is_some()) {
+        return Err(CloudError::new(
+            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
+        ));
+    }
+    // Clap enforces this for parsed input; hand-built args reach it here.
+    if args.auth == "basic" && (args.username.is_none() || args.password.is_none()) {
+        return Err(CloudError::new(
+            "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
+        ));
+    }
     if args.replication_slot_name.is_some() && args.replication_mode != "cdc_only" {
         return Err(CloudError::new(
             "--replication-slot-name can only be used with --replication-mode cdc_only",
@@ -2931,12 +2948,20 @@ fn build_postgres_request(
         .as_deref()
         .map(std::fs::read_to_string)
         .transpose()?;
+    // `validate_postgres_create_args` has already tied the pair to the auth
+    // mode: basic auth has both flags, IAM_ROLE has neither. So the pair being
+    // absent means IAM_ROLE, where `iamRole` is the whole credential and the
+    // `credentials` object must stay off the wire entirely.
+    let credentials = match (args.username.as_deref(), args.password.as_deref()) {
+        (Some(username), Some(password)) => Some(PLAIN {
+            username: username.to_string(),
+            password: password.to_string(),
+        }),
+        _ => None,
+    };
     let source = ClickPipeMutatePostgresSource {
         r#type: Some(parse_enum(&args.postgres_type)?),
-        credentials: PLAIN {
-            username: args.username.clone(),
-            password: args.password.clone(),
-        },
+        credentials,
         host: args.host.clone(),
         port: i64::from(args.port),
         database: args.pg_database.clone(),
@@ -5072,8 +5097,8 @@ mod tests {
         assert_eq!(args.host, "postgres.example");
         assert_eq!(args.port, 5433);
         assert_eq!(args.pg_database, "source-db");
-        assert_eq!(args.username, "user");
-        assert_eq!(args.password, "password");
+        assert_eq!(args.username.as_deref(), Some("user"));
+        assert_eq!(args.password.as_deref(), Some("password"));
         assert_eq!(args.table_mappings, ["public.one:one", "public.two:two"]);
         assert_eq!(args.postgres_type, "neon");
         assert_eq!(args.replication_mode, "cdc_only");
@@ -5336,6 +5361,83 @@ mod tests {
     }
 
     #[test]
+    fn postgres_iam_role_auth_does_not_require_username_or_password() {
+        // IAM_ROLE authentication has no username or password: the role ARN is
+        // the whole credential, so clap must not demand the pair.
+        let mut args = vec![
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--table-mapping",
+            "public.events:events",
+            "--auth",
+            "IAM_ROLE",
+            "--iam-role",
+            "arn:aws:iam::123456789012:role/clickpipe",
+        ];
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(parsed.username, None);
+        assert_eq!(parsed.password, None);
+        assert_eq!(parsed.auth, "IAM_ROLE");
+
+        // The pair is rejected rather than silently dropped, the same way
+        // basic auth rejects --iam-role.
+        args.extend(["--username", "user", "--password", "password"]);
+        let command = parse_clickpipe(&args);
+        assert_eq!(
+            command.postgres_create_validation_error().as_deref(),
+            Some("--username and --password cannot be used with --auth IAM_ROLE; use --auth basic")
+        );
+    }
+
+    #[test]
+    fn postgres_basic_auth_still_requires_username_and_password() {
+        for omitted in ["--username", "--password"] {
+            let args: Vec<&str> = [
+                "create",
+                "postgres",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--host",
+                "postgres.example",
+                "--pg-database",
+                "source-db",
+                "--table-mapping",
+                "public.events:events",
+                "--username",
+                "user",
+                "--password",
+                "password",
+            ]
+            .into_iter()
+            .collect();
+            let position = args.iter().position(|arg| *arg == omitted).unwrap();
+            let mut args = args;
+            args.drain(position..position + 2);
+
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "omitting {omitted} should be a usage error"
+            );
+            assert!(error.to_string().contains(omitted), "{error}");
+        }
+    }
+
+    #[test]
     fn postgres_cross_value_relationships_have_specific_validation_errors() {
         let mut basic_with_role = postgres_cli_args(Some("public.events:events"));
         basic_with_role.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
@@ -5409,6 +5511,17 @@ mod tests {
         assert!(help.contains("or one --table-mapping-json"), "{help}");
         assert!(
             help.contains("--auth IAM_ROLE requires --iam-role"),
+            "{help}"
+        );
+        assert!(
+            help.contains("--auth basic requires --username and --password"),
+            "{help}"
+        );
+        assert!(
+            help.contains(
+                "the role ARN is the whole
+  credential"
+            ),
             "{help}"
         );
         assert!(help.contains("silently ignored"), "{help}");
@@ -5488,6 +5601,10 @@ mod tests {
             "`USAGE` on each mapped schema",
             "https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic",
             "https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips",
+            // IAM role authentication takes no username or password.
+            "`--username` and `--password` are basic-auth only",
+            "no `credentials` object is sent",
+            "--auth IAM_ROLE --iam-role \"$POSTGRES_IAM_ROLE_ARN\"",
         ] {
             assert!(
                 postgres.contains(expected),
@@ -5497,7 +5614,7 @@ mod tests {
 
         assert_eq!(
             postgres.matches("--publication-name clickpipes").count(),
-            5,
+            6,
             "every PostgreSQL example must use the publication created in the prerequisites"
         );
     }
@@ -7133,8 +7250,8 @@ mod tests {
             host: "postgres.example".into(),
             port: 5432,
             pg_database: "source-db".into(),
-            username: "user".into(),
-            password: "password".into(),
+            username: Some("user".into()),
+            password: Some("password".into()),
             table_mappings: vec!["public.events:events".into()],
             table_mappings_json: vec![],
             postgres_type: "postgres".into(),
@@ -7184,8 +7301,9 @@ mod tests {
         let source = request.source.postgres.as_ref().expect("postgres source");
         assert_eq!(source.r#type.as_ref().unwrap().to_string(), "postgres");
         assert_eq!(source.authentication.to_string(), "basic");
-        assert_eq!(source.credentials.username, "user");
-        assert_eq!(source.credentials.password, "password");
+        let credentials = source.credentials.as_ref().expect("basic credentials");
+        assert_eq!(credentials.username, "user");
+        assert_eq!(credentials.password, "password");
         assert_eq!(source.host, "postgres.example");
         assert_eq!(source.port, 5432);
         assert_eq!(source.database, "source-db");
@@ -7227,8 +7345,10 @@ mod tests {
         args.host = "rds.example".into();
         args.port = 65535;
         args.pg_database = "production".into();
-        args.username = "iam-user".into();
-        args.password = "iam-password".into();
+        // IAM_ROLE auth has no username or password: the role ARN is the whole
+        // credential, so the `credentials` object is omitted entirely.
+        args.username = None;
+        args.password = None;
         args.table_mappings = vec![
             "public.users:users_raw".into(),
             "audit.events:audit_events".into(),
@@ -7268,8 +7388,7 @@ mod tests {
         let source = request.source.postgres.as_ref().expect("postgres source");
         assert_eq!(source.r#type.as_ref().unwrap().to_string(), "rdspostgres");
         assert_eq!(source.authentication.to_string(), "IAM_ROLE");
-        assert_eq!(source.credentials.username, "iam-user");
-        assert_eq!(source.credentials.password, "iam-password");
+        assert_eq!(source.credentials, None);
         assert_eq!(source.host, "rds.example");
         assert_eq!(source.port, 65535);
         assert_eq!(source.database, "production");

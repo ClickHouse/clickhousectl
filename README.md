@@ -948,6 +948,16 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --table-mapping "public.users:public_users" \
   --table-mapping "public.orders:public_orders"
 
+# From an RDS or Aurora PostgreSQL with IAM role authentication (CDC)
+# IAM_ROLE auth takes no --username/--password: the role ARN is the credential
+clickhousectl cloud clickpipe create postgres <service-id> \
+  --name my-rds-pg-pipe \
+  --host db.abcdefg.us-east-1.rds.amazonaws.com --pg-database mydb \
+  --postgres-type rdspostgres \
+  --auth IAM_ROLE --iam-role "$POSTGRES_IAM_ROLE_ARN" \
+  --publication-name clickpipes \
+  --table-mapping "public.users:public_users"
+
 # From PostgreSQL with a private or self-signed CA (CDC)
 clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-private-pg-pipe \
@@ -1092,6 +1102,9 @@ PostgreSQL ClickPipes require at least one table mapping, from either
 (see [PostgreSQL table mappings](#postgresql-table-mappings)). Ports must be in
 `1..=65535`. `--auth IAM_ROLE` requires `--iam-role`; the CLI rejects
 `--iam-role` with basic auth rather than silently ignoring it.
+`--username` and `--password` are basic-auth only: they are required for the
+default `--auth basic`, and rejected with `--auth IAM_ROLE`, where the role ARN
+is the whole credential and no `credentials` object is sent.
 `--replication-slot-name` is valid only with `--replication-mode cdc_only`.
 
 #### PostgreSQL table mappings

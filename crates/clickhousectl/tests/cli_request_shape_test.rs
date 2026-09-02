@@ -3344,6 +3344,38 @@ fn postgres_args_minimal() -> Vec<String> {
     .collect()
 }
 
+/// The minimal create argument set for IAM_ROLE authentication: no
+/// `--username`/`--password`, because the role ARN is the whole credential.
+fn postgres_args_iam_role() -> Vec<String> {
+    [
+        "clickpipe",
+        "create",
+        "postgres",
+        "svc-id",
+        "--name",
+        "t",
+        "--host",
+        "pg",
+        "--port",
+        "5432",
+        "--pg-database",
+        "test",
+        "--table-mapping",
+        "public.t:t",
+        "--replication-mode",
+        "cdc",
+        "--org-id",
+        "org",
+        "--auth",
+        "IAM_ROLE",
+        "--iam-role",
+        "arn:aws:iam::123:role/x",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 #[tokio::test]
 async fn postgres_invalid_inputs_exit_as_usage_errors_before_auth_file_or_network() {
     let mock = MockServer::start().await;
@@ -3565,16 +3597,63 @@ async fn postgres_tls_host_serializes_when_provided() {
 #[tokio::test]
 async fn postgres_iam_role_serializes_when_provided() {
     let mock = start_mock_clickpipes_api().await;
-    let mut args = postgres_args_minimal();
-    args.push("--auth".into());
-    args.push("IAM_ROLE".into());
-    args.push("--iam-role".into());
-    args.push("arn:aws:iam::123:role/x".into());
+    let args = postgres_args_iam_role();
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let body = invoke_cli_capture_body(&mock, &arg_refs).await;
     assert_eq!(
         body["source"]["postgres"]["iamRole"], "arn:aws:iam::123:role/x",
         "iamRole should round-trip the user-provided value"
+    );
+    assert_eq!(body["source"]["postgres"]["authentication"], "IAM_ROLE");
+}
+
+#[tokio::test]
+async fn postgres_iam_role_create_omits_the_credentials_object() {
+    // IAM_ROLE authentication has no username or password: the role ARN is the
+    // whole credential, so `credentials` must be absent from the wire rather
+    // than sent as an empty username/password pair.
+    let mock = start_mock_clickpipes_api().await;
+    let args = postgres_args_iam_role();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert!(
+        body["source"]["postgres"].get("credentials").is_none(),
+        "credentials must not be sent for IAM_ROLE auth, got {}",
+        body["source"]["postgres"]
+    );
+}
+
+#[tokio::test]
+async fn postgres_basic_auth_create_sends_the_credentials_object() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = postgres_args_minimal();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(body["source"]["postgres"]["credentials"]["username"], "u");
+    assert_eq!(body["source"]["postgres"]["credentials"]["password"], "p");
+    assert_eq!(body["source"]["postgres"]["authentication"], "basic");
+}
+
+#[tokio::test]
+async fn postgres_credentials_with_iam_role_auth_are_rejected() {
+    let mock = MockServer::start().await;
+    let mut args = postgres_args_iam_role();
+    args.push("--username".into());
+    args.push("u".into());
+    args.push("--password".into());
+    args.push("p".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+    // Reported as a usage error against the owning command, the same way
+    // `--iam-role` with basic auth is: clap cannot express "forbidden for this
+    // value of another argument", so the check runs after parsing.
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic"
+        ),
+        "{stderr}"
     );
 }
 
