@@ -439,11 +439,11 @@ CONTEXT FOR AGENTS:
   endpoint already authorizes it. Otherwise, a per-service read+write key is
   auto-provisioned and stored in .clickhouse/credentials.json.
   A stored key rejected with HTTP 401/403 is never replaced automatically: the
-  CLI first reads the key's management record. Only a key that no longer exists
-  has its stale local record removed (the next query re-provisions); a disabled,
+  CLI reads the key's management record only to say why. A deleted, disabled,
   expired, unbound or IP-restricted key is reported with its key ID and left
-  untouched. Use `cloud service repair-query-key <service-id>` to replace only
-  that credential deliberately.
+  untouched, and nothing is changed. To replace only that credential
+  deliberately, use `cloud service repair-query-key <service-id>`; it also drops
+  a deleted key's stale endpoint binding.
   With OAuth (cloud auth login): sends your own bearer token — SQL runs as
   your cloud user with read-only access (SELECT only, no writes); no key
   provisioning and no query endpoint required on the service.

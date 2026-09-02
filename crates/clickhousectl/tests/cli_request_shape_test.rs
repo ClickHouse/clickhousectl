@@ -5201,7 +5201,11 @@ async fn an_expired_stored_query_key_is_reported_and_never_replaced() {
 }
 
 #[tokio::test]
-async fn a_deleted_stored_query_key_removes_only_its_own_local_record() {
+async fn a_deleted_stored_query_key_is_reported_and_never_replaced() {
+    // The key is gone from the organization, so the stored secret can never
+    // work again. The record is still kept: it is what lets repair-query-key
+    // find the key's UUID and drop it from the endpoint binding while binding
+    // the replacement. Rerunning the query fails identically until then.
     let control = start_mock_control_plane_with_service().await;
     mount_stored_key_get(
         &control,
@@ -5219,56 +5223,17 @@ async fn a_deleted_stored_query_key_removes_only_its_own_local_record() {
         )),
         "{stderr}"
     );
-    assert!(stderr.contains("has been removed"), "{stderr}");
+    assert!(stderr.contains("no replacement was created"), "{stderr}");
     assert!(
-        stderr.contains(&format!(
-            "clickhousectl cloud service query --id {QUERY_TEST_SERVICE_ID} --org-id org-1 --query '<your SQL>'"
-        )),
+        stderr.contains("still listed on the service's Query API endpoint"),
         "{stderr}"
     );
-    // The stale record is gone, and nothing else in the file moved: the other
-    // service's key and the project's management credentials are intact.
-    assert_control_plane_only_read(&control, "deleted").await;
-    let stored = read_credentials(project.path());
-    assert!(
-        stored["service_query_keys"]
-            .get(QUERY_TEST_SERVICE_ID)
-            .is_none(),
-        "{stored}"
-    );
-    assert_eq!(
-        stored["service_query_keys"][PRESERVED_QUERY_SERVICE_ID],
-        original["service_query_keys"][PRESERVED_QUERY_SERVICE_ID]
-    );
-    assert_eq!(stored["api_key"], original["api_key"]);
-    assert_eq!(stored["api_secret"], original["api_secret"]);
-}
-
-#[tokio::test]
-async fn a_deleted_stored_query_key_with_pending_cleanup_keeps_its_record() {
-    // The record still names superseded keys awaiting deletion (#527). Those
-    // IDs are the only handle on the leftover keys, so the record stays and
-    // the repair command is the way to finish.
-    let control = start_mock_control_plane_with_service().await;
-    mount_stored_key_get(
-        &control,
-        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
-    )
-    .await;
-    let (output, original, project) = run_rejected_stored_key_query(
-        &control,
-        401,
-        Some(OLD_QUERY_TEST_KEY_UUID),
-        &["superseded-key-uuid"],
-        &[],
-    )
-    .await;
-
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("awaiting deletion"), "{stderr}");
     assert!(stderr.contains(&repair_hint()), "{stderr}");
-    assert_control_plane_only_read(&control, "deleted with pending cleanup").await;
+    assert!(
+        !stderr.contains("has been removed") && !stderr.contains("Rerun the query"),
+        "{stderr}"
+    );
+    assert_control_plane_only_read(&control, "deleted").await;
     assert_eq!(read_credentials(project.path()), original);
 }
 
@@ -5505,14 +5470,14 @@ async fn stored_query_key_rejections_emit_structured_json_errors() {
     );
     assert_eq!(read_credentials(project.path()), original);
 
-    // Deleted: the only mutating verdict, and the command is a rerun.
+    // Deleted: read-only like every other verdict, and the command is repair.
     let control = start_mock_control_plane_with_service().await;
     mount_stored_key_get(
         &control,
         ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
     )
     .await;
-    let (output, _original, project) = run_rejected_stored_key_query(
+    let (output, original, project) = run_rejected_stored_key_query(
         &control,
         401,
         Some(OLD_QUERY_TEST_KEY_UUID),
@@ -5523,18 +5488,9 @@ async fn stored_query_key_rejections_emit_structured_json_errors() {
     assert_eq!(output.status.code(), Some(1));
     let error = parse_error(&output);
     assert_eq!(error["error"]["code"], "query_key_deleted");
-    assert!(
-        error["error"]["command"]
-            .as_str()
-            .unwrap()
-            .starts_with("clickhousectl cloud service query --id"),
-        "{error}"
-    );
-    assert!(
-        read_credentials(project.path())["service_query_keys"]
-            .get(QUERY_TEST_SERVICE_ID)
-            .is_none()
-    );
+    assert_eq!(error["error"]["api_key_id"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(error["error"]["command"], repair_hint());
+    assert_eq!(read_credentials(project.path()), original);
 
     // Unverified: no command is pushed for an ambiguous verdict.
     let control = start_mock_control_plane_with_service().await;

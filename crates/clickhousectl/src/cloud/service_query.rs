@@ -598,8 +598,9 @@ fn repair_command(service_id: &str, org_id: &str) -> String {
 /// What the management API says about the stored key itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum KeyRecordState {
-    /// `GET /keys/{id}` returned 404: the key is gone, so the local secret
-    /// cannot be anything but stale.
+    /// `GET /keys/{id}` returned 404: the key is gone. The stored secret can
+    /// no longer work, and the key's UUID is still listed on the endpoint;
+    /// `repair-query-key` replaces the one and drops the other.
     Deleted,
     /// The key exists with `state: disabled`.
     Disabled,
@@ -633,23 +634,13 @@ fn classify_key_record(key: Option<&ApiKey>, now: DateTime<Utc>) -> KeyRecordSta
     }
 }
 
-/// What happened to the local record of a key that no longer exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LocalRecordOutcome {
-    /// The stale record was removed; the next query re-provisions.
-    Removed,
-    /// The record still lists superseded keys awaiting deletion, and their
-    /// IDs must not be discarded (#527): the record stays and the repair
-    /// command finishes the cleanup.
-    KeptForCleanup,
-    /// Another process replaced the record between the read and the remove.
-    ChangedMeanwhile,
-}
-
 /// The verdict on a rejected stored key.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RejectedKeyReason {
-    Deleted(LocalRecordOutcome),
+    /// The organization no longer has the key. Like every other verdict this
+    /// changes nothing: the record stays, and `repair-query-key` is the one
+    /// path that replaces the key and drops its stale endpoint binding.
+    Deleted,
     Disabled,
     Expired {
         expired_at: DateTime<Utc>,
@@ -750,44 +741,19 @@ fn rejected_query_key_error(reason: &RejectedKeyReason, ctx: RejectedKeyContext<
     let key = ctx.api_key_id;
     let repair = ctx.repair();
     let (code, message, command, ip_access_list) = match reason {
-        RejectedKeyReason::Deleted(outcome) => {
-            let rerun = format!(
-                "clickhousectl cloud service query --id {} --org-id {} --query '<your SQL>'",
-                ctx.service_id, ctx.org_id
-            );
-            let (message, command) = match outcome {
-                LocalRecordOutcome::Removed => (
-                    format!(
-                        "{prefix}: management API key {key} no longer exists in organization \
-                         {}, so the stored credential was stale and has been removed from \
-                         .clickhouse/credentials.json. Rerun the query to provision a new key \
-                         for this service:\n  {rerun}",
-                        ctx.org_id
-                    ),
-                    rerun,
-                ),
-                LocalRecordOutcome::KeptForCleanup => (
-                    format!(
-                        "{prefix}: management API key {key} no longer exists in organization \
-                         {}, but the stored record still lists superseded keys awaiting \
-                         deletion, so it was kept. Finish the cleanup and replace the \
-                         credential with\n  {repair}",
-                        ctx.org_id
-                    ),
-                    repair.clone(),
-                ),
-                LocalRecordOutcome::ChangedMeanwhile => (
-                    format!(
-                        "{prefix}: management API key {key} no longer exists in organization \
-                         {}, but another process replaced the stored credential meanwhile, so \
-                         nothing was removed. Rerun the query:\n  {rerun}",
-                        ctx.org_id
-                    ),
-                    rerun,
-                ),
-            };
-            (CloudErrorCode::QueryKeyDeleted, message, command, None)
-        }
+        RejectedKeyReason::Deleted => (
+            CloudErrorCode::QueryKeyDeleted,
+            format!(
+                "{prefix}: management API key {key} no longer exists in organization {}, so \
+                 the stored credential can no longer work. It was kept and no replacement was \
+                 created; the key's UUID is also still listed on the service's Query API \
+                 endpoint. Nothing was changed. Replace the key and clean up that binding \
+                 with\n  {repair}\nthen rerun the query",
+                ctx.org_id
+            ),
+            repair,
+            None,
+        ),
         RejectedKeyReason::Disabled => (
             CloudErrorCode::QueryKeyDisabled,
             format!(
@@ -923,35 +889,14 @@ fn legacy_query_key_error(service_id: &str, status: u16) -> CloudError {
         })
 }
 
-/// Drop the local record of a key the organization no longer has, unless the
-/// record is still needed: superseded key IDs awaiting cleanup must not be
-/// discarded (#527), and a record another process already replaced is not
-/// ours to remove.
-async fn forget_deleted_query_key(
-    stored: &ServiceQueryKey,
-    service_id: &str,
-    api_key_id: &str,
-) -> CloudResult<LocalRecordOutcome> {
-    if !stored.pending_cleanup_api_key_ids.is_empty() {
-        return Ok(LocalRecordOutcome::KeptForCleanup);
-    }
-    let lock = credentials::lock_query_provisioning().await?;
-    let removed =
-        credentials::remove_service_query_key_if_api_key_matches(service_id, api_key_id, &lock)?;
-    Ok(if removed {
-        LocalRecordOutcome::Removed
-    } else {
-        LocalRecordOutcome::ChangedMeanwhile
-    })
-}
-
 /// The error to report for a stored key the Query API rejected with `status`
 /// (401/403), after classifying the rejection against the key's management
 /// record and the endpoint binding.
 ///
-/// The only mutation on any path is removing the local record of a key that
-/// no longer exists. Every other verdict, and every lookup failure, leaves the
-/// credentials file and the organization exactly as they were.
+/// No path here mutates anything: every verdict, and every lookup failure,
+/// leaves the credentials file and the organization exactly as they were. The
+/// management lookups exist only so the error can say what happened and name
+/// the one deliberate way forward, `repair-query-key`.
 pub(crate) async fn rejected_stored_query_key_error(
     client: &CloudClient,
     stored: &ServiceQueryKey,
@@ -980,12 +925,7 @@ pub(crate) async fn rejected_stored_query_key_error(
         }
     };
     let reason = match classify_key_record(key.as_ref(), Utc::now()) {
-        KeyRecordState::Deleted => {
-            match forget_deleted_query_key(stored, service_id, api_key_id).await {
-                Ok(outcome) => RejectedKeyReason::Deleted(outcome),
-                Err(error) => return error,
-            }
-        }
+        KeyRecordState::Deleted => RejectedKeyReason::Deleted,
         KeyRecordState::Disabled => RejectedKeyReason::Disabled,
         KeyRecordState::Expired { expired_at } => RejectedKeyReason::Expired { expired_at },
         KeyRecordState::Active { ip_access_list } => {
@@ -1560,9 +1500,9 @@ mod tests {
     fn every_verdict_has_a_stable_code_and_the_deliberate_repair_path() {
         let cases = [
             (
-                RejectedKeyReason::Deleted(LocalRecordOutcome::KeptForCleanup),
+                RejectedKeyReason::Deleted,
                 CloudErrorCode::QueryKeyDeleted,
-                "awaiting deletion",
+                "no longer exists in organization org-1",
             ),
             (
                 RejectedKeyReason::Disabled,
@@ -1631,15 +1571,13 @@ mod tests {
                 "{reason:?}: {}",
                 error.message
             );
-            // Every non-deleted verdict says out loud that nothing was replaced.
-            if !matches!(reason, RejectedKeyReason::Deleted(_)) {
-                assert!(
-                    error.message.contains("no replacement was created")
-                        || error.message.contains("Nothing was changed"),
-                    "{reason:?}: {}",
-                    error.message
-                );
-            }
+            // Every verdict says out loud that nothing was replaced.
+            assert!(
+                error.message.contains("no replacement was created")
+                    || error.message.contains("Nothing was changed"),
+                "{reason:?}: {}",
+                error.message
+            );
             // The failure is the Query API's own rejection (#450), and a
             // rejected *stored* key is never an auth-required exit.
             assert_eq!(
@@ -1653,33 +1591,37 @@ mod tests {
     }
 
     #[test]
-    fn a_removed_stale_record_points_at_rerunning_the_query() {
-        let error = rejected_query_key_error(
-            &RejectedKeyReason::Deleted(LocalRecordOutcome::Removed),
-            ctx(),
-        );
+    fn a_deleted_key_keeps_the_record_and_points_at_repair() {
+        // The stored credential is kept even though it can never work again:
+        // the record is what lets `repair-query-key` find the key's UUID and
+        // drop it from the endpoint binding along with binding the
+        // replacement. Rerunning the query is not the way forward, so it is
+        // not the suggested command.
+        let error = rejected_query_key_error(&RejectedKeyReason::Deleted, ctx());
         let details = error.details.as_deref().unwrap();
         assert_eq!(details.code, CloudErrorCode::QueryKeyDeleted);
         assert!(
-            error.message.contains("has been removed"),
+            error
+                .message
+                .contains("It was kept and no replacement was created"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .contains("still listed on the service's Query API endpoint"),
+            "{}",
+            error.message
+        );
+        assert!(
+            !error.message.contains("removed") && !error.message.contains("Rerun the query"),
             "{}",
             error.message
         );
         assert_eq!(
             details.command.as_deref(),
-            Some(
-                "clickhousectl cloud service query --id svc-1 --org-id org-1 --query '<your SQL>'"
-            )
-        );
-
-        let changed = rejected_query_key_error(
-            &RejectedKeyReason::Deleted(LocalRecordOutcome::ChangedMeanwhile),
-            ctx(),
-        );
-        assert!(
-            changed.message.contains("nothing was removed"),
-            "{}",
-            changed.message
+            Some("clickhousectl cloud service repair-query-key svc-1 --org-id org-1")
         );
     }
 

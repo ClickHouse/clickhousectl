@@ -78,8 +78,8 @@ pub(crate) fn print_line(line: impl std::fmt::Display) {
 pub enum CloudErrorCode {
     /// The Query API gateway stopped waiting for the statement (#644).
     QueryTimeout,
-    /// The stored Query API key no longer exists in the organization, so the
-    /// stale local record was removed; the next query re-provisions (#528).
+    /// The stored Query API key no longer exists in the organization; the
+    /// record was kept and `repair-query-key` replaces it (#528).
     QueryKeyDeleted,
     /// The stored Query API key exists but an administrator disabled it; it
     /// was neither replaced nor removed (#528).
