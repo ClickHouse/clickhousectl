@@ -843,7 +843,14 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
             let repair_stderr = String::from_utf8_lossy(&repaired.stderr).to_string();
             let waited = repair_stderr.contains(KEY_PROPAGATION_NOTICE);
             if !repaired.status.success() {
-                summary.print(round);
+                // A failed repair may have recorded its rolled-back key as
+                // pending on the record; the registry must know that ID.
+                if let Ok(stored) = cli.stored_key(&service_id) {
+                    for pending in stored.pending_cleanup_api_key_ids {
+                        cleanup.register_api_key(pending);
+                    }
+                }
+                summary.print(repair_iterations);
                 return Err(cli_failure("service repair-query-key", &repaired).into());
             }
             let result: Value = serde_json::from_slice(&repaired.stdout)?;
@@ -859,15 +866,16 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
             let query = cli.query(&service_id, true)?;
             let query_elapsed = started.elapsed();
             let first_try = query.status.success();
+            let mut recovered = Ok(());
             if !first_try {
                 let stderr = String::from_utf8_lossy(&query.stderr);
                 eprintln!(
                     "  diag: round {round}: the query right after the repair failed: {}",
-                    first_line(&stderr)
+                    stderr.trim()
                 );
                 // Keep the run going to measure how often this happens; the
                 // summary fails the test at the end.
-                poll_until(
+                recovered = poll_until(
                     "the replacement key to be accepted",
                     rejection_timeout,
                     ctx.poll_interval,
@@ -880,9 +888,13 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
                         }
                     },
                 )
-                .await?;
+                .await;
             }
             summary.note_repair(round, repair_elapsed, waited, first_try, query_elapsed);
+            if let Err(error) = recovered {
+                summary.print(repair_iterations);
+                return Err(error);
+            }
 
             assert_key_gone(&client, &ctx.org_id, &current_api_key_id).await?;
             assert_single_owned_key(
@@ -1563,7 +1575,7 @@ impl StressSummary {
 
     fn print(&self, planned_repairs: u64) {
         eprintln!(
-            "  summary: {} of {planned_repairs} repairs ran",
+            "  summary: {} of {planned_repairs} planned repairs completed",
             self.repairs.len()
         );
         for (round, repair, waited, first_try, query) in &self.repairs {
