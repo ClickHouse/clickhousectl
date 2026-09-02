@@ -1,6 +1,6 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
-use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
+use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
@@ -79,6 +79,12 @@ const MONGODB_READ_PREFERENCES: &[&str] = &[
     "secondaryPreferred",
     "nearest",
 ];
+const PUBSUB_FORMATS: &[&str] = &["JSONEachRow", "Avro", "Protobuf"];
+const PUBSUB_AUTHS: &[&str] = &["SERVICE_ACCOUNT"];
+const PUBSUB_SEEK_TYPES: &[&str] = &["latest", "earliest", "timestamp"];
+/// `maxLength` of the Pub/Sub subscription filter in the spec, so an over-long
+/// CEL expression is a usage error instead of a rejected request.
+const PUBSUB_FILTER_MAX_LENGTH: usize = 256;
 
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
@@ -201,13 +207,14 @@ the pipe itself, so read them with `clickhousectl cloud clickpipe get <service>
     },
 
     /// Discover a source schema without creating a pipe (beta)
-    #[command(after_help = "\\
+    #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Infers the schema (column name + ClickHouse type) for a Kafka, Kinesis or
-  object-storage source without creating a ClickPipe. Useful for filling in
-  --column on `clickpipe create`.
-  Related: `clickhousectl cloud clickpipe create kafka|kinesis|object-storage` to
-  create a pipe with the discovered columns.")]
+  Infers the schema (column name + ClickHouse type) for a Kafka, Kinesis,
+  object-storage or Google Cloud Pub/Sub source without creating a ClickPipe.
+  Useful for filling in --column on `clickpipe create`.
+  Related: `clickhousectl cloud clickpipe create
+  kafka|kinesis|object-storage|pubsub` to create a pipe with the discovered
+  columns.")]
     SchemaDiscover {
         /// Service ID
         service_id: String,
@@ -272,6 +279,10 @@ pub enum ClickPipeSchemaDiscoverCommands {
     /// Discover schema from an object-storage source (S3, GCS, Azure Blob Storage)
     #[command(name = "object-storage")]
     ObjectStorage(Box<ObjectStorageSourceFields>),
+
+    /// Discover schema from a Google Cloud Pub/Sub topic (limited preview)
+    #[command(name = "pubsub")]
+    PubSub(Box<PubSubSourceFields>),
 }
 
 #[derive(Subcommand)]
@@ -441,6 +452,36 @@ DOCUMENTATION:
     /// Create a ClickPipe from BigQuery
     #[command(name = "bigquery")]
     BigQuery(BigQueryCreateArgs),
+
+    /// Create a ClickPipe from Google Cloud Pub/Sub
+    #[command(
+        name = "pubsub",
+        after_help = "\
+PUB/SUB INPUT RULES:
+  GCP Pub/Sub ClickPipes are in limited preview: contact support to enable the
+  feature for your organization before creating a pipe.
+  --topic takes the topic name, not the fully-qualified projects/.../topics/...
+  path; the project comes from --project-id.
+  --seek-type has no default because it decides which messages the pipe reads.
+  --seek-timestamp is required with --seek-type timestamp and rejected with the
+  other seek types, which is what the API does.
+  --ack-deadline is in seconds and must be between 10 and 600.
+  --filter takes a Pub/Sub CEL subscription filter of at most 256 characters.
+  --enable-ordering needs the publisher to send ordering keys; when it is
+  omitted the request leaves ordering at the ClickPipes default.
+
+PUB/SUB SERVICE ACCOUNT KEY:
+  --service-account-file takes the path to the GCP service account JSON key
+  file, or - to read the key from stdin. The file contents are base64-encoded
+  and sent as source.pubsub.serviceAccountKey.serviceAccountFile; the key is
+  never taken from the command line, so it stays out of process listings and
+  shell history, and it is never echoed back in output or errors.
+
+DOCUMENTATION:
+  ClickPipes sources:
+    https://clickhouse.com/docs/integrations/clickpipes"
+    )]
+    PubSub(PubSubCreateArgs),
 }
 
 /// Destination-permission flags shared by every `clickpipe create` subcommand.
@@ -1121,6 +1162,113 @@ pub struct BigQueryCreateArgs {
     pub org_id: Option<String>,
 }
 
+/// Source-connection fields for a Google Cloud Pub/Sub ClickPipe source.
+/// Flattened into both `PubSubCreateArgs` (pipe creation) and the
+/// schema-discover pubsub subcommand so the source field set has a single
+/// definition, the way `KafkaSourceFields` does for Kafka.
+///
+/// Requiredness follows `ClickPipePostPubSubSource`: the fields the library
+/// types as `T` are required flags. `--auth` is the exception the spec allows
+/// for: it is required on the wire but has exactly one accepted value, so it
+/// defaults instead of making every invocation repeat it.
+#[derive(Args, Debug)]
+pub struct PubSubSourceFields {
+    /// Pub/Sub topic name (not the fully-qualified path)
+    #[arg(long)]
+    pub topic: String,
+
+    /// GCP project ID that owns the Pub/Sub topic
+    #[arg(long)]
+    pub project_id: String,
+
+    /// Format of messages in the Pub/Sub topic
+    #[arg(long, value_parser = PossibleValuesParser::new(PUBSUB_FORMATS))]
+    pub format: String,
+
+    /// Path to the GCP service account JSON key file, or - to read it from stdin
+    ///
+    /// The contents are base64-encoded and sent as the service account key;
+    /// the path itself is never sent, and the key is never accepted inline so
+    /// it stays out of process listings and shell history.
+    #[arg(long, value_name = "PATH")]
+    pub service_account_file: String,
+
+    /// Starting position for consuming the subscription
+    ///
+    /// No default: this decides whether the pipe reads the backlog
+    /// (earliest), only new messages (latest), or from --seek-timestamp.
+    #[arg(long, value_parser = PossibleValuesParser::new(PUBSUB_SEEK_TYPES))]
+    pub seek_type: String,
+
+    /// Timestamp to seek to (ISO 8601 / RFC 3339)
+    ///
+    /// Required with --seek-type timestamp and rejected with any other seek
+    /// type, matching the API.
+    #[arg(
+        long,
+        value_name = "TIMESTAMP",
+        value_parser = parse_datetime,
+        required_if_eq("seek_type", "timestamp"),
+    )]
+    pub seek_timestamp: Option<String>,
+
+    /// Authentication method to use with GCP Pub/Sub
+    #[arg(
+        long,
+        default_value = "SERVICE_ACCOUNT",
+        value_parser = PossibleValuesParser::new(PUBSUB_AUTHS),
+    )]
+    pub auth: String,
+
+    /// Pub/Sub subscription filter expression (CEL, at most 256 characters)
+    #[arg(long, value_parser = parse_pubsub_filter)]
+    pub filter: Option<String>,
+
+    /// Enable ordered delivery (needs messages published with ordering keys)
+    #[arg(long)]
+    pub enable_ordering: bool,
+
+    /// Acknowledgement deadline for messages, in seconds (10-600)
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(i64).range(10..=600),
+    )]
+    pub ack_deadline: Option<i64>,
+}
+
+#[derive(Args, Debug)]
+pub struct PubSubCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub source: PubSubSourceFields,
+
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+    #[arg(long = "column")]
+    pub columns: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+
+    /// Organization ID (auto-detected if not specified)
+    #[arg(long)]
+    pub org_id: Option<String>,
+}
+
 pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -> CloudResult<()> {
     match command {
         ClickPipeCommands::List { service_id, org_id } => {
@@ -1274,6 +1422,9 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
             }
             ClickPipeCreateCommands::BigQuery(args) => {
                 clickpipe_create_bigquery(client, &args, json).await
+            }
+            ClickPipeCreateCommands::PubSub(args) => {
+                clickpipe_create_pubsub(client, &args, json).await
             }
         },
     }
@@ -1696,6 +1847,134 @@ async fn clickpipe_create_kinesis(
     Ok(())
 }
 
+/// Validate a Pub/Sub subscription filter against the spec's 256-character
+/// limit, so an over-long CEL expression is a clap usage error instead of a
+/// request the API rejects. The message reports the length only, never the
+/// expression, which can name topic attributes.
+fn parse_pubsub_filter(value: &str) -> Result<String, String> {
+    let length = value.chars().count();
+    if length > PUBSUB_FILTER_MAX_LENGTH {
+        return Err(format!(
+            "filter is {length} characters; the Pub/Sub subscription filter limit is {PUBSUB_FILTER_MAX_LENGTH}"
+        ));
+    }
+    Ok(value.to_string())
+}
+
+/// Parse `--seek-timestamp` into the library's UTC timestamp. clap already
+/// validates the format with `parse_datetime`, so this keeps the builder total
+/// rather than being a second gate the user can hit.
+fn parse_pubsub_seek_timestamp(value: &str) -> CloudResult<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|datetime| datetime.with_timezone(&chrono::Utc))
+        .map_err(|error| {
+            CloudError::new(format!(
+                "invalid --seek-timestamp '{value}': expected ISO 8601 / RFC 3339 format (e.g. 2026-04-10T12:00:00Z): {error}"
+            ))
+        })
+}
+
+/// Build a `ClickPipePostPubSubSource` from the CLI args, reading the GCP
+/// service-account key up front so a bad path or an unreadable key fails
+/// before any network call. Shared by the `clickpipe create pubsub` and
+/// `clickpipe schema-discover <SERVICE_ID> pubsub` handlers, so discovery and
+/// creation send an identical `pubsub` source.
+fn build_pubsub_source(
+    args: &PubSubSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostPubSubSource> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostPubSubSource, ClickPipePostPubSubSourceSeektype, ServiceAccount,
+    };
+
+    let seek_type: ClickPipePostPubSubSourceSeektype = parse_enum(&args.seek_type)?;
+    // The API rejects a seekTimestamp that does not match the seek type. clap
+    // can require the flag for `timestamp` but cannot forbid it for the other
+    // values, so the inverse relationship is checked here.
+    if args.seek_timestamp.is_some() && seek_type != ClickPipePostPubSubSourceSeektype::Timestamp {
+        return Err(CloudError::new(format!(
+            "--seek-timestamp can only be used with --seek-type timestamp, not --seek-type {}",
+            args.seek_type
+        )));
+    }
+
+    Ok(ClickPipePostPubSubSource {
+        topic: args.topic.clone(),
+        project_id: args.project_id.clone(),
+        format: parse_enum(&args.format)?,
+        authentication: parse_enum(&args.auth)?,
+        seek_type,
+        seek_timestamp: args
+            .seek_timestamp
+            .as_deref()
+            .map(parse_pubsub_seek_timestamp)
+            .transpose()?,
+        service_account_key: ServiceAccount {
+            service_account_file: read_gcp_service_account_file(&args.service_account_file)?,
+        },
+        filter: args.filter.clone(),
+        enable_ordering: if args.enable_ordering {
+            Some(true)
+        } else {
+            None
+        },
+        ack_deadline: args.ack_deadline,
+    })
+}
+
+/// Build the schema-discovery request body for a Pub/Sub source, from the same
+/// helper `clickpipe create pubsub` uses; every other source key is absent.
+fn build_pubsub_schema_discovery_request(
+    args: &PubSubSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryRequest> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeSchemaDiscoveryRequest, ClickPipeSchemaDiscoverySource,
+    };
+
+    Ok(ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            kafka: None,
+            kinesis: None,
+            object_storage: None,
+            pubsub: Some(build_pubsub_source(args)?),
+        },
+    })
+}
+
+async fn clickpipe_create_pubsub(
+    client: &CloudClient,
+    args: &PubSubCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
+
+    // Validate args and build the source before any network call so bad
+    // invocations fail fast.
+    let parsed_columns = parse_columns(&args.columns)?;
+    let source = build_pubsub_source(&args.source)?;
+
+    let request = ClickPipePostRequest {
+        name: args.name.clone(),
+        source: ClickPipePostSource {
+            pubsub: Some(source),
+            ..Default::default()
+        },
+        destination: build_destination(
+            &args.database,
+            &args.table,
+            parsed_columns,
+            build_destination_roles(&args.destination_roles.roles),
+        ),
+        ..Default::default()
+    };
+
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
 /// Build the schema-discovery request body for an object-storage source. The
 /// source connection is built by the same helper `clickpipe create
 /// object-storage` uses, so discovery and creation send an identical
@@ -1717,10 +1996,10 @@ fn build_object_storage_schema_discovery_request(
     })
 }
 
-/// Discover the inferred schema for a Kafka, Kinesis or object-storage source
-/// without creating a ClickPipe (Beta). Side-effect-free, but the API gateway
-/// rejects OAuth/Bearer on this POST endpoint, so it is classified as a write
-/// command and requires API key auth.
+/// Discover the inferred schema for a Kafka, Kinesis, object-storage or
+/// Pub/Sub source without creating a ClickPipe (Beta). Side-effect-free, but
+/// the API gateway rejects OAuth/Bearer on this POST endpoint, so it is
+/// classified as a write command and requires API key auth.
 async fn clickpipe_schema_discover(
     client: &CloudClient,
     service_id: &str,
@@ -1751,6 +2030,9 @@ async fn clickpipe_schema_discover(
         },
         ClickPipeSchemaDiscoverCommands::ObjectStorage(args) => {
             build_object_storage_schema_discovery_request(args)?
+        }
+        ClickPipeSchemaDiscoverCommands::PubSub(args) => {
+            build_pubsub_schema_discovery_request(args)?
         }
     };
     let org_id = resolve_org_id(client, org_id).await?;
@@ -2247,11 +2529,31 @@ fn build_destination(
 }
 
 /// Read a GCP service-account JSON key file from disk and return the
-/// base64-encoded contents. Used by both the object-storage and BigQuery
+/// base64-encoded contents. Used by the object-storage, BigQuery and Pub/Sub
 /// `create` handlers — the upstream API wants the encoded blob regardless
 /// of which source it ends up on.
+///
+/// A path of `-` reads the key from stdin, the same spelling
+/// `service query --queries-file -` uses, so a key held in a secret manager
+/// never has to be written to disk. An empty key is refused here rather than
+/// sent as an empty string; neither that error nor the io error names anything
+/// but the path, so the key itself cannot reach an error message.
 fn read_gcp_service_account_file(path: &str) -> CloudResult<String> {
-    let contents = std::fs::read_to_string(path)?;
+    let contents = if path == "-" {
+        use std::io::Read as _;
+        let mut contents = String::new();
+        std::io::stdin().read_to_string(&mut contents)?;
+        contents
+    } else {
+        std::fs::read_to_string(path)?
+    };
+    if contents.trim().is_empty() {
+        return Err(CloudError::new(if path == "-" {
+            "no service account key received on stdin".to_string()
+        } else {
+            format!("service account key file '{path}' was empty")
+        }));
+    }
     Ok(base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
         contents.as_bytes(),
@@ -3160,6 +3462,91 @@ mod tests {
             "wrong classification for: {}",
             args.join(" ")
         );
+    }
+
+    /// Write a service-account key file and return its directory (which the
+    /// caller keeps alive) plus the path to pass to --service-account-file.
+    fn service_account_key_file() -> (tempfile::TempDir, String) {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("service-account.json");
+        std::fs::File::create(&path)
+            .expect("create service account file")
+            .write_all(br#"{"type":"service_account"}"#)
+            .expect("write service account file");
+        let path = path.to_str().expect("utf-8 temp path").to_string();
+        (dir, path)
+    }
+
+    /// base64 of the `service_account_key_file` contents, which is what the
+    /// request carries — the path is never sent.
+    const SERVICE_ACCOUNT_KEY_BASE64: &str = "eyJ0eXBlIjoic2VydmljZV9hY2NvdW50In0=";
+
+    /// The required Pub/Sub source flags, with a key path that is only read
+    /// when a request is built.
+    fn pubsub_source_flags(service_account_file: &str) -> Vec<&str> {
+        vec![
+            "--topic",
+            "events",
+            "--project-id",
+            "my-gcp-project",
+            "--format",
+            "JSONEachRow",
+            "--seek-type",
+            "earliest",
+            "--service-account-file",
+            service_account_file,
+        ]
+    }
+
+    /// Parse `create pubsub` args, so the builder tests exercise the real
+    /// clap defaults rather than hand-built structs.
+    fn parse_pubsub_create(flags: &[&str]) -> PubSubCreateArgs {
+        let mut args = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        args.extend(flags.iter().copied());
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::PubSub(args),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected pubsub create");
+        };
+        args
+    }
+
+    /// Parse `schema-discover pubsub` args and return the source fields.
+    fn parse_pubsub_discovery(flags: &[&str]) -> Box<PubSubSourceFields> {
+        let mut args = vec!["schema-discover", "svc-1", "pubsub"];
+        args.extend(flags.iter().copied());
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::PubSub(source),
+            ..
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected pubsub schema discovery");
+        };
+        source
+    }
+
+    fn assert_pubsub_value(flag: &str, value: &str) {
+        let mut flags = pubsub_source_flags("./sa-key.json");
+        // Replace the baseline value for a flag the minimal invocation already
+        // carries, so no flag is passed twice.
+        match flags.iter().position(|arg| *arg == flag) {
+            Some(index) => flags[index + 1] = value,
+            None => flags.extend([flag, value]),
+        }
+        parse_pubsub_create(&flags);
     }
 
     fn assert_object_storage_value(flag: &str, value: &str) {
@@ -5525,6 +5912,10 @@ mod tests {
             ]
         );
 
+        assert_eq!(PUBSUB_FORMATS, &["JSONEachRow", "Avro", "Protobuf"]);
+        assert_eq!(PUBSUB_AUTHS, &["SERVICE_ACCOUNT"]);
+        assert_eq!(PUBSUB_SEEK_TYPES, &["latest", "earliest", "timestamp"]);
+
         for &value in OBJECT_STORAGE_FORMATS {
             assert_object_storage_value("--format", value);
         }
@@ -5575,6 +5966,20 @@ mod tests {
         }
         for &value in MONGODB_READ_PREFERENCES {
             assert_mongodb_value("--read-preference", value);
+        }
+        for &value in PUBSUB_FORMATS {
+            assert_pubsub_value("--format", value);
+        }
+        for &value in PUBSUB_AUTHS {
+            assert_pubsub_value("--auth", value);
+        }
+        for &value in PUBSUB_SEEK_TYPES {
+            // `timestamp` needs its companion flag, which is covered by
+            // `pubsub_seek_timestamp_pairs_with_the_timestamp_seek_type`.
+            if value == "timestamp" {
+                continue;
+            }
+            assert_pubsub_value("--seek-type", value);
         }
     }
 
@@ -5760,6 +6165,27 @@ mod tests {
             args.extend([flag, invalid]);
             assert_rejected(&args);
         }
+
+        for flag in ["--format", "--auth", "--seek-type"] {
+            let mut flags = pubsub_source_flags("./sa-key.json");
+            match flags.iter().position(|arg| *arg == flag) {
+                Some(index) => flags[index + 1] = invalid,
+                None => flags.extend([flag, invalid]),
+            }
+            let mut args = vec![
+                "create",
+                "pubsub",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ];
+            args.extend(flags);
+            assert_rejected(&args);
+        }
     }
 
     #[test]
@@ -5888,6 +6314,22 @@ mod tests {
             ],
             true,
         );
+        let mut pubsub_discover = vec!["schema-discover", "svc-1", "pubsub"];
+        pubsub_discover.extend(pubsub_source_flags("./sa-key.json"));
+        assert_write(&pubsub_discover, true);
+        let mut pubsub_create = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        pubsub_create.extend(pubsub_source_flags("./sa-key.json"));
+        assert_write(&pubsub_create, true);
         assert_write(
             &[
                 "create",
@@ -6090,6 +6532,526 @@ mod tests {
             })
         );
         assert_eq!(source.skip_initial_load, Some(true));
+    }
+
+    #[test]
+    fn parses_pubsub_create_flags_and_defaults() {
+        let args = parse_pubsub_create(&[
+            "--topic",
+            "events",
+            "--project-id",
+            "my-gcp-project",
+            "--format",
+            "Avro",
+            "--seek-type",
+            "timestamp",
+            "--seek-timestamp",
+            "2026-04-10T12:00:00Z",
+            "--service-account-file",
+            "/tmp/sa-key.json",
+            "--auth",
+            "SERVICE_ACCOUNT",
+            "--filter",
+            r#"attributes.region = "eu""#,
+            "--enable-ordering",
+            "--ack-deadline",
+            "120",
+            "--column",
+            "event_id:Int64",
+            "--column",
+            "name:String",
+            "--role",
+            "analytics_reader",
+            "--org-id",
+            "org-1",
+        ]);
+
+        assert_eq!(args.service_id, "svc-1");
+        assert_eq!(args.name, "pipe-1");
+        assert_eq!(args.source.topic, "events");
+        assert_eq!(args.source.project_id, "my-gcp-project");
+        assert_eq!(args.source.format, "Avro");
+        assert_eq!(args.source.seek_type, "timestamp");
+        assert_eq!(
+            args.source.seek_timestamp.as_deref(),
+            Some("2026-04-10T12:00:00Z")
+        );
+        assert_eq!(args.source.service_account_file, "/tmp/sa-key.json");
+        assert_eq!(args.source.auth, "SERVICE_ACCOUNT");
+        assert_eq!(
+            args.source.filter.as_deref(),
+            Some(r#"attributes.region = "eu""#)
+        );
+        assert!(args.source.enable_ordering);
+        assert_eq!(args.source.ack_deadline, Some(120));
+        assert_eq!(args.database, "db");
+        assert_eq!(args.table, "events");
+        assert_eq!(args.columns, vec!["event_id:Int64", "name:String"]);
+        assert_eq!(args.destination_roles.roles, vec!["analytics_reader"]);
+        assert_eq!(args.org_id.as_deref(), Some("org-1"));
+
+        // Defaults: only --auth has one, and the optional fields stay unset.
+        let args = parse_pubsub_create(&pubsub_source_flags("./sa-key.json"));
+        assert_eq!(args.source.auth, "SERVICE_ACCOUNT");
+        assert_eq!(args.source.seek_timestamp, None);
+        assert_eq!(args.source.filter, None);
+        assert!(!args.source.enable_ordering);
+        assert_eq!(args.source.ack_deadline, None);
+        assert!(args.columns.is_empty());
+        assert!(args.destination_roles.roles.is_empty());
+        assert_eq!(args.org_id, None);
+    }
+
+    #[test]
+    fn pubsub_create_requires_every_strict_source_field() {
+        // Each field the library types as `T` is a required flag, so dropping
+        // one is a usage error rather than a request the API rejects.
+        for omitted in [
+            "--topic",
+            "--project-id",
+            "--format",
+            "--seek-type",
+            "--service-account-file",
+        ] {
+            let flags = pubsub_source_flags("./sa-key.json");
+            let index = flags
+                .iter()
+                .position(|arg| *arg == omitted)
+                .expect("baseline flag");
+            let mut args = vec![
+                "create",
+                "pubsub",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ];
+            args.extend(
+                flags
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter_map(|(at, arg)| (at != index && at != index + 1).then_some(arg)),
+            );
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.exit_code(), 2, "{omitted}: {error}");
+            assert!(error.to_string().contains(omitted), "{omitted}: {error}");
+        }
+    }
+
+    #[test]
+    fn pubsub_seek_timestamp_pairs_with_the_timestamp_seek_type() {
+        let (_dir, key_path) = service_account_key_file();
+
+        // `--seek-type timestamp` without the companion flag is a clap error.
+        let mut flags = pubsub_source_flags(&key_path);
+        let index = flags
+            .iter()
+            .position(|arg| *arg == "earliest")
+            .expect("baseline seek type");
+        flags[index] = "timestamp";
+        let mut args = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        args.extend(flags.iter().copied());
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(error.exit_code(), 2, "{error}");
+        assert!(error.to_string().contains("--seek-timestamp"), "{error}");
+
+        // With it, the pair parses and builds.
+        let mut with_timestamp = flags.clone();
+        with_timestamp.extend(["--seek-timestamp", "2026-04-10T12:00:00Z"]);
+        let built = build_pubsub_source(&parse_pubsub_create(&with_timestamp).source)
+            .expect("timestamp seek builds");
+        assert_eq!(
+            built.seek_timestamp,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-04-10T12:00:00Z")
+                    .expect("fixed timestamp")
+                    .with_timezone(&chrono::Utc)
+            )
+        );
+
+        // clap cannot express the inverse relationship, so the builder refuses
+        // a timestamp given for another seek type before any network call.
+        let mut mismatched = pubsub_source_flags(&key_path);
+        mismatched.extend(["--seek-timestamp", "2026-04-10T12:00:00Z"]);
+        let error = build_pubsub_source(&parse_pubsub_create(&mismatched).source)
+            .expect_err("earliest seek with a timestamp is refused");
+        assert_eq!(
+            error.to_string(),
+            "--seek-timestamp can only be used with --seek-type timestamp, not --seek-type earliest"
+        );
+
+        // A malformed timestamp never reaches the builder.
+        let mut malformed = flags;
+        malformed.extend(["--seek-timestamp", "yesterday"]);
+        let mut args = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        args.extend(malformed);
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(error.exit_code(), 2, "{error}");
+        assert!(error.to_string().contains("ISO 8601 / RFC 3339"), "{error}");
+    }
+
+    #[test]
+    fn pubsub_ack_deadline_and_filter_stay_inside_the_spec_bounds() {
+        for deadline in ["10", "600"] {
+            let mut flags = pubsub_source_flags("./sa-key.json");
+            flags.extend(["--ack-deadline", deadline]);
+            let args = parse_pubsub_create(&flags);
+            assert_eq!(
+                args.source.ack_deadline,
+                Some(deadline.parse::<i64>().expect("test literal"))
+            );
+        }
+        for deadline in ["9", "601", "0"] {
+            let mut flags = pubsub_source_flags("./sa-key.json");
+            flags.extend(["--ack-deadline", deadline]);
+            let mut args = vec![
+                "create",
+                "pubsub",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ];
+            args.extend(flags);
+            assert_rejected(&args);
+        }
+
+        // The filter's 256-character limit is enforced at parse time.
+        let at_limit = "a".repeat(PUBSUB_FILTER_MAX_LENGTH);
+        let mut flags = pubsub_source_flags("./sa-key.json");
+        flags.extend(["--filter", &at_limit]);
+        assert_eq!(
+            parse_pubsub_create(&flags).source.filter.as_deref(),
+            Some(at_limit.as_str())
+        );
+
+        let too_long = "a".repeat(PUBSUB_FILTER_MAX_LENGTH + 1);
+        let mut flags = pubsub_source_flags("./sa-key.json");
+        flags.extend(["--filter", &too_long]);
+        let mut args = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        args.extend(flags);
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(error.exit_code(), 2, "{error}");
+        assert!(error.to_string().contains("257 characters"), "{error}");
+    }
+
+    #[test]
+    fn parses_pubsub_schema_discovery_flags() {
+        let ClickPipeCommands::SchemaDiscover {
+            service_id,
+            command: ClickPipeSchemaDiscoverCommands::PubSub(args),
+            org_id,
+        } = parse_clickpipe(&[
+            "schema-discover",
+            "svc-pubsub",
+            "--org-id",
+            "org-pubsub",
+            "pubsub",
+            "--topic",
+            "events",
+            "--project-id",
+            "my-gcp-project",
+            "--format",
+            "Protobuf",
+            "--seek-type",
+            "latest",
+            "--service-account-file",
+            "/tmp/sa-key.json",
+            "--filter",
+            "attributes.tenant = \"acme\"",
+            "--enable-ordering",
+            "--ack-deadline",
+            "30",
+        ])
+        else {
+            panic!("expected pubsub schema discovery");
+        };
+        assert_eq!(service_id, "svc-pubsub");
+        assert_eq!(org_id.as_deref(), Some("org-pubsub"));
+        assert_eq!(args.topic, "events");
+        assert_eq!(args.project_id, "my-gcp-project");
+        assert_eq!(args.format, "Protobuf");
+        assert_eq!(args.seek_type, "latest");
+        assert_eq!(args.service_account_file, "/tmp/sa-key.json");
+        assert_eq!(args.auth, "SERVICE_ACCOUNT");
+        assert_eq!(args.filter.as_deref(), Some("attributes.tenant = \"acme\""));
+        assert!(args.enable_ordering);
+        assert_eq!(args.ack_deadline, Some(30));
+    }
+
+    #[test]
+    fn build_pubsub_source_supports_minimal_fields() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostPubSubSourceAuthentication, ClickPipePostPubSubSourceFormat,
+            ClickPipePostPubSubSourceSeektype,
+        };
+
+        let (_dir, key_path) = service_account_key_file();
+        let args = parse_pubsub_create(&pubsub_source_flags(&key_path));
+        let source = build_pubsub_source(&args.source).expect("minimal pubsub source builds");
+
+        assert_eq!(source.topic, "events");
+        assert_eq!(source.project_id, "my-gcp-project");
+        assert_eq!(source.format, ClickPipePostPubSubSourceFormat::JSONEachRow);
+        assert_eq!(
+            source.authentication,
+            ClickPipePostPubSubSourceAuthentication::ServiceAccount
+        );
+        assert_eq!(
+            source.seek_type,
+            ClickPipePostPubSubSourceSeektype::Earliest
+        );
+        assert_eq!(source.seek_timestamp, None);
+        // The key file is read and base64-encoded; the path is never sent.
+        assert_eq!(
+            source.service_account_key.service_account_file,
+            SERVICE_ACCOUNT_KEY_BASE64
+        );
+        assert_eq!(source.filter, None);
+        assert_eq!(source.enable_ordering, None);
+        assert_eq!(source.ack_deadline, None);
+    }
+
+    #[test]
+    fn build_pubsub_source_supports_maximal_fields() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostPubSubSourceFormat, ClickPipePostPubSubSourceSeektype,
+        };
+
+        let (_dir, key_path) = service_account_key_file();
+        let mut flags = pubsub_source_flags(&key_path);
+        let seek = flags
+            .iter()
+            .position(|arg| *arg == "earliest")
+            .expect("baseline seek type");
+        flags[seek] = "timestamp";
+        let format = flags
+            .iter()
+            .position(|arg| *arg == "JSONEachRow")
+            .expect("baseline format");
+        flags[format] = "Protobuf";
+        flags.extend([
+            "--seek-timestamp",
+            "2026-04-10T12:00:00+02:00",
+            "--filter",
+            "attributes.region = \"eu\"",
+            "--enable-ordering",
+            "--ack-deadline",
+            "600",
+        ]);
+        let args = parse_pubsub_create(&flags);
+        let source = build_pubsub_source(&args.source).expect("maximal pubsub source builds");
+
+        assert_eq!(source.format, ClickPipePostPubSubSourceFormat::Protobuf);
+        assert_eq!(
+            source.seek_type,
+            ClickPipePostPubSubSourceSeektype::Timestamp
+        );
+        // The offset is normalized to UTC for the wire.
+        assert_eq!(
+            source.seek_timestamp,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-04-10T10:00:00Z")
+                    .expect("fixed timestamp")
+                    .with_timezone(&chrono::Utc)
+            )
+        );
+        assert_eq!(source.filter.as_deref(), Some("attributes.region = \"eu\""));
+        assert_eq!(source.enable_ordering, Some(true));
+        assert_eq!(source.ack_deadline, Some(600));
+        assert_eq!(
+            source.service_account_key.service_account_file,
+            SERVICE_ACCOUNT_KEY_BASE64
+        );
+    }
+
+    #[test]
+    fn build_pubsub_source_reports_an_unreadable_or_empty_key_without_echoing_it() {
+        let (dir, key_path) = service_account_key_file();
+
+        let mut flags = pubsub_source_flags("/missing/sa-key.json");
+        let args = parse_pubsub_create(&flags);
+        let error = build_pubsub_source(&args.source).expect_err("missing key file fails");
+        assert!(!error.to_string().is_empty());
+
+        let empty_path = dir.path().join("empty.json");
+        std::fs::write(&empty_path, b"   \n").expect("write empty key file");
+        let empty_path = empty_path.to_str().expect("utf-8 temp path").to_string();
+        flags = pubsub_source_flags(&empty_path);
+        let args = parse_pubsub_create(&flags);
+        let error = build_pubsub_source(&args.source).expect_err("empty key file fails");
+        assert_eq!(
+            error.to_string(),
+            format!("service account key file '{empty_path}' was empty")
+        );
+
+        // The happy path still reads the same file the other tests use.
+        let args = parse_pubsub_create(&pubsub_source_flags(&key_path));
+        assert!(build_pubsub_source(&args.source).is_ok());
+    }
+
+    #[test]
+    fn build_pubsub_schema_discovery_request_minimal() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostPubSubSourceFormat, ClickPipePostPubSubSourceSeektype,
+        };
+
+        let (_dir, key_path) = service_account_key_file();
+        let args = parse_pubsub_discovery(&pubsub_source_flags(&key_path));
+        let request = build_pubsub_schema_discovery_request(&args)
+            .expect("minimal pubsub discovery request builds");
+
+        // Only the pubsub source is populated.
+        assert!(request.source.kafka.is_none());
+        assert!(request.source.kinesis.is_none());
+        assert!(request.source.object_storage.is_none());
+        let source = request.source.pubsub.expect("pubsub source is set");
+        assert_eq!(source.topic, "events");
+        assert_eq!(source.project_id, "my-gcp-project");
+        assert_eq!(source.format, ClickPipePostPubSubSourceFormat::JSONEachRow);
+        assert_eq!(
+            source.seek_type,
+            ClickPipePostPubSubSourceSeektype::Earliest
+        );
+        assert_eq!(
+            source.service_account_key.service_account_file,
+            SERVICE_ACCOUNT_KEY_BASE64
+        );
+        assert_eq!(source.seek_timestamp, None);
+        assert_eq!(source.filter, None);
+        assert_eq!(source.enable_ordering, None);
+        assert_eq!(source.ack_deadline, None);
+    }
+
+    #[test]
+    fn build_pubsub_schema_discovery_request_maximal() {
+        use clickhouse_cloud_api::models::ClickPipePostPubSubSourceSeektype;
+
+        let (_dir, key_path) = service_account_key_file();
+        let mut flags = pubsub_source_flags(&key_path);
+        let seek = flags
+            .iter()
+            .position(|arg| *arg == "earliest")
+            .expect("baseline seek type");
+        flags[seek] = "timestamp";
+        flags.extend([
+            "--seek-timestamp",
+            "2026-04-10T12:00:00Z",
+            "--filter",
+            "attributes.region = \"eu\"",
+            "--enable-ordering",
+            "--ack-deadline",
+            "45",
+        ]);
+        let args = parse_pubsub_discovery(&flags);
+        let request = build_pubsub_schema_discovery_request(&args)
+            .expect("maximal pubsub discovery request builds");
+
+        assert!(request.source.kafka.is_none());
+        assert!(request.source.kinesis.is_none());
+        assert!(request.source.object_storage.is_none());
+        let source = request.source.pubsub.expect("pubsub source is set");
+        assert_eq!(
+            source.seek_type,
+            ClickPipePostPubSubSourceSeektype::Timestamp
+        );
+        assert_eq!(
+            source.seek_timestamp,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-04-10T12:00:00Z")
+                    .expect("fixed timestamp")
+                    .with_timezone(&chrono::Utc)
+            )
+        );
+        assert_eq!(source.filter.as_deref(), Some("attributes.region = \"eu\""));
+        assert_eq!(source.enable_ordering, Some(true));
+        assert_eq!(source.ack_deadline, Some(45));
+    }
+
+    #[test]
+    fn pubsub_help_documents_the_input_rules_and_key_handling() {
+        let error = clickpipe_parse_error(&["create", "pubsub", "--help"]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        for excerpt in [
+            "PUB/SUB INPUT RULES:",
+            "limited preview",
+            "--seek-timestamp is required with --seek-type timestamp",
+            "--ack-deadline is in seconds and must be between 10 and 600",
+            "at most 256 characters",
+            "PUB/SUB SERVICE ACCOUNT KEY:",
+            "or - to read the key from stdin",
+            "source.pubsub.serviceAccountKey.serviceAccountFile",
+        ] {
+            assert!(help.contains(excerpt), "missing `{excerpt}`:\n{help}");
+        }
+        // Every accepted value stays visible in the help.
+        for value in PUBSUB_FORMATS.iter().chain(PUBSUB_SEEK_TYPES) {
+            assert!(help.contains(value), "missing `{value}`:\n{help}");
+        }
+    }
+
+    #[test]
+    fn readme_documents_the_pubsub_source() {
+        let readme = include_str!("../../../../README.md");
+        let clickpipes = readme
+            .split_once("#### Creating ClickPipes")
+            .expect("ClickPipes create section")
+            .1
+            .split_once("### Members")
+            .expect("next README section")
+            .0;
+
+        for expected in [
+            "clickhousectl cloud clickpipe create pubsub <service-id>",
+            "clickhousectl cloud clickpipe schema-discover <service-id> pubsub",
+            "--service-account-file",
+            "--seek-type",
+            "limited preview",
+        ] {
+            assert!(
+                clickpipes.contains(expected),
+                "missing `{expected}`:\n{clickpipes}"
+            );
+        }
     }
 
     #[test]
@@ -7008,6 +7970,11 @@ mod tests {
                     "dataset.events:events",
                 ],
             ),
+            ("pubsub", {
+                let mut flags = pubsub_source_flags("./sa-key.json");
+                flags.extend(["--database", "db", "--table", "events"]);
+                flags
+            }),
         ] {
             let mut args = vec!["create", subcommand, "svc-1", "--name", "pipe-1"];
             args.extend(extra);

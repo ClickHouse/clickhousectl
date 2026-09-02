@@ -7741,6 +7741,333 @@ async fn schema_discover_object_storage_posts_source_body() {
     }
 }
 
+// ── Google Cloud Pub/Sub source (issue #587) ───────────────────────────────
+//
+// `clickpipe create pubsub` and `clickpipe schema-discover <SERVICE_ID> pubsub`
+// build the same `source.pubsub` object. The service account key is read from a
+// file (or from stdin for `-`) and sent base64-encoded under
+// `serviceAccountKey.serviceAccountFile`, so the path never goes on the wire —
+// and neither the key nor its encoding may reach output or an error message.
+
+const PUBSUB_SERVICE_ACCOUNT_KEY: &str =
+    r#"{"type":"service_account","private_key":"FAKE_PRIVATE_KEY"}"#;
+
+fn encoded_service_account_key() -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        PUBSUB_SERVICE_ACCOUNT_KEY.as_bytes(),
+    )
+}
+
+fn write_service_account_key(dir: &Path) -> PathBuf {
+    let path = dir.join("sa-key.json");
+    std::fs::File::create(&path)
+        .expect("create service account key file")
+        .write_all(PUBSUB_SERVICE_ACCOUNT_KEY.as_bytes())
+        .expect("write service account key file");
+    path
+}
+
+/// Minimal `clickpipe create pubsub` invocation reading the key from
+/// `service_account_file`.
+fn pubsub_create_args(service_account_file: &str) -> Vec<String> {
+    [
+        "clickpipe",
+        "create",
+        "pubsub",
+        "svc-id",
+        "--name",
+        "pubsub-pipe",
+        "--topic",
+        "events",
+        "--project-id",
+        "my-gcp-project",
+        "--format",
+        "JSONEachRow",
+        "--seek-type",
+        "earliest",
+        "--service-account-file",
+        service_account_file,
+        "--database",
+        "default",
+        "--table",
+        "events",
+        "--column",
+        "event_id:Int64",
+        "--org-id",
+        "org",
+    ]
+    .iter()
+    .map(|arg| arg.to_string())
+    .collect()
+}
+
+fn as_str_args(args: &[String]) -> Vec<&str> {
+    args.iter().map(|arg| arg.as_str()).collect()
+}
+
+/// Spawn the binary with a piped stdin, write `stdin_data`, and return the
+/// finished output. Used for `--service-account-file -`.
+fn invoke_cli_with_piped_stdin(
+    mock: &MockServer,
+    cli_args: &[String],
+    stdin_data: &str,
+) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let mut args = vec![
+        "cloud".to_string(),
+        "--url".to_string(),
+        mock.uri(),
+        "--json".to_string(),
+    ];
+    args.extend_from_slice(cli_args);
+    let mut child = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(stdin_data.as_bytes())
+        .expect("write service account key to stdin");
+    child
+        .wait_with_output()
+        .expect("failed to wait for clickhousectl")
+}
+
+/// The JSON body of the first POST the mock recorded.
+async fn recorded_post_body(mock: &MockServer) -> Value {
+    let requests = mock
+        .received_requests()
+        .await
+        .expect("mock requests log unavailable");
+    let post = requests
+        .iter()
+        .find(|request| request.method == wiremock::http::Method::POST)
+        .expect("no POST request recorded by mock");
+    serde_json::from_slice(&post.body).expect("POST body wasn't valid JSON")
+}
+
+#[tokio::test]
+async fn pubsub_create_posts_source_body_with_the_key_read_from_the_file() {
+    let mock = start_mock_clickpipes_api().await;
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_service_account_key(dir.path());
+    let mut args = pubsub_create_args(key_path.to_str().expect("utf-8 temp path"));
+    // Swap the minimal seek for the timestamp form and add every optional flag.
+    let seek = args
+        .iter()
+        .position(|arg| arg == "earliest")
+        .expect("baseline seek type");
+    args[seek] = "timestamp".to_string();
+    args.extend(
+        [
+            "--seek-timestamp",
+            "2026-04-10T12:00:00Z",
+            "--filter",
+            r#"attributes.region = "eu""#,
+            "--enable-ordering",
+            "--ack-deadline",
+            "120",
+            "--role",
+            "analytics_reader",
+        ]
+        .iter()
+        .map(|arg| arg.to_string()),
+    );
+
+    let body = invoke_cli_capture_body(&mock, &as_str_args(&args)).await;
+
+    let pubsub = &body["source"]["pubsub"];
+    assert_eq!(pubsub["topic"], "events");
+    assert_eq!(pubsub["projectId"], "my-gcp-project");
+    assert_eq!(pubsub["format"], "JSONEachRow");
+    assert_eq!(pubsub["authentication"], "SERVICE_ACCOUNT");
+    assert_eq!(pubsub["seekType"], "timestamp");
+    assert_eq!(pubsub["seekTimestamp"], "2026-04-10T12:00:00Z");
+    assert_eq!(pubsub["filter"], r#"attributes.region = "eu""#);
+    assert_eq!(pubsub["enableOrdering"], true);
+    assert_eq!(pubsub["ackDeadline"], 120);
+    // The key came from the file, base64-encoded, and the path never went out.
+    assert_eq!(
+        pubsub["serviceAccountKey"]["serviceAccountFile"],
+        Value::String(encoded_service_account_key()),
+    );
+    let serialized = body.to_string();
+    assert!(
+        !serialized.contains(key_path.to_str().expect("utf-8 temp path")),
+        "the key file path leaked into the request body: {serialized}",
+    );
+    assert!(
+        !serialized.contains("FAKE_PRIVATE_KEY"),
+        "the raw key leaked into the request body unencoded: {serialized}",
+    );
+    // Destination and roles behave exactly as on the other create subcommands.
+    assert_eq!(body["destination"]["database"], "default");
+    assert_eq!(body["destination"]["table"], "events");
+    assert_eq!(
+        body["destination"]["roles"],
+        serde_json::json!(["analytics_reader"]),
+    );
+    // No other source arm is populated.
+    for key in ["kafka", "kinesis", "objectStorage", "postgres", "bigquery"] {
+        assert!(
+            body["source"].get(key).is_none(),
+            "{key} leaked into the pubsub create body: {}",
+            body["source"],
+        );
+    }
+}
+
+#[tokio::test]
+async fn pubsub_optional_fields_absent_when_flags_omitted() {
+    let mock = start_mock_clickpipes_api().await;
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_service_account_key(dir.path());
+    let args = pubsub_create_args(key_path.to_str().expect("utf-8 temp path"));
+
+    let body = invoke_cli_capture_body(&mock, &as_str_args(&args)).await;
+
+    let pubsub = &body["source"]["pubsub"];
+    assert_eq!(pubsub["seekType"], "earliest");
+    for field in ["seekTimestamp", "filter", "enableOrdering", "ackDeadline"] {
+        assert!(
+            pubsub.get(field).is_none(),
+            "{field} leaked into the pubsub source body: {pubsub}",
+        );
+    }
+    assert!(
+        body["destination"].get("roles").is_none(),
+        "roles leaked into the destination body when --role was omitted: {}",
+        body["destination"],
+    );
+}
+
+#[tokio::test]
+async fn pubsub_service_account_key_can_be_read_from_stdin() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = pubsub_create_args("-");
+
+    let output = invoke_cli_with_piped_stdin(&mock, &args, PUBSUB_SERVICE_ACCOUNT_KEY);
+    assert_success(&output);
+
+    let body = recorded_post_body(&mock).await;
+    assert_eq!(
+        body["source"]["pubsub"]["serviceAccountKey"]["serviceAccountFile"],
+        Value::String(encoded_service_account_key()),
+    );
+}
+
+#[tokio::test]
+async fn pubsub_service_account_key_never_reaches_output_on_an_api_error() {
+    let mock = MockServer::start().await;
+    // A rejected create: the API error body is surfaced to the user, so this is
+    // where an echoed credential would show up.
+    Mock::given(method("POST"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes$",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "pubsub source is not enabled for this organization",
+            "status": 400,
+            "requestId": "stub-request-id",
+        })))
+        .mount(&mock)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_service_account_key(dir.path());
+    let args = pubsub_create_args(key_path.to_str().expect("utf-8 temp path"));
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &as_str_args(&args));
+
+    assert!(
+        !output.status.success(),
+        "a rejected create must fail: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stderr.contains("not enabled for this organization"),
+        "the API error should still be reported: {stderr}",
+    );
+    for secret in [
+        PUBSUB_SERVICE_ACCOUNT_KEY,
+        "FAKE_PRIVATE_KEY",
+        &encoded_service_account_key(),
+    ] {
+        assert!(
+            !stderr.contains(secret),
+            "the service account key leaked into stderr: {stderr}",
+        );
+        assert!(
+            !stdout.contains(secret),
+            "the service account key leaked into stdout: {stdout}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn schema_discover_pubsub_posts_source_body() {
+    let mock = start_mock_schema_discovery_api().await;
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_service_account_key(dir.path());
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "svc-id",
+            "--org-id",
+            "org",
+            "pubsub",
+            "--topic",
+            "events",
+            "--project-id",
+            "my-gcp-project",
+            "--format",
+            "Avro",
+            "--seek-type",
+            "latest",
+            "--service-account-file",
+            key_path.to_str().expect("utf-8 temp path"),
+            "--ack-deadline",
+            "30",
+        ],
+    )
+    .await;
+
+    let pubsub = &body["source"]["pubsub"];
+    assert_eq!(pubsub["topic"], "events");
+    assert_eq!(pubsub["projectId"], "my-gcp-project");
+    assert_eq!(pubsub["format"], "Avro");
+    assert_eq!(pubsub["authentication"], "SERVICE_ACCOUNT");
+    assert_eq!(pubsub["seekType"], "latest");
+    assert_eq!(pubsub["ackDeadline"], 30);
+    assert_eq!(
+        pubsub["serviceAccountKey"]["serviceAccountFile"],
+        Value::String(encoded_service_account_key()),
+    );
+    for key in ["kafka", "kinesis", "objectStorage"] {
+        assert!(
+            body["source"].get(key).is_none(),
+            "{key} leaked into pubsub schema-discovery body: {}",
+            body["source"],
+        );
+    }
+}
+
 // ── Generated service passwords are never silently dropped ─────────────────
 //
 // `service reset-password` without either hash flag sends an empty PATCH

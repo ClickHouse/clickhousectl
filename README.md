@@ -991,6 +991,33 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
   --staging-path gs://bucket/staging \
   --table-mapping "dataset.table:target_table"
 
+# From Google Cloud Pub/Sub (limited preview: contact support to enable it)
+# --seek-type has no default: earliest reads the backlog, latest only new
+# messages, timestamp starts from --seek-timestamp (required for that seek
+# type, and rejected for the others).
+clickhousectl cloud clickpipe create pubsub <service-id> \
+  --name my-pubsub-pipe \
+  --topic events --project-id my-gcp-project \
+  --format JSONEachRow \
+  --seek-type earliest \
+  --service-account-file ./sa-key.json \
+  --database default --table events \
+  --column "event_id:Int64" --column "name:String"
+
+# Pub/Sub with the optional subscription tuning, reading the key from stdin
+# so it never has to be written to disk
+gcloud secrets versions access latest --secret=clickpipes-sa-key |
+  clickhousectl cloud clickpipe create pubsub <service-id> \
+    --name my-tuned-pubsub-pipe \
+    --topic events --project-id my-gcp-project \
+    --format Avro \
+    --seek-type timestamp --seek-timestamp 2026-04-10T12:00:00Z \
+    --service-account-file - \
+    --filter 'attributes.region = "eu"' \
+    --enable-ordering --ack-deadline 120 \
+    --database default --table events \
+    --column "event_id:Int64" --column "name:String"
+
 # Grant extra ClickHouse roles to the destination user (any create subcommand)
 clickhousectl cloud clickpipe create kafka <service-id> \
   --name my-kafka-pipe \
@@ -1136,12 +1163,26 @@ streaming and object-storage pipes and does not cover these settings.
 
 The same settings are not yet exposed on `clickpipe create mysql`.
 
+`--service-account-file` (on `create pubsub`, `create object-storage` and
+`create bigquery`) takes a path to the GCP service account JSON key file, or `-`
+to read the key from stdin, the same spelling `service query --queries-file -`
+uses. The contents are base64-encoded and sent as the service account key; the
+path itself is never sent, the key is never accepted as an inline flag value, so
+it stays out of process listings and shell history, and it is never echoed back
+in output or errors. An empty key file (or empty stdin) is refused before any
+request is made.
+
+Pub/Sub-specific limits come from the API: `--ack-deadline` is in seconds and
+must be between 10 and 600, and `--filter` takes a Pub/Sub CEL subscription
+filter of at most 256 characters. Both are checked before the request is sent.
+
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
 
 #### Discovering a source schema (beta)
 
-`clickpipe schema-discover` probes a Kafka, Kinesis or object-storage source and
-returns the inferred fields/types without creating a pipe. It takes the same source
+`clickpipe schema-discover` probes a Kafka, Kinesis, object-storage or Google
+Cloud Pub/Sub source and returns the inferred fields/types without creating a
+pipe. It takes the same source
 connection flags as the corresponding `create` subcommand (minus the
 destination `--name`/`--database`/`--table`/`--column` options). Schema discovery requires API-key authentication:
 
@@ -1169,6 +1210,13 @@ clickhousectl cloud clickpipe schema-discover <service-id> object-storage \
   --source-url 'https://bucket.s3.us-east-1.amazonaws.com/data/*.json' \
   --format JSONEachRow \
   --iam-role "$S3_IAM_ROLE_ARN"
+
+# Discover schema from Google Cloud Pub/Sub (limited preview)
+clickhousectl cloud clickpipe schema-discover <service-id> pubsub \
+  --topic events --project-id my-gcp-project \
+  --format JSONEachRow \
+  --seek-type earliest \
+  --service-account-file ./sa-key.json
 ```
 
 Add `--json` (or run as a coding agent) for machine-readable output.
