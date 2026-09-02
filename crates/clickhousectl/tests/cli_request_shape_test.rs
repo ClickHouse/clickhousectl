@@ -4981,61 +4981,577 @@ async fn mount_replacement_key_create(control: &MockServer) {
         .await;
 }
 
+// ── Rejected stored key classification (issue #528) ────────────────────────
+//
+// A Query API 401/403 for a stored key is classified against the key's
+// management record and the endpoint binding before anything is touched.
+// Only a key that no longer exists (GET key -> 404) makes the local record
+// disposable; every other verdict, and every lookup failure, leaves the
+// credentials file byte-for-byte unchanged and makes no write to the control
+// plane. `OLD_QUERY_TEST_KEY_UUID` is the stored key's management ID.
+
+fn stored_key_path() -> String {
+    format!("/v1/organizations/org-1/keys/{OLD_QUERY_TEST_KEY_UUID}")
+}
+
+fn query_endpoint_path() -> String {
+    format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint")
+}
+
+/// A `GET /keys/{id}` body for the stored key. Only the fields the classifier
+/// reads are set; the key's secret is never part of a management record.
+fn stored_key_record(state: &str, expire_at: Option<&str>, cidrs: &[&str]) -> ResponseTemplate {
+    let mut result = serde_json::json!({
+        "id": OLD_QUERY_TEST_KEY_UUID,
+        "name": "clickhousectl-query-demo",
+        "state": state,
+        "ipAccessList": cidrs
+            .iter()
+            .map(|cidr| serde_json::json!({ "source": cidr, "description": "test" }))
+            .collect::<Vec<_>>(),
+    });
+    if let Some(expire_at) = expire_at {
+        result["expireAt"] = Value::String(expire_at.to_string());
+    }
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": "stub-key-get"
+    }))
+}
+
+async fn mount_stored_key_get(control: &MockServer, response: ResponseTemplate) {
+    Mock::given(method("GET"))
+        .and(path(stored_key_path()))
+        .respond_with(response)
+        .mount(control)
+        .await;
+}
+
+async fn mount_query_endpoint_get(control: &MockServer, response: ResponseTemplate) {
+    Mock::given(method("GET"))
+        .and(path(query_endpoint_path()))
+        .respond_with(response)
+        .mount(control)
+        .await;
+}
+
+fn query_endpoint_record(open_api_keys: &[&str]) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": {
+            "id": "ep-1",
+            "openApiKeys": open_api_keys,
+            "roles": ["sql_console_admin"],
+            "allowedOrigins": "*"
+        },
+        "status": 200,
+        "requestId": "stub-endpoint-get"
+    }))
+}
+
+/// Run `cloud service query` with a stored key the query host rejects with
+/// `status`. Returns the process output, the credentials file as written
+/// before the run, and the project directory (kept alive for later reads).
+async fn run_rejected_stored_key_query(
+    control: &MockServer,
+    status: u16,
+    api_key_id: Option<&str>,
+    pending_cleanup_api_key_ids: &[&str],
+    extra_args: &[&str],
+) -> (std::process::Output, Value, tempfile::TempDir) {
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(status).set_body_string("key rejected"))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let original = write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        api_key_id,
+        Some("ep-1"),
+        pending_cleanup_api_key_ids,
+    );
+    let mut command = service_query_process(project.path(), control, &query_host);
+    command.args(extra_args);
+    let output = command
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    (output, original, project)
+}
+
+fn read_credentials(project: &Path) -> Value {
+    serde_json::from_slice(&std::fs::read(project.join(".clickhouse/credentials.json")).unwrap())
+        .unwrap()
+}
+
+/// Every request the run made to the control plane was a read.
+async fn assert_control_plane_only_read(control: &MockServer, context: &str) {
+    let requests = control.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method == wiremock::http::Method::GET),
+        "{context}: a rejected stored key must never create, bind or delete anything: {:?}",
+        requests
+            .iter()
+            .map(|request| format!("{} {}", request.method, request.url.path()))
+            .collect::<Vec<_>>(),
+    );
+}
+
+async fn control_plane_requests_to(control: &MockServer, path: &str) -> usize {
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == path)
+        .count()
+}
+
+fn repair_hint() -> String {
+    format!("clickhousectl cloud service repair-query-key {QUERY_TEST_SERVICE_ID} --org-id org-1")
+}
+
 #[tokio::test]
-async fn stored_query_key_401_or_403_explains_repair_without_provisioning() {
+async fn a_disabled_stored_query_key_is_reported_and_never_replaced() {
     for status in [401, 403] {
         let control = start_mock_control_plane_with_service().await;
-        let query_host = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
-            .respond_with(ResponseTemplate::new(status).set_body_string("stale stored key"))
-            .expect(1)
-            .mount(&query_host)
-            .await;
-
-        let project = tempfile::tempdir().unwrap();
-        std::fs::create_dir(project.path().join("home")).unwrap();
-        let original = write_repair_query_credentials(
-            project.path(),
-            Some("org-1"),
+        mount_stored_key_get(
+            &control,
+            stored_key_record("disabled", None, &["0.0.0.0/0"]),
+        )
+        .await;
+        // No endpoint stub on purpose: a disabled key needs no binding check,
+        // and an unmounted route would be a visible 404 in the request log.
+        let (output, original, project) = run_rejected_stored_key_query(
+            &control,
+            status,
             Some(OLD_QUERY_TEST_KEY_UUID),
-            Some("ep-1"),
             &[],
-        );
-        let output = service_query_process(project.path(), &control, &query_host)
-            .output()
-            .await
-            .expect("failed to spawn clickhousectl");
+            &[],
+        )
+        .await;
 
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(1), "{status}");
         assert!(output.stdout.is_empty());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains(&format!("rejected with HTTP {status}")),
             "{stderr}"
         );
-        assert!(stderr.contains("no replacement was created"), "{stderr}");
         assert!(
             stderr.contains(&format!(
-                "clickhousectl cloud service repair-query-key {QUERY_TEST_SERVICE_ID} --org-id org-1"
+                "management API key {OLD_QUERY_TEST_KEY_UUID} is disabled"
             )),
             "{stderr}"
         );
+        assert!(stderr.contains("no replacement was created"), "{stderr}");
         assert!(
-            control
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .all(|request| request.method == wiremock::http::Method::GET),
-            "a rejected stored key must not trigger provisioning"
+            stderr.contains(&format!(
+                "clickhousectl cloud key update {OLD_QUERY_TEST_KEY_UUID} --state enabled --org-id org-1"
+            )),
+            "{stderr}"
         );
-        let stored: Value = serde_json::from_slice(
-            &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(stored, original);
+        assert!(stderr.contains(&repair_hint()), "{stderr}");
+        assert!(
+            !stderr.contains("stored-key-secret"),
+            "secret leaked: {stderr}"
+        );
+
+        assert_control_plane_only_read(&control, "disabled").await;
+        assert_eq!(
+            control_plane_requests_to(&control, &query_endpoint_path()).await,
+            0,
+            "a disabled key is classified from its record alone"
+        );
+        assert_eq!(read_credentials(project.path()), original, "{status}");
     }
+}
+
+#[tokio::test]
+async fn an_expired_stored_query_key_is_reported_and_never_replaced() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        stored_key_record("enabled", Some("2020-01-01T00:00:00Z"), &["0.0.0.0/0"]),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "management API key {OLD_QUERY_TEST_KEY_UUID} expired at 2020-01-01T00:00:00Z"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains("no replacement was created"), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_control_plane_only_read(&control, "expired").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn a_deleted_stored_query_key_removes_only_its_own_local_record() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "management API key {OLD_QUERY_TEST_KEY_UUID} no longer exists in organization org-1"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains("has been removed"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "clickhousectl cloud service query --id {QUERY_TEST_SERVICE_ID} --org-id org-1 --query '<your SQL>'"
+        )),
+        "{stderr}"
+    );
+    // The stale record is gone, and nothing else in the file moved: the other
+    // service's key and the project's management credentials are intact.
+    assert_control_plane_only_read(&control, "deleted").await;
+    let stored = read_credentials(project.path());
+    assert!(
+        stored["service_query_keys"]
+            .get(QUERY_TEST_SERVICE_ID)
+            .is_none(),
+        "{stored}"
+    );
+    assert_eq!(
+        stored["service_query_keys"][PRESERVED_QUERY_SERVICE_ID],
+        original["service_query_keys"][PRESERVED_QUERY_SERVICE_ID]
+    );
+    assert_eq!(stored["api_key"], original["api_key"]);
+    assert_eq!(stored["api_secret"], original["api_secret"]);
+}
+
+#[tokio::test]
+async fn a_deleted_stored_query_key_with_pending_cleanup_keeps_its_record() {
+    // The record still names superseded keys awaiting deletion (#527). Those
+    // IDs are the only handle on the leftover keys, so the record stays and
+    // the repair command is the way to finish.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &["superseded-key-uuid"],
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("awaiting deletion"), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_control_plane_only_read(&control, "deleted with pending cleanup").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn an_unbound_stored_query_key_is_reported_and_never_replaced() {
+    // The endpoint exists but lists another key.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(&control, stored_key_record("enabled", None, &["0.0.0.0/0"])).await;
+    mount_query_endpoint_get(&control, query_endpoint_record(&["unrelated-key"])).await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 403, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is not bound to Query API endpoint ep-1"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("no replacement was created"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "clickhousectl cloud service query-endpoint get {QUERY_TEST_SERVICE_ID} --org-id org-1"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_control_plane_only_read(&control, "unbound").await;
+    assert_eq!(read_credentials(project.path()), original);
+
+    // No endpoint at all: still unbound, still nothing recreated.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(&control, stored_key_record("enabled", None, &["0.0.0.0/0"])).await;
+    mount_query_endpoint_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("has no Query API endpoint"), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_control_plane_only_read(&control, "no endpoint").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn an_enabled_bound_stored_query_key_that_is_still_rejected_lists_its_allowlist() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        stored_key_record("enabled", None, &["203.0.113.0/24", "198.51.100.7/32"]),
+    )
+    .await;
+    mount_query_endpoint_get(
+        &control,
+        query_endpoint_record(&["unrelated-key", OLD_QUERY_TEST_KEY_UUID]),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is enabled, unexpired and bound to the Query API endpoint"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("IP access list (203.0.113.0/24, 198.51.100.7/32)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("stored secret no longer matches"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert!(
+        !stderr.contains("stored-key-secret"),
+        "secret leaked: {stderr}"
+    );
+    assert_control_plane_only_read(&control, "rejected").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn an_unverifiable_stored_query_key_rejection_changes_nothing() {
+    // The key lookup itself fails: the verdict is "unknown", not "stale".
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(500).set_body_string("upstream unavailable"),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "management API key {OLD_QUERY_TEST_KEY_UUID} could not be read"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains("upstream unavailable"), "{stderr}");
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_control_plane_only_read(&control, "key lookup failed").await;
+    assert_eq!(read_credentials(project.path()), original);
+
+    // The key reads fine but the endpoint lookup fails: same treatment.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(&control, stored_key_record("enabled", None, &["0.0.0.0/0"])).await;
+    mount_query_endpoint_get(
+        &control,
+        ResponseTemplate::new(503).set_body_string("endpoint service unavailable"),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "the Query API endpoint binding of service {QUERY_TEST_SERVICE_ID} could not be read"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert_control_plane_only_read(&control, "endpoint lookup failed").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn a_legacy_stored_query_key_rejection_changes_nothing() {
+    // No management key ID in the record: there is nothing to look up, so no
+    // key GET is even attempted, and nothing is removed.
+    let control = start_mock_control_plane_with_service().await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, None, &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("predates key-ownership metadata"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("service_query_keys.{QUERY_TEST_SERVICE_ID}")),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert_control_plane_only_read(&control, "legacy").await;
+    assert_eq!(
+        control_plane_requests_to(&control, &stored_key_path()).await,
+        0
+    );
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn stored_query_key_rejections_emit_structured_json_errors() {
+    fn parse_error(output: &std::process::Output) -> Value {
+        assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // The credentials file written by `write_repair_query_credentials`
+        // also holds project management credentials, so the CLI's existing
+        // "note: ... env vars are set but ignored" line precedes the object.
+        let object = &stderr[stderr.find('{').unwrap_or(0)..];
+        serde_json::from_str(object.trim())
+            .unwrap_or_else(|e| panic!("stderr does not end in one JSON object ({e}): {stderr}"))
+    }
+
+    // Disabled: the code, the key ID and the deliberate repair command.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        stored_key_record("disabled", None, &["0.0.0.0/0"]),
+    )
+    .await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[],
+        &["--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    let error = parse_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_disabled");
+    assert_eq!(error["error"]["api_key_id"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(error["error"]["command"], repair_hint());
+    assert!(error["error"].get("ip_access_list").is_none(), "{error}");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is disabled")
+    );
+    assert_eq!(read_credentials(project.path()), original);
+
+    // Rejected while enabled and bound: the allowlist travels as data.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        stored_key_record("enabled", None, &["203.0.113.0/24"]),
+    )
+    .await;
+    mount_query_endpoint_get(&control, query_endpoint_record(&[OLD_QUERY_TEST_KEY_UUID])).await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        403,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[],
+        &["--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    let error = parse_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_rejected");
+    assert_eq!(
+        error["error"]["ip_access_list"],
+        serde_json::json!(["203.0.113.0/24"])
+    );
+    assert!(
+        !error.to_string().contains("stored-key-secret"),
+        "secret leaked: {error}"
+    );
+    assert_eq!(read_credentials(project.path()), original);
+
+    // Deleted: the only mutating verdict, and the command is a rerun.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    let (output, _original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[],
+        &["--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    let error = parse_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_deleted");
+    assert!(
+        error["error"]["command"]
+            .as_str()
+            .unwrap()
+            .starts_with("clickhousectl cloud service query --id"),
+        "{error}"
+    );
+    assert!(
+        read_credentials(project.path())["service_query_keys"]
+            .get(QUERY_TEST_SERVICE_ID)
+            .is_none()
+    );
+
+    // Unverified: no command is pushed for an ambiguous verdict.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(&control, ResponseTemplate::new(500).set_body_string("boom")).await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[],
+        &["--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    let error = parse_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_unverified");
+    assert!(error["error"].get("command").is_none(), "{error}");
+    assert_eq!(read_credentials(project.path()), original);
 }
 
 #[tokio::test]

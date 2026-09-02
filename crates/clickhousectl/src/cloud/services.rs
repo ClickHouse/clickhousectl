@@ -438,8 +438,12 @@ CONTEXT FOR AGENTS:
   With API key auth: first uses the authenticated key directly when the query
   endpoint already authorizes it. Otherwise, a per-service read+write key is
   auto-provisioned and stored in .clickhouse/credentials.json.
-  A stored key rejected with HTTP 401/403 is never replaced automatically; use
-  `cloud service repair-query-key <service-id>` to repair only that credential.
+  A stored key rejected with HTTP 401/403 is never replaced automatically: the
+  CLI first reads the key's management record. Only a key that no longer exists
+  has its stale local record removed (the next query re-provisions); a disabled,
+  expired, unbound or IP-restricted key is reported with its key ID and left
+  untouched. Use `cloud service repair-query-key <service-id>` to replace only
+  that credential deliberately.
   With OAuth (cloud auth login): sends your own bearer token — SQL runs as
   your cloud user with read-only access (SELECT only, no writes); no key
   provisioning and no query endpoint required on the service.
@@ -2163,17 +2167,6 @@ fn refused_query_provisioning_error(
     .with_failure(failure::classify_api_error(rejection))
 }
 
-fn stale_stored_query_key_error(service_id: &str, org_id: &str, status: u16) -> CloudError {
-    CloudError::new(format!(
-        "the stored Query API key for service {service_id} was rejected with HTTP {status} and \
-         may be stale; no replacement was created. Repair only this service credential with \
-         `clickhousectl cloud service repair-query-key {service_id} --org-id {org_id}`"
-    ))
-    // The rejection status is the only bounded fact worth reporting: the
-    // status comes from the query host's own 401/403.
-    .with_failure(ApiFailure::with_status(FailureKind::Http4xx, status))
-}
-
 async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> CloudResult<()> {
     // Anchor the duration bucket of any failure classification (#450) at the
     // start of the run rather than at process start, so it measures the query
@@ -2272,9 +2265,21 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             .await
             {
                 Err(error) => match stored_query_key_rejection_status(&error) {
+                    // The 401/403 alone does not say whether the key is stale
+                    // or was deliberately revoked; the management record
+                    // decides, and nothing is replaced automatically (#528).
                     Some(status) => {
-                        return Err(stale_stored_query_key_error(&service_id, &org_id, status)
-                            .at_stage(FailureStage::QueryRequest));
+                        return Err(
+                            crate::cloud::service_query::rejected_stored_query_key_error(
+                                client,
+                                &key,
+                                &service_id,
+                                &org_id,
+                                status,
+                            )
+                            .await
+                            .at_stage(FailureStage::QueryRequest),
+                        );
                     }
                     None => Err(convert(error)),
                 },
@@ -2518,6 +2523,8 @@ fn query_timeout_error(target: QueryTarget<'_>) -> CloudError {
             host: target.native.map(|native| native.host.clone()),
             port: target.native.map(|native| native.port),
             command: Some(command),
+            api_key_id: None,
+            ip_access_list: None,
         })
 }
 
@@ -4009,19 +4016,13 @@ mod tests {
     }
 
     #[test]
-    fn stored_query_key_rejections_get_a_non_provisioning_repair_hint() {
+    fn only_a_401_or_403_counts_as_a_stored_query_key_rejection() {
         for status in [401, 403] {
             let error = clickhouse_cloud_api::Error::Api {
                 status,
                 message: "rejected".into(),
             };
             assert_eq!(stored_query_key_rejection_status(&error), Some(status));
-            let hint = stale_stored_query_key_error("svc-1", "org-1", status).to_string();
-            assert!(hint.contains("no replacement was created"), "{hint}");
-            assert!(
-                hint.contains("clickhousectl cloud service repair-query-key svc-1 --org-id org-1"),
-                "{hint}"
-            );
         }
         assert_eq!(
             stored_query_key_rejection_status(&clickhouse_cloud_api::Error::Api {
@@ -5120,12 +5121,6 @@ mod tests {
         assert_eq!(
             sql.failure,
             Some(ApiFailure::with_status(FailureKind::SqlError, 400))
-        );
-
-        let stale = stale_stored_query_key_error("svc-1", "org-1", 401);
-        assert_eq!(
-            stale.failure,
-            Some(ApiFailure::with_status(FailureKind::Http4xx, 401))
         );
 
         // `--no-auto-enable` rewrites the message but the failure is still

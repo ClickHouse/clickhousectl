@@ -55,6 +55,9 @@ pub enum FailureStage {
     QueryRequest,
     /// Creating the auto-provisioned Query API key.
     KeyCreate,
+    /// Reading the management record of the stored Query API key, to tell a
+    /// stale local credential from an intentional revocation (#528).
+    KeyGet,
     /// Reading the service's existing query-endpoint configuration.
     EndpointGet,
     /// Writing (upserting) the query-endpoint configuration.
@@ -73,6 +76,7 @@ impl FailureStage {
             Self::ServiceResolution => "service_resolution",
             Self::QueryRequest => "query_request",
             Self::KeyCreate => "key_create",
+            Self::KeyGet => "key_get",
             Self::EndpointGet => "endpoint_get",
             Self::EndpointUpsert => "endpoint_upsert",
             Self::ResponseStream => "response_stream",
@@ -87,6 +91,7 @@ impl FailureStage {
         Self::ServiceResolution,
         Self::QueryRequest,
         Self::KeyCreate,
+        Self::KeyGet,
         Self::EndpointGet,
         Self::EndpointUpsert,
         Self::ResponseStream,
@@ -444,6 +449,7 @@ mod tests {
                 "service_resolution",
                 "query_request",
                 "key_create",
+                "key_get",
                 "endpoint_get",
                 "endpoint_upsert",
                 "response_stream",

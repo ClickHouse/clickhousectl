@@ -565,7 +565,8 @@ echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
 printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
   clickhousectl cloud service query --id <service-id>
 
-# Replace a stale clickhousectl-owned Query API key for exactly one service
+# Deliberately replace clickhousectl's stored Query API key for exactly one
+# service (the way forward after a disabled, expired, unbound or IP-restricted key)
 clickhousectl cloud service repair-query-key <service-id> --org-id <org-id>
 
 # Update service metadata and patches
@@ -710,7 +711,16 @@ Provisioning is single-flight for processes using the same project directory: th
 
 Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. After deleting a service, `cloud service delete` deletes an auto-provisioned key by its stored management and organization IDs, then removes the local record. Legacy records without that metadata remain readable, but service deletion will not guess at a cloud key by name; a partial record with a management ID is retained for manual recovery.
 
-If a stored per-service key is revoked or its endpoint binding changes, a query that receives HTTP 401/403 reports the exact `repair-query-key` command and does not silently provision another key. Repair is an explicit API-key-authenticated write operation. It verifies the stored organization, management key ID, and endpoint ID, replaces only that key ID in the endpoint binding, and preserves every other binding and project credential. Concurrent repairs in the same project reuse the first process's replacement instead of rotating it again. Legacy or incomplete records without exact ownership metadata are refused. If deletion of the superseded key fails after replacement, its exact ID stays in the service record so rerunning the repair command can finish cleanup without provisioning again.
+If a query with a stored per-service key receives HTTP 401/403, the CLI does not read the rejection as proof that the local secret is stale: an administrator may equally have disabled the key, let it expire, unbound it from the endpoint, or narrowed its IP access list, and replacing the key would undo that decision. Before anything is touched, the CLI reads the key's management record (by the stored organization and management key ID) and, when the key is still enabled, the service's Query API endpoint binding, then classifies the rejection:
+
+- **Key deleted** (the management API returns 404): the local secret cannot be anything but stale, so the record is removed from `.clickhouse/credentials.json` and the next query provisions a new key. This is the only case that changes anything. A record that still lists superseded keys awaiting cleanup is kept instead, and `repair-query-key` finishes that cleanup.
+- **Key disabled**, **expired**, or **not bound** to the endpoint (or the service has no endpoint at all): the record is kept, nothing is created or rebound, and the error names the key ID, the reason, and the way forward. A disabled key can be re-enabled with `cloud key update <key-id> --state enabled`; any of these keys can be replaced deliberately with `repair-query-key`.
+- **Key enabled, unexpired and bound, yet still rejected**: either the key's IP access list does not cover this machine or the stored secret no longer matches the key. The error prints the access list (CIDRs only) and points at `cloud key update --ip-allow` for the former and `repair-query-key` for the latter. Nothing is changed.
+- **Lookup failed** (network error, 5xx, or management credentials that cannot read keys), or a legacy record without a management key ID: the rejection cannot be classified, so nothing is changed and the error says how to retry.
+
+In `--json` mode the failure is one object on stderr with a stable `code` (`query_key_deleted`, `query_key_disabled`, `query_key_expired`, `query_key_unbound`, `query_key_rejected`, `query_key_unverified`), the `api_key_id`, a recovery `command` where one is safe to suggest, and, for `query_key_rejected`, the `ip_access_list`. No path prints the stored secret.
+
+Repair is an explicit API-key-authenticated write operation, and the only way a disabled, expired, unbound or IP-restricted key is ever replaced. It verifies the stored organization, management key ID, and endpoint ID, replaces only that key ID in the endpoint binding, and preserves every other binding and project credential. Concurrent repairs in the same project reuse the first process's replacement instead of rotating it again. Legacy or incomplete records without exact ownership metadata are refused. If deletion of the superseded key fails after replacement, its exact ID stays in the service record so rerunning the repair command can finish cleanup without provisioning again.
 
 The Query API endpoint does not support conditional updates, so repair reads and rewrites the complete endpoint configuration while replacing the owned key binding. Do not modify the same endpoint concurrently with a repair because an update made after that read can be overwritten. Also wait for a first-use query's provisioning and readiness attempt to finish before running repair: its newly stored key can receive a temporary 401/403 while the endpoint binding converges, and an explicitly started repair can rotate that still-valid key.
 

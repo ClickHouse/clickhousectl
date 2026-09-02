@@ -71,9 +71,47 @@ pub(crate) fn print_line(line: impl std::fmt::Display) {
 /// API sends: the vocabulary is this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
+// The shared `Query` prefix is part of the wire value (`query_timeout`,
+// `query_key_*`), which names the command family the code belongs to; it is
+// not a Rust naming accident to strip.
+#[allow(clippy::enum_variant_names)]
 pub enum CloudErrorCode {
     /// The Query API gateway stopped waiting for the statement (#644).
     QueryTimeout,
+    /// The stored Query API key no longer exists in the organization, so the
+    /// stale local record was removed; the next query re-provisions (#528).
+    QueryKeyDeleted,
+    /// The stored Query API key exists but an administrator disabled it; it
+    /// was neither replaced nor removed (#528).
+    QueryKeyDisabled,
+    /// The stored Query API key exists but its `expireAt` has passed; it was
+    /// neither replaced nor removed (#528).
+    QueryKeyExpired,
+    /// The stored Query API key is enabled but no longer bound to the
+    /// service's Query API endpoint; it was neither replaced nor removed
+    /// (#528).
+    QueryKeyUnbound,
+    /// The stored Query API key is enabled, unexpired and bound, yet the
+    /// Query API still rejects it: its IP access list or the local secret is
+    /// the likely cause; nothing was changed (#528).
+    QueryKeyRejected,
+    /// The stored Query API key's management record could not be read, so
+    /// the rejection could not be classified; nothing was changed (#528).
+    QueryKeyUnverified,
+}
+
+impl CloudErrorCode {
+    /// Every code, for closed-vocabulary tests.
+    #[cfg(test)]
+    const ALL: &'static [Self] = &[
+        Self::QueryTimeout,
+        Self::QueryKeyDeleted,
+        Self::QueryKeyDisabled,
+        Self::QueryKeyExpired,
+        Self::QueryKeyUnbound,
+        Self::QueryKeyRejected,
+        Self::QueryKeyUnverified,
+    ];
 }
 
 /// One cloud failure, as `--json` reports it.
@@ -96,6 +134,14 @@ pub struct CloudErrorDetail {
     /// any credential: both are placeholders.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub command: Option<String>,
+    /// Management resource ID of the stored Query API key a `query_key_*`
+    /// failure is about (#528). A resource ID, never the credential pair.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_id: Option<String>,
+    /// The key's IP access list (CIDRs only), when the rejection may be an
+    /// allowlist miss (#528).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -352,6 +398,59 @@ mod tests {
         );
         assert!(!rendered.contains("minTotalMemoryGb"));
         assert!(!rendered.contains("maxTotalMemoryGb"));
+    }
+
+    /// The error codes are a closed vocabulary of snake_case literals: an
+    /// agent branching on `error.code` can enumerate them.
+    #[test]
+    fn cloud_error_codes_are_stable_snake_case_literals() {
+        let wire: Vec<String> = CloudErrorCode::ALL
+            .iter()
+            .map(|code| {
+                serde_json::to_value(code)
+                    .unwrap()
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(
+            wire,
+            [
+                "query_timeout",
+                "query_key_deleted",
+                "query_key_disabled",
+                "query_key_expired",
+                "query_key_unbound",
+                "query_key_rejected",
+                "query_key_unverified",
+            ]
+        );
+    }
+
+    #[test]
+    fn cloud_error_detail_omits_absent_fields() {
+        let detail = CloudErrorDetail {
+            code: CloudErrorCode::QueryKeyDisabled,
+            message: "disabled".into(),
+            host: None,
+            port: None,
+            command: Some("clickhousectl cloud service repair-query-key svc-1".into()),
+            api_key_id: Some("key-1".into()),
+            ip_access_list: None,
+        };
+        let value = serde_json::to_value(CloudErrorOutput { error: &detail }).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "error": {
+                    "code": "query_key_disabled",
+                    "message": "disabled",
+                    "command": "clickhousectl cloud service repair-query-key svc-1",
+                    "api_key_id": "key-1",
+                }
+            })
+        );
     }
 
     #[test]

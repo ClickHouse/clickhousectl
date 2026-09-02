@@ -1957,6 +1957,100 @@ async fn a_failed_endpoint_read_during_provisioning_names_the_endpoint_get_stage
 }
 
 #[tokio::test]
+async fn a_failed_key_lookup_for_a_rejected_stored_key_names_the_key_get_stage() {
+    // The stored key is rejected by the query host, and the management
+    // lookup that would classify the rejection (#528) fails with a 5xx. The
+    // stage is the lookup's own, the kind and status are the lookup's, and
+    // the run is a stored-key run. Neither the stored key pair nor the SQL
+    // reaches the payload.
+    let control = start_control_plane(200).await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/keys/00000000-0000-0000-0000-0000000000bb",
+        ))
+        .respond_with(ResponseTemplate::new(503).set_body_string("upstream unavailable"))
+        .mount(&control)
+        .await;
+    let query_host =
+        start_query_host(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+            .await;
+
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let project = tempfile::tempdir().unwrap();
+    let clickhouse_dir = project.path().join(".clickhouse");
+    std::fs::create_dir_all(&clickhouse_dir).unwrap();
+    std::fs::write(
+        clickhouse_dir.join("credentials.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "service_query_keys": {
+                QUERY_SERVICE_ID: {
+                    "organization_id": "org-1",
+                    "api_key_id": "00000000-0000-0000-0000-0000000000bb",
+                    "key_id": "stored-key-id-SECRET-ISH",
+                    "key_secret": "stored-key-secret-SUPER-SECRET",
+                    "endpoint_id": "ep-1",
+                    "service_name": "demo",
+                    "created_at": "2026-05-11T12:00:00Z"
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let url = control.uri();
+    let output = sandbox
+        .command(&[
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT secret_column FROM hidden_table",
+        ])
+        // This failure carries a structured detail, and under a detected
+        // coding agent the CLI would emit it as JSON and (by design) hold
+        // back the debug payload so stderr stays one object. Start from an
+        // empty environment so the harness's own agent markers cannot flip
+        // the mode, and put back only what the sandbox relies on.
+        .env_clear()
+        .env("HOME", sandbox.home.path())
+        .env("CHCTL_TELEMETRY_URL", sandbox.telemetry_url())
+        .current_dir(project.path())
+        .env("CHCTL_TELEMETRY_DEBUG", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .output()
+        .expect("failed to spawn binary");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "key_get");
+    assert_eq!(event["failure_kind"], "http_5xx");
+    assert_eq!(event["http_status"], 503);
+    assert_eq!(event["provisioning_state"], "stored_key");
+    let raw = serde_json::to_string(&event).unwrap();
+    for secret in [
+        "stored-key-id-SECRET-ISH",
+        "stored-key-secret-SUPER-SECRET",
+        "secret_column",
+        "hidden_table",
+        "00000000-0000-0000-0000-0000000000bb",
+    ] {
+        assert!(
+            !raw.contains(secret),
+            "{secret} leaked into telemetry: {raw}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn an_organization_lookup_failure_names_its_own_stage() {
     // No `--org-id`, so the run starts by resolving the organization; a
     // failure there is not a query failure.

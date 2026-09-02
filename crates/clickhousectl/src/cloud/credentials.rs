@@ -231,6 +231,50 @@ pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
     Ok(())
 }
 
+/// Remove the stored query key for `service_id` only while it still names
+/// management key `api_key_id`.
+///
+/// The caller established that *that* key is gone from the organization
+/// (#528). A concurrent `repair-query-key` may have replaced the record since
+/// the caller read it, and its fresh credential must not be deleted on the
+/// strength of a verdict about the old one. Holding the provisioning lock
+/// keeps a repair from writing between the compare and the remove. Returns
+/// whether a record was removed.
+pub(crate) fn remove_service_query_key_if_api_key_matches(
+    service_id: &str,
+    api_key_id: &str,
+    _lock: &QueryProvisioningLock,
+) -> CloudResult<bool> {
+    let _mutation_lock = lock_credentials_mutation()?;
+    let Some(mut creds) = try_load_credentials()? else {
+        return Ok(false);
+    };
+    if !take_service_query_key_if_api_key_matches(&mut creds, service_id, api_key_id) {
+        return Ok(false);
+    }
+    save_credentials(&creds)?;
+    Ok(true)
+}
+
+/// The compare-and-remove behind [`remove_service_query_key_if_api_key_matches`]:
+/// drops the record only if it still names `api_key_id`. A record for another
+/// key (a concurrent repair's replacement) or a legacy record without a key
+/// ID is left alone.
+fn take_service_query_key_if_api_key_matches(
+    creds: &mut Credentials,
+    service_id: &str,
+    api_key_id: &str,
+) -> bool {
+    let still_the_same = creds
+        .service_query_keys
+        .get(service_id)
+        .is_some_and(|stored| stored.api_key_id.as_deref() == Some(api_key_id));
+    if still_the_same {
+        creds.service_query_keys.remove(service_id);
+    }
+    still_the_same
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -329,6 +373,71 @@ mod tests {
         assert_eq!(key.key_secret, "sec");
         assert_eq!(key.endpoint_id, None);
         assert!(key.pending_cleanup_api_key_ids.is_empty());
+    }
+
+    fn stored_key(api_key_id: Option<&str>) -> ServiceQueryKey {
+        ServiceQueryKey {
+            organization_id: Some("org-1".into()),
+            api_key_id: api_key_id.map(str::to_string),
+            key_id: "kid".into(),
+            key_secret: "sec".into(),
+            endpoint_id: Some("ep".into()),
+            pending_cleanup_api_key_ids: vec![],
+            service_name: "demo".into(),
+            created_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn guarded_removal_drops_only_the_record_that_still_names_the_deleted_key() {
+        let mut creds = Credentials::default();
+        creds
+            .service_query_keys
+            .insert("svc-1".into(), stored_key(Some("gone-key")));
+        creds
+            .service_query_keys
+            .insert("svc-2".into(), stored_key(Some("other-key")));
+
+        assert!(take_service_query_key_if_api_key_matches(
+            &mut creds, "svc-1", "gone-key"
+        ));
+        assert!(!creds.service_query_keys.contains_key("svc-1"));
+        assert!(
+            creds.service_query_keys.contains_key("svc-2"),
+            "another service's record is untouched"
+        );
+    }
+
+    #[test]
+    fn guarded_removal_leaves_a_replaced_or_legacy_record_alone() {
+        // A concurrent repair replaced the record: the verdict was about the
+        // old key, so the fresh credential must survive.
+        let mut creds = Credentials::default();
+        creds
+            .service_query_keys
+            .insert("svc-1".into(), stored_key(Some("replacement-key")));
+        assert!(!take_service_query_key_if_api_key_matches(
+            &mut creds, "svc-1", "gone-key"
+        ));
+        assert!(creds.service_query_keys.contains_key("svc-1"));
+
+        // A legacy record has no key ID, so it can never match.
+        let mut legacy = Credentials::default();
+        legacy
+            .service_query_keys
+            .insert("svc-1".into(), stored_key(None));
+        assert!(!take_service_query_key_if_api_key_matches(
+            &mut legacy,
+            "svc-1",
+            "gone-key"
+        ));
+        assert!(legacy.service_query_keys.contains_key("svc-1"));
+
+        // No record at all is not an error either.
+        let mut empty = Credentials::default();
+        assert!(!take_service_query_key_if_api_key_matches(
+            &mut empty, "svc-1", "gone-key"
+        ));
     }
 
     #[test]

@@ -6,12 +6,13 @@
 //! `cloud service query` invocations can authenticate without contacting the
 //! control plane.
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, CloudErrorKind, Result as CloudResult};
 use crate::cloud::credentials::{self, ServiceQueryKey};
-use crate::failure::FailureStage;
+use crate::cloud::output::{CloudErrorCode, CloudErrorDetail};
+use crate::failure::{ApiFailure, FailureKind, FailureStage};
 use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
-    ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse,
+    ApiKey, ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse, ApiKeyState,
     InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry, QueryEndpointRole,
     ServiceQueryAPIEndpoint,
 };
@@ -537,9 +538,9 @@ pub async fn repair_service_query_key(
         error.message = format!(
             "the replacement query key for service {service_id} is active, but the superseded \
              API key {old_api_key_id} could not be deleted: {}. Its exact ID remains stored; \
-             rerun `clickhousectl cloud service repair-query-key {service_id} --org-id {org_id}` \
-             to finish cleanup",
-            error.message
+             rerun `{}` to finish cleanup",
+            error.message,
+            repair_command(service_id, org_id)
         );
         return Err(error);
     }
@@ -574,6 +575,440 @@ async fn fail_after_key_creation<T>(
             ..provisioning_error
         }),
     }
+}
+
+// ── rejected stored key classification (issue #528) ─────────────────────────
+//
+// A Query API 401/403 for a stored per-service key does not say *why* the key
+// was rejected. The local secret may be stale (the key was deleted), but an
+// administrator may equally have disabled the key, let it expire, unbound it
+// from the endpoint, or narrowed its IP access list. Replacing the key would
+// undo every one of those decisions, so before anything is touched the key's
+// management record and the endpoint binding are read and the rejection is
+// classified. Only a key that no longer exists makes the local record
+// disposable; every other verdict keeps the record, changes nothing, and
+// names the explicit `repair-query-key` command as the deliberate way to
+// replace the credential.
+
+/// The explicit, deliberate replacement command for one service credential.
+fn repair_command(service_id: &str, org_id: &str) -> String {
+    format!("clickhousectl cloud service repair-query-key {service_id} --org-id {org_id}")
+}
+
+/// What the management API says about the stored key itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KeyRecordState {
+    /// `GET /keys/{id}` returned 404: the key is gone, so the local secret
+    /// cannot be anything but stale.
+    Deleted,
+    /// The key exists with `state: disabled`.
+    Disabled,
+    /// The key exists and its `expireAt` has passed.
+    Expired { expired_at: DateTime<Utc> },
+    /// Enabled and unexpired; whether it is still bound and allowed is the
+    /// endpoint's and the allowlist's business. Carries the CIDRs (never a
+    /// secret) for the eventual message.
+    Active { ip_access_list: Vec<String> },
+}
+
+fn classify_key_record(key: Option<&ApiKey>, now: DateTime<Utc>) -> KeyRecordState {
+    let Some(key) = key else {
+        return KeyRecordState::Deleted;
+    };
+    if matches!(key.state, Some(ApiKeyState::Disabled)) {
+        return KeyRecordState::Disabled;
+    }
+    if let Some(expired_at) = key.expire_at
+        && expired_at <= now
+    {
+        return KeyRecordState::Expired { expired_at };
+    }
+    KeyRecordState::Active {
+        ip_access_list: key
+            .ip_access_list
+            .iter()
+            .flatten()
+            .filter_map(|entry| entry.source.clone())
+            .collect(),
+    }
+}
+
+/// What happened to the local record of a key that no longer exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LocalRecordOutcome {
+    /// The stale record was removed; the next query re-provisions.
+    Removed,
+    /// The record still lists superseded keys awaiting deletion, and their
+    /// IDs must not be discarded (#527): the record stays and the repair
+    /// command finishes the cleanup.
+    KeptForCleanup,
+    /// Another process replaced the record between the read and the remove.
+    ChangedMeanwhile,
+}
+
+/// The verdict on a rejected stored key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RejectedKeyReason {
+    Deleted(LocalRecordOutcome),
+    Disabled,
+    Expired {
+        expired_at: DateTime<Utc>,
+    },
+    /// Enabled, but the endpoint's `openApiKeys` does not list the key.
+    /// `endpoint_id` is `None` when the service has no query endpoint at all.
+    Unbound {
+        endpoint_id: Option<String>,
+    },
+    /// Enabled, unexpired and bound, yet rejected: the IP access list or the
+    /// local secret is the likely cause. Neither can be told apart from here.
+    Rejected {
+        ip_access_list: Vec<String>,
+    },
+}
+
+/// Which lookup failed when the rejection could not be classified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lookup {
+    Key,
+    Endpoint,
+}
+
+fn classify_binding(
+    endpoint: Option<&ServiceQueryAPIEndpoint>,
+    api_key_id: &str,
+    ip_access_list: Vec<String>,
+) -> CloudResult<RejectedKeyReason> {
+    let Some(endpoint) = endpoint else {
+        return Ok(RejectedKeyReason::Unbound { endpoint_id: None });
+    };
+    // An absent `openApiKeys` is not an empty one: whether the key is bound is
+    // simply unknown, and the verdict must say so rather than guess.
+    let bound = endpoint.open_api_keys.as_ref().ok_or_else(|| {
+        CloudError::new(
+            "the query endpoint response is missing field 'openApiKeys', so whether the key is \
+             still bound is unknown",
+        )
+    })?;
+    if bound.iter().any(|key_id| key_id == api_key_id) {
+        Ok(RejectedKeyReason::Rejected { ip_access_list })
+    } else {
+        Ok(RejectedKeyReason::Unbound {
+            endpoint_id: endpoint.id.clone(),
+        })
+    }
+}
+
+/// Everything a rejection message names: resource IDs and the HTTP status,
+/// never a credential.
+#[derive(Debug, Clone, Copy)]
+struct RejectedKeyContext<'a> {
+    service_id: &'a str,
+    org_id: &'a str,
+    api_key_id: &'a str,
+    status: u16,
+}
+
+impl RejectedKeyContext<'_> {
+    fn prefix(&self) -> String {
+        format!(
+            "the stored Query API key for service {} was rejected with HTTP {}",
+            self.service_id, self.status
+        )
+    }
+
+    fn repair(&self) -> String {
+        repair_command(self.service_id, self.org_id)
+    }
+
+    /// The failure this error stands for is the Query API's own 401/403; the
+    /// management lookups that produced the verdict succeeded.
+    fn failure(&self) -> ApiFailure {
+        ApiFailure::with_status(FailureKind::Http4xx, self.status)
+    }
+
+    fn detail(
+        &self,
+        code: CloudErrorCode,
+        message: &str,
+        command: Option<String>,
+        ip_access_list: Option<Vec<String>>,
+    ) -> CloudErrorDetail {
+        CloudErrorDetail {
+            code,
+            message: message.to_string(),
+            host: None,
+            port: None,
+            command,
+            api_key_id: Some(self.api_key_id.to_string()),
+            ip_access_list,
+        }
+    }
+}
+
+fn rejected_query_key_error(reason: &RejectedKeyReason, ctx: RejectedKeyContext<'_>) -> CloudError {
+    let prefix = ctx.prefix();
+    let key = ctx.api_key_id;
+    let repair = ctx.repair();
+    let (code, message, command, ip_access_list) = match reason {
+        RejectedKeyReason::Deleted(outcome) => {
+            let rerun = format!(
+                "clickhousectl cloud service query --id {} --org-id {} --query '<your SQL>'",
+                ctx.service_id, ctx.org_id
+            );
+            let (message, command) = match outcome {
+                LocalRecordOutcome::Removed => (
+                    format!(
+                        "{prefix}: management API key {key} no longer exists in organization \
+                         {}, so the stored credential was stale and has been removed from \
+                         .clickhouse/credentials.json. Rerun the query to provision a new key \
+                         for this service:\n  {rerun}",
+                        ctx.org_id
+                    ),
+                    rerun,
+                ),
+                LocalRecordOutcome::KeptForCleanup => (
+                    format!(
+                        "{prefix}: management API key {key} no longer exists in organization \
+                         {}, but the stored record still lists superseded keys awaiting \
+                         deletion, so it was kept. Finish the cleanup and replace the \
+                         credential with\n  {repair}",
+                        ctx.org_id
+                    ),
+                    repair.clone(),
+                ),
+                LocalRecordOutcome::ChangedMeanwhile => (
+                    format!(
+                        "{prefix}: management API key {key} no longer exists in organization \
+                         {}, but another process replaced the stored credential meanwhile, so \
+                         nothing was removed. Rerun the query:\n  {rerun}",
+                        ctx.org_id
+                    ),
+                    rerun,
+                ),
+            };
+            (CloudErrorCode::QueryKeyDeleted, message, command, None)
+        }
+        RejectedKeyReason::Disabled => (
+            CloudErrorCode::QueryKeyDisabled,
+            format!(
+                "{prefix}: management API key {key} is disabled. Disabling a key is an \
+                 access-control decision, so the stored credential was kept and no replacement \
+                 was created. Re-enable the key with\n  clickhousectl cloud key update {key} \
+                 --state enabled --org-id {}\nor replace it deliberately with\n  {repair}",
+                ctx.org_id
+            ),
+            repair,
+            None,
+        ),
+        RejectedKeyReason::Expired { expired_at } => (
+            CloudErrorCode::QueryKeyExpired,
+            format!(
+                "{prefix}: management API key {key} expired at {}. An expired key is never \
+                 replaced automatically, so the stored credential was kept and no replacement \
+                 was created. Replace it deliberately with\n  {repair}",
+                expired_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+            ),
+            repair,
+            None,
+        ),
+        RejectedKeyReason::Unbound { endpoint_id } => {
+            let binding = match endpoint_id {
+                Some(endpoint_id) => format!(
+                    "is enabled but is not bound to Query API endpoint {endpoint_id} of this \
+                     service: its openApiKeys does not list the key"
+                ),
+                None => "is enabled but this service has no Query API endpoint, so nothing is \
+                         bound to it"
+                    .to_string(),
+            };
+            (
+                CloudErrorCode::QueryKeyUnbound,
+                format!(
+                    "{prefix}: management API key {key} {binding}. Unbinding a key is an \
+                     access-control decision, so the stored credential was kept and no \
+                     replacement was created. Inspect the endpoint with\n  clickhousectl cloud \
+                     service query-endpoint get {} --org-id {}\nor replace the key (and \
+                     recreate its binding) deliberately with\n  {repair}",
+                    ctx.service_id, ctx.org_id
+                ),
+                repair,
+                None,
+            )
+        }
+        RejectedKeyReason::Rejected { ip_access_list } => {
+            let allowlist = if ip_access_list.is_empty() {
+                "empty".to_string()
+            } else {
+                ip_access_list.join(", ")
+            };
+            (
+                CloudErrorCode::QueryKeyRejected,
+                format!(
+                    "{prefix}: management API key {key} is enabled, unexpired and bound to the \
+                     Query API endpoint, yet the Query API still rejects it. Either the key's IP \
+                     access list ({allowlist}) does not cover this machine, or the stored \
+                     secret no longer matches the key. Nothing was changed. Allow this machine \
+                     in the key's IP access list (`clickhousectl cloud key update {key} \
+                     --ip-allow <cidr> --org-id {}` replaces the whole list), or, if the stored \
+                     secret is wrong, replace the key deliberately with\n  {repair}",
+                    ctx.org_id
+                ),
+                repair,
+                Some(ip_access_list.clone()),
+            )
+        }
+    };
+    CloudError::new(message.clone())
+        .with_failure(ctx.failure())
+        .with_details(ctx.detail(code, &message, Some(command), ip_access_list))
+}
+
+/// The lookup that would have classified the rejection failed, so the
+/// rejection stays ambiguous. Nothing local or remote is touched. The
+/// classification is the lookup failure's own (a 5xx, a transport error, a
+/// management-side 403), carried across the rewrite (#450); the exit code is
+/// the ordinary `1`, because the remedy is not to re-authenticate the CLI.
+fn unverified_query_key_error(
+    ctx: RejectedKeyContext<'_>,
+    lookup: Lookup,
+    cause: CloudError,
+) -> CloudError {
+    let what = match lookup {
+        Lookup::Key => format!("management API key {}", ctx.api_key_id),
+        Lookup::Endpoint => format!(
+            "the Query API endpoint binding of service {}",
+            ctx.service_id
+        ),
+    };
+    let repair = ctx.repair();
+    let message = format!(
+        "{}, and {what} could not be read to tell a stale credential from an intentional \
+         revocation: {cause}. Nothing was changed. Retry the query once the management API is \
+         reachable; to replace the key regardless, run\n  {repair}",
+        ctx.prefix()
+    );
+    CloudError {
+        message: message.clone(),
+        kind: CloudErrorKind::Generic,
+        details: Some(Box::new(ctx.detail(
+            CloudErrorCode::QueryKeyUnverified,
+            &message,
+            None,
+            None,
+        ))),
+        ..cause
+    }
+}
+
+/// A record written before key-ownership metadata existed names no
+/// management key, so there is nothing to look up and nothing safe to remove.
+fn legacy_query_key_error(service_id: &str, status: u16) -> CloudError {
+    let message = format!(
+        "the stored Query API key for service {service_id} was rejected with HTTP {status}, and \
+         the stored record predates key-ownership metadata, so the key cannot be identified or \
+         verified. Nothing was changed. Remove the `service_query_keys.{service_id}` entry from \
+         .clickhouse/credentials.json to provision a fresh key on the next query, and delete the \
+         old key in the ClickHouse Cloud console if it still exists"
+    );
+    CloudError::new(message.clone())
+        .with_failure(ApiFailure::with_status(FailureKind::Http4xx, status))
+        .with_details(CloudErrorDetail {
+            code: CloudErrorCode::QueryKeyUnverified,
+            message,
+            host: None,
+            port: None,
+            command: None,
+            api_key_id: None,
+            ip_access_list: None,
+        })
+}
+
+/// Drop the local record of a key the organization no longer has, unless the
+/// record is still needed: superseded key IDs awaiting cleanup must not be
+/// discarded (#527), and a record another process already replaced is not
+/// ours to remove.
+async fn forget_deleted_query_key(
+    stored: &ServiceQueryKey,
+    service_id: &str,
+    api_key_id: &str,
+) -> CloudResult<LocalRecordOutcome> {
+    if !stored.pending_cleanup_api_key_ids.is_empty() {
+        return Ok(LocalRecordOutcome::KeptForCleanup);
+    }
+    let lock = credentials::lock_query_provisioning().await?;
+    let removed =
+        credentials::remove_service_query_key_if_api_key_matches(service_id, api_key_id, &lock)?;
+    Ok(if removed {
+        LocalRecordOutcome::Removed
+    } else {
+        LocalRecordOutcome::ChangedMeanwhile
+    })
+}
+
+/// The error to report for a stored key the Query API rejected with `status`
+/// (401/403), after classifying the rejection against the key's management
+/// record and the endpoint binding.
+///
+/// The only mutation on any path is removing the local record of a key that
+/// no longer exists. Every other verdict, and every lookup failure, leaves the
+/// credentials file and the organization exactly as they were.
+pub(crate) async fn rejected_stored_query_key_error(
+    client: &CloudClient,
+    stored: &ServiceQueryKey,
+    service_id: &str,
+    org_id: &str,
+    status: u16,
+) -> CloudError {
+    let Some(api_key_id) = stored.api_key_id.as_deref() else {
+        return legacy_query_key_error(service_id, status);
+    };
+    // The key lives in the organization that provisioned it, which is the
+    // stored one whenever the record has it.
+    let org_id = stored.organization_id.as_deref().unwrap_or(org_id);
+    let ctx = RejectedKeyContext {
+        service_id,
+        org_id,
+        api_key_id,
+        status,
+    };
+
+    let key = match client.get_api_key_if_exists(org_id, api_key_id).await {
+        Ok(key) => key,
+        Err(cause) => {
+            return unverified_query_key_error(ctx, Lookup::Key, cause)
+                .at_stage(FailureStage::KeyGet);
+        }
+    };
+    let reason = match classify_key_record(key.as_ref(), Utc::now()) {
+        KeyRecordState::Deleted => {
+            match forget_deleted_query_key(stored, service_id, api_key_id).await {
+                Ok(outcome) => RejectedKeyReason::Deleted(outcome),
+                Err(error) => return error,
+            }
+        }
+        KeyRecordState::Disabled => RejectedKeyReason::Disabled,
+        KeyRecordState::Expired { expired_at } => RejectedKeyReason::Expired { expired_at },
+        KeyRecordState::Active { ip_access_list } => {
+            let endpoint = match client
+                .get_query_endpoint_for_binding(org_id, service_id)
+                .await
+            {
+                Ok(endpoint) => endpoint,
+                Err(cause) => {
+                    return unverified_query_key_error(ctx, Lookup::Endpoint, cause)
+                        .at_stage(FailureStage::EndpointGet);
+                }
+            };
+            match classify_binding(endpoint.as_ref(), api_key_id, ip_access_list) {
+                Ok(reason) => reason,
+                Err(cause) => {
+                    return unverified_query_key_error(ctx, Lookup::Endpoint, cause)
+                        .at_stage(FailureStage::EndpointGet);
+                }
+            }
+        }
+    };
+    rejected_query_key_error(&reason, ctx)
 }
 
 /// The keys already bound to an existing query endpoint, taken from a
@@ -666,6 +1101,21 @@ async fn bind_query_endpoint(
 }
 
 impl CloudClient {
+    /// The management record of one API key, or `None` when the organization
+    /// no longer has it. Only a 404 means "gone": any other failure is
+    /// reported, because it says nothing about the key.
+    async fn get_api_key_if_exists(
+        &self,
+        org_id: &str,
+        api_key_id: &str,
+    ) -> CloudResult<Option<ApiKey>> {
+        match self.api().openapi_key_get(org_id, api_key_id).await {
+            Ok(response) => Self::unwrap_response(response).map(Some),
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
+            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+        }
+    }
+
     async fn get_query_endpoint_for_binding(
         &self,
         org_id: &str,
@@ -942,5 +1392,368 @@ mod tests {
 
         assert!(repair_state_changed(&expected, &winner));
         assert!(!repair_state_changed(&winner, &winner));
+    }
+
+    // ── rejected stored key classification (issue #528) ─────────────
+
+    use clickhouse_cloud_api::models::IpAccessListEntryResponse;
+
+    fn at(rfc3339: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(rfc3339)
+            .unwrap()
+            .with_timezone(&Utc)
+    }
+
+    fn api_key(
+        state: Option<ApiKeyState>,
+        expire_at: Option<DateTime<Utc>>,
+        cidrs: Option<&[&str]>,
+    ) -> ApiKey {
+        ApiKey {
+            state,
+            expire_at,
+            ip_access_list: cidrs.map(|cidrs| {
+                cidrs
+                    .iter()
+                    .map(|cidr| IpAccessListEntryResponse {
+                        source: Some(cidr.to_string()),
+                        description: None,
+                    })
+                    .collect()
+            }),
+            ..ApiKey::default()
+        }
+    }
+
+    const NOW: &str = "2026-09-02T12:00:00Z";
+
+    fn ctx() -> RejectedKeyContext<'static> {
+        RejectedKeyContext {
+            service_id: "svc-1",
+            org_id: "org-1",
+            api_key_id: "key-1",
+            status: 401,
+        }
+    }
+
+    #[test]
+    fn a_missing_key_record_is_deleted() {
+        assert_eq!(classify_key_record(None, at(NOW)), KeyRecordState::Deleted);
+    }
+
+    #[test]
+    fn a_disabled_key_is_disabled_even_when_it_has_also_expired() {
+        let key = api_key(
+            Some(ApiKeyState::Disabled),
+            Some(at("2026-01-01T00:00:00Z")),
+            Some(&["0.0.0.0/0"]),
+        );
+        assert_eq!(
+            classify_key_record(Some(&key), at(NOW)),
+            KeyRecordState::Disabled
+        );
+    }
+
+    #[test]
+    fn an_expiry_at_or_before_now_is_expired_and_a_later_one_is_not() {
+        let expired = api_key(Some(ApiKeyState::Enabled), Some(at(NOW)), None);
+        assert_eq!(
+            classify_key_record(Some(&expired), at(NOW)),
+            KeyRecordState::Expired {
+                expired_at: at(NOW)
+            }
+        );
+        let live = api_key(
+            Some(ApiKeyState::Enabled),
+            Some(at("2027-01-01T00:00:00Z")),
+            Some(&["10.0.0.0/8"]),
+        );
+        assert_eq!(
+            classify_key_record(Some(&live), at(NOW)),
+            KeyRecordState::Active {
+                ip_access_list: vec!["10.0.0.0/8".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn an_active_key_keeps_only_the_cidrs_and_tolerates_absent_fields() {
+        // Absent `state`, absent `expireAt`, absent `ipAccessList`: nothing is
+        // fabricated, and none of it makes the key look revoked.
+        let bare = api_key(None, None, None);
+        assert_eq!(
+            classify_key_record(Some(&bare), at(NOW)),
+            KeyRecordState::Active {
+                ip_access_list: vec![]
+            }
+        );
+        // An entry without a `source` is skipped rather than rendered empty.
+        let mut partial = api_key(Some(ApiKeyState::Enabled), None, Some(&["1.2.3.4/32"]));
+        partial
+            .ip_access_list
+            .get_or_insert_with(Vec::new)
+            .push(IpAccessListEntryResponse {
+                source: None,
+                description: Some("no source".into()),
+            });
+        assert_eq!(
+            classify_key_record(Some(&partial), at(NOW)),
+            KeyRecordState::Active {
+                ip_access_list: vec!["1.2.3.4/32".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn a_service_without_an_endpoint_leaves_the_key_unbound() {
+        assert_eq!(
+            classify_binding(None, "key-1", vec![]).unwrap(),
+            RejectedKeyReason::Unbound { endpoint_id: None }
+        );
+    }
+
+    #[test]
+    fn an_endpoint_that_omits_the_key_is_unbound_and_names_the_endpoint() {
+        let endpoint = ServiceQueryAPIEndpoint {
+            id: Some("ep-1".into()),
+            open_api_keys: Some(vec!["other-key".into()]),
+            roles: None,
+            allowed_origins: None,
+        };
+        assert_eq!(
+            classify_binding(Some(&endpoint), "key-1", vec![]).unwrap(),
+            RejectedKeyReason::Unbound {
+                endpoint_id: Some("ep-1".into())
+            }
+        );
+    }
+
+    #[test]
+    fn an_endpoint_that_lists_the_key_is_rejected_with_the_allowlist() {
+        let endpoint = ServiceQueryAPIEndpoint {
+            id: Some("ep-1".into()),
+            open_api_keys: Some(vec!["other-key".into(), "key-1".into()]),
+            roles: None,
+            allowed_origins: None,
+        };
+        assert_eq!(
+            classify_binding(Some(&endpoint), "key-1", vec!["203.0.113.0/24".into()]).unwrap(),
+            RejectedKeyReason::Rejected {
+                ip_access_list: vec!["203.0.113.0/24".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn an_endpoint_without_open_api_keys_cannot_classify_the_binding() {
+        let endpoint = ServiceQueryAPIEndpoint {
+            id: Some("ep-1".into()),
+            open_api_keys: None,
+            roles: None,
+            allowed_origins: None,
+        };
+        let error = classify_binding(Some(&endpoint), "key-1", vec![]).unwrap_err();
+        assert!(error.to_string().contains("'openApiKeys'"), "{error}");
+    }
+
+    #[test]
+    fn every_verdict_has_a_stable_code_and_the_deliberate_repair_path() {
+        let cases = [
+            (
+                RejectedKeyReason::Deleted(LocalRecordOutcome::KeptForCleanup),
+                CloudErrorCode::QueryKeyDeleted,
+                "awaiting deletion",
+            ),
+            (
+                RejectedKeyReason::Disabled,
+                CloudErrorCode::QueryKeyDisabled,
+                "clickhousectl cloud key update key-1 --state enabled --org-id org-1",
+            ),
+            (
+                RejectedKeyReason::Expired {
+                    expired_at: at("2026-08-01T00:00:00Z"),
+                },
+                CloudErrorCode::QueryKeyExpired,
+                "expired at 2026-08-01T00:00:00Z",
+            ),
+            (
+                RejectedKeyReason::Unbound {
+                    endpoint_id: Some("ep-1".into()),
+                },
+                CloudErrorCode::QueryKeyUnbound,
+                "not bound to Query API endpoint ep-1",
+            ),
+            (
+                RejectedKeyReason::Unbound { endpoint_id: None },
+                CloudErrorCode::QueryKeyUnbound,
+                "has no Query API endpoint",
+            ),
+            (
+                RejectedKeyReason::Rejected {
+                    ip_access_list: vec!["203.0.113.0/24".into(), "198.51.100.7/32".into()],
+                },
+                CloudErrorCode::QueryKeyRejected,
+                "IP access list (203.0.113.0/24, 198.51.100.7/32)",
+            ),
+            (
+                RejectedKeyReason::Rejected {
+                    ip_access_list: vec![],
+                },
+                CloudErrorCode::QueryKeyRejected,
+                "IP access list (empty)",
+            ),
+        ];
+        for (reason, code, needle) in cases {
+            let error = rejected_query_key_error(&reason, ctx());
+            let details = error.details.as_deref().expect("json details");
+            assert_eq!(details.code, code, "{reason:?}");
+            assert_eq!(details.message, error.message, "{reason:?}");
+            assert_eq!(details.api_key_id.as_deref(), Some("key-1"), "{reason:?}");
+            assert_eq!(
+                details.command.as_deref(),
+                Some("clickhousectl cloud service repair-query-key svc-1 --org-id org-1"),
+                "{reason:?}"
+            );
+            assert!(
+                error.message.contains(needle),
+                "{reason:?}: {}",
+                error.message
+            );
+            assert!(
+                error.message.starts_with(
+                    "the stored Query API key for service svc-1 was rejected with HTTP 401"
+                ),
+                "{}",
+                error.message
+            );
+            assert!(
+                error.message.contains("management API key key-1"),
+                "{reason:?}: {}",
+                error.message
+            );
+            // Every non-deleted verdict says out loud that nothing was replaced.
+            if !matches!(reason, RejectedKeyReason::Deleted(_)) {
+                assert!(
+                    error.message.contains("no replacement was created")
+                        || error.message.contains("Nothing was changed"),
+                    "{reason:?}: {}",
+                    error.message
+                );
+            }
+            // The failure is the Query API's own rejection (#450), and a
+            // rejected *stored* key is never an auth-required exit.
+            assert_eq!(
+                error.failure,
+                Some(ApiFailure::with_status(FailureKind::Http4xx, 401))
+            );
+            assert_eq!(error.kind, CloudErrorKind::Generic);
+            let is_rejected = matches!(reason, RejectedKeyReason::Rejected { .. });
+            assert_eq!(details.ip_access_list.is_some(), is_rejected, "{reason:?}");
+        }
+    }
+
+    #[test]
+    fn a_removed_stale_record_points_at_rerunning_the_query() {
+        let error = rejected_query_key_error(
+            &RejectedKeyReason::Deleted(LocalRecordOutcome::Removed),
+            ctx(),
+        );
+        let details = error.details.as_deref().unwrap();
+        assert_eq!(details.code, CloudErrorCode::QueryKeyDeleted);
+        assert!(
+            error.message.contains("has been removed"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            details.command.as_deref(),
+            Some(
+                "clickhousectl cloud service query --id svc-1 --org-id org-1 --query '<your SQL>'"
+            )
+        );
+
+        let changed = rejected_query_key_error(
+            &RejectedKeyReason::Deleted(LocalRecordOutcome::ChangedMeanwhile),
+            ctx(),
+        );
+        assert!(
+            changed.message.contains("nothing was removed"),
+            "{}",
+            changed.message
+        );
+    }
+
+    #[test]
+    fn an_unverifiable_rejection_carries_the_lookup_failure_and_exits_generic() {
+        let cause = CloudError::auth("FORBIDDEN")
+            .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 403));
+        let error = unverified_query_key_error(ctx(), Lookup::Key, cause);
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 403)),
+            "the classification is the lookup's, carried across the rewrite"
+        );
+        let details = error.details.as_deref().unwrap();
+        assert_eq!(details.code, CloudErrorCode::QueryKeyUnverified);
+        assert_eq!(details.api_key_id.as_deref(), Some("key-1"));
+        assert!(
+            details.command.is_none(),
+            "an ambiguous verdict pushes no write"
+        );
+        assert!(
+            error
+                .message
+                .contains("management API key key-1 could not be read"),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains("FORBIDDEN"), "{}", error.message);
+        assert!(
+            error.message.contains("Nothing was changed"),
+            "{}",
+            error.message
+        );
+
+        let endpoint = unverified_query_key_error(
+            ctx(),
+            Lookup::Endpoint,
+            CloudError::new("upstream unavailable")
+                .with_failure(ApiFailure::with_status(FailureKind::Http5xx, 503)),
+        );
+        assert!(
+            endpoint
+                .message
+                .contains("the Query API endpoint binding of service svc-1 could not be read"),
+            "{}",
+            endpoint.message
+        );
+        assert_eq!(
+            endpoint.failure,
+            Some(ApiFailure::with_status(FailureKind::Http5xx, 503))
+        );
+    }
+
+    #[test]
+    fn a_legacy_record_is_unverifiable_and_names_no_key() {
+        let error = legacy_query_key_error("svc-1", 403);
+        let details = error.details.as_deref().unwrap();
+        assert_eq!(details.code, CloudErrorCode::QueryKeyUnverified);
+        assert!(details.api_key_id.is_none());
+        assert!(details.command.is_none());
+        assert_eq!(
+            error.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 403))
+        );
+        assert!(
+            error.message.contains("service_query_keys.svc-1"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("Nothing was changed"),
+            "{}",
+            error.message
+        );
     }
 }
