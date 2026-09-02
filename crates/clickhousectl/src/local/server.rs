@@ -951,7 +951,9 @@ pub fn now_timestamp() -> String {
 /// Scans for running ClickHouse processes whose cwd matches this project's
 /// `.clickhouse/servers/<name>/data/` path. If a process is found that has no
 /// metadata file, a new `ServerInfo` is saved so it appears in `server list`
-/// and can be managed normally.
+/// and can be managed normally. The recovered `pid` is the one discovery
+/// reports, so it is the process `stop` has to signal — the watchdog when the
+/// server has one — exactly as if `server start` had written it.
 pub fn recover_current_project_servers() -> Result<()> {
     let lock = lock_metadata()?;
     recover_current_project_servers_locked(&lock)
@@ -1093,7 +1095,8 @@ pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
 /// is project-scoped but survives a failed process scan, while discovery spans
 /// projects but depends on `pgrep`/`lsof`/`/proc`. The same server appears in
 /// both, so entries are de-duplicated by PID — metadata for a running server
-/// always carries the live PID of the discovered process.
+/// always carries the live PID of the discovered process, because discovery
+/// reports the supervising watchdog that `server start` recorded (issue #664).
 pub(crate) fn select_version_users(
     project_servers: &[ServerInfo],
     global: &[GlobalServerEntry],
