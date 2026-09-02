@@ -98,6 +98,10 @@ pub enum CloudErrorCode {
     /// The stored Query API key's management record could not be read, so
     /// the rejection could not be classified; nothing was changed (#528).
     QueryKeyUnverified,
+    /// `repair-query-key` replaced and stored the key, but the Query API kept
+    /// rejecting the replacement for the whole readiness window. The repair
+    /// is committed; rerunning it would rotate a key that may be fine (#658).
+    QueryKeyRepairUnverified,
 }
 
 impl CloudErrorCode {
@@ -111,6 +115,7 @@ impl CloudErrorCode {
         Self::QueryKeyUnbound,
         Self::QueryKeyRejected,
         Self::QueryKeyUnverified,
+        Self::QueryKeyRepairUnverified,
     ];
 }
 
@@ -424,6 +429,7 @@ mod tests {
                 "query_key_unbound",
                 "query_key_rejected",
                 "query_key_unverified",
+                "query_key_repair_unverified",
             ]
         );
     }

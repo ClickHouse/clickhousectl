@@ -88,7 +88,9 @@ fn build_query_api_key_request(service_name: &str) -> ApiKeyPostRequest {
 /// created and `GET /keys/{id}` already returns. The wait is bounded and
 /// exponential like the query-endpoint readiness wait in `services.rs`. Live
 /// on 2026-09-02, 1 of 20 back-to-back repairs hit it and the first retry,
-/// one second later, succeeded; the 30 s deadline leaves ample headroom.
+/// one second later, succeeded; the 30 s deadline leaves ample headroom. The
+/// deadline decides whether another attempt is *started*; an attempt already
+/// in flight is never cut off, so a last-attempt success is never discarded.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct KeyPropagation {
     pub(crate) timeout: Duration,
@@ -149,7 +151,9 @@ where
             return Err(error);
         }
         if !waiting {
-            eprintln!("{KEY_PROPAGATION_NOTICE}");
+            // A closed stderr must not panic here: the key exists and the
+            // rollback that would delete it has not run yet.
+            crate::cloud::output::eprint_line(KEY_PROPAGATION_NOTICE);
             waiting = true;
         }
         crate::failure::note_retry();
@@ -264,6 +268,35 @@ async fn fail_after_endpoint_binding<T>(
     fail_after_key_creation(client, org_id, api_key_id, persistence_error).await
 }
 
+/// Whether a repair confirmed that the Query API accepts the new key (#658).
+///
+/// The repair itself is committed whatever the value: the binding, the stored
+/// record and the retirement of the old key do not depend on the probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairVerification {
+    /// A probe query with the new key succeeded.
+    Verified,
+    /// The key was not probed: the service is not running, its state could
+    /// not be read, no Query API host is configured, or the record changed.
+    /// The next query verifies the key.
+    Skipped,
+    /// The probe failed for a reason unrelated to the key becoming ready
+    /// (transport, 5xx), or kept being rejected for the whole readiness
+    /// window. The next query verifies the key.
+    Failed,
+}
+
+impl RepairVerification {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Verified => "verified",
+            Self::Skipped => "skipped",
+            Self::Failed => "failed",
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryKeyRepairResult {
@@ -286,6 +319,11 @@ pub struct QueryKeyRepairResult {
     /// for a human; the JSON result carries the IDs themselves.
     #[serde(skip)]
     pub(crate) cleanup_warning: Option<String>,
+    /// Whether the Query API was confirmed to accept the new key (#658). Set
+    /// by the command handler after the repair is committed; absent for an
+    /// `already_repaired` result, whose key another process verified.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) verification: Option<RepairVerification>,
 }
 
 #[derive(Clone)]
@@ -540,6 +578,7 @@ pub async fn repair_service_query_key(
             deleted_api_key_ids: vec![],
             pending_cleanup_api_key_ids: vec![],
             cleanup_warning: None,
+            verification: None,
         });
     }
 
@@ -685,6 +724,7 @@ pub async fn repair_service_query_key(
         deleted_api_key_ids: outcome.deleted,
         pending_cleanup_api_key_ids,
         cleanup_warning,
+        verification: None,
     })
 }
 
@@ -1521,7 +1561,7 @@ mod tests {
         }
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_backoff_is_capped_and_never_sleeps_past_the_deadline() {
         use std::sync::{
             Arc, Mutex,
@@ -2256,9 +2296,11 @@ mod tests {
             deleted_api_key_ids: vec![],
             pending_cleanup_api_key_ids: vec!["old".into()],
             cleanup_warning: Some("Warning: prose".into()),
+            verification: Some(RepairVerification::Verified),
         };
         let json = serde_json::to_value(&result).unwrap();
         assert_eq!(json["pendingCleanupApiKeyIds"], serde_json::json!(["old"]));
+        assert_eq!(json["verification"], "verified");
         assert!(json.get("deletedApiKeyIds").is_none(), "{json}");
         assert!(json.get("cleanupWarning").is_none(), "{json}");
     }

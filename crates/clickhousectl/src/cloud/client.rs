@@ -425,6 +425,31 @@ impl CloudClient {
         })
     }
 
+    /// An API-key client against `base_url`, for unit tests that drive a
+    /// handler against a local mock server.
+    #[cfg(test)]
+    pub(crate) fn for_tests(base_url: &str, query_host: Option<&str>) -> Self {
+        let http = reqwest::Client::builder().build().unwrap();
+        let mut lib_client = clickhouse_cloud_api::Client::with_http_client(
+            http,
+            lib_base_url(base_url),
+            "test_key",
+            "test_secret",
+        );
+        if let Some(query_host) = query_host {
+            lib_client = lib_client.with_query_host(query_host);
+        }
+        Self {
+            lib_client,
+            auth_mode: AuthMode::Basic {
+                key: "test_key".into(),
+                secret: "test_secret".into(),
+            },
+            auth_source: AuthSource::CliFlags,
+            base_url: base_url.to_string(),
+        }
+    }
+
     /// Returns true if the client is using OAuth Bearer token authentication.
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {

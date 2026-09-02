@@ -5896,6 +5896,7 @@ async fn stored_query_key_rejections_emit_structured_json_errors() {
 #[tokio::test]
 async fn service_query_key_repair_replaces_exact_binding_and_preserves_credentials() {
     let control = MockServer::start().await;
+    mount_running_service_accepting_probes(&control, 1).await;
     let endpoint_path = mount_repair_endpoint_get(&control).await;
     mount_replacement_key_create(&control).await;
     Mock::given(method("POST"))
@@ -5949,6 +5950,8 @@ async fn service_query_key_repair_replaces_exact_binding_and_preserves_credentia
     assert_eq!(result["replacedApiKeyId"], OLD_QUERY_TEST_KEY_UUID);
     assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
     assert_eq!(result["endpointId"], "ep-1");
+    assert_eq!(result["verification"], "verified");
+    assert_eq!(probes_received(&control).await.len(), 1);
 
     let stored: Value = serde_json::from_slice(
         &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
@@ -5975,6 +5978,7 @@ async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
     // superseded key is a warning, not a failure (#527): the exact ID stays
     // on the record for the next query to retry, and the warning says so.
     let control = MockServer::start().await;
+    mount_running_service_accepting_probes(&control, 1).await;
     let endpoint_path = mount_repair_endpoint_get(&control).await;
     mount_replacement_key_create(&control).await;
     Mock::given(method("POST"))
@@ -6542,6 +6546,7 @@ async fn repair_with_a_pending_retirement_replaces_the_key_and_deletes_every_ret
     assert_eq!(result["status"], "repaired");
     assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
     assert_eq!(result["replacedApiKeyId"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(result["verification"], "verified");
     assert_eq!(
         result["deletedApiKeyIds"],
         serde_json::json!([PENDING_QUERY_TEST_KEY_UUID, OLD_QUERY_TEST_KEY_UUID])
@@ -6583,6 +6588,7 @@ async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list()
     );
 
     let first = MockServer::start().await;
+    mount_running_service_accepting_probes(&first, 1).await;
     mount_repair_endpoint_get_listing(&first, &["unrelated-key", OLD_QUERY_TEST_KEY_UUID]).await;
     mount_key_create_returning(&first, QUERY_TEST_KEY_UUID).await;
     expect_repair_endpoint_upsert(&first, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
@@ -6598,6 +6604,7 @@ async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list()
     );
 
     let second = MockServer::start().await;
+    mount_running_service_accepting_probes(&second, 1).await;
     mount_repair_endpoint_get_listing(&second, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
     mount_key_create_returning(&second, THIRD_QUERY_TEST_KEY_UUID).await;
     expect_repair_endpoint_upsert(&second, &["unrelated-key", THIRD_QUERY_TEST_KEY_UUID]).await;
@@ -6610,6 +6617,7 @@ async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list()
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["replacedApiKeyId"], QUERY_TEST_KEY_UUID);
     assert_eq!(result["apiKeyId"], THIRD_QUERY_TEST_KEY_UUID);
+    assert_eq!(result["verification"], "verified");
     assert_eq!(
         result["deletedApiKeyIds"],
         serde_json::json!([QUERY_TEST_KEY_UUID])
@@ -6705,6 +6713,7 @@ async fn mount_endpoint_upsert_failing_once(
 #[tokio::test]
 async fn repair_waits_for_the_new_key_to_propagate_before_binding_it() {
     let control = MockServer::start().await;
+    mount_running_service_accepting_probes(&control, 1).await;
     mount_repair_endpoint_get(&control).await;
     mount_replacement_key_create(&control).await;
     mount_endpoint_upsert_failing_once(
@@ -6738,6 +6747,7 @@ async fn repair_waits_for_the_new_key_to_propagate_before_binding_it() {
         result["deletedApiKeyIds"],
         serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
     );
+    assert_eq!(result["verification"], "verified");
     let stderr = stderr_without_notes(&output);
     assert_eq!(
         stderr.matches(KEY_PROPAGATION_NOTICE).count(),
@@ -6990,6 +7000,26 @@ async fn mount_clean_repair(control: &MockServer) {
     mount_key_delete(control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
 }
 
+/// A `running` service whose query host accepts every probe: what every
+/// successful repair sees. `expected_probes` pins that the probe ran.
+async fn mount_running_service_accepting_probes(control: &MockServer, expected_probes: u64) {
+    mount_repair_service_state(control, "running").await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .expect(expected_probes)
+        .mount(control)
+        .await;
+}
+
+/// The one JSON error object on stderr, after any notice lines.
+fn structured_error(output: &std::process::Output) -> Value {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let object = &stderr[stderr.find('{').unwrap_or(0)..];
+    serde_json::from_str(object.trim())
+        .unwrap_or_else(|e| panic!("stderr does not end in one JSON object ({e}): {stderr}"))
+}
+
 /// The probe requests the query host received with the replacement key.
 async fn probes_received(control: &MockServer) -> Vec<Value> {
     let auth = query_test_basic_auth("replacement-key-id:replacement-key-secret");
@@ -7048,6 +7078,7 @@ async fn repair_exits_zero_only_once_the_query_api_accepts_the_new_key() {
     assert_success(&output);
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["status"], "repaired");
+    assert_eq!(result["verification"], "verified");
     let stderr = stderr_without_notes(&output);
     assert_eq!(
         stderr.matches(QUERY_READINESS_NOTICE).count(),
@@ -7095,12 +7126,13 @@ async fn repair_does_not_probe_a_service_that_is_not_running() {
         assert_success(&output);
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result["status"], "repaired");
+        assert_eq!(result["verification"], "skipped");
         let stderr = stderr_without_notes(&output);
         assert!(
             stderr.contains(&format!("Note: service {QUERY_TEST_SERVICE_ID} is {state}")),
             "{stderr}"
         );
-        assert!(stderr.contains("will be verified by the next"), "{stderr}");
+        assert!(stderr.contains("is verified by the next"), "{stderr}");
         assert!(
             probes_received(&control).await.is_empty(),
             "{state}: probed"
@@ -7109,11 +7141,101 @@ async fn repair_does_not_probe_a_service_that_is_not_running() {
 }
 
 #[tokio::test]
-async fn a_failed_verification_reports_the_committed_repair_and_never_rolls_it_back() {
+async fn repair_skips_verification_when_the_service_state_cannot_be_read() {
+    // No `GET service` is mounted, so the state lookup answers 404. The repair
+    // is complete and reported; the key is simply not probed.
+    let control = MockServer::start().await;
+    mount_clean_repair(&control).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["verification"], "skipped");
+    let stderr = stderr_without_notes(&output);
+    assert!(
+        stderr.contains(&format!(
+            "Note: could not read the state of service {QUERY_TEST_SERVICE_ID}"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(QUERY_TEST_KEY_UUID),
+        "the note names the stored key: {stderr}"
+    );
+    assert!(probes_received(&control).await.is_empty());
+}
+
+#[tokio::test]
+async fn repair_skips_verification_without_a_configured_query_host() {
+    // `--url` points at a host the Query API host cannot be derived from and
+    // `CLICKHOUSE_CLOUD_QUERY_HOST` is unset: the library would fall back to
+    // the production host, so the CLI does not probe at all. Every request
+    // the run made went to the mock, and none of them was a probe.
+    let control = MockServer::start().await;
+    mount_running_service_accepting_probes(&control, 0).await;
+    mount_clean_repair(&control).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .env_remove("CLICKHOUSE_CLOUD_QUERY_HOST")
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["verification"], "skipped");
+    let stderr = stderr_without_notes(&output);
+    assert!(
+        stderr.contains("Note: no Query API host is configured for"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("CLICKHOUSE_CLOUD_QUERY_HOST"), "{stderr}");
+    let requests = control.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path().starts_with("/v1/")),
+        "only control-plane requests, no probe: {:?}",
+        requests
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect::<Vec<_>>()
+    );
+    // Old key retired, new key kept: the repair itself is untouched.
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![OLD_QUERY_TEST_KEY_UUID.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn a_failed_probe_reports_the_committed_repair_and_exits_zero() {
     // The probe fails for a reason that is not "not ready yet". The repair
-    // itself is complete and consistent, so nothing is undone: the record
-    // names the new key, the old key is gone, and the error says exactly
-    // that before saying what failed.
+    // itself is complete and consistent, so nothing is undone and the exit
+    // code stays 0: the result names the new key with `verification: failed`
+    // and a warning on stderr says what failed and how the key gets verified.
     let control = MockServer::start().await;
     mount_repair_service_state(&control, "running").await;
     mount_clean_repair(&control).await;
@@ -7139,22 +7261,22 @@ async fn a_failed_verification_reports_the_committed_repair_and_never_rolls_it_b
         .output()
         .await
         .expect("failed to spawn clickhousectl");
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "{}",
-        stderr_without_notes(&output)
-    );
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["verification"], "failed");
     let stderr = stderr_without_notes(&output);
     assert!(
         stderr.contains(&format!(
-            "the query key for service {QUERY_TEST_SERVICE_ID} was replaced (new API key \
-             {QUERY_TEST_KEY_UUID}) and stored in .clickhouse/credentials.json, but verifying it \
-             failed"
+            "Warning: the query key for service {QUERY_TEST_SERVICE_ID} was replaced (new API \
+             key {QUERY_TEST_KEY_UUID}) and stored in .clickhouse/credentials.json, but probing \
+             it failed"
         )),
         "{stderr}"
     );
     assert!(stderr.contains("bad gateway"), "{stderr}");
+    assert!(stderr.contains("is verified by the next"), "{stderr}");
 
     assert_eq!(
         key_deletes_received(&control).await,
@@ -7165,6 +7287,117 @@ async fn a_failed_verification_reports_the_committed_repair_and_never_rolls_it_b
     let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
     assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
     assert_eq!(repaired["key_id"], "replacement-key-id");
+}
+
+#[tokio::test]
+async fn repair_skips_verification_when_the_probe_finds_the_service_stopped() {
+    // The service was running when its state was read and stopped by the time
+    // the probe arrived (HTTP 206 `Service is stopped`). Not a failure of the
+    // key: the probe is skipped like any other not-running service.
+    let control = MockServer::start().await;
+    mount_repair_service_state(&control, "running").await;
+    mount_clean_repair(&control).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_json(serde_json::json!({ "data": "Service is stopped" })),
+        )
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["verification"], "skipped");
+    let stderr = stderr_without_notes(&output);
+    assert!(
+        stderr.contains(&format!("Note: service {QUERY_TEST_SERVICE_ID} is stopped")),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Warning:"), "{stderr}");
+}
+
+#[tokio::test]
+#[ignore = "waits out the real 120 s Query API readiness window; run explicitly"]
+async fn a_key_the_query_api_never_accepts_reports_the_repair_then_fails_with_its_own_code() {
+    // The probe is rejected for the whole readiness window. The repair is
+    // committed and printed first, with `verification: failed`; then the
+    // structured error follows on stderr with its own code, the new key's ID
+    // and the query command to run — never a repair rerun, which would rotate
+    // a key that may only be slow to propagate. Nothing is rolled back.
+    let control = MockServer::start().await;
+    mount_repair_service_state(&control, "running").await;
+    mount_clean_repair(&control).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .mount(&control)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        stderr_without_notes(&output)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["verification"], "failed");
+    let error = structured_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_repair_unverified");
+    assert_eq!(error["error"]["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        error["error"]["command"],
+        format!(
+            "clickhousectl cloud service query --id {QUERY_TEST_SERVICE_ID} --org-id org-1 \
+             --query \"SELECT 1\""
+        )
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("was replaced (new API key"), "{message}");
+    assert!(
+        message.contains("Do not rerun repair-query-key"),
+        "{message}"
+    );
+    assert!(
+        probes_received(&control).await.len() > 1,
+        "the whole window was used"
+    );
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![OLD_QUERY_TEST_KEY_UUID.to_string()],
+        "no rollback: the old key is retired, the new one kept"
+    );
+    let repaired = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
 }
 
 #[tokio::test]

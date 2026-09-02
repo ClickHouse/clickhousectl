@@ -5,6 +5,7 @@ use crate::cloud::credentials;
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
+use crate::cloud::service_query::RepairVerification;
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
@@ -515,8 +516,11 @@ then replaces only that key's endpoint binding while preserving all other
 bindings and project credentials, and deletes the key it replaced. The new key
 can take a few seconds to become visible to the query endpoint and the Query
 API; the command waits that out, and on a running service exits 0 only once a
-probe query with the new key succeeds. Legacy or non-owned records without
-this metadata are refused. This is an explicit write operation and
+probe query with the new key succeeds (the JSON result reports it under
+`verification`). If the Query API still rejects the key after the readiness
+window the command exits 1, but the repair stands: do not rerun it, run
+`cloud service query` instead. Legacy or non-owned records without this
+metadata are refused. This is an explicit write operation and
 is never run automatically after a query fails.")]
     RepairQueryKey {
         /// Service ID whose stored Query API key should be replaced
@@ -1953,18 +1957,32 @@ async fn service_query_key_repair(
     // A retired key that could not be deleted is a warning, not a failure: the
     // replacement is active and its ID is stored for the retry (#527). The
     // warning goes to stderr in both modes; the JSON result carries the IDs.
+    let mut result = result;
     if let Some(warning) = &result.cleanup_warning {
         eprint_line(warning);
     }
+    // The repair is committed before the probe runs, so its result is printed
+    // whatever the probe says (#658): a `--json` consumer must never lose the
+    // IDs of a repair that happened. Only a probe that kept being rejected
+    // for the whole readiness window is an error, and it is reported after
+    // the result.
+    let mut verification_error = None;
     if result.status == "repaired" {
-        verify_repaired_query_key(
+        match verify_repaired_query_key(
             client,
             &org_id,
             service_id,
             &result.api_key_id,
             QUERY_ENDPOINT_READINESS,
         )
-        .await?;
+        .await
+        {
+            Ok(verification) => result.verification = Some(verification),
+            Err(error) => {
+                result.verification = Some(RepairVerification::Failed);
+                verification_error = Some(error);
+            }
+        }
     }
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -1994,10 +2012,16 @@ async fn service_query_key_repair(
                         result.pending_cleanup_api_key_ids.join(", ")
                     );
                 }
+                if let Some(verification) = result.verification {
+                    println!("  Query API check: {}", verification.as_str());
+                }
             }
         }
     }
-    Ok(())
+    match verification_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 /// Confirm that the Query API accepts the key a repair just committed (#658).
@@ -2006,86 +2030,196 @@ async fn service_query_key_repair(
 /// query issued in between is rejected, and the stored-key classifier (#528)
 /// would then read an enabled, bound key as "IP allowlist or secret
 /// mismatch", a verdict that is wrong and points nowhere useful. So repair
-/// probes the endpoint with the new key the way first-use provisioning does,
-/// and exits 0 only once the key works. Only a `running` service is probed:
-/// the probe would wake an idle one, and a stopped one cannot answer at all;
-/// in those cases the next query is the verification, and a note says so. A
-/// concurrent repair's replacement is not this run's to verify.
+/// probes the endpoint with the new key the way first-use provisioning does.
+///
+/// The repair is committed before this runs and nothing here undoes it. The
+/// outcome is reported, not acted on: `Verified` when a probe succeeded;
+/// `Skipped` when the key was not probed (no Query API host configured, the
+/// service not `running` or its state unreadable, the record replaced by a
+/// concurrent repair, or the probe answered idle/stopped); `Failed` when the
+/// probe failed for a reason unrelated to readiness. Only a key the Query API
+/// kept rejecting for the whole readiness window is an error, and even then
+/// the message says the repair stands and points at `cloud service query`,
+/// which classifies the rejection — never at rerunning the repair, which
+/// would rotate a key that may simply not have propagated yet.
 async fn verify_repaired_query_key(
     client: &CloudClient,
     org_id: &str,
     service_id: &str,
     api_key_id: &str,
     readiness: QueryEndpointReadiness,
-) -> CloudResult<()> {
-    let stored_note = format!(
-        "the replacement (API key {api_key_id}) is stored in .clickhouse/credentials.json and \
-         will be verified by the next `clickhousectl cloud service query --id {service_id} \
-         --org-id {org_id} ...`"
-    );
+) -> CloudResult<RepairVerification> {
+    let stored = credentials::try_get_service_query_key(service_id)?;
+    let Some((key_id, key_secret)) = repaired_query_credential(stored, api_key_id) else {
+        return Ok(skip_repair_verification(
+            org_id,
+            service_id,
+            api_key_id,
+            &format!(
+                "the stored query key for service {service_id} changed before the replacement \
+                 could be probed"
+            ),
+        ));
+    };
+    probe_repaired_query_key(
+        client,
+        org_id,
+        service_id,
+        api_key_id,
+        &key_id,
+        &key_secret,
+        readiness,
+    )
+    .await
+}
+
+/// The credential pair to probe with, if the record still names the key the
+/// repair just stored. A record that vanished or that a concurrent repair
+/// replaced is not this run's to verify.
+fn repaired_query_credential(
+    stored: Option<credentials::ServiceQueryKey>,
+    api_key_id: &str,
+) -> Option<(String, String)> {
+    let stored = stored?;
+    if stored.api_key_id.as_deref() != Some(api_key_id) {
+        return None;
+    }
+    Some((stored.key_id, stored.key_secret))
+}
+
+fn next_query_command(service_id: &str, org_id: &str) -> String {
+    format!(
+        "clickhousectl cloud service query --id {service_id} --org-id {org_id} --query \"SELECT 1\""
+    )
+}
+
+/// Print the one `Note:` line every skipped verification gets, and return
+/// `Skipped`. A closed stderr must not panic: the repair is already done.
+fn skip_repair_verification(
+    org_id: &str,
+    service_id: &str,
+    api_key_id: &str,
+    reason: &str,
+) -> RepairVerification {
+    eprint_line(format!(
+        "Note: {reason}, so the repaired query key was not probed; the replacement (API key \
+         {api_key_id}) is stored in .clickhouse/credentials.json and is verified by the next `{}`",
+        next_query_command(service_id, org_id)
+    ));
+    RepairVerification::Skipped
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn probe_repaired_query_key(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_id: &str,
+    key_id: &str,
+    key_secret: &str,
+    readiness: QueryEndpointReadiness,
+) -> CloudResult<RepairVerification> {
+    // Never probe production by accident: a control plane the query host
+    // cannot be derived from (a local mock, an unusual base URL) means the
+    // library would fall back to the production host.
+    if client.api().configured_query_host().is_none() {
+        return Ok(skip_repair_verification(
+            org_id,
+            service_id,
+            api_key_id,
+            &format!(
+                "no Query API host is configured for {} (set CLICKHOUSE_CLOUD_QUERY_HOST)",
+                client.base_url()
+            ),
+        ));
+    }
     let state = match client.get_service(org_id, service_id).await {
         Ok(service) => service.state,
         Err(error) => {
-            eprintln!(
-                "Note: could not read the state of service {service_id} to verify the repaired \
-                 query key ({error}); {stored_note}"
-            );
-            return Ok(());
+            return Ok(skip_repair_verification(
+                org_id,
+                service_id,
+                api_key_id,
+                &format!("could not read the state of service {service_id} ({error})"),
+            ));
         }
     };
     if state != Some(ServiceState::Running) {
-        eprintln!(
-            "Note: service {service_id} is {}, so the repaired query key was not probed; \
-             {stored_note}",
-            state
-                .as_ref()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "in an unknown state".to_string()),
-        );
-        return Ok(());
-    }
-    let Some(stored) = credentials::try_get_service_query_key(service_id)? else {
-        return Ok(());
-    };
-    if stored.api_key_id.as_deref() != Some(api_key_id) {
-        return Ok(());
+        // A probe would wake an idle service, and a stopped one cannot answer.
+        let state = state
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "in an unknown state".to_string());
+        return Ok(skip_repair_verification(
+            org_id,
+            service_id,
+            api_key_id,
+            &format!("service {service_id} is {state}"),
+        ));
     }
 
-    wait_for_query_endpoint_readiness(readiness, || {
+    let outcome = wait_for_query_endpoint_readiness(readiness, || {
         client.api().run_query(
             service_id,
-            &stored.key_id,
-            &stored.key_secret,
+            key_id,
+            key_secret,
             "SELECT 1",
             None,
             "TabSeparated",
             false,
         )
     })
-    .await
-    .map(|_| ())
-    .map_err(|error| {
-        let repaired = format!(
-            "the query key for service {service_id} was replaced (new API key {api_key_id}) and \
-             stored in .clickhouse/credentials.json"
-        );
-        match error {
-            QueryReadinessError::TimedOut(timeout) => CloudError::new(format!(
-                "{repaired}, but the Query API did not accept it within {timeout:?}; run \
-                 `clickhousectl cloud service query --id {service_id} --org-id {org_id} ...` to \
-                 try again"
+    .await;
+    let repaired = format!(
+        "the query key for service {service_id} was replaced (new API key {api_key_id}) and \
+         stored in .clickhouse/credentials.json"
+    );
+    match outcome {
+        Ok(false) => Ok(RepairVerification::Verified),
+        Ok(true) => Ok(skip_repair_verification(
+            org_id,
+            service_id,
+            api_key_id,
+            &format!("service {service_id} is idle"),
+        )),
+        Err(QueryReadinessError::Api(clickhouse_cloud_api::Error::ServiceStopped)) => {
+            Ok(skip_repair_verification(
+                org_id,
+                service_id,
+                api_key_id,
+                &format!("service {service_id} is stopped"),
             ))
-            .with_failure(ApiFailure::new(FailureKind::Timeout)),
-            QueryReadinessError::Api(error) => {
-                let converted = client.convert_error(error);
-                CloudError {
-                    message: format!("{repaired}, but verifying it failed: {}", converted.message),
-                    ..converted
-                }
-            }
         }
-        .at_stage(FailureStage::QueryRequest)
-    })
+        Err(QueryReadinessError::Api(error)) => {
+            let converted = client.convert_error(error);
+            eprint_line(format!(
+                "Warning: {repaired}, but probing it failed: {converted}; it is verified by the \
+                 next `{}`",
+                next_query_command(service_id, org_id)
+            ));
+            Ok(RepairVerification::Failed)
+        }
+        Err(QueryReadinessError::TimedOut(timeout)) => {
+            let command = next_query_command(service_id, org_id);
+            let message = format!(
+                "{repaired}, but the Query API kept rejecting it for {timeout:?}. Do not rerun \
+                 repair-query-key: that would rotate a key that may only be slow to propagate. \
+                 Run `{command}`, which classifies the rejection"
+            );
+            Err(CloudError::new(message.clone())
+                .with_failure(ApiFailure::new(FailureKind::Timeout))
+                .with_details(CloudErrorDetail {
+                    code: CloudErrorCode::QueryKeyRepairUnverified,
+                    message,
+                    host: None,
+                    port: None,
+                    command: Some(command),
+                    api_key_id: Some(api_key_id.to_string()),
+                    ip_access_list: None,
+                })
+                .at_stage(FailureStage::QueryRequest))
+        }
+    }
 }
 
 struct ServiceQueryOptions {
@@ -2185,7 +2319,7 @@ where
             return Err(QueryReadinessError::TimedOut(readiness.timeout));
         }
         if !waiting {
-            eprintln!("Waiting for the Query API endpoint to become ready...");
+            eprint_line("Waiting for the Query API endpoint to become ready...");
             waiting = true;
         }
         // One more probe is about to be sent: the retry bucket is how a
@@ -4944,6 +5078,212 @@ mod tests {
         .expect("stalled attempt exceeded the test guard");
 
         assert_query_readiness_timeout(result, readiness.timeout);
+    }
+
+    // ── post-repair verification (issue #658) ───────────────────────────
+
+    /// The service under repair; a UUID because the service model's `id` is one.
+    const VERIFIED_SERVICE_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+    const FAST_READINESS: QueryEndpointReadiness = QueryEndpointReadiness {
+        timeout: Duration::from_millis(60),
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(5),
+    };
+
+    async fn mount_running_service(control: &wiremock::MockServer) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/v1/organizations/org-1/services/{VERIFIED_SERVICE_ID}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": VERIFIED_SERVICE_ID, "name": "demo", "state": "running" },
+                    "status": 200,
+                    "requestId": "stub-service-get"
+                })),
+            )
+            .mount(control)
+            .await;
+    }
+
+    fn probes_received(requests: &[wiremock::Request]) -> usize {
+        requests
+            .iter()
+            .filter(|request| request.url.path() == format!("/service/{VERIFIED_SERVICE_ID}/run"))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_repair_verification_timeout_is_a_generic_error_with_its_own_code() {
+        let control = wiremock::MockServer::start().await;
+        mount_running_service(&control).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(format!(
+                "/service/{VERIFIED_SERVICE_ID}/run"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(401).set_body_string("API key is not authorized"),
+            )
+            .mount(&control)
+            .await;
+        let client = CloudClient::for_tests(&control.uri(), Some(&control.uri()));
+
+        let error = probe_repaired_query_key(
+            &client,
+            "org-1",
+            VERIFIED_SERVICE_ID,
+            "new-key-uuid",
+            "kid",
+            "sec",
+            FAST_READINESS,
+        )
+        .await
+        .expect_err("a key rejected for the whole window is an error");
+
+        // Not an auth failure of the command: the management credentials
+        // worked, and exit code 4 would send the user to `cloud auth`.
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert!(
+            error.message.starts_with(&format!(
+                "the query key for service {VERIFIED_SERVICE_ID} was replaced (new API key \
+                 new-key-uuid) and stored in .clickhouse/credentials.json, but the Query API \
+                 kept rejecting it"
+            )),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("Do not rerun repair-query-key"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error.failure.map(|failure| failure.kind),
+            Some(FailureKind::Timeout)
+        );
+        let details = error.details.expect("the timeout has a structured form");
+        assert_eq!(details.code, CloudErrorCode::QueryKeyRepairUnverified);
+        assert_eq!(details.api_key_id.as_deref(), Some("new-key-uuid"));
+        assert_eq!(
+            details.command.as_deref(),
+            Some(
+                format!(
+                    "clickhousectl cloud service query --id {VERIFIED_SERVICE_ID} --org-id org-1 \
+                     --query \"SELECT 1\""
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(details.message, error.message);
+        assert!(probes_received(&control.received_requests().await.unwrap()) >= 2);
+    }
+
+    #[tokio::test]
+    async fn a_repair_verification_succeeds_once_the_probe_is_accepted() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let control = wiremock::MockServer::start().await;
+        mount_running_service(&control).await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(format!(
+                "/service/{VERIFIED_SERVICE_ID}/run"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    wiremock::ResponseTemplate::new(401).set_body_string("not yet")
+                } else {
+                    wiremock::ResponseTemplate::new(200).set_body_string("1\n")
+                }
+            })
+            .mount(&control)
+            .await;
+        let client = CloudClient::for_tests(&control.uri(), Some(&control.uri()));
+
+        let verification = probe_repaired_query_key(
+            &client,
+            "org-1",
+            VERIFIED_SERVICE_ID,
+            "new-key-uuid",
+            "kid",
+            "sec",
+            FAST_READINESS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verification, RepairVerification::Verified);
+        assert_eq!(
+            probes_received(&control.received_requests().await.unwrap()),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repair_verification_without_a_configured_query_host_skips_without_probing() {
+        let control = wiremock::MockServer::start().await;
+        mount_running_service(&control).await;
+        // A loopback base URL derives no query host, and no override is given.
+        let client = CloudClient::for_tests(&control.uri(), None);
+        let verification = probe_repaired_query_key(
+            &client,
+            "org-1",
+            VERIFIED_SERVICE_ID,
+            "new-key-uuid",
+            "kid",
+            "sec",
+            FAST_READINESS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verification, RepairVerification::Skipped);
+        assert!(control.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repair_verification_skips_without_probing_when_the_record_is_gone() {
+        // No credentials file names this service, so there is nothing to
+        // probe with; the mock sees no request at all.
+        let control = wiremock::MockServer::start().await;
+        mount_running_service(&control).await;
+        let client = CloudClient::for_tests(&control.uri(), Some(&control.uri()));
+        let verification = verify_repaired_query_key(
+            &client,
+            "org-1",
+            "svc-1-with-no-stored-record",
+            "new-key-uuid",
+            FAST_READINESS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verification, RepairVerification::Skipped);
+        assert!(control.received_requests().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_repaired_credential_is_probed_only_while_the_record_names_the_new_key() {
+        let stored = |api_key_id: &str| credentials::ServiceQueryKey {
+            organization_id: Some("org-1".into()),
+            api_key_id: Some(api_key_id.into()),
+            key_id: "kid".into(),
+            key_secret: "sec".into(),
+            endpoint_id: Some("ep-1".into()),
+            pending_cleanup_api_key_ids: vec![],
+            service_name: "demo".into(),
+            created_at: chrono::Utc::now(),
+        };
+        assert_eq!(
+            repaired_query_credential(Some(stored("new")), "new"),
+            Some(("kid".to_string(), "sec".to_string()))
+        );
+        // A concurrent repair replaced the key, or the record vanished.
+        assert_eq!(
+            repaired_query_credential(Some(stored("newer")), "new"),
+            None
+        );
+        assert_eq!(repaired_query_credential(None, "new"), None);
     }
 
     #[tokio::test]
