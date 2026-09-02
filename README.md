@@ -1140,8 +1140,8 @@ Use `clickhousectl cloud clickpipe create <source> --help` for the full list of 
 
 #### Discovering a source schema (beta)
 
-`clickpipe schema-discover` probes a Kafka or Kinesis source and returns the
-inferred fields/types without creating a pipe. It takes the same source
+`clickpipe schema-discover` probes a Kafka, Kinesis or object-storage source and
+returns the inferred fields/types without creating a pipe. It takes the same source
 connection flags as the corresponding `create` subcommand (minus the
 destination `--name`/`--database`/`--table`/`--column` options). Schema discovery requires API-key authentication:
 
@@ -1163,6 +1163,12 @@ clickhousectl cloud clickpipe schema-discover <service-id> kinesis \
   --stream-name events --region us-east-1 \
   --format JSONEachRow \
   --auth IAM_ROLE --iam-role "$KINESIS_IAM_ROLE_ARN"
+
+# Discover schema from object storage (S3, GCS, Azure Blob Storage)
+clickhousectl cloud clickpipe schema-discover <service-id> object-storage \
+  --source-url 'https://bucket.s3.us-east-1.amazonaws.com/data/*.json' \
+  --format JSONEachRow \
+  --iam-role "$S3_IAM_ROLE_ARN"
 ```
 
 Add `--json` (or run as a coding agent) for machine-readable output.

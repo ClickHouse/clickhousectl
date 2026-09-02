@@ -203,9 +203,11 @@ the pipe itself, so read them with `clickhousectl cloud clickpipe get <service>
     /// Discover a source schema without creating a pipe (beta)
     #[command(after_help = "\\
 CONTEXT FOR AGENTS:
-  Infers the schema (column name + ClickHouse type) for a Kafka or Kinesis source
-  without creating a ClickPipe. Useful for filling in --column on `clickpipe create`.
-  Related: `clickhousectl cloud clickpipe create kafka|kinesis` to create a pipe with the discovered columns.")]
+  Infers the schema (column name + ClickHouse type) for a Kafka, Kinesis or
+  object-storage source without creating a ClickPipe. Useful for filling in
+  --column on `clickpipe create`.
+  Related: `clickhousectl cloud clickpipe create kafka|kinesis|object-storage` to
+  create a pipe with the discovered columns.")]
     SchemaDiscover {
         /// Service ID
         service_id: String,
@@ -266,6 +268,10 @@ pub enum ClickPipeSchemaDiscoverCommands {
 
     /// Discover schema from an Amazon Kinesis stream
     Kinesis(Box<KinesisSourceFields>),
+
+    /// Discover schema from an object-storage source (S3, GCS, Azure Blob Storage)
+    #[command(name = "object-storage")]
+    ObjectStorage(Box<ObjectStorageSourceFields>),
 }
 
 #[derive(Subcommand)]
@@ -451,15 +457,12 @@ pub struct DestinationRoleArgs {
     pub roles: Vec<String>,
 }
 
+/// Source-connection fields for an object-storage ClickPipe source.
+/// Flattened into both `ObjectStorageCreateArgs` (pipe creation) and the
+/// schema-discover object-storage subcommand so the source field set has a
+/// single definition.
 #[derive(Args, Debug)]
-pub struct ObjectStorageCreateArgs {
-    /// Service ID
-    pub service_id: String,
-
-    /// ClickPipe name
-    #[arg(long)]
-    pub name: String,
-
+pub struct ObjectStorageSourceFields {
     /// Source URL (e.g., https://bucket.s3.region.amazonaws.com/path/*.json)
     #[arg(long)]
     pub source_url: String,
@@ -467,18 +470,6 @@ pub struct ObjectStorageCreateArgs {
     /// Data format
     #[arg(long, value_parser = PossibleValuesParser::new(OBJECT_STORAGE_FORMATS))]
     pub format: String,
-
-    /// Destination database
-    #[arg(long)]
-    pub database: String,
-
-    /// Destination table
-    #[arg(long)]
-    pub table: String,
-
-    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
-    #[arg(long = "column")]
-    pub columns: Vec<String>,
 
     /// Storage type
     #[arg(
@@ -545,6 +536,31 @@ pub struct ObjectStorageCreateArgs {
     /// Path to GCP service account JSON key file
     #[arg(long)]
     pub service_account_file: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ObjectStorageCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub source: ObjectStorageSourceFields,
+
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
+    #[arg(long = "column")]
+    pub columns: Vec<String>,
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
@@ -1290,18 +1306,18 @@ async fn clickpipe_list(
     Ok(())
 }
 
-async fn clickpipe_create_object_storage(
-    client: &CloudClient,
-    args: &ObjectStorageCreateArgs,
-    json: bool,
-) -> CloudResult<()> {
+/// Build a `ClickPipePostObjectStorageSource` from the CLI args, inferring the
+/// authentication mechanism from the credential flags and reading any GCP
+/// service-account file up front so bad invocations fail fast before any
+/// network call. Shared by the `clickpipe create object-storage` and
+/// `clickpipe schema-discover <SERVICE_ID> object-storage` handlers.
+fn build_object_storage_source(
+    args: &ObjectStorageSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostObjectStorageSource> {
     use clickhouse_cloud_api::models::{
         ClickPipePostObjectStorageSource, ClickPipePostObjectStorageSourceAuthentication,
-        ClickPipePostRequest, ClickPipePostSource, MskIamUser,
+        MskIamUser,
     };
-
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
-    let parsed_columns = parse_columns(&args.columns)?;
 
     let (authentication, iam_role_val, access_key) = match (
         args.iam_role.as_deref(),
@@ -1340,7 +1356,7 @@ async fn clickpipe_create_object_storage(
         None => None,
     };
 
-    let source = ClickPipePostObjectStorageSource {
+    Ok(ClickPipePostObjectStorageSource {
         r#type: parse_enum(&args.storage_type)?,
         format: parse_enum(&args.format)?,
         url: args.source_url.clone(),
@@ -1361,7 +1377,21 @@ async fn clickpipe_create_object_storage(
             None
         },
         start_after: args.start_after.clone(),
-    };
+    })
+}
+
+async fn clickpipe_create_object_storage(
+    client: &CloudClient,
+    args: &ObjectStorageCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
+
+    // Validate args and build the source before any network call so bad
+    // invocations fail fast.
+    let parsed_columns = parse_columns(&args.columns)?;
+    let source = build_object_storage_source(&args.source)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
 
     let request = ClickPipePostRequest {
         name: args.name.clone(),
@@ -1666,10 +1696,31 @@ async fn clickpipe_create_kinesis(
     Ok(())
 }
 
-/// Discover the inferred schema for a Kafka or Kinesis source without creating
-/// a ClickPipe (Beta). Side-effect-free, but the API gateway rejects
-/// OAuth/Bearer on this POST endpoint, so it is classified as a write command
-/// and requires API key auth.
+/// Build the schema-discovery request body for an object-storage source. The
+/// source connection is built by the same helper `clickpipe create
+/// object-storage` uses, so discovery and creation send an identical
+/// `objectStorage` source; every other source key is left absent.
+fn build_object_storage_schema_discovery_request(
+    args: &ObjectStorageSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryRequest> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeSchemaDiscoveryRequest, ClickPipeSchemaDiscoverySource,
+    };
+
+    Ok(ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            kafka: None,
+            kinesis: None,
+            object_storage: Some(build_object_storage_source(args)?),
+            pubsub: None,
+        },
+    })
+}
+
+/// Discover the inferred schema for a Kafka, Kinesis or object-storage source
+/// without creating a ClickPipe (Beta). Side-effect-free, but the API gateway
+/// rejects OAuth/Bearer on this POST endpoint, so it is classified as a write
+/// command and requires API key auth.
 async fn clickpipe_schema_discover(
     client: &CloudClient,
     service_id: &str,
@@ -1681,22 +1732,27 @@ async fn clickpipe_schema_discover(
         ClickPipeSchemaDiscoveryRequest, ClickPipeSchemaDiscoverySource,
     };
 
-    let source = match command {
-        ClickPipeSchemaDiscoverCommands::Kafka(args) => ClickPipeSchemaDiscoverySource {
-            kafka: Some(build_kafka_source(args)?),
-            kinesis: None,
-            object_storage: None,
-            pubsub: None,
+    let request = match command {
+        ClickPipeSchemaDiscoverCommands::Kafka(args) => ClickPipeSchemaDiscoveryRequest {
+            source: ClickPipeSchemaDiscoverySource {
+                kafka: Some(build_kafka_source(args)?),
+                kinesis: None,
+                object_storage: None,
+                pubsub: None,
+            },
         },
-        ClickPipeSchemaDiscoverCommands::Kinesis(args) => ClickPipeSchemaDiscoverySource {
-            kafka: None,
-            kinesis: Some(build_kinesis_source(args)?),
-            object_storage: None,
-            pubsub: None,
+        ClickPipeSchemaDiscoverCommands::Kinesis(args) => ClickPipeSchemaDiscoveryRequest {
+            source: ClickPipeSchemaDiscoverySource {
+                kafka: None,
+                kinesis: Some(build_kinesis_source(args)?),
+                object_storage: None,
+                pubsub: None,
+            },
         },
+        ClickPipeSchemaDiscoverCommands::ObjectStorage(args) => {
+            build_object_storage_schema_discovery_request(args)?
+        }
     };
-
-    let request = ClickPipeSchemaDiscoveryRequest { source };
     let org_id = resolve_org_id(client, org_id).await?;
     let response = client
         .click_pipe_schema_discovery(&org_id, service_id, &request)
@@ -3914,26 +3970,32 @@ mod tests {
         };
         assert_eq!(args.service_id, "svc-1");
         assert_eq!(args.name, "pipe-1");
-        assert_eq!(args.source_url, "https://bucket.example/data/*.csv");
-        assert_eq!(args.format, "CSV");
+        assert_eq!(args.source.source_url, "https://bucket.example/data/*.csv");
+        assert_eq!(args.source.format, "CSV");
         assert_eq!(args.database, "db");
         assert_eq!(args.table, "events");
         assert_eq!(args.columns, ["id:UInt64", "name:String"]);
-        assert_eq!(args.storage_type, "gcs");
-        assert_eq!(args.compression, "gzip");
-        assert!(args.continuous);
-        assert_eq!(args.queue_url.as_deref(), Some("https://queue.example/q"));
-        assert!(!args.skip_initial_load);
-        assert_eq!(args.start_after.as_deref(), Some("key-1"));
-        assert_eq!(args.delimiter.as_deref(), Some(","));
-        assert_eq!(args.iam_role.as_deref(), Some("arn:role"));
-        assert_eq!(args.access_key_id.as_deref(), Some("access"));
-        assert_eq!(args.secret_key.as_deref(), Some("secret"));
-        assert_eq!(args.connection_string.as_deref(), Some("connection"));
-        assert_eq!(args.azure_container_name.as_deref(), Some("container"));
-        assert_eq!(args.path.as_deref(), Some("path/*.csv"));
+        assert_eq!(args.source.storage_type, "gcs");
+        assert_eq!(args.source.compression, "gzip");
+        assert!(args.source.continuous);
         assert_eq!(
-            args.service_account_file.as_deref(),
+            args.source.queue_url.as_deref(),
+            Some("https://queue.example/q")
+        );
+        assert!(!args.source.skip_initial_load);
+        assert_eq!(args.source.start_after.as_deref(), Some("key-1"));
+        assert_eq!(args.source.delimiter.as_deref(), Some(","));
+        assert_eq!(args.source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.source.access_key_id.as_deref(), Some("access"));
+        assert_eq!(args.source.secret_key.as_deref(), Some("secret"));
+        assert_eq!(args.source.connection_string.as_deref(), Some("connection"));
+        assert_eq!(
+            args.source.azure_container_name.as_deref(),
+            Some("container")
+        );
+        assert_eq!(args.source.path.as_deref(), Some("path/*.csv"));
+        assert_eq!(
+            args.source.service_account_file.as_deref(),
             Some("/tmp/account.json")
         );
         assert_eq!(args.org_id.as_deref(), Some("org-1"));
@@ -3959,20 +4021,20 @@ mod tests {
             panic!("expected object-storage create");
         };
         assert!(args.columns.is_empty());
-        assert_eq!(args.storage_type, "s3");
-        assert_eq!(args.compression, "auto");
-        assert!(!args.continuous);
-        assert_eq!(args.queue_url, None);
-        assert!(!args.skip_initial_load);
-        assert_eq!(args.start_after, None);
-        assert_eq!(args.delimiter, None);
-        assert_eq!(args.iam_role, None);
-        assert_eq!(args.access_key_id, None);
-        assert_eq!(args.secret_key, None);
-        assert_eq!(args.connection_string, None);
-        assert_eq!(args.azure_container_name, None);
-        assert_eq!(args.path, None);
-        assert_eq!(args.service_account_file, None);
+        assert_eq!(args.source.storage_type, "s3");
+        assert_eq!(args.source.compression, "auto");
+        assert!(!args.source.continuous);
+        assert_eq!(args.source.queue_url, None);
+        assert!(!args.source.skip_initial_load);
+        assert_eq!(args.source.start_after, None);
+        assert_eq!(args.source.delimiter, None);
+        assert_eq!(args.source.iam_role, None);
+        assert_eq!(args.source.access_key_id, None);
+        assert_eq!(args.source.secret_key, None);
+        assert_eq!(args.source.connection_string, None);
+        assert_eq!(args.source.azure_container_name, None);
+        assert_eq!(args.source.path, None);
+        assert_eq!(args.source.service_account_file, None);
         assert_eq!(args.org_id, None);
     }
 
@@ -4001,7 +4063,7 @@ mod tests {
         else {
             panic!("expected object-storage create");
         };
-        assert!(args.skip_initial_load);
+        assert!(args.source.skip_initial_load);
 
         let base = [
             "create",
@@ -4399,6 +4461,134 @@ mod tests {
         assert_eq!(args.auth, "IAM_ROLE");
         assert_eq!(args.iterator_type, "TRIM_HORIZON");
         assert_eq!(org_id.as_deref(), Some("org-kinesis"));
+    }
+
+    /// `schema-discover object-storage` takes the same source flags as
+    /// `create object-storage`, minus the destination options, and keeps the
+    /// same `--storage-type`/`--compression` defaults (issue #588).
+    #[test]
+    fn parses_object_storage_schema_discovery_flags() {
+        let ClickPipeCommands::SchemaDiscover {
+            service_id,
+            command: ClickPipeSchemaDiscoverCommands::ObjectStorage(args),
+            org_id,
+        } = parse_clickpipe(&[
+            "schema-discover",
+            "svc-object-storage",
+            "--org-id",
+            "org-object-storage",
+            "object-storage",
+            "--source-url",
+            "https://bucket.example/data/*.csv",
+            "--format",
+            "CSV",
+            "--storage-type",
+            "gcs",
+            "--compression",
+            "gzip",
+            "--continuous",
+            "--queue-url",
+            "https://queue.example/q",
+            "--start-after",
+            "key-1",
+            "--delimiter",
+            ",",
+            "--iam-role",
+            "arn:role",
+            "--access-key-id",
+            "access",
+            "--secret-key",
+            "secret",
+            "--connection-string",
+            "connection",
+            "--azure-container-name",
+            "container",
+            "--path",
+            "path/*.csv",
+            "--service-account-file",
+            "/tmp/account.json",
+        ])
+        else {
+            panic!("expected object-storage schema discovery");
+        };
+        assert_eq!(service_id, "svc-object-storage");
+        assert_eq!(org_id.as_deref(), Some("org-object-storage"));
+        assert_eq!(args.source_url, "https://bucket.example/data/*.csv");
+        assert_eq!(args.format, "CSV");
+        assert_eq!(args.storage_type, "gcs");
+        assert_eq!(args.compression, "gzip");
+        assert!(args.continuous);
+        assert_eq!(args.queue_url.as_deref(), Some("https://queue.example/q"));
+        assert!(!args.skip_initial_load);
+        assert_eq!(args.start_after.as_deref(), Some("key-1"));
+        assert_eq!(args.delimiter.as_deref(), Some(","));
+        assert_eq!(args.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.access_key_id.as_deref(), Some("access"));
+        assert_eq!(args.secret_key.as_deref(), Some("secret"));
+        assert_eq!(args.connection_string.as_deref(), Some("connection"));
+        assert_eq!(args.azure_container_name.as_deref(), Some("container"));
+        assert_eq!(args.path.as_deref(), Some("path/*.csv"));
+        assert_eq!(
+            args.service_account_file.as_deref(),
+            Some("/tmp/account.json")
+        );
+
+        // Only the source connection is required: no --name/--database/--table.
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::ObjectStorage(args),
+            org_id,
+            ..
+        } = parse_clickpipe(&[
+            "schema-discover",
+            "svc-object-storage",
+            "object-storage",
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+        ])
+        else {
+            panic!("expected object-storage schema discovery");
+        };
+        assert_eq!(args.storage_type, "s3");
+        assert_eq!(args.compression, "auto");
+        assert!(!args.continuous);
+        assert_eq!(args.queue_url, None);
+        assert!(!args.skip_initial_load);
+        assert_eq!(args.start_after, None);
+        assert_eq!(args.delimiter, None);
+        assert_eq!(args.iam_role, None);
+        assert_eq!(args.access_key_id, None);
+        assert_eq!(args.secret_key, None);
+        assert_eq!(args.connection_string, None);
+        assert_eq!(args.azure_container_name, None);
+        assert_eq!(args.path, None);
+        assert_eq!(args.service_account_file, None);
+        assert_eq!(org_id, None);
+
+        // --skip-initial-load still requires --queue-url and still conflicts
+        // with --start-after, exactly as on `create object-storage`.
+        let base = [
+            "schema-discover",
+            "svc-object-storage",
+            "object-storage",
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+        ];
+        let mut rejected = base.to_vec();
+        rejected.push("--skip-initial-load");
+        assert_rejected(&rejected);
+        let mut rejected = base.to_vec();
+        rejected.extend([
+            "--queue-url",
+            "https://queue.example/q",
+            "--skip-initial-load",
+            "--start-after",
+            "key-1",
+        ]);
+        assert_rejected(&rejected);
     }
 
     #[test]
@@ -5674,6 +5864,32 @@ mod tests {
         );
         assert_write(
             &[
+                "schema-discover",
+                "svc-1",
+                "kinesis",
+                "--stream-name",
+                "stream-1",
+                "--region",
+                "us-east-1",
+                "--format",
+                "JSONEachRow",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "schema-discover",
+                "svc-1",
+                "object-storage",
+                "--source-url",
+                "https://bucket.example/data/*.json",
+                "--format",
+                "JSONEachRow",
+            ],
+            true,
+        );
+        assert_write(
+            &[
                 "create",
                 "object-storage",
                 "svc-1",
@@ -5690,6 +5906,190 @@ mod tests {
             ],
             true,
         );
+    }
+
+    /// Parse `schema-discover object-storage` args and return the source
+    /// fields, so the builder tests exercise the real clap defaults.
+    fn parse_object_storage_discovery(flags: &[&str]) -> Box<ObjectStorageSourceFields> {
+        let mut args = vec!["schema-discover", "svc-1", "object-storage"];
+        args.extend(flags.iter().copied());
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::ObjectStorage(source),
+            ..
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected object-storage schema discovery");
+        };
+        source
+    }
+
+    #[test]
+    fn build_object_storage_schema_discovery_request_minimal() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostObjectStorageSourceCompression, ClickPipePostObjectStorageSourceFormat,
+            ClickPipePostObjectStorageSourceType,
+        };
+
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+        ]);
+        let request = build_object_storage_schema_discovery_request(&args)
+            .expect("minimal object-storage discovery request builds");
+
+        // Only the objectStorage source is populated.
+        assert!(request.source.kafka.is_none());
+        assert!(request.source.kinesis.is_none());
+        assert!(request.source.pubsub.is_none());
+        let source = request
+            .source
+            .object_storage
+            .expect("objectStorage source is set");
+        assert_eq!(source.url, "https://bucket.example/data/*.json");
+        assert_eq!(
+            source.format,
+            ClickPipePostObjectStorageSourceFormat::JSONEachRow
+        );
+        assert_eq!(source.r#type, ClickPipePostObjectStorageSourceType::S3);
+        assert_eq!(
+            source.compression,
+            Some(ClickPipePostObjectStorageSourceCompression::Auto)
+        );
+        assert_eq!(source.authentication, None);
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.access_key, None);
+        assert_eq!(source.connection_string, None);
+        assert_eq!(source.azure_container_name, None);
+        assert_eq!(source.path, None);
+        assert_eq!(source.service_account_key, None);
+        assert_eq!(source.delimiter, None);
+        assert_eq!(source.queue_url, None);
+        assert_eq!(source.is_continuous, None);
+        assert_eq!(source.skip_initial_load, None);
+        assert_eq!(source.start_after, None);
+    }
+
+    #[test]
+    fn build_object_storage_schema_discovery_request_maximal() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostObjectStorageSourceAuthentication,
+            ClickPipePostObjectStorageSourceCompression, ClickPipePostObjectStorageSourceFormat,
+            ClickPipePostObjectStorageSourceType, MskIamUser,
+        };
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sa_path = dir.path().join("service-account.json");
+        let mut sa_file = std::fs::File::create(&sa_path).expect("create service account file");
+        sa_file
+            .write_all(br#"{"type":"service_account"}"#)
+            .expect("write service account file");
+
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.example/data/*.csv",
+            "--format",
+            "CSV",
+            "--storage-type",
+            "gcs",
+            "--compression",
+            "gzip",
+            "--continuous",
+            "--queue-url",
+            "https://queue.example/q",
+            "--start-after",
+            "key-1",
+            "--delimiter",
+            ",",
+            "--iam-role",
+            "arn:role",
+            "--access-key-id",
+            "access",
+            "--secret-key",
+            "secret",
+            "--connection-string",
+            "connection",
+            "--azure-container-name",
+            "container",
+            "--path",
+            "path/*.csv",
+            "--service-account-file",
+            sa_path.to_str().expect("utf-8 temp path"),
+        ]);
+        let request = build_object_storage_schema_discovery_request(&args)
+            .expect("maximal object-storage discovery request builds");
+
+        assert!(request.source.kafka.is_none());
+        assert!(request.source.kinesis.is_none());
+        assert!(request.source.pubsub.is_none());
+        let source = request
+            .source
+            .object_storage
+            .expect("objectStorage source is set");
+        assert_eq!(source.url, "https://bucket.example/data/*.csv");
+        assert_eq!(source.format, ClickPipePostObjectStorageSourceFormat::CSV);
+        assert_eq!(source.r#type, ClickPipePostObjectStorageSourceType::Gcs);
+        assert_eq!(
+            source.compression,
+            Some(ClickPipePostObjectStorageSourceCompression::Gzip)
+        );
+        // --iam-role wins over the other credential flags, exactly as it does
+        // on `create object-storage`.
+        assert_eq!(
+            source.authentication,
+            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE)
+        );
+        assert_eq!(source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(source.access_key, None);
+        assert_eq!(source.connection_string.as_deref(), Some("connection"));
+        assert_eq!(source.azure_container_name.as_deref(), Some("container"));
+        assert_eq!(source.path.as_deref(), Some("path/*.csv"));
+        // The GCP key file is read and base64-encoded, not passed by path.
+        assert_eq!(
+            source.service_account_key.as_deref(),
+            Some("eyJ0eXBlIjoic2VydmljZV9hY2NvdW50In0=")
+        );
+        assert_eq!(source.delimiter.as_deref(), Some(","));
+        assert_eq!(source.queue_url.as_deref(), Some("https://queue.example/q"));
+        assert_eq!(source.is_continuous, Some(true));
+        assert_eq!(source.skip_initial_load, None);
+        assert_eq!(source.start_after.as_deref(), Some("key-1"));
+
+        // Without --iam-role the access key pair infers IAM_USER, and
+        // --skip-initial-load is carried through.
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--access-key-id",
+            "access",
+            "--secret-key",
+            "secret",
+            "--queue-url",
+            "https://queue.example/q",
+            "--skip-initial-load",
+        ]);
+        let source = build_object_storage_schema_discovery_request(&args)
+            .expect("IAM_USER object-storage discovery request builds")
+            .source
+            .object_storage
+            .expect("objectStorage source is set");
+        assert_eq!(
+            source.authentication,
+            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER)
+        );
+        assert_eq!(source.iam_role, None);
+        assert_eq!(
+            source.access_key,
+            Some(MskIamUser {
+                access_key_id: "access".to_string(),
+                secret_key: "secret".to_string(),
+            })
+        );
+        assert_eq!(source.skip_initial_load, Some(true));
     }
 
     #[test]

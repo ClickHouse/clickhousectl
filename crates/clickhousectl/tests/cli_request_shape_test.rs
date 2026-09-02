@@ -7691,6 +7691,56 @@ async fn schema_discover_kinesis_posts_source_body() {
     );
 }
 
+#[tokio::test]
+async fn schema_discover_object_storage_posts_source_body() {
+    let mock = start_mock_schema_discovery_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "svc-id",
+            "--org-id",
+            "org",
+            "object-storage",
+            "--source-url",
+            "https://bucket.s3.us-east-1.amazonaws.com/data/*.csv",
+            "--format",
+            "CSV",
+            "--compression",
+            "gzip",
+            "--delimiter",
+            ",",
+            "--iam-role",
+            "arn:aws:iam::123:role/x",
+        ],
+    )
+    .await;
+    let object_storage = &body["source"]["objectStorage"];
+    assert_eq!(
+        object_storage["url"],
+        "https://bucket.s3.us-east-1.amazonaws.com/data/*.csv"
+    );
+    assert_eq!(object_storage["format"], "CSV");
+    assert_eq!(object_storage["type"], "s3");
+    assert_eq!(object_storage["compression"], "gzip");
+    assert_eq!(object_storage["delimiter"], ",");
+    assert_eq!(object_storage["authentication"], "IAM_ROLE");
+    assert_eq!(object_storage["iamRole"], "arn:aws:iam::123:role/x");
+    // No credential the user did not pass, and no other source key.
+    assert!(
+        object_storage.get("accessKey").is_none(),
+        "accessKey leaked into object-storage schema-discovery body: {object_storage}",
+    );
+    for key in ["kafka", "kinesis", "pubsub"] {
+        assert!(
+            body["source"].get(key).is_none(),
+            "{key} leaked into object-storage schema-discovery body: {}",
+            body["source"],
+        );
+    }
+}
+
 // ── Generated service passwords are never silently dropped ─────────────────
 //
 // `service reset-password` without either hash flag sends an empty PATCH
