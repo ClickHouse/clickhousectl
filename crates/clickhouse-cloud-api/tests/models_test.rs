@@ -5829,3 +5829,76 @@ fn deserialize_clickstack_dashboard_chart_series_unknown_type_round_trip() {
     let expected: serde_json::Value = serde_json::from_str(json).unwrap();
     assert_eq!(serde_json::to_value(&series).unwrap(), expected);
 }
+
+#[test]
+fn reverse_private_endpoint_create_enums_round_trip_and_match_values() {
+    // The CLI validates `reverse-private-endpoint create --type` and
+    // `--msk-authentication` against `VALUES`, so each const must stay equal
+    // to the wire values its enum actually accepts.
+    assert_eq!(
+        CreateReversePrivateEndpointType::VALUES,
+        &[
+            "VPC_ENDPOINT_SERVICE",
+            "VPC_RESOURCE",
+            "MSK_MULTI_VPC",
+            "GCP_PSC_SERVICE_ATTACHMENT",
+        ]
+    );
+    for value in CreateReversePrivateEndpointType::VALUES {
+        let parsed: CreateReversePrivateEndpointType =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, CreateReversePrivateEndpointType::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            format!(r#""{value}""#)
+        );
+    }
+
+    assert_eq!(
+        CreateReversePrivateEndpointMskauthentication::VALUES,
+        &["SASL_IAM", "SASL_SCRAM"]
+    );
+    for value in CreateReversePrivateEndpointMskauthentication::VALUES {
+        let parsed: CreateReversePrivateEndpointMskauthentication =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(
+                parsed,
+                CreateReversePrivateEndpointMskauthentication::Unknown(_)
+            ),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            format!(r#""{value}""#)
+        );
+    }
+}
+
+/// The endpoint's own model is a response type: a key the API drops and a key
+/// it sends as `null` both have to land as `None`, and neither is emitted back.
+#[test]
+fn reverse_private_endpoint_tolerates_missing_and_null_fields() {
+    let sparse: ReversePrivateEndpoint = serde_json::from_str(r#"{"description":"warehouse"}"#)
+        .expect("a response with one key must deserialize");
+    assert_eq!(sparse.description.as_deref(), Some("warehouse"));
+    assert_eq!(sparse.dns_names, None);
+    assert_eq!(sparse.status, None);
+    assert_eq!(sparse.id, None);
+
+    let explicit_nulls: ReversePrivateEndpoint = serde_json::from_str(
+        r#"{"description":null,"dnsNames":null,"status":null,"id":null,"type":null}"#,
+    )
+    .expect("explicit nulls must deserialize");
+    assert_eq!(explicit_nulls, ReversePrivateEndpoint::default());
+    assert_eq!(
+        serde_json::to_string(&explicit_nulls).unwrap(),
+        "{}",
+        "absent fields must be omitted, never serialized as null"
+    );
+}

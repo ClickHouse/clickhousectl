@@ -1673,6 +1673,11 @@ impl std::fmt::Display for CreateReversePrivateEndpointMskauthentication {
     }
 }
 
+impl CreateReversePrivateEndpointMskauthentication {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["SASL_IAM", "SASL_SCRAM"];
+}
+
 /// Inline enum for `CreateReversePrivateEndpoint.type`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum CreateReversePrivateEndpointType {
@@ -1696,6 +1701,16 @@ impl std::fmt::Display for CreateReversePrivateEndpointType {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl CreateReversePrivateEndpointType {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &[
+        "VPC_ENDPOINT_SERVICE",
+        "VPC_RESOURCE",
+        "MSK_MULTI_VPC",
+        "GCP_PSC_SERVICE_ATTACHMENT",
+    ];
 }
 
 /// Inline enum for `ReversePrivateEndpoint.mskAuthentication`.
