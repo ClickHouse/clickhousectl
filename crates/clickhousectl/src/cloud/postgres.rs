@@ -1,4 +1,6 @@
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
 use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_line};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
 use clap::{ArgGroup, Subcommand};
@@ -927,12 +929,7 @@ pub async fn postgres_get(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let resp = client
-        .api()
-        .postgres_service_get(&org_id, postgres_id)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let svc = unwrap_api(resp)?;
+    let svc = client.get_postgres_service(&org_id, postgres_id).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
@@ -1475,7 +1472,18 @@ impl CloudClient {
             .api()
             .postgres_service_get(org_id, postgres_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                // A read by identifier: a 400 over well-formed UUIDs is a
+                // missing Postgres service, not a bad request (#666).
+                self.convert_error_for_lookup(
+                    error,
+                    ResourceLookup {
+                        kind: ResourceKind::PostgresService,
+                        id: postgres_id,
+                        org_id: Some(org_id),
+                    },
+                )
+            })?;
         Self::unwrap_response(response)
     }
 

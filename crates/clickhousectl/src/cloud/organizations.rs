@@ -1,4 +1,6 @@
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
@@ -758,11 +760,18 @@ impl CloudClient {
         &self,
         org_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::Organization> {
-        let response = self
-            .api()
-            .organization_get(org_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        let response = self.api().organization_get(org_id).await.map_err(|error| {
+            // A read by identifier: a 400 over a well-formed UUID is a
+            // missing organization, not a bad request (#666).
+            self.convert_error_for_lookup(
+                error,
+                ResourceLookup {
+                    kind: ResourceKind::Organization,
+                    id: org_id,
+                    org_id: Some(org_id),
+                },
+            )
+        })?;
         Self::unwrap_response(response)
     }
 

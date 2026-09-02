@@ -1,6 +1,8 @@
 use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanup};
 use crate::cloud::backups::BackupConfigCommands;
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
 use crate::cloud::credentials;
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
@@ -3049,7 +3051,18 @@ impl CloudClient {
             .api()
             .instance_get(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                // A read by identifier: a 400 over well-formed UUIDs is a
+                // missing service, not a bad request (#666).
+                self.convert_error_for_lookup(
+                    error,
+                    ResourceLookup {
+                        kind: ResourceKind::Service,
+                        id: service_id,
+                        org_id: Some(org_id),
+                    },
+                )
+            })?;
         Self::unwrap_response(response)
     }
 

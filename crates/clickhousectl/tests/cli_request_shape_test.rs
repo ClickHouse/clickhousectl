@@ -11750,3 +11750,193 @@ async fn clickpipe_get_json_output_keeps_the_full_ca_certificate() {
         "--json must not elide: {stdout}"
     );
 }
+
+// ── A well-formed but unknown id reads as not found (issue #666) ───────────
+//
+// The API answers HTTP 400 `Invalid <thing> id string:"<id>"` for a
+// syntactically valid UUID that resolves to nothing, so a by-id read reported
+// a bad request instead of a missing resource. The refinement is structural
+// (the status, plus whether the identifiers the CLI put in the path parse as
+// UUIDs), so a malformed id must still get the server's own answer.
+
+/// A well-formed UUID that no resource has. All-zero is still a syntactically
+/// valid UUID.
+const UNKNOWN_UUID: &str = "00000000-0000-0000-0000-000000000000";
+const LOOKUP_ORG_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+/// The 400 the API really answers for a well-formed id it cannot resolve.
+async fn mount_invalid_id_400(mock: &MockServer, api_path: String, thing: &str, id: &str) {
+    Mock::given(method("GET"))
+        .and(path(api_path))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": format!("BAD_REQUEST: Invalid {thing} id string:\"{id}\""),
+            "requestId": "stub-invalid-id",
+        })))
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn postgres_get_unknown_well_formed_id_reads_as_not_found() {
+    let mock = MockServer::start().await;
+    mount_invalid_id_400(
+        &mock,
+        format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{UNKNOWN_UUID}"),
+        "Postgres service",
+        UNKNOWN_UUID,
+    )
+    .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &["postgres", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such Postgres service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid Postgres service id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn service_get_unknown_well_formed_id_reads_as_not_found() {
+    let mock = MockServer::start().await;
+    mount_invalid_id_400(
+        &mock,
+        format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}"),
+        "service",
+        UNKNOWN_UUID,
+    )
+    .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &["service", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn org_get_unknown_well_formed_id_reads_as_not_found() {
+    let mock = MockServer::start().await;
+    mount_invalid_id_400(
+        &mock,
+        format!("/v1/organizations/{UNKNOWN_UUID}"),
+        "organization",
+        UNKNOWN_UUID,
+    )
+    .await;
+
+    let output = invoke_cli_human(&mock, &["org", "get", UNKNOWN_UUID]);
+
+    assert_eq!(output.status.code(), Some(1));
+    // The organization is the identifier being looked up, so it is not
+    // repeated as request scope.
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such organization: {UNKNOWN_UUID}. \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid organization id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn by_id_read_not_found_carries_the_resource_not_found_code_in_json_mode() {
+    for (api_path, thing, args, expected_command) in [
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{UNKNOWN_UUID}"),
+            "Postgres service",
+            vec!["postgres", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+            format!("clickhousectl cloud postgres list --org-id {LOOKUP_ORG_ID}"),
+        ),
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}"),
+            "service",
+            vec!["service", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+            format!("clickhousectl cloud service list --org-id {LOOKUP_ORG_ID}"),
+        ),
+        (
+            format!("/v1/organizations/{UNKNOWN_UUID}"),
+            "organization",
+            vec!["org", "get", UNKNOWN_UUID],
+            "clickhousectl cloud org list".to_string(),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        mount_invalid_id_400(&mock, api_path, thing, UNKNOWN_UUID).await;
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(1), "args {args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let error: Value =
+            serde_json::from_str(stderr.trim()).unwrap_or_else(|_| panic!("not JSON: {stderr}"));
+        assert_eq!(error["error"]["code"], "resource_not_found", "{stderr}");
+        assert_eq!(
+            error["error"]["command"],
+            Value::String(expected_command),
+            "{stderr}"
+        );
+        // The JSON message is the same text human mode prints, server detail
+        // and all.
+        let message = error["error"]["message"].as_str().expect("a message");
+        assert!(message.starts_with("No such "), "{stderr}");
+        assert!(
+            message.ends_with(&format!(
+                "BAD_REQUEST: Invalid {thing} id string:\"{UNKNOWN_UUID}\""
+            )),
+            "{stderr}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn by_id_read_keeps_the_servers_message_for_a_malformed_id() {
+    const MALFORMED_ID: &str = "not-a-uuid";
+    for (api_path, thing, args) in [
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{MALFORMED_ID}"),
+            "Postgres service",
+            vec!["postgres", "get", MALFORMED_ID, "--org-id", LOOKUP_ORG_ID],
+        ),
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{MALFORMED_ID}"),
+            "service",
+            vec!["service", "get", MALFORMED_ID, "--org-id", LOOKUP_ORG_ID],
+        ),
+        (
+            format!("/v1/organizations/{MALFORMED_ID}"),
+            "organization",
+            vec!["org", "get", MALFORMED_ID],
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        mount_invalid_id_400(&mock, api_path, thing, MALFORMED_ID).await;
+
+        let output = invoke_cli_human(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(1), "args {args:?}");
+        // "Invalid" is the truth here, and more useful than "no such".
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("Error: BAD_REQUEST: Invalid {thing} id string:\"{MALFORMED_ID}\"\n"),
+        );
+    }
+}

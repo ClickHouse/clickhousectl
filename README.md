@@ -1472,6 +1472,8 @@ The schema and meanings of existing codes are stable. New optional fields or cod
 | `io_error` | A local filesystem, metadata, or serialization operation failed |
 | `local_error` | A redacted fallback for failures whose text cannot be rendered safely |
 
+Cloud failures use their own codes rather than this local schema. A by-id read (`cloud service get`, `cloud postgres get`, `cloud org get`) that names a well-formed UUID no resource has is reported as not found instead of as the API's `BAD_REQUEST: Invalid ... id`, keeping the server's own text as a trailing detail, and in `--json` mode it carries the stable code `resource_not_found` plus the matching `list` command for the same scope. A malformed identifier keeps the API's `invalid` message unchanged, because there that is both true and the more useful answer.
+
 ### Exit codes
 
 Usage errors and cancelled actions use distinct exit codes.
