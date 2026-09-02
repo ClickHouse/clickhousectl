@@ -938,6 +938,23 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --publication-name clickpipes \
   --table-mapping "public.users:public_users"
 
+# From PostgreSQL, shaping the destination tables with the JSON mapping form
+clickhousectl cloud clickpipe create postgres <service-id> \
+  --name my-shaped-pg-pipe \
+  --host db.example.com --pg-database mydb \
+  --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --publication-name clickpipes \
+  --table-mapping "public.orders:public_orders" \
+  --table-mapping-json '{
+    "sourceSchemaName": "public",
+    "sourceTable": "users",
+    "targetTable": "public_users",
+    "excludedColumns": ["ssn"],
+    "sortingKeys": ["created_at", "id"],
+    "partitionByExpr": "toYYYYMM(created_at)",
+    "tableEngine": "ReplacingMergeTree"
+  }'
+
 # From PostgreSQL, tuning the CDC and initial-load settings
 clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-tuned-pg-pipe \
@@ -1023,11 +1040,73 @@ See the [PostgreSQL ClickPipes setup guide](https://clickhouse.com/docs/integrat
 the [generic PostgreSQL source setup guide](https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic),
 and the [ClickPipes networking and static IP documentation](https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips).
 
-PostgreSQL ClickPipes require one or more complete
-`--table-mapping schema.table:target_table` values. Ports must be in
+PostgreSQL ClickPipes require at least one table mapping, from either
+`--table-mapping schema.table:target_table` or `--table-mapping-json <JSON>`
+(see [PostgreSQL table mappings](#postgresql-table-mappings)). Ports must be in
 `1..=65535`. `--auth IAM_ROLE` requires `--iam-role`; the CLI rejects
 `--iam-role` with basic auth rather than silently ignoring it.
 `--replication-slot-name` is valid only with `--replication-mode cdc_only`.
+
+#### PostgreSQL table mappings
+
+`clickpipe create postgres` takes table mappings in two forms, and both flags
+are repeatable and may be given together. At least one mapping from either
+flag is required.
+
+`--table-mapping schema.table:target_table` is unchanged: it maps one source
+table to one destination table and leaves every other per-table option at the
+ClickPipes default.
+
+`--table-mapping-json <JSON>` takes the API's table mapping object verbatim,
+for the options that shape the destination table ClickPipes creates and
+therefore cannot be changed once the pipe exists:
+
+```bash
+clickhousectl cloud clickpipe create postgres <service-id> \
+  --name my-pg-pipe \
+  --host db.example.com --pg-database mydb \
+  --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --publication-name clickpipes \
+  --table-mapping-json '{
+    "sourceSchemaName": "public",
+    "sourceTable": "users",
+    "targetTable": "public_users",
+    "excludedColumns": ["ssn"],
+    "sortingKeys": ["created_at", "id"],
+    "partitionByExpr": "toYYYYMM(created_at)",
+    "tableEngine": "ReplacingMergeTree"
+  }'
+```
+
+| Field | Meaning |
+| --- | --- |
+| `sourceSchemaName` | Source schema. Required, must not be empty. |
+| `sourceTable` | Source table. Required, must not be empty. |
+| `targetTable` | Destination table. Required, must not be empty. |
+| `excludedColumns` | Source columns to leave out of the destination table. |
+| `sortingKeys` | Destination `ORDER BY` columns. |
+| `useCustomSortingKey` | Whether the API applies `sortingKeys`. Set to `true` automatically when `sortingKeys` is given. |
+| `partitionByExpr` | `PARTITION BY` expression for the destination table, for example `toYYYYMM(created_at)`. |
+| `partitionKey` | Column used to partition the initial snapshot for parallelism. Unrelated to the destination table's `PARTITION BY`. |
+| `tableEngine` | One of `MergeTree`, `ReplacingMergeTree` or `Null`. Defaults to `MergeTree`, which is what the simple form sends. |
+
+Every value is validated before any request is made, and a failure is a usage
+error (exit code 2):
+
+- An unknown field is rejected, so a typo such as `excludeColumns` fails loudly
+  instead of being dropped on the way to the API.
+- `useCustomSortingKey: false` alongside a non-empty `sortingKeys` is rejected,
+  because the API would ignore the keys. `useCustomSortingKey: true` with no
+  keys is rejected for the same reason.
+- An unknown `tableEngine` is rejected locally, since the destination table's
+  engine cannot be changed after the pipe is created.
+- Each error names the offending occurrence, for example
+  `--table-mapping-json #2: targetTable is required and must not be empty`.
+
+The mappings are sent in flag order: the `--table-mapping` values first, then
+the `--table-mapping-json` ones. The JSON form is not yet available on
+`clickpipe create mysql`, `mongodb` or `bigquery`, whose table mappings have
+analogous fields.
 
 #### PostgreSQL CDC pipe settings
 

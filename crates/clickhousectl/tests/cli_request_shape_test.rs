@@ -3589,6 +3589,150 @@ async fn postgres_multiple_table_mappings_serialize_as_array() {
     assert!(target_tables.contains(&"t3_dst"));
 }
 
+// ── Postgres JSON table mappings (issue #566) ──────────────────────────────
+//
+// `--table-mapping-json` takes the API's table mapping object verbatim. These
+// shape the destination table ClickPipes creates and cannot be changed later,
+// so the body must reproduce the JSON exactly, with no field invented and none
+// dropped.
+
+#[tokio::test]
+async fn postgres_table_mapping_json_reproduces_every_field_in_the_body() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    args.push("--table-mapping-json".into());
+    args.push(
+        serde_json::json!({
+            "sourceSchemaName": "public",
+            "sourceTable": "users",
+            "targetTable": "users_raw",
+            "excludedColumns": ["ssn", "dob"],
+            "sortingKeys": ["created_at", "id"],
+            "partitionByExpr": "toYYYYMM(created_at)",
+            "partitionKey": "id",
+            "tableEngine": "ReplacingMergeTree",
+        })
+        .to_string(),
+    );
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    let mappings = body["source"]["postgres"]["tableMappings"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!(
+                "tableMappings should be an array, got: {}",
+                body["source"]["postgres"]["tableMappings"]
+            )
+        });
+    // The simple mapping from the minimal args comes first, then the JSON one.
+    assert_eq!(mappings.len(), 2, "{mappings:?}");
+    assert_eq!(
+        mappings[0],
+        serde_json::json!({
+            "sourceSchemaName": "public",
+            "sourceTable": "t",
+            "targetTable": "t",
+            "excludedColumns": [],
+            "sortingKeys": [],
+            "useCustomSortingKey": false,
+            "partitionByExpr": "",
+            "partitionKey": "",
+            "tableEngine": "MergeTree",
+        }),
+        "the simple form's wire shape must not change",
+    );
+    assert_eq!(
+        mappings[1],
+        serde_json::json!({
+            "sourceSchemaName": "public",
+            "sourceTable": "users",
+            "targetTable": "users_raw",
+            "excludedColumns": ["ssn", "dob"],
+            "sortingKeys": ["created_at", "id"],
+            // Set for the caller, because the API ignores the keys without it.
+            "useCustomSortingKey": true,
+            "partitionByExpr": "toYYYYMM(created_at)",
+            "partitionKey": "id",
+            "tableEngine": "ReplacingMergeTree",
+        }),
+    );
+}
+
+#[tokio::test]
+async fn postgres_table_mapping_json_alone_satisfies_the_mapping_requirement() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    let simple = args
+        .iter()
+        .position(|arg| arg == "--table-mapping")
+        .expect("baseline table mapping");
+    args.drain(simple..=simple + 1);
+    args.push("--table-mapping-json".into());
+    args.push(
+        r#"{"sourceSchemaName":"audit","sourceTable":"events","targetTable":"audit_events","tableEngine":"Null"}"#
+            .into(),
+    );
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    assert_eq!(
+        body["source"]["postgres"]["tableMappings"],
+        serde_json::json!([{
+            "sourceSchemaName": "audit",
+            "sourceTable": "events",
+            "targetTable": "audit_events",
+            "excludedColumns": [],
+            "sortingKeys": [],
+            "useCustomSortingKey": false,
+            "partitionByExpr": "",
+            "partitionKey": "",
+            "tableEngine": "Null",
+        }]),
+    );
+}
+
+#[tokio::test]
+async fn postgres_invalid_table_mapping_json_is_a_usage_error_before_any_request() {
+    let mock = MockServer::start().await;
+
+    for (mapping, diagnostic) in [
+        ("{ nope", "--table-mapping-json #1: invalid JSON"),
+        (
+            r#"{"sourceSchemaName":"public","sourceTable":"users"}"#,
+            "targetTable is required and must not be empty",
+        ),
+        (
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","excludeColumns":["ssn"]}"#,
+            "unknown field excludeColumns",
+        ),
+        (
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":["id"],"useCustomSortingKey":false}"#,
+            "sortingKeys is set but useCustomSortingKey is false",
+        ),
+        (
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","tableEngine":"MergeTre"}"#,
+            "invalid tableEngine: unknown value 'MergeTre'",
+        ),
+    ] {
+        let mut args = postgres_args_minimal();
+        args.push("--table-mapping-json".into());
+        args.push(mapping.into());
+        let output = invoke_cli_without_cloud_credentials(&mock, &args);
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(diagnostic), "{stderr}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 // ── Postgres CDC pipe settings (issue #565) ────────────────────────────────
 //
 // The snapshot and initial-load settings are create-time-only at the API, so

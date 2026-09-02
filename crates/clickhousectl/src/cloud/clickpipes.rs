@@ -1,8 +1,11 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
-use crate::cloud::shared::resolve_org_id;
+use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Args, Subcommand};
+use clickhouse_cloud_api::models::{
+    ClickPipePostgresPipeTableMapping, ClickPipePostgresPipeTableMappingTableengine,
+};
 use tabled::{Table, Tabled, settings::Style};
 
 // Valid wire values for each ClickPipe enum the CLI accepts as a string argument.
@@ -354,10 +357,39 @@ pub enum ClickPipeCreateCommands {
     /// Create a ClickPipe from PostgreSQL
     #[command(after_help = "\
 POSTGRES INPUT RULES:
-  At least one --table-mapping is required, in schema.table:target_table form.
+  At least one --table-mapping is required, in schema.table:target_table form,
+  or one --table-mapping-json.
   --auth IAM_ROLE requires --iam-role. With basic auth, --iam-role is rejected
   instead of being silently ignored.
   --replication-slot-name is valid only with --replication-mode cdc_only.
+
+POSTGRES TABLE MAPPINGS:
+  --table-mapping schema.table:target_table is unchanged: it maps one table
+  and leaves every other per-table option at the ClickPipes default.
+  --table-mapping-json takes the API's table mapping object verbatim, for the
+  options that shape the destination table and cannot be changed once the pipe
+  exists:
+
+    --table-mapping-json '{\"sourceSchemaName\":\"public\",
+      \"sourceTable\":\"users\",\"targetTable\":\"users\",
+      \"excludedColumns\":[\"ssn\"],\"sortingKeys\":[\"created_at\",\"id\"],
+      \"partitionByExpr\":\"toYYYYMM(created_at)\",
+      \"tableEngine\":\"ReplacingMergeTree\"}'
+
+  sourceSchemaName, sourceTable and targetTable are required and must not be
+  empty. excludedColumns, sortingKeys, useCustomSortingKey, partitionByExpr
+  and partitionKey are optional. tableEngine is one of MergeTree,
+  ReplacingMergeTree or Null, and defaults to MergeTree, which is what the
+  simple form sends. partitionKey partitions the initial snapshot for
+  parallelism and is unrelated to the destination table's PARTITION BY, which
+  is partitionByExpr.
+  useCustomSortingKey is set to true automatically when sortingKeys is given,
+  because the API ignores the keys without it; passing false alongside keys is
+  rejected rather than silently dropping them. An unknown field is rejected,
+  so a typo such as excludeColumns fails instead of being ignored.
+  Both flags are repeatable and may be given together: the --table-mapping
+  values are sent first, then the --table-mapping-json ones, each in the order
+  given.
 
 POSTGRES CDC SETTINGS:
   Every CDC setting is applied when the pipe is created. The API can patch only
@@ -739,7 +771,15 @@ pub struct KinesisCreateArgs {
     pub org_id: Option<String>,
 }
 
+/// The two table-mapping flags are one required "at least one of" group, so
+/// clap names both in the missing-argument error and either alone is enough.
 #[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("postgres_table_mappings")
+        .required(true)
+        .multiple(true)
+        .args(["table_mappings", "table_mappings_json"])
+))]
 pub struct PostgresCreateArgs {
     /// Service ID
     pub service_id: String,
@@ -772,14 +812,27 @@ pub struct PostgresCreateArgs {
     #[arg(long)]
     pub password: String,
 
-    /// Table mappings as schema.table:target_table (required, repeatable)
+    /// Table mappings as schema.table:target_table (repeatable)
+    ///
+    /// One of --table-mapping or --table-mapping-json is required. This form
+    /// leaves every other per-table option at the ClickPipes default.
     #[arg(
         long = "table-mapping",
-        required = true,
         value_name = "SCHEMA.TABLE:TARGET_TABLE",
         value_parser = parse_postgres_table_mapping
     )]
     pub table_mappings: Vec<String>,
+
+    /// Full table mapping as a JSON object (repeatable)
+    ///
+    /// Takes the API's table mapping object verbatim, for the per-table
+    /// options the simple form cannot express: excludedColumns, sortingKeys
+    /// with useCustomSortingKey, partitionByExpr, partitionKey and
+    /// tableEngine. Can be combined with --table-mapping. Unknown fields are
+    /// rejected. See POSTGRES TABLE MAPPINGS for the field list and an
+    /// example.
+    #[arg(long = "table-mapping-json", value_name = "JSON")]
+    pub table_mappings_json: Vec<String>,
 
     /// Postgres type
     #[arg(
@@ -2233,15 +2286,165 @@ fn parse_postgres_table_mapping(mapping: &str) -> Result<String, String> {
         .map_err(|error| error.message)
 }
 
+/// Wire field names `ClickPipePostgresPipeTableMapping` accepts, in the order
+/// the help text and the error messages list them.
+const POSTGRES_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
+    "sourceSchemaName",
+    "sourceTable",
+    "targetTable",
+    "excludedColumns",
+    "sortingKeys",
+    "useCustomSortingKey",
+    "partitionByExpr",
+    "partitionKey",
+    "tableEngine",
+];
+
+/// One `--table-mapping-json` value, before validation.
+///
+/// The library's `ClickPipePostgresPipeTableMapping` is a request type and so
+/// strict: every field is required, which a hand-written mapping object is not
+/// expected to spell out. This mirror is all-`Option` so absence is
+/// representable, and each field is then resolved explicitly. It carries no
+/// `deny_unknown_fields`: unknown fields are reported against
+/// `POSTGRES_TABLE_MAPPING_JSON_FIELDS` instead, so the diagnostic names the
+/// wire fields rather than serde's view of this struct.
+#[derive(serde::Deserialize)]
+struct PostgresTableMappingJson {
+    #[serde(rename = "sourceSchemaName")]
+    source_schema_name: Option<String>,
+    #[serde(rename = "sourceTable")]
+    source_table: Option<String>,
+    #[serde(rename = "targetTable")]
+    target_table: Option<String>,
+    #[serde(rename = "excludedColumns")]
+    excluded_columns: Option<Vec<String>>,
+    #[serde(rename = "sortingKeys")]
+    sorting_keys: Option<Vec<String>>,
+    #[serde(rename = "useCustomSortingKey")]
+    use_custom_sorting_key: Option<bool>,
+    #[serde(rename = "partitionByExpr")]
+    partition_by_expr: Option<String>,
+    #[serde(rename = "partitionKey")]
+    partition_key: Option<String>,
+    #[serde(rename = "tableEngine")]
+    table_engine: Option<String>,
+}
+
+/// Parse and validate one `--table-mapping-json` value into the library's
+/// table mapping. `position` is the flag's zero-based occurrence, so an error
+/// names the offending value instead of the whole request.
+fn parse_postgres_table_mapping_json(
+    position: usize,
+    raw: &str,
+) -> CloudResult<ClickPipePostgresPipeTableMapping> {
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let invalid = |detail: String| CloudError::new(format!("{flag}: {detail}"));
+    let fields = POSTGRES_TABLE_MAPPING_JSON_FIELDS.join(", ");
+
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|error| invalid(format!("invalid JSON: {error}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid(format!("expected a JSON object with the fields {fields}")))?;
+    let unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !POSTGRES_TABLE_MAPPING_JSON_FIELDS.contains(key))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(invalid(format!(
+            "unknown field{} {}; valid fields are {fields}",
+            if unknown.len() == 1 { "" } else { "s" },
+            unknown.join(", "),
+        )));
+    }
+    let mapping: PostgresTableMappingJson =
+        serde_json::from_value(value).map_err(|error| invalid(error.to_string()))?;
+
+    let required = |field: &str, value: Option<String>| -> CloudResult<String> {
+        let value = value.unwrap_or_default();
+        if value.trim().is_empty() {
+            return Err(invalid(format!(
+                "{field} is required and must not be empty"
+            )));
+        }
+        Ok(value.trim().to_string())
+    };
+    let entries = |field: &str, values: Option<Vec<String>>| -> CloudResult<Vec<String>> {
+        values
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| {
+                if entry.trim().is_empty() {
+                    return Err(invalid(format!("{field} must not contain an empty entry")));
+                }
+                Ok(entry.trim().to_string())
+            })
+            .collect()
+    };
+
+    let source_schema_name = required("sourceSchemaName", mapping.source_schema_name)?;
+    let source_table = required("sourceTable", mapping.source_table)?;
+    let target_table = required("targetTable", mapping.target_table)?;
+    let excluded_columns = entries("excludedColumns", mapping.excluded_columns)?;
+    let sorting_keys = entries("sortingKeys", mapping.sorting_keys)?;
+    // The API applies `sortingKeys` only when `useCustomSortingKey` is true,
+    // so keys on their own would be silently ignored: turn the flag on for the
+    // caller, and reject the two spellings that contradict each other.
+    let use_custom_sorting_key = match mapping.use_custom_sorting_key {
+        Some(true) if sorting_keys.is_empty() => {
+            return Err(invalid(
+                "useCustomSortingKey is true but sortingKeys is empty; list the destination \
+                 ORDER BY columns in sortingKeys"
+                    .to_string(),
+            ));
+        }
+        Some(false) if !sorting_keys.is_empty() => {
+            return Err(invalid(
+                "sortingKeys is set but useCustomSortingKey is false, which would ignore the \
+                 keys; omit useCustomSortingKey or set it to true"
+                    .to_string(),
+            ));
+        }
+        Some(explicit) => explicit,
+        None => !sorting_keys.is_empty(),
+    };
+    let table_engine = match mapping.table_engine {
+        Some(engine) => parse_serde_enum(
+            &engine,
+            "tableEngine",
+            ClickPipePostgresPipeTableMappingTableengine::VALUES,
+        )
+        .map_err(|error| invalid(error.message))?,
+        None => ClickPipePostgresPipeTableMappingTableengine::default(),
+    };
+
+    Ok(ClickPipePostgresPipeTableMapping {
+        source_schema_name,
+        source_table,
+        target_table,
+        excluded_columns,
+        sorting_keys,
+        use_custom_sorting_key,
+        partition_by_expr: mapping.partition_by_expr.unwrap_or_default(),
+        partition_key: mapping.partition_key.unwrap_or_default(),
+        table_engine,
+    })
+}
+
+/// Validate the cross-flag rules and resolve every table mapping, from both
+/// `--table-mapping` and `--table-mapping-json`, before any request is made.
 fn validate_postgres_create_args(
     args: &PostgresCreateArgs,
-) -> CloudResult<Vec<(String, String, String)>> {
+) -> CloudResult<Vec<ClickPipePostgresPipeTableMapping>> {
     if args.port == 0 {
         return Err(CloudError::new("--port must be in the range 1..=65535"));
     }
-    if args.table_mappings.is_empty() {
+    if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
         return Err(CloudError::new(
-            "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> is required",
+            "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> or \
+             --table-mapping-json <JSON> is required",
         ));
     }
     if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
@@ -2260,10 +2463,26 @@ fn validate_postgres_create_args(
         ));
     }
 
-    args.table_mappings
-        .iter()
-        .map(|mapping| parse_postgres_table_mapping_parts(mapping))
-        .collect()
+    // The simple mappings are sent first, then the JSON ones, each in the
+    // order given: clap's derive API does not expose argv indices, so
+    // interleaving the two flags is not observable here.
+    let mut mappings =
+        Vec::with_capacity(args.table_mappings.len() + args.table_mappings_json.len());
+    for mapping in &args.table_mappings {
+        let (source_schema_name, source_table, target_table) =
+            parse_postgres_table_mapping_parts(mapping)?;
+        mappings.push(ClickPipePostgresPipeTableMapping {
+            source_schema_name,
+            source_table,
+            target_table,
+            ..Default::default()
+        });
+    }
+    for (position, mapping) in args.table_mappings_json.iter().enumerate() {
+        mappings.push(parse_postgres_table_mapping_json(position, mapping)?);
+    }
+
+    Ok(mappings)
 }
 
 /// Build the Postgres pipe settings sent at create time.
@@ -2302,27 +2521,15 @@ fn build_postgres_request(
     args: &PostgresCreateArgs,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
-        ClickPipeMutatePostgresSource, ClickPipePostRequest, ClickPipePostSource,
-        ClickPipePostgresPipeTableMapping, PLAIN,
+        ClickPipeMutatePostgresSource, ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
 
-    let mappings = validate_postgres_create_args(args)?;
+    let table_mappings = validate_postgres_create_args(args)?;
     let ca_certificate = args
         .ca_certificate
         .as_deref()
         .map(std::fs::read_to_string)
         .transpose()?;
-    let table_mappings = mappings
-        .into_iter()
-        .map(
-            |(source_schema_name, source_table, target_table)| ClickPipePostgresPipeTableMapping {
-                source_schema_name,
-                source_table,
-                target_table,
-                ..Default::default()
-            },
-        )
-        .collect();
     let source = ClickPipeMutatePostgresSource {
         r#type: Some(parse_enum(&args.postgres_type)?),
         credentials: PLAIN {
@@ -4395,6 +4602,103 @@ mod tests {
         }
     }
 
+    /// One `--table-mapping-json` object with every field set, reused by the
+    /// clap, validation and builder tests.
+    const MAXIMAL_TABLE_MAPPING_JSON: &str = r#"{
+        "sourceSchemaName": "public",
+        "sourceTable": "users",
+        "targetTable": "users_raw",
+        "excludedColumns": ["ssn", "dob"],
+        "sortingKeys": ["created_at", "id"],
+        "useCustomSortingKey": true,
+        "partitionByExpr": "toYYYYMM(created_at)",
+        "partitionKey": "id",
+        "tableEngine": "ReplacingMergeTree"
+    }"#;
+
+    #[test]
+    fn parses_postgres_table_mapping_json_flag() {
+        let second =
+            r#"{"sourceSchemaName":"audit","sourceTable":"events","targetTable":"audit_events"}"#;
+
+        // JSON only: the simple form is not required when the JSON form is given.
+        let mut cli_args = postgres_cli_args(None);
+        cli_args.extend([
+            "--table-mapping-json",
+            MAXIMAL_TABLE_MAPPING_JSON,
+            "--table-mapping-json",
+            second,
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&cli_args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert!(args.table_mappings.is_empty());
+        assert_eq!(
+            args.table_mappings_json,
+            [MAXIMAL_TABLE_MAPPING_JSON, second]
+        );
+
+        // Both forms together: each flag keeps its own values, verbatim.
+        let mut cli_args = postgres_cli_args(Some("public.events:events"));
+        cli_args.extend(["--table-mapping-json", second]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&cli_args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(args.table_mappings, ["public.events:events"]);
+        assert_eq!(args.table_mappings_json, [second]);
+
+        // Simple form only: the JSON list stays empty.
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&postgres_cli_args(Some("public.events:events")))
+        else {
+            panic!("expected postgres create");
+        };
+        assert!(args.table_mappings_json.is_empty());
+    }
+
+    #[test]
+    fn postgres_missing_both_table_mapping_flags_names_both() {
+        let error = clickpipe_parse_error(&postgres_cli_args(None));
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let message = error.to_string();
+        assert!(message.contains("--table-mapping "), "{message}");
+        assert!(message.contains("--table-mapping-json"), "{message}");
+    }
+
+    #[test]
+    fn postgres_table_mapping_json_is_not_parsed_by_clap() {
+        // Content validation belongs to `validate_postgres_create_args`, which
+        // runs before any request; clap only collects the raw strings.
+        let mut cli_args = postgres_cli_args(None);
+        cli_args.extend(["--table-mapping-json", "{ not json"]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&cli_args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(args.table_mappings_json, ["{ not json"]);
+
+        let command = parse_clickpipe(&cli_args);
+        assert_eq!(
+            command
+                .postgres_create_validation_error()
+                .as_deref()
+                .map(|message| message.contains("--table-mapping-json #1: invalid JSON")),
+            Some(true)
+        );
+    }
+
     #[test]
     fn postgres_iam_role_auth_requires_role_arn() {
         let mut args = postgres_cli_args(Some("public.events:events"));
@@ -4438,6 +4742,42 @@ mod tests {
     }
 
     #[test]
+    fn postgres_help_documents_the_json_table_mapping_form() {
+        let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        assert!(help.contains("POSTGRES TABLE MAPPINGS:"), "{help}");
+        assert!(help.contains("--table-mapping-json <JSON>"), "{help}");
+        assert!(
+            help.contains("--table-mapping schema.table:target_table is unchanged"),
+            "{help}"
+        );
+        // The example shows the fields the simple form cannot express.
+        for field in POSTGRES_TABLE_MAPPING_JSON_FIELDS {
+            assert!(help.contains(field), "missing `{field}`:\n{help}");
+        }
+        for excerpt in [
+            r#""excludedColumns":["ssn"]"#,
+            r#""sortingKeys":["created_at","id"]"#,
+            r#""partitionByExpr":"toYYYYMM(created_at)""#,
+            r#""tableEngine":"ReplacingMergeTree""#,
+        ] {
+            assert!(help.contains(excerpt), "missing `{excerpt}`:\n{help}");
+        }
+        // Every table engine the library accepts is named, so the help cannot
+        // drift from the enum's wire values.
+        for engine in ClickPipePostgresPipeTableMappingTableengine::VALUES {
+            assert!(help.contains(engine), "missing `{engine}`:\n{help}");
+        }
+        assert!(
+            help.contains("useCustomSortingKey is set to true automatically"),
+            "{help}"
+        );
+        assert!(help.contains("An unknown field is rejected"), "{help}");
+    }
+
+    #[test]
     fn postgres_help_documents_input_tls_and_source_requirements() {
         let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
@@ -4446,6 +4786,7 @@ mod tests {
             help.contains("At least one --table-mapping is required"),
             "{help}"
         );
+        assert!(help.contains("or one --table-mapping-json"), "{help}");
         assert!(
             help.contains("--auth IAM_ROLE requires --iam-role"),
             "{help}"
@@ -4536,9 +4877,53 @@ mod tests {
 
         assert_eq!(
             postgres.matches("--publication-name clickpipes").count(),
-            3,
+            5,
             "every PostgreSQL example must use the publication created in the prerequisites"
         );
+    }
+
+    #[test]
+    fn readme_documents_the_json_table_mapping_form() {
+        let readme = include_str!("../../../../README.md");
+        let mappings = readme
+            .split_once("#### PostgreSQL table mappings")
+            .expect("PostgreSQL table mappings section")
+            .1
+            .split_once("#### PostgreSQL CDC pipe settings")
+            .expect("end of the table mappings section")
+            .0;
+
+        for expected in [
+            "--table-mapping schema.table:target_table",
+            "--table-mapping-json <JSON>",
+            "\"excludedColumns\": [\"ssn\"]",
+            "\"sortingKeys\": [\"created_at\", \"id\"]",
+            "\"partitionByExpr\": \"toYYYYMM(created_at)\"",
+            "\"tableEngine\": \"ReplacingMergeTree\"",
+            "Set to `true` automatically when `sortingKeys` is given",
+            "An unknown field is rejected",
+            "usage\nerror (exit code 2)",
+            "--table-mapping-json #2: targetTable is required and must not be empty",
+            "not yet available on\n`clickpipe create mysql`",
+        ] {
+            assert!(
+                mappings.contains(expected),
+                "missing `{expected}`:\n{mappings}"
+            );
+        }
+        // Every field of the mapping object is documented in the table.
+        for field in POSTGRES_TABLE_MAPPING_JSON_FIELDS {
+            assert!(
+                mappings.contains(&format!("| `{field}` |")),
+                "missing `{field}` row:\n{mappings}"
+            );
+        }
+        for engine in ClickPipePostgresPipeTableMappingTableengine::VALUES {
+            assert!(
+                mappings.contains(&format!("`{engine}`")),
+                "missing `{engine}`:\n{mappings}"
+            );
+        }
     }
 
     #[test]
@@ -5346,6 +5731,7 @@ mod tests {
             username: "user".into(),
             password: "password".into(),
             table_mappings: vec!["public.events:events".into()],
+            table_mappings_json: vec![],
             postgres_type: "postgres".into(),
             replication_mode: "cdc".into(),
             auth: "basic".into(),
@@ -5580,6 +5966,237 @@ mod tests {
     }
 
     #[test]
+    fn parse_postgres_table_mapping_json_accepts_a_minimal_object() {
+        let mapping = parse_postgres_table_mapping_json(
+            0,
+            r#"{"sourceSchemaName":" public ","sourceTable":" users ","targetTable":" users_raw "}"#,
+        )
+        .unwrap();
+
+        // Absent optional fields fall back to the same request shape the
+        // simple `schema.table:target` form sends.
+        assert_eq!(
+            mapping,
+            ClickPipePostgresPipeTableMapping {
+                source_schema_name: "public".into(),
+                source_table: "users".into(),
+                target_table: "users_raw".into(),
+                excluded_columns: vec![],
+                sorting_keys: vec![],
+                use_custom_sorting_key: false,
+                partition_by_expr: String::new(),
+                partition_key: String::new(),
+                table_engine: ClickPipePostgresPipeTableMappingTableengine::MergeTree,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_postgres_table_mapping_json_accepts_a_maximal_object() {
+        let mapping = parse_postgres_table_mapping_json(0, MAXIMAL_TABLE_MAPPING_JSON).unwrap();
+
+        assert_eq!(
+            mapping,
+            ClickPipePostgresPipeTableMapping {
+                source_schema_name: "public".into(),
+                source_table: "users".into(),
+                target_table: "users_raw".into(),
+                excluded_columns: vec!["ssn".into(), "dob".into()],
+                sorting_keys: vec!["created_at".into(), "id".into()],
+                use_custom_sorting_key: true,
+                partition_by_expr: "toYYYYMM(created_at)".into(),
+                partition_key: "id".into(),
+                table_engine: ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_postgres_table_mapping_json_enables_the_custom_sorting_key() {
+        // The API ignores `sortingKeys` unless `useCustomSortingKey` is true,
+        // so omitting the flag must not silently drop the keys.
+        let mapping = parse_postgres_table_mapping_json(
+            0,
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users",
+                "sortingKeys":["created_at"," id "]}"#,
+        )
+        .unwrap();
+        assert!(mapping.use_custom_sorting_key);
+        assert_eq!(mapping.sorting_keys, ["created_at", "id"]);
+
+        // Without keys, the flag stays false and the pipe keeps the default
+        // ordering key.
+        let mapping = parse_postgres_table_mapping_json(
+            0,
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users"}"#,
+        )
+        .unwrap();
+        assert!(!mapping.use_custom_sorting_key);
+    }
+
+    #[test]
+    fn parse_postgres_table_mapping_json_accepts_every_table_engine() {
+        for engine in ClickPipePostgresPipeTableMappingTableengine::VALUES {
+            let mapping = parse_postgres_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceSchemaName":"public","sourceTable":"users",
+                        "targetTable":"users","tableEngine":"{engine}"}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(mapping.table_engine.to_string(), *engine);
+        }
+    }
+
+    #[test]
+    fn parse_postgres_table_mapping_json_rejects_invalid_objects() {
+        let cases = [
+            // Not JSON, and not an object.
+            ("{ nope", "invalid JSON"),
+            (
+                r#"["public.users"]"#,
+                "expected a JSON object with the fields sourceSchemaName",
+            ),
+            // A typo in a field name is rejected instead of being ignored.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","excludeColumns":["ssn"]}"#,
+                "unknown field excludeColumns; valid fields are sourceSchemaName",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","engine":"Null","order":"id"}"#,
+                "unknown fields engine, order",
+            ),
+            // Wrong JSON type for a known field.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":"id"}"#,
+                "invalid type: string \"id\", expected a sequence",
+            ),
+            // Required fields, absent or empty.
+            (
+                r#"{"sourceTable":"users","targetTable":"users"}"#,
+                "sourceSchemaName is required and must not be empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","targetTable":"users"}"#,
+                "sourceTable is required and must not be empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users"}"#,
+                "targetTable is required and must not be empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"  "}"#,
+                "targetTable is required and must not be empty",
+            ),
+            // Empty list entries.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","excludedColumns":["ssn",""]}"#,
+                "excludedColumns must not contain an empty entry",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":[" "]}"#,
+                "sortingKeys must not contain an empty entry",
+            ),
+            // The two contradictions between sortingKeys and its flag.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","useCustomSortingKey":true}"#,
+                "useCustomSortingKey is true but sortingKeys is empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":["id"],"useCustomSortingKey":false}"#,
+                "sortingKeys is set but useCustomSortingKey is false",
+            ),
+            // An unknown table engine is caught here rather than reaching the
+            // API, because the engine cannot be changed after creation.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","tableEngine":"MergeTre"}"#,
+                "invalid tableEngine: unknown value 'MergeTre', expected one of: \
+                 MergeTree, ReplacingMergeTree, Null",
+            ),
+        ];
+
+        for (raw, diagnostic) in cases {
+            let error = parse_postgres_table_mapping_json(0, raw).unwrap_err();
+            assert!(
+                error.message.contains(diagnostic),
+                "expected `{diagnostic}` in: {}",
+                error.message
+            );
+            // Every diagnostic names the offending flag occurrence.
+            assert!(
+                error.message.starts_with("--table-mapping-json #1: "),
+                "{}",
+                error.message
+            );
+        }
+
+        // The occurrence number is one-based over the flag's own values.
+        let error = parse_postgres_table_mapping_json(2, "{ nope").unwrap_err();
+        assert!(
+            error.message.starts_with("--table-mapping-json #3: "),
+            "{}",
+            error.message
+        );
+    }
+
+    #[test]
+    fn build_postgres_request_combines_both_table_mapping_flags() {
+        let mut args = postgres_builder_args();
+        args.table_mappings = vec!["public.events:events".into()];
+        args.table_mappings_json = vec![
+            MAXIMAL_TABLE_MAPPING_JSON.to_string(),
+            r#"{"sourceSchemaName":"audit","sourceTable":"events","targetTable":"audit_events","tableEngine":"Null"}"#
+                .to_string(),
+        ];
+
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+
+        // The simple mappings come first, then the JSON ones in order.
+        assert_eq!(source.table_mappings.len(), 3);
+        assert_eq!(
+            source.table_mappings[0],
+            ClickPipePostgresPipeTableMapping {
+                source_schema_name: "public".into(),
+                source_table: "events".into(),
+                target_table: "events".into(),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            source.table_mappings[1],
+            ClickPipePostgresPipeTableMapping {
+                source_schema_name: "public".into(),
+                source_table: "users".into(),
+                target_table: "users_raw".into(),
+                excluded_columns: vec!["ssn".into(), "dob".into()],
+                sorting_keys: vec!["created_at".into(), "id".into()],
+                use_custom_sorting_key: true,
+                partition_by_expr: "toYYYYMM(created_at)".into(),
+                partition_key: "id".into(),
+                table_engine: ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
+            }
+        );
+        assert_eq!(
+            source.table_mappings[2].table_engine,
+            ClickPipePostgresPipeTableMappingTableengine::Null
+        );
+    }
+
+    #[test]
+    fn build_postgres_request_accepts_json_mappings_alone() {
+        let mut args = postgres_builder_args();
+        args.table_mappings.clear();
+        args.table_mappings_json = vec![MAXIMAL_TABLE_MAPPING_JSON.to_string()];
+
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        assert_eq!(source.table_mappings.len(), 1);
+        assert_eq!(source.table_mappings[0].target_table, "users_raw");
+    }
+
+    #[test]
     fn build_postgres_request_preserves_basic_auth_replication_modes() {
         for mode in REPLICATION_MODES {
             let mut args = postgres_builder_args();
@@ -5608,7 +6225,19 @@ mod tests {
             {
                 let mut args = postgres_builder_args();
                 args.table_mappings.clear();
-                (args, "at least one --table-mapping")
+                (
+                    args,
+                    "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> or \
+                     --table-mapping-json <JSON> is required",
+                )
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.table_mappings_json = vec!["{}".into()];
+                (
+                    args,
+                    "--table-mapping-json #1: sourceSchemaName is required",
+                )
             },
             {
                 let mut args = postgres_builder_args();
