@@ -132,7 +132,8 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/tests/common/support.rs",
             },
             frozenset({"service"}): {
-                "crates/clickhouse-cloud-api/tests/integration_test.rs"
+                "crates/clickhouse-cloud-api/tests/integration_test.rs",
+                "crates/clickhouse-cloud-api/tests/service_query_key_cli_test.rs",
             },
             frozenset({"postgres"}): {
                 "crates/clickhouse-cloud-api/tests/integration_postgres_test.rs"

@@ -134,6 +134,9 @@ TEST_PATH_SUITES = {
     "crates/clickhouse-cloud-api/tests/model_facade_test.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/models_test.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/run_query_test.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/tests/service_query_key_cli_test.rs": frozenset(
+        {"service"}
+    ),
     "crates/clickhouse-cloud-api/tests/spec_coverage_test.rs": NO_SUITES,
 }
 

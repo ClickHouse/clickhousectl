@@ -248,11 +248,26 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-03-27
 
+      - name: Build clickhousectl for CLI-driven live tests
+        if: >-
+          ${{ !cancelled() &&
+              (needs.plan.outputs.service == 'true' ||
+               needs.plan.outputs.clickpipes == 'true') }}
+        run: cargo build -p clickhousectl
+
       - name: Run cloud integration suite
         if: >-
           ${{ !cancelled() &&
               needs.plan.outputs.service == 'true' }}
         run: cargo test -p clickhouse-cloud-api --test integration_test -- --ignored --nocapture
+
+      - name: Run Query API key classification CLI integration test
+        if: >-
+          ${{ !cancelled() &&
+              needs.plan.outputs.service == 'true' }}
+        env:
+          CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN: ${{ github.workspace }}/target/debug/clickhousectl
+        run: cargo test -p clickhouse-cloud-api --test service_query_key_cli_test -- --ignored --nocapture
 
       - name: Run cloud Postgres integration suite
         if: >-
@@ -265,12 +280,6 @@ jobs:
           ${{ !cancelled() &&
               needs.plan.outputs.organization == 'true' }}
         run: cargo test -p clickhouse-cloud-api --test integration_org_test -- --ignored --nocapture
-
-      - name: Build clickhousectl for live ClickPipe tests
-        if: >-
-          ${{ !cancelled() &&
-              needs.plan.outputs.clickpipes == 'true' }}
-        run: cargo build -p clickhousectl
 
       - name: Run ClickPipe Postgres CLI CDC integration test
         if: >-
