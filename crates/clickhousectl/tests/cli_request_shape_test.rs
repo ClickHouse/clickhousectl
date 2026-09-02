@@ -8970,3 +8970,538 @@ async fn service_query_help_names_the_gateway_timeout() {
     );
     assert!(help.contains("--port 9440 --user"), "{help}");
 }
+
+// ── `clickpipe reverse-private-endpoint` CRUD (issue #567) ─────────────────
+//
+// PrivateLink connectivity for ClickPipes is a reverse private endpoint the
+// user creates on the service and then references from a pipe: by ID for
+// Kafka, or by DNS name as `--host` for Postgres/MySQL CDC. These tests pin
+// the five requests, the request bodies (including which fields stay off the
+// wire), and the client-side type/flag validation that must cost no request.
+
+const RPE_COLLECTION_PATH: &str =
+    "/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints";
+const RPE_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+fn reverse_private_endpoint_path() -> String {
+    format!("{RPE_COLLECTION_PATH}/{RPE_ID}")
+}
+
+/// One endpoint as the API returns it, with the fields the CLI renders.
+fn reverse_private_endpoint_json() -> serde_json::Value {
+    serde_json::json!({
+        "id": RPE_ID,
+        "serviceId": "11111111-2222-3333-4444-555555555555",
+        "type": "VPC_ENDPOINT_SERVICE",
+        "description": "warehouse",
+        "status": "PendingAcceptance",
+        "endpointId": "vpce-12345678901234567",
+        "dnsNames": ["vpce-1-abc.vpce.amazonaws.com"],
+        "vpcEndpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+    })
+}
+
+fn reverse_private_endpoint_envelope(result: serde_json::Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": "stub-reverse-private-endpoint",
+    }))
+}
+
+/// Run the binary with credentials but *without* `--json`, so human output can
+/// be asserted. `invoke_cli_with_cloud_credentials` always adds `--json`.
+fn invoke_cli_human(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url];
+    args.extend(cli_args);
+    let mut command = Command::new(clickhousectl_binary());
+    // Agent detection turns on `--json` on its own, so the inherited
+    // environment has to go for human output to be observable at all.
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args(args);
+    command.output().expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_list_returns_the_resource_array() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(serde_json::json!([
+            reverse_private_endpoint_json()
+        ])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource array as JSON");
+    assert_eq!(stdout[0]["id"], RPE_ID);
+    assert_eq!(stdout[0]["status"], "PendingAcceptance");
+    assert!(
+        stdout.get("status").is_none() && stdout.get("requestId").is_none(),
+        "must not emit the raw API envelope, got: {stdout}"
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("GET".to_string(), RPE_COLLECTION_PATH.to_string())]
+    );
+}
+
+/// Every response field is `Option`, so a row with nothing but an ID must
+/// render placeholders rather than fabricate values.
+#[tokio::test]
+async fn reverse_private_endpoint_list_table_renders_absent_fields() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(serde_json::json!([
+            { "id": RPE_ID }
+        ])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("| ID"), "{stdout}");
+    assert!(stdout.contains("DNS Names"), "{stdout}");
+    assert!(stdout.contains(RPE_ID), "{stdout}");
+    // Type, Description, Status and DNS Names are all absent here.
+    assert_eq!(stdout.matches(" - ").count(), 4, "{stdout}");
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_list_reports_an_empty_collection() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(serde_json::json!([])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "No reverse private endpoints found"
+    );
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_get_reads_the_single_endpoint() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(reverse_private_endpoint_path()))
+        .respond_with(reverse_private_endpoint_envelope(
+            reverse_private_endpoint_json(),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "get",
+            "svc-1",
+            RPE_ID,
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource object as JSON");
+    assert_eq!(stdout["endpointId"], "vpce-12345678901234567");
+    assert_eq!(stdout["dnsNames"][0], "vpce-1-abc.vpce.amazonaws.com");
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("GET".to_string(), reverse_private_endpoint_path())]
+    );
+}
+
+/// One create per endpoint type: the POST body carries the type's own fields
+/// and nothing else, so an omitted flag never reaches the wire as `""`.
+#[tokio::test]
+async fn reverse_private_endpoint_create_sends_the_body_for_each_type() {
+    let cases: Vec<(Vec<&str>, serde_json::Value)> = vec![
+        (
+            vec![
+                "--type",
+                "VPC_ENDPOINT_SERVICE",
+                "--vpc-endpoint-service-name",
+                "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+            ],
+            serde_json::json!({
+                "description": "warehouse",
+                "type": "VPC_ENDPOINT_SERVICE",
+                "vpcEndpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+            }),
+        ),
+        (
+            vec![
+                "--type",
+                "VPC_RESOURCE",
+                "--vpc-resource-configuration-id",
+                "rcfg-12345678901234567",
+                "--vpc-resource-share-arn",
+                "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
+            ],
+            serde_json::json!({
+                "description": "warehouse",
+                "type": "VPC_RESOURCE",
+                "vpcResourceConfigurationId": "rcfg-12345678901234567",
+                "vpcResourceShareArn":
+                    "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
+            }),
+        ),
+        (
+            vec![
+                "--type",
+                "MSK_MULTI_VPC",
+                "--msk-cluster-arn",
+                "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+                "--msk-authentication",
+                "SASL_IAM",
+            ],
+            serde_json::json!({
+                "description": "warehouse",
+                "type": "MSK_MULTI_VPC",
+                "mskClusterArn": "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+                "mskAuthentication": "SASL_IAM",
+            }),
+        ),
+        (
+            vec![
+                "--type",
+                "GCP_PSC_SERVICE_ATTACHMENT",
+                "--gcp-service-attachment",
+                "projects/p/regions/us-central1/serviceAttachments/s",
+                "--custom-private-dns-mapping",
+                "db.example.com",
+                "--custom-private-dns-mapping",
+                "*.example.com",
+            ],
+            serde_json::json!({
+                "description": "warehouse",
+                "type": "GCP_PSC_SERVICE_ATTACHMENT",
+                "gcpServiceAttachment": "projects/p/regions/us-central1/serviceAttachments/s",
+                "customPrivateDnsMappings": [
+                    { "privateDnsName": "db.example.com" },
+                    { "privateDnsName": "*.example.com" },
+                ],
+            }),
+        ),
+    ];
+
+    for (flags, expected_body) in cases {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(RPE_COLLECTION_PATH))
+            .respond_with(reverse_private_endpoint_envelope(
+                reverse_private_endpoint_json(),
+            ))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let mut args = vec![
+            "clickpipe",
+            "reverse-private-endpoint",
+            "create",
+            "svc-1",
+            "--description",
+            "warehouse",
+            "--org-id",
+            "org-1",
+        ];
+        args.extend_from_slice(&flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(
+            received_request_shape(&mock).await,
+            vec![("POST".to_string(), RPE_COLLECTION_PATH.to_string())],
+            "unexpected requests for {flags:?}"
+        );
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body, expected_body, "unexpected body for {flags:?}");
+    }
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_create_prints_the_status_to_wait_for() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(
+            reverse_private_endpoint_json(),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "create",
+            "svc-1",
+            "--description",
+            "warehouse",
+            "--type",
+            "VPC_ENDPOINT_SERVICE",
+            "--vpc-endpoint-service-name",
+            "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Reverse private endpoint created"),
+        "{stdout}"
+    );
+    assert!(stdout.contains(RPE_ID), "{stdout}");
+    assert!(stdout.contains("Status: PendingAcceptance"), "{stdout}");
+    assert!(
+        stdout.contains("DNS names: vpce-1-abc.vpce.amazonaws.com"),
+        "{stdout}"
+    );
+}
+
+/// The flags a type needs, and the flags belonging to another type, are
+/// checked before any network call: a bad combination is a usage error
+/// (exit 2) with no request sent.
+#[tokio::test]
+async fn reverse_private_endpoint_create_validates_flags_before_any_request() {
+    let cases: [(Vec<&str>, &str); 3] = [
+        (
+            vec![
+                "--type",
+                "VPC_RESOURCE",
+                "--vpc-resource-configuration-id",
+                "rcfg-1",
+            ],
+            "--type VPC_RESOURCE requires --vpc-resource-share-arn",
+        ),
+        (
+            vec![
+                "--type",
+                "VPC_ENDPOINT_SERVICE",
+                "--vpc-endpoint-service-name",
+                "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+                "--msk-cluster-arn",
+                "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+            ],
+            "--msk-cluster-arn applies to --type MSK_MULTI_VPC, not --type VPC_ENDPOINT_SERVICE",
+        ),
+        (
+            vec![
+                "--type",
+                "MSK_MULTI_VPC",
+                "--msk-cluster-arn",
+                "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+                "--msk-authentication",
+                "SASL_IAM",
+                "--custom-private-dns-mapping",
+                "db.example.com",
+            ],
+            "--custom-private-dns-mapping is not supported for --type MSK_MULTI_VPC",
+        ),
+    ];
+
+    for (flags, expected_message) in cases {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(RPE_COLLECTION_PATH))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock)
+            .await;
+
+        // No --org-id either: a rejected invocation must not even look one up.
+        let mut args = vec![
+            "clickpipe",
+            "reverse-private-endpoint",
+            "create",
+            "svc-1",
+            "--description",
+            "warehouse",
+        ];
+        args.extend_from_slice(&flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(2), "expected a usage error");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected_message), "{stderr}");
+        assert!(
+            mock.received_requests().await.unwrap().is_empty(),
+            "a rejected create must not reach the API"
+        );
+    }
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_update_patches_the_full_mapping_list() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(reverse_private_endpoint_path()))
+        .respond_with(reverse_private_endpoint_envelope(
+            reverse_private_endpoint_json(),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "update",
+            "svc-1",
+            RPE_ID,
+            "--custom-private-dns-mapping",
+            "db.example.com",
+            "--custom-private-dns-mapping",
+            "*.example.com",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("PATCH".to_string(), reverse_private_endpoint_path())]
+    );
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "customPrivateDnsMappings": [
+                { "privateDnsName": "db.example.com" },
+                { "privateDnsName": "*.example.com" },
+            ],
+        })
+    );
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_delete_confirms_the_removal() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(reverse_private_endpoint_path()))
+        .respond_with(successful_delete_response("stub-rpe-delete"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let args = [
+        "clickpipe",
+        "reverse-private-endpoint",
+        "delete",
+        "svc-1",
+        RPE_ID,
+        "--org-id",
+        "org-1",
+    ];
+
+    let human = invoke_cli_human(&mock, &args);
+    assert_success(&human);
+    assert_eq!(
+        String::from_utf8_lossy(&human.stdout).trim(),
+        format!("Reverse private endpoint {RPE_ID} deleted")
+    );
+
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&json.stdout).trim())
+        .expect("stdout should be JSON");
+    assert_eq!(stdout, serde_json::json!({ "deleted": RPE_ID }));
+
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("DELETE".to_string(), reverse_private_endpoint_path()),
+            ("DELETE".to_string(), reverse_private_endpoint_path()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_help_explains_how_pipes_reference_it() {
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .args(["cloud", "clickpipe", "reverse-private-endpoint", "--help"])
+        .output()
+        .expect("render reverse-private-endpoint help");
+
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--reverse-private-endpoint-id"), "{help}");
+    assert!(
+        help.contains("pass one of the endpoint's DNS names as --host"),
+        "{help}"
+    );
+    assert!(help.contains("reached the Ready status"), "{help}");
+    assert!(help.contains("PendingAcceptance"), "{help}");
+}

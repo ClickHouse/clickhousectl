@@ -4,6 +4,10 @@ pub(crate) use crate::cloud::auth::AuthCommands;
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::backups::{BackupCommands, BackupConfigCommands};
 #[allow(unused_imports)]
+pub(crate) use crate::cloud::clickpipe_endpoints::{
+    ReversePrivateEndpointCommands, ReversePrivateEndpointCreateArgs,
+};
+#[allow(unused_imports)]
 pub(crate) use crate::cloud::clickpipes::{
     BigQueryCreateArgs, ClickPipeCommands, ClickPipeCreateCommands,
     ClickPipeSchemaDiscoverCommands, ClickPipeSettingsCommands, KafkaCreateArgs, KafkaSourceFields,
@@ -63,6 +67,17 @@ impl CloudArgs {
             return None;
         };
         command.postgres_create_validation_error()
+    }
+
+    /// The `clickpipe reverse-private-endpoint create` validation message, if
+    /// the flags cannot describe the chosen `--type`. clap cannot express
+    /// "forbidden for this value of another argument", so the check runs after
+    /// parsing and is reported as a usage error against the owning command.
+    pub fn reverse_private_endpoint_validation_error(&self) -> Option<String> {
+        let CloudCommands::ClickPipe { command } = &self.command else {
+            return None;
+        };
+        command.reverse_private_endpoint_create_validation_error()
     }
 }
 
@@ -129,7 +144,8 @@ CONTEXT FOR AGENTS:
         after_help = "\
 CONTEXT FOR AGENTS:
     Manage ClickPipes for ingesting data into ClickHouse Cloud.
-    Subcommands: list, get, delete, start, stop, resync, scale, settings, create.
+    Subcommands: list, get, delete, start, stop, resync, scale, settings, create,
+    reverse-private-endpoint (PrivateLink connectivity for sources).
     Requires a service ID — get it from `clickhousectl cloud service list`."
     )]
     ClickPipe {
@@ -262,6 +278,31 @@ mod tests {
             ],
             false,
         );
+
+        // ClickPipe reverse private endpoint reads
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "list",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "get",
+                "svc-1",
+                "rpe-1",
+            ],
+            false,
+        );
     }
 
     #[test]
@@ -391,6 +432,51 @@ mod tests {
         );
         assert_write(
             &["clickhousectl", "cloud", "postgres", "switchover", "pg-1"],
+            true,
+        );
+
+        // ClickPipe reverse private endpoint writes
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "create",
+                "svc-1",
+                "--type",
+                "GCP_PSC_SERVICE_ATTACHMENT",
+                "--description",
+                "endpoint",
+                "--gcp-service-attachment",
+                "projects/p/regions/us-central1/serviceAttachments/s",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "update",
+                "svc-1",
+                "rpe-1",
+                "--custom-private-dns-mapping",
+                "db.example.com",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "delete",
+                "svc-1",
+                "rpe-1",
+            ],
             true,
         );
     }

@@ -828,6 +828,9 @@ clickhousectl cloud clickpipe scale <service-id> <clickpipe-id> \
 clickhousectl cloud clickpipe settings get <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
   --streaming-max-insert-wait-ms 10000
+
+# Manage reverse private endpoints for private source connectivity
+clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
 ```
 
 `settings get` and `settings update` apply to streaming (Kafka, Kinesis) and
@@ -1177,6 +1180,82 @@ must be between 10 and 600, and `--filter` takes a Pub/Sub CEL subscription
 filter of at most 256 characters. Both are checked before the request is sent.
 
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
+
+#### Reverse private endpoints (PrivateLink, Private Service Connect)
+
+A reverse private endpoint gives ClickPipes a private route to a source that is
+not reachable over the public internet. Create the endpoint on the service,
+wait for it to become `Ready`, then reference it from a pipe.
+
+```bash
+# List and inspect the endpoints of a service
+clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
+clickhousectl cloud clickpipe reverse-private-endpoint get <service-id> <endpoint-id>
+
+# AWS PrivateLink, VPC endpoint service
+clickhousectl cloud clickpipe reverse-private-endpoint create <service-id> \
+  --type VPC_ENDPOINT_SERVICE \
+  --description 'analytics source' \
+  --vpc-endpoint-service-name com.amazonaws.vpce.us-east-1.vpce-svc-12345678901234567
+
+# AWS PrivateLink, VPC resource
+clickhousectl cloud clickpipe reverse-private-endpoint create <service-id> \
+  --type VPC_RESOURCE \
+  --description 'analytics source' \
+  --vpc-resource-configuration-id rcfg-12345678901234567 \
+  --vpc-resource-share-arn arn:aws:ram:us-east-1:123456789012:resource-share/share-1
+
+# Amazon MSK multi-VPC connectivity
+clickhousectl cloud clickpipe reverse-private-endpoint create <service-id> \
+  --type MSK_MULTI_VPC \
+  --description 'msk source' \
+  --msk-cluster-arn arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster \
+  --msk-authentication SASL_IAM
+
+# Google Private Service Connect, with custom private DNS names
+clickhousectl cloud clickpipe reverse-private-endpoint create <service-id> \
+  --type GCP_PSC_SERVICE_ATTACHMENT \
+  --description 'gcp source' \
+  --gcp-service-attachment projects/my-project/regions/us-central1/serviceAttachments/my-service \
+  --custom-private-dns-mapping db.example.com \
+  --custom-private-dns-mapping '*.example.com'
+
+# Replace the custom private DNS mappings, or delete the endpoint
+clickhousectl cloud clickpipe reverse-private-endpoint update <service-id> <endpoint-id> \
+  --custom-private-dns-mapping db.example.com
+clickhousectl cloud clickpipe reverse-private-endpoint delete <service-id> <endpoint-id>
+```
+
+Using an endpoint from a pipe:
+
+- Kafka: pass the endpoint's `id` with `clickpipe create kafka
+  --reverse-private-endpoint-id <endpoint-id>`, which is repeatable.
+- Postgres and MySQL CDC: pass one of the endpoint's DNS names as `--host` on
+  `clickpipe create postgres` or `clickpipe create mysql`. `reverse-private-endpoint
+  get` prints `dnsNames`, along with any custom private DNS names.
+
+A pipe can only use an endpoint that has reached the `Ready` status. An AWS
+PrivateLink endpoint stays in `PendingAcceptance` until the connection request
+is accepted in the account that owns the source, so check
+`reverse-private-endpoint get` before creating the pipe.
+
+Each type has its own required flags, and a flag belonging to another type is a
+usage error (exit code 2) raised before any request is made:
+
+| `--type` | Required flags |
+| --- | --- |
+| `VPC_ENDPOINT_SERVICE` | `--vpc-endpoint-service-name` |
+| `VPC_RESOURCE` | `--vpc-resource-configuration-id`, `--vpc-resource-share-arn` |
+| `MSK_MULTI_VPC` | `--msk-cluster-arn`, `--msk-authentication` |
+| `GCP_PSC_SERVICE_ATTACHMENT` | `--gcp-service-attachment` |
+
+`--custom-private-dns-mapping` is repeatable and takes an exact or
+leading-wildcard name (`*.example.com`). The API does not support it for
+`MSK_MULTI_VPC`, which the CLI also rejects up front, and for the AWS
+PrivateLink types it has to be enabled for the service by ClickHouse support.
+The custom private DNS mappings are the only field the API's PATCH accepts, so
+`update` sends the complete list given on the command line: repeat every mapping
+the endpoint should keep.
 
 #### Discovering a source schema (beta)
 

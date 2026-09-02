@@ -158,6 +158,19 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
         ));
     }
 
+    // Each reverse private endpoint type has its own required flags, and the
+    // flags of the other types are meaningless for it; clap has no way to
+    // forbid an argument based on another argument's value.
+    if let Some(message) = args.reverse_private_endpoint_validation_error() {
+        let endpoint = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
+            .and_then(|clickpipe| clickpipe.find_subcommand_mut("reverse-private-endpoint"))
+            .and_then(|endpoint| endpoint.find_subcommand_mut("create"))
+            .expect("clickpipe reverse-private-endpoint create command must exist");
+        return Err(endpoint.error(ErrorKind::ArgumentConflict, message));
+    }
+
     // clap can require --iam-role for one auth value, but cannot express the
     // inverse conflict or condition --replication-slot-name on another value.
     let Some(message) = args.postgres_clickpipe_validation_error() else {

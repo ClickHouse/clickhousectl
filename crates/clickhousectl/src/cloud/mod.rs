@@ -3,6 +3,7 @@ pub mod api_keys;
 pub mod auth;
 pub mod backups;
 pub mod cli;
+pub mod clickpipe_endpoints;
 pub mod clickpipes;
 pub mod client;
 pub mod credentials;

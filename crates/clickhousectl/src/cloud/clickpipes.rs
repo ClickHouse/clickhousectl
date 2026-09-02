@@ -227,6 +227,37 @@ CONTEXT FOR AGENTS:
         org_id: Option<String>,
     },
 
+    /// Manage reverse private endpoints (PrivateLink, Private Service Connect)
+    #[command(
+        name = "reverse-private-endpoint",
+        long_about = "\
+Manage the reverse private endpoints ClickPipes uses to reach a source over
+private networking instead of the public internet.
+
+Create the endpoint first, then reference it from a pipe:
+
+  Kafka: pass the endpoint's id to `clickpipe create kafka
+  --reverse-private-endpoint-id <ID>`, which is repeatable.
+
+  Postgres and MySQL CDC: pass one of the endpoint's DNS names as --host on
+  `clickpipe create postgres` or `clickpipe create mysql`. `reverse-private-endpoint get`
+  prints the dnsNames the endpoint answers on, plus any custom private DNS
+  names configured for it.
+
+A pipe can only use an endpoint that has reached the Ready status. An AWS
+PrivateLink endpoint stays in PendingAcceptance until the connection request is
+accepted in the account that owns the source, so check `reverse-private-endpoint
+get` before creating the pipe.
+
+Types: VPC_ENDPOINT_SERVICE and VPC_RESOURCE (AWS PrivateLink), MSK_MULTI_VPC
+(Amazon MSK multi-VPC connectivity), GCP_PSC_SERVICE_ATTACHMENT (Google Private
+Service Connect)."
+    )]
+    ReversePrivateEndpoint {
+        #[command(subcommand)]
+        command: crate::cloud::clickpipe_endpoints::ReversePrivateEndpointCommands,
+    },
+
     /// Create a ClickPipe
     Create {
         #[command(subcommand)]
@@ -251,6 +282,7 @@ impl ClickPipeCommands {
             ClickPipeCommands::SchemaDiscover { .. } => true,
             ClickPipeCommands::Create { .. } => true,
             ClickPipeCommands::Settings { command } => command.is_write(),
+            ClickPipeCommands::ReversePrivateEndpoint { command } => command.is_write(),
         }
     }
 
@@ -265,6 +297,14 @@ impl ClickPipeCommands {
         validate_postgres_create_args(args)
             .err()
             .map(|error| error.message)
+    }
+
+    pub(crate) fn reverse_private_endpoint_create_validation_error(&self) -> Option<String> {
+        let ClickPipeCommands::ReversePrivateEndpoint { command } = self else {
+            return None;
+        };
+
+        command.create_validation_error()
     }
 }
 
@@ -1400,6 +1440,9 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
             org_id,
         } => {
             clickpipe_schema_discover(client, &service_id, &command, org_id.as_deref(), json).await
+        }
+        ClickPipeCommands::ReversePrivateEndpoint { command } => {
+            crate::cloud::clickpipe_endpoints::run(client, command, json).await
         }
         ClickPipeCommands::Create { command } => match command {
             ClickPipeCreateCommands::ObjectStorage(args) => {
