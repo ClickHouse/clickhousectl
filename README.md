@@ -961,7 +961,25 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
   --service-account-file ./sa-key.json \
   --staging-path gs://bucket/staging \
   --table-mapping "dataset.table:target_table"
+
+# Grant extra ClickHouse roles to the destination user (any create subcommand)
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-kafka-pipe \
+  --brokers 'broker:9092' --topics events \
+  --format JSONEachRow \
+  --database default --table events \
+  --column "event_id:Int64" \
+  --role analytics_reader --role analytics_writer
 ```
+
+`--role` is available on every `clickpipe create` subcommand and is repeatable.
+ClickPipes creates a ClickHouse user for the pipe; when `--role` is omitted that
+user is granted the default role only, and the request omits the field
+altogether. Each `--role` grants one more existing role on top of the default,
+so roles are added and never taken away. Repeated values are sent once in the
+order given. The names `clickpipes` and `clickpipes_system` are reserved by
+ClickPipes: the CLI rejects them as usage errors (exit code 2) before making
+any request.
 
 #### PostgreSQL ClickPipe prerequisites
 

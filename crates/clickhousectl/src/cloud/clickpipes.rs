@@ -394,6 +394,20 @@ DOCUMENTATION:
     BigQuery(BigQueryCreateArgs),
 }
 
+/// Destination-permission flags shared by every `clickpipe create` subcommand.
+/// Flattened into each create args struct so `--role` and its help text have a
+/// single definition, the way `KafkaSourceFields` shares the Kafka source flags.
+#[derive(Args, Debug, Default)]
+pub struct DestinationRoleArgs {
+    /// Extra ClickHouse role to grant the ClickPipes destination user (repeatable)
+    ///
+    /// When omitted, ClickPipes grants that user the default role only. Each
+    /// --role adds a role on top of the default; nothing is taken away. The
+    /// API-reserved names `clickpipes` and `clickpipes_system` are rejected.
+    #[arg(long = "role", value_name = "ROLE", value_parser = parse_destination_role)]
+    pub roles: Vec<String>,
+}
+
 #[derive(Args, Debug)]
 pub struct ObjectStorageCreateArgs {
     /// Service ID
@@ -488,6 +502,9 @@ pub struct ObjectStorageCreateArgs {
     /// Path to GCP service account JSON key file
     #[arg(long)]
     pub service_account_file: Option<String>,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
 
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]
@@ -617,6 +634,9 @@ pub struct KafkaCreateArgs {
     #[arg(long = "column")]
     pub columns: Vec<String>,
 
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]
     pub org_id: Option<String>,
@@ -699,6 +719,9 @@ pub struct KinesisCreateArgs {
     /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
     #[arg(long = "column")]
     pub columns: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
 
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]
@@ -790,6 +813,9 @@ pub struct PostgresCreateArgs {
     /// Replication slot name (only with --replication-mode cdc_only)
     #[arg(long)]
     pub replication_slot_name: Option<String>,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
 
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]
@@ -883,6 +909,9 @@ pub struct MySqlCreateArgs {
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..=4294967295))]
     pub server_id: Option<u64>,
 
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]
     pub org_id: Option<String>,
@@ -941,6 +970,9 @@ pub struct MongoDbCreateArgs {
     #[arg(long)]
     pub disable_tls: bool,
 
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]
     pub org_id: Option<String>,
@@ -966,6 +998,9 @@ pub struct BigQueryCreateArgs {
     /// Table mappings as dataset.table:target_table (repeatable)
     #[arg(long = "table-mapping")]
     pub table_mappings: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
 
     /// Organization ID (auto-detected if not specified)
     #[arg(long)]
@@ -1236,7 +1271,12 @@ async fn clickpipe_create_object_storage(
             object_storage: Some(source),
             ..Default::default()
         },
-        destination: build_destination(&args.database, &args.table, parsed_columns),
+        destination: build_destination(
+            &args.database,
+            &args.table,
+            parsed_columns,
+            build_destination_roles(&args.destination_roles.roles),
+        ),
         ..Default::default()
     };
 
@@ -1478,7 +1518,12 @@ async fn clickpipe_create_kafka(
             kafka: Some(source),
             ..Default::default()
         },
-        destination: build_destination(&args.database, &args.table, parsed_columns),
+        destination: build_destination(
+            &args.database,
+            &args.table,
+            parsed_columns,
+            build_destination_roles(&args.destination_roles.roles),
+        ),
         ..Default::default()
     };
 
@@ -1507,7 +1552,12 @@ async fn clickpipe_create_kinesis(
             kinesis: Some(source),
             ..Default::default()
         },
-        destination: build_destination(&args.database, &args.table, parsed_columns),
+        destination: build_destination(
+            &args.database,
+            &args.table,
+            parsed_columns,
+            build_destination_roles(&args.destination_roles.roles),
+        ),
         ..Default::default()
     };
 
@@ -1963,11 +2013,59 @@ fn parse_columns(
         .collect()
 }
 
+/// Role names the API reserves for ClickPipes itself and rejects in
+/// `destination.roles`. Caught client-side so the failure names the flag
+/// instead of relaying a server-side validation error.
+const RESERVED_DESTINATION_ROLES: &[&str] = &["clickpipes", "clickpipes_system"];
+
+/// Validate one `--role` value, returning the trimmed role name.
+fn parse_destination_role_name(role: &str) -> CloudResult<String> {
+    let trimmed = role.trim();
+    if trimmed.is_empty() {
+        return Err(CloudError::new("a role name must not be empty"));
+    }
+    if RESERVED_DESTINATION_ROLES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(trimmed))
+    {
+        return Err(CloudError::new(format!(
+            "role names reserved by ClickPipes cannot be granted: {}",
+            RESERVED_DESTINATION_ROLES.join(", ")
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// clap `value_parser` wrapper for `--role`, so a bad name is a usage error
+/// (exit 2) formatted against the create subcommand that was invoked, before
+/// any credential lookup or network call.
+fn parse_destination_role(role: &str) -> Result<String, String> {
+    parse_destination_role_name(role).map_err(|error| error.message)
+}
+
+/// Resolve the repeatable `--role` values into `destination.roles`. Every value
+/// is already validated and trimmed by `parse_destination_role`; duplicates are
+/// dropped with declaration order preserved, and no flags at all leave the
+/// field absent from the request body.
+fn build_destination_roles(roles: &[String]) -> Option<Vec<String>> {
+    if roles.is_empty() {
+        return None;
+    }
+    let mut deduped: Vec<String> = Vec::with_capacity(roles.len());
+    for role in roles {
+        if !deduped.iter().any(|existing| existing == role) {
+            deduped.push(role.clone());
+        }
+    }
+    Some(deduped)
+}
+
 /// Build a managed-table destination with the default MergeTree engine.
 fn build_destination(
     database: &str,
     table: &str,
     columns: Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>,
+    roles: Option<Vec<String>>,
 ) -> clickhouse_cloud_api::models::ClickPipeMutateDestination {
     // Database pipes (Postgres/MySQL/BigQuery) carry the destination table on
     // the per-mapping `targetTable` and reject any of {table, managedTable,
@@ -1976,6 +2074,9 @@ fn build_destination(
     if table.is_empty() {
         return clickhouse_cloud_api::models::ClickPipeMutateDestination {
             database: database.to_string(),
+            // `roles` is not one of the four fields database pipes reject, so
+            // it is wired here too.
+            roles,
             ..Default::default()
         };
     }
@@ -1984,7 +2085,7 @@ fn build_destination(
         table: Some(table.to_string()),
         columns,
         managed_table: Some(true),
-        roles: None,
+        roles,
         table_definition: Some(
             clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition::default(),
         ),
@@ -2175,7 +2276,12 @@ fn build_postgres_request(
             postgres: Some(source),
             ..Default::default()
         },
-        destination: build_destination("default", "", vec![]),
+        destination: build_destination(
+            "default",
+            "",
+            vec![],
+            build_destination_roles(&args.destination_roles.roles),
+        ),
         ..Default::default()
     })
 }
@@ -2291,7 +2397,12 @@ async fn clickpipe_create_mysql(
             mysql: Some(source),
             ..Default::default()
         },
-        destination: build_destination("default", "", vec![]),
+        destination: build_destination(
+            "default",
+            "",
+            vec![],
+            build_destination_roles(&args.destination_roles.roles),
+        ),
         ..Default::default()
     };
 
@@ -2370,7 +2481,12 @@ async fn clickpipe_create_mongodb(
             mongodb: Some(source),
             ..Default::default()
         },
-        destination: build_destination("default", "", vec![]),
+        destination: build_destination(
+            "default",
+            "",
+            vec![],
+            build_destination_roles(&args.destination_roles.roles),
+        ),
         ..Default::default()
     };
 
@@ -2438,7 +2554,12 @@ async fn clickpipe_create_bigquery(
             bigquery: Some(source),
             ..Default::default()
         },
-        destination: build_destination("default", "", vec![]),
+        destination: build_destination(
+            "default",
+            "",
+            vec![],
+            build_destination_roles(&args.destination_roles.roles),
+        ),
         ..Default::default()
     };
 
@@ -5048,6 +5169,7 @@ mod tests {
             ca_certificate: None,
             publication_name: None,
             replication_slot_name: None,
+            destination_roles: DestinationRoleArgs::default(),
             org_id: None,
         }
     }
@@ -5135,12 +5257,22 @@ mod tests {
         args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
         args.publication_name = Some("clickpipe_publication".into());
         args.replication_slot_name = Some("clickpipe_slot".into());
+        args.destination_roles = DestinationRoleArgs {
+            roles: vec!["analytics_reader".into(), "analytics_writer".into()],
+        };
         args.org_id = Some("org-1".into());
 
         let request = build_postgres_request(&args).unwrap();
         assert_eq!(request.name, "maximal-pipe");
         assert_eq!(request.destination.database, "default");
         assert_eq!(request.destination.table, None);
+        assert_eq!(
+            request.destination.roles,
+            Some(vec![
+                "analytics_reader".to_string(),
+                "analytics_writer".to_string()
+            ])
+        );
         let source = request.source.postgres.as_ref().expect("postgres source");
         assert_eq!(source.r#type.as_ref().unwrap().to_string(), "rdspostgres");
         assert_eq!(source.authentication.to_string(), "IAM_ROLE");
@@ -5351,7 +5483,7 @@ mod tests {
 
     #[test]
     fn build_destination_uses_defaults_for_table_definition() {
-        let destination = build_destination("mydb", "events", vec![]);
+        let destination = build_destination("mydb", "events", vec![], None);
         assert_eq!(destination.database, "mydb");
         assert_eq!(destination.table.as_deref(), Some("events"));
         assert_eq!(destination.managed_table, Some(true));
@@ -5369,13 +5501,240 @@ mod tests {
 
     #[test]
     fn build_destination_omits_table_fields_for_database_pipes() {
-        let destination = build_destination("default", "", vec![]);
+        let destination = build_destination("default", "", vec![], None);
         assert_eq!(destination.database, "default");
         assert_eq!(destination.table, None);
         assert!(destination.columns.is_empty());
         assert_eq!(destination.managed_table, None);
         assert_eq!(destination.roles, None);
         assert_eq!(destination.table_definition, None);
+    }
+
+    // `--role` → `destination.roles` (issue #568). Omitted means the field is
+    // absent from the body, so ClickPipes applies the default role on its own.
+
+    #[test]
+    fn build_destination_carries_roles_on_both_destination_shapes() {
+        let roles = Some(vec!["reader".to_string(), "writer".to_string()]);
+        let streaming = build_destination("mydb", "events", vec![], roles.clone());
+        assert_eq!(streaming.roles, roles);
+        // Database pipes send only `database`, but `roles` is not one of the
+        // four fields they reject, so it must survive that branch too.
+        let database_pipe = build_destination("default", "", vec![], roles.clone());
+        assert_eq!(database_pipe.roles, roles);
+        assert_eq!(database_pipe.table, None);
+    }
+
+    #[test]
+    fn build_destination_roles_omits_field_when_no_flags_passed() {
+        assert_eq!(build_destination_roles(&[]), None);
+    }
+
+    #[test]
+    fn build_destination_roles_dedupes_preserving_declaration_order() {
+        let roles = [
+            "writer".to_string(),
+            "reader".to_string(),
+            "writer".to_string(),
+        ];
+        assert_eq!(
+            build_destination_roles(&roles),
+            Some(vec!["writer".to_string(), "reader".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_destination_role_name_trims_and_accepts_ordinary_names() {
+        assert_eq!(
+            parse_destination_role_name("  analytics_reader  ").unwrap(),
+            "analytics_reader"
+        );
+    }
+
+    #[test]
+    fn parse_destination_role_name_rejects_blank_names() {
+        for blank in ["", "   ", "\t"] {
+            let error = parse_destination_role_name(blank)
+                .expect_err("a blank role name must be rejected client-side");
+            assert!(error.message.contains("must not be empty"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn parse_destination_role_name_rejects_api_reserved_names() {
+        for reserved in [
+            "clickpipes",
+            "clickpipes_system",
+            "ClickPipes",
+            "  clickpipes_system  ",
+        ] {
+            let error = parse_destination_role_name(reserved)
+                .expect_err("reserved role names must be rejected client-side");
+            assert!(
+                error.message.contains("reserved by ClickPipes"),
+                "{error:?}"
+            );
+            assert!(error.message.contains("clickpipes_system"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn parses_repeatable_role_on_kafka_create() {
+        let mut args = kafka_create_cli_args();
+        args.extend(["--role", "reader", "--role", "writer"]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected clickpipe create kafka");
+        };
+        assert_eq!(parsed.destination_roles.roles, vec!["reader", "writer"]);
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(parsed),
+        } = parse_clickpipe(&kafka_create_cli_args())
+        else {
+            panic!("expected clickpipe create kafka");
+        };
+        assert!(parsed.destination_roles.roles.is_empty());
+    }
+
+    #[test]
+    fn parses_repeatable_role_on_postgres_create() {
+        let mut args = postgres_cli_args(Some("public.events:events"));
+        args.extend(["--role", "reader", "--role", "writer"]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected clickpipe create postgres");
+        };
+        assert_eq!(parsed.destination_roles.roles, vec!["reader", "writer"]);
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(parsed),
+        } = parse_clickpipe(&postgres_cli_args(Some("public.events:events")))
+        else {
+            panic!("expected clickpipe create postgres");
+        };
+        assert!(parsed.destination_roles.roles.is_empty());
+    }
+
+    #[test]
+    fn role_is_available_on_every_create_subcommand() {
+        for (subcommand, extra) in [
+            (
+                "object-storage",
+                vec![
+                    "--source-url",
+                    "https://bucket.example/data",
+                    "--format",
+                    "JSONEachRow",
+                    "--database",
+                    "db",
+                    "--table",
+                    "events",
+                ],
+            ),
+            (
+                "kafka",
+                vec![
+                    "--brokers",
+                    "broker:9092",
+                    "--topics",
+                    "topic",
+                    "--format",
+                    "JSONEachRow",
+                    "--database",
+                    "db",
+                    "--table",
+                    "events",
+                ],
+            ),
+            (
+                "kinesis",
+                vec![
+                    "--stream-name",
+                    "stream",
+                    "--region",
+                    "us-east-1",
+                    "--format",
+                    "JSONEachRow",
+                    "--database",
+                    "db",
+                    "--table",
+                    "events",
+                ],
+            ),
+            (
+                "postgres",
+                vec![
+                    "--host",
+                    "postgres.example",
+                    "--pg-database",
+                    "source-db",
+                    "--username",
+                    "user",
+                    "--password",
+                    "password",
+                    "--table-mapping",
+                    "public.events:events",
+                ],
+            ),
+            (
+                "mysql",
+                vec![
+                    "--host",
+                    "mysql.example",
+                    "--username",
+                    "user",
+                    "--password",
+                    "password",
+                    "--table-mapping",
+                    "mydb.events:events",
+                ],
+            ),
+            (
+                "mongodb",
+                vec![
+                    "--uri",
+                    "mongodb://mongo.example:27017",
+                    "--username",
+                    "user",
+                    "--password",
+                    "password",
+                    "--table-mapping",
+                    "mydb.events:events",
+                ],
+            ),
+            (
+                "bigquery",
+                vec![
+                    "--service-account-file",
+                    "./sa-key.json",
+                    "--staging-path",
+                    "gs://bucket/staging",
+                    "--table-mapping",
+                    "dataset.events:events",
+                ],
+            ),
+        ] {
+            let mut args = vec!["create", subcommand, "svc-1", "--name", "pipe-1"];
+            args.extend(extra);
+            args.extend(["--role", "reader"]);
+            parse_clickpipe(&args);
+
+            let mut reserved = args.clone();
+            reserved.pop();
+            reserved.push("clickpipes");
+            let error = clickpipe_parse_error(&reserved);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert_eq!(error.exit_code(), 2);
+            assert!(
+                error.to_string().contains("reserved by ClickPipes"),
+                "{subcommand}: {error}"
+            );
+        }
     }
 
     // `build_kafka_credentials` tests — lock the wire shape for each auth mode.
@@ -5412,6 +5771,7 @@ mod tests {
             database: "d".into(),
             table: "t".into(),
             columns: vec![],
+            destination_roles: DestinationRoleArgs::default(),
             org_id: None,
         }
     }

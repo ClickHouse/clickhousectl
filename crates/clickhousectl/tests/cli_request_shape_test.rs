@@ -3283,6 +3283,98 @@ async fn postgres_invalid_inputs_exit_as_usage_errors_before_auth_file_or_networ
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+// ── Destination roles (issue #568) ─────────────────────────────────────────
+//
+// `--role` maps to `destination.roles`. Omitting it must leave the key out of
+// the body entirely, because ClickPipes reads absence as "grant the default
+// role"; an empty array would be a different instruction.
+
+#[tokio::test]
+async fn kafka_destination_roles_serialize_in_declaration_order() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_args_minimal();
+    args.extend([
+        "--role",
+        "analytics_writer",
+        "--role",
+        "analytics_reader",
+        // A repeated value is de-duplicated rather than sent twice.
+        "--role",
+        "analytics_writer",
+    ]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+
+    assert_eq!(
+        body["destination"]["roles"],
+        serde_json::json!(["analytics_writer", "analytics_reader"]),
+        "destination.roles should carry the --role values in order: {}",
+        body["destination"],
+    );
+}
+
+#[tokio::test]
+async fn kafka_destination_roles_absent_when_role_omitted() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(&mock, &kafka_args_minimal()).await;
+
+    let dest = &body["destination"];
+    assert!(
+        dest.get("roles").is_none(),
+        "roles leaked into the destination body when --role was omitted: {dest}",
+    );
+}
+
+#[tokio::test]
+async fn postgres_destination_roles_serialize_on_database_pipes() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    args.extend([
+        "--role".to_string(),
+        "analytics_reader".to_string(),
+        "--role".to_string(),
+        "analytics_writer".to_string(),
+    ]);
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    let dest = &body["destination"];
+    assert_eq!(
+        dest["roles"],
+        serde_json::json!(["analytics_reader", "analytics_writer"]),
+        "destination.roles should survive the database-pipe destination: {dest}",
+    );
+    // The four fields database pipes reject must still be absent.
+    for field in ["table", "columns", "managedTable", "tableDefinition"] {
+        assert!(
+            dest.get(field).is_none(),
+            "{field} leaked into the postgres destination body: {dest}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn reserved_destination_role_is_a_usage_error_before_any_request() {
+    let mock = start_mock_clickpipes_api().await;
+
+    for reserved in ["clickpipes", "clickpipes_system"] {
+        let mut args = postgres_args_minimal();
+        args.extend(["--role".to_string(), reserved.to_string()]);
+        let output = invoke_cli_without_cloud_credentials(&mock, &args);
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("reserved by ClickPipes"), "{stderr}");
+        assert!(stderr.contains(reserved), "{stderr}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn postgres_publication_name_serializes_when_provided() {
     let mock = start_mock_clickpipes_api().await;
