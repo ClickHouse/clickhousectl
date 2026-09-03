@@ -8,7 +8,7 @@ With `clickhousectl` you can:
 - Create a ClickHouse Cloud account and authenticate from the terminal
 - Create and manage ClickHouse and Postgres services in ClickHouse Cloud
 - Run SQL against local and cloud ClickHouse services
-- Create and manage ClickPipes for data ingestion (S3, Kafka, Kinesis, Postgres, MySQL, MongoDB, BigQuery)
+- Create and manage ClickPipes for data ingestion (object storage incl. S3, Kafka, Kinesis, Pub/Sub, Postgres, MySQL, MongoDB, BigQuery)
 - Install the official ClickHouse agent skills into supported coding agents
 - Move local ClickHouse development to ClickHouse Cloud
 
@@ -155,6 +155,8 @@ psql "$POSTGRES_CONNECTION_STRING" --command "SELECT version()"
 ```bash
 # Manage default version
 clickhousectl local use latest              # Latest master build; installs if needed and creates ~/.local/bin/clickhouse
+clickhousectl local use stable              # Latest stable release channel
+clickhousectl local use lts                 # Latest LTS release channel
 clickhousectl local use 26.8                # Latest 26.8.x.x (installs if needed)
 clickhousectl local use 26.8.1.1760         # Exact version
 clickhousectl local use latest --no-global  # Set default but don't touch ~/.local/bin/clickhouse
@@ -165,6 +167,7 @@ clickhousectl local install latest          # Latest master build
 clickhousectl local install 26              # Latest 26.x.x.x
 clickhousectl local install 26.8            # Latest 26.8.x.x
 clickhousectl local install 26.8.1.1760      # Exact version
+clickhousectl local install 26.8.1.1760 --force  # Re-install even if already present
 
 # List versions
 clickhousectl local list                    # Installed versions
@@ -179,7 +182,7 @@ clickhousectl local remove 26.8.1.1760 --force   # Stop running servers on this 
 
 `local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with exit `1` and JSON error code `server_running`. Because versions are shared between projects, the check spans **every** project, not just the current directory: the error names each blocking server with the project root it was started from and its PID, so a server found by `clickhousectl local server list --global` is identifiable. Stop those servers first (`clickhousectl local server stop --global <name>`), or pass `--force` to stop them — in whichever project they run — and then remove the version.
 
-`local remove` also refuses to delete the **current default version** (exit `1`, JSON error code `version_is_default`): removing it clears the `~/.clickhouse/default` marker and the global `~/.local/bin/clickhouse` symlink, and the exact build is not always re-downloadable — `builds.clickhouse.com` does not serve every exact build, which can leave a master-channel build unrecoverable. Switch the default first with `clickhousectl local use <other-version>`, or pass `--force` to remove it anyway. A forced removal stops any running servers on the version, warns on stderr before the version itself is deleted, then reports `was_default: true` in its output and clears both the default marker and the global symlink; set a new default with `clickhousectl local use latest`.
+`local remove` also refuses the **current default version** (exit `1`, JSON error code `version_is_default`), because the exact build is not always re-downloadable. Switch with `clickhousectl local use <other-version>`, or pass `--force` to remove it anyway — which stops running servers on the version, clears `~/.clickhouse/default` and the global symlink, and reports `was_default: true`.
 
 #### ClickHouse binary storage
 
@@ -231,6 +234,7 @@ clickhousectl local client --host remote-host --port 9000  # Connect to a specif
 clickhousectl local client --host remote-host         # Direct mode; port defaults to 9000
 clickhousectl local client --port 19000               # Direct mode; host defaults to localhost
 clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an installed client binary
+clickhousectl local client -- --format Pretty        # Extra clickhouse-client args after --
 ```
 
 `--name` selects the connection and local client binary from managed server metadata, so named mode does not need a global default. It cannot be combined with direct `--host` or `--port` selectors, and named mode does not accept `--version`.
@@ -263,6 +267,7 @@ clickhousectl local server start --foreground             # Run in foreground (-
 clickhousectl local server start --no-wait                # Return after spawning without waiting for readiness
 clickhousectl local server start --http-port 8124 --tcp-port 9001  # Explicit ports
 clickhousectl local server start --config analytics       # Apply a custom config (see "Custom config files" below)
+clickhousectl local server start -- --logger.level=debug  # Extra clickhouse-server args after --
 
 # List custom config files available to --config
 clickhousectl local server configs
@@ -286,6 +291,7 @@ clickhousectl local server dotenv                        # From "default" server
 clickhousectl local server dotenv --name dev             # From "dev" server → .env
 clickhousectl local server dotenv --local                # Write to .env.local instead
 clickhousectl local server dotenv --local --user default --database mydb  # Include user and database
+clickhousectl local server dotenv --local --user default --password secret  # Include CLICKHOUSE_PASSWORD
 ```
 
 Stopping a server preserves its data and identity metadata, so it remains visible in `server list` with a `stopped` status. Version and ports are shown only while running because they are resolved again on each start. Starting the same name resumes the existing data directory.
@@ -309,7 +315,7 @@ Version removal and server-data removal are separate operations:
 
 **Orphaned server recovery:** If server metadata files are lost while the ClickHouse process is still running, the CLI automatically recovers them via process discovery. Running `server list`, `server start`, or any server command will detect orphaned processes belonging to the current project and bring them back under management.
 
-**Global server management:** Use `--global` with `list`, `stop`, and `stop-all` to operate across all projects system-wide. `server list --global` shows all running ClickHouse servers with a Project column indicating which directory each belongs to. The PID column is the process to signal to stop a server for good, which is the ClickHouse watchdog when the server has one. The watchdog owns the lifetime of the pair: it forwards SIGTERM to the server it supervises and exits with it, so signalling the watchdog stops both together, and not even a server started with `CLICKHOUSE_WATCHDOG_RESTART=1` is brought back. Both `server list` and `server list --global` report that same PID for a given server, which is the one `server start` recorded. `stop` and `stop-all` escalate to SIGKILL when the watchdog does not exit in time, and because a SIGKILL cannot be forwarded they kill the supervised server too, reporting success only once both processes are gone.
+**Global server management:** Use `--global` with `list`, `stop`, and `stop-all` to work across all projects; `server list --global` adds a Project column. The reported PID is the watchdog when there is one, and signalling it stops the supervised server too; `stop`/`stop-all` escalate to SIGKILL and report success only once both processes are gone.
 
 #### Custom config files
 
@@ -341,7 +347,7 @@ When you also need a local Postgres alongside ClickHouse — e.g. for testing CD
 # Pre-pull a Postgres image (optional; start will pull on demand). Supported: 17, 18 (and any sub-tag like 17-alpine, 17.0, 18-bookworm).
 clickhousectl local install postgres@17
 
-# Start a Postgres instance (defaults: postgres:18, port 5432, user "postgres", db "postgres")
+# Start a Postgres instance (defaults: postgres:18, port 5432 or a free port, user "postgres", db "postgres")
 clickhousectl local postgres start
 clickhousectl local postgres start --name dev --version 17 --port 5433
 clickhousectl local postgres start --user app --database myapp  # Generates a random password
@@ -351,9 +357,11 @@ clickhousectl local postgres start --wait-timeout 120            # Default: 60s;
 # List everything (ClickHouse + Postgres are merged in `server list`)
 clickhousectl local server list
 
-# Connect with psql (uses host psql if installed; otherwise falls back to docker exec)
+# Connect with psql
 clickhousectl local postgres client --name dev
 clickhousectl local postgres client --name dev --query "SELECT 1"
+clickhousectl local postgres client --name dev --queries-file schema.sql  # Run a SQL file (psql -f)
+clickhousectl local postgres client --name dev --version 17               # Disambiguate two majors
 clickhousectl local postgres client --host remote-host       # Direct mode; port defaults to 5432
 clickhousectl local postgres client --port 55432             # Direct mode; connects locally
 
@@ -371,11 +379,15 @@ clickhousectl local postgres remove dev
 
 Postgres `--name` and `--version` select a managed instance and cannot be combined with direct `--host` or `--port` selectors.
 
+`postgres client --name` uses host `psql` when available and otherwise runs psql inside the container via `docker exec`. Direct `--host`/`--port` mode requires host `psql` and connects as user/database `postgres` with no password, so it cannot authenticate against a managed instance created with `--user`/`--password`.
+
+With `--port` omitted, 5432 is used when free and a free port is auto-selected otherwise; an explicitly requested port that is occupied is rejected rather than moved.
+
 The Postgres `dotenv` command includes the generated password. Do not commit its output; prefer `--local` when your application reads `.env.local`.
 
 `--env` accepts each valid `KEY=VALUE` key once. `POSTGRES_USER`, `POSTGRES_DB`, and `PGDATA` are generated by clickhousectl and cannot be supplied through `--env`; use `--user` or `--database` for the first two. For compatibility, `-e POSTGRES_PASSWORD=...` remains an alternative to `--password`, but combining the two or repeating `POSTGRES_PASSWORD` is an error. This guarantees that every generated variable appears exactly once in the container environment.
 
-`local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, the command exits and asks you to pass `--version`. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory. The unified `local server stop-all` stops both ClickHouse and Postgres instances in the current project; the dedicated `local postgres stop-all` remains available when only Postgres should be stopped.
+`local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, the command exits and asks you to pass `--version`. A resume reuses the stored settings, so `--port`, `--user`, `--password`, `--database` and `-e` are ignored on a resume; run `local postgres remove <name>` then `start` to change them. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory. The unified `local server stop-all` stops both ClickHouse and Postgres instances in the current project; the dedicated `local postgres stop-all` remains available when only Postgres should be stopped.
 
 Fresh and resumed starts wait until `pg_isready` reports that PostgreSQL is accepting connections inside the container. The readiness timeout defaults to 60 seconds and can be set from 1 to 600 seconds with `--wait-timeout`. A timeout or early container exit fails the command and prints a bounded tail of the container logs instead of connection credentials. A failed fresh startup removes the newly created container, metadata, and PGDATA created by that attempt only when rollback completes. Pre-existing PGDATA is preserved, and recovery metadata is retained whenever cleanup is incomplete. A failed resume stops the existing container but preserves its metadata and data.
 
@@ -450,6 +462,8 @@ Learn how to [create API keys](https://clickhouse.com/docs/cloud/manage/openapi?
 ```bash
 clickhousectl cloud auth status    # Show current auth state (including read-only/read-write labels)
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
+clickhousectl cloud auth logout --oauth      # Clear only OAuth tokens, keep API keys
+clickhousectl cloud auth logout --api-keys   # Clear only API keys, keep OAuth tokens
 ```
 
 Credential resolution order:
@@ -473,13 +487,16 @@ clickhousectl cloud --debug service list
 # [debug] auth source: credentials file (.clickhouse/credentials.json)
 # [debug] api url: https://api.clickhouse.cloud/v1
 # ... normal output ...
+
+# Target a non-production control plane (env: CLICKHOUSE_CLOUD_QUERY_HOST for the Query API host)
+clickhousectl cloud --url https://api.control-plane.example.com service list
 ```
 
 ## Cloud
 
 Manage ClickHouse, Postgres, and other ClickHouse Cloud resources via the API.
 
-Any command that reads or deletes a cloud resource by identifier reports an identifier no resource has as not found. The API answers `400 BAD_REQUEST: Invalid ... id` for a syntactically valid UUID that resolves to nothing, so the CLI re-presents that as `No such service: <id> (organization <org-id>)` and keeps the server's own text as a trailing detail. In `--json` mode the failure carries the stable code `resource_not_found` and the `list` command for the same scope. An identifier that is not a well-formed UUID keeps the API's `invalid` message unchanged, because there it is both true and the more useful answer.
+Reading or deleting a cloud resource by an identifier that resolves to nothing reports `No such <resource>: <id> (organization <org-id>)` with the server's text as a trailing detail, and the stable code `resource_not_found` under `--json`. A malformed (non-UUID) identifier keeps the API's own `invalid` message.
 
 ### Organizations
 
@@ -493,8 +510,10 @@ clickhousectl cloud org update <org-id> \
 clickhousectl cloud org prometheus --filtered-metrics true
 clickhousectl cloud org usage \
   --from-date 2024-01-01 \
-  --to-date 2024-01-31
-# Add --org-id <org-id> to either command when your credentials access multiple organizations.
+  --to-date 2024-01-31 \
+  --filter tag:Environment=Production   # max 31-day window (to-date inclusive), costs in CHC
+# --org-id applies to prometheus/usage only; list takes none and get/update take a positional <org-id>.
+# It is auto-detected only when your credentials reach exactly one organization.
 ```
 
 ### Services
@@ -507,6 +526,7 @@ clickhousectl cloud service list
 clickhousectl cloud service get <service-id>
 
 # Create a service with explicit placement and network access
+# Omitting --ip-allow creates the service with an "Allow all" 0.0.0.0/0 access list
 clickhousectl cloud service create --name my-service \
   --provider aws \
   --region us-east-1 \
@@ -519,7 +539,8 @@ clickhousectl cloud service create --name my-service \
   --ip-allow <trusted-public-ip>/32 \
   --min-replica-memory-gb 8 \
   --max-replica-memory-gb 32 \
-  --num-replicas 2
+  --num-replicas 2 \
+  --idle-scaling true --idle-timeout-minutes 10
 
 # Create with specific IP allowlist
 clickhousectl cloud service create --name my-service \
@@ -552,6 +573,15 @@ clickhousectl cloud service create --name my-service \
   --private-preview-terms-checked \
   --enable-core-dumps true
 
+# Create a read-only replica in an existing data warehouse
+clickhousectl cloud service create --name my-replica \
+  --data-warehouse-id <warehouse-id> --readonly
+
+# Enterprise: instance profile, compliance, customer-managed disk encryption, TDE
+clickhousectl cloud service create --name my-service \
+  --profile v1-highmem-xs --compliance-type hipaa \
+  --encryption-key <kms-key-arn> --encryption-role <kms-role-arn> --enable-tde
+
 # Start/stop a service
 clickhousectl cloud service start <service-id>
 clickhousectl cloud service stop <service-id>
@@ -562,10 +592,8 @@ clickhousectl cloud service query --id <service-id> --query "SELECT count() FROM
 clickhousectl cloud service query --name my-service --queries-file query.sql   # single statement only; "-" reads from stdin
 clickhousectl cloud service query --name my-service --database mydb --query "SHOW TABLES"
 echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
-
-# Load a CSV: the statement and its data travel together on stdin
-printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
-  clickhousectl cloud service query --id <service-id>
+clickhousectl cloud service query --name my-service --query "SELECT 1" --no-auto-enable
+# Loading a CSV: see the stdin INSERT example below
 
 # Deliberately replace clickhousectl's stored Query API key for exactly one
 # service (the way forward after a disabled, expired, unbound or IP-restricted key)
@@ -582,11 +610,12 @@ clickhousectl cloud service update <service-id> \
   --add-tag env=staging \
   --transparent-data-encryption-key-id tde-key-1 \
   --enable-core-dumps false
-# `--remove-ip-allow`/`--remove-private-endpoint-id`/`--remove-tag` are
-# idempotent: removing something already absent still exits 0, but
-# clickhousectl warns on stderr for each entry that matched nothing (tags are
-# matched by key), so a
-# typo doesn't silently no-op.
+clickhousectl cloud service update <service-id> \
+  --disable-endpoint mysql \
+  --remove-private-endpoint-id pe-1 \
+  --remove-tag legacy
+# --remove-* flags are idempotent: an entry that matched nothing still exits 0,
+# with one stderr warning per miss (tags match by key).
 
 # Update replica scaling (vertical autoscaling — fixed replica count, variable memory)
 clickhousectl cloud service scale <service-id> \
@@ -624,7 +653,7 @@ clickhousectl cloud service query-endpoint delete <service-id>
 
 # Private endpoint management
 clickhousectl cloud service private-endpoint create <service-id> \
-  --endpoint-id vpce-0123456789abcdef0
+  --endpoint-id vpce-0123456789abcdef0 --description 'app vpc'
 clickhousectl cloud service private-endpoint get-config <service-id>
 
 # Backup configuration
@@ -639,7 +668,7 @@ clickhousectl cloud service backup-config update <service-id> \
   --clear-backup-start-time \
   --backup-period-hours 12
 
-# Service Prometheus configuration
+# Service Prometheus configuration (always raw Prometheus exposition text; --json is ignored)
 clickhousectl cloud service prometheus <service-id> --filtered-metrics true
 
 # Delete a service (must be stopped first)
@@ -659,6 +688,8 @@ Use `clickhousectl cloud service create --help` for the complete option list. If
 
 `--query` and `--queries-file` are mutually exclusive. If neither is supplied, `cloud service query` reads SQL from stdin; `--queries-file -` also reads stdin explicitly.
 
+Without `--format` the response is `PrettyCompact` on a TTY and `TabSeparated` when piped. `--json` selects `JSONEachRow` and cannot be combined with `--format`; an explicit `--format` wins over agent auto-JSON.
+
 `--query` never reads stdin, so `--query "INSERT INTO trips FORMAT CSV" < data.csv` is refused (exit code `1`) before any request is sent rather than silently inserting nothing. The Query API takes a single request body, so a statement and a separate data stream cannot both be sent; pipe them together instead:
 
 ```bash
@@ -666,7 +697,7 @@ printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
   clickhousectl cloud service query --id <service-id>
 ```
 
-Only real input counts as a conflict. A redirected file, a closed pipe, `/dev/null` and a pipe that already holds data are all answered immediately, and a pipe that is open but silent is given 250 ms to produce its first byte before the CLI treats stdin as empty and runs the query. So an empty non-terminal stdin, which is what CI runners and coding agents normally have, leaves `--query` working as before, a pipe nobody writes to can never hang the command, and a producer that is merely slow to start still gets caught. The residual is narrow and deliberate: a producer that has written nothing within those 250 ms is indistinguishable from no input at all.
+Only real input counts as a conflict: an empty non-terminal stdin (a CI runner, a coding agent) leaves `--query` working, and a silent pipe is given 250 ms to produce a byte before stdin is treated as empty.
 
 The Query API gateway stops waiting after about 30 seconds. When it does, the request fails (exit code `1`) but **the statement keeps running on the service** — only the HTTP response is lost. The error says so, points at `SELECT query_id, elapsed FROM system.processes` so a still-running statement is not started a second time, and prints the `clickhouse client` command for the service's own native endpoint. Nothing is retried automatically: re-sending a large `INSERT` would load the data twice.
 
@@ -704,14 +735,14 @@ Private endpoint IDs supplied to `private-endpoint create --endpoint-id` and `se
 
 `cloud service query` is the canonical way to run SQL against a cloud service — over HTTP, with no `clickhouse` binary and no service password required. It works with both credential modes:
 
-- **API key auth** (read + write SQL): when no per-service key is stored, `cloud service query` first uses the authenticated API key directly. This supports services whose Query API endpoint already authorizes that key without requiring permission to create another key. If the key or endpoint is not authorized, the CLI provisions a dedicated API key and binds it to the service. Those generated query credentials, the endpoint ID, exact management API key ID, and provisioning organization ID are stored in `.clickhouse/credentials.json` under `service_query_keys.<service-id>`, alongside any user-level API key. Subsequent queries use that key. The generated key is scoped to a single service, so it can read and write (SELECT, INSERT, DDL) against that service but cannot reach any other service in the org. Pass `--no-auto-enable` to fail instead of provisioning.
+- **API key auth** (read + write SQL): when no per-service key is stored, `cloud service query` first uses the authenticated API key directly. This supports services whose Query API endpoint already authorizes that key without requiring permission to create another key. If the key or endpoint is not authorized, the CLI provisions a dedicated API key and binds it to the service with role `sql_console_admin`. Those generated query credentials, the endpoint ID, exact management API key ID, and provisioning organization ID are stored in `.clickhouse/credentials.json` under `service_query_keys.<service-id>`, alongside any user-level API key. Subsequent queries use that key. The generated key is scoped to a single service, so it can read and write (SELECT, INSERT, DDL) against that service but cannot reach any other service in the org. Pass `--no-auto-enable` to fail instead of provisioning.
 - **OAuth** (`cloud auth login`): the query runs as your own identity — the CLI sends your bearer token straight to the Query API, which grants **read-only** SQL access (SELECT and other read statements only; no INSERT, DDL, or other writes). No Query API key is provisioned or stored, and no query endpoint needs to be configured on the service. Use API key auth if you need to write. `--no-auto-enable` has no effect in this mode.
 
 Provisioning happens lazily (rather than at `service create` time) because the endpoint can only be bound once the service has finished provisioning, which can take several minutes — `service create` returns immediately instead of blocking on it.
 
-Provisioning is single-flight for processes using the same project directory: the CLI serializes the create, bind, and credential-save transaction and reuses the result written by the first process. The endpoint upsert API replaces the complete `openApiKeys` list and does not currently support a conditional or idempotent key-binding operation. Provisioning the same service concurrently from different project directories can therefore still lose a binding if both projects read and replace that list at the same time.
+Provisioning is single-flight per project directory; provisioning the same service concurrently from two different project directories can still lose a binding.
 
-Per-service scoping is enforced at the query endpoint binding, which is created with role `sql_console_admin` (read + write inside the bound service only). The API key itself has no org-level roles, so the binding is the only thing that grants it any access. After deleting a service, `cloud service delete` deletes the auto-provisioned key by its stored management and organization IDs, along with any retired key still listed under `pending_cleanup_api_key_ids`, then removes the local record. Every key is attempted even if one fails; on failure the command exits non-zero naming the keys that remain and keeps the local record so their IDs are not lost. Legacy records without that metadata remain readable, but service deletion will not guess at a cloud key by name; a partial record with a management ID is retained for manual recovery.
+The API key itself has no org-level roles, so the binding is the only thing that grants it any access. After deleting a service, `cloud service delete` deletes the auto-provisioned key by its stored management and organization IDs, along with any retired key still listed under `pending_cleanup_api_key_ids`, then removes the local record. Every key is attempted even if one fails; on failure the command exits non-zero naming the keys that remain and keeps the local record so their IDs are not lost. Legacy records without that metadata remain readable, but service deletion will not guess at a cloud key by name; a partial record with a management ID is retained for manual recovery.
 
 If a query with a stored per-service key receives HTTP 401/403, the CLI does not read the rejection as proof that the local secret is stale: an administrator may equally have disabled the key, let it expire, unbound it from the endpoint, or narrowed its IP access list, and replacing the key would undo that decision. Before anything is touched, the CLI reads the key's management record (by the stored organization and management key ID) and, when the key is still enabled, the service's Query API endpoint binding, then classifies the rejection. No verdict changes anything, locally or in the organization; each one names the key ID, the reason, and the deliberate way forward:
 
@@ -724,13 +755,13 @@ In `--json` mode the failure is one object on stderr with a stable `code` (`quer
 
 Repair is an explicit API-key-authenticated write operation, and the only way a disabled, expired, unbound or IP-restricted key is ever replaced. It verifies the stored organization, management key ID, and endpoint ID, replaces only that key ID in the endpoint binding, and preserves every other binding and project credential. Concurrent repairs in the same project reuse the first process's replacement instead of rotating it again. Legacy or incomplete records without exact ownership metadata are refused.
 
-Both first-use provisioning and repair create a key and bind it to the endpoint straight away, and the endpoint service can briefly answer `400 OpenAPI key <id> does not belong to the organization` for a key that was created moments earlier. The CLI waits that out: it retries only the endpoint upsert, with the same request, for up to 30 seconds with an exponential backoff, printing `Waiting for the new API key to become visible to the Query API endpoint...` on stderr once. A 400 that outlives the window fails the command exactly as before, with the API's own error: the original binding is restored, the new key is deleted, and the stored record is untouched. If that final deletion itself fails, the new key's ID is appended to the record's `pending_cleanup_api_key_ids` so the next query retries it, and the error says so.
+A newly created key can take a few seconds to become visible to the endpoint; clickhousectl retries the binding for up to 30 seconds, then fails with the API's own error and rolls the binding back.
 
-The new binding also takes a moment to reach the Query API host, and a query issued in between is rejected. First-use provisioning already waits for the endpoint to accept the new key before running the statement; `repair-query-key` does the same: once the repair is committed it reads the service (one `GET service`) and, when the service is `running`, probes the endpoint with the new key (`SELECT 1`) until it is accepted, so a repair normally takes a second longer than its API calls alone. The result, printed in every case, reports the outcome under `verification`: `verified` when a probe succeeded; `skipped` when the key was not probed (the service is in any state other than `running`, its state could not be read, no Query API host is configured for the `--url` in use, the probe found the service idle or stopped, or the stored record was replaced meanwhile or could not be read); `failed` when the probe failed for a reason unrelated to the key becoming ready (a transport error or a 5xx, say). Skipped and failed exit 0, print one `Note:` or `Warning:` line on stderr, and leave the next `cloud service query` to verify the key. Only a key the Query API keeps rejecting for the whole readiness window (about two minutes) exits 1, and even then the repair stands: the result is printed with `verification: failed`, followed by an error with code `query_key_repair_unverified` that names the new key and points at `cloud service query`, which classifies the rejection. Do not rerun `repair-query-key` in that case: it would rotate a key that may only be slow to propagate. Nothing about a failed or skipped probe is ever rolled back.
+The new binding also takes a moment to reach the Query API host, and a query issued in between is rejected. Both first-use provisioning and `repair-query-key` wait for the endpoint to accept the new key, and the repair result reports the outcome under `verification`: `verified`, `skipped` (the key was not probed) or `failed` (the probe failed for a reason unrelated to readiness). Skipped and failed exit 0, print one `Note:` or `Warning:` line on stderr, and leave the next `cloud service query` to verify the key. Only a key the Query API keeps rejecting for the whole readiness window (about two minutes) exits 1, and even then the repair stands: the result is printed with `verification: failed`, followed by an error with code `query_key_repair_unverified`. Do not rerun `repair-query-key` in that case: it would rotate a key that may only be slow to propagate.
 
-A repair also retires the key it replaces: the same endpoint upsert removes the superseded key's UUID from `openApiKeys`, and the key is then deleted from the organization, so repeated repairs never grow the endpoint binding or the organization's key inventory. Only keys the CLI itself created are ever deleted, identified by the exact management key IDs in the stored record, never by name or by scanning the organization's keys. The deletion is best effort. Before it is attempted, the retired ID is written to the record's `pending_cleanup_api_key_ids`, so a failed delete never loses the only copy of the ID: the repair still succeeds, prints a warning naming the key and the failure, and reports the ID under `pendingCleanupApiKeyIds` in `--json` mode. The next `cloud service query` for that service retries the deletion before running the query, quietly when it succeeds and with the same warning when it does not; a later `repair-query-key` retires any pending key together with the one it replaces. The retry never touches the active key, and it only edits the record while that record still names the key it was read with, so a concurrent repair's replacement is safe. To delete a pending key by hand, use `cloud key delete <key-id>`; the record forgets the ID once a retry finds the key gone.
+A repair also retires the key it replaced and deletes it best-effort; a failed deletion is reported (as `pendingCleanupApiKeyIds` under `--json`) and retried by the next query. Only keys the CLI itself created are ever deleted, identified by the exact management key IDs in the stored record. Delete one by hand with `cloud key delete <key-id>`.
 
-The Query API endpoint does not support conditional updates, so repair reads and rewrites the complete endpoint configuration while replacing the owned key binding. Do not modify the same endpoint concurrently with a repair because an update made after that read can be overwritten. Also wait for a first-use query's provisioning and readiness attempt to finish before running repair: its newly stored key can receive a temporary 401/403 while the endpoint binding converges, and an explicitly started repair can rotate that still-valid key.
+Do not modify the same query endpoint concurrently with a repair, and let a first-use query finish provisioning before running one.
 
 Querying an **idled** service wakes it automatically in both auth modes — under OAuth the Query API first asks for a wake confirmation, which the CLI sends after printing a notice to stderr (the first query may take a minute while the service wakes). A **stopped** service is never woken: the query fails with a hint to run `cloud service start`.
 
@@ -764,12 +795,14 @@ clickhousectl cloud postgres create \
   --pg-version 18 \
   --ha-type sync \
   --tag env=prod \
-  --pg-config-file ./pg.json
+  --pg-config-file ./pg.json \
+  --pg-bouncer-config-file ./pgbouncer.json
 
 # Update name, size, HA, or tags (all flags optional)
 clickhousectl cloud postgres update <pg-id> \
   --name renamed-pg \
-  --size m7i.4xlarge \
+  --size c6gd.4xlarge \
+  --ha-type sync \
   --add-tag env=prod --remove-tag legacy
 
 # Delete (works from any state, including running; no stop needed first)
@@ -779,7 +812,7 @@ clickhousectl cloud postgres delete <pg-id>
 clickhousectl cloud postgres certs get <pg-id>                   # raw PEM to stdout
 clickhousectl cloud postgres certs get <pg-id> --output ca.pem   # file (mode 0600 on unix)
 
-# Runtime configuration
+# Runtime configuration (`config get` always prints JSON; --json changes nothing)
 clickhousectl cloud postgres config get <pg-id>
 clickhousectl cloud postgres config patch <pg-id> --set max_connections=500 --set random_page_cost=1.1
 clickhousectl cloud postgres config patch <pg-id> --file patch.json
@@ -789,12 +822,16 @@ clickhousectl cloud postgres config replace <pg-id> --file complete-config.json
 
 # Password
 clickhousectl cloud postgres reset-password <pg-id> --generate
+clickhousectl cloud postgres reset-password <pg-id> --password '<min-12-upper-lower-digit>'
 
 # Read replica and PITR restore
 clickhousectl cloud postgres read-replica create <pg-id> --name replica-1
+clickhousectl cloud postgres read-replica create <pg-id> --name replica-2 \
+  --tag env=prod --pg-config-file ./pg.json
 clickhousectl cloud postgres restore <pg-id> \
   --name restored \
-  --restore-target <recent-RFC3339-time-within-retention>
+  --restore-target <recent-RFC3339-time-within-retention> \
+  --tag env=prod --pg-bouncer-config-file ./pgbouncer.json
 
 # Lifecycle
 clickhousectl cloud postgres restart <pg-id>
@@ -805,6 +842,10 @@ clickhousectl cloud postgres switchover <primary-id> --wait --wait-timeout 600
 ```
 
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
+
+A read replica inherits the source's provider, region, size and Postgres version, so `read-replica create` takes only a name, tags and optional `--pg-config-file`/`--pg-bouncer-config-file` — there is no `--size` or `--region`.
+
+Coding agents get `--json` automatically, which wraps the certificate as `{"certificate": ...}` — use `certs get --output ca.pem` to write a usable PEM file.
 
 `postgres list --filter KEY=VALUE` is applied client-side to the listing and is repeatable; every filter must match. Supported keys are `state`, `region`, `name`, `provider` and `isPrimary` (the `Primary` column; `true`/`false`, or the `yes`/`no` the column shows). Keys are case-insensitive, `state` and `provider` match the wire value case-insensitively, and `region`/`name` match exactly. An unknown key, a missing `=` or an empty value is a usage error (exit 2) listing the valid keys — it never returns an unfiltered list. A field the API omitted matches no filter value, so filtering on it excludes that service. This is unrelated to `cloud service list --filter`, which sends server-side resource-tag filters (`tag:env=production`) to the API.
 
@@ -834,7 +875,7 @@ clickhousectl cloud clickpipe get <service-id> <clickpipe-id>
 # Start/stop/resync a ClickPipe
 clickhousectl cloud clickpipe start <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe stop <service-id> <clickpipe-id>
-clickhousectl cloud clickpipe resync <service-id> <clickpipe-id>   # CDC pipes only
+clickhousectl cloud clickpipe resync <service-id> <clickpipe-id>   # Postgres and MySQL pipes only
 
 # Delete a ClickPipe
 clickhousectl cloud clickpipe delete <service-id> <clickpipe-id>
@@ -848,13 +889,23 @@ clickhousectl cloud clickpipe settings get <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
   --streaming-max-insert-wait-ms 10000
 
+# Object-storage and ClickHouse-side ingestion settings
+clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
+  --object-storage-concurrency 8 \
+  --object-storage-polling-interval-ms 30000 \
+  --object-storage-max-file-count 500 \
+  --object-storage-max-insert-bytes 268435456 \
+  --object-storage-use-cluster-function true \
+  --clickhouse-max-threads 16 --clickhouse-max-insert-threads 4 \
+  --clickhouse-parallel-view-processing false
+
 # Manage reverse private endpoints for private source connectivity
 clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
 ```
 
 `settings get` and `settings update` apply to streaming (Kafka, Kinesis) and
 object-storage pipes only, because ingestion settings exist for those pipes
-alone. Database CDC pipes (Postgres, MySQL, MongoDB, BigQuery) are refused with
+alone. Database pipes (Postgres, MySQL, MongoDB, BigQuery) are refused with
 an explanation instead of the API's `NOT_FOUND`: their settings, such as the
 sync interval and pull batch size, live on the pipe itself, so read them with
 `clickhousectl cloud clickpipe get <service-id> <clickpipe-id>`.
@@ -905,6 +956,25 @@ clickhousectl cloud clickpipe create object-storage <service-id> \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
+# From Azure Blob Storage
+clickhousectl cloud clickpipe create object-storage <service-id> \
+  --name my-azure-pipe \
+  --storage-type azureblobstorage \
+  --connection-string "$AZURE_CONNECTION_STRING" \
+  --azure-container-name events --path 'data/**' \
+  --format JSONEachRow \
+  --database default --table events \
+  --column "event_id:Int64"
+
+# Gzipped CSV in a private bucket, read with an IAM role (or --access-key-id/--secret-key)
+clickhousectl cloud clickpipe create object-storage <service-id> \
+  --name my-csv-pipe \
+  --source-url 'https://bucket.s3.us-east-1.amazonaws.com/data/**' \
+  --format CSVWithNames --compression gzip --delimiter ',' \
+  --iam-role "$S3_IAM_ROLE_ARN" \
+  --database default --table events \
+  --column "event_id:Int64"
+
 # From Kafka / Redpanda / Confluent / MSK
 clickhousectl cloud clickpipe create kafka <service-id> \
   --name my-kafka-pipe \
@@ -917,20 +987,29 @@ clickhousectl cloud clickpipe create kafka <service-id> \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
-# From a Kafka broker that requires no authentication: omit every auth flag.
-# `--auth` is optional; when it is omitted the mechanism is inferred from the
-# credential flags you passed (`--username`/`--password` → PLAIN,
-# `--access-key-id`/`--secret-key` → IAM_USER, `--iam-role` → IAM_ROLE,
-# `--client-certificate`/`--client-key` → MUTUAL_TLS), and no authentication is
-# sent when none were passed. Each credential pair must be given in full — half
-# a pair (e.g. `--client-certificate` without `--client-key`) is a usage error,
-# not a request with no authentication.
+# No-auth broker: omit every auth flag. --auth is optional and is inferred from
+# the credentials given (--username/--password → PLAIN, --access-key-id/--secret-key
+# → IAM_USER, --iam-role → IAM_ROLE, --client-certificate/--client-key → MUTUAL_TLS);
+# half a pair is a usage error, not an unauthenticated request.
 clickhousectl cloud clickpipe create kafka <service-id> \
   --name my-kafka-pipe \
   --brokers 'broker:9092' --topics events \
   --format JSONEachRow \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
+
+# Avro via a schema registry, mutual TLS, starting from a timestamp
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-avro-pipe \
+  --brokers 'broker:9092' --topics events --consumer-group clickpipes-events \
+  --format AvroConfluent \
+  --schema-registry-url https://registry.example.com \
+  --schema-registry-username "$SR_USERNAME" --schema-registry-password "$SR_PASSWORD" \
+  --schema-registry-ca-certificate ./sr-ca.crt \
+  --auth MUTUAL_TLS --client-certificate ./client.crt --client-key ./client.key \
+  --offset from_timestamp --offset-timestamp 2026-01-01T00:00 \
+  --database default --table events \
+  --column "event_id:Int64"
 
 # From Amazon Kinesis
 clickhousectl cloud clickpipe create kinesis <service-id> \
@@ -940,6 +1019,15 @@ clickhousectl cloud clickpipe create kinesis <service-id> \
   --auth IAM_ROLE --iam-role "$KINESIS_IAM_ROLE_ARN" \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
+
+# Kinesis with access keys, enhanced fan-out, starting at a timestamp
+clickhousectl cloud clickpipe create kinesis <service-id> \
+  --name my-kinesis-replay --stream-name events --region us-east-1 \
+  --format JSONEachRow \
+  --auth IAM_USER --access-key-id "$AWS_ACCESS_KEY_ID" --secret-key "$AWS_SECRET_ACCESS_KEY" \
+  --iterator-type AT_TIMESTAMP --iterator-timestamp 1767225600 --enhanced-fan-out \
+  --database default --table events \
+  --column "event_id:Int64"
 
 # From PostgreSQL with a publicly trusted certificate (CDC)
 clickhousectl cloud clickpipe create postgres <service-id> \
@@ -970,22 +1058,17 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --publication-name clickpipes \
   --table-mapping "public.users:public_users"
 
-# From PostgreSQL, shaping the destination tables with the JSON mapping form
+# Shaping the destination tables (excluded columns, sorting keys, engine): use
+# --table-mapping-json, documented under "PostgreSQL table mappings" below
+
+# Reuse an existing replication slot (cdc_only), non-default port, failover slots on PG17+
 clickhousectl cloud clickpipe create postgres <service-id> \
-  --name my-shaped-pg-pipe \
-  --host db.example.com --pg-database mydb \
+  --name my-slot-pg-pipe \
+  --host db.example.com --port 6432 --pg-database mydb \
   --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
-  --publication-name clickpipes \
-  --table-mapping "public.orders:public_orders" \
-  --table-mapping-json '{
-    "sourceSchemaName": "public",
-    "sourceTable": "users",
-    "targetTable": "public_users",
-    "excludedColumns": ["ssn"],
-    "sortingKeys": ["created_at", "id"],
-    "partitionByExpr": "toYYYYMM(created_at)",
-    "tableEngine": "ReplacingMergeTree"
-  }'
+  --replication-mode cdc_only --replication-slot-name my_existing_slot \
+  --enable-failover-slots true \
+  --table-mapping "public.users:public_users"
 
 # From PostgreSQL, tuning the CDC and initial-load settings
 clickhousectl cloud clickpipe create postgres <service-id> \
@@ -1018,11 +1101,29 @@ clickhousectl cloud clickpipe create mysql <service-id> \
   --auth IAM_ROLE --iam-role "$MYSQL_IAM_ROLE_ARN" \
   --table-mapping "mydb.users:mydb_users"
 
+# MySQL over a non-default port, binlog file/position replication, private CA
+clickhousectl cloud clickpipe create mysql <service-id> \
+  --name my-mariadb-pipe \
+  --host mysql.example.com --port 3307 --mysql-type mariadb \
+  --username "$MYSQL_USERNAME" --password "$MYSQL_PASSWORD" \
+  --replication-mode cdc --replication-mechanism FILE_POS \
+  --ca-certificate ./mysql-ca.pem --tls-host mysql.internal.example.com \
+  --table-mapping "mydb.users:mydb_users"
+
 # From MongoDB (CDC)
 clickhousectl cloud clickpipe create mongodb <service-id> \
   --name my-mongo-pipe \
   --uri 'mongodb+srv://cluster.example.net/mydb' \
   --username "$MONGODB_USERNAME" --password "$MONGODB_PASSWORD" \
+  --table-mapping "mydb.users:mydb_users"
+
+# One-shot MongoDB snapshot, read from the primary, private CA
+clickhousectl cloud clickpipe create mongodb <service-id> \
+  --name my-mongo-snapshot \
+  --uri 'mongodb+srv://cluster.example.net/mydb' \
+  --username "$MONGODB_USERNAME" --password "$MONGODB_PASSWORD" \
+  --replication-mode snapshot --read-preference primary \
+  --ca-certificate ./mongo-ca.pem \
   --table-mapping "mydb.users:mydb_users"
 
 # From BigQuery (snapshot)
@@ -1033,9 +1134,6 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
   --table-mapping "dataset.table:target_table"
 
 # From Google Cloud Pub/Sub (limited preview: contact support to enable it)
-# --seek-type has no default: earliest reads the backlog, latest only new
-# messages, timestamp starts from --seek-timestamp (required for that seek
-# type, and rejected for the others).
 clickhousectl cloud clickpipe create pubsub <service-id> \
   --name my-pubsub-pipe \
   --topic events --project-id my-gcp-project \
@@ -1080,15 +1178,10 @@ any request.
 
 #### PostgreSQL ClickPipe prerequisites
 
-TLS and certificate verification are enabled by default. A source that serves a
-complete, publicly trusted certificate chain needs neither `--ca-certificate`
-nor `--tls-host`. If the source certificate uses a private or self-signed CA,
-pass the CA certificate or bundle as PEM with `--ca-certificate <PATH>`; the CLI
-reads that file and sends its contents in the create request. Certificate
-hostname verification defaults to `--host`. Use `--tls-host <HOSTNAME>` only
-when the certificate is issued for a different hostname, such as when `--host`
-is an IP address. These options preserve certificate verification; they do not
-disable it.
+TLS and certificate verification are enabled by default and stay on. Pass the CA
+certificate or bundle as PEM with `--ca-certificate <PATH>` for a private or
+self-signed CA, and `--tls-host <HOSTNAME>` only when the certificate names a
+different hostname than `--host` (for example when `--host` is an IP address).
 
 Before creating a PostgreSQL CDC ClickPipe:
 
@@ -1217,9 +1310,12 @@ it stays out of process listings and shell history, and it is never echoed back
 in output or errors. An empty key file (or empty stdin) is refused before any
 request is made.
 
-Pub/Sub-specific limits come from the API: `--ack-deadline` is in seconds and
-must be between 10 and 600, and `--filter` takes a Pub/Sub CEL subscription
-filter of at most 256 characters. Both are checked before the request is sent.
+`--seek-type` has no default: `earliest` reads the backlog, `latest` only new
+messages, and `timestamp` starts from `--seek-timestamp` (required for that seek
+type, rejected for the others). Other Pub/Sub limits come from the API:
+`--ack-deadline` is in seconds and must be between 10 and 600, and `--filter`
+takes a Pub/Sub CEL subscription filter of at most 256 characters. Both are
+checked before the request is sent.
 
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
 
@@ -1229,12 +1325,9 @@ Use `clickhousectl cloud clickpipe create <source> --help` for the full list of 
 (the default `--auth basic`) or an AWS IAM role on an RDS or Aurora MySQL
 source (`--auth IAM_ROLE`).
 
-`--auth IAM_ROLE` requires `--iam-role`; the CLI rejects `--iam-role` with
-basic auth rather than silently ignoring it. `--username` and `--password` are
-basic-auth only and must be given together: they are required for the default
-`--auth basic`, and rejected with `--auth IAM_ROLE`, where the role ARN is the
-whole credential and no `credentials` object is sent. Each rule is a usage
-error (exit code 2) before any request is made.
+The same auth rules as the [Postgres source](#postgresql-clickpipe-prerequisites)
+apply, with `--mysql-type rdsmysql`/`auroramysql` selecting the source type. Each
+rule is a usage error (exit code 2) before any request is made.
 
 #### Reverse private endpoints (PrivateLink, Private Service Connect)
 
@@ -1267,7 +1360,7 @@ clickhousectl cloud clickpipe reverse-private-endpoint create <service-id> \
   --msk-cluster-arn arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster \
   --msk-authentication SASL_IAM
 
-# Google Private Service Connect, with custom private DNS names
+# Google Private Service Connect (private preview), with custom private DNS names
 clickhousectl cloud clickpipe reverse-private-endpoint create <service-id> \
   --type GCP_PSC_SERVICE_ATTACHMENT \
   --description 'gcp source' \
@@ -1279,6 +1372,14 @@ clickhousectl cloud clickpipe reverse-private-endpoint create <service-id> \
 clickhousectl cloud clickpipe reverse-private-endpoint update <service-id> <endpoint-id> \
   --custom-private-dns-mapping db.example.com
 clickhousectl cloud clickpipe reverse-private-endpoint delete <service-id> <endpoint-id>
+
+# Reference a Ready endpoint from a Kafka pipe
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-private-kafka-pipe \
+  --brokers 'b-1.msk.internal:9098' --topics events --format JSONEachRow \
+  --reverse-private-endpoint-id <endpoint-id> \
+  --database default --table events \
+  --column "event_id:Int64"
 ```
 
 Using an endpoint from a pipe:
@@ -1302,7 +1403,7 @@ usage error (exit code 2) raised before any request is made:
 | `VPC_ENDPOINT_SERVICE` | `--vpc-endpoint-service-name` |
 | `VPC_RESOURCE` | `--vpc-resource-configuration-id`, `--vpc-resource-share-arn` |
 | `MSK_MULTI_VPC` | `--msk-cluster-arn`, `--msk-authentication` |
-| `GCP_PSC_SERVICE_ATTACHMENT` | `--gcp-service-attachment` |
+| `GCP_PSC_SERVICE_ATTACHMENT` (private preview) | `--gcp-service-attachment` |
 
 `--custom-private-dns-mapping` is repeatable and takes an exact or
 leading-wildcard name (`*.example.com`). The API does not support it for
@@ -1318,7 +1419,9 @@ the endpoint should keep.
 Cloud Pub/Sub source and returns the inferred fields/types without creating a
 pipe. It takes the same source
 connection flags as the corresponding `create` subcommand (minus the
-destination `--name`/`--database`/`--table`/`--column` options). Schema discovery requires API-key authentication:
+destination `--name`/`--database`/`--table`/`--column` options). Object-storage
+discovery runs on the destination service, so that service must be running.
+Schema discovery requires API-key authentication:
 
 ```bash
 # Discover schema from Kafka
@@ -1380,10 +1483,12 @@ clickhousectl cloud invitation delete <invitation-id>
 ```bash
 clickhousectl cloud key list
 clickhousectl cloud key get <key-id>
+# the key secret is printed once, at create time only
 clickhousectl cloud key create --name ci-key \
   --role-id <role-id> \
   --expires-at <future-RFC3339-time> \
-  --ip-allow <trusted-egress-ip>/32
+  --ip-allow <trusted-egress-ip>/32 \
+  --state disabled   # create the key already disabled; pre-hashed values via --hash-key-*
 clickhousectl cloud key update <key-id> \
   --name renamed-key \
   --state disabled
@@ -1406,7 +1511,7 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
-`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, and any tool that sets the standard `AGENT` env var) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `cloud org prometheus` and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `cloud org prometheus` and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
 
 Human-readable detail views (`cloud clickpipe get` and every other `get`-style command) never print PEM-framed material. Each well-formed PEM block in a value is replaced, where it stands, by a one-line summary of that block: `<PEM CERTIFICATE, SHA-256 fingerprint AB:CD:...>` for a certificate, certificate request or CRL, using the fingerprint `openssl x509 -fingerprint -sha256` prints for that block, and `<PEM EC PRIVATE KEY, 121 bytes>` for any other label, because a private key is reported by size and never fingerprinted. Text around the blocks, such as a bundle's header comments, is kept as it was. This affects human output only: `--json` still returns the value verbatim, and `cloud postgres certs get` deliberately still prints the raw PEM, since emitting the certificate is that command's purpose.
 
@@ -1531,6 +1636,9 @@ clickhousectl skills --global --detected-only
 # Non-interactive: install into specific project-local agents
 clickhousectl skills --agent claude --agent codex
 
+# Comma-separated is equivalent to repeating the flag
+clickhousectl skills --agent claude,codex
+
 # Non-interactive: install into specific global agents
 clickhousectl skills --global --agent claude --agent codex
 ```
@@ -1556,6 +1664,7 @@ The following agents can be selected, and Skills are installed in the correspond
 - `cline` -> `.cline/skills/`
 - `command-code` -> `.command-code/skills/`
 - `kiro-cli` -> `.kiro/skills/`
+- `agents` -> `.agents/skills/` (always installed; selectable explicitly too)
 
 Supports global or project scope installation. Project scope installs Skills into the current working directory. Global scope installs Skills into the current user's home directory.
 
@@ -1597,7 +1706,7 @@ Each event contains exactly:
 
 There is no install ID, no device ID, and no fingerprinting of any kind. The payload is built from the clap command definitions rather than the raw command line, so leaking an argument value is structurally impossible — the code that builds the event has no access to values at all.
 
-The privacy boundary for positional arguments is exactly the same one as for flags: every recorded name is a string compiled into the binary, so the field's vocabulary is a closed set that cannot carry anything you typed. `clickhousectl local server stop analytics-prod` records `positionals: ["name"]` — the fact that a server was named, not which one. Three further exclusions keep the field honest:
+`clickhousectl local server stop analytics-prod` records `positionals: ["name"]` — that a server was named, not which one. Three exclusions keep that honest:
 
 - only arguments you actually passed count, so a value clap filled in from a default (or from the environment), and a name the CLI generated for you, are absent — which is what makes "you named it" and "we picked one" distinguishable
 - arguments forwarded to another program are never recorded: everything after `--` for `local server start`, and the trailing arguments of `local client` and `local postgres client`, belong to `clickhouse-server`, `clickhouse-client`, and `psql`
@@ -1605,16 +1714,16 @@ The privacy boundary for positional arguments is exactly the same one as for fla
 
 A failed *runtime* invocation may also carry up to six failure-classification fields, so that "exit code 1" stops being the only thing we know about a broken command. Each one is a closed vocabulary defined in the source, and nothing else can ever appear in it:
 
-- `failure_stage` — which stage failed: `sql_input`, `org_resolution`, `service_resolution`, `query_request`, `key_create`, `endpoint_get`, `endpoint_upsert`, `response_stream`
+- `failure_stage` — which stage failed: `sql_input`, `org_resolution`, `service_resolution`, `query_request`, `key_create`, `key_get`, `key_delete`, `endpoint_get`, `endpoint_upsert`, `response_stream`
 - `failure_kind` — what kind of failure it was: `io`, `transport`, `http_4xx`, `http_5xx`, `sql_error`, `service_stopped`, `timeout`, `rate_limited`, `other`
 - `http_status` — the exact HTTP status, and only if it is one of a fixed list of common statuses; anything else is dropped (its class is already in `failure_kind`)
 - `retry_bucket` — how many retries the run made, as a bucket (`0`, `1`, `2`, `3_5`, `6_10`, `gt_10`), never an exact count
 - `provisioning_state` — how far Query API credential provisioning had got: `bearer`, `stored_key`, `management_key`, `provisioning`, `provisioned`, `refused`
 - `duration_bucket` — how long the operation ran before failing, as a bucket (`lt_250ms`, `lt_1s`, `lt_5s`, `lt_30s`, `lt_2m`, `ge_2m`)
 
-The privacy boundary is again structural rather than a filter: these values are fixed strings compiled into the binary (plus one number from an allowlist), and they are set only at the points in the code that own a given failure — a category is never derived from an error message. Your SQL, database and format values, file paths, service and organization IDs, API response text, and credentials therefore have no representation in these fields at all. A field is omitted, never sent as `null`, when it does not apply, and no failure classification is attached to a successful run or to the censored `exec_attempt` handoff described below.
+These are fixed strings compiled into the binary (plus one allowlisted status), set only where a failure is owned — never derived from an error text. No classification is attached to a successful run.
 
-Exactly one event is recorded per invocation. Two commands are special: `local client` and `local postgres client` hand the process over to the native `clickhouse client` or to `psql` with `exec()`, which replaces clickhousectl's process image — same PID, same process group, same terminal, inherited stdin/stdout/stderr — so that Ctrl-C, job control and the program's own exit status or fatal signal reach your shell exactly as if you had run it directly. Because clickhousectl is gone at that point, its event is recorded just before the handover and is explicitly *censored*: the outcome is `exec_attempt` and its exit code is a fixed `0`, which means "the handoff was reached" and never "the native client succeeded". Failures clickhousectl can see for itself — a build that is missing, is not a regular file, or has no execute bit, or a `psql` that is not on `PATH` — are refused before the handover, so they are ordinary failures with the real exit code and a message telling you how to repair the install.
+Exactly one event is recorded per invocation. `local client` and `local postgres client` `exec()` into the native client, so clickhousectl's event is recorded just before the handover with the censored outcome `exec_attempt` and a fixed exit code `0` — it means "the handoff was reached", not "the native client succeeded". Failures clickhousectl can see itself (missing/non-executable binary, `psql` not on `PATH`) are refused first and report their real exit code.
 
 Nothing is sent before you have seen the notice unless you explicitly enable telemetry with `clickhousectl telemetry enable`. The first run normally prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run. Explicitly enabling telemetry starts it immediately and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
 
@@ -1626,6 +1735,9 @@ clickhousectl telemetry disable
 
 # Per environment/shell (https://consoledonottrack.com)
 export DO_NOT_TRACK=1
+
+# Show whether telemetry is enabled and why
+clickhousectl telemetry status
 ```
 
 To see exactly what would be sent without sending it, set `CHCTL_TELEMETRY_DEBUG=1` — the payload is printed to stderr and nothing leaves the machine.
@@ -1638,11 +1750,12 @@ Maintainer operation, exact-SHA overrides, stacked-PR policy, and the required
 check rollout procedure are documented in
 [`.github/CLOUD_INTEGRATION.md`](.github/CLOUD_INTEGRATION.md).
 
-Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. All changes to cloud commands must pass CI testing before merge. Tests live in three binaries, each a single `#[tokio::test]` lifecycle:
+Cloud API integration is tested against a real ClickHouse Cloud workspace via the library crate. Affected suites are selected automatically and run once the `run-cloud-integration` label is applied. Tests live in four suites:
 
 - [`tests/integration_test.rs`](crates/clickhouse-cloud-api/tests/integration_test.rs) — ClickHouse service CRUD + service-scoped endpoints
 - [`tests/integration_postgres_test.rs`](crates/clickhouse-cloud-api/tests/integration_postgres_test.rs) — Postgres service CRUD
 - [`tests/integration_org_test.rs`](crates/clickhouse-cloud-api/tests/integration_org_test.rs) — org-scoped endpoints (members, invitations, roles, activity, prometheus, private endpoint config)
+- [`tests/clickpipes/`](crates/clickhouse-cloud-api/tests/clickpipes/) — ClickPipes E2E; only Postgres CDC runs in CI
 
 Required environment variables:
 
@@ -1674,4 +1787,4 @@ export CONTINUE_ON_NON_BLOCKING_FAILURES=1
 ## Requirements
 
 - macOS (aarch64, x86_64) or Linux (aarch64, x86_64)
-- Cloud read operations support OAuth; writes and some operations such as ClickPipe schema discovery require a [ClickHouse Cloud API key](https://clickhouse.com/docs/en/cloud/manage/api)
+- Cloud read operations support OAuth; writes and some operations such as ClickPipe schema discovery require a [ClickHouse Cloud API key](https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl)
