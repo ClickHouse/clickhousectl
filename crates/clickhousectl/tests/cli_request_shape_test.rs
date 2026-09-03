@@ -11792,7 +11792,7 @@ async fn reverse_private_endpoint_help_explains_how_pipes_reference_it() {
         help.contains("pass one of the endpoint's DNS names as --host"),
         "{help}"
     );
-    assert!(help.contains("reached the Ready status"), "{help}");
+    assert!(help.contains("status is Ready"), "{help}");
     assert!(help.contains("PendingAcceptance"), "{help}");
 }
 

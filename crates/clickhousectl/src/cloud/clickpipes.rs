@@ -94,7 +94,7 @@ pub enum ClickPipeCommands {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -107,7 +107,7 @@ pub enum ClickPipeCommands {
         /// ClickPipe ID
         clickpipe_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -120,7 +120,7 @@ pub enum ClickPipeCommands {
         /// ClickPipe ID
         clickpipe_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -133,7 +133,7 @@ pub enum ClickPipeCommands {
         /// ClickPipe ID
         clickpipe_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -146,12 +146,12 @@ pub enum ClickPipeCommands {
         /// ClickPipe ID
         clickpipe_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Resync a ClickPipe (CDC pipes only)
+    /// Resync a ClickPipe (Postgres and MySQL pipes only)
     Resync {
         /// Service ID
         service_id: String,
@@ -159,12 +159,12 @@ pub enum ClickPipeCommands {
         /// ClickPipe ID
         clickpipe_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Update scaling configuration
+    /// Update ClickPipe scaling
     #[command(
         group(ArgGroup::new("scale_target").required(true).multiple(true).args(["replicas", "cpu_millicores", "memory_gb"]))
     )]
@@ -187,20 +187,16 @@ pub enum ClickPipeCommands {
         #[arg(long)]
         memory_gb: Option<f64>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Manage ClickPipe ingestion settings (streaming and object-storage pipes only)
-    #[command(long_about = "\
-Manage ClickPipe ingestion settings.
-
-Ingestion settings apply only to streaming (Kafka, Kinesis) and object-storage
-pipes. Database CDC pipes (Postgres, MySQL, MongoDB, BigQuery) have no ingestion
-settings: their settings, such as the sync interval and pull batch size, live on
-the pipe itself, so read them with `clickhousectl cloud clickpipe get <service>
-<clickpipe>`.")]
+    /// Manage ingestion settings (streaming, object-storage pipes)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  CDC pipes (Postgres, MySQL, MongoDB, BigQuery) have no ingestion settings: their
+  sync interval and pull batch size are fields of `clickhousectl cloud clickpipe get`.")]
     Settings {
         #[command(subcommand)]
         command: ClickPipeSettingsCommands,
@@ -209,12 +205,11 @@ the pipe itself, so read them with `clickhousectl cloud clickpipe get <service>
     /// Discover a source schema without creating a pipe (beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Infers the schema (column name + ClickHouse type) for a Kafka, Kinesis,
-  object-storage or Google Cloud Pub/Sub source without creating a ClickPipe.
-  Useful for filling in --column on `clickpipe create`.
-  Related: `clickhousectl cloud clickpipe create
-  kafka|kinesis|object-storage|pubsub` to create a pipe with the discovered
-  columns.")]
+  Needs API key auth: the API gateway rejects OAuth on this endpoint even though the
+  command only reads.
+  Output is one inferred name/type per field — pass them to `--column name:type` on
+  `clickhousectl cloud clickpipe create <source>`, which takes the same source flags.
+  object-storage discovery runs on the destination service, which must be running.")]
     SchemaDiscover {
         /// Service ID
         service_id: String,
@@ -222,7 +217,7 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ClickPipeSchemaDiscoverCommands,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -230,28 +225,13 @@ CONTEXT FOR AGENTS:
     /// Manage reverse private endpoints (PrivateLink, Private Service Connect)
     #[command(
         name = "reverse-private-endpoint",
-        long_about = "\
-Manage the reverse private endpoints ClickPipes uses to reach a source over
-private networking instead of the public internet.
-
-Create the endpoint first, then reference it from a pipe:
-
-  Kafka: pass the endpoint's id to `clickpipe create kafka
-  --reverse-private-endpoint-id <ID>`, which is repeatable.
-
-  Postgres and MySQL CDC: pass one of the endpoint's DNS names as --host on
-  `clickpipe create postgres` or `clickpipe create mysql`. `reverse-private-endpoint get`
-  prints the dnsNames the endpoint answers on, plus any custom private DNS
-  names configured for it.
-
-A pipe can only use an endpoint that has reached the Ready status. An AWS
-PrivateLink endpoint stays in PendingAcceptance until the connection request is
-accepted in the account that owns the source, so check `reverse-private-endpoint
-get` before creating the pipe.
-
-Types: VPC_ENDPOINT_SERVICE and VPC_RESOURCE (AWS PrivateLink), MSK_MULTI_VPC
-(Amazon MSK multi-VPC connectivity), GCP_PSC_SERVICE_ATTACHMENT (Google Private
-Service Connect)."
+        after_help = "\
+CONTEXT FOR AGENTS:
+  A pipe can only use an endpoint whose status is Ready; an AWS PrivateLink endpoint
+  stays in PendingAcceptance until accepted in the account that owns the source.
+  Kafka: pass the endpoint's id to `clickpipe create kafka --reverse-private-endpoint-id`.
+  Postgres and MySQL CDC: pass one of the endpoint's DNS names as --host (see `get`).
+  Typical flow: `create` -> `get` until Ready -> `clickpipe create <source>`."
     )]
     ReversePrivateEndpoint {
         #[command(subcommand)]
@@ -259,6 +239,15 @@ Service Connect)."
     },
 
     /// Create a ClickPipe
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Creating a pipe is a write: needs API key auth, OAuth is read-only.
+  For kafka, kinesis, object-storage and pubsub, get --column from
+  `clickhousectl cloud clickpipe schema-discover <service-id> <source>`.
+  The source must be reachable from ClickPipes; allow the static egress IPs:
+  https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips
+  Prints the pipe's name, ID and state; it is not ready to query yet.
+  Next: `clickpipe list <service-id>`, `clickpipe get <service-id> <clickpipe-id>`.")]
     Create {
         #[command(subcommand)]
         command: ClickPipeCreateCommands,
@@ -343,7 +332,7 @@ pub enum ClickPipeSchemaDiscoverCommands {
 
 #[derive(Subcommand)]
 pub enum ClickPipeSettingsCommands {
-    /// Get ClickPipe ingestion settings (streaming and object-storage pipes only)
+    /// Get ingestion settings (streaming, object-storage pipes)
     Get {
         /// Service ID
         service_id: String,
@@ -351,12 +340,16 @@ pub enum ClickPipeSettingsCommands {
         /// ClickPipe ID
         clickpipe_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Update ClickPipe ingestion settings (streaming and object-storage pipes only)
+    /// Update ingestion settings (streaming, object-storage pipes)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Only the settings named on the command line are sent; run `clickpipe settings get`
+  first and re-pass every setting you want to keep.")]
     Update {
         /// Service ID
         service_id: String,
@@ -400,7 +393,7 @@ pub enum ClickPipeSettingsCommands {
         #[arg(long)]
         clickhouse_parallel_view_processing: Option<bool>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -418,7 +411,14 @@ impl ClickPipeSettingsCommands {
 #[derive(Subcommand)]
 pub enum ClickPipeCreateCommands {
     /// Create a ClickPipe from S3, GCS, Azure Blob, or other object storage
-    #[command(name = "object-storage")]
+    #[command(
+        name = "object-storage",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Auth is inferred from the credential flags, in order: --iam-role,
+  --access-key-id/--secret-key, --connection-string, --service-account-file.
+  With no credential flag nothing is sent, so the source must be public."
+    )]
     ObjectStorage(ObjectStorageCreateArgs),
 
     /// Create a ClickPipe from Kafka or Kafka-compatible source
@@ -429,88 +429,18 @@ pub enum ClickPipeCreateCommands {
 
     /// Create a ClickPipe from PostgreSQL
     #[command(after_help = "\
-POSTGRES INPUT RULES:
-  At least one --table-mapping is required, in schema.table:target_table form,
-  or one --table-mapping-json.
-  --auth IAM_ROLE requires --iam-role. With basic auth, --iam-role is rejected
-  instead of being silently ignored.
-  --auth basic requires --username and --password. With IAM_ROLE auth they are
-  rejected instead of being silently ignored: the role ARN is the whole
-  credential.
-  --replication-slot-name is valid only with --replication-mode cdc_only.
-
-POSTGRES TABLE MAPPINGS:
-  --table-mapping schema.table:target_table is unchanged: it maps one table
-  and leaves every other per-table option at the ClickPipes default.
-  --table-mapping-json takes the API's table mapping object verbatim, for the
-  options that shape the destination table and cannot be changed once the pipe
-  exists:
-
-    --table-mapping-json '{\"sourceSchemaName\":\"public\",
-      \"sourceTable\":\"users\",\"targetTable\":\"users\",
-      \"excludedColumns\":[\"ssn\"],\"sortingKeys\":[\"created_at\",\"id\"],
-      \"partitionByExpr\":\"toYYYYMM(created_at)\",
-      \"tableEngine\":\"ReplacingMergeTree\"}'
-
-  sourceSchemaName, sourceTable and targetTable are required and must not be
-  empty. excludedColumns, sortingKeys, useCustomSortingKey, partitionByExpr
-  and partitionKey are optional. tableEngine is one of MergeTree,
-  ReplacingMergeTree or Null, and defaults to MergeTree, which is what the
-  simple form sends. partitionKey partitions the initial snapshot for
-  parallelism and is unrelated to the destination table's PARTITION BY, which
-  is partitionByExpr.
-  useCustomSortingKey is set to true automatically when sortingKeys is given,
-  because the API ignores the keys without it; passing false alongside keys is
-  rejected rather than silently dropping them. An unknown field is rejected,
-  so a typo such as excludeColumns fails instead of being ignored.
-  Both flags are repeatable and may be given together: the --table-mapping
-  values are sent first, then the --table-mapping-json ones, each in the order
-  given.
-
-POSTGRES CDC SETTINGS:
-  Every CDC setting is applied when the pipe is created. The API can patch only
-  syncIntervalSeconds and pullBatchSize afterwards, so the snapshot and
-  initial-load settings (--initial-load-parallelism,
-  --snapshot-rows-per-partition, --snapshot-parallel-tables,
-  --allow-nullable-columns, --enable-failover-slots, --delete-on-merge) cannot
-  be changed after creation. `clickpipe settings update` is a different
-  endpoint for streaming and object-storage pipes and does not cover them.
-  The boolean settings take an explicit true or false; omitting one sends
-  false, which is the API default.
-
-POSTGRES TLS:
-  TLS and certificate verification are enabled by default. A source whose
-  certificate chain is publicly trusted needs no CA file. For a private or
-  self-signed source CA, pass its PEM CA bundle with --ca-certificate <PATH>.
-  Certificate hostname verification uses --host unless --tls-host <HOSTNAME>
-  overrides it.
-
-PREREQUISITES:
-  ClickPipes must be able to reach the source; allow the ClickPipes static IPs
-  through its network controls. For CDC, enable logical replication, put every
-  mapped table in the publication, and grant the source user the required
-  schema, table, and replication privileges.
-
-DOCUMENTATION:
-  PostgreSQL ClickPipes setup:
-    https://clickhouse.com/docs/integrations/clickpipes/postgres
-  Generic PostgreSQL source setup:
-    https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic
-  ClickPipes networking and static IPs:
-    https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips")]
+CONTEXT FOR AGENTS:
+  For CDC the source needs logical replication, a publication containing every
+  mapped table, and REPLICATION on the source user:
+  https://clickhouse.com/docs/integrations/clickpipes/postgres
+  TLS and certificate verification are always on; --ca-certificate and --tls-host
+  adjust them, they cannot disable them.
+  Only --sync-interval-seconds and --pull-batch-size can change after creation; the
+  three <true|false> settings send false when omitted.")]
     Postgres(PostgresCreateArgs),
 
     /// Create a ClickPipe from MySQL
-    #[command(
-        name = "mysql",
-        after_help = "\
-MYSQL INPUT RULES:
-  --auth basic requires --username and --password, which must be given
-  together.
-  --auth IAM_ROLE requires --iam-role, and rejects --username and --password
-  instead of silently ignoring them: the role ARN is the whole credential.
-  --iam-role is rejected with --auth basic instead of being silently ignored."
-    )]
+    #[command(name = "mysql")]
     MySQL(MySqlCreateArgs),
 
     /// Create a ClickPipe from MongoDB
@@ -525,29 +455,9 @@ MYSQL INPUT RULES:
     #[command(
         name = "pubsub",
         after_help = "\
-PUB/SUB INPUT RULES:
-  GCP Pub/Sub ClickPipes are in limited preview: contact support to enable the
-  feature for your organization before creating a pipe.
-  --topic takes the topic name, not the fully-qualified projects/.../topics/...
-  path; the project comes from --project-id.
-  --seek-type has no default because it decides which messages the pipe reads.
-  --seek-timestamp is required with --seek-type timestamp and rejected with the
-  other seek types, which is what the API does.
-  --ack-deadline is in seconds and must be between 10 and 600.
-  --filter takes a Pub/Sub CEL subscription filter of at most 256 characters.
-  --enable-ordering needs the publisher to send ordering keys; when it is
-  omitted the request leaves ordering at the ClickPipes default.
-
-PUB/SUB SERVICE ACCOUNT KEY:
-  --service-account-file takes the path to the GCP service account JSON key
-  file, or - to read the key from stdin. The file contents are base64-encoded
-  and sent as source.pubsub.serviceAccountKey.serviceAccountFile; the key is
-  never taken from the command line, so it stays out of process listings and
-  shell history, and it is never echoed back in output or errors.
-
-DOCUMENTATION:
-  ClickPipes sources:
-    https://clickhouse.com/docs/integrations/clickpipes"
+CONTEXT FOR AGENTS:
+  Pub/Sub ClickPipes are in limited preview: ask ClickHouse support to enable the
+  feature for the organization before creating a pipe."
     )]
     PubSub(PubSubCreateArgs),
 }
@@ -604,13 +514,15 @@ pub struct ObjectStorageSourceFields {
     #[arg(long)]
     pub queue_url: Option<String>,
 
-    /// Skip the initial load of existing objects and ingest only queue-notification
-    /// files. Only applicable when --queue-url is provided.
+    /// Skip the initial load and ingest only queue-notification files
+    ///
+    /// Requires --queue-url.
     #[arg(long, requires = "queue_url")]
     pub skip_initial_load: bool,
 
-    /// Object key to start continuous ingestion after. Mutually exclusive with
-    /// --skip-initial-load (the API rejects both being set).
+    /// Object key to start continuous ingestion after
+    ///
+    /// Mutually exclusive with --skip-initial-load.
     #[arg(long, conflicts_with = "skip_initial_load")]
     pub start_after: Option<String>,
 
@@ -618,19 +530,19 @@ pub struct ObjectStorageSourceFields {
     #[arg(long)]
     pub delimiter: Option<String>,
 
-    /// IAM role ARN for authentication
+    /// IAM role ARN (selects IAM_ROLE auth)
     #[arg(long)]
     pub iam_role: Option<String>,
 
-    /// Access key ID for authentication
+    /// Access key ID (selects IAM_USER auth; requires --secret-key)
     #[arg(long, requires = "secret_key")]
     pub access_key_id: Option<String>,
 
-    /// Secret key for authentication
+    /// Secret key (requires --access-key-id)
     #[arg(long, requires = "access_key_id")]
     pub secret_key: Option<String>,
 
-    /// Azure connection string for authentication
+    /// Azure connection string (selects CONNECTION_STRING auth)
     #[arg(long)]
     pub connection_string: Option<String>,
 
@@ -642,8 +554,8 @@ pub struct ObjectStorageSourceFields {
     #[arg(long)]
     pub path: Option<String>,
 
-    /// Path to GCP service account JSON key file
-    #[arg(long)]
+    /// Path to a GCP service account JSON key file, or - to read it from stdin
+    #[arg(long, value_name = "PATH")]
     pub service_account_file: Option<String>,
 }
 
@@ -674,7 +586,7 @@ pub struct ObjectStorageCreateArgs {
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
-    /// Organization ID (auto-detected if not specified)
+    /// Organization ID (auto-detected only if you have one org)
     #[arg(long)]
     pub org_id: Option<String>,
 }
@@ -708,8 +620,10 @@ pub struct KafkaSourceFields {
     #[arg(long)]
     pub consumer_group: Option<String>,
 
-    /// Authentication method (inferred from the credential flags when omitted;
-    /// no authentication is sent when no credential flags are given)
+    /// Authentication method
+    ///
+    /// Inferred from the credential flags when omitted; with no credential flag
+    /// at all, no authentication is sent.
     #[arg(long, value_parser = PossibleValuesParser::new(KAFKA_AUTHS))]
     pub auth: Option<String>,
 
@@ -757,8 +671,8 @@ pub struct KafkaSourceFields {
     #[arg(long)]
     pub schema_registry_password: Option<String>,
 
-    /// Path to broker CA certificate file
-    #[arg(long)]
+    /// Path to a PEM CA bundle for the broker
+    #[arg(long, value_name = "PATH")]
     pub ca_certificate: Option<String>,
 
     /// Path to client certificate file (for MUTUAL_TLS auth; requires --client-key)
@@ -805,7 +719,7 @@ pub struct KafkaCreateArgs {
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
-    /// Organization ID (auto-detected if not specified)
+    /// Organization ID (auto-detected only if you have one org)
     #[arg(long)]
     pub org_id: Option<String>,
 }
@@ -827,7 +741,7 @@ pub struct KinesisSourceFields {
     #[arg(long, value_parser = PossibleValuesParser::new(KINESIS_FORMATS))]
     pub format: String,
 
-    /// Authentication
+    /// Authentication method
     #[arg(
         long,
         default_value = "IAM_ROLE",
@@ -835,7 +749,7 @@ pub struct KinesisSourceFields {
     )]
     pub auth: String,
 
-    /// IAM role ARN
+    /// IAM role ARN (with --auth IAM_ROLE)
     #[arg(long)]
     pub iam_role: Option<String>,
 
@@ -891,7 +805,7 @@ pub struct KinesisCreateArgs {
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
-    /// Organization ID (auto-detected if not specified)
+    /// Organization ID (auto-detected only if you have one org)
     #[arg(long)]
     pub org_id: Option<String>,
 }
@@ -929,18 +843,17 @@ pub struct PostgresCreateArgs {
     #[arg(long)]
     pub pg_database: String,
 
-    /// Username (basic auth only; invalid with --auth IAM_ROLE)
+    /// Username (required with --auth basic; invalid with --auth IAM_ROLE)
     #[arg(long, requires = "password")]
     pub username: Option<String>,
 
-    /// Password (basic auth only; invalid with --auth IAM_ROLE)
+    /// Password (required with --auth basic; invalid with --auth IAM_ROLE)
     #[arg(long, requires = "username")]
     pub password: Option<String>,
 
     /// Table mappings as schema.table:target_table (repeatable)
     ///
-    /// One of --table-mapping or --table-mapping-json is required. This form
-    /// leaves every other per-table option at the ClickPipes default.
+    /// Leaves every other per-table option at the ClickPipes default.
     #[arg(
         long = "table-mapping",
         value_name = "SCHEMA.TABLE:TARGET_TABLE",
@@ -951,11 +864,9 @@ pub struct PostgresCreateArgs {
     /// Full table mapping as a JSON object (repeatable)
     ///
     /// Takes the API's table mapping object verbatim, for the per-table
-    /// options the simple form cannot express: excludedColumns, sortingKeys
-    /// with useCustomSortingKey, partitionByExpr, partitionKey and
-    /// tableEngine. Can be combined with --table-mapping. Unknown fields are
-    /// rejected. See POSTGRES TABLE MAPPINGS for the field list and an
-    /// example.
+    /// options the simple form cannot express: excludedColumns, sortingKeys,
+    /// useCustomSortingKey, partitionByExpr, partitionKey and tableEngine.
+    /// Combinable with --table-mapping; unknown fields are rejected.
     #[arg(long = "table-mapping-json", value_name = "JSON")]
     pub table_mappings_json: Vec<String>,
 
@@ -975,7 +886,7 @@ pub struct PostgresCreateArgs {
     )]
     pub replication_mode: String,
 
-    /// Authentication
+    /// Authentication method
     #[arg(
         long,
         default_value = "basic",
@@ -1040,7 +951,7 @@ pub struct PostgresCreateArgs {
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
-    /// Organization ID (auto-detected if not specified)
+    /// Organization ID (auto-detected only if you have one org)
     #[arg(long)]
     pub org_id: Option<String>,
 }
@@ -1071,7 +982,7 @@ pub struct MySqlCreateArgs {
     pub password: Option<String>,
 
     /// Table mappings as schema.table:target_table (repeatable)
-    #[arg(long = "table-mapping")]
+    #[arg(long = "table-mapping", value_name = "SCHEMA.TABLE:TARGET_TABLE")]
     pub table_mappings: Vec<String>,
 
     /// MySQL type
@@ -1098,7 +1009,7 @@ pub struct MySqlCreateArgs {
     )]
     pub replication_mechanism: String,
 
-    /// Authentication
+    /// Authentication method
     #[arg(
         long,
         default_value = "basic",
@@ -1107,15 +1018,17 @@ pub struct MySqlCreateArgs {
     pub auth: String,
 
     /// IAM role ARN (required with --auth IAM_ROLE; invalid with basic auth)
+    ///
+    /// IAM_ROLE applies to RDS and Aurora MySQL sources only.
     #[arg(long, required_if_eq("auth", "IAM_ROLE"))]
     pub iam_role: Option<String>,
 
-    /// TLS hostname
-    #[arg(long)]
+    /// Certificate hostname override (defaults to --host)
+    #[arg(long, value_name = "HOSTNAME")]
     pub tls_host: Option<String>,
 
-    /// Path to CA certificate file
-    #[arg(long)]
+    /// Path to a PEM CA bundle for a private or self-signed source certificate
+    #[arg(long, value_name = "PATH")]
     pub ca_certificate: Option<String>,
 
     /// Disable TLS
@@ -1126,16 +1039,17 @@ pub struct MySqlCreateArgs {
     #[arg(long)]
     pub skip_cert_verification: bool,
 
-    /// Optional MySQL server_id the pipe declares itself as in the MySQL
-    /// replication topology (1-4294967295). Must be unique across replicas
-    /// connected to the source. If omitted, one is assigned automatically.
+    /// MySQL server_id used in the replication topology (1-4294967295)
+    ///
+    /// Must be unique across every replica connected to the source. Assigned
+    /// automatically when omitted.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..=4294967295))]
     pub server_id: Option<u64>,
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
-    /// Organization ID (auto-detected if not specified)
+    /// Organization ID (auto-detected only if you have one org)
     #[arg(long)]
     pub org_id: Option<String>,
 }
@@ -1162,7 +1076,10 @@ pub struct MongoDbCreateArgs {
     pub password: String,
 
     /// Table mappings as database.collection:target_table (repeatable)
-    #[arg(long = "table-mapping")]
+    #[arg(
+        long = "table-mapping",
+        value_name = "DATABASE.COLLECTION:TARGET_TABLE"
+    )]
     pub table_mappings: Vec<String>,
 
     /// Replication mode
@@ -1181,12 +1098,12 @@ pub struct MongoDbCreateArgs {
     )]
     pub read_preference: String,
 
-    /// TLS hostname
-    #[arg(long)]
+    /// Certificate hostname override (defaults to the --uri host)
+    #[arg(long, value_name = "HOSTNAME")]
     pub tls_host: Option<String>,
 
-    /// Path to CA certificate file
-    #[arg(long)]
+    /// Path to a PEM CA bundle for a private or self-signed source certificate
+    #[arg(long, value_name = "PATH")]
     pub ca_certificate: Option<String>,
 
     /// Disable TLS
@@ -1196,7 +1113,7 @@ pub struct MongoDbCreateArgs {
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
-    /// Organization ID (auto-detected if not specified)
+    /// Organization ID (auto-detected only if you have one org)
     #[arg(long)]
     pub org_id: Option<String>,
 }
@@ -1210,8 +1127,8 @@ pub struct BigQueryCreateArgs {
     #[arg(long)]
     pub name: String,
 
-    /// Path to GCP service account JSON key file
-    #[arg(long)]
+    /// Path to a GCP service account JSON key file, or - to read it from stdin
+    #[arg(long, value_name = "PATH")]
     pub service_account_file: String,
 
     /// GCS staging path for snapshot data
@@ -1219,13 +1136,13 @@ pub struct BigQueryCreateArgs {
     pub staging_path: String,
 
     /// Table mappings as dataset.table:target_table (repeatable)
-    #[arg(long = "table-mapping")]
+    #[arg(long = "table-mapping", value_name = "DATASET.TABLE:TARGET_TABLE")]
     pub table_mappings: Vec<String>,
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
-    /// Organization ID (auto-detected if not specified)
+    /// Organization ID (auto-detected only if you have one org)
     #[arg(long)]
     pub org_id: Option<String>,
 }
@@ -1254,24 +1171,16 @@ pub struct PubSubSourceFields {
     pub format: String,
 
     /// Path to the GCP service account JSON key file, or - to read it from stdin
-    ///
-    /// The contents are base64-encoded and sent as the service account key;
-    /// the path itself is never sent, and the key is never accepted inline so
-    /// it stays out of process listings and shell history.
     #[arg(long, value_name = "PATH")]
     pub service_account_file: String,
 
     /// Starting position for consuming the subscription
-    ///
-    /// No default: this decides whether the pipe reads the backlog
-    /// (earliest), only new messages (latest), or from --seek-timestamp.
     #[arg(long, value_parser = PossibleValuesParser::new(PUBSUB_SEEK_TYPES))]
     pub seek_type: String,
 
     /// Timestamp to seek to (ISO 8601 / RFC 3339)
     ///
-    /// Required with --seek-type timestamp and rejected with any other seek
-    /// type, matching the API.
+    /// Required with --seek-type timestamp, rejected with any other seek type.
     #[arg(
         long,
         value_name = "TIMESTAMP",
@@ -1280,7 +1189,7 @@ pub struct PubSubSourceFields {
     )]
     pub seek_timestamp: Option<String>,
 
-    /// Authentication method to use with GCP Pub/Sub
+    /// Authentication method
     #[arg(
         long,
         default_value = "SERVICE_ACCOUNT",
@@ -1332,7 +1241,7 @@ pub struct PubSubCreateArgs {
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
-    /// Organization ID (auto-detected if not specified)
+    /// Organization ID (auto-detected only if you have one org)
     #[arg(long)]
     pub org_id: Option<String>,
 }
@@ -4469,9 +4378,8 @@ mod tests {
             .expect("settings subcommand");
         let help = settings.render_long_help().to_string();
         for expected in [
-            "apply only to streaming (Kafka, Kinesis) and object-storage",
-            "Database CDC pipes (Postgres, MySQL, MongoDB, BigQuery) have no ingestion",
-            "clickhousectl cloud clickpipe get <service>",
+            "CDC pipes (Postgres, MySQL, MongoDB, BigQuery) have no ingestion settings",
+            "clickhousectl cloud clickpipe get",
         ] {
             assert!(help.contains(expected), "missing `{expected}`:\n{help}");
         }
@@ -4482,10 +4390,21 @@ mod tests {
                 .render_long_help()
                 .to_string();
             assert!(
-                subcommand_help.contains("streaming and object-storage pipes only"),
+                subcommand_help.contains("streaming, object-storage pipes"),
                 "missing applicability in `settings {subcommand}` help:\n{subcommand_help}"
             );
         }
+        // `settings update` states what the request carries, since an omitted
+        // setting is left out of the body entirely.
+        let update_help = settings
+            .find_subcommand_mut("update")
+            .expect("settings update subcommand")
+            .render_long_help()
+            .to_string();
+        assert!(
+            update_help.contains("Only the settings named on the command line are sent"),
+            "{update_help}"
+        );
     }
 
     #[test]
@@ -5659,34 +5578,21 @@ mod tests {
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        assert!(help.contains("POSTGRES TABLE MAPPINGS:"), "{help}");
+        // The flag's own help names the fields the simple form cannot express
+        // and the unknown-field rule; the field reference lives in README
+        // (`readme_documents_the_json_table_mapping_form`).
         assert!(help.contains("--table-mapping-json <JSON>"), "{help}");
-        assert!(
-            help.contains("--table-mapping schema.table:target_table is unchanged"),
-            "{help}"
-        );
-        // The example shows the fields the simple form cannot express.
-        for field in POSTGRES_TABLE_MAPPING_JSON_FIELDS {
+        for field in [
+            "excludedColumns",
+            "sortingKeys",
+            "useCustomSortingKey",
+            "partitionByExpr",
+            "partitionKey",
+            "tableEngine",
+        ] {
             assert!(help.contains(field), "missing `{field}`:\n{help}");
         }
-        for excerpt in [
-            r#""excludedColumns":["ssn"]"#,
-            r#""sortingKeys":["created_at","id"]"#,
-            r#""partitionByExpr":"toYYYYMM(created_at)""#,
-            r#""tableEngine":"ReplacingMergeTree""#,
-        ] {
-            assert!(help.contains(excerpt), "missing `{excerpt}`:\n{help}");
-        }
-        // Every table engine the library accepts is named, so the help cannot
-        // drift from the enum's wire values.
-        for engine in ClickPipePostgresPipeTableMappingTableengine::VALUES {
-            assert!(help.contains(engine), "missing `{engine}`:\n{help}");
-        }
-        assert!(
-            help.contains("useCustomSortingKey is set to true automatically"),
-            "{help}"
-        );
-        assert!(help.contains("An unknown field is rejected"), "{help}");
+        assert!(help.contains("unknown fields are rejected"), "{help}");
     }
 
     #[test]
@@ -5694,34 +5600,17 @@ mod tests {
         let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
+
+        // Each cross-flag rule stays on the flag it constrains.
         assert!(
-            help.contains("At least one --table-mapping is required"),
-            "{help}"
-        );
-        assert!(help.contains("or one --table-mapping-json"), "{help}");
-        assert!(
-            help.contains("--auth IAM_ROLE requires --iam-role"),
+            help.contains("required with --auth IAM_ROLE; invalid with basic auth"),
             "{help}"
         );
         assert!(
-            help.contains("--auth basic requires --username and --password"),
+            help.contains("required with --auth basic; invalid with --auth IAM_ROLE"),
             "{help}"
         );
-        assert!(help.contains("the role ARN is the whole"), "{help}");
-        assert!(help.contains("silently ignored"), "{help}");
         assert!(help.contains("--replication-mode cdc_only"), "{help}");
-        assert!(
-            help.contains("cannot\n  be changed after creation"),
-            "{help}"
-        );
-        assert!(
-            help.contains("can patch only\n  syncIntervalSeconds and pullBatchSize"),
-            "{help}"
-        );
-        assert!(
-            help.contains("omitting one sends\n  false, which is the API default"),
-            "{help}"
-        );
         for flag in [
             "--sync-interval-seconds <SECONDS>",
             "--pull-batch-size <ROWS>",
@@ -5734,29 +5623,19 @@ mod tests {
         ] {
             assert!(help.contains(flag), "missing `{flag}`:\n{help}");
         }
-        assert!(
-            help.contains("TLS and certificate verification are enabled by default"),
-            "{help}"
-        );
-        assert!(help.contains("publicly trusted needs no CA file"), "{help}");
-        assert!(help.contains("PEM CA bundle"), "{help}");
         assert!(help.contains("--ca-certificate <PATH>"), "{help}");
         assert!(help.contains("--tls-host <HOSTNAME>"), "{help}");
-        assert!(help.contains("uses --host unless"), "{help}");
-        assert!(help.contains("enable logical replication"), "{help}");
-        assert!(help.contains("mapped table in the publication"), "{help}");
+        // The agent block carries the CDC prerequisites, the TLS floor, the
+        // patchable subset and the one docs URL. The prose lives in README.
+        assert!(help.contains("REPLICATION on the source user"), "{help}");
+        assert!(help.contains("they cannot disable them"), "{help}");
         assert!(
-            help.contains("schema, table, and replication privileges"),
+            help.contains("Only --sync-interval-seconds and --pull-batch-size can change"),
             "{help}"
         );
+        assert!(help.contains("send false when omitted"), "{help}");
         assert!(
             help.contains("https://clickhouse.com/docs/integrations/clickpipes/postgres"),
-            "{help}"
-        );
-        assert!(
-            help.contains(
-                "https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips"
-            ),
             "{help}"
         );
     }
@@ -5764,32 +5643,24 @@ mod tests {
     #[test]
     fn mysql_help_documents_input_rules() {
         // The credential pair is `Option` so IAM_ROLE auth can omit it, which
-        // takes it out of the usage line; the help text is what tells a user
+        // takes it out of the usage line; the flag help is what tells a user
         // basic auth still needs both flags.
         let error = clickpipe_parse_error(&["create", "mysql", "--help"]);
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        assert!(help.contains("MYSQL INPUT RULES:"), "{help}");
         assert!(
-            help.contains("--auth basic requires --username and --password"),
-            "{help}"
-        );
-        assert!(help.contains("must be given"), "{help}");
-        assert!(
-            help.contains("--auth IAM_ROLE requires --iam-role"),
-            "{help}"
-        );
-        assert!(help.contains("rejects --username and --password"), "{help}");
-        assert!(
-            help.contains("the role ARN is the whole credential"),
+            help.contains("required with --auth basic; invalid with --auth IAM_ROLE"),
             "{help}"
         );
         assert!(
-            help.contains("--iam-role is rejected with --auth basic"),
+            help.contains("required with --auth IAM_ROLE; invalid with basic auth"),
             "{help}"
         );
-        assert!(help.contains("silently ignored"), "{help}");
+        assert!(
+            help.contains("IAM_ROLE applies to RDS and Aurora MySQL sources only"),
+            "{help}"
+        );
         for flag in [
             "--username <USERNAME>",
             "--password <PASSWORD>",
@@ -7612,14 +7483,11 @@ mod tests {
         let help = error.to_string();
 
         for excerpt in [
-            "PUB/SUB INPUT RULES:",
             "limited preview",
-            "--seek-timestamp is required with --seek-type timestamp",
-            "--ack-deadline is in seconds and must be between 10 and 600",
+            "Required with --seek-type timestamp",
+            "in seconds (10-600)",
             "at most 256 characters",
-            "PUB/SUB SERVICE ACCOUNT KEY:",
-            "or - to read the key from stdin",
-            "source.pubsub.serviceAccountKey.serviceAccountFile",
+            "or - to read it from stdin",
         ] {
             assert!(help.contains(excerpt), "missing `{excerpt}`:\n{help}");
         }

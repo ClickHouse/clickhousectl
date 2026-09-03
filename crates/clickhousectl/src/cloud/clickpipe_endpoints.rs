@@ -33,17 +33,12 @@ pub enum ReversePrivateEndpointCommands {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
     /// Get reverse private endpoint details
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  `dnsNames` is what a Postgres or MySQL CDC pipe connects to: pass one of them
-  as --host on `clickhousectl cloud clickpipe create postgres|mysql`.
-  Kafka pipes use the endpoint's `id` with --reverse-private-endpoint-id.")]
     Get {
         /// Service ID
         service_id: String,
@@ -51,37 +46,15 @@ CONTEXT FOR AGENTS:
         /// Reverse private endpoint ID
         endpoint_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
     /// Create a reverse private endpoint
-    #[command(long_about = "\
-Create a reverse private endpoint.
-
-Each type needs its own connection flags, and flags belonging to another type
-are rejected before any request is made:
-
-  --type VPC_ENDPOINT_SERVICE       --vpc-endpoint-service-name
-  --type VPC_RESOURCE               --vpc-resource-configuration-id and
-                                    --vpc-resource-share-arn
-  --type MSK_MULTI_VPC              --msk-cluster-arn and --msk-authentication
-  --type GCP_PSC_SERVICE_ATTACHMENT --gcp-service-attachment
-
---custom-private-dns-mapping is repeatable and accepts exact or leading-wildcard
-names (`*.example.com`). The API does not support it for MSK_MULTI_VPC, and for
-AWS PrivateLink types it needs to be enabled for the service by ClickHouse
-support.")]
     Create(Box<ReversePrivateEndpointCreateArgs>),
 
     /// Replace the custom private DNS mappings of a reverse private endpoint
-    #[command(long_about = "\
-Replace the custom private DNS mappings of a reverse private endpoint.
-
-The custom private DNS mappings are the only field the API's PATCH accepts, so
-this command sends the complete list given on the command line: every mapping
-the endpoint should keep has to be repeated.")]
     Update {
         /// Service ID
         service_id: String,
@@ -89,11 +62,11 @@ the endpoint should keep has to be repeated.")]
         /// Reverse private endpoint ID
         endpoint_id: String,
 
-        /// Custom private DNS name (repeatable; at least one required)
+        /// Custom private DNS name (repeatable; replaces the whole list)
         #[arg(long = "custom-private-dns-mapping", required = true)]
         custom_private_dns_mappings: Vec<String>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -106,7 +79,7 @@ the endpoint should keep has to be repeated.")]
         /// Reverse private endpoint ID
         endpoint_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -125,36 +98,40 @@ pub struct ReversePrivateEndpointCreateArgs {
     #[arg(long)]
     pub description: String,
 
-    /// VPC endpoint service name (for --type VPC_ENDPOINT_SERVICE)
+    /// VPC endpoint service name (required for --type VPC_ENDPOINT_SERVICE)
     #[arg(long)]
     pub vpc_endpoint_service_name: Option<String>,
 
-    /// VPC resource configuration ID (for --type VPC_RESOURCE)
+    /// VPC resource configuration ID (required for --type VPC_RESOURCE)
     #[arg(long)]
     pub vpc_resource_configuration_id: Option<String>,
 
-    /// VPC resource share ARN (for --type VPC_RESOURCE)
+    /// VPC resource share ARN (required for --type VPC_RESOURCE)
     #[arg(long)]
     pub vpc_resource_share_arn: Option<String>,
 
-    /// MSK cluster ARN (for --type MSK_MULTI_VPC)
+    /// MSK cluster ARN (required for --type MSK_MULTI_VPC)
     #[arg(long)]
     pub msk_cluster_arn: Option<String>,
 
-    /// MSK cluster authentication (for --type MSK_MULTI_VPC)
+    /// MSK cluster authentication (required for --type MSK_MULTI_VPC)
     #[arg(long, value_parser = PossibleValuesParser::new(CreateReversePrivateEndpointMskauthentication::VALUES))]
     pub msk_authentication: Option<String>,
 
-    /// GCP PSC service attachment URI, projects/{project}/regions/{region}/serviceAttachments/{name}
-    /// (for --type GCP_PSC_SERVICE_ATTACHMENT)
+    /// GCP PSC service attachment URI (required for --type GCP_PSC_SERVICE_ATTACHMENT)
+    ///
+    /// Form: projects/{project}/regions/{region}/serviceAttachments/{name}
     #[arg(long)]
     pub gcp_service_attachment: Option<String>,
 
     /// Custom private DNS name, exact or leading wildcard (repeatable)
+    ///
+    /// Rejected with --type MSK_MULTI_VPC. On the AWS PrivateLink types ClickHouse
+    /// support must enable it for the service first.
     #[arg(long = "custom-private-dns-mapping")]
     pub custom_private_dns_mappings: Vec<String>,
 
-    /// Organization ID (auto-detected if not specified)
+    /// Organization ID (auto-detected only if you have one org)
     #[arg(long)]
     pub org_id: Option<String>,
 }
