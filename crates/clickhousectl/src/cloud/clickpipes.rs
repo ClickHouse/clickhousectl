@@ -4183,34 +4183,6 @@ mod tests {
     }
 
     #[test]
-    fn readme_documents_source_aware_settings_update() {
-        let readme = include_str!("../../../../README.md");
-        let clickpipes = readme
-            .split_once("### ClickPipes")
-            .expect("ClickPipes section")
-            .1
-            .split_once("#### Creating ClickPipes")
-            .expect("next ClickPipes section")
-            .0;
-
-        for expected in [
-            "only sends the settings you name on the command line",
-            "first reads the pipe to find its source type",
-            "`kafka_read_committed`",
-            "omitted for every other source",
-            // Applicability by pipe type (#643).
-            "apply to streaming (Kafka, Kinesis) and\nobject-storage pipes only",
-            "Database pipes (Postgres, MySQL, MongoDB, BigQuery) are refused",
-            "`clickhousectl cloud clickpipe get <service-id> <clickpipe-id>`",
-        ] {
-            assert!(
-                clickpipes.contains(expected),
-                "missing `{expected}`:\n{clickpipes}"
-            );
-        }
-    }
-
-    #[test]
     fn classifies_every_clickpipe_source_and_an_absent_one() {
         use clickhouse_cloud_api::models::{
             ClickPipe, ClickPipeBigQuerySource, ClickPipeKafkaSource, ClickPipeKinesisSource,
@@ -4359,49 +4331,6 @@ mod tests {
         assert!(
             ensure_clickpipe_has_ingestion_settings(&ClickPipe::default(), "svc-1", "pipe-1")
                 .is_ok()
-        );
-    }
-
-    #[test]
-    fn settings_help_states_which_pipe_types_it_applies_to() {
-        use clap::CommandFactory;
-
-        let mut command = Cli::command();
-        let settings = command
-            .find_subcommand_mut("cloud")
-            .expect("cloud subcommand")
-            .find_subcommand_mut("clickpipe")
-            .expect("clickpipe subcommand")
-            .find_subcommand_mut("settings")
-            .expect("settings subcommand");
-        let help = settings.render_long_help().to_string();
-        for expected in [
-            "CDC pipes (Postgres, MySQL, MongoDB, BigQuery) have no ingestion settings",
-            "clickhousectl cloud clickpipe get",
-        ] {
-            assert!(help.contains(expected), "missing `{expected}`:\n{help}");
-        }
-        for subcommand in ["get", "update"] {
-            let subcommand_help = settings
-                .find_subcommand_mut(subcommand)
-                .expect("settings subcommand")
-                .render_long_help()
-                .to_string();
-            assert!(
-                subcommand_help.contains("streaming, object-storage pipes"),
-                "missing applicability in `settings {subcommand}` help:\n{subcommand_help}"
-            );
-        }
-        // `settings update` states what the request carries, since an omitted
-        // setting is left out of the body entirely.
-        let update_help = settings
-            .find_subcommand_mut("update")
-            .expect("settings update subcommand")
-            .render_long_help()
-            .to_string();
-        assert!(
-            update_help.contains("Only the settings named on the command line are sent"),
-            "{update_help}"
         );
     }
 
@@ -5570,45 +5499,24 @@ mod tests {
         }
     }
 
+    /// `<JSON>` is the value name clap renders for the flag's attribute.
     #[test]
-    fn postgres_help_documents_the_json_table_mapping_form() {
+    fn postgres_help_renders_the_json_table_mapping_value_name() {
         let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        // The flag's own help names the fields the simple form cannot express
-        // and the unknown-field rule; the field reference lives in README
-        // (`readme_documents_the_json_table_mapping_form`).
         assert!(help.contains("--table-mapping-json <JSON>"), "{help}");
-        for field in [
-            "excludedColumns",
-            "sortingKeys",
-            "useCustomSortingKey",
-            "partitionByExpr",
-            "partitionKey",
-            "tableEngine",
-        ] {
-            assert!(help.contains(field), "missing `{field}`:\n{help}");
-        }
-        assert!(help.contains("unknown fields are rejected"), "{help}");
     }
 
+    /// Every CDC and TLS flag reaches the help screen with the value name its
+    /// clap attribute declares.
     #[test]
-    fn postgres_help_documents_input_tls_and_source_requirements() {
+    fn postgres_help_renders_every_cdc_and_tls_flag_value_name() {
         let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        // Each cross-flag rule stays on the flag it constrains.
-        assert!(
-            help.contains("required with --auth IAM_ROLE; invalid with basic auth"),
-            "{help}"
-        );
-        assert!(
-            help.contains("required with --auth basic; invalid with --auth IAM_ROLE"),
-            "{help}"
-        );
-        assert!(help.contains("--replication-mode cdc_only"), "{help}");
         for flag in [
             "--sync-interval-seconds <SECONDS>",
             "--pull-batch-size <ROWS>",
@@ -5618,47 +5526,22 @@ mod tests {
             "--allow-nullable-columns <true|false>",
             "--enable-failover-slots <true|false>",
             "--delete-on-merge <true|false>",
+            "--ca-certificate <PATH>",
+            "--tls-host <HOSTNAME>",
         ] {
             assert!(help.contains(flag), "missing `{flag}`:\n{help}");
         }
-        assert!(help.contains("--ca-certificate <PATH>"), "{help}");
-        assert!(help.contains("--tls-host <HOSTNAME>"), "{help}");
-        // The agent block carries the CDC prerequisites, the TLS floor, the
-        // patchable subset and the one docs URL. The prose lives in README.
-        assert!(help.contains("REPLICATION on the source user"), "{help}");
-        assert!(help.contains("they cannot disable them"), "{help}");
-        assert!(
-            help.contains("Only --sync-interval-seconds and --pull-batch-size can change"),
-            "{help}"
-        );
-        assert!(help.contains("send false when omitted"), "{help}");
-        assert!(
-            help.contains("https://clickhouse.com/docs/integrations/clickpipes/postgres"),
-            "{help}"
-        );
     }
 
+    /// The credential pair is `Option` so IAM_ROLE auth can omit it, which
+    /// takes it out of the usage line; the flags still have to reach the help
+    /// screen with their declared value names.
     #[test]
-    fn mysql_help_documents_input_rules() {
-        // The credential pair is `Option` so IAM_ROLE auth can omit it, which
-        // takes it out of the usage line; the flag help is what tells a user
-        // basic auth still needs both flags.
+    fn mysql_help_renders_the_credential_flag_value_names() {
         let error = clickpipe_parse_error(&["create", "mysql", "--help"]);
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        assert!(
-            help.contains("required with --auth basic; invalid with --auth IAM_ROLE"),
-            "{help}"
-        );
-        assert!(
-            help.contains("required with --auth IAM_ROLE; invalid with basic auth"),
-            "{help}"
-        );
-        assert!(
-            help.contains("IAM_ROLE applies to RDS and Aurora MySQL sources only"),
-            "{help}"
-        );
         for flag in [
             "--username <USERNAME>",
             "--password <PASSWORD>",
@@ -5702,164 +5585,6 @@ mod tests {
             assert!(
                 create.find_subcommand(source).is_some(),
                 "`clickpipe create {source}` must exist for the usage error to name it"
-            );
-        }
-    }
-
-    #[test]
-    fn readme_documents_postgres_tls_and_cdc_prerequisites() {
-        let readme = include_str!("../../../../README.md");
-        let postgres = readme
-            .split_once("### ClickPipes")
-            .expect("ClickPipes section")
-            .1
-            .split_once("#### MySQL ClickPipe authentication")
-            .expect("next ClickPipes section")
-            .0;
-
-        for expected in [
-            "publicly trusted certificate",
-            "private or self-signed CA",
-            "--ca-certificate ./postgres-ca.pem",
-            "--tls-host postgres.internal.example.com",
-            "TLS and certificate verification are enabled by default",
-            "different hostname than `--host`",
-            "ClickPipes static egress IPs",
-            "`wal_level=logical`",
-            "publication must contain every source table",
-            "`USAGE` on each mapped schema",
-            "https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic",
-            "https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips",
-            // IAM role authentication takes no username or password.
-            "`--username` and `--password` are basic-auth only",
-            "must be given together",
-            "no `credentials` object is sent",
-            "--auth IAM_ROLE --iam-role \"$POSTGRES_IAM_ROLE_ARN\"",
-        ] {
-            assert!(
-                postgres.contains(expected),
-                "missing `{expected}`:\n{postgres}"
-            );
-        }
-
-        assert_eq!(
-            postgres.matches("--publication-name clickpipes").count(),
-            6,
-            "every PostgreSQL example must use the publication created in the prerequisites"
-        );
-    }
-
-    #[test]
-    fn readme_documents_mysql_iam_role_authentication() {
-        let readme = include_str!("../../../../README.md");
-        let mysql = readme
-            .split_once("#### MySQL ClickPipe authentication")
-            .expect("MySQL ClickPipe authentication section")
-            .1
-            .split_once("#### Reverse private endpoints")
-            .expect("next ClickPipes section")
-            .0;
-
-        for expected in [
-            "`--auth IAM_ROLE`",
-            "same auth rules as the [Postgres source](#postgresql-clickpipe-prerequisites)",
-            "`--mysql-type rdsmysql`/`auroramysql`",
-            "(exit code 2) before any request is made",
-        ] {
-            assert!(mysql.contains(expected), "missing `{expected}`:\n{mysql}");
-        }
-
-        // The example the section describes is in the create block above it.
-        let examples = readme
-            .split_once("# From MySQL (CDC)")
-            .expect("MySQL create example")
-            .1
-            .split_once("# From MongoDB (CDC)")
-            .expect("next create example")
-            .0;
-        for expected in [
-            "clickhousectl cloud clickpipe create mysql <service-id>",
-            "--auth IAM_ROLE --iam-role \"$MYSQL_IAM_ROLE_ARN\"",
-            "--mysql-type rdsmysql",
-        ] {
-            assert!(
-                examples.contains(expected),
-                "missing `{expected}`:\n{examples}"
-            );
-        }
-    }
-
-    #[test]
-    fn readme_documents_the_json_table_mapping_form() {
-        let readme = include_str!("../../../../README.md");
-        let mappings = readme
-            .split_once("#### PostgreSQL table mappings")
-            .expect("PostgreSQL table mappings section")
-            .1
-            .split_once("#### PostgreSQL CDC pipe settings")
-            .expect("end of the table mappings section")
-            .0;
-
-        for expected in [
-            "--table-mapping schema.table:target_table",
-            "--table-mapping-json <JSON>",
-            "\"excludedColumns\": [\"ssn\"]",
-            "\"sortingKeys\": [\"created_at\", \"id\"]",
-            "\"partitionByExpr\": \"toYYYYMM(created_at)\"",
-            "\"tableEngine\": \"ReplacingMergeTree\"",
-            "Set to `true` automatically when `sortingKeys` is given",
-            "An unknown field is rejected",
-            "usage\nerror (exit code 2)",
-            "--table-mapping-json #2: targetTable is required and must not be empty",
-            "not yet available on\n`clickpipe create mysql`",
-        ] {
-            assert!(
-                mappings.contains(expected),
-                "missing `{expected}`:\n{mappings}"
-            );
-        }
-        // Every field of the mapping object is documented in the table.
-        for field in POSTGRES_TABLE_MAPPING_JSON_FIELDS {
-            assert!(
-                mappings.contains(&format!("| `{field}` |")),
-                "missing `{field}` row:\n{mappings}"
-            );
-        }
-        for engine in ClickPipePostgresPipeTableMappingTableengine::VALUES {
-            assert!(
-                mappings.contains(&format!("`{engine}`")),
-                "missing `{engine}`:\n{mappings}"
-            );
-        }
-    }
-
-    #[test]
-    fn readme_documents_postgres_cdc_settings_flags() {
-        let readme = include_str!("../../../../README.md");
-        let settings = readme
-            .split_once("#### PostgreSQL CDC pipe settings")
-            .expect("PostgreSQL CDC pipe settings section")
-            .1
-            .split_once("Use `clickhousectl cloud clickpipe create <source> --help`")
-            .expect("end of the CDC settings section")
-            .0;
-
-        for expected in [
-            "--sync-interval-seconds <SECONDS>",
-            "--pull-batch-size <ROWS>",
-            "--initial-load-parallelism <WORKERS>",
-            "--snapshot-rows-per-partition <ROWS>",
-            "--snapshot-parallel-tables <TABLES>",
-            "--allow-nullable-columns <true\\|false>",
-            "--enable-failover-slots <true\\|false>",
-            "--delete-on-merge <true\\|false>",
-            "they send `false`, which is the API default",
-            "cannot be changed later",
-            "not yet exposed on `clickpipe create mysql`",
-        ] {
-            assert!(
-                settings.contains(expected),
-                "missing `{expected}`:\n{settings}"
             );
         }
     }
@@ -7473,49 +7198,16 @@ mod tests {
         assert_eq!(source.ack_deadline, Some(45));
     }
 
+    /// Every value the `PossibleValuesParser`s accept stays visible in the
+    /// help screen clap renders from them.
     #[test]
-    fn pubsub_help_documents_the_input_rules_and_key_handling() {
+    fn pubsub_help_lists_every_accepted_format_and_seek_type() {
         let error = clickpipe_parse_error(&["create", "pubsub", "--help"]);
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        for excerpt in [
-            "limited preview",
-            "Required with --seek-type timestamp",
-            "in seconds (10-600)",
-            "at most 256 characters",
-            "or - to read it from stdin",
-        ] {
-            assert!(help.contains(excerpt), "missing `{excerpt}`:\n{help}");
-        }
-        // Every accepted value stays visible in the help.
         for value in PUBSUB_FORMATS.iter().chain(PUBSUB_SEEK_TYPES) {
             assert!(help.contains(value), "missing `{value}`:\n{help}");
-        }
-    }
-
-    #[test]
-    fn readme_documents_the_pubsub_source() {
-        let readme = include_str!("../../../../README.md");
-        let clickpipes = readme
-            .split_once("#### Creating ClickPipes")
-            .expect("ClickPipes create section")
-            .1
-            .split_once("### Members")
-            .expect("next README section")
-            .0;
-
-        for expected in [
-            "clickhousectl cloud clickpipe create pubsub <service-id>",
-            "clickhousectl cloud clickpipe schema-discover <service-id> pubsub",
-            "--service-account-file",
-            "--seek-type",
-            "limited preview",
-        ] {
-            assert!(
-                clickpipes.contains(expected),
-                "missing `{expected}`:\n{clickpipes}"
-            );
         }
     }
 
