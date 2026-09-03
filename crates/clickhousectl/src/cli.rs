@@ -9,19 +9,13 @@ pub use crate::local::cli::LocalArgs;
 #[command(version)]
 #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  With clickhousectl you can:
-  1. Install and use ClickHouse and Postgres locally (`clickhousectl local` commands)
-  2. Manage ClickHouse and Postgres in ClickHouse Cloud (`clickhousectl cloud` commands)
-
-  Install the ClickHouse Agent Skills: `clickhousectl skills --agent X`
-
-  For ClickHouse Cloud:
+  Both `local` and `cloud` manage ClickHouse and Postgres.
+  Cloud auth: OAuth (`cloud auth login`) is read-only; API keys
+  (`cloud auth login --api-key X --api-secret Y`) allow writes.
   Create account: `cloud auth signup`
-  Authenticate: OAuth (`cloud auth login` is read-only) or API keys (`cloud auth login --api-key X --api-secret Y` provides write access)
-
-  Typical local workflow: `clickhousectl local server start` → `clickhousectl local client -q 'SELECT 1;'`
-  Typical cloud workflow: `clickhousectl cloud auth signup` → `clickhousectl cloud auth login --api-key X --api-secret Y` → `clickhousectl cloud service create`
-  ")]
+  Typical local flow: `local server start` -> `local client -q 'SELECT 1'`
+  Typical cloud flow: `cloud auth signup` -> `cloud auth login --api-key X --api-secret Y` -> `cloud service create`
+  Install the ClickHouse agent skills: `clickhousectl skills --agent claude`")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -29,13 +23,14 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Work with local ClickHouse installations
+    /// Manage local ClickHouse and Postgres
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage local ClickHouse installations: install versions, run queries, manage servers.
-  Typical workflow: `clickhousectl local server start` (bootstraps from zero — installs `latest` if nothing is set up).
-  Use `clickhousectl local <command> --help` for details on each subcommand.
-  For a local Postgres instance via Docker, see `clickhousectl local postgres --help`.")]
+  Project-scoped commands use `.clickhouse` under the exact current directory; parent directories
+  are not searched. Run them from the project root.
+  `clickhousectl local server start` bootstraps from zero — installs `latest` if nothing is set up.
+  Local Postgres instances are Docker-backed and need Docker running.
+  Typical flow: `local server start` -> `local client -q 'SELECT 1'`")]
     Local(LocalArgs),
 
     /// Work with serverless ClickHouse in ClickHouse Cloud
@@ -53,26 +48,23 @@ CONTEXT FOR AGENTS:
     /// Install ClickHouse agent skills into supported coding agents
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Installs the official ClickHouse agent skills. These skills contain knowledge on how to use
-  ClickHouse and this CLI.
-  Using any flags skips interactive mode. Project scope is the default. Universal `.agents/skills`
-  is always included.")]
+  Any flag skips the interactive prompts; with no flags this command prompts on a TTY.
+  Scope is the current project directory unless --global.
+  The universal `.agents/skills` target is always installed, alongside any selected agent.
+  --agent values: claude, cursor, opencode, codex, agent, roo, trae, windsurf, zencoder, neovate,
+  pochi, adal, openclaw, cline, command-code, kiro-cli, agents")]
     Skills(SkillsArgs),
 
     /// Update clickhousectl to the latest version
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Self-update command. Downloads the latest clickhousectl release from GitHub and replaces the
-  current binary. Use --check to see if an update is available without installing.")]
     Update(UpdateArgs),
 
     /// Manage anonymous usage telemetry
     #[cfg(feature = "telemetry")]
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  clickhousectl collects anonymous usage data: command name, flag and argument names (never
-  their values), success/failure, version, OS/arch, and CI/agent detection. No user or machine IDs.
-  Opt out with `clickhousectl telemetry disable` or DO_NOT_TRACK=1.
+  Collected: command name, flag and argument names (never their values), success/failure, version,
+  OS/arch, CI/agent detection. No user or machine IDs.
+  DO_NOT_TRACK=1 also disables telemetry, without writing any config.
   Details: https://clickhouse.com/docs/concepts/features/interfaces/cli#telemetry")]
     Telemetry(TelemetryArgs),
 }
@@ -92,10 +84,6 @@ pub enum TelemetryCommands {
     /// Disable anonymous usage telemetry
     Disable,
     /// Show whether telemetry is enabled and why
-    ///
-    /// On a machine that has never seen the first-run notice, this reports
-    /// "not yet configured" and then completes the first run itself (writes
-    /// the marker file and prints the notice).
     Status,
     /// (internal) Fire one telemetry POST from CHCTL_TELEMETRY_PAYLOAD and exit
     //
@@ -110,13 +98,8 @@ pub enum TelemetryCommands {
 
 #[derive(Args, Debug)]
 pub struct SkillsArgs {
-    /// Install into specific agents (repeatable or comma-separated).
-    #[arg(
-        long = "agent",
-        value_name = "AGENT",
-        value_delimiter = ',',
-        long_help = "Install into specific agents (repeatable or comma-separated).\n\nValid names:\n  claude, cursor, opencode, codex\n  agent, roo, trae, windsurf\n  zencoder, neovate, pochi, adal\n  openclaw, cline, command-code\n  kiro-cli, agents"
-    )]
+    /// Install into specific agents (repeatable, comma-separated)
+    #[arg(long = "agent", value_name = "AGENT", value_delimiter = ',')]
     pub agents: Vec<String>,
 
     /// Install into every supported agent in the selected scope without prompting

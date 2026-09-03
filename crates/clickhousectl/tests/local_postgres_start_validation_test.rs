@@ -357,43 +357,78 @@ fn postgres_start_help_matches_managed_runtime_behavior() {
         .expect("render postgres start help");
 
     assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).expect("stdout is UTF-8");
     assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
-        r#"Start a Postgres container
+        help,
+        r#"Start a Postgres instance
 
 Usage: clickhousectl local postgres start [OPTIONS]
 
 Options:
-      --json                         Output as JSON
-      --name <NAME>                  Server name (default: "default", or random if default is already running)
-  -v, --version <VERSION>            Postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm). Default: 18. Pulls if missing
-      --port <PORT>                  Host TCP port (when omitted: uses 5432 if free, otherwise auto-selects; an occupied explicit port is rejected)
-      --user <USER>                  POSTGRES_USER (default: postgres)
-      --password <PASSWORD>          POSTGRES_PASSWORD (default: random 24-char alphanumeric)
-      --database <DATABASE>          POSTGRES_DB (default: postgres)
-  -e, --env <KEY=VALUE>              Extra unique env vars for the container; POSTGRES_PASSWORD is the only supported reserved key
-      --wait-timeout <WAIT_TIMEOUT>  Seconds to wait for PostgreSQL readiness (maximum: 600) [default: 60]
-  -h, --help                         Print help
+      --json
+          Output as JSON
+
+      --name <NAME>
+          Server name (default: "default", or random if default is already running)
+
+  -v, --version <VERSION>
+          Postgres image tag, major 17 or 18 (e.g. 17-alpine, 18.1). Default: 18
+          
+          Pulls the image if it is not present locally.
+
+      --port <PORT>
+          Host TCP port; when omitted, 5432 if free else an auto-selected free port
+          
+          An explicitly requested port that is already in use is rejected.
+
+      --user <USER>
+          POSTGRES_USER (default: postgres)
+
+      --password <PASSWORD>
+          POSTGRES_PASSWORD (default: random 24-char alphanumeric)
+
+      --database <DATABASE>
+          POSTGRES_DB (default: postgres)
+
+  -e, --env <KEY=VALUE>
+          Extra container env vars; repeatable, each key at most once
+          
+          POSTGRES_USER, POSTGRES_DB and PGDATA are managed and rejected here — use --user/--database. POSTGRES_PASSWORD is accepted, but not together with --password.
+
+      --wait-timeout <WAIT_TIMEOUT>
+          Seconds to wait for PostgreSQL readiness (maximum: 600)
+          
+          [default: 60]
+
+  -h, --help
+          Print help (see a summary with '-h')
 
 CONTEXT FOR AGENTS:
-  Starts a named Postgres server backed by a Docker container.
-  Without --name, the first server is called "default"; if "default" is running,
-  a random name is generated (e.g. "bold-crane").
-  --version (-v) selects a postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm).
-  Defaults to 18. Image is pulled if not already present locally.
-  When --port is omitted, port 5432 is used if free or another free port is auto-selected.
-  An explicitly requested port is rejected if it is occupied.
-  If a fresh startup fails, its new container and attempt-created data are removed; existing data is preserved.
-  A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
-  POSTGRES_USER, POSTGRES_DB, and PGDATA are reserved; use --user/--database for the first two.
-  `-e POSTGRES_PASSWORD=...` remains a compatibility alternative to --password, but the two cannot
-  be combined. Every --env key must be unique, so generated variables are never duplicated.
-  Start waits for PostgreSQL to accept connections, up to --wait-timeout seconds (default: 60).
-  Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
-  `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and
-  `created_by=clickhousectl_<version>` for safe discovery.
-  Requires Docker to be installed and running.
+  An existing stopped instance for the same (name, major) is resumed with its stored settings, so
+  --port/--user/--password/--database/-e are ignored on a resume.
+  Without --version, an existing instance selects the major; two majors under one name error.
+  The generated password is printed once by start — re-read connection details later with
+  `postgres dotenv` or `postgres client`.
+  A failed fresh start rolls back the container and data it created; pre-existing data is kept.
 "#
     );
     assert!(output.stderr.is_empty());
+
+    // Constraints that moved from the context block onto the flag they constrain.
+    assert!(
+        help.contains("POSTGRES_USER, POSTGRES_DB and PGDATA are managed and rejected here"),
+        "{help}"
+    );
+    assert!(
+        help.contains("POSTGRES_PASSWORD is accepted, but not together with --password."),
+        "{help}"
+    );
+    assert!(
+        help.contains("An explicitly requested port that is already in use is rejected."),
+        "{help}"
+    );
+    assert!(
+        help.contains("Pulls the image if it is not present locally."),
+        "{help}"
+    );
 }
