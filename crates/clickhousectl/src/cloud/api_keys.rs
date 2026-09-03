@@ -15,7 +15,7 @@ use tabled::{Table, Tabled, settings::Style};
 pub enum KeyCommands {
     /// List API keys
     List {
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -26,11 +26,11 @@ pub enum KeyCommands {
         #[arg(long)]
         name: String,
 
-        /// Role IDs to assign (can be specified multiple times)
+        /// Role UUID to assign (repeatable)
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// Expiration datetime (ISO 8601 / RFC 3339, e.g. 2025-12-31T23:59:59Z)
+        /// Expiry as RFC 3339 (e.g. 2025-12-31T23:59:59Z); omit for never
         #[arg(long, value_parser = parse_datetime)]
         expires_at: Option<String>,
 
@@ -38,23 +38,23 @@ pub enum KeyCommands {
         #[arg(long)]
         state: Option<String>,
 
-        /// IP/CIDR entries allowed to use the key
+        /// IP or CIDR allowed to use the key (repeatable)
         #[arg(long = "ip-allow")]
         ip_allow: Vec<String>,
 
-        /// Pre-hashed key ID digest
+        /// Pre-hashed key ID digest; needs --hash-key-id-suffix and --hash-key-secret
         #[arg(long)]
         hash_key_id: Option<String>,
 
-        /// Suffix of the pre-hashed key ID
+        /// Suffix of the pre-hashed key ID; needs --hash-key-id and --hash-key-secret
         #[arg(long)]
         hash_key_id_suffix: Option<String>,
 
-        /// Pre-hashed key secret digest
+        /// Pre-hashed key secret digest; needs --hash-key-id and --hash-key-id-suffix
         #[arg(long)]
         hash_key_secret: Option<String>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -64,7 +64,7 @@ pub enum KeyCommands {
         /// API key ID
         key_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -78,23 +78,23 @@ pub enum KeyCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Role IDs to assign (can be specified multiple times)
+        /// Role UUID to assign (repeatable)
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// Expiration datetime (ISO 8601 / RFC 3339, e.g. 2025-12-31T23:59:59Z)
+        /// Expiry as RFC 3339 (e.g. 2025-12-31T23:59:59Z); omit for never
         #[arg(long, value_parser = parse_datetime)]
         expires_at: Option<String>,
 
-        /// Key state (e.g., enabled, disabled)
+        /// Key state (enabled or disabled)
         #[arg(long)]
         state: Option<String>,
 
-        /// IP/CIDR entries allowed to use the key
+        /// IP or CIDR allowed to use the key (repeatable)
         #[arg(long = "ip-allow")]
         ip_allow: Vec<String>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -104,7 +104,7 @@ pub enum KeyCommands {
         /// API key ID
         key_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },

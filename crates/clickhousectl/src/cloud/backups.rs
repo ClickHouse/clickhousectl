@@ -8,28 +8,16 @@ use tabled::{Table, Tabled, settings::Style};
 #[derive(Subcommand)]
 pub enum BackupCommands {
     /// List backups for a service
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Lists all backups for a given service. Requires a service ID from `clickhousectl cloud service list`.
-  Returns backup IDs that can be used with `clickhousectl cloud service create --backup-id` to restore.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud backup get` for details on a specific backup.")]
     List {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
     /// Get backup details
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Returns details for a specific backup. Requires service ID and backup ID.
-  Get service IDs from `clickhousectl cloud service list`, backup IDs from `clickhousectl cloud backup list`.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud service create --backup-id <id>` to restore from this backup.")]
     Get {
         /// Service ID
         service_id: String,
@@ -37,7 +25,7 @@ CONTEXT FOR AGENTS:
         /// Backup ID
         backup_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -59,7 +47,7 @@ pub enum BackupConfigCommands {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -92,7 +80,7 @@ pub enum BackupConfigCommands {
         #[arg(long, conflicts_with = "backup_start_time")]
         clear_backup_start_time: bool,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },

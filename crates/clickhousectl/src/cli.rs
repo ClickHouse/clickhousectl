@@ -40,20 +40,14 @@ CONTEXT FOR AGENTS:
 
     /// Work with serverless ClickHouse in ClickHouse Cloud
     #[command(after_help = "\
-CREDENTIAL PRECEDENCE:
-  1. --api-key / --api-secret command-line flags
-  2. Project credentials in .clickhouse/credentials.json
-  3. CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET (shell, then .env)
-  4. OAuth tokens from `cloud auth login`
-
-Higher-precedence credentials override lower-precedence credentials. Use
-`clickhousectl cloud auth status` to see which configured source is active.
-
 CONTEXT FOR AGENTS:
-  Create a ClickHouse Cloud account with `clickhousectl cloud auth signup`.
-  Auth with `clickhousectl cloud auth login` (use API keys for write access).
+  Credential precedence, first wins: --api-key/--api-secret flags, .clickhouse/credentials.json,
+  CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth tokens.
+  API keys are read+write; OAuth is read-only and every write command fails on it.
+  `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
+  delete/remove act immediately — there is no confirmation prompt.
   Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
-  Typical workflow: `cloud auth signup` → `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
+  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud org list` -> `cloud service list`")]
     Cloud(Box<CloudArgs>),
 
     /// Install ClickHouse agent skills into supported coding agents
@@ -159,15 +153,21 @@ mod tests {
             .render_long_help()
             .to_string();
 
-        let precedence = help.split_once("CREDENTIAL PRECEDENCE:").unwrap().1;
-        let flags = precedence.find("1. --api-key / --api-secret").unwrap();
-        let file = precedence
-            .find("2. Project credentials in .clickhouse/credentials.json")
+        let precedence = help
+            .split_once("Credential precedence, first wins:")
+            .expect("credential precedence must be documented")
+            .1;
+        let flags = precedence.find("--api-key/--api-secret flags").unwrap();
+        let file = precedence.find(".clickhouse/credentials.json").unwrap();
+        let env = precedence
+            .find("CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env)")
             .unwrap();
-        let env = precedence.find("3. CLICKHOUSE_CLOUD_API_KEY").unwrap();
-        let oauth = precedence.find("4. OAuth tokens").unwrap();
+        let oauth = precedence.find("OAuth tokens.").unwrap();
         assert!(flags < file && file < env && env < oauth, "{help}");
-        assert!(help.contains("Higher-precedence credentials override lower-precedence"));
+        assert!(
+            help.contains("API keys are read+write; OAuth is read-only"),
+            "{help}"
+        );
     }
 
     #[test]
@@ -202,11 +202,6 @@ mod tests {
             .expect("cloud subcommand")
             .find_subcommand_mut("auth")
             .expect("auth subcommand");
-        let auth_help = auth.render_long_help().to_string();
-        assert!(
-            auth_help
-                .contains("Create a ClickHouse Cloud account: `clickhousectl cloud auth signup`.")
-        );
 
         let signup_help = auth
             .find_subcommand_mut("signup")

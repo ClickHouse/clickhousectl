@@ -23,11 +23,11 @@ use clap::{Args, Subcommand};
 
 #[derive(Args)]
 pub struct CloudArgs {
-    /// API key override (highest precedence; see `cloud --help` for all sources)
+    /// Cloud API key; overrides stored and environment credentials
     #[arg(long, global = true)]
     pub api_key: Option<String>,
 
-    /// API secret override (highest precedence; see `cloud --help` for all sources)
+    /// Cloud API secret; overrides stored and environment credentials
     #[arg(long, global = true)]
     pub api_secret: Option<String>,
 
@@ -35,11 +35,11 @@ pub struct CloudArgs {
     #[arg(long, global = true)]
     pub json: bool,
 
-    /// Print debug info (e.g. the credential source used) to stderr before running the command
+    /// Print the resolved credential source and API URL to stderr
     #[arg(long, global = true)]
     pub debug: bool,
 
-    /// API base URL (default: auto-detect from OAuth tokens, or https://api.clickhouse.cloud)
+    /// Cloud API base URL override
     #[cfg_attr(debug_assertions, arg(long, global = true))]
     #[cfg_attr(not(debug_assertions), arg(long, global = true, hide = true))]
     pub url: Option<String>,
@@ -88,30 +88,16 @@ impl CloudArgs {
 #[derive(Subcommand)]
 pub enum CloudCommands {
     /// Manage authentication (OAuth login, API keys)
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Create a ClickHouse Cloud account: `clickhousectl cloud auth signup`.
-
-  `login` without flags uses OAuth device flow (interactive, read-only).
-  Use API keys for write access (`login --api-key X --api-secret Y` or set CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET).
-
-  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
-
-  `logout` clears all saved credentials (OAuth tokens and API keys).
-
-  Related: `clickhousectl cloud org list` to verify credentials work.")]
     Auth {
         #[command(subcommand)]
         command: AuthCommands,
     },
 
-    /// Organization commands
+    /// Manage organizations
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage ClickHouse Cloud organizations. Subcommands: list, get, update, prometheus, usage.
-  Org IDs are needed for most service and backup operations.
-  Start with `clickhousectl cloud org list` to discover available org IDs.
-  Related: `clickhousectl cloud service list` (uses org ID).")]
+  `org list` is the source of the org IDs every other cloud command takes as --org-id.
+  Next: `cloud service list`, `cloud member list`.")]
     Org {
         #[command(subcommand)]
         command: OrgCommands,
@@ -130,13 +116,12 @@ CONTEXT FOR AGENTS:
         command: ServiceCommands,
     },
 
-    /// Backup commands
+    /// View service backups
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage ClickHouse Cloud backups. Subcommands: list, get.
-  Requires a service ID — get it from `clickhousectl cloud service list`.
-  Backup IDs from `backup list` can be used with `service create --backup-id` to restore.
-  Related: `clickhousectl cloud service list` for service IDs.")]
+  Service IDs come from `cloud service list`; backup IDs from `cloud backup list <service-id>`.
+  Restore a backup into a new service: `cloud service create --backup-id <backup-id>`.
+  Change schedule or retention with `cloud service backup-config update`, not here.")]
     Backup {
         #[command(subcommand)]
         command: BackupCommands,
@@ -158,24 +143,45 @@ CONTEXT FOR AGENTS:
     },
 
     /// Manage organization members
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  User IDs come from `cloud member list`; role IDs only from `cloud member list --json`
+  (the table shows role names). `update` replaces the member's whole role set.
+  `remove` takes effect immediately with no confirmation.
+  Next: `cloud invitation create --email ...` to add someone who is not yet a member.")]
     Member {
         #[command(subcommand)]
         command: MemberCommands,
     },
 
     /// Manage organization invitations
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Role IDs come from `cloud member list --json` (roleId), not from the human table.
+  The invitee must accept from the email; `list` shows only invitations still pending.
+  Next: `cloud member list` once the invitation is accepted.")]
     Invitation {
         #[command(subcommand)]
         command: InvitationCommands,
     },
 
     /// Manage API keys
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  `create` prints the key secret exactly once — capture stdout or you must create a new key.
+  Role IDs come from `cloud member list --json` (roleId) and must be UUIDs here.
+  `update` replaces --role-id and --ip-allow wholesale; omitted flags are left as-is.
+  Next: `cloud auth login --api-key <id> --api-secret <secret>` to use a new key.")]
     Key {
         #[command(subcommand)]
         command: KeyCommands,
     },
 
-    /// View activity log
+    /// View the organization activity log
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Audit log of org and service changes; without --from-date/--to-date the API picks the range.
+  Activity IDs for `activity get` come from `activity list`.")]
     Activity {
         #[command(subcommand)]
         command: ActivityCommands,
