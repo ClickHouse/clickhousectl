@@ -115,10 +115,10 @@ module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new l
   compatibility notes, reassurance, or anything already in the flag list, `[default:]`, or the `about` line.
 - Put shared context (auth model, how to find IDs, typical flow) on the parent (`cloud service`, `local server`);
   leaves add a block only for a leaf-specific gotcha. A plain `get`/`list` usually needs none.
-- Rendered help wording is pinned by ~31 `*_help_*` tests in `src/` (via `rendered_help()` in `src/local/cli.rs`,
-  e.g. `every_cloud_subcommand_has_a_help_about`) plus three in `tests/` (`cli_request_shape_test.rs`,
-  `local_postgres_start_validation_test.rs`). When a constraint moves, update the test that pins it; keep one
-  assertion per constraint.
+- Rendered help wording is pinned by `*help*` tests across `src/` (local, cloud domain and telemetry modules;
+  `rendered_help()` helpers in `src/local/cli.rs` and `src/cloud/postgres.rs`) plus three in `tests/`
+  (`cli_request_shape_test.rs`, `local_postgres_start_validation_test.rs`). When a constraint moves, update the
+  test that pins it; keep one assertion per constraint.
 - Content users still need but help must not carry goes to `README.md` as a short example or ≤ 3-line note.
 
 ## Tests
@@ -146,7 +146,8 @@ Test coverage is non-negotiable.
   breaks. `scripts/classify-cloud-integration.py` maps API-library source/test paths to the `service`, `postgres`,
   `organization`, `clickpipes` suites (unknown paths select all suites);
   `scripts/classify-install-integration.py` holds `INSTALL_EXACT_PATHS`/`INSTALL_PREFIXES` for the live local install
-  matrix, verified on every push by `test-cli.yml` (`scripts/tests/test_classify_install_integration.py`).
+  matrix, verified by `test-cli.yml` and `test-install.yml` on PRs that touch the classifier or the CLI
+  (`scripts/tests/test_classify_install_integration.py`).
 - Internal PRs classify the exact base-to-head diff on every push via a secret-free planner job; the
   `Cloud integration decision` check goes green automatically when no suites are affected. Affected suites only run
   after the `run-cloud-integration` label is applied (one-shot, bound to the labeled head SHA). Scheduled runs select

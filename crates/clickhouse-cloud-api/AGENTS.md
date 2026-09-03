@@ -12,8 +12,8 @@ and the private drift analyzer, which are always edited together.
 - `src/convert.rs` — `MissingRequiredFields` and conversion documentation; explicit response→request conversions
   live in private per-domain `src/convert/*.rs`.
 - `src/error.rs` — `Error` is the structural contract for failure modes: a failure a caller must tell apart gets its
-  own variant, never a recognizable message. `Error::Sql` exists precisely so callers stop sniffing a `SQL error `
-  prefix. Keep each variant's `Display` stable — it is what the user sees.
+  own variant, never a recognizable message. `Error::Sql` (the Query API rejecting a statement) exists precisely
+  so callers stop sniffing a `SQL error ` prefix. Keep each variant's `Display` stable — it is what the user sees.
 - `crates/clickhouse-openapi-analyzer/` — OpenAPI and Rust inventory, direction-aware comparison, policy config, and
   stable drift reports. Private (`publish = false`), a dev-dependency of this crate. Parser/tooling deps such as
   `syn` must not enter either published crate's normal dependency graph. It recursively traverses the private module
