@@ -9,7 +9,7 @@ use tabled::{Table, Tabled, settings::Style};
 pub enum BackupCommands {
     /// List backups for a service
     List {
-        /// Service ID
+        /// Service ID (from `cloud service list`)
         service_id: String,
 
         /// Organization ID (auto-detected only if you have one org)
@@ -19,7 +19,7 @@ pub enum BackupCommands {
 
     /// Get backup details
     Get {
-        /// Service ID
+        /// Service ID (from `cloud service list`)
         service_id: String,
 
         /// Backup ID
@@ -42,9 +42,9 @@ impl BackupCommands {
 
 #[derive(Subcommand)]
 pub enum BackupConfigCommands {
-    /// Get backup configuration for a service
+    /// Get the backup configuration
     Get {
-        /// Service ID
+        /// Service ID (from `cloud service list`)
         service_id: String,
 
         /// Organization ID (auto-detected only if you have one org)
@@ -52,9 +52,9 @@ pub enum BackupConfigCommands {
         org_id: Option<String>,
     },
 
-    /// Update backup configuration for a service
+    /// Update the backup configuration
     Update {
-        /// Service ID
+        /// Service ID (from `cloud service list`)
         service_id: String,
 
         /// The interval in hours between each backup. With --backup-start-time,
@@ -66,17 +66,14 @@ pub enum BackupConfigCommands {
         #[arg(long)]
         backup_retention_period_hours: Option<u32>,
 
-        /// Backup start time in UTC, exactly on the hour (HH:00). Requires the
-        /// backup period to be 24 or 48 hours: pass --backup-period-hours 24|48
-        /// in the same call, or the stored period must already be one of those.
-        /// Reversible with --clear-backup-start-time.
+        /// Backup start time in UTC, on the hour (HH:00). Requires the backup period
+        /// to be 24 or 48 hours, passed in the same call or already stored.
+        /// Clear it with --clear-backup-start-time.
         #[arg(long, value_parser = parse_backup_start_time)]
         backup_start_time: Option<String>,
 
-        /// Remove the stored backup start time, lifting the 24/48 hour
-        /// restriction on the backup period. Can be combined with
-        /// --backup-period-hours to clear the start time and set any period in
-        /// one call. Conflicts with --backup-start-time.
+        /// Remove the stored start time, lifting the 24/48 hour restriction on the
+        /// period. Can be combined with --backup-period-hours; conflicts with --backup-start-time.
         #[arg(long, conflicts_with = "backup_start_time")]
         clear_backup_start_time: bool,
 
@@ -587,12 +584,12 @@ mod tests {
         .err()
         .expect("help should stop parsing");
         let help = error.to_string();
-        assert!(help.contains("exactly on the hour (HH:00)"));
+        assert!(help.contains("on the hour (HH:00)"));
         assert!(help.contains("must be 24 or 48 hours"));
-        assert!(help.contains("Requires the backup period to be 24 or 48 hours"));
-        assert!(help.contains("or the stored period must already be one of those"));
-        assert!(help.contains("Reversible with --clear-backup-start-time"));
-        assert!(help.contains("Remove the stored backup start time"));
+        assert!(help.contains("Requires the backup period"));
+        assert!(help.contains("passed in the same call or already stored"));
+        assert!(help.contains("Clear it with --clear-backup-start-time"));
+        assert!(help.contains("Remove the stored start time"));
         assert!(help.contains("lifting the 24/48 hour"));
         assert!(
             !help.contains("API sets it to 24 hours"),

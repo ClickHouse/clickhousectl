@@ -436,19 +436,14 @@ CONTEXT FOR AGENTS:
         group(ArgGroup::new("service_selector").required(true).args(["name", "id"])),
         after_help = "\
 CONTEXT FOR AGENTS:
-  One statement per request: a ';'-separated script is rejected — run statements one call at a time.
-  The Query API times out after about 30 seconds; the statement keeps running but the result is
-    lost. For longer work the error prints a `clickhouse client` command, installed by
-    `clickhousectl local use latest`.
-  With no --query and no --queries-file, SQL is read from stdin. --query never reads stdin: pipe the
-    statement and its data together, e.g. printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv |
-    clickhousectl cloud service query --id <id>.
-  API key auth runs read+write SQL; OAuth (`cloud auth login`) is read-only SELECT.
-  Format: PrettyCompact on a TTY, TabSeparated when piped, JSONEachRow with --json.
-  An idle service is woken automatically (the first query is slow); a stopped one is not — run
-    `cloud service start <id>` first.
-  A stored Query API key rejected with 401/403 is never replaced automatically:
-    `cloud service repair-query-key <id>` does it deliberately."
+  One statement per request: a ';'-separated script is rejected. Run statements one call at a time.
+  Times out after about 30 seconds (the statement keeps running, the result is lost); the error prints a `clickhouse client` fallback.
+  SQL is read from stdin unless --query or --queries-file is given; --query never reads stdin.
+  To load data, pipe the statement and data together: printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | ... --id <id>
+  API key auth runs read+write SQL; OAuth is read-only SELECT.
+  Output: PrettyCompact on a TTY, TabSeparated when piped, JSONEachRow with --json (not with --format).
+  An idle service wakes automatically (first query is slow); a stopped one needs `cloud service start <id>` first.
+  A stored query key rejected with 401/403 is never replaced automatically: `cloud service repair-query-key <id>`."
     )]
     Query {
         /// Service name to query
@@ -3274,31 +3269,26 @@ mod tests {
 
         // The gateway limit is named, not alluded to, and so is what happens
         // to the statement when it fires (#644).
-        assert!(help.contains("times out after about 30 seconds"), "{help}");
+        assert!(help.contains("Times out after about 30 seconds"), "{help}");
         assert!(help.contains("the statement keeps running"), "{help}");
         // The full native-client command belongs to the timeout error, which
         // knows the service's real host; help only points at it (#678).
         assert!(
-            help.contains("the error prints a `clickhouse client` command"),
+            help.contains("the error prints a `clickhouse client` fallback"),
             "{help}"
         );
-        assert!(help.contains("`clickhousectl local use latest`"), "{help}");
         assert!(help.contains("One statement per request"), "{help}");
         assert!(help.contains("SQL is read from stdin"), "{help}");
-        assert!(help.contains("woken automatically"), "{help}");
+        assert!(help.contains("wakes automatically"), "{help}");
         assert!(help.contains("repair-query-key <id>"), "{help}");
         assert!(help.contains("never replaced automatically"), "{help}");
-        // The block is a CONTEXT FOR AGENTS section within its 8-fact budget:
-        // one fact per line, continuations indented past it.
+        // The block is a CONTEXT FOR AGENTS section within its 8-line budget.
         let block = help
             .split_once("CONTEXT FOR AGENTS:\n")
             .expect("after_help block")
             .1;
-        let facts = block
-            .lines()
-            .filter(|line| line.starts_with("  ") && !line.starts_with("   "))
-            .count();
-        assert!(facts <= 8, "{facts} facts: {help}");
+        let lines = block.lines().filter(|line| !line.trim().is_empty()).count();
+        assert!(lines <= 8, "{lines} lines: {help}");
     }
 
     #[test]
