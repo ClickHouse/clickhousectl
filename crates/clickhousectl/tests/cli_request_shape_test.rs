@@ -324,6 +324,243 @@ async fn backup_config_rejects_incompatible_period_before_any_request() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+// ── Backup start time against the stored period (issue #642) ────────────────
+
+/// The API keeps the stored period when a start-time update omits one, and
+/// rejects the PATCH if that period is not 24 or 48. The CLI reads the
+/// configuration first so the user gets a message naming the flag to pass.
+const BACKUP_CONFIG_PATH: &str = "/v1/organizations/org-1/services/svc-1/backupConfiguration";
+
+async fn mount_stored_backup_config(mock: &MockServer, period_hours: f64) {
+    Mock::given(method("GET"))
+        .and(path(BACKUP_CONFIG_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "backupPeriodInHours": period_hours,
+                "backupRetentionPeriodInHours": 48.0,
+            },
+            "status": 200,
+            "requestId": "stub-backup-config-get",
+        })))
+        .mount(mock)
+        .await;
+}
+
+async fn mount_backup_config_patch(mock: &MockServer) {
+    Mock::given(method("PATCH"))
+        .and(path(BACKUP_CONFIG_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "backupPeriodInHours": 24.0,
+                "backupRetentionPeriodInHours": 48.0,
+                "backupStartTime": "02:00",
+            },
+            "status": 200,
+            "requestId": "stub-backup-config-patch",
+        })))
+        .mount(mock)
+        .await;
+}
+
+fn backup_config_update_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "service",
+        "backup-config",
+        "update",
+        "svc-1",
+        "--org-id",
+        "org-1",
+        "--backup-start-time",
+        "02:00",
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
+#[tokio::test]
+async fn backup_config_start_time_refuses_an_incompatible_stored_period() {
+    let mock = MockServer::start().await;
+    mount_stored_backup_config(&mock, 12.0).await;
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &backup_config_update_args(&[]));
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
+         Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call.\n"
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "expected only the configuration read");
+    assert_eq!(requests[0].method, wiremock::http::Method::GET);
+}
+
+#[tokio::test]
+async fn backup_config_start_time_patches_when_the_stored_period_is_compatible() {
+    let mock = MockServer::start().await;
+    mount_stored_backup_config(&mock, 24.0).await;
+    mount_backup_config_patch(&mock).await;
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &backup_config_update_args(&[]));
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].method, wiremock::http::Method::GET);
+    assert_eq!(requests[1].method, wiremock::http::Method::PATCH);
+
+    let body: Value = serde_json::from_slice(&requests[1].body).expect("PATCH body wasn't JSON");
+    assert_eq!(body["backupStartTime"], "02:00");
+    assert!(
+        body.get("backupPeriodInHours").is_none(),
+        "the period must stay absent so the API keeps the stored one: {body}"
+    );
+
+    let printed: Value = serde_json::from_slice(&output.stdout).expect("stdout wasn't JSON");
+    assert_eq!(printed["backupStartTime"], "02:00");
+}
+
+#[tokio::test]
+async fn backup_config_start_time_with_an_explicit_period_skips_the_read() {
+    let mock = MockServer::start().await;
+    mount_backup_config_patch(&mock).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &backup_config_update_args(&["--backup-period-hours", "48"]),
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "an explicit period needs no read");
+    assert_eq!(requests[0].method, wiremock::http::Method::PATCH);
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
+    assert_eq!(body["backupStartTime"], "02:00");
+    assert_eq!(body["backupPeriodInHours"], 48.0);
+}
+
+// ── Clearing the backup start time (issue #564) ─────────────────────────────
+
+/// The Cloud API clears a stored start time only on an explicit JSON `null`
+/// (an empty string is rejected as an invalid time), and clearing is the only
+/// way back to a backup period other than 24 or 48 hours. The flag therefore
+/// has to put the key in the body with a null value, and must not be talked
+/// out of it by the stored-period read.
+async fn mount_cleared_backup_config_patch(mock: &MockServer) {
+    Mock::given(method("PATCH"))
+        .and(path(BACKUP_CONFIG_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "backupPeriodInHours": 12.0,
+                "backupRetentionPeriodInHours": 48.0,
+            },
+            "status": 200,
+            "requestId": "stub-backup-config-clear",
+        })))
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn backup_config_clear_start_time_sends_an_explicit_null() {
+    let mock = MockServer::start().await;
+    mount_cleared_backup_config_patch(&mock).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--clear-backup-start-time",
+        ],
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1, "clearing needs no stored-period read");
+    assert_eq!(requests[0].method, wiremock::http::Method::PATCH);
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
+    assert_eq!(
+        body,
+        serde_json::json!({ "backupStartTime": null }),
+        "the key must be present and null, not omitted: {body}"
+    );
+}
+
+#[tokio::test]
+async fn backup_config_clear_start_time_travels_with_an_incompatible_period() {
+    let mock = MockServer::start().await;
+    mount_cleared_backup_config_patch(&mock).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--clear-backup-start-time",
+            "--backup-period-hours",
+            "12",
+            "--json",
+        ],
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
+    assert_eq!(
+        body,
+        serde_json::json!({ "backupPeriodInHours": 12.0, "backupStartTime": null })
+    );
+
+    let printed: Value = serde_json::from_slice(&output.stdout).expect("stdout wasn't JSON");
+    assert_eq!(printed["backupPeriodInHours"], 12.0);
+    assert!(
+        printed.get("backupStartTime").is_none(),
+        "the cleared start time must be absent from the response: {printed}"
+    );
+}
+
+#[tokio::test]
+async fn backup_config_rejects_setting_and_clearing_the_start_time_together() {
+    let mock = MockServer::start().await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--backup-start-time",
+            "02:00",
+            "--clear-backup-start-time",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cannot be used with"),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 // ── Concrete Cloud error routing (issue #233) ──────────────────────────────
 
 async fn invoke_service_list_api_error(status: u16, message: &str) -> std::process::Output {
@@ -581,6 +818,534 @@ async fn service_delete_running_conflict_suggests_force() {
     );
 }
 
+// ── Postgres deletion JSON output (issue #614) ────────────────────────────
+
+/// `postgres delete --json` must emit the Postgres resource object, not the
+/// raw `{"status":...,"requestId":...}` API envelope the delete endpoint
+/// itself returns: the handler fetches the resource before issuing the
+/// delete and renders that instead, consistent with every other
+/// `cloud postgres` subcommand.
+#[tokio::test]
+async fn postgres_delete_json_emits_the_resource_object_not_the_envelope() {
+    let mock = MockServer::start().await;
+    let postgres_id = "11111111-2222-3333-4444-555555555555";
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{postgres_id}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": postgres_id,
+                "name": "my-postgres",
+                "state": "running",
+            },
+            "status": 200,
+            "requestId": "stub-postgres-get",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{postgres_id}"
+        )))
+        .respond_with(successful_delete_response("stub-postgres-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["postgres", "delete", postgres_id, "--org-id", "org-1"],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource object as JSON");
+    assert_eq!(stdout["id"], postgres_id);
+    assert_eq!(stdout["name"], "my-postgres");
+    assert_eq!(stdout["state"], "running");
+    assert!(
+        stdout.get("status").is_none() && stdout.get("requestId").is_none(),
+        "must not emit the raw API envelope, got: {stdout}"
+    );
+}
+
+// ── Postgres update --name (issue #663) ────────────────────────────────────
+
+/// `postgres update --name` must PATCH the API with only `name` set: no
+/// `size`, `haType`, or `tags` key should appear when only `--name` is
+/// passed, and no discovery `GET` is issued (no tag diff was requested).
+#[tokio::test]
+async fn postgres_update_name_sends_only_the_name_field() {
+    let mock = MockServer::start().await;
+    let postgres_id = "11111111-2222-3333-4444-555555555555";
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{postgres_id}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": postgres_id,
+                "name": "renamed-pg",
+                "state": "running",
+            },
+            "status": 200,
+            "requestId": "stub-postgres-update",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            postgres_id,
+            "--org-id",
+            "org-1",
+            "--name",
+            "renamed-pg",
+        ],
+    );
+
+    assert_success(&output);
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "expected only the PATCH, no discovery GET"
+    );
+    assert_eq!(requests[0].method, wiremock::http::Method::PATCH);
+
+    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
+    assert_eq!(body["name"], "renamed-pg");
+    assert!(
+        body.get("size").is_none() && body.get("haType").is_none() && body.get("tags").is_none(),
+        "unexpected keys in PATCH body: {body}"
+    );
+}
+
+// ── Postgres list --filter validation (issue #603) ────────────────────────
+
+fn postgres_list_response() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": [
+            {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "name": "primary-pg",
+                "state": "running",
+                "region": "us-east-1",
+                "provider": "aws",
+                "isPrimary": true,
+            },
+            {
+                "id": "66666666-7777-8888-9999-000000000000",
+                "name": "replica-pg",
+                "state": "restoring_backup",
+                "region": "us-east-1",
+                "provider": "aws",
+                "isPrimary": false,
+            },
+            {
+                // Absent `isPrimary`/`state`: must match no filter value.
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "name": "unknown-pg",
+                "region": "us-east-1",
+            },
+        ],
+        "status": 200,
+        "requestId": "stub-postgres-list",
+    }))
+}
+
+/// An unsupported `--filter` key used to return the whole unfiltered list with
+/// exit 0. It is now a clap usage error (exit 2) that names the valid keys, and
+/// no request reaches the API.
+#[tokio::test]
+async fn postgres_list_rejects_an_unknown_filter_key_before_calling_the_api() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres"))
+        .respond_with(postgres_list_response())
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    for filter in ["bogus=1", "state=", "isPrimary=maybe", "state"] {
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &["postgres", "list", "--org-id", "org-1", "--filter", filter],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "--filter {filter} must be a usage error, stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "--filter {filter} must print no results, got: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres", "list", "--org-id", "org-1", "--filter", "bogus=1",
+        ],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown filter key 'bogus'"), "{stderr}");
+    assert!(
+        stderr.contains("state, region, name, provider, isPrimary"),
+        "the valid keys must be listed, got: {stderr}"
+    );
+}
+
+/// `isPrimary` is a supported key (it is the `Primary` column), `state` matches
+/// the serde wire value including multi-word states, and an item whose field the
+/// API omitted matches nothing.
+#[tokio::test]
+async fn postgres_list_applies_supported_filters_client_side() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres"))
+        .respond_with(postgres_list_response())
+        .mount(&mock)
+        .await;
+
+    let names = |filter: &str| -> Vec<String> {
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &["postgres", "list", "--org-id", "org-1", "--filter", filter],
+        );
+        assert_success(&output);
+        let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+            .expect("stdout should be a JSON array");
+        stdout
+            .as_array()
+            .expect("array")
+            .iter()
+            .map(|item| item["name"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+
+    assert_eq!(names("isPrimary=true"), vec!["primary-pg".to_string()]);
+    assert_eq!(names("isPrimary=false"), vec!["replica-pg".to_string()]);
+    assert_eq!(
+        names("state=restoring_backup"),
+        vec!["replica-pg".to_string()]
+    );
+    assert_eq!(names("state=running"), vec!["primary-pg".to_string()]);
+    assert_eq!(
+        names("region=us-east-1"),
+        vec![
+            "primary-pg".to_string(),
+            "replica-pg".to_string(),
+            "unknown-pg".to_string()
+        ]
+    );
+    assert_eq!(names("name=nope"), Vec::<String>::new());
+}
+
+// ── Postgres promote / switchover role changes (issue #604) ───────────────
+
+const ROLE_TEST_POSTGRES_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+fn postgres_role_service(ha_type: &str, is_primary: Option<bool>) -> serde_json::Value {
+    let mut service = serde_json::json!({
+        "id": ROLE_TEST_POSTGRES_ID,
+        "name": "my-postgres",
+        "state": "running",
+        "haType": ha_type,
+    });
+    if let Some(is_primary) = is_primary {
+        service["isPrimary"] = serde_json::json!(is_primary);
+    }
+    service
+}
+
+/// Mounts the GET a role change may issue: only `--wait` reads the service,
+/// once before a switchover to learn the prior role and then once per poll.
+/// `expected_calls` pins that, so a command run without `--wait` is verified to
+/// issue no GET at all.
+async fn mount_postgres_get(mock: &MockServer, service: serde_json::Value, expected_calls: u64) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": service,
+            "status": 200,
+            "requestId": "stub-postgres-get",
+        })))
+        .expect(expected_calls)
+        .mount(mock)
+        .await;
+}
+
+async fn mount_postgres_state(mock: &MockServer, service: serde_json::Value, expected_calls: u64) {
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}/state"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": service,
+            "status": 200,
+            "requestId": "stub-postgres-state",
+        })))
+        .expect(expected_calls)
+        .mount(mock)
+        .await;
+}
+
+/// Without `--wait`, switchover is issued as-is: no read of the service before
+/// or after, just the state PATCH, and stdout is the state-change response.
+#[tokio::test]
+async fn postgres_switchover_without_wait_issues_only_the_state_change() {
+    let mock = MockServer::start().await;
+    mount_postgres_get(&mock, postgres_role_service("sync", Some(true)), 0).await;
+    mount_postgres_state(&mock, postgres_role_service("sync", Some(true)), 1).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "switchover",
+            ROLE_TEST_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![(
+            "PATCH".to_string(),
+            format!("/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}/state")
+        )],
+        "switchover without --wait must issue exactly one request"
+    );
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource object as JSON");
+    assert_eq!(stdout["id"], ROLE_TEST_POSTGRES_ID);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--wait"),
+        "should say --wait is how the swap gets confirmed, got: {stderr}"
+    );
+}
+
+/// The #604 failure: the state endpoint answers 200 and the roles never swap.
+/// With `--wait` the CLI polls the service and exits non-zero when the role it
+/// captured before the command is still the role afterwards.
+#[tokio::test]
+async fn postgres_switchover_wait_fails_when_the_roles_never_swap() {
+    let mock = MockServer::start().await;
+    // One read before the command to learn the prior role, one poll after it.
+    mount_postgres_get(&mock, postgres_role_service("sync", Some(true)), 2).await;
+    mount_postgres_state(&mock, postgres_role_service("sync", Some(true)), 1).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "switchover",
+            ROLE_TEST_POSTGRES_ID,
+            "--wait",
+            "--wait-timeout",
+            "0",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("switchover did not take effect within 0s")
+            && stderr.contains("isPrimary=true")
+            && stderr.contains("expected false"),
+        "should report non-convergence, got: {stderr}"
+    );
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("the last observed state should still be emitted as JSON");
+    assert_eq!(stdout["isPrimary"], serde_json::json!(true));
+}
+
+/// `--wait` succeeds once the target reports the new role, and still says the
+/// old primary's demotion is not something the CLI can confirm.
+#[tokio::test]
+async fn postgres_promote_wait_confirms_the_new_primary() {
+    let mock = MockServer::start().await;
+    // Promote always targets isPrimary=true, so nothing is read before the
+    // command; the single poll afterwards sees the new primary.
+    mount_postgres_get(&mock, postgres_role_service("async", Some(true)), 1).await;
+    // The promote response omits `isPrimary` entirely, exactly as the API does.
+    mount_postgres_state(&mock, postgres_role_service("async", None), 1).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "promote",
+            ROLE_TEST_POSTGRES_ID,
+            "--wait",
+            "--wait-timeout",
+            "0",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the polled resource object as JSON");
+    assert_eq!(
+        stdout["isPrimary"],
+        serde_json::json!(true),
+        "the polled state must replace the promote response that omits isPrimary"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("previous primary is demoted asynchronously"),
+        "the dual-primary window must be reported, got: {stderr}"
+    );
+}
+
+/// Without `--wait`, promote keeps its old behaviour (exit 0 on acceptance, no
+/// read of the service) but says on stderr that the role change is not confirmed.
+#[tokio::test]
+async fn postgres_promote_without_wait_reports_eventual_consistency() {
+    let mock = MockServer::start().await;
+    mount_postgres_get(&mock, postgres_role_service("async", Some(false)), 0).await;
+    mount_postgres_state(&mock, postgres_role_service("async", None), 1).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "promote",
+            ROLE_TEST_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource object as JSON");
+    assert!(
+        stdout.get("isPrimary").is_none(),
+        "an omitted isPrimary must stay omitted, got: {stdout}"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("previous primary is demoted asynchronously") && stderr.contains("--wait"),
+        "should point at --wait and the dual-primary window, got: {stderr}"
+    );
+}
+
+/// Every response field is optional, so the pre-command GET can omit
+/// `isPrimary`. A switchover swaps that role, so `--wait` then has nothing to
+/// confirm a swap against: the command must refuse before issuing a state
+/// change it could only report as an unverified success (#604).
+#[tokio::test]
+async fn postgres_switchover_wait_refuses_an_unknown_prior_role() {
+    let mock = MockServer::start().await;
+    mount_postgres_get(&mock, postgres_role_service("sync", None), 1).await;
+    mount_postgres_state(&mock, postgres_role_service("sync", None), 0).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "switchover",
+            ROLE_TEST_POSTGRES_ID,
+            "--wait",
+            "--wait-timeout",
+            "0",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("omitted isPrimary") && stderr.contains("--wait"),
+        "should explain why --wait cannot confirm the swap, got: {stderr}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "a refused switchover must print no resource, got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// Start a human-mode (no `--json`, no agent env) switchover without waiting
+/// for it, so the test can close its stdout first (see the #598 tests).
+fn spawn_postgres_switchover_human(mock: &MockServer, project_dir: &Path) -> std::process::Child {
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", project_dir.join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project_dir)
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "postgres",
+            "switchover",
+            ROLE_TEST_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl")
+}
+
+/// The human rendering of the role-change result lands after the command
+/// already took effect — with `--wait`, minutes after — so a closed stdout must
+/// not turn an accepted switchover into a panic and exit 101 (#598).
+#[tokio::test]
+async fn postgres_switchover_human_output_survives_a_closed_stdout() {
+    let mock = MockServer::start().await;
+    mount_postgres_get(&mock, postgres_role_service("sync", Some(true)), 0).await;
+    mount_postgres_state(&mock, postgres_role_service("sync", Some(true)), 1).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("home")).unwrap();
+    let mut child = spawn_postgres_switchover_human(&mock, dir.path());
+    drop(child.stdout.take().expect("stdout was piped"));
+    let status = child.wait().expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a closed stdout must not turn an accepted switchover into a panic"
+    );
+    let shape = received_request_shape(&mock).await;
+    assert!(
+        shape.contains(&(
+            "PATCH".to_string(),
+            format!("/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}/state")
+        )),
+        "the switchover must still reach the API: {shape:?}"
+    );
+}
+
 const DELETE_TEST_SERVICE_ID: &str = "11111111-2222-3333-4444-555555555555";
 const DELETE_TEST_API_KEY_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const DELETE_TEST_PENDING_API_KEY_ID: &str = "99999999-8888-7777-6666-555555555555";
@@ -611,11 +1376,15 @@ fn write_service_query_key(root: &Path, organization_id: Option<&str>, api_key_i
     .unwrap();
 }
 
-fn invoke_service_delete(
+/// Start a `service delete` without waiting for it, so a test can close the
+/// child's pipes while the command is still running (see the #598 tests).
+fn spawn_service_delete(
     mock: &MockServer,
     project_dir: &Path,
     force: bool,
-) -> std::process::Output {
+    stdout: Stdio,
+    stderr: Stdio,
+) -> std::process::Child {
     let url = mock.uri();
     let mut args = vec![
         "cloud",
@@ -638,8 +1407,36 @@ fn invoke_service_delete(
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .current_dir(project_dir)
         .args(args)
-        .output()
+        .stdin(Stdio::null())
+        .stdout(stdout)
+        .stderr(stderr)
+        .spawn()
         .expect("failed to spawn clickhousectl")
+}
+
+fn invoke_service_delete(
+    mock: &MockServer,
+    project_dir: &Path,
+    force: bool,
+) -> std::process::Output {
+    spawn_service_delete(mock, project_dir, force, Stdio::piped(), Stdio::piped())
+        .wait_with_output()
+        .expect("failed to run clickhousectl")
+}
+
+/// The HTTP methods and paths the mock received, in order.
+async fn received_request_shape(mock: &MockServer) -> Vec<(String, String)> {
+    mock.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| {
+            (
+                request.method.as_str().to_string(),
+                request.url.path().to_string(),
+            )
+        })
+        .collect()
 }
 
 fn successful_delete_response(request_id: &str) -> ResponseTemplate {
@@ -835,6 +1632,90 @@ async fn service_delete_also_removes_exact_pending_repair_cleanup_keys() {
 }
 
 #[tokio::test]
+async fn service_delete_attempts_every_owned_key_and_reports_the_ones_that_failed() {
+    // The pending retirement cannot be deleted but the current key can: both
+    // are attempted, the failure names exactly the key that is left, and the
+    // record is kept so its ID is not lost (#527).
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{DELETE_TEST_PENDING_API_KEY_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "status": 500,
+            "error": "pending cleanup failed",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-key-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_service_query_key(dir.path(), Some("org-1"), Some(DELETE_TEST_API_KEY_ID));
+    let credentials_path = dir.path().join(".clickhouse/credentials.json");
+    let mut stored: Value =
+        serde_json::from_slice(&std::fs::read(&credentials_path).unwrap()).unwrap();
+    stored["service_query_keys"][DELETE_TEST_SERVICE_ID]["pending_cleanup_api_key_ids"] =
+        serde_json::json!([DELETE_TEST_PENDING_API_KEY_ID]);
+    std::fs::write(&credentials_path, serde_json::to_vec(&stored).unwrap()).unwrap();
+
+    let output = invoke_service_delete(&mock, dir.path(), false);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "({DELETE_TEST_PENDING_API_KEY_ID}: pending cleanup failed)"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains(&format!("{DELETE_TEST_API_KEY_ID}:")),
+        "a key that was deleted is not reported as failed: {stderr}"
+    );
+    assert!(
+        stderr.contains("clickhousectl cloud key delete <key-id> --org-id org-1"),
+        "{stderr}"
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            (
+                "DELETE".to_string(),
+                format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
+            ),
+            (
+                "DELETE".to_string(),
+                format!("/v1/organizations/org-1/keys/{DELETE_TEST_PENDING_API_KEY_ID}")
+            ),
+            (
+                "DELETE".to_string(),
+                format!("/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}")
+            ),
+        ]
+    );
+    let stored: Value = serde_json::from_slice(&std::fs::read(credentials_path).unwrap()).unwrap();
+    assert_eq!(
+        stored["service_query_keys"][DELETE_TEST_SERVICE_ID]["pending_cleanup_api_key_ids"],
+        serde_json::json!([DELETE_TEST_PENDING_API_KEY_ID])
+    );
+}
+
+#[tokio::test]
 async fn service_delete_without_a_stored_query_key_only_deletes_the_service() {
     let mock = MockServer::start().await;
     Mock::given(method("DELETE"))
@@ -861,7 +1742,7 @@ async fn service_delete_without_a_stored_query_key_only_deletes_the_service() {
 }
 
 #[tokio::test]
-async fn forced_service_delete_treats_an_absent_key_and_service_as_success() {
+async fn forced_service_delete_surfaces_not_found_for_an_absent_service() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(format!(
@@ -870,27 +1751,6 @@ async fn forced_service_delete_treats_an_absent_key_and_service_as_success() {
         .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
             "status": 404,
             "error": "NOT_FOUND",
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("DELETE"))
-        .and(path(format!(
-            "/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}"
-        )))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "status": 404,
-            "error": "NOT_FOUND",
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {},
-            "status": 200,
-            "requestId": "stub-org-get",
         })))
         .expect(1)
         .mount(&mock)
@@ -910,21 +1770,18 @@ async fn forced_service_delete_treats_an_absent_key_and_service_as_success() {
     let dir = tempfile::tempdir().unwrap();
     write_service_query_key(dir.path(), Some("org-1"), Some(DELETE_TEST_API_KEY_ID));
     let output = invoke_service_delete(&mock, dir.path(), true);
-    assert_success(&output);
-    assert_eq!(String::from_utf8_lossy(&output.stdout), "null\n");
-
-    let requests = mock.received_requests().await.unwrap();
-    let request_shape = requests
-        .iter()
-        .map(|request| {
-            (
-                request.method.as_str().to_string(),
-                request.url.path().to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert_eq!(
-        request_shape,
+        String::from_utf8_lossy(&output.stderr),
+        "Error: NOT_FOUND: request scoped to organization org-1\n"
+    );
+
+    // The delete request never succeeded, so local query-key cleanup and the
+    // organization-scoped key deletion (which would follow a successful
+    // delete) must not have been attempted.
+    assert_eq!(
+        received_request_shape(&mock).await,
         vec![
             (
                 "GET".to_string(),
@@ -934,12 +1791,16 @@ async fn forced_service_delete_treats_an_absent_key_and_service_as_success() {
                 "DELETE".to_string(),
                 format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
             ),
-            ("GET".to_string(), "/v1/organizations/org-1".to_string()),
-            (
-                "DELETE".to_string(),
-                format!("/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}")
-            ),
         ]
+    );
+
+    let stored: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        stored["service_query_keys"][DELETE_TEST_SERVICE_ID]["api_key_id"],
+        DELETE_TEST_API_KEY_ID
     );
 }
 
@@ -1009,6 +1870,134 @@ async fn forced_service_delete_reports_only_poll_state_transitions_when_redirect
     );
 }
 
+/// Mock a `--force` delete of a service that is observed mid-`stopping`:
+/// `running` on the pre-stop check, then `stopping` and `stopped` from the
+/// poll loop.
+async fn mount_forced_delete_stop_sequence(mock: &MockServer) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    let states = ["running", "stopping", "stopped"];
+    let request_index = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(move |_: &wiremock::Request| {
+            let index = request_index.fetch_add(1, Ordering::SeqCst);
+            let state = states[index.min(states.len() - 1)];
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {
+                    "id": DELETE_TEST_SERVICE_ID,
+                    "name": "demo",
+                    "state": state,
+                },
+                "status": 200,
+                "requestId": format!("stub-service-get-{index}"),
+            }))
+        })
+        .expect(3)
+        .mount(mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}/state"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": DELETE_TEST_SERVICE_ID,
+                "name": "demo",
+                "state": "stopping",
+            },
+            "status": 200,
+            "requestId": "stub-service-stop",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+/// #598: a `--force` delete that observed the service mid-`stopping` panicked
+/// with exit 101. The stop poll streams a progress line per state change for as
+/// long as the stop takes (minutes on a real service), so it outlives readers
+/// that go away — a pager the user quit, a supervising harness that stopped
+/// reading — and `eprintln!` panics when the write fails with `BrokenPipe`.
+/// The delete must still run to completion and exit 0.
+#[tokio::test]
+async fn forced_service_delete_survives_a_closed_stderr_while_stopping() {
+    let mock = MockServer::start().await;
+    mount_forced_delete_stop_sequence(&mock).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = spawn_service_delete(&mock, dir.path(), true, Stdio::null(), Stdio::piped());
+    // Dropping the read end closes the pipe while the command is still
+    // polling. Rust ignores `SIGPIPE`, so the child's next write to stderr
+    // fails with `EPIPE` rather than killing the process — exactly the state a
+    // reader that walked away leaves behind.
+    drop(child.stderr.take().expect("stderr was piped"));
+    let status = child.wait().expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a closed stderr must not turn a completed forced delete into a panic"
+    );
+    // Not just "didn't panic": the stop-then-delete sequence still completed.
+    let shape = received_request_shape(&mock).await;
+    assert_eq!(
+        shape.last(),
+        Some(&(
+            "DELETE".to_string(),
+            format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
+        )),
+        "unexpected request sequence: {shape:?}"
+    );
+}
+
+/// The stdout counterpart of #598: the result line is printed after the
+/// service is already gone, so a closed stdout must not turn a completed
+/// deletion into a panic either.
+#[tokio::test]
+async fn service_delete_survives_a_closed_stdout() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
+        )))
+        .respond_with(successful_delete_response("stub-service-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = spawn_service_delete(&mock, dir.path(), false, Stdio::piped(), Stdio::piped());
+    drop(child.stdout.take().expect("stdout was piped"));
+    let status = child.wait().expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a closed stdout must not turn a completed deletion into a panic"
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![(
+            "DELETE".to_string(),
+            format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
+        )]
+    );
+}
+
 #[tokio::test]
 async fn service_delete_cleanup_failure_preserves_credentials_for_retry() {
     let mock = MockServer::start().await;
@@ -1040,7 +2029,9 @@ async fn service_delete_cleanup_failure_preserves_credentials_for_retry() {
         String::from_utf8_lossy(&output.stderr),
         format!(
             "Error: failed to delete the auto-provisioned query API key for service \
-             {DELETE_TEST_SERVICE_ID}: cleanup failed\n"
+             {DELETE_TEST_SERVICE_ID} ({DELETE_TEST_API_KEY_ID}: cleanup failed). The local \
+             record was kept so the exact IDs are not lost; delete each key with \
+             `clickhousectl cloud key delete <key-id> --org-id org-1`\n"
         )
     );
 
@@ -1183,12 +2174,6 @@ async fn service_delete_does_not_treat_a_missing_organization_as_an_absent_servi
         .and(path(format!(
             "/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}"
         )))
-        .respond_with(not_found.clone())
-        .expect(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v1/organizations/org-1"))
         .respond_with(not_found)
         .expect(1)
         .mount(&mock)
@@ -1197,18 +2182,45 @@ async fn service_delete_does_not_treat_a_missing_organization_as_an_absent_servi
     let dir = tempfile::tempdir().unwrap();
     let output = invoke_service_delete(&mock, dir.path(), false);
     assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         "Error: NOT_FOUND: request scoped to organization org-1\n"
     );
 
     let requests = mock.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 2);
+    assert_eq!(requests.len(), 1);
     assert_eq!(
         requests[0].url.path(),
         format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}")
     );
-    assert_eq!(requests[1].url.path(), "/v1/organizations/org-1");
+}
+
+#[tokio::test]
+async fn service_delete_preserves_a_detailed_not_found_error() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path("/v1/organizations/org-1/services/missing-service"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "Service missing-service was not found",
+            "requestId": "stub-missing-service",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["service", "delete", "missing-service", "--org-id", "org-1"],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Service missing-service was not found\n"
+    );
 }
 
 #[tokio::test]
@@ -1834,7 +2846,8 @@ async fn mongodb_tls_host_absent_when_not_passed() {
 // plus all 4 SASL credential shapes (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512,
 // MUTUAL_TLS, IAM_ROLE).
 
-fn kafka_args_minimal() -> Vec<&'static str> {
+/// Kafka create args carrying no authentication flag of any kind.
+fn kafka_args_without_auth() -> Vec<&'static str> {
     vec![
         "clickpipe",
         "create",
@@ -1856,15 +2869,15 @@ fn kafka_args_minimal() -> Vec<&'static str> {
         "id:Int64",
         "--kafka-type",
         "kafka",
-        "--auth",
-        "PLAIN",
-        "--username",
-        "u",
-        "--password",
-        "p",
         "--org-id",
         "org",
     ]
+}
+
+fn kafka_args_minimal() -> Vec<&'static str> {
+    let mut args = kafka_args_without_auth();
+    args.extend(["--auth", "PLAIN", "--username", "u", "--password", "p"]);
+    args
 }
 
 #[tokio::test]
@@ -1897,6 +2910,76 @@ async fn kafka_plain_credentials_shape() {
     let creds = &body["source"]["kafka"]["credentials"];
     assert_eq!(creds["username"], "u");
     assert_eq!(creds["password"], "p");
+}
+
+#[tokio::test]
+async fn kafka_without_auth_flags_sends_no_authentication() {
+    // A broker that requires no authentication: the CLI must not invent PLAIN
+    // (which used to fail client-side with "PLAIN requires --username and
+    // --password"), and `authentication` must be absent from the wire body
+    // because the spec enum has no value for "none".
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(&mock, &kafka_args_without_auth()).await;
+
+    let kafka = &body["source"]["kafka"];
+    assert!(
+        kafka.get("authentication").is_none(),
+        "authentication must be omitted for a no-auth broker: {kafka}",
+    );
+    assert!(
+        kafka["credentials"].is_null(),
+        "credentials must not carry a mechanism body: {kafka}",
+    );
+    assert_eq!(kafka["brokers"], "broker:9092");
+    assert_eq!(kafka["topics"], "topic");
+}
+
+#[tokio::test]
+async fn schema_discover_kafka_without_auth_flags_sends_no_authentication() {
+    let mock = start_mock_schema_discovery_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "svc-id",
+            "--org-id",
+            "org",
+            "kafka",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+        ],
+    )
+    .await;
+
+    let kafka = &body["source"]["kafka"];
+    assert!(
+        kafka.get("authentication").is_none(),
+        "authentication must be omitted for a no-auth broker: {kafka}",
+    );
+    assert!(
+        kafka["credentials"].is_null(),
+        "credentials must not carry a mechanism body: {kafka}",
+    );
+}
+
+#[tokio::test]
+async fn kafka_infers_plain_from_username_and_password_without_auth_flag() {
+    // Credential flags without --auth still resolve to the matching mechanism,
+    // so omitting --auth is not a silent downgrade to no authentication.
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_args_without_auth();
+    args.extend(["--username", "u", "--password", "p"]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+
+    let kafka = &body["source"]["kafka"];
+    assert_eq!(kafka["authentication"], "PLAIN");
+    assert_eq!(kafka["credentials"]["username"], "u");
+    assert_eq!(kafka["credentials"]["password"], "p");
 }
 
 #[tokio::test]
@@ -2261,6 +3344,38 @@ fn postgres_args_minimal() -> Vec<String> {
     .collect()
 }
 
+/// The minimal create argument set for IAM_ROLE authentication: no
+/// `--username`/`--password`, because the role ARN is the whole credential.
+fn postgres_args_iam_role() -> Vec<String> {
+    [
+        "clickpipe",
+        "create",
+        "postgres",
+        "svc-id",
+        "--name",
+        "t",
+        "--host",
+        "pg",
+        "--port",
+        "5432",
+        "--pg-database",
+        "test",
+        "--table-mapping",
+        "public.t:t",
+        "--replication-mode",
+        "cdc",
+        "--org-id",
+        "org",
+        "--auth",
+        "IAM_ROLE",
+        "--iam-role",
+        "arn:aws:iam::123:role/x",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 #[tokio::test]
 async fn postgres_invalid_inputs_exit_as_usage_errors_before_auth_file_or_network() {
     let mock = MockServer::start().await;
@@ -2343,6 +3458,98 @@ async fn postgres_invalid_inputs_exit_as_usage_errors_before_auth_file_or_networ
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+// ── Destination roles (issue #568) ─────────────────────────────────────────
+//
+// `--role` maps to `destination.roles`. Omitting it must leave the key out of
+// the body entirely, because ClickPipes reads absence as "grant the default
+// role"; an empty array would be a different instruction.
+
+#[tokio::test]
+async fn kafka_destination_roles_serialize_in_declaration_order() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_args_minimal();
+    args.extend([
+        "--role",
+        "analytics_writer",
+        "--role",
+        "analytics_reader",
+        // A repeated value is de-duplicated rather than sent twice.
+        "--role",
+        "analytics_writer",
+    ]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+
+    assert_eq!(
+        body["destination"]["roles"],
+        serde_json::json!(["analytics_writer", "analytics_reader"]),
+        "destination.roles should carry the --role values in order: {}",
+        body["destination"],
+    );
+}
+
+#[tokio::test]
+async fn kafka_destination_roles_absent_when_role_omitted() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(&mock, &kafka_args_minimal()).await;
+
+    let dest = &body["destination"];
+    assert!(
+        dest.get("roles").is_none(),
+        "roles leaked into the destination body when --role was omitted: {dest}",
+    );
+}
+
+#[tokio::test]
+async fn postgres_destination_roles_serialize_on_database_pipes() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    args.extend([
+        "--role".to_string(),
+        "analytics_reader".to_string(),
+        "--role".to_string(),
+        "analytics_writer".to_string(),
+    ]);
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    let dest = &body["destination"];
+    assert_eq!(
+        dest["roles"],
+        serde_json::json!(["analytics_reader", "analytics_writer"]),
+        "destination.roles should survive the database-pipe destination: {dest}",
+    );
+    // The four fields database pipes reject must still be absent.
+    for field in ["table", "columns", "managedTable", "tableDefinition"] {
+        assert!(
+            dest.get(field).is_none(),
+            "{field} leaked into the postgres destination body: {dest}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn reserved_destination_role_is_a_usage_error_before_any_request() {
+    let mock = start_mock_clickpipes_api().await;
+
+    for reserved in ["clickpipes", "clickpipes_system"] {
+        let mut args = postgres_args_minimal();
+        args.extend(["--role".to_string(), reserved.to_string()]);
+        let output = invoke_cli_without_cloud_credentials(&mock, &args);
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("reserved by ClickPipes"), "{stderr}");
+        assert!(stderr.contains(reserved), "{stderr}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn postgres_publication_name_serializes_when_provided() {
     let mock = start_mock_clickpipes_api().await;
@@ -2390,16 +3597,195 @@ async fn postgres_tls_host_serializes_when_provided() {
 #[tokio::test]
 async fn postgres_iam_role_serializes_when_provided() {
     let mock = start_mock_clickpipes_api().await;
-    let mut args = postgres_args_minimal();
-    args.push("--auth".into());
-    args.push("IAM_ROLE".into());
-    args.push("--iam-role".into());
-    args.push("arn:aws:iam::123:role/x".into());
+    let args = postgres_args_iam_role();
     let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
     let body = invoke_cli_capture_body(&mock, &arg_refs).await;
     assert_eq!(
         body["source"]["postgres"]["iamRole"], "arn:aws:iam::123:role/x",
         "iamRole should round-trip the user-provided value"
+    );
+    assert_eq!(body["source"]["postgres"]["authentication"], "IAM_ROLE");
+}
+
+#[tokio::test]
+async fn postgres_iam_role_create_omits_the_credentials_object() {
+    // IAM_ROLE authentication has no username or password: the role ARN is the
+    // whole credential, so `credentials` must be absent from the wire rather
+    // than sent as an empty username/password pair.
+    let mock = start_mock_clickpipes_api().await;
+    let args = postgres_args_iam_role();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert!(
+        body["source"]["postgres"].get("credentials").is_none(),
+        "credentials must not be sent for IAM_ROLE auth, got {}",
+        body["source"]["postgres"]
+    );
+}
+
+#[tokio::test]
+async fn postgres_basic_auth_create_sends_the_credentials_object() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = postgres_args_minimal();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(body["source"]["postgres"]["credentials"]["username"], "u");
+    assert_eq!(body["source"]["postgres"]["credentials"]["password"], "p");
+    assert_eq!(body["source"]["postgres"]["authentication"], "basic");
+}
+
+#[tokio::test]
+async fn postgres_credentials_with_iam_role_auth_are_rejected() {
+    let mock = MockServer::start().await;
+    let mut args = postgres_args_iam_role();
+    args.push("--username".into());
+    args.push("u".into());
+    args.push("--password".into());
+    args.push("p".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+    // Reported as a usage error against the owning command, the same way
+    // `--iam-role` with basic auth is: clap cannot express "forbidden for this
+    // value of another argument", so the check runs after parsing.
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic"
+        ),
+        "{stderr}"
+    );
+}
+
+/// The minimal `clickpipe create mysql` argument set for basic auth.
+fn mysql_args_minimal() -> Vec<String> {
+    [
+        "clickpipe",
+        "create",
+        "mysql",
+        "svc-id",
+        "--name",
+        "t",
+        "--host",
+        "mysql",
+        "--port",
+        "3306",
+        "--table-mapping",
+        "mydb.t:t",
+        "--replication-mode",
+        "cdc",
+        "--org-id",
+        "org",
+        "--username",
+        "u",
+        "--password",
+        "p",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+/// The same set for IAM_ROLE authentication: no `--username`/`--password`,
+/// because the role ARN is the whole credential.
+fn mysql_args_iam_role() -> Vec<String> {
+    [
+        "clickpipe",
+        "create",
+        "mysql",
+        "svc-id",
+        "--name",
+        "t",
+        "--host",
+        "mysql",
+        "--port",
+        "3306",
+        "--table-mapping",
+        "mydb.t:t",
+        "--replication-mode",
+        "cdc",
+        "--org-id",
+        "org",
+        "--auth",
+        "IAM_ROLE",
+        "--iam-role",
+        "arn:aws:iam::123:role/x",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
+#[tokio::test]
+async fn mysql_iam_role_create_omits_the_credentials_object() {
+    // IAM_ROLE authentication has no username or password: the role ARN is the
+    // whole credential, so `credentials` must be absent from the wire rather
+    // than sent as an empty username/password pair.
+    let mock = start_mock_clickpipes_api().await;
+    let args = mysql_args_iam_role();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert!(
+        body["source"]["mysql"].get("credentials").is_none(),
+        "credentials must not be sent for IAM_ROLE auth, got {}",
+        body["source"]["mysql"]
+    );
+    assert_eq!(
+        body["source"]["mysql"]["iamRole"], "arn:aws:iam::123:role/x",
+        "iamRole should round-trip the user-provided value"
+    );
+    assert_eq!(body["source"]["mysql"]["authentication"], "IAM_ROLE");
+}
+
+#[tokio::test]
+async fn mysql_basic_auth_create_sends_the_credentials_object() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = mysql_args_minimal();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(body["source"]["mysql"]["credentials"]["username"], "u");
+    assert_eq!(body["source"]["mysql"]["credentials"]["password"], "p");
+    assert_eq!(body["source"]["mysql"]["authentication"], "basic");
+}
+
+#[tokio::test]
+async fn mysql_credentials_with_iam_role_auth_are_rejected() {
+    let mock = MockServer::start().await;
+    let mut args = mysql_args_iam_role();
+    args.push("--username".into());
+    args.push("u".into());
+    args.push("--password".into());
+    args.push("p".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+    // Reported as a usage error against the owning command, the same way
+    // `--iam-role` with basic auth is: clap cannot express "forbidden for this
+    // value of another argument", so the check runs after parsing.
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic"
+        ),
+        "{stderr}"
+    );
+    // The usage line names the source subcommand the flags belong to.
+    assert!(stderr.contains("clickpipe create mysql"), "{stderr}");
+}
+
+#[tokio::test]
+async fn mysql_iam_role_with_basic_auth_is_rejected() {
+    let mock = MockServer::start().await;
+    let mut args = mysql_args_minimal();
+    args.push("--iam-role".into());
+    args.push("arn:aws:iam::123:role/x".into());
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--iam-role cannot be used with --auth basic; use --auth IAM_ROLE"),
+        "{stderr}"
     );
 }
 
@@ -2555,6 +3941,250 @@ async fn postgres_multiple_table_mappings_serialize_as_array() {
     assert!(target_tables.contains(&"t"));
     assert!(target_tables.contains(&"t2_dst"));
     assert!(target_tables.contains(&"t3_dst"));
+}
+
+// ── Postgres JSON table mappings (issue #566) ──────────────────────────────
+//
+// `--table-mapping-json` takes the API's table mapping object verbatim. These
+// shape the destination table ClickPipes creates and cannot be changed later,
+// so the body must reproduce the JSON exactly, with no field invented and none
+// dropped.
+
+#[tokio::test]
+async fn postgres_table_mapping_json_reproduces_every_field_in_the_body() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    args.push("--table-mapping-json".into());
+    args.push(
+        serde_json::json!({
+            "sourceSchemaName": "public",
+            "sourceTable": "users",
+            "targetTable": "users_raw",
+            "excludedColumns": ["ssn", "dob"],
+            "sortingKeys": ["created_at", "id"],
+            "partitionByExpr": "toYYYYMM(created_at)",
+            "partitionKey": "id",
+            "tableEngine": "ReplacingMergeTree",
+        })
+        .to_string(),
+    );
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    let mappings = body["source"]["postgres"]["tableMappings"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!(
+                "tableMappings should be an array, got: {}",
+                body["source"]["postgres"]["tableMappings"]
+            )
+        });
+    // The simple mapping from the minimal args comes first, then the JSON one.
+    assert_eq!(mappings.len(), 2, "{mappings:?}");
+    assert_eq!(
+        mappings[0],
+        serde_json::json!({
+            "sourceSchemaName": "public",
+            "sourceTable": "t",
+            "targetTable": "t",
+            "excludedColumns": [],
+            "sortingKeys": [],
+            "useCustomSortingKey": false,
+            "partitionByExpr": "",
+            "partitionKey": "",
+            "tableEngine": "MergeTree",
+        }),
+        "the simple form's wire shape must not change",
+    );
+    assert_eq!(
+        mappings[1],
+        serde_json::json!({
+            "sourceSchemaName": "public",
+            "sourceTable": "users",
+            "targetTable": "users_raw",
+            "excludedColumns": ["ssn", "dob"],
+            "sortingKeys": ["created_at", "id"],
+            // Set for the caller, because the API ignores the keys without it.
+            "useCustomSortingKey": true,
+            "partitionByExpr": "toYYYYMM(created_at)",
+            "partitionKey": "id",
+            "tableEngine": "ReplacingMergeTree",
+        }),
+    );
+}
+
+#[tokio::test]
+async fn postgres_table_mapping_json_alone_satisfies_the_mapping_requirement() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    let simple = args
+        .iter()
+        .position(|arg| arg == "--table-mapping")
+        .expect("baseline table mapping");
+    args.drain(simple..=simple + 1);
+    args.push("--table-mapping-json".into());
+    args.push(
+        r#"{"sourceSchemaName":"audit","sourceTable":"events","targetTable":"audit_events","tableEngine":"Null"}"#
+            .into(),
+    );
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    assert_eq!(
+        body["source"]["postgres"]["tableMappings"],
+        serde_json::json!([{
+            "sourceSchemaName": "audit",
+            "sourceTable": "events",
+            "targetTable": "audit_events",
+            "excludedColumns": [],
+            "sortingKeys": [],
+            "useCustomSortingKey": false,
+            "partitionByExpr": "",
+            "partitionKey": "",
+            "tableEngine": "Null",
+        }]),
+    );
+}
+
+#[tokio::test]
+async fn postgres_invalid_table_mapping_json_is_a_usage_error_before_any_request() {
+    let mock = MockServer::start().await;
+
+    for (mapping, diagnostic) in [
+        ("{ nope", "--table-mapping-json #1: invalid JSON"),
+        (
+            r#"{"sourceSchemaName":"public","sourceTable":"users"}"#,
+            "targetTable is required and must not be empty",
+        ),
+        (
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","excludeColumns":["ssn"]}"#,
+            "unknown field excludeColumns",
+        ),
+        (
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":["id"],"useCustomSortingKey":false}"#,
+            "sortingKeys is set but useCustomSortingKey is false",
+        ),
+        (
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","tableEngine":"MergeTre"}"#,
+            "invalid tableEngine: unknown value 'MergeTre'",
+        ),
+    ] {
+        let mut args = postgres_args_minimal();
+        args.push("--table-mapping-json".into());
+        args.push(mapping.into());
+        let output = invoke_cli_without_cloud_credentials(&mock, &args);
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(diagnostic), "{stderr}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+// ── Postgres CDC pipe settings (issue #565) ────────────────────────────────
+//
+// The snapshot and initial-load settings are create-time-only at the API, so
+// the create body is the only chance to set them. These tests pin the exact
+// key set of `source.postgres.settings`: no flag may leak a zero value, and
+// no passed flag may be dropped.
+
+fn postgres_settings_keys(settings: &Value) -> Vec<String> {
+    let mut keys: Vec<String> = settings
+        .as_object()
+        .unwrap_or_else(|| panic!("settings should be an object, got: {settings}"))
+        .keys()
+        .cloned()
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+#[tokio::test]
+async fn postgres_cdc_settings_are_absent_unless_their_flags_are_passed() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = postgres_args_minimal();
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    // `allowNullableColumns`, `deleteOnMerge` and `enableFailoverSlots` are
+    // required by the schema, so they always serialize; every other setting
+    // must be omitted when its flag is omitted.
+    assert_eq!(
+        postgres_settings_keys(&body["source"]["postgres"]["settings"]),
+        [
+            "allowNullableColumns",
+            "deleteOnMerge",
+            "enableFailoverSlots",
+            "replicationMode",
+        ],
+        "unexpected settings shape: {}",
+        body["source"]["postgres"]["settings"]
+    );
+    let settings = &body["source"]["postgres"]["settings"];
+    assert_eq!(settings["allowNullableColumns"], false);
+    assert_eq!(settings["deleteOnMerge"], false);
+    assert_eq!(settings["enableFailoverSlots"], false);
+}
+
+#[tokio::test]
+async fn postgres_cdc_settings_serialize_exactly_the_flags_that_were_passed() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    for arg in [
+        "--sync-interval-seconds",
+        "30",
+        "--pull-batch-size",
+        "50000",
+        "--initial-load-parallelism",
+        "4",
+        "--snapshot-rows-per-partition",
+        "1000000",
+        "--snapshot-parallel-tables",
+        "3",
+        "--allow-nullable-columns",
+        "true",
+        "--enable-failover-slots",
+        "false",
+        "--delete-on-merge",
+        "true",
+    ] {
+        args.push(arg.into());
+    }
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    let settings = &body["source"]["postgres"]["settings"];
+    assert_eq!(
+        postgres_settings_keys(settings),
+        [
+            "allowNullableColumns",
+            "deleteOnMerge",
+            "enableFailoverSlots",
+            "initialLoadParallelism",
+            "pullBatchSize",
+            "replicationMode",
+            "snapshotNumRowsPerPartition",
+            "snapshotNumberOfParallelTables",
+            "syncIntervalSeconds",
+        ],
+        "unexpected settings shape: {settings}"
+    );
+    assert_eq!(settings["replicationMode"], "cdc");
+    assert_eq!(settings["syncIntervalSeconds"], 30);
+    assert_eq!(settings["pullBatchSize"], 50000);
+    assert_eq!(settings["initialLoadParallelism"], 4);
+    assert_eq!(settings["snapshotNumRowsPerPartition"], 1000000);
+    assert_eq!(settings["snapshotNumberOfParallelTables"], 3);
+    assert_eq!(settings["allowNullableColumns"], true);
+    // An explicit `false` is sent, not dropped.
+    assert_eq!(settings["enableFailoverSlots"], false);
+    assert_eq!(settings["deleteOnMerge"], true);
 }
 
 // Each --postgres-type value should serialize to the matching enum string.
@@ -2818,10 +4448,224 @@ async fn invoke_oauth_service_query_response(
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        // Pin stdin: `--query` now refuses to run when bytes are waiting on a
+        // non-terminal stdin (#641), so these tests must not inherit whatever
+        // the test runner happens to have there.
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
 
     (output, query_host)
+}
+
+// ── `--query` versus stdin (issue #641) ────────────────────────────────────
+//
+// `--query` sends one request body, so a redirected data file can never be
+// part of it. Rather than discard it silently, the CLI refuses before any
+// network call. An empty non-terminal stdin (`</dev/null`, CI, an agent
+// harness) is not data and must keep working, including when the writer is
+// held open and never writes.
+
+/// How a test drives the child's stdin.
+enum StdinPlan<'a> {
+    /// Closed immediately, the `< /dev/null` shape.
+    Null,
+    /// A regular file with content already in it, the `< data.csv` shape.
+    File(std::fs::File),
+    /// Written and closed as soon as the child is spawned.
+    Write(&'a [u8]),
+    /// A pipe whose writer waits before producing, the `producer |
+    /// clickhousectl` race: the shell starts both at once, so the data can
+    /// arrive after the CLI has already looked at stdin.
+    WriteAfter(&'a [u8], std::time::Duration),
+    /// A pipe that is held open and never written to: a harness that wired up
+    /// stdin and produced nothing. The CLI must not hang on it.
+    IdleOpen,
+}
+
+/// Run `cloud service query` over OAuth with a caller-chosen stdin. Returns
+/// the process output plus both mocks so a test can assert that nothing was
+/// requested at all.
+async fn invoke_oauth_service_query_with_stdin(
+    sql_args: &[&str],
+    stdin_plan: StdinPlan<'_>,
+) -> (std::process::Output, MockServer, MockServer) {
+    let control = start_mock_control_plane_with_service().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home_dir = dir.path().join("home");
+    let ch_dir = home_dir.join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    write_oauth_tokens(&ch_dir, &control.uri());
+
+    let mut args = vec![
+        "cloud".to_string(),
+        "--url".to_string(),
+        control.uri(),
+        "service".to_string(),
+        "query".to_string(),
+        "--id".to_string(),
+        QUERY_TEST_SERVICE_ID.to_string(),
+        "--org-id".to_string(),
+        "org-1".to_string(),
+    ];
+    args.extend(sql_args.iter().map(|arg| (*arg).to_string()));
+
+    let stdin = match &stdin_plan {
+        StdinPlan::Null => Stdio::null(),
+        StdinPlan::File(file) => Stdio::from(file.try_clone().unwrap()),
+        StdinPlan::Write(_) | StdinPlan::WriteAfter(..) | StdinPlan::IdleOpen => Stdio::piped(),
+    };
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let mut child = command
+        .env("DO_NOT_TRACK", "1")
+        .args(args)
+        .current_dir(dir.path())
+        .env("HOME", &home_dir)
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(stdin)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+
+    // `wait_with_output` closes the child's stdin, so the writer has to be
+    // taken out of the `Child` for any plan that must outlive the wait.
+    let held_open = match stdin_plan {
+        StdinPlan::Write(bytes) => {
+            let mut pipe = child.stdin.take().expect("piped stdin");
+            pipe.write_all(bytes).unwrap();
+            None
+        }
+        StdinPlan::WriteAfter(bytes, delay) => {
+            let mut pipe = child.stdin.take().expect("piped stdin");
+            std::thread::sleep(delay);
+            pipe.write_all(bytes).unwrap();
+            None
+        }
+        StdinPlan::IdleOpen => Some(child.stdin.take().expect("piped stdin")),
+        StdinPlan::Null | StdinPlan::File(_) => None,
+    };
+    let output = child.wait_with_output().expect("failed to wait for output");
+    drop(held_open);
+
+    (output, control, query_host)
+}
+
+/// The `sql` field of a recorded Query API request body.
+fn query_sql_of(request: &wiremock::Request) -> String {
+    let body: Value = serde_json::from_slice(&request.body).expect("query body is JSON");
+    body["sql"].as_str().expect("sql field").to_string()
+}
+
+#[tokio::test]
+async fn service_query_refuses_data_on_stdin_before_any_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let data = dir.path().join("data.csv");
+    std::fs::write(&data, "1,alice\n2,bob\n").unwrap();
+    let file = std::fs::File::open(&data).unwrap();
+
+    let (output, control, query_host) = invoke_oauth_service_query_with_stdin(
+        &["--query", "INSERT INTO trips FORMAT CSV"],
+        StdinPlan::File(file),
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--query cannot be combined with SQL or data on stdin"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("cat - data.csv"), "{stderr}");
+    assert!(stderr.contains("--queries-file -"), "{stderr}");
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+    // The refusal happens while reading the SQL, so neither the control plane
+    // nor the query host is contacted.
+    assert!(control.received_requests().await.unwrap().is_empty());
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_query_refuses_data_that_arrives_after_the_check_starts() {
+    // `cat data.csv | clickhousectl ... --query ...`: the shell starts both
+    // processes at once, so the first byte can land after the CLI has begun
+    // looking at stdin. A zero-timeout readiness check would call that "no
+    // input" and send the empty INSERT, which is #641 all over again. The
+    // interleaving here depends on process startup, so the readiness timeout
+    // itself is pinned deterministically by the pipe-level unit tests in
+    // `cloud::services`; this is the end-to-end guard.
+    let (output, control, query_host) = invoke_oauth_service_query_with_stdin(
+        &["--query", "INSERT INTO trips FORMAT CSV"],
+        StdinPlan::WriteAfter(b"1,alice\n2,bob\n", std::time::Duration::from_millis(150)),
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--query cannot be combined with SQL or data on stdin"),
+        "{stderr}"
+    );
+    assert!(control.received_requests().await.unwrap().is_empty());
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_query_does_not_hang_on_a_pipe_nobody_writes_to() {
+    // The writer stays open for the whole run and never produces a byte. The
+    // bounded first-byte wait must expire and the query must still be sent.
+    let (output, _control, query_host) =
+        invoke_oauth_service_query_with_stdin(&["--query", "SELECT 1"], StdinPlan::IdleOpen).await;
+
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(query_sql_of(&requests[0]), "SELECT 1");
+}
+
+#[tokio::test]
+async fn service_query_with_query_and_empty_stdin_still_runs() {
+    let (output, _control, query_host) =
+        invoke_oauth_service_query_with_stdin(&["--query", "SELECT 1"], StdinPlan::Null).await;
+
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(query_sql_of(&requests[0]), "SELECT 1");
+}
+
+#[tokio::test]
+async fn service_query_still_reads_sql_piped_on_bare_stdin() {
+    let (output, _control, query_host) =
+        invoke_oauth_service_query_with_stdin(&[], StdinPlan::Write(b"SELECT 1\n")).await;
+
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(query_sql_of(&requests[0]), "SELECT 1\n");
+}
+
+#[tokio::test]
+async fn service_query_still_reads_sql_from_queries_file_dash() {
+    let (output, _control, query_host) = invoke_oauth_service_query_with_stdin(
+        &["--queries-file", "-"],
+        StdinPlan::Write(b"SELECT 1\n"),
+    )
+    .await;
+
+    assert_success(&output);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(query_sql_of(&requests[0]), "SELECT 1\n");
 }
 
 #[tokio::test]
@@ -2972,6 +4816,7 @@ async fn service_query_requires_exactly_one_selector_before_network_access() {
             .env("HOME", &home_dir)
             .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
             .current_dir(dir.path())
+            .stdin(Stdio::null())
             .args(args);
         if authenticated {
             command
@@ -3036,6 +4881,9 @@ async fn service_query_accepts_independent_sql_sources_and_stdin_fallback() {
             .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
             .env("CLICKHOUSE_CLOUD_QUERY_HOST", &query_host_url)
             .current_dir(dir.path())
+            // Explicit so the inline and file cases below never inherit the
+            // test runner's stdin, which `--query` now refuses (#641).
+            .stdin(Stdio::null())
             .args([
                 "cloud",
                 "--url",
@@ -3173,6 +5021,7 @@ async fn service_query_with_oauth_sends_bearer_and_never_provisions() {
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -3239,6 +5088,7 @@ async fn service_query_uses_an_already_authorized_api_key_without_provisioning()
         .env("CLICKHOUSE_CLOUD_API_KEY", "assigned-key-id")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "assigned-key-secret")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -3323,6 +5173,7 @@ async fn service_query_with_stored_key_sends_basic_auth_with_that_key() {
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -3431,6 +5282,10 @@ fn service_query_key_repair_process(
         .env("HOME", project_dir.join("home"))
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        // The post-repair probe (#658) goes to the query host; pin it to the
+        // control mock so no test can reach a real one. A test that wants the
+        // probe mounts `GET service` (state running) and `POST /service/{id}/run`.
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", control.uri())
         .current_dir(project_dir)
         .args([
             "cloud",
@@ -3484,66 +5339,832 @@ async fn mount_replacement_key_create(control: &MockServer) {
         .await;
 }
 
+// ── Rejected stored key classification (issue #528) ────────────────────────
+//
+// A Query API 401/403 for a stored key is classified against the key's
+// management record and the endpoint binding before anything is touched.
+// Only a key that no longer exists (GET key -> 404) makes the local record
+// disposable; every other verdict, and every lookup failure, leaves the
+// credentials file byte-for-byte unchanged and makes no write to the control
+// plane. `OLD_QUERY_TEST_KEY_UUID` is the stored key's management ID.
+
+fn stored_key_path() -> String {
+    format!("/v1/organizations/org-1/keys/{OLD_QUERY_TEST_KEY_UUID}")
+}
+
+fn query_endpoint_path() -> String {
+    format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint")
+}
+
+/// A `GET /keys/{id}` body for the stored key. Only the fields the classifier
+/// reads are set; the key's secret is never part of a management record.
+fn stored_key_record(state: &str, expire_at: Option<&str>, cidrs: &[&str]) -> ResponseTemplate {
+    let mut result = serde_json::json!({
+        "id": OLD_QUERY_TEST_KEY_UUID,
+        "name": "clickhousectl-query-demo",
+        "state": state,
+        "ipAccessList": cidrs
+            .iter()
+            .map(|cidr| serde_json::json!({ "source": cidr, "description": "test" }))
+            .collect::<Vec<_>>(),
+    });
+    if let Some(expire_at) = expire_at {
+        result["expireAt"] = Value::String(expire_at.to_string());
+    }
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": "stub-key-get"
+    }))
+}
+
+async fn mount_stored_key_get(control: &MockServer, response: ResponseTemplate) {
+    Mock::given(method("GET"))
+        .and(path(stored_key_path()))
+        .respond_with(response)
+        .mount(control)
+        .await;
+}
+
+async fn mount_query_endpoint_get(control: &MockServer, response: ResponseTemplate) {
+    Mock::given(method("GET"))
+        .and(path(query_endpoint_path()))
+        .respond_with(response)
+        .mount(control)
+        .await;
+}
+
+fn query_endpoint_record(open_api_keys: &[&str]) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": {
+            "id": "ep-1",
+            "openApiKeys": open_api_keys,
+            "roles": ["sql_console_admin"],
+            "allowedOrigins": "*"
+        },
+        "status": 200,
+        "requestId": "stub-endpoint-get"
+    }))
+}
+
+/// Run `cloud service query` with a stored key the query host rejects with
+/// `status`. Returns the process output, the credentials file as written
+/// before the run, and the project directory (kept alive for later reads).
+async fn run_rejected_stored_key_query(
+    control: &MockServer,
+    status: u16,
+    api_key_id: Option<&str>,
+    pending_cleanup_api_key_ids: &[&str],
+    extra_args: &[&str],
+) -> (std::process::Output, Value, tempfile::TempDir) {
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(status).set_body_string("key rejected"))
+        .expect(1)
+        .mount(&query_host)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let original = write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        api_key_id,
+        Some("ep-1"),
+        pending_cleanup_api_key_ids,
+    );
+    let mut command = service_query_process(project.path(), control, &query_host);
+    command.args(extra_args);
+    let output = command
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    (output, original, project)
+}
+
+fn read_credentials(project: &Path) -> Value {
+    serde_json::from_slice(&std::fs::read(project.join(".clickhouse/credentials.json")).unwrap())
+        .unwrap()
+}
+
+/// Every request the run made to the control plane was a read.
+async fn assert_control_plane_only_read(control: &MockServer, context: &str) {
+    let requests = control.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.method == wiremock::http::Method::GET),
+        "{context}: a rejected stored key must never create, bind or delete anything: {:?}",
+        requests
+            .iter()
+            .map(|request| format!("{} {}", request.method, request.url.path()))
+            .collect::<Vec<_>>(),
+    );
+}
+
+async fn control_plane_requests_to(control: &MockServer, path: &str) -> usize {
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == path)
+        .count()
+}
+
+fn repair_hint() -> String {
+    format!("clickhousectl cloud service repair-query-key {QUERY_TEST_SERVICE_ID} --org-id org-1")
+}
+
 #[tokio::test]
-async fn stored_query_key_401_or_403_explains_repair_without_provisioning() {
+async fn a_disabled_stored_query_key_is_reported_and_never_replaced() {
     for status in [401, 403] {
         let control = start_mock_control_plane_with_service().await;
-        let query_host = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
-            .respond_with(ResponseTemplate::new(status).set_body_string("stale stored key"))
-            .expect(1)
-            .mount(&query_host)
-            .await;
-
-        let project = tempfile::tempdir().unwrap();
-        std::fs::create_dir(project.path().join("home")).unwrap();
-        let original = write_repair_query_credentials(
-            project.path(),
-            Some("org-1"),
+        mount_stored_key_get(
+            &control,
+            stored_key_record("disabled", None, &["0.0.0.0/0"]),
+        )
+        .await;
+        // No endpoint stub on purpose: a disabled key needs no binding check,
+        // and an unmounted route would be a visible 404 in the request log.
+        let (output, original, project) = run_rejected_stored_key_query(
+            &control,
+            status,
             Some(OLD_QUERY_TEST_KEY_UUID),
-            Some("ep-1"),
             &[],
-        );
-        let output = service_query_process(project.path(), &control, &query_host)
-            .output()
-            .await
-            .expect("failed to spawn clickhousectl");
+            &[],
+        )
+        .await;
 
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(1), "{status}");
         assert!(output.stdout.is_empty());
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(
             stderr.contains(&format!("rejected with HTTP {status}")),
             "{stderr}"
         );
-        assert!(stderr.contains("no replacement was created"), "{stderr}");
         assert!(
             stderr.contains(&format!(
-                "clickhousectl cloud service repair-query-key {QUERY_TEST_SERVICE_ID} --org-id org-1"
+                "management API key {OLD_QUERY_TEST_KEY_UUID} is disabled"
             )),
             "{stderr}"
         );
+        assert!(stderr.contains("no replacement was created"), "{stderr}");
         assert!(
-            control
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .all(|request| request.method == wiremock::http::Method::GET),
-            "a rejected stored key must not trigger provisioning"
+            stderr.contains(&format!(
+                "clickhousectl cloud key update {OLD_QUERY_TEST_KEY_UUID} --state enabled --org-id org-1"
+            )),
+            "{stderr}"
         );
-        let stored: Value = serde_json::from_slice(
-            &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(stored, original);
+        assert!(stderr.contains(&repair_hint()), "{stderr}");
+        assert!(
+            !stderr.contains("stored-key-secret"),
+            "secret leaked: {stderr}"
+        );
+
+        assert_control_plane_only_read(&control, "disabled").await;
+        assert_eq!(
+            control_plane_requests_to(&control, &query_endpoint_path()).await,
+            0,
+            "a disabled key is classified from its record alone"
+        );
+        assert_eq!(read_credentials(project.path()), original, "{status}");
     }
+}
+
+#[tokio::test]
+async fn an_expired_stored_query_key_is_reported_and_never_replaced() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        stored_key_record("enabled", Some("2020-01-01T00:00:00Z"), &["0.0.0.0/0"]),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "management API key {OLD_QUERY_TEST_KEY_UUID} expired at 2020-01-01T00:00:00Z"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains("no replacement was created"), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_control_plane_only_read(&control, "expired").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn a_deleted_stored_query_key_is_reported_and_never_replaced() {
+    // The key is gone from the organization, so the stored secret can never
+    // work again. The record is still kept: it is what lets repair-query-key
+    // find the key's UUID and drop it from the endpoint binding while binding
+    // the replacement. Rerunning the query fails identically until then.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "management API key {OLD_QUERY_TEST_KEY_UUID} no longer exists in organization org-1"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains("no replacement was created"), "{stderr}");
+    assert!(
+        stderr.contains("still listed on the service's Query API endpoint"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert!(
+        !stderr.contains("has been removed") && !stderr.contains("Rerun the query"),
+        "{stderr}"
+    );
+    assert_control_plane_only_read(&control, "deleted").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn a_deleted_stored_query_key_with_pending_cleanup_keeps_its_record() {
+    // The record still names a superseded key awaiting deletion (#527). The
+    // query first retries that deletion; here the retry fails, so a warning
+    // names the leftover key. The deleted verdict then keeps the record like
+    // always, and repair is the way to finish both.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_string("boom"),
+    )
+    .await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[PENDING_QUERY_TEST_KEY_UUID],
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("Warning:"), "{stderr}");
+    assert!(stderr.contains(PENDING_QUERY_TEST_KEY_UUID), "{stderr}");
+    assert!(
+        stderr.contains("no longer exists in organization org-1"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [PENDING_QUERY_TEST_KEY_UUID],
+        "the retry is the only write, and it names the stored retired key"
+    );
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn a_deleted_stored_query_key_whose_pending_retry_succeeds_keeps_its_record() {
+    // Same record, but the retried deletion succeeds: the pending list is
+    // emptied quietly, and the deleted verdict still keeps the record itself,
+    // so repair can drop the dead key's endpoint binding.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        key_deleted_response(),
+    )
+    .await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[PENDING_QUERY_TEST_KEY_UUID],
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.contains("Warning:"), "{stderr}");
+    assert!(
+        stderr.contains("no longer exists in organization org-1"),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [PENDING_QUERY_TEST_KEY_UUID]
+    );
+    let stored = read_credentials(project.path());
+    // An empty pending list is omitted from the file, so the record differs
+    // from the original in exactly that key.
+    let mut expected = original.clone();
+    expected["service_query_keys"][QUERY_TEST_SERVICE_ID]
+        .as_object_mut()
+        .unwrap()
+        .remove("pending_cleanup_api_key_ids");
+    assert_eq!(stored, expected, "only the pending list changed");
+}
+
+// ── Pending retirement retry on the query path (issue #527) ────────────────
+//
+// A repair whose final key deletion failed leaves the retired key's ID on the
+// record. The next query for the service retries the deletion before it runs:
+// quietly when it works, with a warning when it does not, and never at the
+// expense of the query itself.
+
+/// Run `cloud service query` with a working stored key whose record lists
+/// `pending_cleanup_api_key_ids`. Returns the output and the project dir.
+async fn run_query_with_pending_retirements(
+    control: &MockServer,
+    pending_cleanup_api_key_ids: &[&str],
+) -> (std::process::Output, tempfile::TempDir) {
+    let query_host = start_mock_query_host().await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        pending_cleanup_api_key_ids,
+    );
+    let output = service_query_process(project.path(), control, &query_host)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    (output, project)
+}
+
+#[tokio::test]
+async fn a_query_retries_pending_key_retirements_quietly_before_running() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_delete(&control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        key_deleted_response(),
+    )
+    .await;
+
+    let (output, project) = run_query_with_pending_retirements(
+        &control,
+        &[OLD_QUERY_TEST_KEY_UUID, PENDING_QUERY_TEST_KEY_UUID],
+    )
+    .await;
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    assert_eq!(
+        stderr_without_notes(&output),
+        "",
+        "a successful retry is silent"
+    );
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [OLD_QUERY_TEST_KEY_UUID, PENDING_QUERY_TEST_KEY_UUID]
+    );
+    let record = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(record["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(record["key_id"], "stored-key-id");
+    assert!(
+        record.get("pending_cleanup_api_key_ids").is_none(),
+        "{record}"
+    );
+}
+
+#[tokio::test]
+async fn a_failed_retirement_retry_warns_keeps_the_id_and_still_runs_the_query() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_delete(
+        &control,
+        OLD_QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_string("still failing"),
+    )
+    .await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        key_deleted_response(),
+    )
+    .await;
+
+    let (output, project) = run_query_with_pending_retirements(
+        &control,
+        &[OLD_QUERY_TEST_KEY_UUID, PENDING_QUERY_TEST_KEY_UUID],
+    )
+    .await;
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    let stderr = stderr_without_notes(&output);
+    assert!(stderr.starts_with("Warning:"), "{stderr}");
+    assert!(stderr.contains(OLD_QUERY_TEST_KEY_UUID), "{stderr}");
+    assert!(
+        !stderr.contains(PENDING_QUERY_TEST_KEY_UUID),
+        "a key that was deleted is not reported as failed: {stderr}"
+    );
+    assert!(stderr.contains("still failing"), "{stderr}");
+    assert!(
+        stderr.contains("clickhousectl cloud key delete <key-id> --org-id org-1"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("stored-key-secret"), "{stderr}");
+    // Only the key that could not be deleted stays pending.
+    let record = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(
+        record["pending_cleanup_api_key_ids"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+}
+
+/// #598, for the retirement-retry warning: the retry runs before the query, so
+/// a stderr nobody is reading must not panic the process at exit 101 and leave
+/// the query unrun.
+#[tokio::test]
+async fn a_failed_retirement_retry_survives_a_closed_stderr() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_delete(
+        &control,
+        OLD_QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_string("still failing"),
+    )
+    .await;
+
+    let query_host = start_mock_query_host().await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[OLD_QUERY_TEST_KEY_UUID],
+    );
+    let mut child = service_query_process(project.path(), &control, &query_host)
+        // The fixture's env credentials are shadowed by its file credentials,
+        // which emits the precedence `note:` first; dropping them makes the
+        // retry warning the first thing written to the closed stderr.
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+    // The reader of stderr walks away before the warning is written.
+    drop(child.stderr.take().expect("stderr was piped"));
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a closed stderr must not turn a warned-about retry into a panic"
+    );
+    // Not just "didn't panic": the query the warning precedes still ran, and
+    // the ID that could not be deleted is still pending.
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    let record = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(
+        record["pending_cleanup_api_key_ids"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+}
+
+#[tokio::test]
+async fn a_retirement_retry_never_deletes_the_active_key() {
+    // A record that lists its own active key as pending is contradictory.
+    // The retry deletes the genuinely retired key and leaves the active one
+    // alone, whatever the list says.
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_delete(&control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+
+    let (output, project) = run_query_with_pending_retirements(
+        &control,
+        &[QUERY_TEST_KEY_UUID, OLD_QUERY_TEST_KEY_UUID],
+    )
+    .await;
+    assert_success(&output);
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [OLD_QUERY_TEST_KEY_UUID]
+    );
+    let record = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(record["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        record["pending_cleanup_api_key_ids"],
+        serde_json::json!([QUERY_TEST_KEY_UUID])
+    );
+}
+
+#[tokio::test]
+async fn a_query_without_pending_retirements_makes_no_control_plane_writes() {
+    let control = start_mock_control_plane_with_service().await;
+    let (output, _project) = run_query_with_pending_retirements(&control, &[]).await;
+    assert_success(&output);
+    assert!(key_deletes_received(&control).await.is_empty());
+    assert_control_plane_only_read(&control, "no pending retirements").await;
+}
+
+#[tokio::test]
+async fn an_unbound_stored_query_key_is_reported_and_never_replaced() {
+    // The endpoint exists but lists another key.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(&control, stored_key_record("enabled", None, &["0.0.0.0/0"])).await;
+    mount_query_endpoint_get(&control, query_endpoint_record(&["unrelated-key"])).await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 403, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is not bound to Query API endpoint ep-1"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("no replacement was created"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "clickhousectl cloud service query-endpoint get {QUERY_TEST_SERVICE_ID} --org-id org-1"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_control_plane_only_read(&control, "unbound").await;
+    assert_eq!(read_credentials(project.path()), original);
+
+    // No endpoint at all: still unbound, still nothing recreated.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(&control, stored_key_record("enabled", None, &["0.0.0.0/0"])).await;
+    mount_query_endpoint_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("has no Query API endpoint"), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_control_plane_only_read(&control, "no endpoint").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn an_enabled_bound_stored_query_key_that_is_still_rejected_lists_its_allowlist() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        stored_key_record("enabled", None, &["203.0.113.0/24", "198.51.100.7/32"]),
+    )
+    .await;
+    mount_query_endpoint_get(
+        &control,
+        query_endpoint_record(&["unrelated-key", OLD_QUERY_TEST_KEY_UUID]),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("is enabled, unexpired and bound to the Query API endpoint"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("IP access list (203.0.113.0/24, 198.51.100.7/32)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("stored secret no longer matches"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert!(
+        !stderr.contains("stored-key-secret"),
+        "secret leaked: {stderr}"
+    );
+    assert_control_plane_only_read(&control, "rejected").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn an_unverifiable_stored_query_key_rejection_changes_nothing() {
+    // The key lookup itself fails: the verdict is "unknown", not "stale".
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(500).set_body_string("upstream unavailable"),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "management API key {OLD_QUERY_TEST_KEY_UUID} could not be read"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains("upstream unavailable"), "{stderr}");
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert!(stderr.contains(&repair_hint()), "{stderr}");
+    assert_control_plane_only_read(&control, "key lookup failed").await;
+    assert_eq!(read_credentials(project.path()), original);
+
+    // The key reads fine but the endpoint lookup fails: same treatment.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(&control, stored_key_record("enabled", None, &["0.0.0.0/0"])).await;
+    mount_query_endpoint_get(
+        &control,
+        ResponseTemplate::new(503).set_body_string("endpoint service unavailable"),
+    )
+    .await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, Some(OLD_QUERY_TEST_KEY_UUID), &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "the Query API endpoint binding of service {QUERY_TEST_SERVICE_ID} could not be read"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert_control_plane_only_read(&control, "endpoint lookup failed").await;
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn a_legacy_stored_query_key_rejection_changes_nothing() {
+    // No management key ID in the record: there is nothing to look up, so no
+    // key GET is even attempted, and nothing is removed.
+    let control = start_mock_control_plane_with_service().await;
+    let (output, original, project) =
+        run_rejected_stored_key_query(&control, 401, None, &[], &[]).await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("predates key-ownership metadata"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("service_query_keys.{QUERY_TEST_SERVICE_ID}")),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Nothing was changed"), "{stderr}");
+    assert_control_plane_only_read(&control, "legacy").await;
+    assert_eq!(
+        control_plane_requests_to(&control, &stored_key_path()).await,
+        0
+    );
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn stored_query_key_rejections_emit_structured_json_errors() {
+    fn parse_error(output: &std::process::Output) -> Value {
+        assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // The credentials file written by `write_repair_query_credentials`
+        // also holds project management credentials, so the CLI's existing
+        // "note: ... env vars are set but ignored" line precedes the object.
+        let object = &stderr[stderr.find('{').unwrap_or(0)..];
+        serde_json::from_str(object.trim())
+            .unwrap_or_else(|e| panic!("stderr does not end in one JSON object ({e}): {stderr}"))
+    }
+
+    // Disabled: the code, the key ID and the deliberate repair command.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        stored_key_record("disabled", None, &["0.0.0.0/0"]),
+    )
+    .await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[],
+        &["--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    let error = parse_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_disabled");
+    assert_eq!(error["error"]["api_key_id"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(error["error"]["command"], repair_hint());
+    assert!(error["error"].get("ip_access_list").is_none(), "{error}");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("is disabled")
+    );
+    assert_eq!(read_credentials(project.path()), original);
+
+    // Rejected while enabled and bound: the allowlist travels as data.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        stored_key_record("enabled", None, &["203.0.113.0/24"]),
+    )
+    .await;
+    mount_query_endpoint_get(&control, query_endpoint_record(&[OLD_QUERY_TEST_KEY_UUID])).await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        403,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[],
+        &["--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    let error = parse_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_rejected");
+    assert_eq!(
+        error["error"]["ip_access_list"],
+        serde_json::json!(["203.0.113.0/24"])
+    );
+    assert!(
+        !error.to_string().contains("stored-key-secret"),
+        "secret leaked: {error}"
+    );
+    assert_eq!(read_credentials(project.path()), original);
+
+    // Deleted: read-only like every other verdict, and the command is repair.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(
+        &control,
+        ResponseTemplate::new(404).set_body_string("NOT_FOUND"),
+    )
+    .await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[],
+        &["--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    let error = parse_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_deleted");
+    assert_eq!(error["error"]["api_key_id"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(error["error"]["command"], repair_hint());
+    assert_eq!(read_credentials(project.path()), original);
+
+    // Unverified: no command is pushed for an ambiguous verdict.
+    let control = start_mock_control_plane_with_service().await;
+    mount_stored_key_get(&control, ResponseTemplate::new(500).set_body_string("boom")).await;
+    let (output, original, project) = run_rejected_stored_key_query(
+        &control,
+        401,
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        &[],
+        &["--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    let error = parse_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_unverified");
+    assert!(error["error"].get("command").is_none(), "{error}");
+    assert_eq!(read_credentials(project.path()), original);
 }
 
 #[tokio::test]
 async fn service_query_key_repair_replaces_exact_binding_and_preserves_credentials() {
     let control = MockServer::start().await;
+    mount_running_service_accepting_probes(&control, 1).await;
     let endpoint_path = mount_repair_endpoint_get(&control).await;
     mount_replacement_key_create(&control).await;
     Mock::given(method("POST"))
@@ -3597,6 +6218,8 @@ async fn service_query_key_repair_replaces_exact_binding_and_preserves_credentia
     assert_eq!(result["replacedApiKeyId"], OLD_QUERY_TEST_KEY_UUID);
     assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
     assert_eq!(result["endpointId"], "ep-1");
+    assert_eq!(result["verification"], "verified");
+    assert_eq!(probes_received(&control).await.len(), 1);
 
     let stored: Value = serde_json::from_slice(
         &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
@@ -3619,7 +6242,11 @@ async fn service_query_key_repair_replaces_exact_binding_and_preserves_credentia
 
 #[tokio::test]
 async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
+    // The replacement is active and bound, so a failed delete of the
+    // superseded key is a warning, not a failure (#527): the exact ID stays
+    // on the record for the next query to retry, and the warning says so.
     let control = MockServer::start().await;
+    mount_running_service_accepting_probes(&control, 1).await;
     let endpoint_path = mount_repair_endpoint_get(&control).await;
     mount_replacement_key_create(&control).await;
     Mock::given(method("POST"))
@@ -3658,11 +6285,30 @@ async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
         .output()
         .await
         .expect("failed to spawn clickhousectl");
-    assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("replacement query key"), "{stderr}");
-    assert!(stderr.contains("is active"), "{stderr}");
-    assert!(stderr.contains("rerun"), "{stderr}");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["replacedApiKeyId"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        result["pendingCleanupApiKeyIds"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+    assert!(result.get("deletedApiKeyIds").is_none(), "{result}");
+    let stderr = stderr_without_notes(&output);
+    assert!(stderr.starts_with("Warning:"), "{stderr}");
+    assert!(stderr.contains(OLD_QUERY_TEST_KEY_UUID), "{stderr}");
+    assert!(stderr.contains("temporary cleanup failure"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "clickhousectl cloud service query --id {QUERY_TEST_SERVICE_ID} --org-id org-1"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("clickhousectl cloud key delete <key-id> --org-id org-1"),
+        "{stderr}"
+    );
 
     let stored: Value = serde_json::from_slice(
         &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
@@ -3673,6 +6319,84 @@ async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
         original["service_query_keys"][PRESERVED_QUERY_SERVICE_ID]
     );
     let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(repaired["key_id"], "replacement-key-id");
+    assert_eq!(
+        repaired["pending_cleanup_api_key_ids"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+}
+
+/// #598, for the repair's cleanup warning: the replacement key is already
+/// created, bound and committed to the record by the time the warning is
+/// written, so a stderr nobody is reading must not turn a completed repair
+/// into a panic and exit 101.
+#[tokio::test]
+async fn repair_with_a_failed_final_cleanup_survives_a_closed_stderr() {
+    let control = MockServer::start().await;
+    let endpoint_path = mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1" },
+            "status": 200,
+            "requestId": "stub-endpoint-repair"
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    mount_key_delete(
+        &control,
+        OLD_QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "error": "temporary cleanup failure",
+            "status": 500,
+            "requestId": "stub-old-key-delete-failure"
+        })),
+    )
+    .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let mut child = service_query_key_repair_process(project.path(), &control)
+        // As above: only file credentials, so the cleanup warning is the first
+        // thing written to the closed stderr.
+        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+    // The reader of stderr walks away before the warning is written.
+    drop(child.stderr.take().expect("stderr was piped"));
+    let output = child
+        .wait_with_output()
+        .await
+        .expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a closed stderr must not turn a committed repair into a panic"
+    );
+    // Not just "didn't panic": the repair still reported its result, and the
+    // exact retired ID is still stored for the next query to retry.
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(
+        result["pendingCleanupApiKeyIds"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+    let repaired = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
     assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
     assert_eq!(
         repaired["pending_cleanup_api_key_ids"],
@@ -3739,6 +6463,9 @@ async fn failed_repair_restores_bindings_deletes_new_key_and_preserves_records()
         .expect("failed to spawn clickhousectl");
     assert_eq!(output.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&output.stderr).contains("binding replacement failed"));
+    // A 5xx is not key propagation: no wait, no notice, straight to rollback
+    // (#658). The two upserts below are the attempt and the rollback.
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("Waiting for the new API key"));
 
     let requests = control.received_requests().await.unwrap();
     let endpoint_posts = requests
@@ -3830,28 +6557,450 @@ async fn failed_repair_retains_new_key_when_endpoint_rollback_fails() {
 }
 
 #[tokio::test]
-async fn repair_cleanup_retry_deletes_only_pending_key_without_reprovisioning() {
+async fn failed_repair_records_the_new_key_for_retry_when_its_rollback_delete_fails() {
+    // The upsert fails, the original binding is restored, and then the delete
+    // of the never-bound replacement key fails. The key exists and grants
+    // nothing, and its ID must not live only in the error text (#527): it is
+    // appended to the untouched record's pending list so the next query
+    // retries the deletion (#658). Everything else on disk stays as it was.
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
     let control = MockServer::start().await;
-    Mock::given(method("DELETE"))
-        .and(path(format!(
-            "/v1/organizations/org-1/keys/{OLD_QUERY_TEST_KEY_UUID}"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "status": 200,
-            "requestId": "stub-pending-cleanup"
-        })))
-        .expect(1)
+    let endpoint_path = mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(move |_: &wiremock::Request| {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(500).set_body_json(serde_json::json!({
+                    "error": "binding replacement failed",
+                    "status": 500,
+                    "requestId": "stub-repair-failure"
+                }))
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": "ep-1" },
+                    "status": 200,
+                    "requestId": "stub-rollback"
+                }))
+            }
+        })
+        .expect(2)
         .mount(&control)
         .await;
+    mount_key_delete(
+        &control,
+        QUERY_TEST_KEY_UUID,
+        ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "error": "key service unavailable",
+            "status": 500,
+            "requestId": "stub-new-key-delete-failure"
+        })),
+    )
+    .await;
 
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir(project.path().join("home")).unwrap();
     let original = write_repair_query_credentials(
         project.path(),
         Some("org-1"),
-        Some(QUERY_TEST_KEY_UUID),
+        Some(OLD_QUERY_TEST_KEY_UUID),
         Some("ep-1"),
-        &[OLD_QUERY_TEST_KEY_UUID],
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = stderr_without_notes(&output);
+    assert!(stderr.contains("binding replacement failed"), "{stderr}");
+    assert!(stderr.contains("key service unavailable"), "{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "failed to delete newly created API key {QUERY_TEST_KEY_UUID}"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "service_query_keys.{QUERY_TEST_SERVICE_ID}.pending_cleanup_api_key_ids"
+        )),
+        "the error says where the ID went: {stderr}"
+    );
+    assert!(
+        stderr.contains("retried automatically by the next `clickhousectl cloud service query"),
+        "{stderr}"
+    );
+
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![QUERY_TEST_KEY_UUID.to_string()],
+        "only the rolled-back key was attempted; the superseded key stays"
+    );
+    let mut expected = original.clone();
+    expected["service_query_keys"][QUERY_TEST_SERVICE_ID]["pending_cleanup_api_key_ids"] =
+        serde_json::json!([QUERY_TEST_KEY_UUID]);
+    assert_eq!(
+        read_credentials(project.path()),
+        expected,
+        "the record still names the old key and now lists the rolled-back one as pending"
+    );
+}
+
+const PENDING_QUERY_TEST_KEY_UUID: &str = "77777777-6666-5555-4444-333333333333";
+const THIRD_QUERY_TEST_KEY_UUID: &str = "33333333-4444-5555-6666-777777777777";
+
+/// `GET serviceQueryEndpoint` listing exactly `open_api_keys`, with the
+/// read-only role and origin the repair must preserve.
+async fn mount_repair_endpoint_get_listing(control: &MockServer, open_api_keys: &[&str]) {
+    Mock::given(method("GET"))
+        .and(path(query_endpoint_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "ep-1",
+                "openApiKeys": open_api_keys,
+                "roles": ["sql_console_read_only"],
+                "allowedOrigins": "https://example.com"
+            },
+            "status": 200,
+            "requestId": "stub-endpoint-get"
+        })))
+        .expect(1)
+        .mount(control)
+        .await;
+}
+
+/// `POST /keys` answering with `api_key_uuid` as the new key's resource ID.
+async fn mount_key_create_returning(control: &MockServer, api_key_uuid: &str) {
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": { "id": api_key_uuid },
+                "keyId": format!("key-id-for-{api_key_uuid}"),
+                "keySecret": format!("key-secret-for-{api_key_uuid}")
+            },
+            "status": 200,
+            "requestId": "stub-key-create"
+        })))
+        .expect(1)
+        .mount(control)
+        .await;
+}
+
+/// The endpoint upsert the repair must send: the read-only role and origin
+/// preserved, exactly `open_api_keys` bound.
+async fn expect_repair_endpoint_upsert(control: &MockServer, open_api_keys: &[&str]) {
+    Mock::given(method("POST"))
+        .and(path(query_endpoint_path()))
+        .and(body_json(serde_json::json!({
+            "roles": ["sql_console_read_only"],
+            "openApiKeys": open_api_keys,
+            "allowedOrigins": "https://example.com"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "ep-1", "openApiKeys": open_api_keys },
+            "status": 200,
+            "requestId": "stub-endpoint-repair"
+        })))
+        .expect(1)
+        .mount(control)
+        .await;
+}
+
+async fn mount_key_delete(control: &MockServer, api_key_uuid: &str, response: ResponseTemplate) {
+    Mock::given(method("DELETE"))
+        .and(path(format!("/v1/organizations/org-1/keys/{api_key_uuid}")))
+        .respond_with(response)
+        .expect(1)
+        .mount(control)
+        .await;
+}
+
+fn key_deleted_response() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": 200,
+        "requestId": "stub-key-delete"
+    }))
+}
+
+/// The `DELETE /keys/{id}` paths the control plane received, in order.
+async fn key_deletes_received(control: &MockServer) -> Vec<String> {
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.method == wiremock::http::Method::DELETE)
+        .filter_map(|request| {
+            request
+                .url
+                .path()
+                .strip_prefix("/v1/organizations/org-1/keys/")
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// Stderr without the credential-precedence `note:` line the fixture's file
+/// credentials plus the env credentials always produce.
+fn stderr_without_notes(output: &std::process::Output) -> String {
+    String::from_utf8_lossy(&output.stderr)
+        .lines()
+        .filter(|line| !line.starts_with("note:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[tokio::test]
+async fn repair_with_a_pending_retirement_replaces_the_key_and_deletes_every_retired_key() {
+    // An earlier repair could not delete its superseded key, so the record
+    // lists it as pending (#527). This repair replaces the current key,
+    // unbinds both retired keys in the one endpoint upsert, deletes both, and
+    // leaves nothing pending. The unrelated binding survives. The service is
+    // running and accepts the new key at once, so the run is entirely quiet.
+    let control = MockServer::start().await;
+    mount_repair_service_state(&control, "running").await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .expect(1)
+        .mount(&control)
+        .await;
+    mount_repair_endpoint_get_listing(
+        &control,
+        &[
+            "unrelated-key",
+            OLD_QUERY_TEST_KEY_UUID,
+            PENDING_QUERY_TEST_KEY_UUID,
+        ],
+    )
+    .await;
+    mount_key_create_returning(&control, QUERY_TEST_KEY_UUID).await;
+    expect_repair_endpoint_upsert(&control, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
+    mount_key_delete(
+        &control,
+        PENDING_QUERY_TEST_KEY_UUID,
+        key_deleted_response(),
+    )
+    .await;
+    mount_key_delete(&control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let original = write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[PENDING_QUERY_TEST_KEY_UUID],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    assert_eq!(
+        stderr_without_notes(&output),
+        "",
+        "a fully successful cleanup prints no warning"
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["replacedApiKeyId"], OLD_QUERY_TEST_KEY_UUID);
+    assert_eq!(result["verification"], "verified");
+    assert_eq!(
+        result["deletedApiKeyIds"],
+        serde_json::json!([PENDING_QUERY_TEST_KEY_UUID, OLD_QUERY_TEST_KEY_UUID])
+    );
+    assert!(result.get("pendingCleanupApiKeyIds").is_none(), "{result}");
+    assert_eq!(
+        key_deletes_received(&control).await,
+        [PENDING_QUERY_TEST_KEY_UUID, OLD_QUERY_TEST_KEY_UUID],
+        "exactly the stored retired keys are deleted, never the unrelated or the new one"
+    );
+
+    let stored = read_credentials(project.path());
+    assert_eq!(stored["api_key"], original["api_key"]);
+    assert_eq!(
+        stored["service_query_keys"][PRESERVED_QUERY_SERVICE_ID],
+        original["service_query_keys"][PRESERVED_QUERY_SERVICE_ID]
+    );
+    let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert!(
+        repaired.get("pending_cleanup_api_key_ids").is_none(),
+        "{repaired}"
+    );
+}
+
+#[tokio::test]
+async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list() {
+    // Two repairs in a row against the same project: each one retires the key
+    // the previous one installed, so the endpoint always binds exactly the
+    // unrelated key plus the current one and nothing is ever left pending.
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+
+    let first = MockServer::start().await;
+    mount_running_service_accepting_probes(&first, 1).await;
+    mount_repair_endpoint_get_listing(&first, &["unrelated-key", OLD_QUERY_TEST_KEY_UUID]).await;
+    mount_key_create_returning(&first, QUERY_TEST_KEY_UUID).await;
+    expect_repair_endpoint_upsert(&first, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
+    mount_key_delete(&first, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+    let output = service_query_key_repair_process(project.path(), &first)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    assert_eq!(
+        key_deletes_received(&first).await,
+        [OLD_QUERY_TEST_KEY_UUID]
+    );
+
+    let second = MockServer::start().await;
+    mount_running_service_accepting_probes(&second, 1).await;
+    mount_repair_endpoint_get_listing(&second, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
+    mount_key_create_returning(&second, THIRD_QUERY_TEST_KEY_UUID).await;
+    expect_repair_endpoint_upsert(&second, &["unrelated-key", THIRD_QUERY_TEST_KEY_UUID]).await;
+    mount_key_delete(&second, QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+    let output = service_query_key_repair_process(project.path(), &second)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["replacedApiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["apiKeyId"], THIRD_QUERY_TEST_KEY_UUID);
+    assert_eq!(result["verification"], "verified");
+    assert_eq!(
+        result["deletedApiKeyIds"],
+        serde_json::json!([QUERY_TEST_KEY_UUID])
+    );
+    assert_eq!(
+        key_deletes_received(&second).await,
+        [QUERY_TEST_KEY_UUID],
+        "the second repair deletes only the key the first one installed"
+    );
+
+    let repaired = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], THIRD_QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        repaired["key_id"],
+        format!("key-id-for-{THIRD_QUERY_TEST_KEY_UUID}")
+    );
+    assert!(
+        repaired.get("pending_cleanup_api_key_ids").is_none(),
+        "{repaired}"
+    );
+}
+
+// ── Key propagation (issue #658) ────────────────────────────────────────────
+//
+// `POST /keys` and the endpoint upsert are answered by different services, and
+// the upsert can reject a key created moments earlier with
+// `400 OpenAPI key <id> does not belong to the organization` while
+// `GET /keys/{id}` already returns it. Provisioning and repair both create a
+// key and then bind it, so both wait that out: the upsert alone is retried,
+// with the same body, inside a bounded window; the notice below is printed
+// once; a success ends the wait. The condition is structural (a typed
+// `Error::Api` with status 400), never the message text.
+
+const KEY_PROPAGATION_NOTICE: &str =
+    "Waiting for the new API key to become visible to the Query API endpoint...";
+
+/// The control plane's answer while the new key has not propagated yet.
+fn key_not_in_organization_response(api_key_uuid: &str) -> ResponseTemplate {
+    ResponseTemplate::new(400).set_body_json(serde_json::json!({
+        "error": format!("OpenAPI key {api_key_uuid} does not belong to the organization"),
+        "status": 400,
+        "requestId": "stub-key-propagation"
+    }))
+}
+
+/// The endpoint upsert bodies the control plane received, in order.
+async fn endpoint_upserts_received(control: &MockServer) -> Vec<Value> {
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::POST
+                && request.url.path() == query_endpoint_path()
+        })
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect()
+}
+
+/// The endpoint upsert answering `first` on the first attempt and binding
+/// `open_api_keys` on every later one.
+async fn mount_endpoint_upsert_failing_once(
+    control: &MockServer,
+    first: ResponseTemplate,
+    open_api_keys: Vec<&str>,
+    expected_calls: u64,
+) {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let open_api_keys: Vec<String> = open_api_keys.iter().map(|key| key.to_string()).collect();
+    Mock::given(method("POST"))
+        .and(path(query_endpoint_path()))
+        .respond_with(move |_: &wiremock::Request| {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                first.clone()
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": "ep-1", "openApiKeys": open_api_keys },
+                    "status": 200,
+                    "requestId": "stub-endpoint-upsert"
+                }))
+            }
+        })
+        .expect(expected_calls)
+        .mount(control)
+        .await;
+}
+
+#[tokio::test]
+async fn repair_waits_for_the_new_key_to_propagate_before_binding_it() {
+    let control = MockServer::start().await;
+    mount_running_service_accepting_probes(&control, 1).await;
+    mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    mount_endpoint_upsert_failing_once(
+        &control,
+        key_not_in_organization_response(QUERY_TEST_KEY_UUID),
+        vec!["unrelated-key", QUERY_TEST_KEY_UUID],
+        2,
+    )
+    .await;
+    mount_key_delete(&control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
     );
     let output = service_query_key_repair_process(project.path(), &control)
         .output()
@@ -3859,26 +7008,664 @@ async fn repair_cleanup_retry_deletes_only_pending_key_without_reprovisioning() 
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["status"], "cleanup_completed");
+    assert_eq!(result["status"], "repaired");
     assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
-
-    let requests = control.received_requests().await.unwrap();
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].method, wiremock::http::Method::DELETE);
-    let stored: Value = serde_json::from_slice(
-        &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(stored["api_key"], original["api_key"]);
+    assert_eq!(result["replacedApiKeyId"], OLD_QUERY_TEST_KEY_UUID);
     assert_eq!(
-        stored["service_query_keys"][PRESERVED_QUERY_SERVICE_ID],
-        original["service_query_keys"][PRESERVED_QUERY_SERVICE_ID]
+        result["deletedApiKeyIds"],
+        serde_json::json!([OLD_QUERY_TEST_KEY_UUID])
+    );
+    assert_eq!(result["verification"], "verified");
+    let stderr = stderr_without_notes(&output);
+    assert_eq!(
+        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
+        1,
+        "the notice is printed exactly once: {stderr}"
+    );
+    assert!(!stderr.contains("Warning:"), "{stderr}");
+
+    // Exactly one key was created; the retried upsert carried the same body;
+    // the superseded key was retired and the new one was never deleted.
+    let requests = control.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| {
+                request.method == wiremock::http::Method::POST
+                    && request.url.path() == "/v1/organizations/org-1/keys"
+            })
+            .count(),
+        1
+    );
+    let upserts = endpoint_upserts_received(&control).await;
+    assert_eq!(upserts.len(), 2);
+    assert_eq!(upserts[0], upserts[1], "the retry resends the same body");
+    assert_eq!(
+        upserts[0]["openApiKeys"],
+        serde_json::json!(["unrelated-key", QUERY_TEST_KEY_UUID])
+    );
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![OLD_QUERY_TEST_KEY_UUID.to_string()]
+    );
+    let stored = read_credentials(project.path());
+    let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(repaired["key_id"], "replacement-key-id");
+    assert!(repaired.get("pending_cleanup_api_key_ids").is_none());
+}
+
+#[tokio::test]
+async fn a_400_that_outlives_the_propagation_window_rolls_the_repair_back() {
+    // The control plane keeps refusing the new key for the whole window (this
+    // test waits out the real 30 s deadline, so the shipped policy is what is
+    // pinned). The repair then fails exactly as an unretried failure did:
+    // original binding restored, new key deleted, record untouched, and the
+    // error the user sees is the upsert's own last answer.
+    let control = MockServer::start().await;
+    mount_repair_endpoint_get(&control).await;
+    mount_replacement_key_create(&control).await;
+    Mock::given(method("POST"))
+        .and(path(query_endpoint_path()))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            let binds_new_key = body["openApiKeys"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|key| key == QUERY_TEST_KEY_UUID);
+            if binds_new_key {
+                key_not_in_organization_response(QUERY_TEST_KEY_UUID)
+            } else {
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": "ep-1" },
+                    "status": 200,
+                    "requestId": "stub-rollback"
+                }))
+            }
+        })
+        .mount(&control)
+        .await;
+    mount_key_delete(&control, QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let original = write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let started = std::time::Instant::now();
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        stderr_without_notes(&output)
     );
     assert!(
-        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]
-            .get("pending_cleanup_api_key_ids")
-            .is_none()
+        started.elapsed() >= std::time::Duration::from_secs(30),
+        "the whole window is waited out before giving up"
     );
+    let stderr = stderr_without_notes(&output);
+    assert_eq!(
+        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
+        1,
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!(
+            "OpenAPI key {QUERY_TEST_KEY_UUID} does not belong to the organization"
+        )),
+        "the last 400 is the error reported: {stderr}"
+    );
+
+    let upserts = endpoint_upserts_received(&control).await;
+    assert!(
+        upserts.len() >= 3,
+        "several attempts then a rollback: {upserts:?}"
+    );
+    let (rollback, attempts) = upserts.split_last().unwrap();
+    for attempt in attempts {
+        assert_eq!(
+            attempt["openApiKeys"],
+            serde_json::json!(["unrelated-key", QUERY_TEST_KEY_UUID])
+        );
+    }
+    assert_eq!(
+        rollback["openApiKeys"],
+        serde_json::json!(["unrelated-key", OLD_QUERY_TEST_KEY_UUID])
+    );
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![QUERY_TEST_KEY_UUID.to_string()],
+        "only the new key is deleted; the superseded key is untouched"
+    );
+    assert_eq!(read_credentials(project.path()), original);
+}
+
+#[tokio::test]
+async fn first_use_provisioning_waits_for_the_new_key_to_propagate_before_binding_it() {
+    // The first-use path creates a key, reads the endpoint and binds the key:
+    // the same create-then-bind the repair does, so the same wait applies.
+    let control = start_mock_control_plane_with_service().await;
+    mount_key_create_and_delete(
+        &control,
+        serde_json::json!({
+            "key": { "id": QUERY_TEST_KEY_UUID },
+            "keyId": "provisioned-key-id",
+            "keySecret": "provisioned-key-secret"
+        }),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path(query_endpoint_path()))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "error": "not found",
+            "status": 404,
+            "requestId": "stub-endpoint-get"
+        })))
+        .expect(1)
+        .mount(&control)
+        .await;
+    mount_endpoint_upsert_failing_once(
+        &control,
+        key_not_in_organization_response(QUERY_TEST_KEY_UUID),
+        vec![QUERY_TEST_KEY_UUID],
+        2,
+    )
+    .await;
+    let query_host = start_mock_query_host_for_provisioning().await;
+
+    let project = tempfile::tempdir().unwrap();
+    let url = control.uri();
+    let output = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "query",
+            "--id",
+            QUERY_TEST_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+        ])
+        .current_dir(project.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr.matches(KEY_PROPAGATION_NOTICE).count(),
+        1,
+        "{stderr}"
+    );
+
+    let upserts = endpoint_upserts_received(&control).await;
+    assert_eq!(upserts.len(), 2);
+    assert_eq!(upserts[0], upserts[1]);
+    assert_eq!(
+        upserts[0]["openApiKeys"],
+        serde_json::json!([QUERY_TEST_KEY_UUID])
+    );
+    assert!(
+        recorded_key_deletes(&control).await.is_empty(),
+        "a key that was eventually bound is never deleted"
+    );
+    let stored = read_credentials(project.path());
+    assert_eq!(
+        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["api_key_id"],
+        QUERY_TEST_KEY_UUID
+    );
+}
+
+// ── Post-repair verification (issue #658) ───────────────────────────────────
+//
+// The new binding reaches the Query API host a moment after the upsert. A
+// query in between is rejected and the stored-key classifier (#528) would
+// call an enabled, bound key "IP allowlist or secret mismatch". So a repair
+// on a running service probes the endpoint with the new key, the way
+// first-use provisioning does, and exits 0 only once the key works. Idle and
+// stopped services are not probed (the probe would wake one and the other
+// cannot answer); the next query verifies the key instead.
+
+const QUERY_READINESS_NOTICE: &str = "Waiting for the Query API endpoint to become ready...";
+
+async fn mount_repair_service_state(control: &MockServer, state: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": QUERY_TEST_SERVICE_ID, "name": "demo", "state": state },
+            "status": 200,
+            "requestId": "stub-service-get"
+        })))
+        .mount(control)
+        .await;
+}
+
+/// Everything a clean repair needs on the control plane: the endpoint, the
+/// replacement key, the upsert and the retirement of the old key.
+async fn mount_clean_repair(control: &MockServer) {
+    mount_repair_endpoint_get(control).await;
+    mount_replacement_key_create(control).await;
+    expect_repair_endpoint_upsert(control, &["unrelated-key", QUERY_TEST_KEY_UUID]).await;
+    mount_key_delete(control, OLD_QUERY_TEST_KEY_UUID, key_deleted_response()).await;
+}
+
+/// A `running` service whose query host accepts every probe: what every
+/// successful repair sees. `expected_probes` pins that the probe ran.
+async fn mount_running_service_accepting_probes(control: &MockServer, expected_probes: u64) {
+    mount_repair_service_state(control, "running").await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .expect(expected_probes)
+        .mount(control)
+        .await;
+}
+
+/// The one JSON error object on stderr, after any notice lines.
+fn structured_error(output: &std::process::Output) -> Value {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let object = &stderr[stderr.find('{').unwrap_or(0)..];
+    serde_json::from_str(object.trim())
+        .unwrap_or_else(|e| panic!("stderr does not end in one JSON object ({e}): {stderr}"))
+}
+
+/// The probe requests the query host received with the replacement key.
+async fn probes_received(control: &MockServer) -> Vec<Value> {
+    let auth = query_test_basic_auth("replacement-key-id:replacement-key-secret");
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| {
+            request.url.path() == format!("/service/{QUERY_TEST_SERVICE_ID}/run")
+                && request
+                    .headers
+                    .get("authorization")
+                    .is_some_and(|value| value == auth.as_str())
+        })
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect()
+}
+
+#[tokio::test]
+async fn repair_exits_zero_only_once_the_query_api_accepts_the_new_key() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let control = MockServer::start().await;
+    mount_repair_service_state(&control, "running").await;
+    mount_clean_repair(&control).await;
+    let attempts = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(move |_: &wiremock::Request| {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                ResponseTemplate::new(401).set_body_string("API key is not authorized")
+            } else {
+                ResponseTemplate::new(200).set_body_string("1\n")
+            }
+        })
+        .expect(2)
+        .mount(&control)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["verification"], "verified");
+    let stderr = stderr_without_notes(&output);
+    assert_eq!(
+        stderr.matches(QUERY_READINESS_NOTICE).count(),
+        1,
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Note:"), "{stderr}");
+
+    let probes = probes_received(&control).await;
+    assert_eq!(
+        probes.len(),
+        2,
+        "one rejected probe, one accepted: {probes:?}"
+    );
+    for probe in &probes {
+        assert_eq!(probe["sql"], "SELECT 1");
+    }
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![OLD_QUERY_TEST_KEY_UUID.to_string()],
+        "the probe never triggers a rollback"
+    );
+}
+
+#[tokio::test]
+async fn repair_does_not_probe_a_service_that_is_not_running() {
+    for state in ["idle", "stopped"] {
+        let control = MockServer::start().await;
+        mount_repair_service_state(&control, state).await;
+        mount_clean_repair(&control).await;
+
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir(project.path().join("home")).unwrap();
+        write_repair_query_credentials(
+            project.path(),
+            Some("org-1"),
+            Some(OLD_QUERY_TEST_KEY_UUID),
+            Some("ep-1"),
+            &[],
+        );
+        let output = service_query_key_repair_process(project.path(), &control)
+            .output()
+            .await
+            .expect("failed to spawn clickhousectl");
+        assert_success(&output);
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["status"], "repaired");
+        assert_eq!(result["verification"], "skipped");
+        let stderr = stderr_without_notes(&output);
+        assert!(
+            stderr.contains(&format!("Note: service {QUERY_TEST_SERVICE_ID} is {state}")),
+            "{stderr}"
+        );
+        assert!(stderr.contains("is verified by the next"), "{stderr}");
+        assert!(
+            probes_received(&control).await.is_empty(),
+            "{state}: probed"
+        );
+    }
+}
+
+#[tokio::test]
+async fn repair_skips_verification_when_the_service_state_cannot_be_read() {
+    // No `GET service` is mounted, so the state lookup answers 404. The repair
+    // is complete and reported; the key is simply not probed.
+    let control = MockServer::start().await;
+    mount_clean_repair(&control).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["verification"], "skipped");
+    let stderr = stderr_without_notes(&output);
+    assert!(
+        stderr.contains(&format!(
+            "Note: could not read service {QUERY_TEST_SERVICE_ID}:"
+        )),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(QUERY_TEST_KEY_UUID),
+        "the note names the stored key: {stderr}"
+    );
+    assert!(probes_received(&control).await.is_empty());
+}
+
+#[tokio::test]
+async fn repair_skips_verification_without_a_configured_query_host() {
+    // `--url` points at a host the Query API host cannot be derived from and
+    // `CLICKHOUSE_CLOUD_QUERY_HOST` is unset: the library would fall back to
+    // the production host, so the CLI does not probe at all. Every request
+    // the run made went to the mock, and none of them was a probe.
+    let control = MockServer::start().await;
+    mount_running_service_accepting_probes(&control, 0).await;
+    mount_clean_repair(&control).await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .env_remove("CLICKHOUSE_CLOUD_QUERY_HOST")
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["verification"], "skipped");
+    let stderr = stderr_without_notes(&output);
+    assert!(
+        stderr.contains("Note: no Query API host is configured for"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("CLICKHOUSE_CLOUD_QUERY_HOST"), "{stderr}");
+    let requests = control.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path().starts_with("/v1/")),
+        "only control-plane requests, no probe: {:?}",
+        requests
+            .iter()
+            .map(|request| request.url.path().to_string())
+            .collect::<Vec<_>>()
+    );
+    // Old key retired, new key kept: the repair itself is untouched.
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![OLD_QUERY_TEST_KEY_UUID.to_string()]
+    );
+}
+
+#[tokio::test]
+async fn a_failed_probe_reports_the_committed_repair_and_exits_zero() {
+    // The probe fails for a reason that is not "not ready yet". The repair
+    // itself is complete and consistent, so nothing is undone and the exit
+    // code stays 0: the result names the new key with `verification: failed`
+    // and a warning on stderr says what failed and how the key gets verified.
+    let control = MockServer::start().await;
+    mount_repair_service_state(&control, "running").await;
+    mount_clean_repair(&control).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(
+            ResponseTemplate::new(502).set_body_json(serde_json::json!({ "error": "bad gateway" })),
+        )
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["verification"], "failed");
+    let stderr = stderr_without_notes(&output);
+    assert!(
+        stderr.contains(&format!(
+            "Warning: the query key for service {QUERY_TEST_SERVICE_ID} was replaced (new API \
+             key {QUERY_TEST_KEY_UUID}) and stored in .clickhouse/credentials.json, but probing \
+             it failed"
+        )),
+        "{stderr}"
+    );
+    assert!(stderr.contains("bad gateway"), "{stderr}");
+    assert!(stderr.contains("is verified by the next"), "{stderr}");
+
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![OLD_QUERY_TEST_KEY_UUID.to_string()],
+        "the old key is retired and the new key is never deleted"
+    );
+    let stored = read_credentials(project.path());
+    let repaired = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(repaired["key_id"], "replacement-key-id");
+}
+
+#[tokio::test]
+async fn repair_skips_verification_when_the_probe_finds_the_service_stopped() {
+    // The service was running when its state was read and stopped by the time
+    // the probe arrived (HTTP 206 `Service is stopped`). Not a failure of the
+    // key: the probe is skipped like any other not-running service.
+    let control = MockServer::start().await;
+    mount_repair_service_state(&control, "running").await;
+    mount_clean_repair(&control).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(
+            ResponseTemplate::new(206)
+                .set_body_json(serde_json::json!({ "data": "Service is stopped" })),
+        )
+        .expect(1)
+        .mount(&control)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_success(&output);
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["verification"], "skipped");
+    let stderr = stderr_without_notes(&output);
+    assert!(
+        stderr.contains(&format!("Note: service {QUERY_TEST_SERVICE_ID} is stopped")),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("Warning:"), "{stderr}");
+}
+
+#[tokio::test]
+#[ignore = "waits out the real 120 s Query API readiness window; run explicitly"]
+async fn a_key_the_query_api_never_accepts_reports_the_repair_then_fails_with_its_own_code() {
+    // The probe is rejected for the whole readiness window. The repair is
+    // committed and printed first, with `verification: failed`; then the
+    // structured error follows on stderr with its own code, the new key's ID
+    // and the query command to run — never a repair rerun, which would rotate
+    // a key that may only be slow to propagate. Nothing is rolled back.
+    let control = MockServer::start().await;
+    mount_repair_service_state(&control, "running").await;
+    mount_clean_repair(&control).await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .mount(&control)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    write_repair_query_credentials(
+        project.path(),
+        Some("org-1"),
+        Some(OLD_QUERY_TEST_KEY_UUID),
+        Some("ep-1"),
+        &[],
+    );
+    let output = service_query_key_repair_process(project.path(), &control)
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "{}",
+        stderr_without_notes(&output)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["status"], "repaired");
+    assert_eq!(result["apiKeyId"], QUERY_TEST_KEY_UUID);
+    assert_eq!(result["verification"], "failed");
+    let error = structured_error(&output);
+    assert_eq!(error["error"]["code"], "query_key_repair_unverified");
+    assert_eq!(error["error"]["api_key_id"], QUERY_TEST_KEY_UUID);
+    assert_eq!(
+        error["error"]["command"],
+        format!(
+            "clickhousectl cloud service query --id {QUERY_TEST_SERVICE_ID} --org-id org-1 \
+             --query \"SELECT 1\""
+        )
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("was replaced (new API key"), "{message}");
+    assert!(
+        message.contains("Do not rerun repair-query-key"),
+        "{message}"
+    );
+    assert!(
+        probes_received(&control).await.len() > 1,
+        "the whole window was used"
+    );
+    assert_eq!(
+        key_deletes_received(&control).await,
+        vec![OLD_QUERY_TEST_KEY_UUID.to_string()],
+        "no rollback: the old key is retired, the new one kept"
+    );
+    let repaired = &read_credentials(project.path())["service_query_keys"][QUERY_TEST_SERVICE_ID];
+    assert_eq!(repaired["api_key_id"], QUERY_TEST_KEY_UUID);
 }
 
 #[tokio::test]
@@ -3924,6 +7711,7 @@ fn service_query_process_with_sql(
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
         .current_dir(project_dir)
+        .stdin(Stdio::null())
         .args([
             "cloud",
             "--url",
@@ -4683,6 +8471,7 @@ async fn invoke_service_query_provisioning(control: &MockServer) -> (tempfile::T
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
 
@@ -5007,6 +8796,7 @@ async fn service_query_keeps_the_key_when_the_endpoint_response_omits_the_id() {
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -5152,6 +8942,7 @@ async fn provision_against_endpoint_with_keys(existing_keys: Value) -> (tempfile
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -5259,6 +9050,7 @@ async fn invoke_oauth_service_query_error(body: &str) -> std::process::Output {
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl")
 }
@@ -5348,6 +9140,7 @@ async fn service_query_resends_with_wake_header_when_service_is_idle() {
         .env_remove("CLICKHOUSE_CLOUD_API_KEY")
         .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
     assert_success(&output);
@@ -5413,6 +9206,7 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .stdin(Stdio::null())
         .output()
         .expect("failed to spawn clickhousectl");
 
@@ -5736,40 +9530,156 @@ async fn mysql_server_id_absent_when_not_passed() {
     );
 }
 
-// ── ClickPipe settings updates preserve required values ─────────────────────
+// ── ClickPipe settings updates are source-aware (#602) ─────────────────────
+//
+// `kafka_read_committed` is only supported for Kafka pipes: the API fails the
+// whole PUT with "Setting 'kafka_read_committed' is only supported for Kafka
+// ClickPipes" for any other source. The handler therefore fetches the pipe to
+// classify its source, and only reads back and re-sends the Kafka-only setting
+// when the source is Kafka.
+
+const CLICKPIPE_PATH: &str = "/v1/organizations/org/services/svc-id/clickpipes/pipe-id";
+const CLICKPIPE_SETTINGS_PATH: &str =
+    "/v1/organizations/org/services/svc-id/clickpipes/pipe-id/settings";
+
+/// Stub the pipe GET with a source of the given shape, e.g.
+/// `json!({ "objectStorage": { "type": "s3" } })`.
+async fn mount_clickpipe_get(mock: &MockServer, source: Value) {
+    let stub_pipe = serde_json::json!({
+        "result": {
+            "id": "00000000-0000-0000-0000-0000000000aa",
+            "name": "test-pipe",
+            "state": "Running",
+            "source": source,
+        },
+        "status": 200,
+        "requestId": "stub-clickpipe-get",
+    });
+    Mock::given(method("GET"))
+        .and(path(CLICKPIPE_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_pipe))
+        .mount(mock)
+        .await;
+}
+
+async fn mount_clickpipe_settings_put(mock: &MockServer, result: Value) {
+    let updated_settings = serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": "stub-settings-update",
+    });
+    Mock::given(method("PUT"))
+        .and(path(CLICKPIPE_SETTINGS_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(updated_settings))
+        .mount(mock)
+        .await;
+}
+
+/// The (method, path) pairs the mock saw, in order.
+async fn recorded_request_shape(mock: &MockServer) -> Vec<(String, String)> {
+    mock.received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| {
+            (
+                request.method.as_str().to_string(),
+                request.url.path().to_string(),
+            )
+        })
+        .collect()
+}
+
+async fn recorded_put_body(mock: &MockServer) -> Value {
+    let requests = mock.received_requests().await.unwrap();
+    let put = requests
+        .iter()
+        .find(|request| request.method == wiremock::http::Method::PUT)
+        .expect("no settings PUT request recorded by mock");
+    serde_json::from_slice::<Value>(&put.body).unwrap()
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_omits_kafka_only_settings_for_non_kafka_pipes() {
+    for source in [
+        serde_json::json!({ "objectStorage": { "type": "s3", "format": "JSONEachRow" } }),
+        serde_json::json!({ "kinesis": { "stream": "events" } }),
+        // A response that drops `source` entirely is treated as non-Kafka.
+        serde_json::json!({}),
+    ] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, source.clone()).await;
+        mount_clickpipe_settings_put(
+            &mock,
+            serde_json::json!({ "object_storage_max_file_count": 200 }),
+        )
+        .await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "update",
+                "svc-id",
+                "pipe-id",
+                "--object-storage-max-file-count",
+                "200",
+                "--org-id",
+                "org",
+            ],
+        );
+        assert_success(&output);
+
+        // No settings GET: nothing needs reading back when no Kafka-only
+        // setting is being re-sent.
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![
+                ("GET".to_string(), CLICKPIPE_PATH.to_string()),
+                ("PUT".to_string(), CLICKPIPE_SETTINGS_PATH.to_string()),
+            ],
+            "unexpected requests for source {source}"
+        );
+        assert_eq!(
+            recorded_put_body(&mock).await,
+            serde_json::json!({ "object_storage_max_file_count": 200 }),
+            "kafka-only settings leaked for source {source}"
+        );
+    }
+}
 
 #[tokio::test]
 async fn clickpipe_settings_update_preserves_or_defaults_kafka_read_committed() {
-    let settings_path = "/v1/organizations/org/services/svc-id/clickpipes/pipe-id/settings";
     for (current_settings, expected) in [
         (serde_json::json!({ "kafka_read_committed": true }), true),
+        (serde_json::json!({ "kafka_read_committed": false }), false),
         (serde_json::json!({}), false),
     ] {
         let mock = MockServer::start().await;
+        mount_clickpipe_get(
+            &mock,
+            serde_json::json!({ "kafka": { "type": "kafka", "brokers": "b:9092" } }),
+        )
+        .await;
         let current_settings = serde_json::json!({
             "result": current_settings,
             "status": 200,
             "requestId": "stub-settings-get",
         });
-        let updated_settings = serde_json::json!({
-            "result": {
-                "streaming_max_insert_wait_ms": 1000,
-                "kafka_read_committed": expected,
-            },
-            "status": 200,
-            "requestId": "stub-settings-update",
-        });
-
         Mock::given(method("GET"))
-            .and(path(settings_path))
+            .and(path(CLICKPIPE_SETTINGS_PATH))
             .respond_with(ResponseTemplate::new(200).set_body_json(current_settings))
             .mount(&mock)
             .await;
-        Mock::given(method("PUT"))
-            .and(path(settings_path))
-            .respond_with(ResponseTemplate::new(200).set_body_json(updated_settings))
-            .mount(&mock)
-            .await;
+        mount_clickpipe_settings_put(
+            &mock,
+            serde_json::json!({
+                "streaming_max_insert_wait_ms": 1000,
+                "kafka_read_committed": expected,
+            }),
+        )
+        .await;
 
         let output = invoke_cli_with_cloud_credentials(
             &mock,
@@ -5787,34 +9697,185 @@ async fn clickpipe_settings_update_preserves_or_defaults_kafka_read_committed() 
         );
         assert_success(&output);
 
-        let requests = mock.received_requests().await.unwrap();
-        let request_shape = requests
-            .iter()
-            .map(|request| {
-                (
-                    request.method.as_str().to_string(),
-                    request.url.path().to_string(),
-                )
-            })
-            .collect::<Vec<_>>();
         assert_eq!(
-            request_shape,
+            recorded_request_shape(&mock).await,
             vec![
-                ("GET".to_string(), settings_path.to_string()),
-                ("PUT".to_string(), settings_path.to_string()),
+                ("GET".to_string(), CLICKPIPE_PATH.to_string()),
+                ("GET".to_string(), CLICKPIPE_SETTINGS_PATH.to_string()),
+                ("PUT".to_string(), CLICKPIPE_SETTINGS_PATH.to_string()),
             ]
         );
-
-        let put = requests
-            .iter()
-            .find(|request| request.method == wiremock::http::Method::PUT)
-            .expect("no settings PUT request recorded by mock");
         assert_eq!(
-            serde_json::from_slice::<Value>(&put.body).unwrap(),
+            recorded_put_body(&mock).await,
             serde_json::json!({
                 "streaming_max_insert_wait_ms": 1000,
                 "kafka_read_committed": expected,
             })
+        );
+    }
+}
+
+// ── ClickPipe ingestion settings apply to some pipe types only (#643) ──────
+//
+// The ingestion settings endpoints exist for streaming and object-storage pipes
+// only. For a database CDC pipe the API answers `NOT_FOUND: ingestion for pipe
+// "<id>" not found`, which reads as "the pipe is gone". Both settings commands
+// therefore classify the pipe's source first and refuse before touching the
+// settings endpoint.
+
+/// The settings GET the CLI must not reach for a database CDC pipe. Mounted so
+/// the assertion is "the CLI never called it", not "the mock had no route".
+async fn mount_clickpipe_settings_get(mock: &MockServer) {
+    let settings = serde_json::json!({
+        "result": { "streaming_max_insert_wait_ms": 1000 },
+        "status": 200,
+        "requestId": "stub-settings-get",
+    });
+    Mock::given(method("GET"))
+        .and(path(CLICKPIPE_SETTINGS_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(settings))
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn clickpipe_settings_get_refuses_database_pipes_before_calling_the_endpoint() {
+    for (source, label) in [
+        (
+            serde_json::json!({ "postgres": { "host": "db.example.com" } }),
+            "Postgres CDC",
+        ),
+        (
+            serde_json::json!({ "mysql": { "host": "db.example.com" } }),
+            "MySQL CDC",
+        ),
+        (
+            serde_json::json!({ "mongodb": { "host": "db.example.com" } }),
+            "MongoDB CDC",
+        ),
+        (
+            serde_json::json!({ "bigquery": { "projectId": "proj" } }),
+            "BigQuery",
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, source.clone()).await;
+        mount_clickpipe_settings_get(&mock).await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "get",
+                "svc-id",
+                "pipe-id",
+                "--org-id",
+                "org",
+            ],
+        );
+
+        assert_eq!(output.status.code(), Some(1), "source {source}");
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!(
+                "Error: ClickPipe pipe-id is a {label} pipe; `clickpipe settings get` and \
+                 `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
+                 pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
+                 itself: see `clickhousectl cloud clickpipe get svc-id pipe-id`.\n"
+            ),
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).is_empty(),
+            "a refusal must print no settings for source {source}"
+        );
+        // Only the pipe read: the settings endpoint is never called.
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![("GET".to_string(), CLICKPIPE_PATH.to_string())],
+            "unexpected requests for source {source}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_refuses_database_pipes_before_calling_the_endpoint() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(
+        &mock,
+        serde_json::json!({ "postgres": { "host": "db.example.com" } }),
+    )
+    .await;
+    mount_clickpipe_settings_get(&mock).await;
+    mount_clickpipe_settings_put(&mock, serde_json::json!({})).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "settings",
+            "update",
+            "svc-id",
+            "pipe-id",
+            "--streaming-max-insert-wait-ms",
+            "1000",
+            "--org-id",
+            "org",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("ClickPipe pipe-id is a Postgres CDC pipe;"),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        recorded_request_shape(&mock).await,
+        vec![("GET".to_string(), CLICKPIPE_PATH.to_string())],
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_settings_get_reads_settings_for_pipes_that_have_them() {
+    for source in [
+        serde_json::json!({ "kafka": { "type": "kafka", "brokers": "b:9092" } }),
+        serde_json::json!({ "kinesis": { "stream": "events" } }),
+        serde_json::json!({ "objectStorage": { "type": "s3", "format": "JSONEachRow" } }),
+        // An unclassifiable pipe proceeds: the API stays the authority.
+        serde_json::json!({}),
+    ] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, source.clone()).await;
+        mount_clickpipe_settings_get(&mock).await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "get",
+                "svc-id",
+                "pipe-id",
+                "--org-id",
+                "org",
+            ],
+        );
+        assert_success(&output);
+
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            serde_json::json!({ "streaming_max_insert_wait_ms": 1000 }),
+            "unexpected output for source {source}"
+        );
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![
+                ("GET".to_string(), CLICKPIPE_PATH.to_string()),
+                ("GET".to_string(), CLICKPIPE_SETTINGS_PATH.to_string()),
+            ],
+            "unexpected requests for source {source}"
         );
     }
 }
@@ -5918,6 +9979,383 @@ async fn schema_discover_kinesis_posts_source_body() {
         "kafka leaked into kinesis schema-discovery body: {}",
         body["source"],
     );
+}
+
+#[tokio::test]
+async fn schema_discover_object_storage_posts_source_body() {
+    let mock = start_mock_schema_discovery_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "svc-id",
+            "--org-id",
+            "org",
+            "object-storage",
+            "--source-url",
+            "https://bucket.s3.us-east-1.amazonaws.com/data/*.csv",
+            "--format",
+            "CSV",
+            "--compression",
+            "gzip",
+            "--delimiter",
+            ",",
+            "--iam-role",
+            "arn:aws:iam::123:role/x",
+        ],
+    )
+    .await;
+    let object_storage = &body["source"]["objectStorage"];
+    assert_eq!(
+        object_storage["url"],
+        "https://bucket.s3.us-east-1.amazonaws.com/data/*.csv"
+    );
+    assert_eq!(object_storage["format"], "CSV");
+    assert_eq!(object_storage["type"], "s3");
+    assert_eq!(object_storage["compression"], "gzip");
+    assert_eq!(object_storage["delimiter"], ",");
+    assert_eq!(object_storage["authentication"], "IAM_ROLE");
+    assert_eq!(object_storage["iamRole"], "arn:aws:iam::123:role/x");
+    // No credential the user did not pass, and no other source key.
+    assert!(
+        object_storage.get("accessKey").is_none(),
+        "accessKey leaked into object-storage schema-discovery body: {object_storage}",
+    );
+    for key in ["kafka", "kinesis", "pubsub"] {
+        assert!(
+            body["source"].get(key).is_none(),
+            "{key} leaked into object-storage schema-discovery body: {}",
+            body["source"],
+        );
+    }
+}
+
+// ── Google Cloud Pub/Sub source (issue #587) ───────────────────────────────
+//
+// `clickpipe create pubsub` and `clickpipe schema-discover <SERVICE_ID> pubsub`
+// build the same `source.pubsub` object. The service account key is read from a
+// file (or from stdin for `-`) and sent base64-encoded under
+// `serviceAccountKey.serviceAccountFile`, so the path never goes on the wire —
+// and neither the key nor its encoding may reach output or an error message.
+
+const PUBSUB_SERVICE_ACCOUNT_KEY: &str =
+    r#"{"type":"service_account","private_key":"FAKE_PRIVATE_KEY"}"#;
+
+fn encoded_service_account_key() -> String {
+    base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        PUBSUB_SERVICE_ACCOUNT_KEY.as_bytes(),
+    )
+}
+
+fn write_service_account_key(dir: &Path) -> PathBuf {
+    let path = dir.join("sa-key.json");
+    std::fs::File::create(&path)
+        .expect("create service account key file")
+        .write_all(PUBSUB_SERVICE_ACCOUNT_KEY.as_bytes())
+        .expect("write service account key file");
+    path
+}
+
+/// Minimal `clickpipe create pubsub` invocation reading the key from
+/// `service_account_file`.
+fn pubsub_create_args(service_account_file: &str) -> Vec<String> {
+    [
+        "clickpipe",
+        "create",
+        "pubsub",
+        "svc-id",
+        "--name",
+        "pubsub-pipe",
+        "--topic",
+        "events",
+        "--project-id",
+        "my-gcp-project",
+        "--format",
+        "JSONEachRow",
+        "--seek-type",
+        "earliest",
+        "--service-account-file",
+        service_account_file,
+        "--database",
+        "default",
+        "--table",
+        "events",
+        "--column",
+        "event_id:Int64",
+        "--org-id",
+        "org",
+    ]
+    .iter()
+    .map(|arg| arg.to_string())
+    .collect()
+}
+
+fn as_str_args(args: &[String]) -> Vec<&str> {
+    args.iter().map(|arg| arg.as_str()).collect()
+}
+
+/// Spawn the binary with a piped stdin, write `stdin_data`, and return the
+/// finished output. Used for `--service-account-file -`.
+fn invoke_cli_with_piped_stdin(
+    mock: &MockServer,
+    cli_args: &[String],
+    stdin_data: &str,
+) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let mut args = vec![
+        "cloud".to_string(),
+        "--url".to_string(),
+        mock.uri(),
+        "--json".to_string(),
+    ];
+    args.extend_from_slice(cli_args);
+    let mut child = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+    child
+        .stdin
+        .take()
+        .expect("stdin is piped")
+        .write_all(stdin_data.as_bytes())
+        .expect("write service account key to stdin");
+    child
+        .wait_with_output()
+        .expect("failed to wait for clickhousectl")
+}
+
+/// The JSON body of the first POST the mock recorded.
+async fn recorded_post_body(mock: &MockServer) -> Value {
+    let requests = mock
+        .received_requests()
+        .await
+        .expect("mock requests log unavailable");
+    let post = requests
+        .iter()
+        .find(|request| request.method == wiremock::http::Method::POST)
+        .expect("no POST request recorded by mock");
+    serde_json::from_slice(&post.body).expect("POST body wasn't valid JSON")
+}
+
+#[tokio::test]
+async fn pubsub_create_posts_source_body_with_the_key_read_from_the_file() {
+    let mock = start_mock_clickpipes_api().await;
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_service_account_key(dir.path());
+    let mut args = pubsub_create_args(key_path.to_str().expect("utf-8 temp path"));
+    // Swap the minimal seek for the timestamp form and add every optional flag.
+    let seek = args
+        .iter()
+        .position(|arg| arg == "earliest")
+        .expect("baseline seek type");
+    args[seek] = "timestamp".to_string();
+    args.extend(
+        [
+            "--seek-timestamp",
+            "2026-04-10T12:00:00Z",
+            "--filter",
+            r#"attributes.region = "eu""#,
+            "--enable-ordering",
+            "--ack-deadline",
+            "120",
+            "--role",
+            "analytics_reader",
+        ]
+        .iter()
+        .map(|arg| arg.to_string()),
+    );
+
+    let body = invoke_cli_capture_body(&mock, &as_str_args(&args)).await;
+
+    let pubsub = &body["source"]["pubsub"];
+    assert_eq!(pubsub["topic"], "events");
+    assert_eq!(pubsub["projectId"], "my-gcp-project");
+    assert_eq!(pubsub["format"], "JSONEachRow");
+    assert_eq!(pubsub["authentication"], "SERVICE_ACCOUNT");
+    assert_eq!(pubsub["seekType"], "timestamp");
+    assert_eq!(pubsub["seekTimestamp"], "2026-04-10T12:00:00Z");
+    assert_eq!(pubsub["filter"], r#"attributes.region = "eu""#);
+    assert_eq!(pubsub["enableOrdering"], true);
+    assert_eq!(pubsub["ackDeadline"], 120);
+    // The key came from the file, base64-encoded, and the path never went out.
+    assert_eq!(
+        pubsub["serviceAccountKey"]["serviceAccountFile"],
+        Value::String(encoded_service_account_key()),
+    );
+    let serialized = body.to_string();
+    assert!(
+        !serialized.contains(key_path.to_str().expect("utf-8 temp path")),
+        "the key file path leaked into the request body: {serialized}",
+    );
+    assert!(
+        !serialized.contains("FAKE_PRIVATE_KEY"),
+        "the raw key leaked into the request body unencoded: {serialized}",
+    );
+    // Destination and roles behave exactly as on the other create subcommands.
+    assert_eq!(body["destination"]["database"], "default");
+    assert_eq!(body["destination"]["table"], "events");
+    assert_eq!(
+        body["destination"]["roles"],
+        serde_json::json!(["analytics_reader"]),
+    );
+    // No other source arm is populated.
+    for key in ["kafka", "kinesis", "objectStorage", "postgres", "bigquery"] {
+        assert!(
+            body["source"].get(key).is_none(),
+            "{key} leaked into the pubsub create body: {}",
+            body["source"],
+        );
+    }
+}
+
+#[tokio::test]
+async fn pubsub_optional_fields_absent_when_flags_omitted() {
+    let mock = start_mock_clickpipes_api().await;
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_service_account_key(dir.path());
+    let args = pubsub_create_args(key_path.to_str().expect("utf-8 temp path"));
+
+    let body = invoke_cli_capture_body(&mock, &as_str_args(&args)).await;
+
+    let pubsub = &body["source"]["pubsub"];
+    assert_eq!(pubsub["seekType"], "earliest");
+    for field in ["seekTimestamp", "filter", "enableOrdering", "ackDeadline"] {
+        assert!(
+            pubsub.get(field).is_none(),
+            "{field} leaked into the pubsub source body: {pubsub}",
+        );
+    }
+    assert!(
+        body["destination"].get("roles").is_none(),
+        "roles leaked into the destination body when --role was omitted: {}",
+        body["destination"],
+    );
+}
+
+#[tokio::test]
+async fn pubsub_service_account_key_can_be_read_from_stdin() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = pubsub_create_args("-");
+
+    let output = invoke_cli_with_piped_stdin(&mock, &args, PUBSUB_SERVICE_ACCOUNT_KEY);
+    assert_success(&output);
+
+    let body = recorded_post_body(&mock).await;
+    assert_eq!(
+        body["source"]["pubsub"]["serviceAccountKey"]["serviceAccountFile"],
+        Value::String(encoded_service_account_key()),
+    );
+}
+
+#[tokio::test]
+async fn pubsub_service_account_key_never_reaches_output_on_an_api_error() {
+    let mock = MockServer::start().await;
+    // A rejected create: the API error body is surfaced to the user, so this is
+    // where an echoed credential would show up.
+    Mock::given(method("POST"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes$",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "error": "pubsub source is not enabled for this organization",
+            "status": 400,
+            "requestId": "stub-request-id",
+        })))
+        .mount(&mock)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_service_account_key(dir.path());
+    let args = pubsub_create_args(key_path.to_str().expect("utf-8 temp path"));
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &as_str_args(&args));
+
+    assert!(
+        !output.status.success(),
+        "a rejected create must fail: {}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stderr.contains("not enabled for this organization"),
+        "the API error should still be reported: {stderr}",
+    );
+    for secret in [
+        PUBSUB_SERVICE_ACCOUNT_KEY,
+        "FAKE_PRIVATE_KEY",
+        &encoded_service_account_key(),
+    ] {
+        assert!(
+            !stderr.contains(secret),
+            "the service account key leaked into stderr: {stderr}",
+        );
+        assert!(
+            !stdout.contains(secret),
+            "the service account key leaked into stdout: {stdout}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn schema_discover_pubsub_posts_source_body() {
+    let mock = start_mock_schema_discovery_api().await;
+    let dir = tempfile::tempdir().unwrap();
+    let key_path = write_service_account_key(dir.path());
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "svc-id",
+            "--org-id",
+            "org",
+            "pubsub",
+            "--topic",
+            "events",
+            "--project-id",
+            "my-gcp-project",
+            "--format",
+            "Avro",
+            "--seek-type",
+            "latest",
+            "--service-account-file",
+            key_path.to_str().expect("utf-8 temp path"),
+            "--ack-deadline",
+            "30",
+        ],
+    )
+    .await;
+
+    let pubsub = &body["source"]["pubsub"];
+    assert_eq!(pubsub["topic"], "events");
+    assert_eq!(pubsub["projectId"], "my-gcp-project");
+    assert_eq!(pubsub["format"], "Avro");
+    assert_eq!(pubsub["authentication"], "SERVICE_ACCOUNT");
+    assert_eq!(pubsub["seekType"], "latest");
+    assert_eq!(pubsub["ackDeadline"], 30);
+    assert_eq!(
+        pubsub["serviceAccountKey"]["serviceAccountFile"],
+        Value::String(encoded_service_account_key()),
+    );
+    for key in ["kafka", "kinesis", "objectStorage"] {
+        assert!(
+            body["source"].get(key).is_none(),
+            "{key} leaked into pubsub schema-discovery body: {}",
+            body["source"],
+        );
+    }
 }
 
 // ── Generated service passwords are never silently dropped ─────────────────
@@ -6139,5 +10577,1627 @@ async fn key_create_succeeds_for_a_pre_hashed_key_without_generated_material() {
     assert!(
         !stdout.contains("Key Secret"),
         "a pre-hashed create must not report key material:\n{stdout}",
+    );
+}
+
+// ── `service update --remove-*` warns on unmatched entries (issue #612) ────
+
+/// Mount a `GET` returning the given `ipAccessList`/`privateEndpointIds`/`tags`
+/// snapshot and a `PATCH` that echoes it back unchanged, both scoped to
+/// `svc-1` in `org-1`.
+async fn mount_service_update_round_trip(mock: &MockServer, current: serde_json::Value) {
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": current,
+            "status": 200,
+            "requestId": "stub-service-get",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": current,
+            "status": 200,
+            "requestId": "stub-service-update",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn service_update_warns_when_remove_ip_allow_matches_nothing() {
+    let mock = MockServer::start().await;
+    mount_service_update_round_trip(
+        &mock,
+        serde_json::json!({
+            "id": "22222222-3333-4444-5555-666666666666",
+            "name": "demo",
+            "ipAccessList": [{ "source": "10.0.0.0/8" }],
+        }),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--remove-ip-allow",
+            "10.99.99.99/32",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Warning: --remove-ip-allow 10.99.99.99/32 did not match any entry in the service's \
+         current IP allow list; no entry was removed\n"
+    );
+}
+
+#[tokio::test]
+async fn service_update_does_not_warn_when_remove_ip_allow_matches() {
+    let mock = MockServer::start().await;
+    mount_service_update_round_trip(
+        &mock,
+        serde_json::json!({
+            "id": "22222222-3333-4444-5555-666666666666",
+            "name": "demo",
+            "ipAccessList": [{ "source": "10.0.0.0/8" }],
+        }),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--remove-ip-allow",
+            "10.0.0.0/8",
+        ],
+    );
+
+    assert_success(&output);
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test]
+async fn service_update_warns_on_unmatched_private_endpoint_and_tag_removal() {
+    let mock = MockServer::start().await;
+    mount_service_update_round_trip(
+        &mock,
+        serde_json::json!({
+            "id": "22222222-3333-4444-5555-666666666666",
+            "name": "demo",
+            "privateEndpointIds": ["pe-1"],
+            "tags": [{ "key": "env", "value": "prod" }],
+        }),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--remove-private-endpoint-id",
+            "pe-missing",
+            "--remove-tag",
+            "missing",
+        ],
+    );
+
+    assert_success(&output);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        stderr,
+        "Warning: --remove-private-endpoint-id pe-missing did not match any private endpoint \
+         on the service; nothing was removed\n\
+         Warning: --remove-tag missing did not match any tag on the service; nothing was \
+         removed\n"
+    );
+}
+
+#[tokio::test]
+async fn service_update_skips_get_when_no_removals_requested() {
+    let mock = MockServer::start().await;
+    // No removal flags: the handler must not issue the pre-update GET at all,
+    // since idempotent adds/renames never risk a silent no-op.
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "22222222-3333-4444-5555-666666666666", "name": "renamed" },
+            "status": 200,
+            "requestId": "stub-service-update",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service", "update", "svc-1", "--org-id", "org-1", "--name", "renamed",
+        ],
+    );
+
+    assert_success(&output);
+    assert!(
+        output.stderr.is_empty(),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+// ── Private endpoint ID format validation (issue #611) ─────────────────────
+
+#[tokio::test]
+async fn private_endpoint_create_sends_well_formed_endpoint_id() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/privateEndpoint",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": "vpce-0123456789abcdef0", "description": "prod" },
+            "status": 200,
+            "requestId": "stub-private-endpoint-create",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "private-endpoint",
+            "create",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--endpoint-id",
+            "vpce-0123456789abcdef0",
+        ],
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["id"], "vpce-0123456789abcdef0");
+}
+
+/// A malformed ID must fail as a clap usage error (exit 2) before any request
+/// is sent: registering one is org-wide and has to be unpicked by hand.
+#[tokio::test]
+async fn private_endpoint_create_rejects_malformed_endpoint_id_without_calling_api() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/privateEndpoint",
+        ))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "private-endpoint",
+            "create",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--endpoint-id",
+            "vpce-bogus",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid AWS VPC endpoint ID 'vpce-bogus'"),
+        "stderr should explain the format: {stderr}"
+    );
+    assert!(
+        mock.received_requests().await.unwrap().is_empty(),
+        "a rejected endpoint ID must not reach the API"
+    );
+}
+
+#[tokio::test]
+async fn service_update_rejects_malformed_added_private_endpoint_id_without_calling_api() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--add-private-endpoint-id",
+            "vpce-bogus",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+/// GCP (numeric PSC connection ID) and Azure (Resource ID) formats are not
+/// AWS-shaped and must still be forwarded verbatim.
+#[tokio::test]
+async fn private_endpoint_create_forwards_non_aws_endpoint_ids() {
+    for endpoint_id in [
+        "102600141743718403",
+        "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg/providers/Microsoft.Network/privateEndpoints/pe-demo",
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/privateEndpoint",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": endpoint_id, "description": "" },
+                "status": 200,
+                "requestId": "stub-private-endpoint-create",
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "service",
+                "private-endpoint",
+                "create",
+                "svc-1",
+                "--org-id",
+                "org-1",
+                "--endpoint-id",
+                endpoint_id,
+            ],
+        );
+
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["id"], endpoint_id);
+    }
+}
+
+// ── `clickpipe scale` requires at least one target (issue #605) ────────────
+//
+// Without --replicas/--cpu-millicores/--memory-gb the CLI used to send an
+// empty PATCH body, which the API 400s on and the CLI surfaced as a generic
+// "Internal error" (exit 1). It must now be a clap usage error (exit 2)
+// raised before any request is sent.
+
+#[tokio::test]
+async fn clickpipe_scale_without_any_flag_is_a_usage_error() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes/[^/]+/scaling$",
+        ))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["clickpipe", "scale", "svc-1", "pipe-1", "--org-id", "org-1"],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("replicas")
+            || stderr.contains("cpu-millicores")
+            || stderr.contains("memory-gb"),
+        "stderr should name the scale flags: {stderr}"
+    );
+    assert!(
+        mock.received_requests().await.unwrap().is_empty(),
+        "a rejected scale command must not reach the API"
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_scale_with_a_single_flag_sends_the_request() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path_regex(
+            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes/[^/]+/scaling$",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "name": "pipe-1",
+                "scaling": { "replicas": 4 },
+            },
+            "status": 200,
+            "requestId": "stub-clickpipe-scale",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "scale",
+            "svc-1",
+            "pipe-1",
+            "--org-id",
+            "org-1",
+            "--replicas",
+            "4",
+        ],
+    );
+
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["replicas"], 4);
+}
+
+// ── the Query API gateway timeout (issue #644) ─────────────────────────────
+//
+// The gateway stops waiting after roughly 30 seconds and answers HTTP 500
+// with `{"error":"Timeout error."}`. The statement keeps running on the
+// service, so the CLI must (a) say so, (b) point at `system.processes` before
+// a rerun, (c) hand over the native-protocol command built from the service's
+// own `nativesecure` endpoint, and (d) never resend the statement itself.
+
+/// The gateway's timeout body, verbatim.
+const QUERY_GATEWAY_TIMEOUT_BODY: &str = r#"{"error":"Timeout error."}"#;
+
+const QUERY_TEST_NATIVE_HOST: &str = "demo.gcp.clickhouse.cloud";
+
+/// A control plane whose `GET service` response carries both endpoints, the
+/// shape a real service has.
+async fn start_mock_control_plane_with_native_endpoint() -> MockServer {
+    let mock = MockServer::start().await;
+    let stub_service = serde_json::json!({
+        "result": {
+            "id": QUERY_TEST_SERVICE_ID,
+            "name": "demo",
+            "endpoints": [
+                { "protocol": "https", "host": QUERY_TEST_NATIVE_HOST, "port": 8443 },
+                {
+                    "protocol": "nativesecure",
+                    "host": QUERY_TEST_NATIVE_HOST,
+                    "port": 9440,
+                    "username": "default",
+                },
+            ],
+        },
+        "status": 200,
+        "requestId": "stub-service-get",
+    });
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(stub_service))
+        .mount(&mock)
+        .await;
+    mock
+}
+
+/// Run `cloud service query` with API-key auth against a query host that
+/// fails with `status`/`body`. Returns the process output and the query host,
+/// so a test can count how many times the statement was actually sent.
+async fn invoke_service_query_against_failing_query_host(
+    control: &MockServer,
+    status: u16,
+    body: &str,
+    extra_args: &[&str],
+) -> (std::process::Output, MockServer) {
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(status).set_body_string(body))
+        .mount(&query_host)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("home")).unwrap();
+    let mut command = service_query_process(dir.path(), control, &query_host);
+    command.args(extra_args);
+    let output = command
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl");
+
+    (output, query_host)
+}
+
+#[tokio::test]
+async fn query_gateway_timeout_hints_the_native_client_without_retrying() {
+    let control = start_mock_control_plane_with_native_endpoint().await;
+    let (output, query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        QUERY_GATEWAY_TIMEOUT_BODY,
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("stops waiting after about 30 seconds"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("The statement may still be running on the service"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("SELECT query_id, elapsed FROM system.processes"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("clickhousectl local use latest"),
+        "{stderr}"
+    );
+    // The host and port come from the mocked service response, not from a
+    // placeholder or a guess.
+    assert!(
+        stderr.contains(&format!(
+            "clickhouse client --host {QUERY_TEST_NATIVE_HOST} --secure --port 9440 --user \
+             default --password '<password>' --query '<your SQL>'"
+        )),
+        "{stderr}"
+    );
+    // The user's SQL is never echoed back, and no credential appears.
+    assert!(!stderr.contains("SELECT 1"), "{stderr}");
+    assert!(!stderr.contains("fake-secret-for-tests"), "{stderr}");
+    // The anonymous 500 the old code surfaced is gone.
+    assert!(
+        !stderr.contains("Internal Server Error"),
+        "the gateway timeout must not be reported as a bare 500: {stderr}"
+    );
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+
+    // Exactly one attempt: a statement that may still be running is never
+    // resent.
+    assert_eq!(
+        query_host.received_requests().await.unwrap().len(),
+        1,
+        "the gateway timeout must not be retried"
+    );
+}
+
+#[tokio::test]
+async fn query_gateway_timeout_without_endpoints_points_at_service_get() {
+    // The default stub service carries no `endpoints` at all.
+    let control = start_mock_control_plane_with_service().await;
+    let (output, query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        QUERY_GATEWAY_TIMEOUT_BODY,
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("clickhouse client --host <host> --secure --port 9440"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains(
+            "clickhousectl cloud service get 11111111-2222-3333-4444-555555555555 --org-id org-1"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn query_gateway_timeout_json_emits_a_structured_error() {
+    let control = start_mock_control_plane_with_native_endpoint().await;
+    let (output, _query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        QUERY_GATEWAY_TIMEOUT_BODY,
+        &["--json"],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty(), "{:?}", output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error: Value = serde_json::from_str(stderr.trim())
+        .unwrap_or_else(|e| panic!("stderr is not one JSON object ({e}): {stderr}"));
+    assert_eq!(error["error"]["code"], "query_timeout");
+    assert_eq!(error["error"]["host"], QUERY_TEST_NATIVE_HOST);
+    assert_eq!(error["error"]["port"], 9440);
+    assert_eq!(
+        error["error"]["command"],
+        format!(
+            "clickhouse client --host {QUERY_TEST_NATIVE_HOST} --secure --port 9440 --user \
+             default --password '<password>' --query '<your SQL>'"
+        )
+    );
+    let message = error["error"]["message"]
+        .as_str()
+        .expect("message is a string");
+    assert!(message.contains("about 30 seconds"), "{message}");
+    assert!(
+        message.contains("SELECT query_id, elapsed FROM system.processes"),
+        "{message}"
+    );
+}
+
+#[tokio::test]
+async fn query_gateway_timeout_json_omits_an_absent_endpoint() {
+    let control = start_mock_control_plane_with_service().await;
+    let (output, _query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        QUERY_GATEWAY_TIMEOUT_BODY,
+        &["--json"],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error: Value = serde_json::from_str(stderr.trim())
+        .unwrap_or_else(|e| panic!("stderr is not one JSON object ({e}): {stderr}"));
+    assert_eq!(error["error"]["code"], "query_timeout");
+    // Absent means omitted, never a fabricated host or a `null`.
+    assert!(error["error"].get("host").is_none(), "{stderr}");
+    assert!(error["error"].get("port").is_none(), "{stderr}");
+    assert!(
+        error["error"]["command"]
+            .as_str()
+            .is_some_and(|command| command.contains("--host <host>")),
+        "{stderr}"
+    );
+}
+
+/// The control case: a 500 that is *not* the gateway timeout keeps the
+/// generic API error, in both output modes.
+#[tokio::test]
+async fn other_query_500s_keep_the_generic_api_error() {
+    let control = start_mock_control_plane_with_native_endpoint().await;
+    let (output, query_host) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        r#"{"error":"Internal error."}"#,
+        &[],
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(
+            r#"Query API returned HTTP 500 Internal Server Error: {"error":"Internal error."}"#
+        ),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("30 seconds"), "{stderr}");
+    assert!(!stderr.contains("clickhouse client"), "{stderr}");
+    assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
+
+    // In JSON mode it stays prose too: no structured detail was resolved for
+    // it, so no code is invented.
+    let (json_output, _) = invoke_service_query_against_failing_query_host(
+        &control,
+        500,
+        r#"{"error":"Internal error."}"#,
+        &["--json"],
+    )
+    .await;
+    let stderr = String::from_utf8_lossy(&json_output.stderr);
+    assert!(stderr.starts_with("Error: "), "{stderr}");
+    assert!(
+        serde_json::from_str::<Value>(stderr.trim()).is_err(),
+        "{stderr}"
+    );
+}
+
+#[tokio::test]
+async fn service_query_help_names_the_gateway_timeout() {
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .args(["cloud", "service", "query", "--help"])
+        .output()
+        .expect("render service query help");
+
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("times out after about 30 seconds"), "{help}");
+    assert!(help.contains("the statement keeps running"), "{help}");
+    assert!(help.contains("clickhousectl local use latest"), "{help}");
+    assert!(
+        help.contains("clickhouse client --host <host> --secure"),
+        "{help}"
+    );
+    assert!(help.contains("--port 9440 --user"), "{help}");
+}
+
+// ── `clickpipe reverse-private-endpoint` CRUD (issue #567) ─────────────────
+//
+// PrivateLink connectivity for ClickPipes is a reverse private endpoint the
+// user creates on the service and then references from a pipe: by ID for
+// Kafka, or by DNS name as `--host` for Postgres/MySQL CDC. These tests pin
+// the five requests, the request bodies (including which fields stay off the
+// wire), and the client-side type/flag validation that must cost no request.
+
+const RPE_COLLECTION_PATH: &str =
+    "/v1/organizations/org-1/services/svc-1/clickpipesReversePrivateEndpoints";
+const RPE_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+fn reverse_private_endpoint_path() -> String {
+    format!("{RPE_COLLECTION_PATH}/{RPE_ID}")
+}
+
+/// One endpoint as the API returns it, with the fields the CLI renders.
+fn reverse_private_endpoint_json() -> serde_json::Value {
+    serde_json::json!({
+        "id": RPE_ID,
+        "serviceId": "11111111-2222-3333-4444-555555555555",
+        "type": "VPC_ENDPOINT_SERVICE",
+        "description": "warehouse",
+        "status": "PendingAcceptance",
+        "endpointId": "vpce-12345678901234567",
+        "dnsNames": ["vpce-1-abc.vpce.amazonaws.com"],
+        "vpcEndpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+    })
+}
+
+fn reverse_private_endpoint_envelope(result: serde_json::Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": "stub-reverse-private-endpoint",
+    }))
+}
+
+/// Run the binary with credentials but *without* `--json`, so human output can
+/// be asserted. `invoke_cli_with_cloud_credentials` always adds `--json`.
+fn invoke_cli_human(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url];
+    args.extend(cli_args);
+    let mut command = Command::new(clickhousectl_binary());
+    // Agent detection turns on `--json` on its own, so the inherited
+    // environment has to go for human output to be observable at all.
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args(args);
+    command.output().expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_list_returns_the_resource_array() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(serde_json::json!([
+            reverse_private_endpoint_json()
+        ])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource array as JSON");
+    assert_eq!(stdout[0]["id"], RPE_ID);
+    assert_eq!(stdout[0]["status"], "PendingAcceptance");
+    assert!(
+        stdout.get("status").is_none() && stdout.get("requestId").is_none(),
+        "must not emit the raw API envelope, got: {stdout}"
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("GET".to_string(), RPE_COLLECTION_PATH.to_string())]
+    );
+}
+
+/// Every response field is `Option`, so a row with nothing but an ID must
+/// render placeholders rather than fabricate values.
+#[tokio::test]
+async fn reverse_private_endpoint_list_table_renders_absent_fields() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(serde_json::json!([
+            { "id": RPE_ID }
+        ])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("| ID"), "{stdout}");
+    assert!(stdout.contains("DNS Names"), "{stdout}");
+    assert!(stdout.contains(RPE_ID), "{stdout}");
+    // Type, Description, Status and DNS Names are all absent here.
+    assert_eq!(stdout.matches(" - ").count(), 4, "{stdout}");
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_list_reports_an_empty_collection() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(serde_json::json!([])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "No reverse private endpoints found"
+    );
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_get_reads_the_single_endpoint() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(reverse_private_endpoint_path()))
+        .respond_with(reverse_private_endpoint_envelope(
+            reverse_private_endpoint_json(),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "get",
+            "svc-1",
+            RPE_ID,
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim())
+        .expect("stdout should be the resource object as JSON");
+    assert_eq!(stdout["endpointId"], "vpce-12345678901234567");
+    assert_eq!(stdout["dnsNames"][0], "vpce-1-abc.vpce.amazonaws.com");
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("GET".to_string(), reverse_private_endpoint_path())]
+    );
+}
+
+/// One create per endpoint type: the POST body carries the type's own fields
+/// and nothing else, so an omitted flag never reaches the wire as `""`.
+#[tokio::test]
+async fn reverse_private_endpoint_create_sends_the_body_for_each_type() {
+    let cases: Vec<(Vec<&str>, serde_json::Value)> = vec![
+        (
+            vec![
+                "--type",
+                "VPC_ENDPOINT_SERVICE",
+                "--vpc-endpoint-service-name",
+                "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+            ],
+            serde_json::json!({
+                "description": "warehouse",
+                "type": "VPC_ENDPOINT_SERVICE",
+                "vpcEndpointServiceName": "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+            }),
+        ),
+        (
+            vec![
+                "--type",
+                "VPC_RESOURCE",
+                "--vpc-resource-configuration-id",
+                "rcfg-12345678901234567",
+                "--vpc-resource-share-arn",
+                "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
+            ],
+            serde_json::json!({
+                "description": "warehouse",
+                "type": "VPC_RESOURCE",
+                "vpcResourceConfigurationId": "rcfg-12345678901234567",
+                "vpcResourceShareArn":
+                    "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
+            }),
+        ),
+        (
+            vec![
+                "--type",
+                "MSK_MULTI_VPC",
+                "--msk-cluster-arn",
+                "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+                "--msk-authentication",
+                "SASL_IAM",
+            ],
+            serde_json::json!({
+                "description": "warehouse",
+                "type": "MSK_MULTI_VPC",
+                "mskClusterArn": "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+                "mskAuthentication": "SASL_IAM",
+            }),
+        ),
+        (
+            vec![
+                "--type",
+                "GCP_PSC_SERVICE_ATTACHMENT",
+                "--gcp-service-attachment",
+                "projects/p/regions/us-central1/serviceAttachments/s",
+                "--custom-private-dns-mapping",
+                "db.example.com",
+                "--custom-private-dns-mapping",
+                "*.example.com",
+            ],
+            serde_json::json!({
+                "description": "warehouse",
+                "type": "GCP_PSC_SERVICE_ATTACHMENT",
+                "gcpServiceAttachment": "projects/p/regions/us-central1/serviceAttachments/s",
+                "customPrivateDnsMappings": [
+                    { "privateDnsName": "db.example.com" },
+                    { "privateDnsName": "*.example.com" },
+                ],
+            }),
+        ),
+    ];
+
+    for (flags, expected_body) in cases {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(RPE_COLLECTION_PATH))
+            .respond_with(reverse_private_endpoint_envelope(
+                reverse_private_endpoint_json(),
+            ))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let mut args = vec![
+            "clickpipe",
+            "reverse-private-endpoint",
+            "create",
+            "svc-1",
+            "--description",
+            "warehouse",
+            "--org-id",
+            "org-1",
+        ];
+        args.extend_from_slice(&flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(
+            received_request_shape(&mock).await,
+            vec![("POST".to_string(), RPE_COLLECTION_PATH.to_string())],
+            "unexpected requests for {flags:?}"
+        );
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body, expected_body, "unexpected body for {flags:?}");
+    }
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_create_prints_the_status_to_wait_for() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(
+            reverse_private_endpoint_json(),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "create",
+            "svc-1",
+            "--description",
+            "warehouse",
+            "--type",
+            "VPC_ENDPOINT_SERVICE",
+            "--vpc-endpoint-service-name",
+            "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Reverse private endpoint created"),
+        "{stdout}"
+    );
+    assert!(stdout.contains(RPE_ID), "{stdout}");
+    assert!(stdout.contains("Status: PendingAcceptance"), "{stdout}");
+    assert!(
+        stdout.contains("DNS names: vpce-1-abc.vpce.amazonaws.com"),
+        "{stdout}"
+    );
+}
+
+/// The flags a type needs, and the flags belonging to another type, are
+/// checked before any network call: a bad combination is a usage error
+/// (exit 2) with no request sent.
+#[tokio::test]
+async fn reverse_private_endpoint_create_validates_flags_before_any_request() {
+    let cases: [(Vec<&str>, &str); 3] = [
+        (
+            vec![
+                "--type",
+                "VPC_RESOURCE",
+                "--vpc-resource-configuration-id",
+                "rcfg-1",
+            ],
+            "--type VPC_RESOURCE requires --vpc-resource-share-arn",
+        ),
+        (
+            vec![
+                "--type",
+                "VPC_ENDPOINT_SERVICE",
+                "--vpc-endpoint-service-name",
+                "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+                "--msk-cluster-arn",
+                "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+            ],
+            "--msk-cluster-arn applies to --type MSK_MULTI_VPC, not --type VPC_ENDPOINT_SERVICE",
+        ),
+        (
+            vec![
+                "--type",
+                "MSK_MULTI_VPC",
+                "--msk-cluster-arn",
+                "arn:aws:kafka:us-east-1:123456789012:cluster/my-cluster",
+                "--msk-authentication",
+                "SASL_IAM",
+                "--custom-private-dns-mapping",
+                "db.example.com",
+            ],
+            "--custom-private-dns-mapping is not supported for --type MSK_MULTI_VPC",
+        ),
+    ];
+
+    for (flags, expected_message) in cases {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(RPE_COLLECTION_PATH))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&mock)
+            .await;
+
+        // No --org-id either: a rejected invocation must not even look one up.
+        let mut args = vec![
+            "clickpipe",
+            "reverse-private-endpoint",
+            "create",
+            "svc-1",
+            "--description",
+            "warehouse",
+        ];
+        args.extend_from_slice(&flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(2), "expected a usage error");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected_message), "{stderr}");
+        assert!(
+            mock.received_requests().await.unwrap().is_empty(),
+            "a rejected create must not reach the API"
+        );
+    }
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_update_patches_the_full_mapping_list() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(reverse_private_endpoint_path()))
+        .respond_with(reverse_private_endpoint_envelope(
+            reverse_private_endpoint_json(),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "update",
+            "svc-1",
+            RPE_ID,
+            "--custom-private-dns-mapping",
+            "db.example.com",
+            "--custom-private-dns-mapping",
+            "*.example.com",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("PATCH".to_string(), reverse_private_endpoint_path())]
+    );
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "customPrivateDnsMappings": [
+                { "privateDnsName": "db.example.com" },
+                { "privateDnsName": "*.example.com" },
+            ],
+        })
+    );
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_delete_confirms_the_removal() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(reverse_private_endpoint_path()))
+        .respond_with(successful_delete_response("stub-rpe-delete"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let args = [
+        "clickpipe",
+        "reverse-private-endpoint",
+        "delete",
+        "svc-1",
+        RPE_ID,
+        "--org-id",
+        "org-1",
+    ];
+
+    let human = invoke_cli_human(&mock, &args);
+    assert_success(&human);
+    assert_eq!(
+        String::from_utf8_lossy(&human.stdout).trim(),
+        format!("Reverse private endpoint {RPE_ID} deleted")
+    );
+
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    let stdout: Value = serde_json::from_str(String::from_utf8_lossy(&json.stdout).trim())
+        .expect("stdout should be JSON");
+    assert_eq!(stdout, serde_json::json!({ "deleted": RPE_ID }));
+
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("DELETE".to_string(), reverse_private_endpoint_path()),
+            ("DELETE".to_string(), reverse_private_endpoint_path()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_help_explains_how_pipes_reference_it() {
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .args(["cloud", "clickpipe", "reverse-private-endpoint", "--help"])
+        .output()
+        .expect("render reverse-private-endpoint help");
+
+    assert!(output.status.success());
+    let help = String::from_utf8_lossy(&output.stdout);
+    assert!(help.contains("--reverse-private-endpoint-id"), "{help}");
+    assert!(
+        help.contains("pass one of the endpoint's DNS names as --host"),
+        "{help}"
+    );
+    assert!(help.contains("reached the Ready status"), "{help}");
+    assert!(help.contains("PendingAcceptance"), "{help}");
+}
+
+// ── PEM certificates are elided from human output (issue #665) ─────────────
+//
+// A Postgres ClickPipe's `source.postgres.caCertificate` is a whole PEM block.
+// Rendered verbatim it pushed every other field of `clickpipe get` off the
+// screen. Human output replaces each block with a one-line summary of that
+// block; `--json` still carries the bytes, so a caller that needs the
+// certificate has not lost anything.
+
+/// A real self-signed EC certificate, the same fixture the `cloud::output`
+/// unit tests use. The fingerprint came from
+/// `openssl x509 -noout -fingerprint -sha256`.
+const CA_CERTIFICATE_PEM: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIBjDCCATOgAwIBAgIUajES1wl65zexYYPuWX8ShldYw4YwCgYIKoZIzj0EAwIw
+HDEaMBgGA1UEAwwRY2hjdGwtcGVtLWZpeHR1cmUwHhcNMjYwOTAyMTc1NDI3WhcN
+NDYwODI4MTc1NDI3WjAcMRowGAYDVQQDDBFjaGN0bC1wZW0tZml4dHVyZTBZMBMG
+ByqGSM49AgEGCCqGSM49AwEHA0IABNTPygUG2umVvTqod5jJXCgp1o9qwrx2wLf7
+p+2PyHYm5ZdIS+kqT25Xm2SGM3th4dB43l3fd5kF0g6CzvGNt42jUzBRMB0GA1Ud
+DgQWBBQcL9JNezOJ8vzT0lR1Pj4sMoH2STAfBgNVHSMEGDAWgBQcL9JNezOJ8vzT
+0lR1Pj4sMoH2STAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIAhv
+iLjfMqcnJ10gmKoyEIMDDRJP2UwtGRcJZU/FnaIEAiBeUmN+nJBGIq0tFHIxz1Xl
+LaBMf6qZANMrXRQaETxhIA==
+-----END CERTIFICATE-----
+";
+
+const CA_CERTIFICATE_SUMMARY: &str = "caCertificate: <PEM CERTIFICATE, SHA-256 fingerprint 5A:6D:67:FD:14:1B:1E:61:4A:F4:E2:7D:F1:F8:67:E2:75:85:DF:92:E3:66:31:85:75:AB:2C:C3:F4:8C:9A:D8>";
+
+fn postgres_source_with_certificate() -> Value {
+    serde_json::json!({
+        "postgres": {
+            "host": "db.example.com",
+            "port": 5432,
+            "database": "postgres",
+            "caCertificate": CA_CERTIFICATE_PEM,
+        }
+    })
+}
+
+#[tokio::test]
+async fn clickpipe_get_human_output_summarizes_the_ca_certificate() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(&mock, postgres_source_with_certificate()).await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(CA_CERTIFICATE_SUMMARY),
+        "certificate not summarized:\n{stdout}"
+    );
+    assert!(
+        !stdout.contains("-----BEGIN"),
+        "certificate body dumped:\n{stdout}"
+    );
+    // The point of eliding is that the surrounding fields stay readable.
+    assert!(stdout.contains("host: db.example.com"), "{stdout}");
+    assert!(stdout.contains("name: test-pipe"), "{stdout}");
+}
+
+#[tokio::test]
+async fn clickpipe_get_json_output_keeps_the_full_ca_certificate() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(&mock, postgres_source_with_certificate()).await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let pipe: Value = serde_json::from_str(stdout.trim()).expect("stdout should be JSON");
+    assert_eq!(
+        pipe["source"]["postgres"]["caCertificate"],
+        Value::String(CA_CERTIFICATE_PEM.to_string()),
+        "--json must carry the certificate verbatim: {stdout}"
+    );
+    assert!(
+        stdout.contains("-----BEGIN CERTIFICATE-----"),
+        "--json must not elide: {stdout}"
+    );
+}
+
+// ── A well-formed but unknown id reads as not found (issue #666) ───────────
+//
+// The API answers HTTP 400 `Invalid <thing> id string:"<id>"` for a
+// syntactically valid UUID that resolves to nothing, so a by-id read reported
+// a bad request instead of a missing resource. The refinement is structural
+// (the status, plus whether the identifiers the CLI put in the path parse as
+// UUIDs), so a malformed id must still get the server's own answer.
+
+/// A well-formed UUID that no resource has. All-zero is still a syntactically
+/// valid UUID.
+const UNKNOWN_UUID: &str = "00000000-0000-0000-0000-000000000000";
+const LOOKUP_ORG_ID: &str = "00000000-0000-4000-8000-000000000001";
+
+/// The 400 the API really answers for a well-formed id it cannot resolve.
+fn invalid_id_400_response(thing: &str, id: &str) -> ResponseTemplate {
+    ResponseTemplate::new(400).set_body_json(serde_json::json!({
+        "status": 400,
+        "error": format!("BAD_REQUEST: Invalid {thing} id string:\"{id}\""),
+        "requestId": "stub-invalid-id",
+    }))
+}
+
+async fn mount_invalid_id_400(mock: &MockServer, api_path: String, thing: &str, id: &str) {
+    Mock::given(method("GET"))
+        .and(path(api_path))
+        .respond_with(invalid_id_400_response(thing, id))
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn postgres_get_unknown_well_formed_id_reads_as_not_found() {
+    let mock = MockServer::start().await;
+    mount_invalid_id_400(
+        &mock,
+        format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{UNKNOWN_UUID}"),
+        "Postgres service",
+        UNKNOWN_UUID,
+    )
+    .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &["postgres", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such Postgres service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid Postgres service id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn service_get_unknown_well_formed_id_reads_as_not_found() {
+    let mock = MockServer::start().await;
+    mount_invalid_id_400(
+        &mock,
+        format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}"),
+        "service",
+        UNKNOWN_UUID,
+    )
+    .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &["service", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn org_get_unknown_well_formed_id_reads_as_not_found() {
+    let mock = MockServer::start().await;
+    mount_invalid_id_400(
+        &mock,
+        format!("/v1/organizations/{UNKNOWN_UUID}"),
+        "organization",
+        UNKNOWN_UUID,
+    )
+    .await;
+
+    let output = invoke_cli_human(&mock, &["org", "get", UNKNOWN_UUID]);
+
+    assert_eq!(output.status.code(), Some(1));
+    // The organization is the identifier being looked up, so it is not
+    // repeated as request scope.
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such organization: {UNKNOWN_UUID}. \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid organization id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+}
+
+#[tokio::test]
+async fn by_id_read_not_found_carries_the_resource_not_found_code_in_json_mode() {
+    for (api_path, thing, args, expected_command) in [
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{UNKNOWN_UUID}"),
+            "Postgres service",
+            vec!["postgres", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+            format!("clickhousectl cloud postgres list --org-id {LOOKUP_ORG_ID}"),
+        ),
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}"),
+            "service",
+            vec!["service", "get", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID],
+            format!("clickhousectl cloud service list --org-id {LOOKUP_ORG_ID}"),
+        ),
+        (
+            format!("/v1/organizations/{UNKNOWN_UUID}"),
+            "organization",
+            vec!["org", "get", UNKNOWN_UUID],
+            "clickhousectl cloud org list".to_string(),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        mount_invalid_id_400(&mock, api_path, thing, UNKNOWN_UUID).await;
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(1), "args {args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let error: Value =
+            serde_json::from_str(stderr.trim()).unwrap_or_else(|_| panic!("not JSON: {stderr}"));
+        assert_eq!(error["error"]["code"], "resource_not_found", "{stderr}");
+        assert_eq!(
+            error["error"]["command"],
+            Value::String(expected_command),
+            "{stderr}"
+        );
+        // The JSON message is the same text human mode prints, server detail
+        // and all.
+        let message = error["error"]["message"].as_str().expect("a message");
+        assert!(message.starts_with("No such "), "{stderr}");
+        assert!(
+            message.ends_with(&format!(
+                "BAD_REQUEST: Invalid {thing} id string:\"{UNKNOWN_UUID}\""
+            )),
+            "{stderr}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn by_id_read_keeps_the_servers_message_for_a_malformed_id() {
+    const MALFORMED_ID: &str = "not-a-uuid";
+    for (api_path, thing, args) in [
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{MALFORMED_ID}"),
+            "Postgres service",
+            vec!["postgres", "get", MALFORMED_ID, "--org-id", LOOKUP_ORG_ID],
+        ),
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{MALFORMED_ID}"),
+            "service",
+            vec!["service", "get", MALFORMED_ID, "--org-id", LOOKUP_ORG_ID],
+        ),
+        (
+            format!("/v1/organizations/{MALFORMED_ID}"),
+            "organization",
+            vec!["org", "get", MALFORMED_ID],
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        mount_invalid_id_400(&mock, api_path, thing, MALFORMED_ID).await;
+
+        let output = invoke_cli_human(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(1), "args {args:?}");
+        // "Invalid" is the truth here, and more useful than "no such".
+        assert_eq!(
+            String::from_utf8_lossy(&output.stderr),
+            format!("Error: BAD_REQUEST: Invalid {thing} id string:\"{MALFORMED_ID}\"\n"),
+        );
+    }
+}
+
+/// `--json` mode must not invent a code for a failure the CLI did not
+/// classify: a malformed id keeps the API's prose, as it does in human mode.
+#[tokio::test]
+async fn by_id_read_in_json_mode_keeps_the_servers_message_for_a_malformed_id() {
+    const MALFORMED_ID: &str = "not-a-uuid";
+    for (api_path, thing, args) in [
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/postgres/{MALFORMED_ID}"),
+            "Postgres service",
+            vec!["postgres", "get", MALFORMED_ID, "--org-id", LOOKUP_ORG_ID],
+        ),
+        (
+            format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{MALFORMED_ID}"),
+            "service",
+            vec!["service", "get", MALFORMED_ID, "--org-id", LOOKUP_ORG_ID],
+        ),
+        (
+            format!("/v1/organizations/{MALFORMED_ID}"),
+            "organization",
+            vec!["org", "get", MALFORMED_ID],
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        mount_invalid_id_400(&mock, api_path, thing, MALFORMED_ID).await;
+
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(1), "args {args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            stderr,
+            format!("Error: BAD_REQUEST: Invalid {thing} id string:\"{MALFORMED_ID}\"\n"),
+        );
+        assert!(
+            !stderr.contains("\"code\""),
+            "no structured code for an unclassified failure: {stderr}"
+        );
+    }
+}
+
+/// A `service delete` for an id no service has, with the organization id also
+/// a well-formed UUID so every path identifier passes the structural test.
+fn invoke_unknown_service_delete(mock: &MockServer, force: bool) -> std::process::Output {
+    let mut args = vec!["service", "delete", UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID];
+    if force {
+        args.push("--force");
+    }
+    invoke_cli_human(mock, &args)
+}
+
+/// `--force` reads the service first to decide whether to stop it. That read
+/// must treat the 400 the way it treats a 404 (see
+/// `forced_service_delete_surfaces_not_found_for_an_absent_service`): carry
+/// on to the delete, rather than aborting on an id `service get` reports as
+/// missing.
+#[tokio::test]
+async fn forced_service_delete_proceeds_when_the_read_rejects_a_well_formed_id() {
+    let mock = MockServer::start().await;
+    let service_path = format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}");
+    Mock::given(method("GET"))
+        .and(path(service_path.clone()))
+        .respond_with(invalid_id_400_response("service", UNKNOWN_UUID))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(service_path.clone()))
+        .respond_with(invalid_id_400_response("service", UNKNOWN_UUID))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_unknown_service_delete(&mock, true);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+    // The read did not abort the command: the delete was still attempted.
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![
+            ("GET".to_string(), service_path.clone()),
+            ("DELETE".to_string(), service_path),
+        ]
+    );
+}
+
+/// Without `--force` there is no read at all, so the delete's own 400 is what
+/// has to be refined.
+#[tokio::test]
+async fn service_delete_reports_a_well_formed_unknown_id_as_not_found() {
+    let mock = MockServer::start().await;
+    let service_path = format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}");
+    Mock::given(method("DELETE"))
+        .and(path(service_path.clone()))
+        .respond_with(invalid_id_400_response("service", UNKNOWN_UUID))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_unknown_service_delete(&mock, false);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!(
+            "Error: No such service: {UNKNOWN_UUID} (organization {LOOKUP_ORG_ID}). \
+             The API rejected the identifier: \
+             BAD_REQUEST: Invalid service id string:\"{UNKNOWN_UUID}\"\n"
+        )
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("DELETE".to_string(), service_path)]
     );
 }

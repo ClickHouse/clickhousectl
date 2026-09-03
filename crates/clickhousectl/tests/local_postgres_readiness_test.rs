@@ -1013,7 +1013,8 @@ fn create_success_start_failure_rolls_back_exact_container_and_fresh_data() {
 
     assert_eq!(output.status.code(), Some(1));
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "local_error");
+    assert_eq!(error["error"]["code"], "docker_error");
+    assert_eq!(error["error"]["message"], "Docker operation failed");
     assert!(!String::from_utf8_lossy(&output.stderr).contains("start failed by test"));
     let create = request_index(&requests, "POST", "/containers/create?");
     let start = request_index(&requests, "POST", "/containers/pg-id/start");
@@ -1209,7 +1210,8 @@ fn cleanup_failure_preserves_rollback_behavior_but_redacts_json_diagnostics() {
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "local_error");
+    assert_eq!(error["error"]["code"], "docker_error");
+    assert_eq!(error["error"]["message"], "Docker operation failed");
     assert!(!stderr.contains("start failed by test"));
     assert!(!stderr.contains("Postgres startup rollback incomplete"));
     assert!(!stderr.contains("remove failed by test"));

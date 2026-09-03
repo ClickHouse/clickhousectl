@@ -195,17 +195,19 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
 
-    let unavailable = run(
+    // A version that is not installed is a local miss, not an unresolvable
+    // download: the code and the hint both stay local.
+    let not_installed = run(
         project.path(),
         home.path(),
         &["local", "--json", "remove", "99.99.1.1"],
     );
     assert_structured_failure(
-        &unavailable,
+        &not_installed,
         &expected_error(
-            "version_unavailable",
-            "Requested version is unavailable",
-            Some("clickhousectl local list --remote"),
+            "version_not_installed",
+            "Version 99.99.1.1 not found",
+            Some("clickhousectl local list"),
         ),
     );
 
@@ -267,7 +269,7 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
 }
 
 #[test]
-fn io_and_fallback_errors_redact_paths_docker_details_and_secrets() {
+fn io_and_docker_errors_redact_paths_daemon_details_and_secrets() {
     let root = tempfile::tempdir().expect("create root");
     let project = root.path().join("project-private-token");
     let home = root.path().join("home-private-token");
@@ -286,18 +288,25 @@ fn io_and_fallback_errors_redact_paths_docker_details_and_secrets() {
     );
     std::fs::remove_file(project.join(".clickhouse/servers/default.json")).unwrap();
 
+    // Docker unavailability is classified and described by clickhousectl
+    // itself, so JSON carries the full human diagnostic — but never the
+    // daemon's own text or the socket path it was pointed at.
     let docker_secret = home.join("docker-secret-token.sock");
-    let fallback = command(&project, &home)
+    let unavailable = command(&project, &home)
         .env("DOCKER_HOST", format!("unix://{}", docker_secret.display()))
         .args(["local", "--json", "postgres", "start"])
         .output()
-        .expect("run Docker fallback failure");
-    assert_structured_failure(
-        &fallback,
-        &expected_error("local_error", "Local command failed", None),
-    );
+        .expect("run Docker unavailable failure");
+    assert_eq!(unavailable.status.code(), Some(1));
+    assert!(unavailable.stdout.is_empty());
+    let error: serde_json::Value =
+        serde_json::from_slice(&unavailable.stderr).expect("one JSON error object");
+    assert_eq!(error["error"]["code"], "docker_unavailable");
+    let message = error["error"]["message"].as_str().expect("message");
+    assert!(message.contains("Docker is not available"), "{message}");
+    assert!(message.contains("was not found"), "{message}");
 
-    for output in [&io_error, &fallback] {
+    for output in [&io_error, &unavailable] {
         let stderr = String::from_utf8_lossy(&output.stderr);
         for sensitive in [
             "project-private-token",
@@ -305,11 +314,145 @@ fn io_and_fallback_errors_redact_paths_docker_details_and_secrets() {
             "docker-secret-token",
             "hunter2",
             "private SQL",
-            "DOCKER_HOST",
         ] {
             assert!(!stderr.contains(sensitive), "leaked {sensitive}: {stderr}");
         }
     }
+}
+
+/// Issue #608: the message an agent gets in JSON must not be thinner than the
+/// human `Error: ...` line for a self-composed local failure.
+#[test]
+fn config_and_argument_failures_carry_their_full_human_detail_in_json() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    install_fake_clickhouse(home.path(), "#!/bin/sh\nexit 7\n");
+    let configs = home.path().join(".clickhouse/configs");
+    std::fs::create_dir_all(&configs).expect("create configs dir");
+    std::fs::write(configs.join("analytics.xml"), b"<clickhouse/>").expect("write config");
+
+    let missing_config = run(
+        project.path(),
+        home.path(),
+        &[
+            "local",
+            "--json",
+            "server",
+            "start",
+            "--version",
+            VERSION,
+            "--config",
+            "does-not-exist",
+        ],
+    );
+    assert_structured_failure(
+        &missing_config,
+        &expected_error(
+            "config_not_found",
+            &format!(
+                "config 'does-not-exist' not found in {} (available: analytics.xml)",
+                configs.display()
+            ),
+            Some("clickhousectl local server configs"),
+        ),
+    );
+
+    let human = run(
+        project.path(),
+        home.path(),
+        &[
+            "local",
+            "server",
+            "start",
+            "--version",
+            VERSION,
+            "--config",
+            "does-not-exist",
+        ],
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&human.stderr),
+        format!(
+            "Error: config 'does-not-exist' not found in {} (available: analytics.xml)\n",
+            configs.display()
+        ),
+        "JSON and human mode must carry the same detail"
+    );
+
+    let escaping_config = run(
+        project.path(),
+        home.path(),
+        &[
+            "local",
+            "--json",
+            "server",
+            "start",
+            "--version",
+            VERSION,
+            "--config",
+            "../outside.xml",
+        ],
+    );
+    assert_structured_failure(
+        &escaping_config,
+        &expected_error(
+            "invalid_config_name",
+            "Invalid config name '../outside.xml': must be a file in the configs dir, not a path \
+             (no '/', '\\', or '..')",
+            Some("clickhousectl local server configs"),
+        ),
+    );
+
+    let passthrough = run(
+        project.path(),
+        home.path(),
+        &[
+            "local",
+            "--json",
+            "server",
+            "start",
+            "--version",
+            VERSION,
+            "--",
+            "--config-file=/tmp/elsewhere.xml",
+        ],
+    );
+    assert_structured_failure(
+        &passthrough,
+        &expected_error(
+            "unsupported_argument",
+            "--config / --config-file / -C cannot be passed through in trailing args. \
+             Use `--config <NAME>` with a file in ~/.clickhouse/configs/ \
+             (see `clickhousectl local server configs`). \
+             Individual --setting=value flags are supported.",
+            Some("clickhousectl local server start --help"),
+        ),
+    );
+
+    // Port 0 would hand the choice to the OS, which managed metadata cannot
+    // track; the refusal is self-composed guidance, not a redacted fallback.
+    let zero_port = run(
+        project.path(),
+        home.path(),
+        &[
+            "local",
+            "--json",
+            "server",
+            "start",
+            "--version",
+            VERSION,
+            "--http-port",
+            "0",
+        ],
+    );
+    assert_structured_failure(
+        &zero_port,
+        &expected_error(
+            "unsupported_argument",
+            "--http-port 0 is not allowed; pick a specific port or omit the flag",
+            Some("clickhousectl local server start --help"),
+        ),
+    );
 }
 
 #[test]

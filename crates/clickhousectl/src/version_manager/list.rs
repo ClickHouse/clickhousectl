@@ -1,5 +1,6 @@
 use crate::error::{Error, NetworkStage, Result};
 use crate::paths;
+use crate::version_manager::atomic::CommitLock;
 use crate::version_manager::network::{self, ProbeOutcome};
 use chrono::Datelike;
 use futures_util::{StreamExt, stream};
@@ -176,6 +177,27 @@ async fn scan_build_candidates(
     Ok(available)
 }
 
+/// Trims the `~/.clickhouse/default` marker's contents, treating a blank marker
+/// as no default at all.
+fn parse_default_marker(contents: &str) -> Option<String> {
+    let version = contents.trim();
+    (!version.is_empty()).then(|| version.to_string())
+}
+
+/// Reads the version named by the `~/.clickhouse/default` marker *without*
+/// checking that it is still installed. `None` when the marker is missing,
+/// unreadable, or blank.
+///
+/// Destructive guards need the raw marker rather than [`get_default_version`]:
+/// a marker naming a version whose binary is already gone is exactly the state
+/// [`get_default_version`] rejects, and clearing it is still part of removing
+/// that version.
+pub fn default_version_marker() -> Option<String> {
+    let default_file = paths::default_file().ok()?;
+    let contents = std::fs::read_to_string(default_file).ok()?;
+    parse_default_marker(&contents)
+}
+
 /// Gets the current default version
 pub fn get_default_version() -> Result<String> {
     let default_file = paths::default_file()?;
@@ -184,11 +206,8 @@ pub fn get_default_version() -> Result<String> {
         return Err(Error::NoDefaultVersion);
     }
 
-    let version = std::fs::read_to_string(&default_file)?.trim().to_string();
-
-    if version.is_empty() {
-        return Err(Error::NoDefaultVersion);
-    }
+    let contents = std::fs::read_to_string(&default_file)?;
+    let version = parse_default_marker(&contents).ok_or(Error::NoDefaultVersion)?;
 
     // Verify the version is actually installed
     let binary = paths::binary_path(&version)?;
@@ -199,7 +218,13 @@ pub fn get_default_version() -> Result<String> {
     Ok(version)
 }
 
-/// Sets the default version
+/// Sets the default version.
+///
+/// The marker is written under the install commit lock so that `local remove`,
+/// which decides under that same lock whether the version it is deleting is the
+/// default, can never have the marker change underneath it. Callers must not
+/// already hold the commit lock (the install paths release it before
+/// returning), or this would block on itself.
 pub fn set_default_version(version: &str) -> Result<()> {
     // Verify the version is installed
     let binary = paths::binary_path(version)?;
@@ -207,6 +232,8 @@ pub fn set_default_version(version: &str) -> Result<()> {
         return Err(Error::VersionNotFound(version.to_string()));
     }
 
+    let versions_dir = paths::versions_dir()?;
+    let _commit_lock = CommitLock::acquire_blocking(&versions_dir)?;
     let default_file = paths::default_file()?;
     std::fs::write(&default_file, version)?;
     Ok(())
@@ -247,6 +274,25 @@ mod tests {
     use std::cmp::Ordering;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn default_marker_is_trimmed() {
+        assert_eq!(
+            parse_default_marker("25.12.9.61\n").as_deref(),
+            Some("25.12.9.61")
+        );
+        assert_eq!(
+            parse_default_marker("  25.12.9.61  ").as_deref(),
+            Some("25.12.9.61")
+        );
+    }
+
+    #[test]
+    fn blank_default_marker_is_no_default() {
+        assert_eq!(parse_default_marker(""), None);
+        assert_eq!(parse_default_marker("\n"), None);
+        assert_eq!(parse_default_marker("   \t\n"), None);
+    }
 
     async fn mount_head(server: &MockServer, endpoint: &str, status: u16) {
         Mock::given(method("HEAD"))

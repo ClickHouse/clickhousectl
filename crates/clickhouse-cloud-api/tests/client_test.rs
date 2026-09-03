@@ -1282,7 +1282,7 @@ async fn update_backup_configuration() {
     let body = BackupConfigurationPatchRequest {
         backup_period_in_hours: Some(12.0),
         backup_retention_period_in_hours: Some(336.0),
-        backup_start_time: Some("03:00".to_string()),
+        backup_start_time: Some(Some("03:00".to_string())),
     };
     let resp = client
         .backup_configuration_update("org-1", "svc-1", &body)
@@ -1660,7 +1660,7 @@ async fn update_click_pipe_settings() {
         .await;
 
     let body = ClickPipeSettingsPutRequest {
-        kafka_read_committed: true,
+        kafka_read_committed: Some(true),
         ..Default::default()
     };
     let resp = c

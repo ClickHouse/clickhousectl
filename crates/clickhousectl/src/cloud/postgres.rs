@@ -1,9 +1,11 @@
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::output::{ABSENT, or_absent};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
+use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_line};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
-use clap::Subcommand;
+use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
-    ApiResponse, PgBouncerConfig, PgConfig, PgHaType, PgIdProperty, PgProvider, PgVersion,
+    ApiResponse, PgBouncerConfig, PgConfig, PgHaType, PgIdProperty, PgProvider, PgSize, PgVersion,
     PostgresInstanceConfig, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
     PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
     PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
@@ -11,6 +13,7 @@ use clickhouse_cloud_api::models::{
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Subcommand)]
@@ -19,9 +22,10 @@ pub enum PostgresCommands {
     List {
         #[arg(long)]
         org_id: Option<String>,
-        /// Filter results by field (e.g. --filter state=running)
-        #[arg(long)]
-        filter: Vec<String>,
+        /// Filter results client-side by field (repeatable), e.g. --filter
+        /// state=running. Keys: state, region, name, provider, isPrimary
+        #[arg(long, value_parser = parse_postgres_list_filter)]
+        filter: Vec<PostgresListFilter>,
     },
 
     /// Get details for a single Postgres service
@@ -67,6 +71,9 @@ pub enum PostgresCommands {
     /// Update an existing Postgres service (metadata only)
     Update {
         postgres_id: String,
+        /// New service name
+        #[arg(long)]
+        name: Option<String>,
         #[arg(long)]
         size: Option<String>,
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
@@ -82,6 +89,12 @@ pub enum PostgresCommands {
     },
 
     /// Delete a Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Permanently deletes a managed Postgres service. This action is irreversible.
+  Unlike `cloud service delete`, no stop is needed first: the Cloud API deletes a
+  Postgres service from any state, including 'running'.
+  Related: `clickhousectl cloud postgres list` for service IDs.")]
     Delete {
         postgres_id: String,
         #[arg(long)]
@@ -97,6 +110,9 @@ pub enum PostgresCommands {
     Config(ConfigCommands),
 
     /// Reset the Postgres service password
+    #[command(
+        group(ArgGroup::new("password_source").required(true).args(["password", "generate"]))
+    )]
     ResetPassword {
         postgres_id: String,
         /// New password (min 12, must include upper, lower, digit)
@@ -141,15 +157,45 @@ pub enum PostgresCommands {
     },
 
     /// Promote a read replica to primary
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Issues the promote command as-is. The API acknowledges it before (or without)
+  applying it, and the response omits isPrimary, so exit 0 alone does not confirm
+  the replica became primary. Pass --wait to poll the service until it reports
+  isPrimary=true; it exits 1 with the last observed role if that never happens.
+  The previous primary is demoted asynchronously and can keep reporting
+  isPrimary=true for minutes; verify with
+  `clickhousectl cloud postgres list --filter isPrimary=true` that exactly one
+  service is primary.")]
     Promote {
         postgres_id: String,
+        /// Poll until the service reports isPrimary=true, and fail if it never does
+        #[arg(long)]
+        wait: bool,
+        /// Seconds to poll for with --wait (default: 300)
+        #[arg(long, requires = "wait", value_name = "SECONDS")]
+        wait_timeout: Option<u16>,
         #[arg(long)]
         org_id: Option<String>,
     },
 
     /// Switch over between primary and replica
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Issues the switchover command as-is. The API acknowledges it before (or without)
+  applying it, so exit 0 alone does not confirm the roles swapped. Pass --wait to
+  read the service's isPrimary first and poll until it reports the opposite value;
+  it exits 1 with the last observed role if that never happens, and refuses before
+  issuing the command when the pre-command read omits isPrimary. Without --wait no
+  read is performed.")]
     Switchover {
         postgres_id: String,
+        /// Poll until the roles actually swap, and fail if they never do
+        #[arg(long)]
+        wait: bool,
+        /// Seconds to poll for with --wait (default: 300)
+        #[arg(long, requires = "wait", value_name = "SECONDS")]
+        wait_timeout: Option<u16>,
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -186,6 +232,9 @@ pub enum ConfigCommands {
         org_id: Option<String>,
     },
     /// Patch selected runtime configuration fields
+    #[command(
+        group(ArgGroup::new("patch_source").required(true).args(["sets", "file"]))
+    )]
     Patch {
         postgres_id: String,
         /// Set a pgConfig field (repeatable), e.g. --set max_connections=500
@@ -278,6 +327,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
         }
         PostgresCommands::Update {
             postgres_id,
+            name,
             size,
             ha_type,
             add_tag,
@@ -285,6 +335,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             org_id,
         } => {
             let opts = PostgresUpdateOptions {
+                name: name.as_deref(),
                 size: size.as_deref(),
                 ha_type: ha_type.as_deref(),
                 add_tag: &add_tag,
@@ -403,26 +454,36 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
         }
         PostgresCommands::Promote {
             postgres_id,
+            wait,
+            wait_timeout,
             org_id,
         } => {
-            postgres_state_change(
+            postgres_role_change(
                 client,
                 &postgres_id,
-                PostgresServiceSetStateCommand::Promote,
-                org_id.as_deref(),
+                PostgresRoleCommand::Promote,
+                RoleChangeOptions {
+                    wait: wait_duration(wait, wait_timeout),
+                    org_id: org_id.as_deref(),
+                },
                 json,
             )
             .await
         }
         PostgresCommands::Switchover {
             postgres_id,
+            wait,
+            wait_timeout,
             org_id,
         } => {
-            postgres_state_change(
+            postgres_role_change(
                 client,
                 &postgres_id,
-                PostgresServiceSetStateCommand::Switchover,
-                org_id.as_deref(),
+                PostgresRoleCommand::Switchover,
+                RoleChangeOptions {
+                    wait: wait_duration(wait, wait_timeout),
+                    org_id: org_id.as_deref(),
+                },
                 json,
             )
             .await
@@ -434,9 +495,11 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Every Postgres path reports an empty body the same way the rest of the
+/// cloud surface does, so moving one onto a `CloudClient` wrapper cannot
+/// change the message a caller sees.
 fn unwrap_api<T>(resp: ApiResponse<T>) -> CloudResult<T> {
-    resp.result
-        .ok_or_else(|| CloudError::new("API response was missing a result body"))
+    CloudClient::unwrap_response(resp)
 }
 
 fn parse_pg_size(value: &str) -> CloudResult<clickhouse_cloud_api::models::PgSize> {
@@ -547,30 +610,99 @@ fn write_pem_file(path: &Path, pem: &str) -> CloudResult<()> {
     Ok(())
 }
 
-fn apply_filter(item: &PostgresServiceListItem, filters: &[String]) -> bool {
-    for filter in filters {
-        let Some((key, val)) = filter.split_once('=') else {
-            continue;
-        };
-        // A response field the API omitted matches no filter value.
-        let matches = match key.trim() {
-            "state" => item
-                .state
-                .as_ref()
-                .is_some_and(|s| format!("{:?}", s).eq_ignore_ascii_case(val)),
-            "region" => item.region.as_deref() == Some(val),
-            "name" => item.name.as_deref() == Some(val),
-            "provider" => item
-                .provider
-                .as_ref()
-                .is_some_and(|p| format!("{:?}", p).eq_ignore_ascii_case(val)),
-            _ => true,
-        };
-        if !matches {
-            return false;
-        }
+/// A parsed, validated `cloud postgres list --filter KEY=VALUE` predicate.
+///
+/// `--filter` is applied client-side over the list response, so an unsupported
+/// key cannot be rejected by the API. Parsing into this closed set at clap time
+/// is what makes an unknown key a usage error (exit 2) instead of a silently
+/// unfiltered full listing (issue #603).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostgresListFilter {
+    /// Matched case-insensitively against the `state` wire value.
+    State(String),
+    /// Matched exactly against the region ID the API returned.
+    Region(String),
+    /// Matched exactly: service names are case-sensitive.
+    Name(String),
+    /// Matched case-insensitively against the `provider` wire value.
+    Provider(String),
+    /// Matched against the `isPrimary` boolean shown in the `Primary` column.
+    IsPrimary(bool),
+}
+
+/// The supported filter keys, in the order they are listed to the user. Spelled
+/// as the API's wire field names, which is what `--json` output shows.
+const POSTGRES_LIST_FILTER_KEYS: [&str; 5] = ["state", "region", "name", "provider", "isPrimary"];
+
+fn postgres_list_filter_keys() -> String {
+    POSTGRES_LIST_FILTER_KEYS.join(", ")
+}
+
+/// Parses one `KEY=VALUE` filter. Every rejection is a clap `value_parser`
+/// error, so the process exits 2 with the valid keys listed.
+fn parse_postgres_list_filter(raw: &str) -> std::result::Result<PostgresListFilter, String> {
+    let Some((key, value)) = raw.split_once('=') else {
+        return Err(format!(
+            "invalid filter '{raw}': expected KEY=VALUE, where KEY is one of {}",
+            postgres_list_filter_keys()
+        ));
+    };
+    let key = key.trim();
+    let value = value.trim();
+    // Keys are matched case-insensitively so `isprimary` works alongside the
+    // documented `isPrimary`; values keep their case for the per-key rules.
+    let canonical = POSTGRES_LIST_FILTER_KEYS
+        .into_iter()
+        .find(|candidate| candidate.eq_ignore_ascii_case(key))
+        .ok_or_else(|| {
+            format!(
+                "unknown filter key '{key}': expected one of {}",
+                postgres_list_filter_keys()
+            )
+        })?;
+    if value.is_empty() {
+        return Err(format!(
+            "filter '{canonical}' requires a value: expected {canonical}=VALUE"
+        ));
     }
-    true
+    Ok(match canonical {
+        "state" => PostgresListFilter::State(value.to_string()),
+        "region" => PostgresListFilter::Region(value.to_string()),
+        "name" => PostgresListFilter::Name(value.to_string()),
+        "provider" => PostgresListFilter::Provider(value.to_string()),
+        "isPrimary" => PostgresListFilter::IsPrimary(parse_filter_bool(canonical, value)?),
+        other => unreachable!("unhandled filter key '{other}'"),
+    })
+}
+
+/// `yes`/`no` are accepted because that is how the `Primary` column renders.
+fn parse_filter_bool(key: &str, value: &str) -> std::result::Result<bool, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "yes" => Ok(true),
+        "false" | "no" => Ok(false),
+        _ => Err(format!(
+            "invalid value '{value}' for filter '{key}': expected true or false"
+        )),
+    }
+}
+
+fn apply_filter(item: &PostgresServiceListItem, filters: &[PostgresListFilter]) -> bool {
+    // A response field the API omitted matches no filter value.
+    filters.iter().all(|filter| match filter {
+        // Compared against the serde wire value (`Display`), not the Rust
+        // Debug form: the latter never matches an `Unknown(..)` state.
+        PostgresListFilter::State(want) => item
+            .state
+            .as_ref()
+            .is_some_and(|state| state.to_string().eq_ignore_ascii_case(want)),
+        PostgresListFilter::Region(want) => item.region.as_deref() == Some(want.as_str()),
+        PostgresListFilter::Name(want) => item.name.as_deref() == Some(want.as_str()),
+        PostgresListFilter::Provider(want) => item
+            .provider
+            .as_ref()
+            .is_some_and(|provider| provider.to_string().eq_ignore_ascii_case(want)),
+        PostgresListFilter::IsPrimary(want) => item.is_primary == Some(*want),
+    })
 }
 
 fn state_label(s: Option<&clickhouse_cloud_api::models::PgStateProperty>) -> String {
@@ -593,26 +725,32 @@ fn enum_label<T: serde::Serialize>(v: Option<&T>) -> String {
     }
 }
 
+// `print_line`, not `println!`: role changes render this after `--wait`
+// polling, minutes after the caller may have stopped reading, and a closed
+// stdout must not turn a completed operation into a panic (#598).
 fn render_postgres_service(svc: &PostgresService) {
-    println!("  ID: {}", or_absent(svc.id.as_ref()));
-    println!("  Name: {}", or_absent(svc.name.as_deref()));
-    println!("  State: {}", state_label(svc.state.as_ref()));
-    println!("  Provider: {}", enum_label(svc.provider.as_ref()));
-    println!("  Region: {}", or_absent(svc.region.as_deref()));
-    println!("  Size: {}", enum_label(svc.size.as_ref()));
-    println!("  Storage (GB): {}", or_absent(svc.storage_size));
-    println!(
+    print_line(format!("  ID: {}", or_absent(svc.id.as_ref())));
+    print_line(format!("  Name: {}", or_absent(svc.name.as_deref())));
+    print_line(format!("  State: {}", state_label(svc.state.as_ref())));
+    print_line(format!("  Provider: {}", enum_label(svc.provider.as_ref())));
+    print_line(format!("  Region: {}", or_absent(svc.region.as_deref())));
+    print_line(format!("  Size: {}", enum_label(svc.size.as_ref())));
+    print_line(format!("  Storage (GB): {}", or_absent(svc.storage_size)));
+    print_line(format!(
         "  PG version: {}",
         enum_label(svc.postgres_version.as_ref())
-    );
-    println!("  HA type: {}", enum_label(svc.ha_type.as_ref()));
-    println!("  Primary: {}", or_absent(svc.is_primary));
-    println!("  Host: {}", or_absent(svc.hostname.as_deref()));
-    println!("  Username: {}", or_absent(svc.username.as_deref()));
-    println!(
+    ));
+    print_line(format!("  HA type: {}", enum_label(svc.ha_type.as_ref())));
+    print_line(format!("  Primary: {}", or_absent(svc.is_primary)));
+    print_line(format!("  Host: {}", or_absent(svc.hostname.as_deref())));
+    print_line(format!(
+        "  Username: {}",
+        or_absent(svc.username.as_deref())
+    ));
+    print_line(format!(
         "  Created: {}",
         or_absent(svc.created_at.map(|c| c.to_rfc3339()))
-    );
+    ));
     if let Some(svc_tags) = svc.tags.as_ref().filter(|t| !t.is_empty()) {
         let tags: Vec<String> = svc_tags
             .iter()
@@ -621,7 +759,7 @@ fn render_postgres_service(svc: &PostgresService) {
                 (key, None) => or_absent(key).to_string(),
             })
             .collect();
-        println!("  Tags: {}", tags.join(", "));
+        print_line(format!("  Tags: {}", tags.join(", ")));
     }
 }
 
@@ -687,6 +825,7 @@ pub struct PostgresCreateOptions<'a> {
 }
 
 pub struct PostgresUpdateOptions<'a> {
+    pub name: Option<&'a str>,
     pub size: Option<&'a str>,
     pub ha_type: Option<&'a str>,
     pub add_tag: &'a [String],
@@ -718,7 +857,7 @@ pub struct PostgresRestoreOptions<'a> {
 pub async fn postgres_list(
     client: &CloudClient,
     org_id: Option<&str>,
-    filters: &[String],
+    filters: &[PostgresListFilter],
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
@@ -792,12 +931,7 @@ pub async fn postgres_get(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let resp = client
-        .api()
-        .postgres_service_get(&org_id, postgres_id)
-        .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-    let svc = unwrap_api(resp)?;
+    let svc = client.get_postgres_service(&org_id, postgres_id).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
@@ -925,6 +1059,23 @@ pub async fn postgres_create(
     Ok(())
 }
 
+/// Builds the `postgres update` PATCH body from the already-parsed pieces
+/// (name, size, HA type, merged tags). Kept separate from `postgres_update`
+/// so the shape sent on the wire is unit-testable without a mock server.
+fn build_postgres_update_request(
+    name: Option<&str>,
+    size: Option<PgSize>,
+    ha_type: Option<PgHaType>,
+    tags: Option<Vec<ResourceTagsV1>>,
+) -> PostgresServicePatchRequest {
+    PostgresServicePatchRequest {
+        name: name.map(str::to_string),
+        size,
+        ha_type,
+        tags,
+    }
+}
+
 pub async fn postgres_update(
     client: &CloudClient,
     postgres_id: &str,
@@ -953,12 +1104,7 @@ pub async fn postgres_update(
         None
     };
 
-    let req = PostgresServicePatchRequest {
-        name: None,
-        size,
-        ha_type,
-        tags,
-    };
+    let req = build_postgres_update_request(opts.name, size, ha_type, tags);
 
     let resp = client
         .api()
@@ -984,16 +1130,29 @@ pub async fn postgres_delete(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let resp = client
+
+    // The delete endpoint itself only ever returns the raw API envelope
+    // (`ApiResponse<serde_json::Value>`, no resource in `result`), so fetch the
+    // resource before deleting it and render that instead: `--json` output must
+    // stay consistent with every other `cloud postgres` subcommand, which emits
+    // the resource object rather than `{"status":...,"requestId":...}` (#614).
+    let svc = client.get_postgres_service(&org_id, postgres_id).await?;
+
+    client
         .api()
         .postgres_service_delete(&org_id, postgres_id)
         .await
         .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
 
+    // The service is already gone by here, so a closed stdout must not turn a
+    // completed deletion into a panic — see `print_line` and #598.
     if json {
-        println!("{}", serde_json::to_string_pretty(&resp)?);
+        print_line(serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Postgres service {} deletion initiated", postgres_id);
+        print_line(format!(
+            "Postgres service {} deletion initiated",
+            postgres_id
+        ));
     }
     Ok(())
 }
@@ -1096,9 +1255,10 @@ pub async fn postgres_config_patch(
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
 
-    if sets.is_empty() && file.is_none() {
-        return Err(CloudError::new("provide --set key=value... or --file PATH"));
-    }
+    debug_assert!(
+        !sets.is_empty() || file.is_some(),
+        "clap ArgGroup(\"patch_source\") requires --set or --file"
+    );
 
     let cfg = if let Some(path) = file {
         instance_config_from_json(&load_json_file::<serde_json::Value>(path)?)?
@@ -1147,7 +1307,7 @@ pub async fn postgres_reset_password(
         }
         (None, true) => generate_compliant_password(),
         (None, false) => {
-            return Err(CloudError::new("provide --password VALUE or --generate"));
+            unreachable!("clap ArgGroup(\"password_source\") requires --password or --generate")
         }
         (Some(_), true) => unreachable!("clap conflicts_with prevents this"),
     };
@@ -1269,6 +1429,10 @@ pub async fn postgres_restore(
     Ok(())
 }
 
+/// Issues a state command that does not change which service is primary.
+///
+/// `promote` and `switchover` go through [`postgres_role_change`] instead, which
+/// adds the `--wait` convergence polling this has no use for.
 pub async fn postgres_state_change(
     client: &CloudClient,
     postgres_id: &str,
@@ -1293,6 +1457,302 @@ pub async fn postgres_state_change(
         render_postgres_service(&svc);
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Role changes: promote / switchover (issue #604)
+// ---------------------------------------------------------------------------
+
+impl CloudClient {
+    /// Fetch a single Postgres service.
+    pub async fn get_postgres_service(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<PostgresService> {
+        let response = self
+            .api()
+            .postgres_service_get(org_id, postgres_id)
+            .await
+            .map_err(|error| {
+                // A read by identifier: a 400 over well-formed UUIDs is a
+                // missing Postgres service, not a bad request (#666).
+                self.convert_error_for_lookup(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    /// Issue a `restart`/`promote`/`switchover` command against a Postgres service.
+    pub async fn set_postgres_service_state(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        command: PostgresServiceSetStateCommand,
+    ) -> CloudResult<PostgresService> {
+        let request = PostgresServiceSetState { command };
+        let response = self
+            .api()
+            .postgres_service_patch_state(org_id, postgres_id, &request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+}
+
+/// Seconds `--wait` polls for when `--wait-timeout` is not given.
+const DEFAULT_ROLE_WAIT_SECS: u16 = 300;
+
+/// Gap between role polls. The API acknowledges a role change long before it
+/// applies it, so polling faster than this only burns rate limit.
+const ROLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The `cloud postgres` commands that change which service is primary.
+///
+/// `restart` is not one of them: it keeps going through
+/// [`postgres_state_change`], which needs no role bookkeeping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostgresRoleCommand {
+    Promote,
+    Switchover,
+}
+
+impl PostgresRoleCommand {
+    fn api_command(self) -> PostgresServiceSetStateCommand {
+        match self {
+            Self::Promote => PostgresServiceSetStateCommand::Promote,
+            Self::Switchover => PostgresServiceSetStateCommand::Switchover,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Promote => "promote",
+            Self::Switchover => "switchover",
+        }
+    }
+}
+
+pub struct RoleChangeOptions<'a> {
+    /// How long to poll for convergence, or `None` to return once the API
+    /// acknowledges the command.
+    pub wait: Option<Duration>,
+    pub org_id: Option<&'a str>,
+}
+
+/// Translates `--wait` / `--wait-timeout` into a polling budget.
+fn wait_duration(wait: bool, wait_timeout: Option<u16>) -> Option<Duration> {
+    wait.then(|| Duration::from_secs(u64::from(wait_timeout.unwrap_or(DEFAULT_ROLE_WAIT_SECS))))
+}
+
+/// The `isPrimary` value the target must report once `cmd` has taken effect.
+///
+/// `None` means the CLI has nothing to compare against: a switchover swaps the
+/// target's role, so without the pre-command `isPrimary` there is no swap to
+/// detect.
+fn expected_primary_after(cmd: PostgresRoleCommand, before: Option<bool>) -> Option<bool> {
+    match cmd {
+        PostgresRoleCommand::Promote => Some(true),
+        PostgresRoleCommand::Switchover => before.map(|primary| !primary),
+    }
+}
+
+/// Whether the polled service has reached the expected role.
+#[derive(Debug, PartialEq)]
+enum RoleConvergence {
+    Converged(PostgresService),
+    NotConverged(PostgresService),
+}
+
+/// Polls `fetch` until the service reports `isPrimary=expected_primary`.
+///
+/// The first poll happens immediately: `promote` flips the replica in under a
+/// second, so the common case must not pay a full interval.
+async fn poll_role_convergence<F, Fut>(
+    mut fetch: F,
+    expected_primary: bool,
+    timeout: Duration,
+    interval: Duration,
+) -> CloudResult<RoleConvergence>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = CloudResult<PostgresService>>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let svc = fetch().await?;
+        if svc.is_primary == Some(expected_primary) {
+            return Ok(RoleConvergence::Converged(svc));
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            return Ok(RoleConvergence::NotConverged(svc));
+        }
+        tokio::time::sleep(interval.min(remaining)).await;
+    }
+}
+
+/// Error text for a role change the API accepted but never applied.
+fn role_timeout_message(
+    cmd: PostgresRoleCommand,
+    postgres_id: &str,
+    expected_primary: bool,
+    observed: Option<bool>,
+    timeout: Duration,
+) -> String {
+    format!(
+        "{} did not take effect within {}s: Postgres service {postgres_id} reports isPrimary={} \
+         (expected {expected_primary}). The API accepted the request; re-check with \
+         `clickhousectl cloud postgres get {postgres_id}`.",
+        cmd.label(),
+        timeout.as_secs(),
+        or_absent(observed),
+    )
+}
+
+/// stderr notes for a role change, in print order.
+///
+/// Both commands are eventually consistent and neither reports that: the
+/// `promote` response omits `isPrimary` entirely and the old primary has been
+/// observed reporting `isPrimary=true` for minutes afterwards, so a caller that
+/// trusts exit 0 sees two primaries (#604).
+fn role_change_notes(cmd: PostgresRoleCommand, postgres_id: &str, waited: bool) -> Vec<String> {
+    let mut notes = Vec::new();
+    match cmd {
+        PostgresRoleCommand::Promote => {
+            notes.push(
+                "The previous primary is demoted asynchronously and can keep reporting \
+                 isPrimary=true for several minutes; verify with `clickhousectl cloud postgres \
+                 list --filter isPrimary=true` that exactly one service is primary."
+                    .to_string(),
+            );
+            if !waited {
+                notes.push(format!(
+                    "The promote response does not carry the new role; pass --wait to poll \
+                     Postgres service {postgres_id} until it reports isPrimary=true."
+                ));
+            }
+        }
+        PostgresRoleCommand::Switchover => {
+            if !waited {
+                notes.push(format!(
+                    "Switchover is acknowledged before (or without) the roles swapping; pass \
+                     --wait to poll Postgres service {postgres_id} until they actually change."
+                ));
+            }
+        }
+    }
+    notes
+}
+
+/// The `isPrimary` value `--wait` polls for, resolved before the command is issued.
+///
+/// `promote` always targets `true`. A switchover swaps the target's role, so it
+/// reads the service first and refuses when that read omits `isPrimary`: with no
+/// pre-command role to compare a swap against, `--wait` could only report an
+/// unverifiable success (#604). This is the only place a role change reads the
+/// service before issuing the command.
+async fn wait_target(
+    client: &CloudClient,
+    org_id: &str,
+    postgres_id: &str,
+    cmd: PostgresRoleCommand,
+) -> CloudResult<bool> {
+    let before = match cmd {
+        PostgresRoleCommand::Promote => None,
+        PostgresRoleCommand::Switchover => {
+            client
+                .get_postgres_service(org_id, postgres_id)
+                .await?
+                .is_primary
+        }
+    };
+    expected_primary_after(cmd, before).ok_or_else(|| {
+        CloudError::new(format!(
+            "--wait cannot confirm a switchover of Postgres service {postgres_id}: the API \
+             response omitted isPrimary, so there is no pre-command role to compare a swap \
+             against. Re-run without --wait to issue the switchover unconfirmed."
+        ))
+    })
+}
+
+/// Handles `cloud postgres promote` and `cloud postgres switchover`.
+///
+/// The command is issued as-is; the API acknowledges it before (or without)
+/// applying it, so `--wait` is the only way to learn whether a role changed.
+pub async fn postgres_role_change(
+    client: &CloudClient,
+    postgres_id: &str,
+    cmd: PostgresRoleCommand,
+    opts: RoleChangeOptions<'_>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, opts.org_id).await?;
+
+    let wait = match opts.wait {
+        Some(timeout) => Some((
+            timeout,
+            wait_target(client, &org_id, postgres_id, cmd).await?,
+        )),
+        None => None,
+    };
+
+    let accepted = client
+        .set_postgres_service_state(&org_id, postgres_id, cmd.api_command())
+        .await?;
+
+    let mut timeout_error = None;
+    let mut svc = accepted;
+
+    if let Some((timeout, expected_primary)) = wait {
+        let outcome = poll_role_convergence(
+            || client.get_postgres_service(&org_id, postgres_id),
+            expected_primary,
+            timeout,
+            ROLE_POLL_INTERVAL,
+        )
+        .await?;
+        svc = match outcome {
+            RoleConvergence::Converged(svc) => svc,
+            RoleConvergence::NotConverged(svc) => {
+                timeout_error = Some(role_timeout_message(
+                    cmd,
+                    postgres_id,
+                    expected_primary,
+                    svc.is_primary,
+                    timeout,
+                ));
+                svc
+            }
+        };
+    }
+
+    let waited = wait.is_some();
+    for note in role_change_notes(cmd, postgres_id, waited) {
+        eprint_line(note);
+    }
+
+    // `print_line`, not `println!`: with --wait this output can land minutes
+    // after the caller stopped reading, and a closed pipe must not turn a
+    // completed role change into a panic (#598).
+    if json {
+        print_line(serde_json::to_string_pretty(&svc)?);
+    } else {
+        print_line(match (timeout_error.is_some(), waited) {
+            (true, _) => format!("{} not confirmed", cmd.label()),
+            (false, true) => format!("{} confirmed", cmd.label()),
+            (false, false) => format!("{} accepted", cmd.label()),
+        });
+        print_line("");
+        render_postgres_service(&svc);
+    }
+
+    match timeout_error {
+        Some(message) => Err(CloudError::new(message)),
+        None => Ok(()),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1330,11 +1790,93 @@ mod tests {
             "state=running",
             "--filter",
             "region=us-east-1",
+            "--filter",
+            "isPrimary=false",
         ]);
         let PostgresCommands::List { filter, .. } = cmd else {
             panic!("expected list");
         };
-        assert_eq!(filter, vec!["state=running", "region=us-east-1"]);
+        assert_eq!(
+            filter,
+            vec![
+                PostgresListFilter::State("running".to_string()),
+                PostgresListFilter::Region("us-east-1".to_string()),
+                PostgresListFilter::IsPrimary(false),
+            ]
+        );
+    }
+
+    fn list_filter_error(filter: &str) -> String {
+        let err = PostgresCli::try_parse_from(["clickhousectl", "list", "--filter", filter])
+            .err()
+            .expect("expected parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_eq!(err.exit_code(), 2, "filter errors must be usage errors");
+        err.to_string()
+    }
+
+    #[test]
+    fn rejects_an_unknown_postgres_list_filter_key() {
+        let message = list_filter_error("bogus=1");
+        assert!(message.contains("unknown filter key 'bogus'"), "{message}");
+        // The valid keys are listed so the user can correct the invocation.
+        for key in ["state", "region", "name", "provider", "isPrimary"] {
+            assert!(message.contains(key), "{key} missing from: {message}");
+        }
+    }
+
+    #[test]
+    fn rejects_a_postgres_list_filter_without_a_value() {
+        let message = list_filter_error("state=");
+        assert!(
+            message.contains("filter 'state' requires a value"),
+            "{message}"
+        );
+        // Whitespace-only is empty too.
+        let message = list_filter_error("name=   ");
+        assert!(
+            message.contains("filter 'name' requires a value"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_postgres_list_filter_without_an_equals_sign() {
+        let message = list_filter_error("state");
+        assert!(
+            message.contains("invalid filter 'state': expected KEY=VALUE"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_non_boolean_is_primary_postgres_list_filter() {
+        let message = list_filter_error("isPrimary=maybe");
+        assert!(
+            message.contains("invalid value 'maybe' for filter 'isPrimary'"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn parses_postgres_list_filter_keys_case_insensitively() {
+        assert_eq!(
+            parse_postgres_list_filter("ISPRIMARY=YES"),
+            Ok(PostgresListFilter::IsPrimary(true))
+        );
+        assert_eq!(
+            parse_postgres_list_filter(" state = running "),
+            Ok(PostgresListFilter::State("running".to_string()))
+        );
+        // `no`/`false` both read as false, matching the `Primary` column.
+        assert_eq!(
+            parse_postgres_list_filter("isPrimary=no"),
+            Ok(PostgresListFilter::IsPrimary(false))
+        );
+        assert_eq!(
+            parse_postgres_list_filter("isPrimary=false"),
+            Ok(PostgresListFilter::IsPrimary(false))
+        );
     }
 
     #[test]
@@ -1513,13 +2055,38 @@ mod tests {
     fn parses_postgres_update_no_fields() {
         let cmd = parse_postgres(&["clickhousectl", "cloud", "postgres", "update", "pg-1"]);
         let PostgresCommands::Update {
-            postgres_id, size, ..
+            postgres_id,
+            name,
+            size,
+            ..
         } = cmd
         else {
             panic!("expected update");
         };
         assert_eq!(postgres_id, "pg-1");
+        assert!(name.is_none());
         assert!(size.is_none());
+    }
+
+    #[test]
+    fn parses_postgres_update_name() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "update",
+            "pg-1",
+            "--name",
+            "renamed-pg",
+        ]);
+        let PostgresCommands::Update {
+            postgres_id, name, ..
+        } = cmd
+        else {
+            panic!("expected update");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(name.as_deref(), Some("renamed-pg"));
     }
 
     #[test]
@@ -1661,6 +2228,24 @@ mod tests {
     }
 
     #[test]
+    fn rejects_postgres_config_patch_without_set_or_file() {
+        let err = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "config",
+            "patch",
+            "pg-1",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let message = err.to_string();
+        assert!(message.contains("--set <SETS>"), "{message}");
+        assert!(message.contains("--file <FILE>"), "{message}");
+    }
+
+    #[test]
     fn parses_postgres_reset_password_with_password_and_generate() {
         let cmd = parse_postgres(&[
             "clickhousectl",
@@ -1696,6 +2281,23 @@ mod tests {
         };
         assert!(password.is_none());
         assert!(generate);
+    }
+
+    #[test]
+    fn rejects_postgres_reset_password_without_password_or_generate() {
+        let err = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "reset-password",
+            "pg-1",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let message = err.to_string();
+        assert!(message.contains("--password <PASSWORD>"), "{message}");
+        assert!(message.contains("--generate"), "{message}");
     }
 
     #[test]
@@ -1802,6 +2404,297 @@ mod tests {
         ));
     }
 
+    // --- role change (promote / switchover) parsing, issue #604 ---
+
+    #[test]
+    fn promote_and_switchover_do_not_wait_by_default() {
+        let PostgresCommands::Promote {
+            wait, wait_timeout, ..
+        } = parse_postgres(&["clickhousectl", "cloud", "postgres", "promote", "pg-1"])
+        else {
+            panic!("expected promote");
+        };
+        assert!(!wait);
+        assert_eq!(wait_timeout, None);
+
+        let PostgresCommands::Switchover {
+            wait, wait_timeout, ..
+        } = parse_postgres(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"])
+        else {
+            panic!("expected switchover");
+        };
+        assert!(!wait);
+        assert_eq!(wait_timeout, None);
+    }
+
+    #[test]
+    fn promote_parses_wait_flags() {
+        let PostgresCommands::Promote {
+            postgres_id,
+            wait,
+            wait_timeout,
+            org_id,
+        } = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "promote",
+            "pg-1",
+            "--wait",
+            "--wait-timeout",
+            "45",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected promote");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert!(wait);
+        assert_eq!(wait_timeout, Some(45));
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn switchover_parses_wait_flags() {
+        let PostgresCommands::Switchover {
+            postgres_id,
+            wait,
+            wait_timeout,
+            ..
+        } = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "switchover",
+            "pg-1",
+            "--wait",
+            "--wait-timeout",
+            "600",
+        ])
+        else {
+            panic!("expected switchover");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert!(wait);
+        assert_eq!(wait_timeout, Some(600));
+    }
+
+    /// `--wait-timeout` without `--wait` would silently not wait, so clap
+    /// rejects it as a usage error instead.
+    #[test]
+    fn wait_timeout_requires_wait() {
+        for command in ["promote", "switchover"] {
+            let err = match PostgresCli::try_parse_from([
+                "clickhousectl",
+                command,
+                "pg-1",
+                "--wait-timeout",
+                "30",
+            ]) {
+                Ok(_) => {
+                    panic!("--wait-timeout without --wait should be a usage error for {command}")
+                }
+                Err(err) => err,
+            };
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{command}: {err}"
+            );
+            assert_eq!(err.exit_code(), 2, "{command}: {err}");
+        }
+    }
+
+    #[test]
+    fn wait_duration_maps_flags_to_a_polling_budget() {
+        assert_eq!(wait_duration(false, None), None);
+        assert_eq!(wait_duration(false, Some(10)), None);
+        assert_eq!(
+            wait_duration(true, None),
+            Some(Duration::from_secs(u64::from(DEFAULT_ROLE_WAIT_SECS)))
+        );
+        assert_eq!(wait_duration(true, Some(30)), Some(Duration::from_secs(30)));
+        // A zero budget still polls once: `poll_role_convergence` fetches
+        // before it checks the deadline.
+        assert_eq!(wait_duration(true, Some(0)), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn expected_primary_after_a_role_change() {
+        assert_eq!(
+            expected_primary_after(PostgresRoleCommand::Promote, None),
+            Some(true)
+        );
+        assert_eq!(
+            expected_primary_after(PostgresRoleCommand::Promote, Some(false)),
+            Some(true)
+        );
+        assert_eq!(
+            expected_primary_after(PostgresRoleCommand::Switchover, Some(true)),
+            Some(false)
+        );
+        assert_eq!(
+            expected_primary_after(PostgresRoleCommand::Switchover, Some(false)),
+            Some(true)
+        );
+        // Nothing to compare against, so nothing to wait for.
+        assert_eq!(
+            expected_primary_after(PostgresRoleCommand::Switchover, None),
+            None
+        );
+    }
+
+    // --- role change convergence polling, issue #604 ---
+
+    fn primary_response(is_primary: Option<bool>) -> PostgresService {
+        PostgresService {
+            name: Some("pg".to_string()),
+            is_primary,
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn polling_returns_immediately_when_the_role_already_converged() {
+        let mut calls = 0;
+        let outcome = poll_role_convergence(
+            || {
+                calls += 1;
+                std::future::ready(Ok(primary_response(Some(true))))
+            },
+            true,
+            Duration::from_secs(60),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, RoleConvergence::Converged(_)));
+        assert_eq!(calls, 1, "the first poll must not wait for an interval");
+    }
+
+    #[tokio::test]
+    async fn polling_converges_once_the_role_flips() {
+        let mut calls = 0;
+        let outcome = poll_role_convergence(
+            || {
+                calls += 1;
+                std::future::ready(Ok(primary_response(Some(calls >= 3))))
+            },
+            true,
+            Duration::from_secs(60),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        let RoleConvergence::Converged(svc) = outcome else {
+            panic!("expected convergence");
+        };
+        assert_eq!(svc.is_primary, Some(true));
+        assert_eq!(calls, 3);
+    }
+
+    /// A role change the API accepted but never applied is the #604 failure:
+    /// polling must report the last observed role, not success.
+    #[tokio::test]
+    async fn polling_reports_non_convergence_with_the_last_observed_role() {
+        let outcome = poll_role_convergence(
+            || std::future::ready(Ok(primary_response(Some(true)))),
+            false,
+            Duration::from_millis(20),
+            Duration::from_millis(1),
+        )
+        .await
+        .unwrap();
+        let RoleConvergence::NotConverged(svc) = outcome else {
+            panic!("expected non-convergence");
+        };
+        assert_eq!(svc.is_primary, Some(true));
+    }
+
+    /// An omitted `isPrimary` is not the expected value, so it cannot count as
+    /// convergence — the promote response omits it entirely.
+    #[tokio::test]
+    async fn an_absent_is_primary_never_counts_as_converged() {
+        let outcome = poll_role_convergence(
+            || std::future::ready(Ok(primary_response(None))),
+            true,
+            Duration::ZERO,
+            Duration::ZERO,
+        )
+        .await
+        .unwrap();
+        assert!(matches!(outcome, RoleConvergence::NotConverged(_)));
+    }
+
+    #[tokio::test]
+    async fn polling_propagates_a_fetch_error() {
+        let error = poll_role_convergence(
+            || std::future::ready(Err(CloudError::new("boom"))),
+            true,
+            Duration::from_secs(60),
+            Duration::ZERO,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "boom");
+    }
+
+    #[test]
+    fn role_timeout_message_names_the_observed_role() {
+        let message = role_timeout_message(
+            PostgresRoleCommand::Switchover,
+            "pg-1",
+            false,
+            Some(true),
+            Duration::from_secs(300),
+        );
+        assert!(
+            message.contains("switchover did not take effect within 300s")
+                && message.contains("isPrimary=true")
+                && message.contains("expected false")
+                && message.contains("postgres get pg-1"),
+            "unexpected message: {message}"
+        );
+
+        let absent = role_timeout_message(
+            PostgresRoleCommand::Promote,
+            "pg-1",
+            true,
+            None,
+            Duration::from_secs(5),
+        );
+        assert!(
+            absent.contains(&format!("isPrimary={ABSENT}")),
+            "an omitted isPrimary must render as {ABSENT}: {absent}"
+        );
+    }
+
+    #[test]
+    fn role_change_notes_warn_about_eventual_consistency() {
+        let promote_no_wait = role_change_notes(PostgresRoleCommand::Promote, "pg-1", false);
+        assert_eq!(promote_no_wait.len(), 2);
+        assert!(promote_no_wait[0].contains("previous primary is demoted asynchronously"));
+        assert!(promote_no_wait[1].contains("--wait"));
+
+        // With --wait the CLI already confirmed the new primary, but the old
+        // primary's demotion is still not something it can see.
+        let promote_waited = role_change_notes(PostgresRoleCommand::Promote, "pg-1", true);
+        assert_eq!(promote_waited.len(), 1);
+        assert!(promote_waited[0].contains("previous primary"));
+
+        let switchover_no_wait = role_change_notes(PostgresRoleCommand::Switchover, "pg-1", false);
+        assert_eq!(switchover_no_wait.len(), 1);
+        assert!(
+            switchover_no_wait[0].contains("acknowledged before (or without) the roles swapping")
+        );
+        assert!(switchover_no_wait[0].contains("--wait"));
+        assert!(
+            role_change_notes(PostgresRoleCommand::Switchover, "pg-1", true).is_empty(),
+            "a confirmed swap needs no caveat"
+        );
+    }
+
     // --- helper unit tests ---
 
     #[test]
@@ -1898,6 +2791,32 @@ mod tests {
         }];
         let out = merge_response_tags(Some(vec![]), &add, &[]).unwrap();
         assert_eq!(out, add);
+    }
+
+    #[test]
+    fn build_postgres_update_request_omits_name_when_not_given() {
+        let req = build_postgres_update_request(None, None, None, None);
+        assert!(req.name.is_none());
+        assert!(req.size.is_none());
+        assert!(req.ha_type.is_none());
+        assert!(req.tags.is_none());
+    }
+
+    #[test]
+    fn build_postgres_update_request_sets_name_when_given() {
+        let req = build_postgres_update_request(
+            Some("renamed-pg"),
+            Some(PgSize::C6gd_large),
+            Some(PgHaType::Sync),
+            Some(vec![ResourceTagsV1 {
+                key: "env".into(),
+                value: Some("prod".into()),
+            }]),
+        );
+        assert_eq!(req.name.as_deref(), Some("renamed-pg"));
+        assert!(req.size.is_some());
+        assert_eq!(req.ha_type, Some(PgHaType::Sync));
+        assert_eq!(req.tags.unwrap().len(), 1);
     }
 
     #[test]
@@ -2069,20 +2988,102 @@ mod tests {
         assert_eq!(enum_label(item.size.as_ref()), ABSENT);
     }
 
+    fn filters(raw: &[&str]) -> Vec<PostgresListFilter> {
+        raw.iter()
+            .map(|f| parse_postgres_list_filter(f).expect("valid filter"))
+            .collect()
+    }
+
     #[test]
     fn apply_filter_does_not_match_absent_response_fields() {
         let absent = PostgresServiceListItem::default();
-        assert!(!apply_filter(&absent, &["region=us-east-1".to_string()]));
-        assert!(!apply_filter(&absent, &["state=running".to_string()]));
-        // An unknown filter key stays permissive, as before.
-        assert!(apply_filter(&absent, &["bogus=1".to_string()]));
+        for filter in [
+            "region=us-east-1",
+            "state=running",
+            "name=my-pg",
+            "provider=aws",
+            "isPrimary=true",
+            "isPrimary=false",
+        ] {
+            assert!(
+                !apply_filter(&absent, &filters(&[filter])),
+                "absent field must not match {filter}"
+            );
+        }
 
         let present = PostgresServiceListItem {
             region: Some("us-east-1".to_string()),
             state: Some(clickhouse_cloud_api::models::PgStateProperty::Running),
+            name: Some("my-pg".to_string()),
+            provider: Some(clickhouse_cloud_api::models::PgProvider::Aws),
+            is_primary: Some(true),
             ..Default::default()
         };
-        assert!(apply_filter(&present, &["region=us-east-1".to_string()]));
-        assert!(apply_filter(&present, &["state=running".to_string()]));
+        assert!(apply_filter(
+            &present,
+            &filters(&[
+                "region=us-east-1",
+                "state=running",
+                "name=my-pg",
+                "provider=aws",
+                "isPrimary=true",
+            ])
+        ));
+        // Every filter must hold: one mismatch drops the item.
+        assert!(!apply_filter(
+            &present,
+            &filters(&["region=us-east-1", "isPrimary=false"])
+        ));
+    }
+
+    #[test]
+    fn apply_filter_compares_states_by_wire_value_not_debug_form() {
+        use clickhouse_cloud_api::models::PgStateProperty;
+
+        // Multi-word wire values and the `Unknown` catch-all both matched
+        // nothing while the comparison used `format!("{:?}")` (issue #603).
+        let restoring = PostgresServiceListItem {
+            state: Some(PgStateProperty::Restoring_backup),
+            ..Default::default()
+        };
+        assert!(apply_filter(
+            &restoring,
+            &filters(&["state=restoring_backup"])
+        ));
+        assert!(apply_filter(
+            &restoring,
+            &filters(&["state=RESTORING_BACKUP"])
+        ));
+        assert!(!apply_filter(&restoring, &filters(&["state=running"])));
+
+        let unknown = PostgresServiceListItem {
+            state: Some(PgStateProperty::Unknown("hibernating".to_string())),
+            ..Default::default()
+        };
+        assert!(apply_filter(&unknown, &filters(&["state=hibernating"])));
+        assert!(!apply_filter(&unknown, &filters(&["state=running"])));
+    }
+
+    #[test]
+    fn apply_filter_compares_providers_by_wire_value() {
+        use clickhouse_cloud_api::models::PgProvider;
+
+        let gcp = PostgresServiceListItem {
+            provider: Some(PgProvider::Gcp),
+            ..Default::default()
+        };
+        assert!(apply_filter(&gcp, &filters(&["provider=gcp"])));
+        assert!(!apply_filter(&gcp, &filters(&["provider=aws"])));
+
+        let unknown = PostgresServiceListItem {
+            provider: Some(PgProvider::Unknown("azure".to_string())),
+            ..Default::default()
+        };
+        assert!(apply_filter(&unknown, &filters(&["provider=azure"])));
+    }
+
+    #[test]
+    fn apply_filter_with_no_filters_keeps_every_item() {
+        assert!(apply_filter(&PostgresServiceListItem::default(), &[]));
     }
 }

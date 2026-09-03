@@ -1480,6 +1480,11 @@ impl std::fmt::Display for ClickPipePostgresPipeTableMappingTableengine {
     }
 }
 
+impl ClickPipePostgresPipeTableMappingTableengine {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["MergeTree", "ReplacingMergeTree", "Null"];
+}
+
 /// Inline enum for `ClickPipePostgresSource.authentication`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickPipePostgresSourceAuthentication {
@@ -1668,6 +1673,11 @@ impl std::fmt::Display for CreateReversePrivateEndpointMskauthentication {
     }
 }
 
+impl CreateReversePrivateEndpointMskauthentication {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["SASL_IAM", "SASL_SCRAM"];
+}
+
 /// Inline enum for `CreateReversePrivateEndpoint.type`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum CreateReversePrivateEndpointType {
@@ -1691,6 +1701,16 @@ impl std::fmt::Display for CreateReversePrivateEndpointType {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl CreateReversePrivateEndpointType {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &[
+        "VPC_ENDPOINT_SERVICE",
+        "VPC_RESOURCE",
+        "MSK_MULTI_VPC",
+        "GCP_PSC_SERVICE_ATTACHMENT",
+    ];
 }
 
 /// Inline enum for `ReversePrivateEndpoint.mskAuthentication`.
@@ -2354,7 +2374,14 @@ pub struct ClickPipeMutatePostgresSource {
     // `Option<String>` so callers can omit it.
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    pub credentials: PLAIN,
+    // credentials is the basic-auth username/password pair. The schema carries
+    // no `required[]`, so requiredness resolves from the description heuristic
+    // and the field reads as required, but IAM_ROLE authentication has no
+    // username or password: the role ARN in `iamRole` is the whole credential.
+    // Modeled as `Option<PLAIN>` so an IAM_ROLE request can omit the object
+    // entirely instead of sending an empty `{"username":"","password":""}`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<PLAIN>,
     pub database: String,
     #[serde(rename = "disableTls")]
     pub disable_tls: bool,
@@ -2867,7 +2894,11 @@ pub struct ClickPipePatchSource {
 /// `ClickPipePostKafkaSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostKafkaSource {
-    pub authentication: ClickPipePostKafkaSourceAuthentication,
+    /// Omitted for a broker that requires no authentication: the spec enum has
+    /// no "none" value, and the control plane's own field is `omitempty`, so
+    /// absence — not a sentinel value — is how "no auth" is expressed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipePostKafkaSourceAuthentication>,
     pub brokers: String,
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
@@ -3388,8 +3419,15 @@ pub struct ClickPipeSettingsPutRequest {
     pub clickhouse_parallel_distributed_insert_select: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_view_processing: Option<bool>,
-    #[serde(rename = "kafka_read_committed")]
-    pub kafka_read_committed: bool,
+    /// Kafka-only: the API rejects this key outright for any other source
+    /// ("Setting 'kafka_read_committed' is only supported for Kafka
+    /// ClickPipes"), so absence — not `false` — is how a non-Kafka settings
+    /// update expresses "this setting does not apply".
+    #[serde(
+        rename = "kafka_read_committed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kafka_read_committed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_concurrency: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]

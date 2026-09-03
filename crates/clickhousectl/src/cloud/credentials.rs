@@ -231,6 +231,107 @@ pub fn remove_service_query_key(service_id: &str) -> CloudResult<()> {
     Ok(())
 }
 
+/// Drop `cleaned_api_key_ids` from the pending-retirement list of the stored
+/// query key for `service_id`, only while the record still names management
+/// key `api_key_id` as its active key.
+///
+/// A retirement is retried on a later run (#527), and the record may have
+/// been replaced or removed by a concurrent repair or service deletion in
+/// the meantime: a list belonging to another record is not ours to edit, and
+/// a removed record must not be resurrected. Holding the provisioning lock
+/// keeps a repair from writing between the compare and the update. Returns
+/// whether the record was updated.
+pub(crate) fn remove_pending_cleanup_if_api_key_matches(
+    service_id: &str,
+    api_key_id: &str,
+    cleaned_api_key_ids: &[String],
+    _lock: &QueryProvisioningLock,
+) -> CloudResult<bool> {
+    let _mutation_lock = lock_credentials_mutation()?;
+    let Some(mut creds) = try_load_credentials()? else {
+        return Ok(false);
+    };
+    if !retain_uncleaned_pending_if_api_key_matches(
+        &mut creds,
+        service_id,
+        api_key_id,
+        cleaned_api_key_ids,
+    ) {
+        return Ok(false);
+    }
+    save_credentials(&creds)?;
+    Ok(true)
+}
+
+/// The compare-and-update behind [`remove_pending_cleanup_if_api_key_matches`].
+fn retain_uncleaned_pending_if_api_key_matches(
+    creds: &mut Credentials,
+    service_id: &str,
+    api_key_id: &str,
+    cleaned_api_key_ids: &[String],
+) -> bool {
+    let Some(stored) = creds.service_query_keys.get_mut(service_id) else {
+        return false;
+    };
+    if stored.api_key_id.as_deref() != Some(api_key_id) {
+        return false;
+    }
+    stored
+        .pending_cleanup_api_key_ids
+        .retain(|pending| !cleaned_api_key_ids.contains(pending));
+    true
+}
+
+/// Record `pending_api_key_id` as awaiting deletion on the record for
+/// `service_id`, but only while that record still names `api_key_id` as its
+/// active key: a rolled-back repair's replacement key whose delete failed
+/// belongs on the record the repair started from, not on a concurrent
+/// repair's fresh one (#658). The ID is appended once. Returns whether the
+/// record was updated.
+pub(crate) fn add_pending_cleanup_if_api_key_matches(
+    service_id: &str,
+    api_key_id: &str,
+    pending_api_key_id: &str,
+    _lock: &QueryProvisioningLock,
+) -> CloudResult<bool> {
+    let _mutation_lock = lock_credentials_mutation()?;
+    let Some(mut creds) = try_load_credentials()? else {
+        return Ok(false);
+    };
+    if !push_pending_if_api_key_matches(&mut creds, service_id, api_key_id, pending_api_key_id) {
+        return Ok(false);
+    }
+    save_credentials(&creds)?;
+    Ok(true)
+}
+
+/// The compare-and-append behind [`add_pending_cleanup_if_api_key_matches`].
+/// The active key itself is never listed as pending: a record that marks its
+/// own key for deletion is refused by repair, so it must not be produced here.
+fn push_pending_if_api_key_matches(
+    creds: &mut Credentials,
+    service_id: &str,
+    api_key_id: &str,
+    pending_api_key_id: &str,
+) -> bool {
+    let Some(stored) = creds.service_query_keys.get_mut(service_id) else {
+        return false;
+    };
+    if stored.api_key_id.as_deref() != Some(api_key_id) || pending_api_key_id == api_key_id {
+        return false;
+    }
+    if !stored
+        .pending_cleanup_api_key_ids
+        .iter()
+        .any(|pending| pending == pending_api_key_id)
+    {
+        stored
+            .pending_cleanup_api_key_ids
+            .push(pending_api_key_id.to_string());
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +432,19 @@ mod tests {
         assert!(key.pending_cleanup_api_key_ids.is_empty());
     }
 
+    fn stored_key(api_key_id: Option<&str>) -> ServiceQueryKey {
+        ServiceQueryKey {
+            organization_id: Some("org-1".into()),
+            api_key_id: api_key_id.map(str::to_string),
+            key_id: "kid".into(),
+            key_secret: "sec".into(),
+            endpoint_id: Some("ep".into()),
+            pending_cleanup_api_key_ids: vec![],
+            service_name: "demo".into(),
+            created_at: Utc::now(),
+        }
+    }
+
     #[test]
     fn existing_query_keys_without_cleanup_metadata_still_deserialize() {
         // Existing files contain query credentials and an endpoint ID, but
@@ -348,5 +462,151 @@ mod tests {
         let written = serde_json::to_string(&creds).unwrap();
         assert!(!written.contains("organization_id"));
         assert!(!written.contains("api_key_id"));
+    }
+
+    #[test]
+    fn a_record_with_pending_retirements_round_trips_and_a_legacy_one_reads_empty() {
+        let mut creds = Credentials::default();
+        let mut key = stored_key(Some("active-key"));
+        key.pending_cleanup_api_key_ids = vec!["retired-1".into(), "retired-2".into()];
+        creds.service_query_keys.insert("svc-1".into(), key);
+
+        let written = serde_json::to_string(&creds).unwrap();
+        assert!(
+            written.contains(r#""pending_cleanup_api_key_ids":["retired-1","retired-2"]"#),
+            "{written}"
+        );
+        let back: Credentials = serde_json::from_str(&written).unwrap();
+        assert_eq!(
+            back.service_query_keys["svc-1"].pending_cleanup_api_key_ids,
+            ["retired-1", "retired-2"]
+        );
+
+        // A record written before retirements were tracked has no list at
+        // all and must read as "nothing pending", never fail to parse.
+        let legacy = r#"{"service_query_keys":{"svc-1":{"organization_id":"org-1",
+            "api_key_id":"active-key","key_id":"kid","key_secret":"sec","endpoint_id":"ep",
+            "service_name":"demo","created_at":"2026-05-11T12:00:00Z"}}}"#;
+        let creds: Credentials = serde_json::from_str(legacy).unwrap();
+        assert!(
+            creds.service_query_keys["svc-1"]
+                .pending_cleanup_api_key_ids
+                .is_empty()
+        );
+        // And an empty list is omitted again on the way out.
+        assert!(
+            !serde_json::to_string(&creds)
+                .unwrap()
+                .contains("pending_cleanup")
+        );
+    }
+
+    #[test]
+    fn pending_retirements_are_removed_only_from_the_record_that_still_names_the_active_key() {
+        let mut creds = Credentials::default();
+        let mut key = stored_key(Some("active-key"));
+        key.pending_cleanup_api_key_ids = vec!["retired-1".into(), "retired-2".into()];
+        creds.service_query_keys.insert("svc-1".into(), key);
+
+        // Only the cleaned id goes; an id whose deletion failed stays.
+        assert!(retain_uncleaned_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "active-key",
+            &["retired-1".to_string()],
+        ));
+        assert_eq!(
+            creds.service_query_keys["svc-1"].pending_cleanup_api_key_ids,
+            ["retired-2"]
+        );
+
+        // A concurrent repair replaced the active key: the list belongs to
+        // the new record and is left alone.
+        assert!(!retain_uncleaned_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "previous-active-key",
+            &["retired-2".to_string()],
+        ));
+        assert_eq!(
+            creds.service_query_keys["svc-1"].pending_cleanup_api_key_ids,
+            ["retired-2"]
+        );
+
+        // A removed record is not resurrected.
+        let mut empty = Credentials::default();
+        assert!(!retain_uncleaned_pending_if_api_key_matches(
+            &mut empty,
+            "svc-1",
+            "active-key",
+            &["retired-2".to_string()],
+        ));
+        assert!(empty.service_query_keys.is_empty());
+    }
+
+    #[test]
+    fn pending_cleanup_is_appended_only_while_the_active_key_matches() {
+        let mut creds = Credentials::default();
+        creds.service_query_keys.insert(
+            "svc-1".into(),
+            ServiceQueryKey {
+                organization_id: Some("org-1".into()),
+                api_key_id: Some("active-key".into()),
+                key_id: "kid".into(),
+                key_secret: "sec".into(),
+                endpoint_id: Some("ep".into()),
+                pending_cleanup_api_key_ids: vec!["retired-1".into()],
+                service_name: "demo".into(),
+                created_at: Utc::now(),
+            },
+        );
+
+        // The rolled-back key joins the list once, after what was there.
+        assert!(push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "active-key",
+            "rolled-back",
+        ));
+        assert!(push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "active-key",
+            "rolled-back",
+        ));
+        assert_eq!(
+            creds.service_query_keys["svc-1"].pending_cleanup_api_key_ids,
+            ["retired-1", "rolled-back"]
+        );
+
+        // Never the active key itself: repair refuses such a record.
+        assert!(!push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "active-key",
+            "active-key",
+        ));
+        assert_eq!(
+            creds.service_query_keys["svc-1"].pending_cleanup_api_key_ids,
+            ["retired-1", "rolled-back"]
+        );
+
+        // A concurrent repair replaced the active key: not this run's record.
+        assert!(!push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-1",
+            "previous-active-key",
+            "other",
+        ));
+        assert!(!push_pending_if_api_key_matches(
+            &mut creds,
+            "svc-missing",
+            "active-key",
+            "other",
+        ));
+        assert_eq!(
+            creds.service_query_keys["svc-1"].pending_cleanup_api_key_ids,
+            ["retired-1", "rolled-back"]
+        );
     }
 }

@@ -611,27 +611,89 @@ fn send_signal(pid: u32, signal: i32) -> Result<()> {
     }
 }
 
+/// How long a SIGTERM is given before the escalation to SIGKILL: the 500 ms
+/// grace period and the 2 s extension the fixed sleeps used to add up to.
+const TERM_TIMEOUT: Duration = Duration::from_millis(2500);
+/// How long a SIGKILLed process is given to be reaped before it is reported as
+/// still running.
+const KILL_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Poll until `pid` is gone, returning whether it went within `timeout`.
+fn wait_for_exit(pid: u32, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !is_process_alive(pid) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return !is_process_alive(pid);
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// The direct children of `pid`, read while it is still alive.
+///
+/// The ClickHouse watchdog forwards SIGHUP, SIGINT, SIGQUIT and SIGTERM to the
+/// server it supervises, but a SIGKILL it cannot catch leaves that server
+/// running: the kernel reparents it to init and it keeps holding the ports and
+/// the data directory (issue #664). So the escalation path has to kill the pair,
+/// and it has to read the children before the parent dies, because afterwards
+/// the relation is gone. A process-group kill is not an alternative:
+/// `Command::spawn` leaves the watchdog in clickhousectl's own process group.
+fn child_pids(pid: u32) -> Vec<u32> {
+    let output = std::process::Command::new("pgrep")
+        .args(["-P", &pid.to_string()])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.trim().parse::<u32>().ok())
+            .filter(|&child| child != 0 && child != pid)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// Attempt to terminate a process: SIGTERM, wait, SIGKILL if needed, then verify exit.
+///
+/// `pid` is normally a watchdog, which stops the server it supervises with it.
+/// That holds for the SIGTERM it forwards, but not for a SIGKILL, so the
+/// escalation path signals the supervised processes too and reports success only
+/// once every one of them is gone.
 fn kill_process(pid: u32) -> Result<()> {
     send_signal(pid, libc::SIGTERM)?;
 
-    // Wait briefly for graceful shutdown
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // A watchdog that takes the SIGTERM passes it to the server and exits with
+    // it, so waiting on the watchdog waits on the pair.
+    if wait_for_exit(pid, TERM_TIMEOUT) {
+        return Ok(());
+    }
 
-    if is_process_alive(pid) {
-        std::thread::sleep(std::time::Duration::from_secs(2));
-        if is_process_alive(pid) {
-            send_signal(pid, libc::SIGKILL)?;
-            // Give the kernel a moment to reap the process
-            std::thread::sleep(std::time::Duration::from_millis(100));
+    let supervised = child_pids(pid);
+    send_signal(pid, libc::SIGKILL)?;
+    for &child in &supervised {
+        // Losing the race to a child that exited with its parent is not a
+        // failure; the verification below is what decides.
+        if is_process_alive(child) {
+            let _ = send_signal(child, libc::SIGKILL);
         }
     }
 
-    if is_process_alive(pid) {
+    if !wait_for_exit(pid, KILL_TIMEOUT) {
         return Err(Error::Exec(format!(
             "Process {} did not exit after SIGKILL",
             pid
         )));
+    }
+    for child in supervised {
+        if !wait_for_exit(child, KILL_TIMEOUT) {
+            return Err(Error::Exec(format!(
+                "Process {} exited but the server it supervised (PID {}) did not exit after SIGKILL",
+                pid, child
+            )));
+        }
     }
 
     Ok(())
@@ -881,7 +943,7 @@ fn find_free_port(start: u16) -> Option<u16> {
 pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u16, u16, bool)> {
     let http = match http_port {
         Some(0) => {
-            return Err(Error::Exec(
+            return Err(Error::UnsupportedArgument(
                 "--http-port 0 is not allowed; pick a specific port or omit the flag".into(),
             ));
         }
@@ -904,7 +966,7 @@ pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u
 
     let tcp = match tcp_port {
         Some(0) => {
-            return Err(Error::Exec(
+            return Err(Error::UnsupportedArgument(
                 "--tcp-port 0 is not allowed; pick a specific port or omit the flag".into(),
             ));
         }
@@ -951,19 +1013,29 @@ pub fn now_timestamp() -> String {
 /// Scans for running ClickHouse processes whose cwd matches this project's
 /// `.clickhouse/servers/<name>/data/` path. If a process is found that has no
 /// metadata file, a new `ServerInfo` is saved so it appears in `server list`
-/// and can be managed normally.
+/// and can be managed normally. The recovered `pid` is the one discovery
+/// reports, so it is the process `stop` has to signal — the watchdog when the
+/// server has one — exactly as if `server start` had written it.
 pub fn recover_current_project_servers() -> Result<()> {
     let lock = lock_metadata()?;
     recover_current_project_servers_locked(&lock)
 }
 
 pub(crate) fn recover_current_project_servers_locked(lock: &MetadataLock) -> Result<()> {
+    recover_from_discovered_locked(&discovery::discover_clickhouse_processes(), lock)
+}
+
+/// Recovery over an already-completed process scan, so a caller that also needs
+/// the global view pays for `pgrep`/`lsof` once.
+fn recover_from_discovered_locked(
+    processes: &[discovery::DiscoveredProcess],
+    lock: &MetadataLock,
+) -> Result<()> {
     let current_dir = std::env::current_dir()?
         .canonicalize()?
         .display()
         .to_string();
 
-    let processes = discovery::discover_clickhouse_processes();
     for proc in processes {
         // Canonicalize the discovered project root for comparison
         let discovered_root = match std::path::Path::new(&proc.project_root).canonicalize() {
@@ -977,9 +1049,12 @@ pub(crate) fn recover_current_project_servers_locked(lock: &MetadataLock) -> Res
 
         validate_server_name(&proc.server_name)?;
         let info = ServerInfo {
-            name: proc.server_name,
+            name: proc.server_name.clone(),
             pid: proc.pid,
-            version: proc.version.unwrap_or_else(|| "unknown".to_string()),
+            version: proc
+                .version
+                .clone()
+                .unwrap_or_else(|| "unknown".to_string()),
             http_port: proc.http_port.unwrap_or(0),
             tcp_port: proc.tcp_port.unwrap_or(0),
             started_at: "recovered".to_string(),
@@ -1019,20 +1094,123 @@ pub struct GlobalServerEntry {
 /// (Postgres containers are not currently merged in — a future change will add
 /// `docker ps` based discovery here as well.)
 pub fn list_all_servers_global() -> Vec<GlobalServerEntry> {
-    let processes = discovery::discover_clickhouse_processes();
+    global_entries(&discovery::discover_clickhouse_processes())
+}
+
+fn global_entries(processes: &[discovery::DiscoveredProcess]) -> Vec<GlobalServerEntry> {
     processes
-        .into_iter()
+        .iter()
         .map(|p| GlobalServerEntry {
-            name: p.server_name,
+            name: p.server_name.clone(),
             pid: p.pid,
-            project: p.project_root,
+            project: p.project_root.clone(),
             http_port: p.http_port,
             tcp_port: p.tcp_port,
-            version: p.version,
+            version: p.version.clone(),
             engine: Engine::Clickhouse,
             container_id: None,
         })
         .collect()
+}
+
+/// A running server that occupies an installed ClickHouse version, wherever it
+/// was started from. Produced by [`servers_using_version`] for `local remove`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VersionUser {
+    pub name: String,
+    /// Project root the server was started from.
+    pub project: String,
+    pub pid: u32,
+    /// True when the server belongs to the current project, so its metadata is
+    /// reachable and [`kill_server`] can keep it consistent. Servers in other
+    /// projects can only be stopped by PID, like `server stop --global`.
+    pub current_project: bool,
+}
+
+/// Every running server — in this project and in every other project — that is
+/// running `version`.
+///
+/// `local remove` deletes a binary that running servers hold open, so the guard
+/// has to see past the current project's metadata (issue #600).
+pub fn servers_using_version(version: &str) -> Result<Vec<VersionUser>> {
+    // One process scan feeds both sources: discovery shells out to
+    // `pgrep`/`lsof`/`ps`, so scanning twice would double the cost of the guard.
+    let processes = discovery::discover_clickhouse_processes();
+    let project_servers = {
+        let lock = lock_metadata()?;
+        // Recover orphans first so a server whose metadata file is missing is
+        // still counted.
+        recover_from_discovered_locked(&processes, &lock)?;
+        list_running_servers_locked(&lock)?
+    };
+    Ok(select_version_users(
+        &project_servers,
+        &global_entries(&processes),
+        version,
+    ))
+}
+
+/// Merge project-scoped metadata with global process discovery and select the
+/// servers running `version`.
+///
+/// Both sources are consulted because each covers a gap in the other: metadata
+/// is project-scoped but survives a failed process scan, while discovery spans
+/// projects but depends on `pgrep`/`lsof`/`/proc`. The same server appears in
+/// both, so entries are de-duplicated by PID: when the watchdog is resolved,
+/// metadata for a running server carries the live PID of the discovered
+/// process, because discovery reports the supervising watchdog that
+/// `server start` recorded (issue #664). Identity is the fallback, so a server
+/// whose watchdog only one of the two sources resolved is still listed once.
+pub(crate) fn select_version_users(
+    project_servers: &[ServerInfo],
+    global: &[GlobalServerEntry],
+    version: &str,
+) -> Vec<VersionUser> {
+    let mut users: Vec<VersionUser> = project_servers
+        .iter()
+        .filter(|info| info.version == version)
+        .map(|info| VersionUser {
+            name: info.name.clone(),
+            project: info.cwd.clone(),
+            pid: info.pid,
+            current_project: true,
+        })
+        .collect();
+
+    for entry in global {
+        // A process whose version could not be read is treated as non-matching:
+        // blocking every removal on an unreadable command line would be
+        // unfixable by the user.
+        if entry.version.as_deref() != Some(version) {
+            continue;
+        }
+        // `(name, project)` names a server uniquely, so it settles the case
+        // the PID cannot: a heuristic that resolved the watchdog on one side
+        // only would otherwise list the same server twice.
+        if users.iter().any(|user| {
+            user.pid == entry.pid || (user.name == entry.name && user.project == entry.project)
+        }) {
+            continue;
+        }
+        users.push(VersionUser {
+            name: entry.name.clone(),
+            project: entry.project.clone(),
+            pid: entry.pid,
+            current_project: false,
+        });
+    }
+
+    users
+}
+
+/// Name the blocking servers for the `VersionInUse` error, so a server in
+/// another project is identifiable from the message alone.
+pub(crate) fn describe_version_users(users: &[VersionUser]) -> String {
+    users
+        .iter()
+        .map(|user| format!("'{}' in {} (PID {})", user.name, user.project, user.pid))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Kill a server found via global process discovery.
@@ -1043,6 +1221,21 @@ pub fn kill_server_by_pid(pid: u32) -> Result<()> {
     }
 
     kill_process(pid)
+}
+
+/// Make sure the server discovered at `pid` is no longer running, for
+/// `local remove --force` stopping a blocker in another project.
+///
+/// Unlike [`kill_server_by_pid`], a process that has already exited is not an
+/// error: the discovery scan and this call are separated by other blockers
+/// being stopped, and a server that went away on its own is exactly the state
+/// the removal is after. `server stop --global` keeps the strict variant, where
+/// a PID that vanished since the listing is worth telling the user about.
+pub fn ensure_stopped_by_pid(pid: u32) -> Result<()> {
+    match kill_server_by_pid(pid) {
+        Err(Error::ServerNotRunning(_)) => Ok(()),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -1392,9 +1585,299 @@ mod tests {
     #[test]
     fn explicit_ports_reject_zero() {
         let http_error = resolve_ports(Some(0), None).unwrap_err();
-        assert!(matches!(http_error, Error::Exec(msg) if msg.contains("--http-port 0")));
+        assert!(
+            matches!(http_error, Error::UnsupportedArgument(msg) if msg.contains("--http-port 0"))
+        );
 
         let tcp_error = resolve_ports(None, Some(0)).unwrap_err();
-        assert!(matches!(tcp_error, Error::Exec(msg) if msg.contains("--tcp-port 0")));
+        assert!(
+            matches!(tcp_error, Error::UnsupportedArgument(msg) if msg.contains("--tcp-port 0"))
+        );
+    }
+
+    // ── ensure_stopped_by_pid (issue #600) ─────────────────────────────
+
+    /// A PID that certainly belonged to a process and certainly has exited:
+    /// the fake server `local remove` discovered but which quit before
+    /// `--force` reached it.
+    fn exited_pid() -> u32 {
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .spawn()
+            .expect("spawn short-lived process");
+        child.wait().expect("reap short-lived process");
+        child.id()
+    }
+
+    #[test]
+    fn a_blocker_that_exited_since_discovery_counts_as_stopped() {
+        let pid = exited_pid();
+
+        assert!(
+            matches!(kill_server_by_pid(pid), Err(Error::ServerNotRunning(_))),
+            "`server stop --global` keeps reporting a vanished PID"
+        );
+        ensure_stopped_by_pid(pid).expect("an already-exited blocker must not abort the removal");
+    }
+
+    // ── kill_process escalation (issue #664) ───────────────────────────
+
+    /// SIGKILLs whatever the escalation test still owns, so a failed
+    /// assertion cannot leak a sleeping process.
+    struct KillOnDrop(Vec<u32>);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            for &pid in &self.0 {
+                unsafe {
+                    libc::kill(pid as i32, libc::SIGKILL);
+                }
+            }
+        }
+    }
+
+    /// A stand-in for a watchdog started with `CLICKHOUSE_WATCHDOG_NO_FORWARD=1`:
+    /// it ignores SIGTERM and supervises a child that a SIGKILL to the parent
+    /// would leave running. Double-forked so both processes belong to init and
+    /// are reaped, instead of lingering as zombies of the test process, which
+    /// `kill(pid, 0)` cannot tell from a running server.
+    ///
+    /// Returns `(watchdog, supervised server)`.
+    fn spawn_sigterm_ignoring_pair() -> (u32, u32) {
+        use std::io::BufRead;
+
+        let mut spawner = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("sh -c \"$FAKE_WATCHDOG\" &")
+            .env(
+                "FAKE_WATCHDOG",
+                r#"trap '' TERM; sleep 30 & printf '%s %s\n' "$$" "$!"; wait"#,
+            )
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("spawn the fake watchdog pair");
+        let stdout = spawner.stdout.take().expect("piped stdout");
+        spawner.wait().expect("reap the intermediate shell");
+
+        let mut line = String::new();
+        std::io::BufReader::new(stdout)
+            .read_line(&mut line)
+            .expect("read the pair's PIDs");
+        let mut pids = line
+            .split_whitespace()
+            .map(|pid| pid.parse::<u32>().expect("a PID per field"));
+        let watchdog = pids.next().expect("the watchdog PID");
+        let server = pids.next().expect("the supervised PID");
+        (watchdog, server)
+    }
+
+    #[test]
+    fn the_escalation_path_kills_the_server_the_watchdog_supervised() {
+        let (watchdog, server) = spawn_sigterm_ignoring_pair();
+        let _cleanup = KillOnDrop(vec![watchdog, server]);
+
+        assert_ne!(watchdog, server, "the fixture must fork a real child");
+        assert!(
+            child_pids(watchdog).contains(&server),
+            "the child lookup must see the supervised process"
+        );
+
+        kill_process(watchdog).expect("stopping a server that ignores SIGTERM must succeed");
+
+        assert!(!is_process_alive(watchdog));
+        assert!(
+            !is_process_alive(server),
+            "a SIGKILLed watchdog cannot forward the signal, so the server it \
+             supervised has to be killed with it"
+        );
+    }
+
+    #[test]
+    fn a_process_with_no_children_has_no_supervised_pids() {
+        assert!(child_pids(exited_pid()).is_empty());
+    }
+
+    // ── select_version_users / describe_version_users (issue #600) ──────
+
+    fn named_info(name: &str, pid: u32, version: &str, project: &str) -> ServerInfo {
+        ServerInfo {
+            name: name.into(),
+            cwd: project.into(),
+            ..test_info(pid, version)
+        }
+    }
+
+    fn global_entry(
+        name: &str,
+        pid: u32,
+        version: Option<&str>,
+        project: &str,
+    ) -> GlobalServerEntry {
+        GlobalServerEntry {
+            name: name.into(),
+            pid,
+            project: project.into(),
+            http_port: Some(8123),
+            tcp_port: Some(9000),
+            version: version.map(str::to_string),
+            engine: Engine::Clickhouse,
+            container_id: None,
+        }
+    }
+
+    #[test]
+    fn no_running_server_on_the_version_leaves_it_free_to_remove() {
+        let users = select_version_users(
+            &[named_info("default", 10, "25.12.9.61", "/a")],
+            &[global_entry("dev", 20, Some("25.12.9.61"), "/b")],
+            "26.9.1.217",
+        );
+
+        assert!(users.is_empty());
+    }
+
+    #[test]
+    fn a_server_in_another_project_blocks_the_version() {
+        let users = select_version_users(
+            &[],
+            &[global_entry("dev", 4242, Some("26.9.1.217"), "/other")],
+            "26.9.1.217",
+        );
+
+        assert_eq!(
+            users,
+            vec![VersionUser {
+                name: "dev".into(),
+                project: "/other".into(),
+                pid: 4242,
+                current_project: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn the_same_server_seen_in_metadata_and_discovery_is_reported_once() {
+        let users = select_version_users(
+            &[named_info("default", 777, "26.9.1.217", "/here")],
+            &[global_entry("default", 777, Some("26.9.1.217"), "/here")],
+            "26.9.1.217",
+        );
+
+        assert_eq!(
+            users,
+            vec![VersionUser {
+                name: "default".into(),
+                project: "/here".into(),
+                pid: 777,
+                current_project: true,
+            }],
+            "the current project's metadata entry wins, so --force can stop it by name"
+        );
+    }
+
+    #[test]
+    fn one_server_reported_under_two_pids_is_still_listed_once() {
+        // Discovery resolved the watchdog and the metadata file still carries
+        // the supervised child (written before this CLI version, or by a
+        // recovery that could not read the parent), so the PIDs differ while
+        // the server is one and the same.
+        let users = select_version_users(
+            &[named_info("default", 4211, "26.9.1.217", "/here")],
+            &[global_entry("default", 4210, Some("26.9.1.217"), "/here")],
+            "26.9.1.217",
+        );
+
+        assert_eq!(
+            users,
+            vec![VersionUser {
+                name: "default".into(),
+                project: "/here".into(),
+                pid: 4211,
+                current_project: true,
+            }],
+            "the VersionInUse message must not name the same server twice"
+        );
+    }
+
+    #[test]
+    fn servers_of_the_same_name_in_different_projects_are_both_listed() {
+        let users = select_version_users(
+            &[named_info("default", 1, "26.9.1.217", "/here")],
+            &[global_entry("default", 2, Some("26.9.1.217"), "/there")],
+            "26.9.1.217",
+        );
+
+        assert_eq!(
+            users
+                .iter()
+                .map(|user| (user.name.as_str(), user.project.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("default", "/here"), ("default", "/there")]
+        );
+    }
+
+    #[test]
+    fn servers_from_both_sources_are_merged() {
+        let users = select_version_users(
+            &[named_info("default", 1, "26.9.1.217", "/here")],
+            &[
+                global_entry("default", 1, Some("26.9.1.217"), "/here"),
+                global_entry("dev", 2, Some("26.9.1.217"), "/there"),
+                global_entry("old", 3, Some("25.12.9.61"), "/there"),
+            ],
+            "26.9.1.217",
+        );
+
+        assert_eq!(
+            users
+                .iter()
+                .map(|user| (user.name.as_str(), user.pid, user.current_project))
+                .collect::<Vec<_>>(),
+            vec![("default", 1, true), ("dev", 2, false)]
+        );
+    }
+
+    #[test]
+    fn a_discovered_process_with_an_unreadable_version_does_not_block() {
+        let users =
+            select_version_users(&[], &[global_entry("dev", 9, None, "/other")], "26.9.1.217");
+
+        assert!(
+            users.is_empty(),
+            "an unknown version must not make removal impossible"
+        );
+    }
+
+    #[test]
+    fn a_postgres_container_never_matches_a_clickhouse_version() {
+        let mut postgres = named_info("pg", 0, "postgres:17", "/here");
+        postgres.engine = Engine::Postgres;
+        postgres.container_id = Some("abc123".into());
+
+        assert!(select_version_users(&[postgres], &[], "26.9.1.217").is_empty());
+    }
+
+    #[test]
+    fn described_users_name_the_server_the_project_and_the_pid() {
+        let described = describe_version_users(&[
+            VersionUser {
+                name: "default".into(),
+                project: "/here".into(),
+                pid: 1,
+                current_project: true,
+            },
+            VersionUser {
+                name: "dev".into(),
+                project: "/there".into(),
+                pid: 2,
+                current_project: false,
+            },
+        ]);
+
+        assert_eq!(
+            described,
+            "'default' in /here (PID 1), 'dev' in /there (PID 2)"
+        );
     }
 }

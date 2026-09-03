@@ -43,6 +43,7 @@ INSTALL_PREFIXES = ("crates/clickhousectl/src/version_manager/",)
 NON_INSTALL_EXACT_PATHS = frozenset(
     {
         "crates/clickhousectl/src/dotenv.rs",
+        "crates/clickhousectl/src/failure.rs",
         "crates/clickhousectl/src/local/config.rs",
         "crates/clickhousectl/src/local/docker.rs",
         "crates/clickhousectl/src/local/postgres.rs",
@@ -54,8 +55,11 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/tests/local_client_selectors_test.rs",
         "crates/clickhousectl/tests/local_docker_diagnostics_test.rs",
         "crates/clickhousectl/tests/local_docker_pull_progress_test.rs",
+        "crates/clickhousectl/tests/local_init_json_test.rs",
         "crates/clickhousectl/tests/local_postgres_readiness_test.rs",
         "crates/clickhousectl/tests/local_postgres_start_validation_test.rs",
+        "crates/clickhousectl/tests/local_remove_default_test.rs",
+        "crates/clickhousectl/tests/local_remove_global_guard_test.rs",
         "crates/clickhousectl/tests/local_server_metadata_test.rs",
         "crates/clickhousectl/tests/local_server_name_compatibility_test.rs",
         "crates/clickhousectl/tests/local_server_project_scope_errors_test.rs",
@@ -64,6 +68,7 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/tests/local_server_start_args_test.rs",
         "crates/clickhousectl/tests/local_server_state_machine_test.rs",
         "crates/clickhousectl/tests/local_server_stopped_test.rs",
+        "crates/clickhousectl/tests/local_server_watchdog_pid_test.rs",
         "crates/clickhousectl/tests/local_structured_errors_test.rs",
         "crates/clickhousectl/tests/telemetry_test.rs",
     }

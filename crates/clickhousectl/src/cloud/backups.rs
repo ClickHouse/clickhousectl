@@ -78,10 +78,19 @@ pub enum BackupConfigCommands {
         #[arg(long)]
         backup_retention_period_hours: Option<u32>,
 
-        /// Backup start time in UTC, exactly on the hour (HH:00). If the period
-        /// is omitted, the API sets it to 24 hours.
+        /// Backup start time in UTC, exactly on the hour (HH:00). Requires the
+        /// backup period to be 24 or 48 hours: pass --backup-period-hours 24|48
+        /// in the same call, or the stored period must already be one of those.
+        /// Reversible with --clear-backup-start-time.
         #[arg(long, value_parser = parse_backup_start_time)]
         backup_start_time: Option<String>,
+
+        /// Remove the stored backup start time, lifting the 24/48 hour
+        /// restriction on the backup period. Can be combined with
+        /// --backup-period-hours to clear the start time and set any period in
+        /// one call. Conflicts with --backup-start-time.
+        #[arg(long, conflicts_with = "backup_start_time")]
+        clear_backup_start_time: bool,
 
         /// Organization ID (auto-detected if not specified)
         #[arg(long)]
@@ -125,12 +134,14 @@ pub async fn run_config(
             backup_period_hours,
             backup_retention_period_hours,
             backup_start_time,
+            clear_backup_start_time,
             org_id,
         } => {
             let options = BackupConfigUpdateOptions {
                 backup_period_hours,
                 backup_retention_period_hours,
                 backup_start_time,
+                clear_backup_start_time,
                 org_id,
             };
             backup_config_update(client, &service_id, options, json).await
@@ -143,6 +154,7 @@ struct BackupConfigUpdateOptions {
     backup_period_hours: Option<u32>,
     backup_retention_period_hours: Option<u32>,
     backup_start_time: Option<String>,
+    clear_backup_start_time: bool,
     org_id: Option<String>,
 }
 
@@ -169,6 +181,12 @@ fn parse_backup_start_time(value: &str) -> Result<String, String> {
 fn build_backup_config_update_request(
     options: &BackupConfigUpdateOptions,
 ) -> CloudResult<BackupConfigurationPatchRequest> {
+    if options.backup_start_time.is_some() && options.clear_backup_start_time {
+        return Err(CloudError::new(
+            "--backup-start-time and --clear-backup-start-time cannot be used together",
+        ));
+    }
+
     if options.backup_start_time.is_some()
         && matches!(options.backup_period_hours, Some(period) if period != 24 && period != 48)
     {
@@ -177,11 +195,35 @@ fn build_backup_config_update_request(
         ));
     }
 
+    // Clearing is the one way out of the 24/48 hour period restriction, so it
+    // travels as an explicit `null` and is deliberately compatible with any
+    // period in the same call: the API applies the clear first.
+    let backup_start_time = match (&options.backup_start_time, options.clear_backup_start_time) {
+        (Some(time), _) => Some(Some(time.clone())),
+        (None, true) => Some(None),
+        (None, false) => None,
+    };
+
     Ok(BackupConfigurationPatchRequest {
         backup_period_in_hours: options.backup_period_hours.map(f64::from),
         backup_retention_period_in_hours: options.backup_retention_period_hours.map(f64::from),
-        backup_start_time: options.backup_start_time.clone(),
+        backup_start_time,
     })
+}
+
+/// A start time sent without a period is validated by the API against the
+/// *stored* period, which it keeps rather than defaulting. If that period is
+/// not 24 or 48 the PATCH fails with an opaque `BAD_REQUEST`, so check it
+/// first and name the flag that fixes it. An absent stored period is not a
+/// guess we get to make: proceed and let the API decide.
+fn check_stored_period_allows_start_time(stored_period_hours: Option<f64>) -> CloudResult<()> {
+    match stored_period_hours {
+        Some(period) if period != 24.0 && period != 48.0 => Err(CloudError::new(format!(
+            "the stored backup period is {period} hours, but --backup-start-time requires 24 or \
+             48. Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call."
+        ))),
+        _ => Ok(()),
+    }
 }
 
 async fn backup_list(
@@ -268,6 +310,17 @@ async fn backup_config_update(
 ) -> CloudResult<()> {
     let request = build_backup_config_update_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+
+    // Only a start time being *set* is measured against the stored period.
+    // Clearing one is exactly how a service escapes an incompatible period, so
+    // it must never be blocked by that check.
+    if matches!(request.backup_start_time, Some(Some(_)))
+        && request.backup_period_in_hours.is_none()
+    {
+        let stored = client.get_backup_config(&org_id, service_id).await?;
+        check_stored_period_allows_start_time(stored.backup_period_in_hours)?;
+    }
+
     let config = client
         .update_backup_config(&org_id, service_id, &request)
         .await?;
@@ -432,6 +485,7 @@ mod tests {
             backup_period_hours,
             backup_retention_period_hours,
             backup_start_time,
+            clear_backup_start_time,
             org_id,
         } = command
         else {
@@ -441,6 +495,7 @@ mod tests {
         assert_eq!(backup_period_hours, Some(48));
         assert_eq!(backup_retention_period_hours, Some(336));
         assert_eq!(backup_start_time.as_deref(), Some("03:00"));
+        assert!(!clear_backup_start_time);
         assert!(org_id.is_none());
     }
 
@@ -469,6 +524,7 @@ mod tests {
             backup_period_hours,
             backup_retention_period_hours,
             backup_start_time,
+            clear_backup_start_time,
             org_id,
         } = command
         else {
@@ -478,6 +534,7 @@ mod tests {
         assert!(backup_period_hours.is_none());
         assert!(backup_retention_period_hours.is_none());
         assert!(backup_start_time.is_none());
+        assert!(!clear_backup_start_time);
         assert!(org_id.is_none());
     }
 
@@ -544,7 +601,15 @@ mod tests {
         let help = error.to_string();
         assert!(help.contains("exactly on the hour (HH:00)"));
         assert!(help.contains("must be 24 or 48 hours"));
-        assert!(help.contains("API sets it to 24 hours"));
+        assert!(help.contains("Requires the backup period to be 24 or 48 hours"));
+        assert!(help.contains("or the stored period must already be one of those"));
+        assert!(help.contains("Reversible with --clear-backup-start-time"));
+        assert!(help.contains("Remove the stored backup start time"));
+        assert!(help.contains("lifting the 24/48 hour"));
+        assert!(
+            !help.contains("API sets it to 24 hours"),
+            "help must not claim the API defaults an omitted period"
+        );
     }
 
     #[test]
@@ -592,17 +657,23 @@ mod tests {
         assert!(minimal.backup_period_in_hours.is_none());
         assert!(minimal.backup_retention_period_in_hours.is_none());
         assert!(minimal.backup_start_time.is_none());
+        assert_eq!(
+            serde_json::to_value(&minimal).unwrap(),
+            serde_json::json!({}),
+            "an untouched start time must not appear in the PATCH body"
+        );
 
         let maximal = build_backup_config_update_request(&BackupConfigUpdateOptions {
             backup_period_hours: Some(48),
             backup_retention_period_hours: Some(336),
             backup_start_time: Some("03:00".to_string()),
+            clear_backup_start_time: false,
             org_id: None,
         })
         .unwrap();
         assert_eq!(maximal.backup_period_in_hours, Some(48.0));
         assert_eq!(maximal.backup_retention_period_in_hours, Some(336.0));
-        assert_eq!(maximal.backup_start_time.as_deref(), Some("03:00"));
+        assert_eq!(maximal.backup_start_time, Some(Some("03:00".to_string())));
     }
 
     #[test]
@@ -614,7 +685,7 @@ mod tests {
         .unwrap();
 
         assert!(request.backup_period_in_hours.is_none());
-        assert_eq!(request.backup_start_time.as_deref(), Some("03:00"));
+        assert_eq!(request.backup_start_time, Some(Some("03:00".to_string())));
     }
 
     #[test]
@@ -628,7 +699,7 @@ mod tests {
             .unwrap();
 
             assert_eq!(request.backup_period_in_hours, Some(f64::from(period)));
-            assert_eq!(request.backup_start_time.as_deref(), Some("03:00"));
+            assert_eq!(request.backup_start_time, Some(Some("03:00".to_string())));
         }
     }
 
@@ -656,6 +727,137 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "--backup-period-hours must be 24 or 48 when --backup-start-time is set"
+        );
+    }
+
+    #[test]
+    fn parses_clear_backup_start_time() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--clear-backup-start-time",
+            "--backup-period-hours",
+            "12",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let crate::cloud::cli::CloudCommands::Service { command } = args.command else {
+            panic!("expected service command");
+        };
+        let crate::cloud::cli::ServiceCommands::BackupConfig { command } = command else {
+            panic!("expected backup-config command");
+        };
+        let crate::cloud::cli::BackupConfigCommands::Update {
+            backup_period_hours,
+            backup_start_time,
+            clear_backup_start_time,
+            ..
+        } = command
+        else {
+            panic!("expected backup-config update");
+        };
+        assert_eq!(backup_period_hours, Some(12));
+        assert!(backup_start_time.is_none());
+        assert!(clear_backup_start_time);
+    }
+
+    #[test]
+    fn rejects_setting_and_clearing_the_start_time_together() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--backup-start-time",
+            "02:00",
+            "--clear-backup-start-time",
+        ])
+        .err()
+        .expect("conflicting flags should be rejected");
+
+        assert!(error.to_string().contains("cannot be used with"), "{error}");
+    }
+
+    #[test]
+    fn build_backup_config_update_request_clears_the_start_time_with_an_explicit_null() {
+        let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
+            clear_backup_start_time: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(request.backup_start_time, Some(None));
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
+            serde_json::json!({ "backupStartTime": null }),
+            "clearing must send an explicit null and nothing else"
+        );
+    }
+
+    #[test]
+    fn build_backup_config_update_request_clears_alongside_any_period() {
+        let request = build_backup_config_update_request(&BackupConfigUpdateOptions {
+            backup_period_hours: Some(12),
+            clear_backup_start_time: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(request.backup_period_in_hours, Some(12.0));
+        assert_eq!(request.backup_start_time, Some(None));
+    }
+
+    #[test]
+    fn build_backup_config_update_request_rejects_setting_and_clearing_together() {
+        let error = build_backup_config_update_request(&BackupConfigUpdateOptions {
+            backup_start_time: Some("03:00".to_string()),
+            clear_backup_start_time: true,
+            ..Default::default()
+        })
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "--backup-start-time and --clear-backup-start-time cannot be used together"
+        );
+    }
+
+    #[test]
+    fn stored_period_check_accepts_compatible_periods() {
+        for stored in [24.0, 48.0] {
+            check_stored_period_allows_start_time(Some(stored)).unwrap();
+        }
+    }
+
+    #[test]
+    fn stored_period_check_proceeds_when_the_stored_period_is_absent() {
+        check_stored_period_allows_start_time(None).unwrap();
+    }
+
+    #[test]
+    fn stored_period_check_rejects_incompatible_periods_and_names_the_flag() {
+        let error = check_stored_period_allows_start_time(Some(12.0)).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
+             Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call."
+        );
+
+        let fractional = check_stored_period_allows_start_time(Some(12.5)).unwrap_err();
+        assert!(
+            fractional
+                .to_string()
+                .starts_with("the stored backup period is 12.5 hours,"),
+            "{fractional}"
         );
     }
 }

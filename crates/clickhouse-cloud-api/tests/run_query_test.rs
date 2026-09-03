@@ -255,13 +255,26 @@ async fn run_query_formats_documented_sql_error_envelope() {
     let err = client
         .run_query_bearer("svc-1", "SELECT broken FROM", None, "CSV", false)
         .await
-        .expect_err("expected Api error");
+        .expect_err("expected Sql error");
+    // The documented envelope maps to the structural Error::Sql variant so
+    // callers match on it instead of sniffing the "SQL error " prefix; the
+    // Display text is the stable user-facing string.
+    assert_eq!(
+        err.to_string(),
+        "SQL error 62: Syntax error near FROM",
+        "Display must stay stable: {err:?}"
+    );
     match err {
-        Error::Api { status, message } => {
+        Error::Sql {
+            status,
+            code,
+            details,
+        } => {
             assert_eq!(status, 400);
-            assert_eq!(message, "SQL error 62: Syntax error near FROM");
+            assert_eq!(code, "62");
+            assert_eq!(details, "Syntax error near FROM");
         }
-        other => panic!("expected Error::Api, got: {other:?}"),
+        other => panic!("expected Error::Sql, got: {other:?}"),
     }
 }
 
@@ -281,6 +294,53 @@ async fn run_query_preserves_malformed_json_error_with_status() {
             assert_eq!(
                 message,
                 format!("Query API returned HTTP 400 Bad Request: {body}")
+            );
+        }
+        other => panic!("expected Error::Api, got: {other:?}"),
+    }
+}
+
+// ── the gateway's own timeout (issue #644) ─────────────────────────────────
+//
+// The Query API gateway stops waiting after roughly 30 seconds and answers
+// HTTP 500 with `{"error": "Timeout error."}`. The statement keeps running on
+// the service, so the failure gets its own variant: a caller that read it as
+// a transient 500 and resent the request would run the statement twice.
+
+#[tokio::test]
+async fn run_query_500_gateway_timeout_maps_to_query_timeout() {
+    let mock = start_mock_query_host(500, r#"{"error":"Timeout error."}"#).await;
+    let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
+
+    let err = client
+        .run_query_bearer("svc-1", "SELECT sleep(3)", None, "CSV", false)
+        .await
+        .expect_err("expected QueryTimeout");
+    assert!(
+        matches!(err, Error::QueryTimeout),
+        "expected QueryTimeout, got: {err:?}"
+    );
+    // Exactly one request: the library never resends a statement that may
+    // still be running.
+    assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn run_query_other_500_body_stays_an_api_error() {
+    let body = r#"{"error":"Internal error."}"#;
+    let mock = start_mock_query_host(500, body).await;
+    let client = Client::with_bearer_token(mock.uri(), "oauth-token").with_query_host(mock.uri());
+
+    let err = client
+        .run_query_bearer("svc-1", "SELECT 1", None, "CSV", false)
+        .await
+        .expect_err("expected Api error");
+    match err {
+        Error::Api { status, message } => {
+            assert_eq!(status, 500);
+            assert_eq!(
+                message,
+                format!("Query API returned HTTP 500 Internal Server Error: {body}")
             );
         }
         other => panic!("expected Error::Api, got: {other:?}"),

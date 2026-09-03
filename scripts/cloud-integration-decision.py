@@ -28,7 +28,7 @@ SUITE_STEPS = {
     "Run cloud integration suite": "service",
     "Run cloud Postgres integration suite": "postgres",
     "Run cloud Org integration suite": "organization",
-    "Run ClickPipe Postgres CDC integration test": "clickpipes",
+    "Run ClickPipe Postgres CLI CDC integration test": "clickpipes",
 }
 
 CLASSIFIER_PATH = Path(__file__).with_name("classify-cloud-integration.py")
@@ -58,6 +58,9 @@ class Decision:
     title: str
     summary: str
     details_url: str
+    # True when the environment-bearing job did not run, so no live suite
+    # evidence backs this decision whatever its conclusion is.
+    planner_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -250,9 +253,12 @@ def waiting_decision(pull_request: dict[str, Any], repository: str) -> Decision:
         else ""
     )
     summary = (
-        f"Head `{sha}` has no Cloud integration decision. Apply the "
-        "`run-cloud-integration` label to run the trusted planner and any "
-        f"selected live suites.{fork_note}\n\n"
+        f"Head `{sha}` has no Cloud integration decision yet. The trusted "
+        "planner runs automatically on same-repository pushes; when it "
+        "selects no live suites this check turns green with no action "
+        "needed. When live suites are selected, apply the "
+        "`run-cloud-integration` label to authorize them for this exact "
+        f"head.{fork_note}\n\n"
         "Maintainers may instead record a one-shot override by commenting:\n\n"
         f"`{OVERRIDE_COMMAND} {sha} <reason or successful stack-run URL>`\n\n"
         "A decision for another commit does not apply to this SHA."
@@ -265,7 +271,9 @@ def waiting_decision(pull_request: dict[str, Any], repository: str) -> Decision:
     )
 
 
-def failed_decision(run: dict[str, Any], reason: str) -> Decision:
+def failed_decision(
+    run: dict[str, Any], reason: str, *, planner_only: bool = False
+) -> Decision:
     sha = run["head_sha"]
     return Decision(
         conclusion="failure",
@@ -278,6 +286,7 @@ def failed_decision(run: dict[str, Any], reason: str) -> Decision:
             "subsequent exact-SHA override."
         ),
         details_url=run["html_url"],
+        planner_only=planner_only,
     )
 
 
@@ -297,6 +306,26 @@ def successful_live_decision(
     )
 
 
+def authorization_required_decision(
+    run: dict[str, Any], suites: tuple[str, ...]
+) -> Decision:
+    suite_text = ", ".join(f"`{suite}`" for suite in suites)
+    return Decision(
+        conclusion="action_required",
+        title="Live Cloud integration suites need authorization",
+        summary=(
+            f"The trusted planner in Cloud Integration run "
+            f"[{run['id']}]({run['html_url']}) selected {suite_text} for "
+            f"exact head `{run['head_sha']}`, but no live run is authorized "
+            "yet. Apply the `run-cloud-integration` label to run the "
+            "selected suites against this exact head (re-apply it after any "
+            "push), or have a maintainer record a one-shot override."
+        ),
+        details_url=run["html_url"],
+        planner_only=True,
+    )
+
+
 def successful_no_suite_decision(run: dict[str, Any]) -> Decision:
     return Decision(
         conclusion="success",
@@ -308,6 +337,7 @@ def successful_no_suite_decision(run: dict[str, Any]) -> Decision:
             f"`{LIVE_JOB_NAME}` job was skipped."
         ),
         details_url=run["html_url"],
+        planner_only=True,
     )
 
 
@@ -492,31 +522,51 @@ def evaluate_workflow_run(
     plan_job = one_job(jobs, PLAN_JOB_NAME)
     if plan_job is None or plan_job.get("conclusion") == "skipped":
         return None
-    if not source_workflow_unchanged:
-        return failed_decision(run, "the PR changes the trusted Cloud workflow")
-    if plan_job.get("conclusion") != "success":
-        return failed_decision(
-            run, f"planner job concluded {plan_job.get('conclusion')!r}"
-        )
-    if selection is None:
-        return failed_decision(run, "trusted suite selection was unavailable")
 
     live_job = one_job(jobs, LIVE_JOB_NAME)
+    # Planner-only is a property of the run, not of the conclusion it yields:
+    # an absent or skipped environment-bearing job means no live suite ran,
+    # whether the planner itself succeeded, failed, or was untrusted.
+    planner_only = live_job is None or live_job.get("conclusion") == "skipped"
+
+    if not source_workflow_unchanged:
+        return failed_decision(
+            run,
+            "the PR changes the trusted Cloud workflow",
+            planner_only=planner_only,
+        )
+    if plan_job.get("conclusion") != "success":
+        return failed_decision(
+            run,
+            f"planner job concluded {plan_job.get('conclusion')!r}",
+            planner_only=planner_only,
+        )
+    if selection is None:
+        return failed_decision(
+            run,
+            "trusted suite selection was unavailable",
+            planner_only=planner_only,
+        )
     if live_job is None:
-        return failed_decision(run, "the environment-bearing job was missing")
+        return failed_decision(
+            run,
+            "the environment-bearing job was missing",
+            planner_only=planner_only,
+        )
 
     expected_suites = tuple(selection.suites)
     if live_job.get("conclusion") == "skipped":
-        if expected_suites:
-            return failed_decision(
-                run,
-                "the environment-bearing job was skipped although trusted "
-                f"selection required {classifier.format_suites(expected_suites)}",
-            )
         if run.get("conclusion") != "success":
             return failed_decision(
-                run, f"workflow concluded {run.get('conclusion')!r}"
+                run,
+                f"workflow concluded {run.get('conclusion')!r}",
+                planner_only=planner_only,
             )
+        if expected_suites:
+            # A planner-only run (no run-cloud-integration labeled event)
+            # legitimately skips the environment-bearing job; the decision
+            # stays open and names the suites awaiting authorization.
+            return authorization_required_decision(run, expected_suites)
         return successful_no_suite_decision(run)
 
     if live_job.get("conclusion") != "success":
@@ -597,6 +647,18 @@ def reconcile(api: GitHubAPI, event: dict[str, Any], repository: str) -> None:
     if decision is None:
         print("Cloud run did not change the current decision")
         return
+    if decision.planner_only:
+        # A planner-only run observed no live suite, so it must not replace a
+        # settled decision for the same exact head (a passed live run, an
+        # override, or a recorded failure that a maintainer must waive
+        # explicitly) with an authorization prompt or with its own failure.
+        existing = api.find_decision_check(head_sha)
+        if existing is not None and existing.get("conclusion") not in (
+            None,
+            "action_required",
+        ):
+            print("Keeping the settled decision over a planner-only run")
+            return
     check = api.upsert_decision(head_sha, decision)
     print(
         f"Decision check {check['id']} updated to {decision.conclusion} for {head_sha}"

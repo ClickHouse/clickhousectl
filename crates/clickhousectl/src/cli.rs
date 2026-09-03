@@ -76,8 +76,8 @@ CONTEXT FOR AGENTS:
     #[cfg(feature = "telemetry")]
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  clickhousectl collects anonymous usage data: command name, flag names (never values or
-  arguments), success/failure, version, OS/arch, and CI/agent detection. No user or machine IDs.
+  clickhousectl collects anonymous usage data: command name, flag and argument names (never
+  their values), success/failure, version, OS/arch, and CI/agent detection. No user or machine IDs.
   Opt out with `clickhousectl telemetry disable` or DO_NOT_TRACK=1.
   Details: https://clickhouse.com/docs/concepts/features/interfaces/cli#telemetry")]
     Telemetry(TelemetryArgs),

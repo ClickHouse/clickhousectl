@@ -200,7 +200,7 @@ async fn cloud_clickpipe_create_kafka_sasl_smoke() -> TestResult<()> {
                 brokers: "broker.invalid:9092".to_string(),
                 topics: "smoke-topic".to_string(),
                 consumer_group: Some(format!("smoke-cg-{}", ctx.run_id)),
-                authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+                authentication: Some(ClickPipePostKafkaSourceAuthentication::PLAIN),
                 credentials: serde_json::json!({
                     "username": "smoke-user",
                     "password": "smoke-pass",
@@ -231,7 +231,7 @@ async fn cloud_clickpipe_create_kafka_msk_iam_smoke() -> TestResult<()> {
                 format: ClickPipePostKafkaSourceFormat::JSONEachRow,
                 brokers: "msk.invalid:9098".to_string(),
                 topics: "smoke-topic".to_string(),
-                authentication: ClickPipePostKafkaSourceAuthentication::IAM_ROLE,
+                authentication: Some(ClickPipePostKafkaSourceAuthentication::IAM_ROLE),
                 credentials: serde_json::Value::Null,
                 iam_role: Some("arn:aws:iam::000000000000:role/smoke-fake-role".to_string()),
                 offset: Some(ClickPipeKafkaOffset {
@@ -243,6 +243,39 @@ async fn cloud_clickpipe_create_kafka_msk_iam_smoke() -> TestResult<()> {
             ..Default::default()
         },
         destination: managed_destination("smoke_kafka_msk"),
+        ..Default::default()
+    };
+    assert_create_shape_accepted(&ctx, request).await
+}
+
+#[tokio::test]
+#[ignore = "requires live ClickHouse Cloud credentials and a pre-provisioned service"]
+async fn cloud_clickpipe_create_kafka_no_auth_smoke() -> TestResult<()> {
+    // A broker that requires no authentication: `authentication` is absent from
+    // the body entirely (the spec enum has no unauthenticated value) and
+    // `credentials` is null, exactly as the CLI builds it when no auth flags
+    // are given. Pins that the control plane accepts that shape (issue #606).
+    let ctx = SmokeCtx::from_env()?;
+    let request = ClickPipePostRequest {
+        name: ctx.pipe_name("kafka-noauth"),
+        source: ClickPipePostSource {
+            kafka: Some(ClickPipePostKafkaSource {
+                r#type: ClickPipePostKafkaSourceType::default(),
+                format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+                brokers: "broker.invalid:9092".to_string(),
+                topics: "smoke-topic".to_string(),
+                consumer_group: Some(format!("smoke-cg-noauth-{}", ctx.run_id)),
+                authentication: None,
+                credentials: serde_json::Value::Null,
+                offset: Some(ClickPipeKafkaOffset {
+                    strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
+                    timestamp: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        destination: managed_destination("smoke_kafka_noauth"),
         ..Default::default()
     };
     assert_create_shape_accepted(&ctx, request).await

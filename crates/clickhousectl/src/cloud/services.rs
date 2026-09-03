@@ -1,23 +1,31 @@
 use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanup};
 use crate::cloud::backups::BackupConfigCommands;
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
 use crate::cloud::credentials;
-use crate::cloud::output::{ABSENT, or_absent, print_human};
+use crate::cloud::output::{
+    ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
+};
+use crate::cloud::service_query::RepairVerification;
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
+use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
     InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole,
     ServicPrivateEndpointePostRequest, Service, ServiceEndpoint, ServiceEndpointChange,
-    ServiceEndpointChangeProtocol, ServicePasswordPatchRequest, ServicePatchRequest,
-    ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
-    ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
-    ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest, ServiceState,
-    ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
+    ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
+    ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
+    ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
+    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
+    ServiceState, ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
 };
-use std::{io::IsTerminal, time::Duration};
+#[cfg(test)]
+use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Response};
+use std::{collections::HashSet, io::IsTerminal, time::Duration};
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Clone, Copy)]
@@ -26,6 +34,12 @@ struct QueryEndpointReadiness {
     initial_backoff: Duration,
     max_backoff: Duration,
 }
+
+/// Gap between `GET service` calls while `service delete --force` waits for a
+/// stop to finish. A real stop takes minutes, so the loop can emit dozens of
+/// progress lines — see [`crate::cloud::output::eprint_line`] for why none of
+/// them may panic.
+const STOP_POLL_INTERVAL: Duration = Duration::from_secs(5);
 
 const QUERY_ENDPOINT_READINESS: QueryEndpointReadiness = QueryEndpointReadiness {
     timeout: Duration::from_secs(120),
@@ -268,7 +282,7 @@ CONTEXT FOR AGENTS:
         remove_ip_allow: Vec<String>,
 
         /// Add a private endpoint ID to the service
-        #[arg(long = "add-private-endpoint-id")]
+        #[arg(long = "add-private-endpoint-id", value_parser = parse_private_endpoint_id_arg)]
         add_private_endpoint_id: Vec<String>,
 
         /// Remove a private endpoint ID from the service
@@ -401,6 +415,10 @@ CONTEXT FOR AGENTS:
     },
 
     /// Get service Prometheus metrics
+    #[command(after_help = "\
+OUTPUT FORMAT:
+  Output is always raw Prometheus exposition text, never JSON. --json is
+  accepted for consistency with other commands but is silently ignored.")]
     Prometheus {
         /// Service ID
         service_id: String,
@@ -423,18 +441,34 @@ CONTEXT FOR AGENTS:
   With API key auth: first uses the authenticated key directly when the query
   endpoint already authorizes it. Otherwise, a per-service read+write key is
   auto-provisioned and stored in .clickhouse/credentials.json.
-  A stored key rejected with HTTP 401/403 is never replaced automatically; use
-  `cloud service repair-query-key <service-id>` to repair only that credential.
+  A stored key rejected with HTTP 401/403 is never replaced automatically: the
+  CLI reads the key's management record only to say why. A deleted, disabled,
+  expired, unbound or IP-restricted key is reported with its key ID and left
+  untouched, and nothing is changed. To replace only that credential
+  deliberately, use `cloud service repair-query-key <service-id>`; it also drops
+  a deleted key's stale endpoint binding.
   With OAuth (cloud auth login): sends your own bearer token — SQL runs as
   your cloud user with read-only access (SELECT only, no writes); no key
   provisioning and no query endpoint required on the service.
-  For queries that may exceed Query API timeouts, `clickhousectl local use latest`
-  puts the standard `clickhouse` binary on PATH; use `clickhouse client` to connect
-  to the service instead.
+  The Query API times out after about 30 seconds; the statement keeps running
+  on the service but the result is lost. For anything longer (large INSERTs,
+  backfills, `url()` loads), run it over the native protocol instead:
+  `clickhousectl local use latest` puts the standard `clickhouse` binary on
+  PATH, then `clickhouse client --host <host> --secure --port 9440 --user
+  default --password <password>`.
   SQL sources: --query and --queries-file are mutually exclusive. When neither
-  is supplied, SQL is read from stdin. Default format: PrettyCompact on a TTY,
-  TabSeparated when piped. --json selects JSONEachRow and cannot be combined
-  with --format; an explicit --format takes precedence over agent auto-JSON."
+  is supplied, SQL is read from stdin. --query never reads stdin, so data
+  redirected or piped alongside it is an error rather than a silent no-op:
+  send the statement and its data together instead, e.g.
+  printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | clickhousectl cloud
+  service query --id <id>.
+  Default format: PrettyCompact on a TTY, TabSeparated when piped. --json
+  selects JSONEachRow and cannot be combined with --format; an explicit
+  --format takes precedence over agent auto-JSON.
+  The Query API runs exactly one statement per request, so multi-statement SQL
+  (a typical ';'-separated .sql script) is rejected by the server. Run
+  statements one invocation at a time, or connect with `clickhouse client`
+  (see above) to run a script."
     )]
     Query {
         /// Service name to query (exactly one of --name or --id is required)
@@ -445,11 +479,15 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "name")]
         id: Option<String>,
 
-        /// Execute a SQL query
+        /// Execute a SQL query (a single statement; the Query API does not
+        /// accept multi-statement SQL). Does not read stdin: pipe a statement
+        /// and its data together instead of redirecting a data file here
         #[arg(long, short, conflicts_with = "queries_file")]
         query: Option<String>,
 
-        /// Execute queries from a SQL file (use "-" for stdin)
+        /// Execute a query from a SQL file (use "-" for stdin); the file must
+        /// contain a single statement — multi-statement files are not
+        /// supported
         #[arg(long, conflicts_with = "query")]
         queries_file: Option<String>,
 
@@ -477,9 +515,15 @@ CONTEXT FOR AGENTS:
 Repairs only the stored credential for SERVICE_ID. The command verifies the
 saved organization, exact management API key ID, and query endpoint ID; it
 then replaces only that key's endpoint binding while preserving all other
-bindings and project credentials. Legacy or non-owned records without this
-metadata are refused. This is an explicit write operation and is never run
-automatically after a query fails.")]
+bindings and project credentials, and deletes the key it replaced. The new key
+can take a few seconds to become visible to the query endpoint and the Query
+API; the command waits that out, and on a running service exits 0 only once a
+probe query with the new key succeeds (the JSON result reports it under
+`verification`). If the Query API still rejects the key after the readiness
+window the command exits 1, but the repair stands: do not rerun it, run
+`cloud service query` instead. Legacy or non-owned records without this
+metadata are refused. This is an explicit write operation and
+is never run automatically after a query fails.")]
     RepairQueryKey {
         /// Service ID whose stored Query API key should be replaced
         service_id: String,
@@ -542,8 +586,9 @@ pub enum PrivateEndpointCommands {
         /// Service ID
         service_id: String,
 
-        /// Private endpoint ID (VPC endpoint ID)
-        #[arg(long)]
+        /// Private endpoint ID (AWS VPC endpoint ID, GCP PSC connection ID, or
+        /// Azure private endpoint Resource ID / resourceGuid)
+        #[arg(long, value_parser = parse_private_endpoint_id_arg)]
         endpoint_id: String,
 
         /// Description
@@ -904,6 +949,79 @@ fn parse_ip_access_list_patch(add: &[String], remove: &[String]) -> Option<IpAcc
     (!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch)
 }
 
+/// Prefix of an AWS PrivateLink VPC endpoint ID.
+const AWS_VPC_ENDPOINT_PREFIX: &str = "vpce-";
+
+/// Clap `value_parser` for flags that *add* a private endpoint ID to a service.
+///
+/// Adding an ID registers it org-wide and the API accepts any string, so a typo
+/// silently installs a dud entry that has to be unpicked from both the service
+/// and the organization (issue #611). Reject the cases that cannot be a real
+/// endpoint ID before the request is sent; clap reports this as a usage error.
+///
+/// Removal flags deliberately skip this check — a bogus ID that is already
+/// registered must stay removable.
+fn parse_private_endpoint_id_arg(value: &str) -> std::result::Result<String, String> {
+    validate_private_endpoint_id(value).map(|()| value.to_string())
+}
+
+/// The three providers use unrelated endpoint ID formats, and the provider is
+/// not known at parse time, so only checks that hold for every provider are
+/// applied:
+///
+/// * AWS PrivateLink IDs are `vpce-` plus 8 or 17 lowercase hex characters. The
+///   prefix is unmistakable, so a value carrying it anywhere must be exactly one
+///   well-formed AWS ID — that catches truncated IDs, uppercased IDs and a
+///   pasted VPC endpoint ARN.
+/// * GCP uses a numeric Private Service Connect connection ID and Azure uses a
+///   private endpoint Resource ID or `resourceGuid`. Neither has a marker that
+///   distinguishes a typo from a valid value, so they are only checked for
+///   emptiness and whitespace (illegal in all three formats). An Azure Resource
+///   ID is an absolute path and can name a resource `vpce-...`, so it is exempt
+///   from the AWS check.
+///
+/// Whether the endpoint exists and belongs to the caller is not checkable from
+/// the client; that remains an upstream API gap.
+fn validate_private_endpoint_id(value: &str) -> std::result::Result<(), String> {
+    if value.trim().is_empty() {
+        return Err("private endpoint ID must not be empty".to_string());
+    }
+    if value.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "invalid private endpoint ID '{value}': IDs cannot contain whitespace \
+             (pass each endpoint ID as its own flag value)"
+        ));
+    }
+    // Azure Resource IDs are absolute paths and can legitimately name a
+    // resource `vpce-...`, so they are exempt from the AWS-shaped check below.
+    if value.starts_with('/') {
+        return Ok(());
+    }
+    if value.to_ascii_lowercase().contains(AWS_VPC_ENDPOINT_PREFIX)
+        && !is_aws_vpc_endpoint_id(value)
+    {
+        return Err(format!(
+            "invalid AWS VPC endpoint ID '{value}': expected exactly '{AWS_VPC_ENDPOINT_PREFIX}' \
+             followed by 8 or 17 lowercase hex characters (for example vpce-0123456789abcdef0). GCP \
+             uses the numeric Private Service Connect connection ID and Azure the private \
+             endpoint Resource ID or resourceGuid"
+        ));
+    }
+    Ok(())
+}
+
+/// `vpce-` plus 8 (legacy) or 17 (current) lowercase hex characters, and nothing
+/// else.
+fn is_aws_vpc_endpoint_id(value: &str) -> bool {
+    let Some(suffix) = value.strip_prefix(AWS_VPC_ENDPOINT_PREFIX) else {
+        return false;
+    };
+    matches!(suffix.len(), 8 | 17)
+        && suffix
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, 'a'..='f'))
+}
+
 fn parse_private_endpoint_ids_patch(
     add: &[String],
     remove: &[String],
@@ -1253,6 +1371,85 @@ fn build_update_service_request(
     })
 }
 
+/// Whether `options` requests removing anything from a service, so callers
+/// can decide whether a pre-update `GET` is needed to check the removals
+/// against the current state.
+fn has_removals(options: &ServiceUpdateOptions) -> bool {
+    !options.remove_ip_allow.is_empty()
+        || !options.remove_private_endpoint_ids.is_empty()
+        || !options.remove_tags.is_empty()
+}
+
+/// Requested values that do not match anything in `current` (by exact string
+/// equality). The service update API silently no-ops a removal that matches
+/// nothing, which is idempotent but can hide a typo, so the caller surfaces
+/// each unmatched entry as a warning instead of failing.
+fn unmatched<'a>(requested: &'a [String], current: &HashSet<&str>) -> Vec<&'a str> {
+    requested
+        .iter()
+        .map(String::as_str)
+        .filter(|value| !current.contains(value))
+        .collect()
+}
+
+/// Human-readable warnings for every `--remove-*` value on `options` that
+/// does not match anything in `current`.
+fn unmatched_removal_warnings(options: &ServiceUpdateOptions, current: &Service) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    let current_ip_allow: HashSet<&str> = current
+        .ip_access_list
+        .iter()
+        .flatten()
+        .filter_map(|entry| entry.source.as_deref())
+        .collect();
+    for value in unmatched(&options.remove_ip_allow, &current_ip_allow) {
+        warnings.push(format!(
+            "--remove-ip-allow {value} did not match any entry in the service's current IP allow list; no entry was removed"
+        ));
+    }
+
+    let current_private_endpoint_ids: HashSet<&str> = current
+        .private_endpoint_ids
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    for value in unmatched(
+        &options.remove_private_endpoint_ids,
+        &current_private_endpoint_ids,
+    ) {
+        warnings.push(format!(
+            "--remove-private-endpoint-id {value} did not match any private endpoint on the service; nothing was removed"
+        ));
+    }
+
+    let current_tags: HashSet<&str> = current
+        .tags
+        .iter()
+        .flatten()
+        .filter_map(|tag| tag.key.as_deref())
+        .collect();
+    let remove_tag_keys: Vec<String> = options
+        .remove_tags
+        .iter()
+        .map(|value| tag_key(value).to_string())
+        .collect();
+    for value in unmatched(&remove_tag_keys, &current_tags) {
+        warnings.push(format!(
+            "--remove-tag {value} did not match any tag on the service; nothing was removed"
+        ));
+    }
+
+    warnings
+}
+
+/// The key portion of a `key` or `key=value` tag argument, matching how
+/// [`crate::cloud::shared::parse_tag`] splits removal/addition arguments.
+fn tag_key(value: &str) -> &str {
+    value.split_once('=').map_or(value, |(key, _)| key).trim()
+}
+
 fn build_service_password_patch_request(
     options: &ServiceResetPasswordOptions,
 ) -> ServicePasswordPatchRequest {
@@ -1424,7 +1621,15 @@ async fn service_delete(
             .map(|service| or_absent(service.state.as_ref()))
             .unwrap_or_default();
         if matches!(state.as_str(), "running" | "idle" | "starting") {
-            eprintln!("Stopping service {} before deletion...", service_id);
+            // Every write below goes through `eprint_line`/`print_line`, never
+            // `eprintln!`/`println!`: this loop streams progress for as long as
+            // the stop takes (minutes), so it routinely outlives whatever was
+            // reading its output, and a panicking write turned a successful
+            // delete into exit 101 (#598).
+            eprint_line(format!(
+                "Stopping service {} before deletion...",
+                service_id
+            ));
             client
                 .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Stop)
                 .await?;
@@ -1433,11 +1638,11 @@ async fn service_delete(
                 std::io::stderr().is_terminal() && !json && std::env::var_os("CI").is_none();
             let mut progress = StopPollProgress::default();
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                tokio::time::sleep(STOP_POLL_INTERVAL).await;
                 let service = client.get_service(&org_id, service_id).await?;
                 let state = or_absent(service.state.as_ref());
                 if let Some(line) = progress.render(&state, verbose_polling) {
-                    eprintln!("{line}");
+                    eprint_line(line);
                 }
                 if classify_stop_poll_state(service.state.as_ref())? {
                     break;
@@ -1447,19 +1652,19 @@ async fn service_delete(
     }
 
     let response = client
-        .delete_service_if_exists(&org_id, service_id)
+        .delete_service(&org_id, service_id)
         .await
         .map_err(|error| service_delete_error(error, force, service_id))?;
     cleanup_service_query_key(client, &org_id, service_id, &query_key_ids).await?;
     if !retain_query_key {
         credentials::remove_service_query_key(service_id)?;
     }
+    // The service is already gone by here, so a closed stdout must not turn a
+    // completed deletion into a panic — see `print_line` and #598.
     if json {
-        println!("{}", serde_json::to_string_pretty(&response)?);
-    } else if response.is_none() {
-        println!("Service {} is already absent", service_id);
+        print_line(serde_json::to_string_pretty(&response)?);
     } else {
-        println!("Service {} deletion initiated", service_id);
+        print_line(format!("Service {} deletion initiated", service_id));
     }
     Ok(())
 }
@@ -1518,6 +1723,14 @@ async fn service_update(
 ) -> CloudResult<()> {
     let request = build_update_service_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+
+    if has_removals(&options) {
+        let current = client.get_service(&org_id, service_id).await?;
+        for warning in unmatched_removal_warnings(&options, &current) {
+            eprint_line(format!("Warning: {warning}"));
+        }
+    }
+
     let service = client.update_service(&org_id, service_id, &request).await?;
 
     if json {
@@ -1743,14 +1956,40 @@ async fn service_query_key_repair(
     let org_id = resolve_org_id(client, org_id).await?;
     let result =
         crate::cloud::service_query::repair_service_query_key(client, &org_id, service_id).await?;
+    // A retired key that could not be deleted is a warning, not a failure: the
+    // replacement is active and its ID is stored for the retry (#527). The
+    // warning goes to stderr in both modes; the JSON result carries the IDs.
+    let mut result = result;
+    if let Some(warning) = &result.cleanup_warning {
+        eprint_line(warning);
+    }
+    // The repair is committed before the probe runs, so its result is printed
+    // whatever the probe says (#658): a `--json` consumer must never lose the
+    // IDs of a repair that happened. Only a probe that kept being rejected
+    // for the whole readiness window is an error, and it is reported after
+    // the result.
+    let mut verification_error = None;
+    if result.status == "repaired" {
+        match verify_repaired_query_key(
+            client,
+            &org_id,
+            service_id,
+            &result.api_key_id,
+            QUERY_ENDPOINT_READINESS,
+        )
+        .await
+        {
+            Ok(verification) => result.verification = Some(verification),
+            Err(error) => {
+                result.verification = Some(RepairVerification::Failed);
+                verification_error = Some(error);
+            }
+        }
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
         match result.status {
-            "cleanup_completed" => println!(
-                "Finished query-key cleanup for service {} (active API key: {})",
-                result.service_id, result.api_key_id
-            ),
             "already_repaired" => println!(
                 "Query key for service {} was already repaired by another process (active API key: {})",
                 result.service_id, result.api_key_id
@@ -1763,10 +2002,237 @@ async fn service_query_key_repair(
                 );
                 println!("  New API key: {}", result.api_key_id);
                 println!("  Query endpoint: {}", result.endpoint_id);
+                if !result.deleted_api_key_ids.is_empty() {
+                    println!(
+                        "  Deleted API keys: {}",
+                        result.deleted_api_key_ids.join(", ")
+                    );
+                }
+                if !result.pending_cleanup_api_key_ids.is_empty() {
+                    println!(
+                        "  API keys awaiting deletion: {}",
+                        result.pending_cleanup_api_key_ids.join(", ")
+                    );
+                }
+                if let Some(verification) = result.verification {
+                    println!("  Query API check: {}", verification.as_str());
+                }
             }
         }
     }
-    Ok(())
+    match verification_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
+}
+
+/// Confirm that the Query API accepts the key a repair just committed (#658).
+///
+/// The new binding reaches the Query API host a moment after the upsert; a
+/// query issued in between is rejected, and the stored-key classifier (#528)
+/// would then read an enabled, bound key as "IP allowlist or secret
+/// mismatch", a verdict that is wrong and points nowhere useful. So repair
+/// probes the endpoint with the new key the way first-use provisioning does.
+///
+/// The repair is committed before this runs and nothing here undoes it. The
+/// outcome is reported, not acted on: `Verified` when a probe succeeded;
+/// `Skipped` when the key was not probed (no Query API host configured, the
+/// service not `running` or its state unreadable, the record unreadable or
+/// replaced by a concurrent repair, or the probe answered idle/stopped);
+/// `Failed` when the probe failed for a reason unrelated to readiness. Only a
+/// key the Query API kept rejecting for the whole readiness window is an
+/// error, and even then the message says the repair stands and points at
+/// `cloud service query`, which classifies the rejection — never at rerunning
+/// the repair, which would rotate a key that may simply not have propagated
+/// yet.
+async fn verify_repaired_query_key(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_id: &str,
+    readiness: QueryEndpointReadiness,
+) -> CloudResult<RepairVerification> {
+    let stored = credentials::try_get_service_query_key(service_id);
+    let (key_id, key_secret) = match repaired_query_credential(stored, service_id, api_key_id) {
+        Ok(credential) => credential,
+        Err(reason) => {
+            return Ok(skip_repair_verification(
+                org_id, service_id, api_key_id, &reason,
+            ));
+        }
+    };
+    probe_repaired_query_key(
+        client,
+        org_id,
+        service_id,
+        api_key_id,
+        &key_id,
+        &key_secret,
+        readiness,
+    )
+    .await
+}
+
+/// The credential pair to probe with, if the record still names the key the
+/// repair just stored. A record that vanished, that a concurrent repair
+/// replaced, or that could not be read back at all is not this run's to
+/// verify; the `Err` carries the reason the probe is skipped. The repair is
+/// already committed, so re-reading it is never what turns the run into a
+/// failure.
+fn repaired_query_credential(
+    stored: CloudResult<Option<credentials::ServiceQueryKey>>,
+    service_id: &str,
+    api_key_id: &str,
+) -> Result<(String, String), String> {
+    let stored = stored.map_err(|error| {
+        format!("the stored query key for service {service_id} could not be read ({error})")
+    })?;
+    let changed = || {
+        format!(
+            "the stored query key for service {service_id} changed before the replacement could \
+             be probed"
+        )
+    };
+    let stored = stored.ok_or_else(changed)?;
+    if stored.api_key_id.as_deref() != Some(api_key_id) {
+        return Err(changed());
+    }
+    Ok((stored.key_id, stored.key_secret))
+}
+
+fn next_query_command(service_id: &str, org_id: &str) -> String {
+    format!(
+        "clickhousectl cloud service query --id {service_id} --org-id {org_id} --query \"SELECT 1\""
+    )
+}
+
+/// Print the one `Note:` line every skipped verification gets, and return
+/// `Skipped`. A closed stderr must not panic: the repair is already done.
+fn skip_repair_verification(
+    org_id: &str,
+    service_id: &str,
+    api_key_id: &str,
+    reason: &str,
+) -> RepairVerification {
+    eprint_line(format!(
+        "Note: {reason}, so the repaired query key was not probed; the replacement (API key \
+         {api_key_id}) is stored in .clickhouse/credentials.json and is verified by the next `{}`",
+        next_query_command(service_id, org_id)
+    ));
+    RepairVerification::Skipped
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn probe_repaired_query_key(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    api_key_id: &str,
+    key_id: &str,
+    key_secret: &str,
+    readiness: QueryEndpointReadiness,
+) -> CloudResult<RepairVerification> {
+    // Never probe production by accident: a control plane the query host
+    // cannot be derived from (a local mock, an unusual base URL) means the
+    // library would fall back to the production host.
+    if client.api().configured_query_host().is_none() {
+        return Ok(skip_repair_verification(
+            org_id,
+            service_id,
+            api_key_id,
+            &format!(
+                "no Query API host is configured for {} (set CLICKHOUSE_CLOUD_QUERY_HOST)",
+                client.base_url()
+            ),
+        ));
+    }
+    let state = match client.get_service(org_id, service_id).await {
+        Ok(service) => service.state,
+        Err(error) => {
+            return Ok(skip_repair_verification(
+                org_id,
+                service_id,
+                api_key_id,
+                &format!("could not read service {service_id}: {error}"),
+            ));
+        }
+    };
+    if state != Some(ServiceState::Running) {
+        // A probe would wake an idle service, and a stopped one cannot answer.
+        let state = state
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "in an unknown state".to_string());
+        return Ok(skip_repair_verification(
+            org_id,
+            service_id,
+            api_key_id,
+            &format!("service {service_id} is {state}"),
+        ));
+    }
+
+    let outcome = wait_for_query_endpoint_readiness(readiness, || {
+        client.api().run_query(
+            service_id,
+            key_id,
+            key_secret,
+            "SELECT 1",
+            None,
+            "TabSeparated",
+            false,
+        )
+    })
+    .await;
+    let repaired = format!(
+        "the query key for service {service_id} was replaced (new API key {api_key_id}) and \
+         stored in .clickhouse/credentials.json"
+    );
+    match outcome {
+        Ok(false) => Ok(RepairVerification::Verified),
+        Ok(true) => Ok(skip_repair_verification(
+            org_id,
+            service_id,
+            api_key_id,
+            &format!("service {service_id} is idle"),
+        )),
+        Err(QueryReadinessError::Api(clickhouse_cloud_api::Error::ServiceStopped)) => {
+            Ok(skip_repair_verification(
+                org_id,
+                service_id,
+                api_key_id,
+                &format!("service {service_id} is stopped"),
+            ))
+        }
+        Err(QueryReadinessError::Api(error)) => {
+            let converted = client.convert_error(error);
+            eprint_line(format!(
+                "Warning: {repaired}, but probing it failed: {converted}; it is verified by the \
+                 next `{}`",
+                next_query_command(service_id, org_id)
+            ));
+            Ok(RepairVerification::Failed)
+        }
+        Err(QueryReadinessError::TimedOut(timeout)) => {
+            let command = next_query_command(service_id, org_id);
+            let message = format!(
+                "{repaired}, but the Query API kept rejecting it for {timeout:?}. Do not rerun \
+                 repair-query-key: that would rotate a key that may only be slow to propagate. \
+                 Run `{command}`, which classifies the rejection"
+            );
+            Err(CloudError::new(message.clone())
+                .with_failure(ApiFailure::new(FailureKind::Timeout))
+                .with_details(CloudErrorDetail {
+                    code: CloudErrorCode::QueryKeyRepairUnverified,
+                    message,
+                    host: None,
+                    port: None,
+                    command: Some(command),
+                    api_key_id: Some(api_key_id.to_string()),
+                    ip_access_list: None,
+                })
+                .at_stage(FailureStage::QueryRequest))
+        }
+    }
 }
 
 struct ServiceQueryOptions {
@@ -1800,29 +2266,45 @@ async fn run_basic_service_query(
     };
     if confirmed_idle {
         eprint_waking_service(service_name);
+        failure::note_retry();
         return run(true).await;
     }
 
     match run(false).await {
         Err(clickhouse_cloud_api::Error::ServiceIdle) => {
             eprint_waking_service(service_name);
+            failure::note_retry();
             run(true).await
         }
         other => other,
     }
 }
 
-fn query_readiness_timeout_error(timeout: Duration) -> clickhouse_cloud_api::Error {
-    clickhouse_cloud_api::Error::Api {
-        status: 408,
-        message: format!("Query API endpoint did not become ready within {timeout:?}"),
-    }
+/// Why the readiness wait ended without the endpoint accepting a probe.
+///
+/// The deadline is the CLI's own: no HTTP response stands behind it, so it is
+/// a variant of its own rather than a synthesized `Error::Api { status: 408 }`
+/// — telemetry reports `http_status` as the exact status the server sent, and
+/// a made-up one would be a lie there (#450).
+#[derive(Debug)]
+enum QueryReadinessError {
+    /// The endpoint was still rejecting probes when the deadline elapsed.
+    TimedOut(Duration),
+    /// A probe failed for a reason other than "not ready yet".
+    Api(clickhouse_cloud_api::Error),
+}
+
+fn query_readiness_timeout_error(timeout: Duration) -> CloudError {
+    CloudError::new(format!(
+        "Query API endpoint did not become ready within {timeout:?}"
+    ))
+    .with_failure(ApiFailure::new(FailureKind::Timeout))
 }
 
 async fn wait_for_query_endpoint_readiness<T, F, Fut>(
     readiness: QueryEndpointReadiness,
     mut probe: F,
-) -> Result<bool, clickhouse_cloud_api::Error>
+) -> Result<bool, QueryReadinessError>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, clickhouse_cloud_api::Error>>,
@@ -1834,25 +2316,28 @@ where
     loop {
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(query_readiness_timeout_error(readiness.timeout));
+            return Err(QueryReadinessError::TimedOut(readiness.timeout));
         }
 
         match tokio::time::timeout(remaining, probe()).await {
             Ok(Ok(_)) => return Ok(false),
             Ok(Err(clickhouse_cloud_api::Error::ServiceIdle)) => return Ok(true),
             Ok(Err(error)) if query_endpoint_readiness_error(&error) => {}
-            Ok(Err(error)) => return Err(error),
-            Err(_) => return Err(query_readiness_timeout_error(readiness.timeout)),
+            Ok(Err(error)) => return Err(QueryReadinessError::Api(error)),
+            Err(_) => return Err(QueryReadinessError::TimedOut(readiness.timeout)),
         }
 
         let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
         if remaining.is_zero() {
-            return Err(query_readiness_timeout_error(readiness.timeout));
+            return Err(QueryReadinessError::TimedOut(readiness.timeout));
         }
         if !waiting {
-            eprintln!("Waiting for the Query API endpoint to become ready...");
+            eprint_line("Waiting for the Query API endpoint to become ready...");
             waiting = true;
         }
+        // One more probe is about to be sent: the retry bucket is how a
+        // dashboard sees "this run waited on propagation" (#450).
+        failure::note_retry();
         tokio::time::sleep(backoff.min(remaining)).await;
         backoff = backoff.saturating_mul(2).min(readiness.max_backoff);
     }
@@ -1861,18 +2346,17 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn run_just_provisioned_service_query(
     client: &CloudClient,
-    service_id: &str,
     key_id: &str,
     key_secret: &str,
     sql: &str,
     database: Option<&str>,
     format: &str,
-    service_name: &str,
+    target: QueryTarget<'_>,
     readiness: QueryEndpointReadiness,
-) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
+) -> CloudResult<reqwest::Response> {
     let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
         client.api().run_query(
-            service_id,
+            target.service_id,
             key_id,
             key_secret,
             "SELECT 1",
@@ -1881,33 +2365,42 @@ async fn run_just_provisioned_service_query(
             false,
         )
     })
-    .await?;
+    .await
+    .map_err(|error| match error {
+        QueryReadinessError::TimedOut(timeout) => query_readiness_timeout_error(timeout),
+        QueryReadinessError::Api(error) => convert_query_error(client, error, target),
+    })?;
 
     run_basic_service_query(
         client,
-        service_id,
+        target.service_id,
         key_id,
         key_secret,
         sql,
         database,
         format,
-        service_name,
+        target.service_name,
         confirmed_idle,
     )
     .await
+    .map_err(|error| convert_query_error(client, error, target))
 }
 
+/// Whether an error means "the Query API endpoint is not (yet) usable by this
+/// credential" rather than "the query itself failed".
+///
+/// The test is structural: a SQL-level rejection arrives as
+/// `Error::Sql`, which proves the service ran the request, so the endpoint is
+/// demonstrably usable. It used to be told apart by sniffing the formatted
+/// message for a `SQL error ` prefix (#450).
 fn query_endpoint_readiness_error(error: &clickhouse_cloud_api::Error) -> bool {
-    match error {
+    matches!(
+        error,
         clickhouse_cloud_api::Error::Api {
-            status: 401 | 403, ..
-        } => true,
-        clickhouse_cloud_api::Error::Api {
-            status: 404,
-            message,
-        } => !message.starts_with("SQL error "),
-        _ => false,
-    }
+            status: 401 | 403 | 404,
+            ..
+        }
+    )
 }
 
 fn stored_query_key_rejection_status(error: &clickhouse_cloud_api::Error) -> Option<u16> {
@@ -1920,32 +2413,60 @@ fn stored_query_key_rejection_status(error: &clickhouse_cloud_api::Error) -> Opt
     }
 }
 
-fn stale_stored_query_key_error(service_id: &str, org_id: &str, status: u16) -> CloudError {
+/// The `--no-auto-enable` refusal: the Query API rejected the management key
+/// (401/403/404) and provisioning would have fixed that, but the caller forbade
+/// it. The message is the CLI's; the classification stays the API's actual
+/// rejection, carried across from the variant rather than reset to `other`
+/// (#450).
+fn refused_query_provisioning_error(
+    service_id: &str,
+    rejection: &clickhouse_cloud_api::Error,
+) -> CloudError {
     CloudError::new(format!(
-        "the stored Query API key for service {service_id} was rejected with HTTP {status} and \
-         may be stale; no replacement was created. Repair only this service credential with \
-         `clickhousectl cloud service repair-query-key {service_id} --org-id {org_id}`"
+        "the authenticated API key cannot use the Query API endpoint for service {service_id}, \
+         and --no-auto-enable prevents provisioning"
     ))
+    .with_failure(failure::classify_api_error(rejection))
 }
 
 async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> CloudResult<()> {
-    let sql = read_query_sql(options.query.as_deref(), options.queries_file.as_deref())?;
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    // Anchor the duration bucket of any failure classification (#450) at the
+    // start of the run rather than at process start, so it measures the query
+    // and not the CLI's own startup.
+    failure::start_span();
+
+    let sql = read_query_sql(options.query.as_deref(), options.queries_file.as_deref())
+        .map_err(|error| error.at_stage(FailureStage::SqlInput))?;
+    let org_id = resolve_org_id(client, options.org_id.as_deref())
+        .await
+        .map_err(|error| error.at_stage(FailureStage::OrgResolution))?;
     let service = resolve_service(
         client,
         &org_id,
         options.name.as_deref(),
         options.id.as_deref(),
     )
-    .await?;
+    .await
+    .map_err(|error| error.at_stage(FailureStage::ServiceResolution))?;
     let service_id = match service.id {
         Some(id) => id.to_string(),
-        None => options
-            .id
-            .clone()
-            .ok_or_else(|| CloudError::new("the API response is missing the service id"))?,
+        None => options.id.clone().ok_or_else(|| {
+            CloudError::new("the API response is missing the service id")
+                .at_stage(FailureStage::ServiceResolution)
+        })?,
     };
     let service_name = or_absent(service.name.as_deref());
+    // Resolved once, from the `GET service` response the query already needed:
+    // the gateway-timeout hint spells out a `clickhouse client` command, and
+    // it must use the service's real native endpoint when the API returned
+    // one (#644).
+    let native = native_secure_endpoint(service.endpoints.as_deref());
+    let target = QueryTarget {
+        service_name: &service_name,
+        service_id: &service_id,
+        org_id: &org_id,
+        native: native.as_ref(),
+    };
 
     let format = options.format.unwrap_or_else(|| {
         if options.json {
@@ -1955,7 +2476,16 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         }
     });
 
+    // The `query_request` classifications below are a *fallback*: recording
+    // is first-write-wins, so an inner boundary that knows the exact stage
+    // (`key_create`, `endpoint_get`, ...) keeps its record and only failures
+    // no boundary claimed -- an unusable local credential store, say -- land
+    // on the coarse `query_request` stage rather than going unclassified
+    // (#450).
     let response = if client.is_bearer_auth() {
+        // OAuth carries no write access, so no key or endpoint provisioning is
+        // possible on this path at all.
+        failure::set_provisioning_state(ProvisioningState::Bearer);
         let run = |wake: bool| {
             client.api().run_query_bearer(
                 &service_id,
@@ -1968,15 +2498,32 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         let result = match run(false).await {
             Err(clickhouse_cloud_api::Error::ServiceIdle) => {
                 eprint_waking_service(&service_name);
+                failure::note_retry();
                 run(true).await
             }
             other => other,
         };
         result.map_err(|error| {
-            convert_query_error(client, error, &service_name, &service_id, &org_id)
+            convert_query_error(client, error, target).at_stage(FailureStage::QueryRequest)
         })?
     } else {
-        let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)? {
+        let convert =
+            |error: clickhouse_cloud_api::Error| convert_query_error(client, error, target);
+        let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)
+            .map_err(|error| error.at_stage(FailureStage::QueryRequest))?
+        {
+            failure::set_provisioning_state(ProvisioningState::StoredKey);
+            // A repair that could not delete a superseded key left its ID on
+            // the record; finish that here, quietly, before the query (#527).
+            // The list is empty on every ordinary run, so this costs nothing
+            // unless a retirement is actually outstanding.
+            crate::cloud::service_query::retry_pending_query_key_cleanup(
+                client,
+                &key,
+                &service_id,
+                &org_id,
+            )
+            .await;
             match run_basic_service_query(
                 client,
                 &service_id,
@@ -1991,17 +2538,32 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             .await
             {
                 Err(error) => match stored_query_key_rejection_status(&error) {
+                    // The 401/403 alone does not say whether the key is stale
+                    // or was deliberately revoked; the management record
+                    // decides, and nothing is replaced automatically (#528).
                     Some(status) => {
-                        return Err(stale_stored_query_key_error(&service_id, &org_id, status));
+                        return Err(
+                            crate::cloud::service_query::rejected_stored_query_key_error(
+                                client,
+                                &key,
+                                &service_id,
+                                &org_id,
+                                status,
+                            )
+                            .await
+                            .at_stage(FailureStage::QueryRequest),
+                        );
                     }
-                    None => Err(error),
+                    None => Err(convert(error)),
                 },
-                response => response,
+                Ok(response) => Ok(response),
             }
         } else {
-            let (key_id, key_secret) = client
-                .basic_auth_credentials()
-                .ok_or_else(|| CloudError::new("API key credentials are unavailable"))?;
+            failure::set_provisioning_state(ProvisioningState::ManagementKey);
+            let (key_id, key_secret) = client.basic_auth_credentials().ok_or_else(|| {
+                CloudError::new("API key credentials are unavailable")
+                    .at_stage(FailureStage::QueryRequest)
+            })?;
             match run_basic_service_query(
                 client,
                 &service_id,
@@ -2017,40 +2579,40 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             {
                 Err(error) if query_endpoint_readiness_error(&error) => {
                     if options.no_auto_enable {
-                        return Err(CloudError::new(format!(
-                            "the authenticated API key cannot use the Query API endpoint for service {service_id}, and --no-auto-enable prevents provisioning"
-                        )));
+                        failure::set_provisioning_state(ProvisioningState::Refused);
+                        return Err(refused_query_provisioning_error(&service_id, &error)
+                            .at_stage(FailureStage::QueryRequest));
                     }
                     eprintln!(
                         "Provisioning Query API endpoint + key for service '{}'...",
                         service_name
                     );
+                    failure::set_provisioning_state(ProvisioningState::Provisioning);
                     let key = crate::cloud::service_query::ensure_service_query_setup(
                         client,
                         &org_id,
                         &service_id,
                         &service_name,
                     )
-                    .await?;
+                    .await
+                    .map_err(|error| error.at_stage(FailureStage::QueryRequest))?;
+                    failure::set_provisioning_state(ProvisioningState::Provisioned);
                     run_just_provisioned_service_query(
                         client,
-                        &service_id,
                         &key.key_id,
                         &key.key_secret,
                         &sql,
                         options.database.as_deref(),
                         &format,
-                        &service_name,
+                        target,
                         QUERY_ENDPOINT_READINESS,
                     )
                     .await
                 }
-                other => other,
+                other => other.map_err(convert),
             }
         };
-        result.map_err(|error| {
-            convert_query_error(client, error, &service_name, &service_id, &org_id)
-        })?
+        result.map_err(|error| error.at_stage(FailureStage::QueryRequest))?
     };
 
     use futures_util::StreamExt;
@@ -2060,10 +2622,20 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
     let mut handle = stdout.lock();
     let mut byte_count = 0;
     let mut last_byte = None;
+    // Both failure modes of the stream are classified here, at the boundary
+    // that knows which one happened (#450): a truncated body is a transport
+    // failure, a refused write is local I/O.
+    let stream_failure = |error: CloudError| error.at_stage(FailureStage::ResponseStream);
     while let Some(chunk) = stream.next().await {
-        let bytes = chunk
-            .map_err(|error| CloudError::new(format!("Failed to read query response: {error}")))?;
-        handle.write_all(&bytes)?;
+        let bytes = chunk.map_err(|error| {
+            stream_failure(
+                CloudError::new(format!("Failed to read query response: {error}"))
+                    .with_failure(ApiFailure::new(FailureKind::Transport)),
+            )
+        })?;
+        handle
+            .write_all(&bytes)
+            .map_err(|error| stream_failure(CloudError::from(error)))?;
         byte_count += bytes.len();
         if let Some(last) = bytes.last() {
             last_byte = Some(*last);
@@ -2071,10 +2643,14 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
     }
     match query_output_completion(&format, byte_count, last_byte) {
         QueryOutputCompletion::None => {}
-        QueryOutputCompletion::Newline => handle.write_all(b"\n")?,
+        QueryOutputCompletion::Newline => handle
+            .write_all(b"\n")
+            .map_err(|error| stream_failure(CloudError::from(error)))?,
         QueryOutputCompletion::Acknowledge => eprintln!("OK"),
     }
-    handle.flush()?;
+    handle
+        .flush()
+        .map_err(|error| stream_failure(CloudError::from(error)))?;
     Ok(())
 }
 
@@ -2111,19 +2687,227 @@ fn eprint_waking_service(service_name: &str) {
     eprintln!("Service '{service_name}' is idle; waking it (this may take a minute)...");
 }
 
+/// A service's native-protocol (`nativesecure`) endpoint.
+///
+/// Both halves are required. A hint that named the real host but guessed the
+/// port would hand the user a command that does not connect, which is worse
+/// than a command that visibly needs filling in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeEndpoint {
+    host: String,
+    port: i64,
+}
+
+/// What the query path knows about its target service when it has to render
+/// an error: enough to name the service, to point at `service start`, and to
+/// spell out the native-protocol command that routes around the Query API
+/// gateway timeout (#644).
+#[derive(Debug, Clone, Copy)]
+struct QueryTarget<'a> {
+    service_name: &'a str,
+    service_id: &'a str,
+    org_id: &'a str,
+    /// The service's `nativesecure` endpoint, when the `GET service`
+    /// response carried a complete one.
+    native: Option<&'a NativeEndpoint>,
+}
+
+/// The service's `nativesecure` endpoint, when the API returned a complete
+/// one.
+///
+/// Every field of a response model is optional, so a partial endpoint (a host
+/// with no port, or the reverse) counts as absent here rather than being
+/// half-rendered into a command.
+fn native_secure_endpoint(endpoints: Option<&[ServiceEndpoint]>) -> Option<NativeEndpoint> {
+    endpoints?.iter().find_map(|endpoint| {
+        if endpoint.protocol != Some(ServiceEndpointProtocol::Nativesecure) {
+            return None;
+        }
+        Some(NativeEndpoint {
+            host: endpoint.host.clone()?,
+            port: endpoint.port?,
+        })
+    })
+}
+
+/// Stand-in for a host the API did not return. A placeholder, never a guess.
+const NATIVE_HOST_PLACEHOLDER: &str = "<host>";
+
+/// The standard native-protocol TLS port. Only used in the placeholder
+/// command, where there is no endpoint to read a real port from.
+const DEFAULT_NATIVE_SECURE_PORT: i64 = 9440;
+
+/// The `clickhouse client` command that reruns the statement over the native
+/// protocol.
+///
+/// The SQL and the password are always literal placeholders: the user's
+/// statement is never echoed back into an error message, and no credential is
+/// ever rendered.
+fn native_client_command(native: Option<&NativeEndpoint>) -> String {
+    let (host, port) = match native {
+        Some(endpoint) => (endpoint.host.as_str(), endpoint.port),
+        None => (NATIVE_HOST_PLACEHOLDER, DEFAULT_NATIVE_SECURE_PORT),
+    };
+    format!(
+        "clickhouse client --host {host} --secure --port {port} --user default \
+         --password '<password>' --query '<your SQL>'"
+    )
+}
+
+/// The Query API gateway stopped waiting for the statement (#644).
+///
+/// The statement itself is unaffected, so the message leads with that and
+/// points at `system.processes` *before* offering the native-protocol route:
+/// re-running an `INSERT` that is still executing loads the data twice. There
+/// is deliberately no retry anywhere on this path.
+fn query_timeout_error(target: QueryTarget<'_>) -> CloudError {
+    let command = native_client_command(target.native);
+    let endpoint_guidance = if target.native.is_some() {
+        String::new()
+    } else {
+        format!(
+            "\nThe API response carried no native endpoint for this service; read the host and \
+             port from `clickhousectl cloud service get {} --org-id {}`.",
+            target.service_id, target.org_id
+        )
+    };
+    let message = format!(
+        "the query timed out at the Query API gateway, which stops waiting after about 30 \
+         seconds.\nThe statement may still be running on the service; check `SELECT query_id, \
+         elapsed FROM system.processes` before running it again.\n\nHint: run long statements \
+         over the native protocol instead. Install the client with\n  clickhousectl local use \
+         latest\nthen rerun the query with\n  {command}{endpoint_guidance}\nThe password is the \
+         one shown when the service was created; `clickhousectl cloud service reset-password {}` \
+         issues a new one.",
+        target.service_id
+    );
+
+    CloudError::new(message.clone())
+        // Rewriting the message must not lose the classification the variant
+        // already established, and the classification still comes only from
+        // the variant (#450).
+        .with_failure(failure::classify_api_error(
+            &clickhouse_cloud_api::Error::QueryTimeout,
+        ))
+        // The same failure, machine-readable, for `--json` mode.
+        .with_details(CloudErrorDetail {
+            code: CloudErrorCode::QueryTimeout,
+            message,
+            host: target.native.map(|native| native.host.clone()),
+            port: target.native.map(|native| native.port),
+            command: Some(command),
+            api_key_id: None,
+            ip_access_list: None,
+        })
+}
+
 fn convert_query_error(
     client: &CloudClient,
     error: clickhouse_cloud_api::Error,
-    service_name: &str,
-    service_id: &str,
-    org_id: &str,
+    target: QueryTarget<'_>,
 ) -> CloudError {
     match error {
         clickhouse_cloud_api::Error::ServiceStopped => CloudError::new(format!(
-            "service '{service_name}' is stopped; start it with `clickhousectl cloud service start {service_id} --org-id {org_id}` and retry"
-        )),
+            "service '{}' is stopped; start it with `clickhousectl cloud service start {} --org-id {}` and retry",
+            target.service_name, target.service_id, target.org_id
+        ))
+        // Rewriting the message must not lose the classification the variant
+        // already established (#450).
+        .with_failure(ApiFailure::new(FailureKind::ServiceStopped)),
+        clickhouse_cloud_api::Error::QueryTimeout => query_timeout_error(target),
         other => client.convert_error(other),
     }
+}
+
+/// What stdin holds when `--query` is validated (#641). Derived from the file
+/// descriptor only, never from anything the user typed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StdinInput {
+    /// An interactive terminal: nothing was piped or redirected in, and stdin
+    /// must not be read at all — a read would block on the human.
+    Terminal,
+    /// Not a terminal, and no byte arrived within
+    /// [`STDIN_FIRST_BYTE_TIMEOUT_MS`]: `< /dev/null`, a closed pipe, or a CI
+    /// runner or coding agent that has no tty and piped nothing.
+    Empty,
+    /// Not a terminal and at least one byte is available to read.
+    Pending,
+}
+
+/// The message for `--query` plus data on stdin. The Query API takes a single
+/// request body, so a statement and a separate data stream can never both be
+/// sent; the message therefore leads with what does work.
+const INLINE_QUERY_WITH_STDIN_ERROR: &str = "--query cannot be combined with SQL or data on stdin. \
+     The Query API sends one request body, so redirected data is never read. Pipe the statement \
+     and its data together on stdin instead: \
+     printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | clickhousectl cloud service query \
+     --id <id>. Or read a whole statement from stdin with --queries-file -.";
+
+/// Whether `--query` conflicts with what is on stdin. Pure, so the decision is
+/// unit-tested without a real file descriptor. Only bytes that are actually
+/// waiting count: a non-terminal but empty stdin is the normal shape for CI
+/// and for coding agents, so it must stay a valid way to run `--query`.
+fn inline_query_conflicts_with_stdin(inline: Option<&str>, stdin: StdinInput) -> bool {
+    inline.is_some() && matches!(stdin, StdinInput::Pending)
+}
+
+/// How long to wait for the first byte before deciding stdin carries nothing.
+///
+/// A zero timeout would reintroduce #641 as a race: in `cat data.csv |
+/// clickhousectl ... --query ...` the shell starts both processes at once, so
+/// the CLI can reach `poll` before `cat` has written anything and would go on
+/// to send the empty INSERT. A bounded wait closes that window. Nothing that
+/// already knows its answer pays it: a regular file, `/dev/null`, a closed
+/// pipe (`POLLHUP`) and a pipe that already holds data all make `poll` return
+/// at once. The only invocation that waits is `--query` whose stdin is an open
+/// pipe with nothing written yet — the harness case that must never hang — and
+/// it waits this long rather than forever.
+const STDIN_FIRST_BYTE_TIMEOUT_MS: libc::c_int = 250;
+
+/// Classify stdin without consuming it and without blocking indefinitely.
+///
+/// `poll` answers "would a read block?" without reading; only once it says a
+/// read is ready do we `fill_buf`, which performs one syscall and leaves the
+/// bytes in the shared stdin buffer, so the other SQL sources are unaffected.
+/// A hangup without readable data (`POLLHUP` alone) is an empty stdin, not
+/// input. The deliberate residual is now narrow: a producer that has not
+/// written its first byte within [`STDIN_FIRST_BYTE_TIMEOUT_MS`] still reads
+/// as no input, which is the price of never hanging on a pipe nobody is
+/// writing to.
+fn stdin_input() -> StdinInput {
+    use std::io::BufRead as _;
+
+    if std::io::stdin().is_terminal() {
+        return StdinInput::Terminal;
+    }
+
+    if !fd_becomes_readable(libc::STDIN_FILENO, STDIN_FIRST_BYTE_TIMEOUT_MS) {
+        return StdinInput::Empty;
+    }
+
+    match std::io::stdin().lock().fill_buf() {
+        Ok(buffered) if !buffered.is_empty() => StdinInput::Pending,
+        _ => StdinInput::Empty,
+    }
+}
+
+/// Whether a read on `fd` would find something within `timeout_ms`. A hangup
+/// with nothing readable (`POLLHUP` alone, a closed pipe) reports `false`, and
+/// so does a `poll` that is interrupted or errors: the CLI fails open to "no
+/// input" rather than refusing a run it cannot justify refusing. Split out
+/// from [`stdin_input`] so the timeout is testable against a real pipe without
+/// touching the process's own stdin.
+fn fd_becomes_readable(fd: libc::c_int, timeout_ms: libc::c_int) -> bool {
+    let mut poll_fd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    // SAFETY: a single initialized `pollfd` is passed with a matching length,
+    // and the bounded timeout keeps the call from borrowing anything beyond
+    // its own return.
+    let ready = unsafe { libc::poll(&mut poll_fd, 1, timeout_ms) };
+    ready > 0 && poll_fd.revents & libc::POLLIN != 0
 }
 
 fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResult<String> {
@@ -2132,6 +2916,9 @@ fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResu
     if let Some(query) = inline {
         if query.trim().is_empty() {
             return Err(CloudError::new("--query was empty"));
+        }
+        if inline_query_conflicts_with_stdin(inline, stdin_input()) {
+            return Err(CloudError::new(INLINE_QUERY_WITH_STDIN_ERROR));
         }
         return Ok(query.to_string());
     }
@@ -2264,7 +3051,14 @@ impl CloudClient {
             .api()
             .instance_get(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            .map_err(|error| {
+                // A read by identifier: a 400 over well-formed UUIDs is a
+                // missing service, not a bad request (#666).
+                self.convert_error_for_lookup(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })?;
         Self::unwrap_response(response)
     }
 
@@ -2273,10 +3067,17 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
     ) -> crate::cloud::client::Result<Option<Service>> {
+        let lookup = ResourceLookup::in_org(ResourceKind::Service, service_id, org_id);
         match self.api().instance_get(org_id, service_id).await {
             Ok(response) => Self::unwrap_response(response).map(Some),
             Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(None),
-            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
+            // The API answers 400 rather than 404 for a well-formed id no
+            // service has, and this GET has no other user-controlled input,
+            // so that rejection is its way of saying the same thing (#666).
+            // Without this, `service delete --force` aborted on an id
+            // `service get` reports as missing.
+            Err(error) if lookup.rejected_well_formed_ids(&error) => Ok(None),
+            Err(error) => Err(self.convert_error_for_lookup(error, lookup)),
         }
     }
 
@@ -2293,22 +3094,28 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
-    pub async fn delete_service_if_exists(
+    pub async fn delete_service(
         &self,
         org_id: &str,
         service_id: &str,
-    ) -> crate::cloud::client::Result<Option<DeleteResponse>> {
-        match self.api().instance_delete(org_id, service_id).await {
-            Ok(response) => Ok(Some(DeleteResponse {
-                status: response.status,
-                request_id: response.request_id,
-            })),
-            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {
-                self.get_organization(org_id).await?;
-                Ok(None)
-            }
-            Err(error) => Err(self.convert_error_for_organization(error, org_id)),
-        }
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .instance_delete(org_id, service_id)
+            .await
+            .map_err(|error| {
+                // A delete by identifier carries the same single class of
+                // user input as the read, so the same 400 means the same
+                // thing (#666).
+                self.convert_error_for_lookup(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+                )
+            })?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
     }
 
     pub async fn change_service_state(
@@ -2494,8 +3301,19 @@ mod tests {
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        assert!(help.contains("Query API timeouts"), "{help}");
+        // The gateway limit is named, not alluded to, and so is what happens
+        // to the statement when it fires (#644).
+        assert!(help.contains("times out after about 30 seconds"), "{help}");
+        assert!(help.contains("the statement keeps running"), "{help}");
+        assert!(help.contains("native protocol"), "{help}");
         assert!(help.contains("`clickhousectl local use latest`"), "{help}");
+        // The native-client command, which clap wraps across lines.
+        assert!(
+            help.contains("clickhouse client --host <host> --secure"),
+            "{help}"
+        );
+        assert!(help.contains("--port 9440 --user"), "{help}");
+        assert!(help.contains("--password <password>"), "{help}");
         assert!(help.contains("`clickhouse client`"), "{help}");
         assert!(
             help.contains("--query and --queries-file are mutually exclusive"),
@@ -2525,6 +3343,27 @@ mod tests {
         assert!(help.contains("Legacy or non-owned records"), "{help}");
         assert!(help.contains("is never run"), "{help}");
         assert!(help.contains("automatically after a query fails"), "{help}");
+        assert!(help.contains("the command waits that out"), "{help}");
+        assert!(
+            help.contains("probe query with the new key succeeds"),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn service_prometheus_help_documents_json_is_ignored() {
+        let error =
+            Cli::try_parse_from(["clickhousectl", "cloud", "service", "prometheus", "--help"])
+                .err()
+                .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+        assert!(
+            help.contains("always raw Prometheus exposition text"),
+            "{help}"
+        );
+        assert!(help.contains("--json"), "{help}");
+        assert!(help.contains("silently ignored"), "{help}");
     }
 
     #[test]
@@ -2893,7 +3732,7 @@ mod tests {
             "create",
             "svc-1",
             "--endpoint-id",
-            "vpce-1",
+            "vpce-0123456789abcdef0",
         ]);
         let crate::cloud::cli::ServiceCommands::PrivateEndpoint { command } = private_endpoint
         else {
@@ -3477,19 +4316,13 @@ mod tests {
     }
 
     #[test]
-    fn stored_query_key_rejections_get_a_non_provisioning_repair_hint() {
+    fn only_a_401_or_403_counts_as_a_stored_query_key_rejection() {
         for status in [401, 403] {
             let error = clickhouse_cloud_api::Error::Api {
                 status,
                 message: "rejected".into(),
             };
             assert_eq!(stored_query_key_rejection_status(&error), Some(status));
-            let hint = stale_stored_query_key_error("svc-1", "org-1", status).to_string();
-            assert!(hint.contains("no replacement was created"), "{hint}");
-            assert!(
-                hint.contains("clickhousectl cloud service repair-query-key svc-1 --org-id org-1"),
-                "{hint}"
-            );
         }
         assert_eq!(
             stored_query_key_rejection_status(&clickhouse_cloud_api::Error::Api {
@@ -3684,7 +4517,7 @@ mod tests {
             "create",
             "svc-1",
             "--endpoint-id",
-            "vpce-1",
+            "vpce-0123456789abcdef0",
             "--description",
             "production",
             "--org-id",
@@ -3703,9 +4536,165 @@ mod tests {
             panic!("expected private-endpoint create");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(endpoint_id, "vpce-1");
+        assert_eq!(endpoint_id, "vpce-0123456789abcdef0");
         assert_eq!(description.as_deref(), Some("production"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    /// Non-AWS endpoint IDs have no marker that separates a typo from a valid
+    /// value, so they must pass through untouched (issue #611).
+    #[test]
+    fn parses_non_aws_private_endpoint_ids_unchanged() {
+        for id in [
+            // GCP Private Service Connect connection ID.
+            "102600141743718403",
+            // Azure private endpoint Resource ID.
+            "/subscriptions/11111111-2222-3333-4444-555555555555/resourceGroups/rg/providers/\
+             Microsoft.Network/privateEndpoints/pe-demo",
+            // Azure resourceGuid (legacy form).
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            // Legacy 8-character AWS VPC endpoint ID.
+            "vpce-0123abcd",
+        ] {
+            let command = parse_service(&[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "create",
+                "svc-1",
+                "--endpoint-id",
+                id,
+            ]);
+            let crate::cloud::cli::ServiceCommands::PrivateEndpoint { command } = command else {
+                panic!("expected private-endpoint command");
+            };
+            let crate::cloud::cli::PrivateEndpointCommands::Create { endpoint_id, .. } = command
+            else {
+                panic!("expected private-endpoint create");
+            };
+            assert_eq!(endpoint_id, id, "{id} must be accepted verbatim");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_private_endpoint_create_endpoint_id() {
+        for id in ["vpce-1", "vpce-bogus", "VPCE-0123456789ABCDEF0", "", " "] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "service",
+                "private-endpoint",
+                "create",
+                "svc-1",
+                "--endpoint-id",
+                id,
+            ])
+            .err()
+            .unwrap_or_else(|| panic!("--endpoint-id {id:?} must be rejected"));
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "--endpoint-id {id:?} must fail as a usage error"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_added_private_endpoint_id_on_update() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "update",
+            "svc-1",
+            "--add-private-endpoint-id",
+            "vpce-nope",
+        ])
+        .err()
+        .expect("malformed --add-private-endpoint-id must be rejected");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    /// Removing an ID must never be format-checked: a bogus ID that is already
+    /// registered has to stay removable (issue #611).
+    #[test]
+    fn accepts_malformed_removed_private_endpoint_id_on_update() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "update",
+            "svc-1",
+            "--remove-private-endpoint-id",
+            "vpce-nope",
+        ]);
+        let crate::cloud::cli::ServiceCommands::Update {
+            remove_private_endpoint_id,
+            ..
+        } = command
+        else {
+            panic!("expected service update");
+        };
+        assert_eq!(remove_private_endpoint_id, vec!["vpce-nope"]);
+    }
+
+    #[test]
+    fn validate_private_endpoint_id_accepts_every_provider_format() {
+        for id in [
+            "vpce-0123456789abcdef0",
+            "vpce-0123abcd",
+            "102600141743718403",
+            "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/privateEndpoints/pe",
+            // An Azure resource may itself be named `vpce-...`.
+            "/subscriptions/sub/resourceGroups/rg/providers/Microsoft.Network/privateEndpoints/\
+             vpce-mine",
+        ] {
+            assert!(
+                validate_private_endpoint_id(id).is_ok(),
+                "{id} must be accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_private_endpoint_id_rejects_empty_values() {
+        for id in ["", "   ", "\t"] {
+            let error = validate_private_endpoint_id(id).expect_err("empty must be rejected");
+            assert!(error.contains("must not be empty"), "{error}");
+        }
+    }
+
+    #[test]
+    fn validate_private_endpoint_id_rejects_malformed_values() {
+        for id in [
+            // Two IDs squeezed into one quoted flag value.
+            "vpce-0123456789abcdef0 vpce-0123abcd",
+            "vpce-",
+            "vpce-1",
+            "vpce-xyz",
+            // 16 hex characters: one short of the current AWS length.
+            "vpce-0123456789abcdef",
+            // 18 hex characters: one too many.
+            "vpce-0123456789abcdef01",
+            // Non-hex character inside an otherwise correct-length ID.
+            "vpce-0123456789abcdefg",
+            // AWS never issues uppercase IDs, so this would register a dud.
+            "VPCE-0123456789ABCDEF0",
+            // Endpoint *service* name pasted instead of the endpoint ID.
+            "com.amazonaws.vpce.us-east-1.vpce-svc-0123456789abcdef0",
+            // Full ARN pasted instead of the endpoint ID.
+            "arn:aws:ec2:us-east-1:123456789012:vpc-endpoint/vpce-0123456789abcdef0",
+        ] {
+            let error = validate_private_endpoint_id(id)
+                .expect_err(&format!("{id} must be rejected, not accepted"));
+            // The message names the offending value so the fix is obvious.
+            assert!(
+                error.contains(id),
+                "error for {id} should quote the value: {error}"
+            );
+        }
     }
 
     #[test]
@@ -4081,10 +5070,13 @@ mod tests {
                 }
             ));
         }
+        // A SQL-level rejection proves the endpoint *is* usable, and it is
+        // recognized by its variant rather than by its message text.
         assert!(!query_endpoint_readiness_error(
-            &clickhouse_cloud_api::Error::Api {
+            &clickhouse_cloud_api::Error::Sql {
                 status: 404,
-                message: "SQL error 60: Unknown table".into(),
+                code: "60".into(),
+                details: "Unknown table".into(),
             }
         ));
         assert!(!query_endpoint_readiness_error(
@@ -4123,6 +5115,236 @@ mod tests {
         assert_query_readiness_timeout(result, readiness.timeout);
     }
 
+    // ── post-repair verification (issue #658) ───────────────────────────
+
+    /// The service under repair; a UUID because the service model's `id` is one.
+    const VERIFIED_SERVICE_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+    const FAST_READINESS: QueryEndpointReadiness = QueryEndpointReadiness {
+        timeout: Duration::from_millis(60),
+        initial_backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(5),
+    };
+
+    async fn mount_running_service(control: &wiremock::MockServer) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(format!(
+                "/v1/organizations/org-1/services/{VERIFIED_SERVICE_ID}"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": { "id": VERIFIED_SERVICE_ID, "name": "demo", "state": "running" },
+                    "status": 200,
+                    "requestId": "stub-service-get"
+                })),
+            )
+            .mount(control)
+            .await;
+    }
+
+    fn probes_received(requests: &[wiremock::Request]) -> usize {
+        requests
+            .iter()
+            .filter(|request| request.url.path() == format!("/service/{VERIFIED_SERVICE_ID}/run"))
+            .count()
+    }
+
+    #[tokio::test]
+    async fn a_repair_verification_timeout_is_a_generic_error_with_its_own_code() {
+        let control = wiremock::MockServer::start().await;
+        mount_running_service(&control).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(format!(
+                "/service/{VERIFIED_SERVICE_ID}/run"
+            )))
+            .respond_with(
+                wiremock::ResponseTemplate::new(401).set_body_string("API key is not authorized"),
+            )
+            .mount(&control)
+            .await;
+        let client = CloudClient::for_tests(&control.uri(), Some(&control.uri()));
+
+        let error = probe_repaired_query_key(
+            &client,
+            "org-1",
+            VERIFIED_SERVICE_ID,
+            "new-key-uuid",
+            "kid",
+            "sec",
+            FAST_READINESS,
+        )
+        .await
+        .expect_err("a key rejected for the whole window is an error");
+
+        // Not an auth failure of the command: the management credentials
+        // worked, and exit code 4 would send the user to `cloud auth`.
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert!(
+            error.message.starts_with(&format!(
+                "the query key for service {VERIFIED_SERVICE_ID} was replaced (new API key \
+                 new-key-uuid) and stored in .clickhouse/credentials.json, but the Query API \
+                 kept rejecting it"
+            )),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("Do not rerun repair-query-key"),
+            "{}",
+            error.message
+        );
+        assert_eq!(
+            error.failure.map(|failure| failure.kind),
+            Some(FailureKind::Timeout)
+        );
+        let details = error.details.expect("the timeout has a structured form");
+        assert_eq!(details.code, CloudErrorCode::QueryKeyRepairUnverified);
+        assert_eq!(details.api_key_id.as_deref(), Some("new-key-uuid"));
+        assert_eq!(
+            details.command.as_deref(),
+            Some(
+                format!(
+                    "clickhousectl cloud service query --id {VERIFIED_SERVICE_ID} --org-id org-1 \
+                     --query \"SELECT 1\""
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(details.message, error.message);
+        assert!(probes_received(&control.received_requests().await.unwrap()) >= 2);
+    }
+
+    #[tokio::test]
+    async fn a_repair_verification_succeeds_once_the_probe_is_accepted() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        let control = wiremock::MockServer::start().await;
+        mount_running_service(&control).await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path(format!(
+                "/service/{VERIFIED_SERVICE_ID}/run"
+            )))
+            .respond_with(move |_: &wiremock::Request| {
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    wiremock::ResponseTemplate::new(401).set_body_string("not yet")
+                } else {
+                    wiremock::ResponseTemplate::new(200).set_body_string("1\n")
+                }
+            })
+            .mount(&control)
+            .await;
+        let client = CloudClient::for_tests(&control.uri(), Some(&control.uri()));
+
+        let verification = probe_repaired_query_key(
+            &client,
+            "org-1",
+            VERIFIED_SERVICE_ID,
+            "new-key-uuid",
+            "kid",
+            "sec",
+            FAST_READINESS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verification, RepairVerification::Verified);
+        assert_eq!(
+            probes_received(&control.received_requests().await.unwrap()),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn a_repair_verification_without_a_configured_query_host_skips_without_probing() {
+        let control = wiremock::MockServer::start().await;
+        mount_running_service(&control).await;
+        // A loopback base URL derives no query host, and no override is given.
+        let client = CloudClient::for_tests(&control.uri(), None);
+        let verification = probe_repaired_query_key(
+            &client,
+            "org-1",
+            VERIFIED_SERVICE_ID,
+            "new-key-uuid",
+            "kid",
+            "sec",
+            FAST_READINESS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verification, RepairVerification::Skipped);
+        assert!(control.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_repair_verification_skips_without_probing_when_the_record_is_gone() {
+        // No credentials file names this service, so there is nothing to
+        // probe with; the mock sees no request at all.
+        let control = wiremock::MockServer::start().await;
+        mount_running_service(&control).await;
+        let client = CloudClient::for_tests(&control.uri(), Some(&control.uri()));
+        let verification = verify_repaired_query_key(
+            &client,
+            "org-1",
+            "svc-1-with-no-stored-record",
+            "new-key-uuid",
+            FAST_READINESS,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verification, RepairVerification::Skipped);
+        assert!(control.received_requests().await.unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_repaired_credential_is_probed_only_while_the_record_names_the_new_key() {
+        let stored = |api_key_id: &str| credentials::ServiceQueryKey {
+            organization_id: Some("org-1".into()),
+            api_key_id: Some(api_key_id.into()),
+            key_id: "kid".into(),
+            key_secret: "sec".into(),
+            endpoint_id: Some("ep-1".into()),
+            pending_cleanup_api_key_ids: vec![],
+            service_name: "demo".into(),
+            created_at: chrono::Utc::now(),
+        };
+        assert_eq!(
+            repaired_query_credential(Ok(Some(stored("new"))), "svc-1", "new"),
+            Ok(("kid".to_string(), "sec".to_string()))
+        );
+        // A concurrent repair replaced the key, or the record vanished.
+        let changed = "the stored query key for service svc-1 changed before the replacement \
+                       could be probed";
+        assert_eq!(
+            repaired_query_credential(Ok(Some(stored("newer"))), "svc-1", "new"),
+            Err(changed.to_string())
+        );
+        assert_eq!(
+            repaired_query_credential(Ok(None), "svc-1", "new"),
+            Err(changed.to_string())
+        );
+    }
+
+    #[test]
+    fn a_credentials_read_error_after_a_committed_repair_skips_rather_than_fails() {
+        // The repair is committed by the time the record is re-read, so an
+        // unreadable or unparsable credentials file skips the probe like every
+        // other "not this run's to verify" case. Only a full-window Query API
+        // rejection may exit 1.
+        let reason = repaired_query_credential(
+            Err(CloudError::new("credentials.json is not valid JSON")),
+            "svc-1",
+            "new",
+        )
+        .unwrap_err();
+        assert_eq!(
+            reason,
+            "the stored query key for service svc-1 could not be read (credentials.json is not \
+             valid JSON)"
+        );
+    }
+
     #[tokio::test]
     async fn query_readiness_exhaustion_is_not_an_auth_error() {
         use std::sync::{
@@ -4155,20 +5377,16 @@ mod tests {
     }
 
     fn assert_query_readiness_timeout<T>(
-        result: Result<T, clickhouse_cloud_api::Error>,
+        result: Result<T, QueryReadinessError>,
         timeout: Duration,
     ) {
-        let error = match result {
-            Err(error) => error,
+        let elapsed = match result {
+            Err(QueryReadinessError::TimedOut(elapsed)) => elapsed,
+            Err(QueryReadinessError::Api(error)) => panic!("expected the deadline, got {error}"),
             Ok(_) => panic!("readiness should time out"),
         };
-        let client = CloudClient::new(
-            Some("test-key"),
-            Some("test-secret"),
-            Some("https://api.example.com/v1"),
-        )
-        .unwrap();
-        let converted = client.convert_error(error);
+        assert_eq!(elapsed, timeout);
+        let converted = query_readiness_timeout_error(elapsed);
 
         assert_eq!(
             converted.kind,
@@ -4178,6 +5396,281 @@ mod tests {
             converted.message,
             format!("Query API endpoint did not become ready within {timeout:?}")
         );
+        // The readiness deadline is reported as a timeout (#450), not as a
+        // generic 4xx: the CLI, not the API, gave up — so there is no HTTP
+        // status to report either.
+        assert_eq!(
+            converted.failure,
+            Some(ApiFailure::new(FailureKind::Timeout))
+        );
+    }
+
+    /// A query target for the error-rendering tests. `native` decides whether
+    /// the timeout hint has a real endpoint to name.
+    fn test_query_target(native: Option<&NativeEndpoint>) -> QueryTarget<'_> {
+        QueryTarget {
+            service_name: "demo",
+            service_id: "svc-1",
+            org_id: "org-1",
+            native,
+        }
+    }
+
+    #[test]
+    fn native_secure_endpoint_picks_the_native_protocol_endpoint() {
+        let endpoints = vec![
+            ServiceEndpoint {
+                host: Some("demo.gcp.clickhouse.cloud".into()),
+                port: Some(8443),
+                protocol: Some(ServiceEndpointProtocol::Https),
+                username: None,
+            },
+            ServiceEndpoint {
+                host: Some("demo.gcp.clickhouse.cloud".into()),
+                port: Some(9440),
+                protocol: Some(ServiceEndpointProtocol::Nativesecure),
+                username: Some("default".into()),
+            },
+        ];
+        assert_eq!(
+            native_secure_endpoint(Some(&endpoints)),
+            Some(NativeEndpoint {
+                host: "demo.gcp.clickhouse.cloud".into(),
+                port: 9440,
+            })
+        );
+    }
+
+    #[test]
+    fn native_secure_endpoint_is_absent_when_the_response_is_incomplete() {
+        // No endpoints at all, and an empty list.
+        assert_eq!(native_secure_endpoint(None), None);
+        assert_eq!(native_secure_endpoint(Some(&[])), None);
+        // Only the HTTPS endpoint.
+        assert_eq!(
+            native_secure_endpoint(Some(&[ServiceEndpoint {
+                host: Some("demo.clickhouse.cloud".into()),
+                port: Some(8443),
+                protocol: Some(ServiceEndpointProtocol::Https),
+                username: None,
+            }])),
+            None
+        );
+        // Every response field is optional, so a half-returned endpoint is
+        // absent rather than half-rendered into a command.
+        for partial in [
+            ServiceEndpoint {
+                host: Some("demo.clickhouse.cloud".into()),
+                port: None,
+                protocol: Some(ServiceEndpointProtocol::Nativesecure),
+                username: None,
+            },
+            ServiceEndpoint {
+                host: None,
+                port: Some(9440),
+                protocol: Some(ServiceEndpointProtocol::Nativesecure),
+                username: None,
+            },
+            ServiceEndpoint {
+                host: Some("demo.clickhouse.cloud".into()),
+                port: Some(9440),
+                protocol: None,
+                username: None,
+            },
+        ] {
+            assert_eq!(
+                native_secure_endpoint(Some(std::slice::from_ref(&partial))),
+                None
+            );
+        }
+    }
+
+    /// The gateway timeout names the limit, warns before a rerun, and hands
+    /// over a native-protocol command built from the service's own endpoint
+    /// (#644).
+    #[test]
+    fn query_timeout_error_hints_the_native_endpoint() {
+        let native = NativeEndpoint {
+            host: "demo.gcp.clickhouse.cloud".into(),
+            port: 9440,
+        };
+        let error = query_timeout_error(test_query_target(Some(&native)));
+
+        assert!(
+            error.message.contains("about 30 seconds"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .contains("SELECT query_id, elapsed FROM system.processes"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains("clickhousectl local use latest"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains(
+                "clickhouse client --host demo.gcp.clickhouse.cloud --secure --port 9440 \
+                 --user default --password '<password>' --query '<your SQL>'"
+            ),
+            "{}",
+            error.message
+        );
+        assert!(
+            error
+                .message
+                .contains("clickhousectl cloud service reset-password svc-1"),
+            "{}",
+            error.message
+        );
+        // With a real endpoint there is nothing to look up.
+        assert!(
+            !error.message.contains("cloud service get"),
+            "{}",
+            error.message
+        );
+        assert!(!error.message.contains("<host>"), "{}", error.message);
+
+        // A timeout is exit code 1 (Generic), never an auth failure, and the
+        // classification is the variant's (#450).
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure,
+            Some(ApiFailure::with_status(FailureKind::Timeout, 500))
+        );
+
+        let details = error.details.as_deref().expect("json details");
+        assert_eq!(details.code, CloudErrorCode::QueryTimeout);
+        assert_eq!(details.message, error.message);
+        assert_eq!(details.host.as_deref(), Some("demo.gcp.clickhouse.cloud"));
+        assert_eq!(details.port, Some(9440));
+        assert_eq!(
+            details.command.as_deref(),
+            Some(
+                "clickhouse client --host demo.gcp.clickhouse.cloud --secure --port 9440 --user \
+                 default --password '<password>' --query '<your SQL>'"
+            )
+        );
+    }
+
+    #[test]
+    fn query_timeout_error_falls_back_to_a_host_placeholder() {
+        let error = query_timeout_error(test_query_target(None));
+
+        assert!(
+            error.message.contains(
+                "clickhouse client --host <host> --secure --port 9440 --user default \
+                 --password '<password>' --query '<your SQL>'"
+            ),
+            "{}",
+            error.message
+        );
+        // No endpoint in the response, so the message says where to get one.
+        assert!(
+            error
+                .message
+                .contains("clickhousectl cloud service get svc-1 --org-id org-1"),
+            "{}",
+            error.message
+        );
+
+        let details = error.details.as_deref().expect("json details");
+        // Absent means omitted: no fabricated host or port.
+        assert_eq!(details.host, None);
+        assert_eq!(details.port, None);
+        assert!(
+            details
+                .command
+                .as_deref()
+                .is_some_and(|command| command.contains("--host <host>")),
+            "{details:?}"
+        );
+        let json = serde_json::to_value(details).expect("details serialize");
+        assert_eq!(json["code"], "query_timeout");
+        assert!(json.get("host").is_none(), "{json}");
+        assert!(json.get("port").is_none(), "{json}");
+    }
+
+    /// The message is rendered from the target and fixed placeholders only,
+    /// so neither the statement nor any credential can reach it.
+    #[test]
+    fn query_timeout_error_never_echoes_sql_or_credentials() {
+        let native = NativeEndpoint {
+            host: "demo.gcp.clickhouse.cloud".into(),
+            port: 9440,
+        };
+        for target in [test_query_target(Some(&native)), test_query_target(None)] {
+            let error = query_timeout_error(target);
+            assert!(error.message.contains("'<your SQL>'"), "{}", error.message);
+            assert!(
+                error.message.contains("--password '<password>'"),
+                "{}",
+                error.message
+            );
+        }
+    }
+
+    /// Every query-path error a boundary rewrites keeps a classification
+    /// derived from what actually failed, not from its message (#450).
+    #[test]
+    fn query_errors_carry_their_structural_classification() {
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+
+        // A stopped service gets a rewritten, actionable message; the
+        // classification survives the rewrite.
+        let stopped = convert_query_error(
+            &client,
+            clickhouse_cloud_api::Error::ServiceStopped,
+            test_query_target(None),
+        );
+        assert!(stopped.message.contains("is stopped"));
+        assert_eq!(
+            stopped.failure,
+            Some(ApiFailure::new(FailureKind::ServiceStopped))
+        );
+
+        let sql = convert_query_error(
+            &client,
+            clickhouse_cloud_api::Error::Sql {
+                status: 400,
+                code: "62".into(),
+                details: "Syntax error".into(),
+            },
+            test_query_target(None),
+        );
+        assert_eq!(
+            sql.failure,
+            Some(ApiFailure::with_status(FailureKind::SqlError, 400))
+        );
+
+        // `--no-auto-enable` rewrites the message but the failure is still
+        // the Query API's own rejection: its class and status survive.
+        for status in [401, 403, 404] {
+            let refused = refused_query_provisioning_error(
+                "svc-1",
+                &clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "rejected".into(),
+                },
+            );
+            assert!(refused.message.contains("--no-auto-enable"), "{refused}");
+            assert_eq!(refused.kind, crate::cloud::client::CloudErrorKind::Generic);
+            assert_eq!(
+                refused.failure,
+                Some(ApiFailure::with_status(FailureKind::Http4xx, status)),
+                "status {status}"
+            );
+        }
     }
 
     #[test]
@@ -4495,6 +5988,121 @@ mod tests {
     }
 
     #[test]
+    fn has_removals_is_false_when_no_remove_flags_set() {
+        assert!(!has_removals(&ServiceUpdateOptions::default()));
+        assert!(!has_removals(&ServiceUpdateOptions {
+            add_ip_allow: vec!["10.0.0.0/8".to_string()],
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn has_removals_is_true_when_any_remove_flag_set() {
+        assert!(has_removals(&ServiceUpdateOptions {
+            remove_ip_allow: vec!["10.0.0.0/8".to_string()],
+            ..Default::default()
+        }));
+        assert!(has_removals(&ServiceUpdateOptions {
+            remove_private_endpoint_ids: vec!["pe-1".to_string()],
+            ..Default::default()
+        }));
+        assert!(has_removals(&ServiceUpdateOptions {
+            remove_tags: vec!["env".to_string()],
+            ..Default::default()
+        }));
+    }
+
+    #[test]
+    fn unmatched_returns_only_values_absent_from_current() {
+        let current: HashSet<&str> = ["a", "b"].into_iter().collect();
+        assert_eq!(
+            unmatched(&["a".to_string(), "c".to_string()], &current),
+            vec!["c"]
+        );
+        assert!(unmatched(&["a".to_string(), "b".to_string()], &current).is_empty());
+    }
+
+    #[test]
+    fn tag_key_strips_value_and_trims() {
+        assert_eq!(tag_key("env"), "env");
+        assert_eq!(tag_key("env=prod"), "env");
+        assert_eq!(tag_key(" env = prod"), "env");
+    }
+
+    fn service_with_ip_allow_endpoints_and_tags() -> Service {
+        Service {
+            ip_access_list: Some(vec![IpAccessListEntryResponse {
+                source: Some("10.0.0.0/8".to_string()),
+                description: None,
+            }]),
+            private_endpoint_ids: Some(vec!["pe-1".to_string()]),
+            tags: Some(vec![ResourceTagsV1Response {
+                key: Some("env".to_string()),
+                value: Some("prod".to_string()),
+            }]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_is_empty_when_everything_matches() {
+        let current = service_with_ip_allow_endpoints_and_tags();
+        let options = ServiceUpdateOptions {
+            remove_ip_allow: vec!["10.0.0.0/8".to_string()],
+            remove_private_endpoint_ids: vec!["pe-1".to_string()],
+            remove_tags: vec!["env".to_string()],
+            ..Default::default()
+        };
+        assert!(unmatched_removal_warnings(&options, &current).is_empty());
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_names_every_unmatched_entry() {
+        let current = service_with_ip_allow_endpoints_and_tags();
+        let options = ServiceUpdateOptions {
+            remove_ip_allow: vec!["10.99.99.99/32".to_string()],
+            remove_private_endpoint_ids: vec!["pe-missing".to_string()],
+            remove_tags: vec!["missing=value".to_string()],
+            ..Default::default()
+        };
+        let warnings = unmatched_removal_warnings(&options, &current);
+        assert_eq!(warnings.len(), 3);
+        assert!(
+            warnings[0].contains("--remove-ip-allow 10.99.99.99/32")
+                && warnings[0].contains("did not match"),
+            "{warnings:?}"
+        );
+        assert!(
+            warnings[1].contains("--remove-private-endpoint-id pe-missing"),
+            "{warnings:?}"
+        );
+        assert!(warnings[2].contains("--remove-tag missing"), "{warnings:?}");
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_matches_tag_removal_by_key_only() {
+        // Removing "env=staging" should still match a current "env=prod" tag:
+        // the key is what the server matches on for removal.
+        let current = service_with_ip_allow_endpoints_and_tags();
+        let options = ServiceUpdateOptions {
+            remove_tags: vec!["env=staging".to_string()],
+            ..Default::default()
+        };
+        assert!(unmatched_removal_warnings(&options, &current).is_empty());
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_handles_empty_current_lists() {
+        let options = ServiceUpdateOptions {
+            remove_ip_allow: vec!["10.0.0.0/8".to_string()],
+            ..Default::default()
+        };
+        let warnings = unmatched_removal_warnings(&options, &Service::default());
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("--remove-ip-allow 10.0.0.0/8"));
+    }
+
+    #[test]
     fn build_create_service_request_rejects_invalid_provider() {
         let error = build_create_service_request(&CreateServiceOptions {
             provider: "awss".to_string(),
@@ -4749,17 +6357,18 @@ mod tests {
 
     #[test]
     fn build_private_endpoint_create_request_supports_minimal_fields() {
-        let request = build_private_endpoint_create_request("vpce-1", None);
+        let request = build_private_endpoint_create_request("vpce-0123456789abcdef0", None);
 
-        assert_eq!(request.id, "vpce-1");
+        assert_eq!(request.id, "vpce-0123456789abcdef0");
         assert!(request.description.is_empty());
     }
 
     #[test]
     fn build_private_endpoint_create_request_supports_maximal_fields() {
-        let request = build_private_endpoint_create_request("vpce-1", Some("production"));
+        let request =
+            build_private_endpoint_create_request("vpce-0123456789abcdef0", Some("production"));
 
-        assert_eq!(request.id, "vpce-1");
+        assert_eq!(request.id, "vpce-0123456789abcdef0");
         assert_eq!(request.description, "production");
     }
 
@@ -4770,5 +6379,138 @@ mod tests {
 
         assert_eq!(start.command, Some(ServiceStatePatchRequestCommand::Start));
         assert_eq!(stop.command, Some(ServiceStatePatchRequestCommand::Stop));
+    }
+
+    #[test]
+    fn inline_query_only_conflicts_with_bytes_waiting_on_stdin() {
+        // The whole matrix of stdin states crossed with --query being present
+        // (#641). Only "not a terminal and data is already waiting" conflicts:
+        // a terminal must never be read, and a non-terminal empty stdin is the
+        // normal shape for CI and for coding agents.
+        assert!(!inline_query_conflicts_with_stdin(
+            Some("SELECT 1"),
+            StdinInput::Terminal
+        ));
+        assert!(!inline_query_conflicts_with_stdin(
+            Some("SELECT 1"),
+            StdinInput::Empty
+        ));
+        assert!(inline_query_conflicts_with_stdin(
+            Some("SELECT 1"),
+            StdinInput::Pending
+        ));
+
+        assert!(!inline_query_conflicts_with_stdin(
+            None,
+            StdinInput::Terminal
+        ));
+        assert!(!inline_query_conflicts_with_stdin(None, StdinInput::Empty));
+        // Without --query, piped bytes are the SQL itself, not a conflict.
+        assert!(!inline_query_conflicts_with_stdin(
+            None,
+            StdinInput::Pending
+        ));
+    }
+
+    /// A real unnamed pipe as `(read_fd, write_fd)`.
+    fn test_pipe() -> (libc::c_int, libc::c_int) {
+        let mut fds = [0 as libc::c_int; 2];
+        // SAFETY: `fds` is a two-element array, which is what `pipe` writes.
+        let created = unsafe { libc::pipe(fds.as_mut_ptr()) };
+        assert_eq!(created, 0, "pipe() failed");
+        (fds[0], fds[1])
+    }
+
+    fn write_byte(fd: libc::c_int) {
+        // SAFETY: one byte is written from a live local buffer.
+        let written = unsafe { libc::write(fd, b"x".as_ptr().cast(), 1) };
+        assert_eq!(written, 1, "write() failed");
+    }
+
+    fn close_fd(fd: libc::c_int) {
+        // SAFETY: each fd is closed exactly once by its owning test.
+        unsafe { libc::close(fd) };
+    }
+
+    #[test]
+    fn readiness_waits_for_a_producer_that_has_not_written_its_first_byte() {
+        // The #641 race: `cat data.csv | clickhousectl ... --query ...` starts
+        // both processes at once, so the CLI can look at stdin before the
+        // producer has written. A zero timeout calls that "no input" and sends
+        // the empty INSERT, which is the whole bug; the bounded wait sees the
+        // byte. This is asserted on a real pipe rather than through a
+        // subprocess so the interleaving is not left to process startup.
+        let (read_fd, write_fd) = test_pipe();
+        assert!(
+            !fd_becomes_readable(read_fd, 0),
+            "nothing has been written yet"
+        );
+
+        let producer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            write_byte(write_fd);
+            close_fd(write_fd);
+        });
+
+        let started = std::time::Instant::now();
+        assert!(fd_becomes_readable(read_fd, STDIN_FIRST_BYTE_TIMEOUT_MS));
+        assert!(
+            started.elapsed() < Duration::from_millis(STDIN_FIRST_BYTE_TIMEOUT_MS as u64 + 500),
+            "the wait must stay bounded"
+        );
+
+        producer.join().unwrap();
+        close_fd(read_fd);
+    }
+
+    #[test]
+    fn readiness_gives_up_on_a_pipe_nobody_writes_to() {
+        // A harness that wired up stdin and produced nothing must not hang the
+        // command: the wait expires and the run continues.
+        let (read_fd, write_fd) = test_pipe();
+
+        let started = std::time::Instant::now();
+        assert!(!fd_becomes_readable(read_fd, STDIN_FIRST_BYTE_TIMEOUT_MS));
+        let waited = started.elapsed();
+        assert!(
+            waited < Duration::from_millis(STDIN_FIRST_BYTE_TIMEOUT_MS as u64 + 500),
+            "waited {waited:?}"
+        );
+
+        close_fd(write_fd);
+        close_fd(read_fd);
+    }
+
+    #[test]
+    fn readiness_is_immediate_for_data_that_is_already_waiting() {
+        let (read_fd, write_fd) = test_pipe();
+        write_byte(write_fd);
+
+        assert!(fd_becomes_readable(read_fd, 0));
+
+        close_fd(write_fd);
+        close_fd(read_fd);
+    }
+
+    #[test]
+    fn the_stdin_conflict_message_says_what_does_work() {
+        assert!(
+            INLINE_QUERY_WITH_STDIN_ERROR
+                .starts_with("--query cannot be combined with SQL or data on stdin.")
+        );
+        assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("cat - data.csv"));
+        assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("--queries-file -"));
+    }
+
+    #[test]
+    fn service_query_help_documents_that_query_ignores_stdin() {
+        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+        let help = error.to_string();
+
+        assert!(help.contains("--query never reads stdin"), "{help}");
+        assert!(help.contains("cat - data.csv"), "{help}");
+        assert!(help.contains("Does not read stdin"), "{help}");
     }
 }

@@ -29,30 +29,44 @@ pub fn is_initialized() -> bool {
     local_dir().exists()
 }
 
-pub fn init() -> Result<()> {
+/// Which project-local paths `init()` created during this invocation. The
+/// caller renders this in both the human-readable and `--json` output, so
+/// `init()` itself prints nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InitResult {
+    pub clickhouse_dir_created: bool,
+    pub clickhouse_scaffold_created: bool,
+    pub postgres_scaffold_created: bool,
+}
+
+pub fn init() -> Result<InitResult> {
     let dir = local_dir();
 
-    if is_initialized() {
-        eprintln!("Already initialized at {}", dir.display());
+    let clickhouse_dir_created = if is_initialized() {
+        false
     } else {
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join(".gitignore"), "*\n")?;
-        eprintln!("Initialized ClickHouse project in {}", dir.display());
-    }
+        true
+    };
 
-    create_project_scaffold(
+    let clickhouse_scaffold_created = create_project_scaffold(
         project_dir(),
         &["tables", "materialized_views", "queries", "seed"],
     )?;
-    create_project_scaffold(
+    let postgres_scaffold_created = create_project_scaffold(
         postgres_project_dir(),
         &["tables", "views", "functions", "queries", "seed"],
     )?;
 
-    Ok(())
+    Ok(InitResult {
+        clickhouse_dir_created,
+        clickhouse_scaffold_created,
+        postgres_scaffold_created,
+    })
 }
 
-fn create_project_scaffold(dir: PathBuf, subdirs: &[&str]) -> Result<()> {
+fn create_project_scaffold(dir: PathBuf, subdirs: &[&str]) -> Result<bool> {
     let mut created = false;
     for subdir in subdirs {
         let path = dir.join(subdir);
@@ -63,15 +77,7 @@ fn create_project_scaffold(dir: PathBuf, subdirs: &[&str]) -> Result<()> {
         }
     }
 
-    if created {
-        eprintln!(
-            "Created project scaffold in {}/ ({})",
-            dir.display(),
-            subdirs.join(", ")
-        );
-    }
-
-    Ok(())
+    Ok(created)
 }
 
 /// Returns CLI flags that point ClickHouse data into the current directory.
@@ -89,7 +95,8 @@ mod tests {
         let dir = tmp.path().join("postgres");
         let subdirs = ["tables", "materialized_views", "queries", "seed"];
 
-        create_project_scaffold(dir.clone(), &subdirs).unwrap();
+        let created = create_project_scaffold(dir.clone(), &subdirs).unwrap();
+        assert!(created);
 
         for subdir in &subdirs {
             let path = dir.join(subdir);
@@ -108,9 +115,10 @@ mod tests {
         let dir = tmp.path().join("clickhouse");
         let subdirs = ["tables", "queries"];
 
-        create_project_scaffold(dir.clone(), &subdirs).unwrap();
-        // Running again over an existing scaffold must not error.
-        create_project_scaffold(dir.clone(), &subdirs).unwrap();
+        assert!(create_project_scaffold(dir.clone(), &subdirs).unwrap());
+        // Running again over an existing scaffold must not error, and must
+        // report that nothing new was created.
+        assert!(!create_project_scaffold(dir.clone(), &subdirs).unwrap());
 
         assert!(dir.join("tables").join(".gitkeep").is_file());
     }

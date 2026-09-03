@@ -606,6 +606,33 @@ fn clickpipe_state_all_variants() {
 }
 
 #[test]
+fn postgres_table_mapping_table_engines_round_trip_and_match_values() {
+    // The CLI validates `--table-mapping-json`'s `tableEngine` against
+    // `VALUES`, so the const must stay equal to the wire values the enum
+    // actually accepts.
+    assert_eq!(
+        ClickPipePostgresPipeTableMappingTableengine::VALUES,
+        &["MergeTree", "ReplacingMergeTree", "Null"]
+    );
+    for value in ClickPipePostgresPipeTableMappingTableengine::VALUES {
+        let parsed: ClickPipePostgresPipeTableMappingTableengine =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(
+                parsed,
+                ClickPipePostgresPipeTableMappingTableengine::Unknown(_)
+            ),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            format!(r#""{value}""#)
+        );
+    }
+}
+
+#[test]
 fn deserialize_activity() {
     let json = r#"{
         "actorType": "api",
@@ -928,12 +955,40 @@ fn serialize_backup_configuration_patch_request() {
     let req = BackupConfigurationPatchRequest {
         backup_period_in_hours: Some(12.0),
         backup_retention_period_in_hours: Some(336.0),
-        backup_start_time: Some("03:00".to_string()),
+        backup_start_time: Some(Some("03:00".to_string())),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["backupPeriodInHours"], 12.0);
     assert_eq!(json["backupRetentionPeriodInHours"], 336.0);
     assert_eq!(json["backupStartTime"], "03:00");
+}
+
+/// The three states of `backupStartTime` are what let a caller both set and
+/// unset the start time: only an explicit `null` clears the stored value, and
+/// omitting the key must leave it untouched.
+#[test]
+fn serialize_backup_configuration_patch_request_omits_an_untouched_start_time() {
+    let req = BackupConfigurationPatchRequest {
+        backup_period_in_hours: Some(12.0),
+        backup_retention_period_in_hours: None,
+        backup_start_time: None,
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json, serde_json::json!({ "backupPeriodInHours": 12.0 }));
+}
+
+#[test]
+fn serialize_backup_configuration_patch_request_clears_the_start_time_with_null() {
+    let req = BackupConfigurationPatchRequest {
+        backup_period_in_hours: Some(12.0),
+        backup_retention_period_in_hours: None,
+        backup_start_time: Some(None),
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({ "backupPeriodInHours": 12.0, "backupStartTime": null })
+    );
 }
 
 #[test]
@@ -1220,6 +1275,41 @@ fn serialize_clickpipe_object_storage_ingestion_controls() {
     let json = serde_json::to_value(ClickPipePostObjectStorageSource::default()).unwrap();
     assert!(json.get("skipInitialLoad").is_none());
     assert!(json.get("startAfter").is_none());
+}
+
+#[test]
+fn serialize_clickpipe_mutate_postgres_source_omits_absent_credentials() {
+    // IAM_ROLE authentication has no username or password: `iamRole` is the
+    // whole credential, so the `credentials` object must not reach the wire.
+    let iam_role = ClickPipeMutatePostgresSource {
+        authentication: ClickPipeMutatePostgresSourceAuthentication::IAM_ROLE,
+        credentials: None,
+        iam_role: Some("arn:aws:iam::123456789012:role/clickpipe".to_string()),
+        host: "postgres.example".to_string(),
+        port: 5432,
+        database: "source-db".to_string(),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&iam_role).unwrap();
+    assert!(
+        json.get("credentials").is_none(),
+        "credentials must be omitted, got {json}"
+    );
+    assert_eq!(json["iamRole"], "arn:aws:iam::123456789012:role/clickpipe");
+    assert_eq!(json["authentication"], "IAM_ROLE");
+
+    // Basic auth still sends the pair verbatim.
+    let basic = ClickPipeMutatePostgresSource {
+        authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
+        credentials: Some(PLAIN {
+            username: "user".to_string(),
+            password: "secret".to_string(),
+        }),
+        ..iam_role.clone()
+    };
+    let json = serde_json::to_value(&basic).unwrap();
+    assert_eq!(json["credentials"]["username"], "user");
+    assert_eq!(json["credentials"]["password"], "secret");
 }
 
 #[test]
@@ -3650,6 +3740,65 @@ fn click_pipe_schema_discovery_request_kafka_source() {
     assert!(v["source"].get("pubsub").is_none());
 }
 
+// A Kafka broker with no authentication has no spec enum value; absence of the
+// `authentication` key is the wire representation, so `None` must be omitted
+// rather than serialized as a mechanism or as `null`.
+#[test]
+fn click_pipe_post_kafka_source_omits_absent_authentication() {
+    let no_auth = ClickPipePostKafkaSource {
+        brokers: "broker1:9092".to_string(),
+        topics: "events".to_string(),
+        authentication: None,
+        credentials: serde_json::Value::Null,
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&no_auth).unwrap();
+    assert!(
+        v.get("authentication").is_none(),
+        "absent authentication must be omitted, got {v}"
+    );
+    assert_eq!(v["brokers"], "broker1:9092");
+
+    let plain = ClickPipePostKafkaSource {
+        authentication: Some(ClickPipePostKafkaSourceAuthentication::PLAIN),
+        credentials: serde_json::json!({"username": "u", "password": "p"}),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&plain).unwrap();
+    assert_eq!(v["authentication"], "PLAIN");
+    assert_eq!(v["credentials"]["username"], "u");
+}
+
+// `kafka_read_committed` is only supported for Kafka pipes, so a settings PUT
+// for any other source must leave the key off the wire entirely — not send
+// `false` and not send `null`.
+#[test]
+fn click_pipe_settings_put_request_omits_absent_kafka_read_committed() {
+    let non_kafka = ClickPipeSettingsPutRequest {
+        object_storage_max_file_count: Some(200),
+        kafka_read_committed: None,
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&non_kafka).unwrap();
+    assert!(
+        v.get("kafka_read_committed").is_none(),
+        "absent kafka_read_committed must be omitted, got {v}"
+    );
+    assert_eq!(
+        v,
+        serde_json::json!({ "object_storage_max_file_count": 200 })
+    );
+
+    let kafka = ClickPipeSettingsPutRequest {
+        streaming_max_insert_wait_ms: Some(1000),
+        kafka_read_committed: Some(true),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&kafka).unwrap();
+    assert_eq!(v["kafka_read_committed"], true);
+    assert_eq!(v["streaming_max_insert_wait_ms"], 1000);
+}
+
 #[test]
 fn click_pipe_schema_discovery_request_supports_new_sources() {
     let object_storage = ClickPipeSchemaDiscoveryRequest {
@@ -3952,10 +4101,14 @@ fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
         serde_json::from_str::<ClickPipePostgresPipeTableMappingResponse>("{}").unwrap(),
         ClickPipePostgresPipeTableMappingResponse::default()
     );
-    // The new non-nullable Kafka setting is required in requests while the
-    // response variant remains tolerant of a dropped key.
+    // The new non-nullable Kafka setting is required in the create-position
+    // settings object, while the settings PUT omits it for non-Kafka pipes and
+    // the response variant remains tolerant of a dropped key.
     assert!(serde_json::from_str::<ClickPipeSettings>("{}").is_err());
-    assert!(serde_json::from_str::<ClickPipeSettingsPutRequest>("{}").is_err());
+    assert_eq!(
+        serde_json::from_str::<ClickPipeSettingsPutRequest>("{}").unwrap(),
+        ClickPipeSettingsPutRequest::default()
+    );
     assert_eq!(
         serde_json::from_str::<ClickPipeSettingsResponse>("{}").unwrap(),
         ClickPipeSettingsResponse::default()
@@ -5710,4 +5863,77 @@ fn deserialize_clickstack_dashboard_chart_series_unknown_type_round_trip() {
     }
     let expected: serde_json::Value = serde_json::from_str(json).unwrap();
     assert_eq!(serde_json::to_value(&series).unwrap(), expected);
+}
+
+#[test]
+fn reverse_private_endpoint_create_enums_round_trip_and_match_values() {
+    // The CLI validates `reverse-private-endpoint create --type` and
+    // `--msk-authentication` against `VALUES`, so each const must stay equal
+    // to the wire values its enum actually accepts.
+    assert_eq!(
+        CreateReversePrivateEndpointType::VALUES,
+        &[
+            "VPC_ENDPOINT_SERVICE",
+            "VPC_RESOURCE",
+            "MSK_MULTI_VPC",
+            "GCP_PSC_SERVICE_ATTACHMENT",
+        ]
+    );
+    for value in CreateReversePrivateEndpointType::VALUES {
+        let parsed: CreateReversePrivateEndpointType =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, CreateReversePrivateEndpointType::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            format!(r#""{value}""#)
+        );
+    }
+
+    assert_eq!(
+        CreateReversePrivateEndpointMskauthentication::VALUES,
+        &["SASL_IAM", "SASL_SCRAM"]
+    );
+    for value in CreateReversePrivateEndpointMskauthentication::VALUES {
+        let parsed: CreateReversePrivateEndpointMskauthentication =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(
+                parsed,
+                CreateReversePrivateEndpointMskauthentication::Unknown(_)
+            ),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            format!(r#""{value}""#)
+        );
+    }
+}
+
+/// The endpoint's own model is a response type: a key the API drops and a key
+/// it sends as `null` both have to land as `None`, and neither is emitted back.
+#[test]
+fn reverse_private_endpoint_tolerates_missing_and_null_fields() {
+    let sparse: ReversePrivateEndpoint = serde_json::from_str(r#"{"description":"warehouse"}"#)
+        .expect("a response with one key must deserialize");
+    assert_eq!(sparse.description.as_deref(), Some("warehouse"));
+    assert_eq!(sparse.dns_names, None);
+    assert_eq!(sparse.status, None);
+    assert_eq!(sparse.id, None);
+
+    let explicit_nulls: ReversePrivateEndpoint = serde_json::from_str(
+        r#"{"description":null,"dnsNames":null,"status":null,"id":null,"type":null}"#,
+    )
+    .expect("explicit nulls must deserialize");
+    assert_eq!(explicit_nulls, ReversePrivateEndpoint::default());
+    assert_eq!(
+        serde_json::to_string(&explicit_nulls).unwrap(),
+        "{}",
+        "absent fields must be omitted, never serialized as null"
+    );
 }

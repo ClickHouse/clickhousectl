@@ -6,9 +6,31 @@
 
 use std::{collections::HashMap, process::Command};
 
+/// The name the ClickHouse watchdog rewrites its `argv[0]` to, which is what
+/// `ps` reports as the command line of a supervising parent.
+const WATCHDOG_PROCESS_NAME: &str = "clickhouse-watchdog";
+
+/// Shortest `argv[0]` still recognisable as the watchdog.
+///
+/// The watchdog rewrites `argv[0]` in place, so the name it reports is
+/// truncated to the length of the path the CLI spawned it with. That path is
+/// normally far longer than the new name, but a prefix still has to be
+/// accepted, and the bar it has to clear is only the server's own basename:
+/// `clickhouse` is itself a prefix of `clickhouse-watchdog`, so one character
+/// more is enough to tell the two apart. The only 11-character prefix of the
+/// watchdog's name is `clickhouse-`, which no ClickHouse binary is called.
+const WATCHDOG_NAME_MIN_LEN: usize = "clickhouse".len() + 1;
+
 /// A ClickHouse process discovered via OS-level process inspection.
 #[derive(Debug, Clone)]
 pub struct DiscoveredProcess {
+    /// The PID to signal to stop this server for good: the ClickHouse watchdog
+    /// when the server has one, otherwise the server process itself.
+    ///
+    /// The watchdog owns the lifetime of the pair: it forwards SIGTERM to the
+    /// server it supervises and exits with it, so signalling the watchdog stops
+    /// both together. `server start` records that same supervising PID in the
+    /// server's metadata, so both views of a server agree (issue #664).
     pub pid: u32,
     pub project_root: String,
     pub server_name: String,
@@ -24,19 +46,35 @@ pub struct DiscoveredProcess {
 pub fn discover_clickhouse_processes() -> Vec<DiscoveredProcess> {
     let pids = find_clickhouse_pids();
     let cwds = get_process_cwds(&pids);
-    let mut discovered = Vec::new();
 
-    for pid in pids {
-        let Some(cwd) = cwds.get(&pid) else {
-            continue;
-        };
+    // The cwd is what decides whether a process was started by this CLI, so it
+    // is resolved first: parents are then only looked up for the PIDs that
+    // survive the filter.
+    let server_pids: Vec<u32> = pids
+        .into_iter()
+        .filter(|pid| cwds.contains_key(pid))
+        .collect();
 
-        if let Some(proc) = inspect_process(pid, cwd) {
-            discovered.push(proc);
-        }
-    }
+    let rows = scan_process_rows(&server_pids);
+    let supervisors = resolve_watchdog_pids(&server_pids, &rows);
+    // The rows already carry each scanned process's command line, so the whole
+    // scan stays two flat subprocess calls with no per-PID lookup on top.
+    let commands: HashMap<u32, &str> = rows
+        .iter()
+        .map(|row| (row.pid, row.command.as_str()))
+        .collect();
 
-    discovered
+    server_pids
+        .iter()
+        .filter_map(|pid| {
+            // Server metadata always comes from the server process, whose
+            // command line still carries the binary path and the port flags.
+            // Only the reported PID is the supervisor's.
+            let reported_pid = supervisors.get(pid).copied().unwrap_or(*pid);
+            let command = commands.get(pid).copied().unwrap_or_default();
+            inspect_process(reported_pid, cwds.get(pid)?, command)
+        })
+        .collect()
 }
 
 /// Find PIDs of running `clickhouse` processes.
@@ -53,15 +91,19 @@ fn find_clickhouse_pids() -> Vec<u32> {
 }
 
 /// Inspect a single process to extract server metadata from its cwd and cmdline.
-fn inspect_process(pid: u32, cwd: &str) -> Option<DiscoveredProcess> {
+///
+/// `reported_pid` is the PID the result carries, which is the supervising
+/// watchdog when there is one; `cwd` and `cmdline` belong to the server process
+/// being inspected. A process whose `ps` row was missing arrives with an empty
+/// `cmdline`, which leaves every parsed field absent.
+fn inspect_process(reported_pid: u32, cwd: &str, cmdline: &str) -> Option<DiscoveredProcess> {
     let (project_root, server_name) = parse_server_cwd(cwd)?;
-    let cmdline = get_process_cmdline(pid).unwrap_or_default();
-    let http_port = parse_port_flag(&cmdline, "--http_port");
-    let tcp_port = parse_port_flag(&cmdline, "--tcp_port");
-    let version = parse_version_from_cmdline(&cmdline);
+    let http_port = parse_port_flag(cmdline, "--http_port");
+    let tcp_port = parse_port_flag(cmdline, "--tcp_port");
+    let version = parse_version_from_cmdline(cmdline);
 
     Some(DiscoveredProcess {
-        pid,
+        pid: reported_pid,
         project_root,
         server_name,
         http_port,
@@ -133,18 +175,129 @@ fn get_process_cwds(pids: &[u32]) -> HashMap<u32, String> {
         .collect()
 }
 
-/// Get the command-line string of a process.
-fn get_process_cmdline(pid: u32) -> Option<String> {
-    let output = Command::new("ps")
-        .args(["-o", "args=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
+/// A `pid ppid args` row of `ps` output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ProcessRow {
+    pid: u32,
+    ppid: u32,
+    /// The process's command line, whose first token names the executable.
+    command: String,
+}
 
-    if output.status.success() {
-        Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    } else {
-        None
+/// Read a `pid ppid args` row for each scanned server PID and for each of
+/// their parents.
+///
+/// ClickHouse starts a watchdog that owns the lifetime of the server it
+/// supervises, so the server's own PID is not the one that stops it.
+/// `pgrep -x clickhouse` never matches the watchdog (it renames itself), so the
+/// parents have to be read separately: one batched `ps` to learn the parents
+/// and one to identify them, two calls whatever the number of servers.
+/// `get_process_cwds` batches `lsof` for the same reason.
+fn scan_process_rows(pids: &[u32]) -> Vec<ProcessRow> {
+    let mut rows = ps_process_rows(pids);
+    let mut parents = Vec::new();
+    for row in &rows {
+        // PID 0 is the kernel and has no row to read. PID 1 does, and it is
+        // worth reading: in a container the watchdog can be init itself, while
+        // an ordinary init simply fails `is_watchdog_command`.
+        if row.ppid > 0 && !pids.contains(&row.ppid) && !parents.contains(&row.ppid) {
+            parents.push(row.ppid);
+        }
     }
+    rows.extend(ps_process_rows(&parents));
+
+    rows
+}
+
+/// Read `pid ppid args` for `pids` in one `ps` invocation.
+fn ps_process_rows(pids: &[u32]) -> Vec<ProcessRow> {
+    if pids.is_empty() {
+        return Vec::new();
+    }
+
+    let pid_list = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+
+    // `args` rather than `comm`: on Linux `comm` is the thread name the
+    // watchdog sets with `prctl` (it has changed between ClickHouse versions),
+    // while the rewritten `argv[0]` that `args` reports is the same on Linux
+    // and macOS.
+    let output = Command::new("ps")
+        .args(["-o", "pid=,ppid=,args=", "-p", &pid_list])
+        .output();
+
+    let Ok(output) = output else {
+        return Vec::new();
+    };
+
+    // A non-zero status means at least one selected PID exited during
+    // inspection; keep the rows `ps` did emit.
+    parse_ps_process_rows(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Parse `ps -o pid=,ppid=,args=` output.
+///
+/// `ps` right-aligns the numeric columns and `args` is last, so a row is two
+/// integers followed by the rest of the line. Lines that do not start with two
+/// integers (a header, a warning, or a stand-in tool's output) are ignored.
+fn parse_ps_process_rows(output: &str) -> Vec<ProcessRow> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let (pid, rest) = split_first_token(line)?;
+            let (ppid, command) = split_first_token(rest)?;
+            Some(ProcessRow {
+                pid: pid.parse().ok()?,
+                ppid: ppid.parse().ok()?,
+                command: command.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Split leading whitespace and the first token off `text`.
+fn split_first_token(text: &str) -> Option<(&str, &str)> {
+    let text = text.trim_start();
+    let end = text.find(char::is_whitespace).unwrap_or(text.len());
+    if end == 0 {
+        return None;
+    }
+    Some(text.split_at(end))
+}
+
+/// Whether a command line belongs to a ClickHouse watchdog process.
+fn is_watchdog_command(command: &str) -> bool {
+    let Some(argv0) = command.split_whitespace().next() else {
+        return false;
+    };
+    // macOS reports the full binary path; the watchdog's rewritten name has no
+    // path, so take the basename either way.
+    let name = argv0.rsplit('/').next().unwrap_or(argv0);
+
+    name.len() >= WATCHDOG_NAME_MIN_LEN && WATCHDOG_PROCESS_NAME.starts_with(name)
+}
+
+/// Resolve, for each of `pids`, the PID to report: its parent when that parent
+/// is a ClickHouse watchdog, otherwise the PID itself.
+///
+/// Pure over already-collected `ps` rows, which may describe the scanned
+/// processes, their parents, or both.
+fn resolve_watchdog_pids(pids: &[u32], rows: &[ProcessRow]) -> HashMap<u32, u32> {
+    let by_pid: HashMap<u32, &ProcessRow> = rows.iter().map(|row| (row.pid, row)).collect();
+
+    pids.iter()
+        .map(|&pid| {
+            let reported = by_pid
+                .get(&pid)
+                .and_then(|row| by_pid.get(&row.ppid))
+                .filter(|parent| is_watchdog_command(&parent.command))
+                .map_or(pid, |parent| parent.pid);
+            (pid, reported)
+        })
+        .collect()
 }
 
 /// Parse a cwd path matching `<project_root>/.clickhouse/servers/<name>/data`
@@ -239,6 +392,197 @@ mod tests {
 
         assert_eq!(cwds.len(), 1);
         assert_eq!(cwds.get(&404).map(String::as_str), Some("/path-for-404"));
+    }
+
+    // ── watchdog PID resolution tests (issue #664) ─────────────────────
+
+    /// `ps -o pid=,ppid=,args=` as macOS prints it: right-aligned numeric
+    /// columns and the server's `argv[0]` a full path. The watchdog row is the
+    /// rewritten name alone, padded with the trailing spaces `ps` shows for the
+    /// rest of the zeroed `argv` region, because the rewrite ends the macOS
+    /// `argv` walk and no argument is reported after it.
+    const MACOS_PS_OUTPUT: &str = concat!(
+        "95194 95193 /Users/al/.clickhouse/versions/26.9.1.531/clickhouse server -- --path=./ --http_port=8123 --tcp_port=9000\n",
+        "95193     1 clickhouse-watchdog     \n",
+    );
+
+    /// The same call on Linux: unpadded columns and an `/usr/bin` style path.
+    const LINUX_PS_OUTPUT: &str = concat!(
+        "4211 4210 /home/al/.clickhouse/versions/26.9.1.531/clickhouse server -- --path=./ --http_port=8123 --tcp_port=9000\n",
+        "4210 1 clickhouse-watchdog     \n",
+    );
+
+    #[test]
+    fn ps_rows_parse_from_macos_output() {
+        let rows = parse_ps_process_rows(MACOS_PS_OUTPUT);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].pid, 95194);
+        assert_eq!(rows[0].ppid, 95193);
+        assert!(
+            rows[0]
+                .command
+                .starts_with("/Users/al/.clickhouse/versions/")
+        );
+        assert_eq!(rows[1].pid, 95193);
+        assert_eq!(rows[1].ppid, 1);
+        assert_eq!(
+            rows[1].command, "clickhouse-watchdog",
+            "the padding `ps` prints after the rewritten name is not an argument"
+        );
+    }
+
+    #[test]
+    fn ps_rows_parse_from_linux_output() {
+        let rows = parse_ps_process_rows(LINUX_PS_OUTPUT);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!((rows[0].pid, rows[0].ppid), (4211, 4210));
+        assert_eq!((rows[1].pid, rows[1].ppid), (4210, 1));
+    }
+
+    #[test]
+    fn ps_rows_ignore_lines_that_do_not_start_with_two_integers() {
+        let output = concat!(
+            "  PID  PPID COMMAND\n",
+            "ps: warning: something happened\n",
+            "\n",
+            "  707\n",
+            "  808   909 /opt/clickhouse server\n",
+        );
+
+        let rows = parse_ps_process_rows(output);
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].pid, 808);
+        assert_eq!(rows[0].command, "/opt/clickhouse server");
+    }
+
+    #[test]
+    fn a_server_supervised_by_a_watchdog_reports_the_watchdog_pid() {
+        let macos = resolve_watchdog_pids(&[95194], &parse_ps_process_rows(MACOS_PS_OUTPUT));
+        assert_eq!(macos.get(&95194).copied(), Some(95193));
+
+        let linux = resolve_watchdog_pids(&[4211], &parse_ps_process_rows(LINUX_PS_OUTPUT));
+        assert_eq!(linux.get(&4211).copied(), Some(4210));
+    }
+
+    #[test]
+    fn a_server_whose_parent_is_not_a_watchdog_reports_itself() {
+        // CLICKHOUSE_WATCHDOG_ENABLE=0, so the CLI's own child is the server
+        // and its parent is a shell.
+        let output = concat!(
+            "4211 4210 /home/al/.clickhouse/versions/26.9.1.531/clickhouse server\n",
+            "4210 1 /bin/zsh\n",
+        );
+
+        let resolved = resolve_watchdog_pids(&[4211], &parse_ps_process_rows(output));
+
+        assert_eq!(resolved.get(&4211).copied(), Some(4211));
+    }
+
+    #[test]
+    fn a_server_whose_parent_line_is_missing_reports_itself() {
+        // The parent exited between the two `ps` calls, so only the server's
+        // own row is available.
+        let output = "4211 4210 /home/al/.clickhouse/versions/26.9.1.531/clickhouse server\n";
+
+        let resolved = resolve_watchdog_pids(&[4211], &parse_ps_process_rows(output));
+
+        assert_eq!(resolved.get(&4211).copied(), Some(4211));
+    }
+
+    #[test]
+    fn a_server_with_no_row_at_all_reports_itself() {
+        let resolved = resolve_watchdog_pids(&[4211], &[]);
+
+        assert_eq!(resolved.get(&4211).copied(), Some(4211));
+    }
+
+    #[test]
+    fn every_scanned_pid_is_resolved_independently() {
+        let output = concat!(
+            "10 9 /home/al/.clickhouse/versions/26.9.1.531/clickhouse server\n",
+            "9 1 clickhouse-watchdog server\n",
+            "20 1 /home/al/.clickhouse/versions/26.9.1.531/clickhouse server\n",
+        );
+
+        let resolved = resolve_watchdog_pids(&[10, 20], &parse_ps_process_rows(output));
+
+        assert_eq!(resolved.get(&10).copied(), Some(9));
+        assert_eq!(resolved.get(&20).copied(), Some(20));
+    }
+
+    #[test]
+    fn watchdog_commands_are_recognised_by_their_rewritten_argv0() {
+        // The real row: the rewritten name and the padding of the zeroed
+        // `argv` region behind it, with no arguments.
+        assert!(is_watchdog_command("clickhouse-watchdog     "));
+        assert!(is_watchdog_command(
+            "clickhouse-watchdog server -- --path=./"
+        ));
+        assert!(is_watchdog_command("/usr/bin/clickhouse-watchdog server"));
+        // The rewrite is truncated to the length of the spawn path, so a
+        // prefix counts as long as it is longer than "clickhouse" itself.
+        assert!(is_watchdog_command("clickhouse-watc server"));
+        assert!(is_watchdog_command("clickhouse- server"));
+    }
+
+    #[test]
+    fn a_plain_clickhouse_command_is_not_a_watchdog() {
+        // "clickhouse" is a prefix of "clickhouse-watchdog", so a name no
+        // longer than the server's own basename must not count.
+        assert!(!is_watchdog_command("clickhouse server"));
+        assert!(!is_watchdog_command("clickhouse local --query 'SELECT 1'"));
+        assert!(!is_watchdog_command(
+            "/Users/al/.clickhouse/versions/26.9.1.531/clickhouse server -- --path=./"
+        ));
+        // Long enough, but not a prefix of the watchdog's name.
+        assert!(!is_watchdog_command("clickhouse-client --host localhost"));
+        assert!(!is_watchdog_command("clickhouse-watchdog-wrapper server"));
+        assert!(!is_watchdog_command("/bin/zsh"));
+        assert!(!is_watchdog_command("/sbin/launchd"));
+        assert!(!is_watchdog_command(""));
+    }
+
+    // ── inspect_process over an already-scanned `ps` row ───────────────
+
+    #[test]
+    fn a_scanned_row_supplies_every_field_of_the_discovered_process() {
+        let proc = inspect_process(
+            95193,
+            "/Users/al/project/.clickhouse/servers/dev/data",
+            "/Users/al/.clickhouse/versions/26.9.1.531/clickhouse server -- --path=./ --http_port=8123 --tcp_port=9000",
+        )
+        .expect("a CLI-managed cwd is a discovered server");
+
+        assert_eq!(proc.pid, 95193, "the reported PID is the supervisor's");
+        assert_eq!(proc.project_root, "/Users/al/project");
+        assert_eq!(proc.server_name, "dev");
+        assert_eq!(proc.http_port, Some(8123));
+        assert_eq!(proc.tcp_port, Some(9000));
+        assert_eq!(proc.version.as_deref(), Some("26.9.1.531"));
+    }
+
+    #[test]
+    fn a_process_with_no_ps_row_keeps_its_cwd_derived_fields() {
+        // `ps` dropped the row (the process exited mid-scan), which used to be
+        // a failed per-PID lookup and is now an empty command line.
+        let proc = inspect_process(4211, "/home/al/app/.clickhouse/servers/default/data", "")
+            .expect("the cwd alone still identifies the server");
+
+        assert_eq!(proc.project_root, "/home/al/app");
+        assert_eq!(proc.server_name, "default");
+        assert_eq!(proc.http_port, None);
+        assert_eq!(proc.tcp_port, None);
+        assert_eq!(proc.version, None);
+    }
+
+    #[test]
+    fn a_cwd_outside_a_project_is_not_a_discovered_server() {
+        assert!(
+            inspect_process(4211, "/var/lib/clickhouse", "/usr/bin/clickhouse server").is_none()
+        );
     }
 
     // ── parse_server_cwd tests ─────────────────────────────────────────

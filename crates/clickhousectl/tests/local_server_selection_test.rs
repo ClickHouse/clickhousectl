@@ -330,7 +330,7 @@ fn omitted_stop_requires_a_name_or_stop_all_for_many_non_default_servers() {
         json!({
             "error": {
                 "code": "server_selection_required",
-                "message": "Multiple non-default ClickHouse servers exist (available: 2); specify a name or use stop-all",
+                "message": "No server name was provided and multiple non-default ClickHouse servers exist (available: 2). Pass a name with `clickhousectl local server stop <name>`, or stop every server with `clickhousectl local server stop-all`.",
                 "command": "clickhousectl local server list"
             }
         })
@@ -384,7 +384,10 @@ fn omitted_remove_never_selects_custom_servers() {
         assert_eq!(
             error["error"]["message"],
             format!(
-                "The default ClickHouse server does not exist (custom ClickHouse servers available: {}); no server was removed",
+                "No server name was provided and the default ClickHouse server does not exist \
+                 (custom ClickHouse servers available: {}); no server was removed. Inspect them \
+                 with `clickhousectl local server list`; to remove one, pass its name with \
+                 `clickhousectl local server remove <name>`.",
                 names.len()
             )
         );

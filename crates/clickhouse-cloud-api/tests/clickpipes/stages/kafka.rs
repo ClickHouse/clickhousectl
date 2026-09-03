@@ -176,7 +176,7 @@ async fn run_scram_tls_inner(
                 format: ClickPipePostKafkaSourceFormat::JSONEachRow,
                 brokers,
                 topics: topic.clone(),
-                authentication: ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_512,
+                authentication: Some(ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_512),
                 credentials: serde_json::json!({
                     "username": clickpipe_user,
                     "password": clickpipe_pass,
@@ -301,7 +301,7 @@ async fn run_mtls_inner(
                 format: ClickPipePostKafkaSourceFormat::JSONEachRow,
                 brokers,
                 topics: topic.clone(),
-                authentication: ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS,
+                authentication: Some(ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS),
                 credentials: serde_json::json!({
                     "certificate": certs.client_cert_pem,
                     "privateKey": certs.client_key_pem,

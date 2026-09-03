@@ -4,6 +4,10 @@ pub(crate) use crate::cloud::auth::AuthCommands;
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::backups::{BackupCommands, BackupConfigCommands};
 #[allow(unused_imports)]
+pub(crate) use crate::cloud::clickpipe_endpoints::{
+    ReversePrivateEndpointCommands, ReversePrivateEndpointCreateArgs,
+};
+#[allow(unused_imports)]
 pub(crate) use crate::cloud::clickpipes::{
     BigQueryCreateArgs, ClickPipeCommands, ClickPipeCreateCommands,
     ClickPipeSchemaDiscoverCommands, ClickPipeSettingsCommands, KafkaCreateArgs, KafkaSourceFields,
@@ -58,11 +62,26 @@ impl CloudArgs {
             )
     }
 
-    pub fn postgres_clickpipe_validation_error(&self) -> Option<String> {
+    /// The `clickpipe create <source>` validation message and the source
+    /// subcommand it belongs to, if the flags cannot describe the chosen
+    /// `--auth`. Covers both database sources whose credential flags depend on
+    /// `--auth`'s value: `postgres` and `mysql`.
+    pub fn clickpipe_create_validation_error(&self) -> Option<(&'static str, String)> {
         let CloudCommands::ClickPipe { command } = &self.command else {
             return None;
         };
-        command.postgres_create_validation_error()
+        command.clickpipe_create_validation_error()
+    }
+
+    /// The `clickpipe reverse-private-endpoint create` validation message, if
+    /// the flags cannot describe the chosen `--type`. clap cannot express
+    /// "forbidden for this value of another argument", so the check runs after
+    /// parsing and is reported as a usage error against the owning command.
+    pub fn reverse_private_endpoint_validation_error(&self) -> Option<String> {
+        let CloudCommands::ClickPipe { command } = &self.command else {
+            return None;
+        };
+        command.reverse_private_endpoint_create_validation_error()
     }
 }
 
@@ -123,14 +142,15 @@ CONTEXT FOR AGENTS:
         command: BackupCommands,
     },
 
-    // Clickpipe commands
+    /// Manage ClickPipes for data ingestion
     #[command(
         name = "clickpipe",
         after_help = "\
 CONTEXT FOR AGENTS:
-    Manage ClickPipes for ingesting data into ClickHouse Cloud.
-    Subcommands: list, get, delete, start, stop, resync, scale, settings, create.
-    Requires a service ID — get it from `clickhousectl cloud service list`."
+  Manage ClickPipes for ingesting data into ClickHouse Cloud.
+  Subcommands: list, get, delete, start, stop, resync, scale, settings, create,
+  reverse-private-endpoint (PrivateLink connectivity for sources).
+  Requires a service ID — get it from `clickhousectl cloud service list`."
     )]
     ClickPipe {
         #[command(subcommand)]
@@ -167,6 +187,8 @@ CONTEXT FOR AGENTS:
   Manage ClickHouse Cloud managed Postgres services. Subcommands cover CRUD, lifecycle
   (restart/promote/switchover), CA certs, runtime config, password reset, read replicas,
   and point-in-time restore. Service IDs come from `postgres list`.
+  Role changes are eventually consistent: `promote` and `switchover` accept --wait to poll
+  until the target reports the new isPrimary and fail if it never does.
   Write commands require API key auth — OAuth is read-only.")]
     Postgres {
         #[command(subcommand)]
@@ -257,6 +279,31 @@ mod tests {
                 "config",
                 "get",
                 "pg-1",
+            ],
+            false,
+        );
+
+        // ClickPipe reverse private endpoint reads
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "list",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "get",
+                "svc-1",
+                "rpe-1",
             ],
             false,
         );
@@ -391,5 +438,69 @@ mod tests {
             &["clickhousectl", "cloud", "postgres", "switchover", "pg-1"],
             true,
         );
+
+        // ClickPipe reverse private endpoint writes
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "create",
+                "svc-1",
+                "--type",
+                "GCP_PSC_SERVICE_ATTACHMENT",
+                "--description",
+                "endpoint",
+                "--gcp-service-attachment",
+                "projects/p/regions/us-central1/serviceAttachments/s",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "update",
+                "svc-1",
+                "rpe-1",
+                "--custom-private-dns-mapping",
+                "db.example.com",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "reverse-private-endpoint",
+                "delete",
+                "svc-1",
+                "rpe-1",
+            ],
+            true,
+        );
+    }
+
+    #[test]
+    fn every_cloud_subcommand_has_a_help_about() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let cloud = command
+            .find_subcommand_mut("cloud")
+            .expect("cloud subcommand");
+
+        for sub in cloud.get_subcommands() {
+            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
+            assert!(
+                !about.trim().is_empty(),
+                "cloud subcommand `{}` has no about text",
+                sub.get_name()
+            );
+        }
     }
 }

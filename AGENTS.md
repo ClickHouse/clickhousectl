@@ -13,6 +13,7 @@ The user-facing CLI surface. Contains all logic for local commands, wraps `click
 - New Cloud handlers go through `CloudClient` wrapper methods co-located in each domain module, not `clickhouse_cloud_api::Client` directly. `src/cloud/client.rs` owns the core client, credential precedence, error conversion, and response unwrapping. Some pre-modularization Postgres and service-query paths still call the API client directly; do not copy that pattern into new commands.
 - Cloud handlers always support `--json` output unless there is good reason not to. JSON is emitted automatically when `--json` is passed or a coding agent is detected (`is_ai_agent::detect()` via the `json_output()` helper in `main.rs`).
 - `CloudError` carries a `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`). It maps to `Error::AuthRequired` / `Error::Cloud` in `cloud::run`. Dispatched commands exit with `0` on success or use `Error::exit_code()` for failures: `1` error, `3` cancelled, `4` auth required. Clap uses `2` for usage errors.
+- `CloudError` also carries `failure: Option<ApiFailure>` — the telemetry failure classification (`src/failure.rs`, #450). `CloudClient::convert_error*` is the single place a library error variant becomes a `FailureKind`, so classification is inherited by conversion; a handler adds the *stage* with `error.at_stage(FailureStage::…)` in `map_err` at the boundary that owns it. Recording is first-write-wins, so a coarse outer fallback never overwrites a precise inner one. Never derive a category from message text, and never widen a vocabulary to anything but a `&'static str` from an enum or an allowlisted status: those types are what make SQL, identifiers, response bodies and credentials structurally unable to reach telemetry. A boundary that rewrites a message must carry `failure` across (`..error` in a struct literal, or `with_failure`).
 
 Use `--help` to learn the current command surface.
 
@@ -46,7 +47,7 @@ Local clap definitions live in `src/local/cli.rs`. Cloud clap definitions, handl
        print_human(&data)?;
    }
    ```
-   List views stay as `tabled` tables, and short action confirmations (e.g. "Service X starting") stay as plain `println!`.
+   List views stay as `tabled` tables, and short action confirmations (e.g. "Service X starting") stay as plain `println!`. Human output through `print_human` also summarises a PEM-framed string (a certificate, a key) instead of printing its body, so a hand-written `println!` line or a `tabled` cell bypasses that and dumps the whole PEM.
 
    Every field of a library response type is `Option` (see Request and response models), so never `unwrap()`/`expect()` one. Render absence with `crate::cloud::output::or_absent` (`-`) or `ABSENT` in `tabled` cells and plain output, and have `--filter`-style predicates treat an absent field as non-matching. `print_human` and `--json` serialize the model and need no per-field work.
 8. Add `Cli::try_parse_from` coverage next to the domain command definition for the new command's body-related flags, asserting parsed values.
@@ -58,6 +59,7 @@ Typed Rust client library for the ClickHouse Cloud API. The library owns typed H
 - `src/client.rs` — `Client` and shared HTTP machinery; endpoint methods live in private per-domain `src/client/*.rs` files.
 - `src/models.rs` — the public model facade and shared discriminated-union macro. Request/response structs, enums, aliases, and their implementations live in private per-domain `src/models/*.rs` files and are re-exported without changing the crate-root or `models::*` paths.
 - `src/convert.rs` — `MissingRequiredFields` and conversion documentation; explicit response→request conversions live in private per-domain `src/convert/*.rs` files.
+- `src/error.rs` — `Error` is the structural contract for failure modes: a failure a caller must be able to tell apart gets its own variant, never a recognizable message. `Error::Sql` (the Query API rejecting a statement) exists precisely so callers stop sniffing a `SQL error ` prefix; keep each variant's `Display` stable, since it is what the user sees.
 
 The drift analyzer recursively traverses the private module trees rooted at `client.rs`, `models.rs`, and `meta.rs`. Model declarations remain literal source in that tree; declarations in conversion files do not count as models.
 
@@ -188,7 +190,7 @@ Real cloud integration tests, 100% OpenAPI spec coverage. Cost is not a reason t
 - `tests/integration_test.rs`, `tests/integration_postgres_test.rs`, `tests/integration_org_test.rs` — cloud-service, Postgres-service, and organization lifecycle tests.
 - `tests/clickpipes/` — ClickPipes E2E suite, including external cloud services. Only Postgres CDC (uses ClickHouse & Postgres inside ClickHouse Cloud) is run in CI. Its `clickpipe_postgres_cli_cdc_test` target exercises the built `clickhousectl` binary supplied through `CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN`; `.github/workflows/cloud-integration.yml` builds the binary before running it. Tests for third party services must be executed manually. CI also optionally runs `clickpipe_smoke_test` against a long-lived service when the `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID` repo variable is set; the step is skipped when the variable is unset.
 - `spec_coverage_test.rs`: runs the shared analyzer against the vendored OpenAPI snapshot and requires an actionable-drift-free report.
-- Labeled internal PRs classify the exact base-to-head diff with `scripts/classify-cloud-integration.py` and run only affected `service`, `postgres`, `organization`, and `clickpipes` suites. New or renamed API source/test files must be added to its explicit mappings; unknown paths fail closed to all suites. Scheduled runs still select all suites, while manual runs use the requested scope.
+- Internal PRs classify the exact base-to-head diff with `scripts/classify-cloud-integration.py` on every push via a secret-free planner job; the `Cloud integration decision` check goes green automatically when no suites are affected. Affected `service`, `postgres`, `organization`, and `clickpipes` suites only run after the `run-cloud-integration` label is applied (one-shot, bound to the labeled head SHA). New or renamed API source/test files must be added to the classifier's explicit mappings; unknown paths fail closed to all suites. Scheduled runs still select all suites, while manual runs use the requested scope.
 
 ### clickhousectl CLI
 

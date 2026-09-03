@@ -207,15 +207,21 @@ CONTEXT FOR AGENTS:
   Removes an installed ClickHouse version from ~/.clickhouse/versions/.
   Takes an exact version string as shown by `clickhousectl local list` (e.g., \"25.12.5.44\").
   Does NOT accept keywords like \"stable\" — use the exact version number.
-  Fails if a local server is currently running on this version; stop it first, or pass
-  --force to stop the running server(s) before removing.
+  Fails if a local server is currently running on this version, in ANY project (versions are
+  shared, so a server started from another directory is checked too — see
+  `clickhousectl local server list --global`). The error names each blocking server with its
+  project root and PID; stop them first, or pass --force to stop them before removing.
+  Fails if the version is the current default (removing it clears ~/.clickhouse/default and
+  the global ~/.local/bin/clickhouse symlink, and the exact build may not be
+  re-downloadable). Switch the default with `clickhousectl local use <other-version>` first,
+  or pass --force to remove it and clear both.
   Related: `clickhousectl local list` to see installed versions.")]
     Remove {
         /// Version to remove
         // Keep this opaque: removal matches an installed directory name instead of resolving a version spec.
         version: String,
 
-        /// Stop any running servers using this version, then remove it
+        /// Stop any running servers using this version, in any project, and remove it even when it is the default (clearing ~/.clickhouse/default and the global symlink)
         #[arg(long)]
         force: bool,
     },
@@ -1275,6 +1281,28 @@ mod tests {
         assert!(help.contains("`clickhouse client`"), "{help}");
         assert!(help.contains("`clickhouse benchmark`"), "{help}");
         assert!(help.contains("`clickhouse format`"), "{help}");
+    }
+
+    #[test]
+    fn remove_help_documents_the_default_version_guard() {
+        let error = Cli::try_parse_from(["clickhousectl", "local", "remove", "--help"])
+            .err()
+            .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        for required in [
+            "is the current default",
+            "~/.clickhouse/default",
+            "~/.local/bin/clickhouse",
+            "clickhousectl local use <other-version>",
+            "--force",
+        ] {
+            assert!(
+                help.contains(required),
+                "missing {required:?} from:\n{help}"
+            );
+        }
     }
 
     #[test]

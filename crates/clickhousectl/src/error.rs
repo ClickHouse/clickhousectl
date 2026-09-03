@@ -160,6 +160,57 @@ impl fmt::Display for StartupKind {
     }
 }
 
+/// Why a selected native binary cannot be launched, decided *before* the
+/// `exec()` handoff so the failure is an ordinary error rather than a censored
+/// telemetry handoff attempt (#471).
+///
+/// A closed vocabulary, deliberately: the resulting message is this CLI's own
+/// text end to end (path plus one of these phrases plus remediation), which is
+/// what lets it render at parity in structured output instead of being redacted
+/// like [`Error::Exec`]'s foreign subprocess text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryLaunchProblem {
+    /// Nothing at the path (a build removed after version resolution).
+    Missing,
+    /// A directory, device or socket where the binary should be.
+    NotAFile,
+    /// A regular file with no execute bit for anyone.
+    NotExecutable,
+    /// The path could not be inspected at all (permissions on a parent, …).
+    Unreadable,
+}
+
+impl BinaryLaunchProblem {
+    /// The shell command that repairs the build, which depends on what is at
+    /// the path. `local install --force` renames a fresh binary over whatever
+    /// is there, which works for a missing or non-executable *file* but fails
+    /// with EISDIR when the path is a directory — that case has to go through
+    /// `local remove` first.
+    pub fn repair_command(&self, version: &str) -> String {
+        match self {
+            Self::NotAFile => {
+                format!(
+                    "clickhousectl local remove {version} && clickhousectl local install {version}"
+                )
+            }
+            Self::Missing | Self::NotExecutable | Self::Unreadable => {
+                format!("clickhousectl local install --force {version}")
+            }
+        }
+    }
+}
+
+impl fmt::Display for BinaryLaunchProblem {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Missing => "the file does not exist",
+            Self::NotAFile => "it is not a regular file",
+            Self::NotExecutable => "it is not executable",
+            Self::Unreadable => "its metadata could not be read",
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum ManagedClientErrorKind {
     ServerNotFound,
@@ -390,10 +441,26 @@ pub enum Error {
     #[error("Version {0} is already installed")]
     VersionAlreadyInstalled(String),
 
+    /// `local remove` was asked to delete a version that a running server was
+    /// started from. The blocking servers are named with their project root
+    /// because the check spans every project, not just the current directory:
+    /// deleting the binary breaks a server started elsewhere just as badly.
     #[error(
-        "Version {version} is in use by running server(s): {servers}. Stop them first, or pass --force."
+        "Version {version} is in use by running server(s), in this project or another: {servers}. \
+         Stop them first (`clickhousectl local server stop --global <name>`), or pass --force to stop them and remove the version."
     )]
     VersionInUse { version: String, servers: String },
+
+    /// `local remove` was asked to delete the version named by the
+    /// `~/.clickhouse/default` marker. Removing it clears that marker and the
+    /// global `~/.local/bin/clickhouse` symlink, and the deleted build is not
+    /// always re-downloadable (builds.clickhouse.com does not serve every exact
+    /// build), so the default is protected unless `--force` is passed.
+    #[error(
+        "Version {version} is the current default (~/.clickhouse/default) and is linked as ~/.local/bin/clickhouse; removing it would clear both, and the exact build may not be re-downloadable.\n\
+         Switch the default first with `clickhousectl local use <other-version>`, or pass --force to remove it and clear the default marker and the global symlink."
+    )]
+    VersionIsDefault { version: String },
 
     #[error("Unsupported platform: {os}/{arch}")]
     UnsupportedPlatform { os: String, arch: String },
@@ -438,6 +505,28 @@ pub enum Error {
     #[error("Failed to execute ClickHouse: {0}")]
     Exec(String),
 
+    /// A rejected argument, with self-composed guidance. Kept separate from
+    /// [`Error::Exec`], whose payload is subprocess or OS text and is therefore
+    /// summarized in structured output rather than rendered.
+    #[error("{0}")]
+    UnsupportedArgument(String),
+
+    /// The selected native binary cannot be launched, detected before the
+    /// `exec()` handoff (#471). Also self-composed — see
+    /// [`BinaryLaunchProblem`] — so it renders in full, unlike
+    /// [`Error::Exec`], which reports what the OS said when a launch that
+    /// looked viable still failed. The repair is reason-specific — see
+    /// [`BinaryLaunchProblem::repair_command`].
+    #[error(
+        "ClickHouse build {version} cannot be launched: {problem} ({path})\nReinstall it with `{}`",
+        problem.repair_command(version)
+    )]
+    BinaryNotLaunchable {
+        version: String,
+        problem: BinaryLaunchProblem,
+        path: String,
+    },
+
     #[error("{kind} port {port} is already in use{}", kind.human_guidance())]
     PortInUse { kind: PortKind, port: u16 },
 
@@ -459,8 +548,16 @@ pub enum Error {
         details: String,
     },
 
+    /// Postgres failure text clickhousectl does not control (currently the OS
+    /// error from a failed `psql` exec). Summarized in structured output.
     #[error("Postgres error: {0}")]
     Postgres(String),
+
+    /// A Postgres validation or state error whose text clickhousectl composes
+    /// itself, including its recovery guidance. Kept separate from
+    /// [`Error::Postgres`] so structured output can render it verbatim.
+    #[error("Postgres error: {0}")]
+    PostgresUsage(String),
 
     /// A child process whose status must be returned unchanged. This is
     /// intentionally not printed as a clickhousectl error by `run_parsed`.
@@ -502,8 +599,17 @@ pub enum Error {
     )]
     ServerStopSelectionRequired { available: usize },
 
+    /// `server stop --global <name>` matched running servers in more than one
+    /// project, so `--project` is needed to pick one. Self-composed guidance
+    /// (the project roots come from process discovery, not foreign output), so
+    /// structured output renders it verbatim.
     #[error(
-        "No server name was provided and the default ClickHouse server does not exist (custom ClickHouse servers available: {available}). Inspect them with `clickhousectl local server list`; to remove one, pass its name with `clickhousectl local server remove <name>`."
+        "Server '{name}' exists in multiple projects: {projects}. Use --project to specify which one."
+    )]
+    ServerInMultipleProjects { name: String, projects: String },
+
+    #[error(
+        "No server name was provided and the default ClickHouse server does not exist (custom ClickHouse servers available: {available}); no server was removed. Inspect them with `clickhousectl local server list`; to remove one, pass its name with `clickhousectl local server remove <name>`."
     )]
     ServerRemoveSelectionRequired { available: usize },
 
@@ -572,6 +678,14 @@ pub enum Error {
     #[error("{0}")]
     Cloud(String),
 
+    /// A cloud failure that also carries a machine-readable detail (#644).
+    ///
+    /// Human mode prints exactly what [`Error::Cloud`] would — the detail's
+    /// own message — so the two modes never disagree; `--json` emits the
+    /// detail instead of the prose.
+    #[error("{}", .0.message)]
+    CloudDetailed(Box<crate::cloud::output::CloudErrorDetail>),
+
     #[error("{0}")]
     AuthRequired(String),
 
@@ -598,6 +712,15 @@ pub enum Error {
     #[error("Docker error: {0}")]
     #[allow(clippy::enum_variant_names)]
     DockerError(String),
+
+    /// A container name held by a container clickhousectl does not manage.
+    /// Kept separate from [`Error::DockerError`], whose payload is daemon text,
+    /// so structured output can render this self-composed guidance verbatim.
+    #[error(
+        "Docker error: container '{0}' already exists but is not managed by clickhousectl. \
+         Remove it manually or pick a different --name."
+    )]
+    ContainerNameConflict(String),
 
     #[error("{primary}\nPostgres startup rollback incomplete: {cleanup}")]
     PostgresStartupRollback {
@@ -649,6 +772,34 @@ mod tests {
             .exit_code(),
             1
         );
+        assert_eq!(
+            Error::VersionIsDefault {
+                version: "25.12".into(),
+            }
+            .exit_code(),
+            1
+        );
+    }
+
+    #[test]
+    fn version_is_default_error_names_the_marker_the_symlink_and_both_ways_forward() {
+        let message = Error::VersionIsDefault {
+            version: "26.9.1.217".into(),
+        }
+        .to_string();
+
+        for required in [
+            "26.9.1.217 is the current default",
+            "~/.clickhouse/default",
+            "~/.local/bin/clickhouse",
+            "`clickhousectl local use <other-version>`",
+            "--force",
+        ] {
+            assert!(
+                message.contains(required),
+                "missing {required:?}: {message}"
+            );
+        }
     }
 
     #[test]

@@ -99,10 +99,32 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ClickPipeMutateDestination", "table"),
     ("ClickPipeMutateDestination", "managedTable"),
     ("ClickPipeMutateDestination", "tableDefinition"),
+    // A Kafka broker that requires no authentication has no representation in
+    // the spec enum (PLAIN..MUTUAL_TLS only) and the schema carries no
+    // `required[]`, so requiredness resolves from the description heuristic.
+    // Absence is the wire representation of "no auth": the control plane's own
+    // field is `omitempty` and the equivalent PATCH property is nullable.
+    // Keeping this `T` would force every request to claim an auth mechanism.
+    ("ClickPipePostKafkaSource", "authentication"),
+    // `kafka_read_committed` is Kafka-only: the settings PUT is rejected with
+    // "Setting 'kafka_read_committed' is only supported for Kafka ClickPipes"
+    // for every other source, and the schema carries no `required[]`, so
+    // requiredness resolves from the description heuristic. Absence is the only
+    // way a non-Kafka settings update can express "does not apply"; keeping this
+    // `T` would put the key on every request and break all non-Kafka pipes.
+    ("ClickPipeSettingsPutRequest", "kafka_read_committed"),
     // Empty TLS/IAM strings fail validation for sources that do not use them.
     ("ClickPipeMutatePostgresSource", "caCertificate"),
     ("ClickPipeMutatePostgresSource", "iamRole"),
     ("ClickPipeMutatePostgresSource", "tlsHost"),
+    // IAM_ROLE authentication has no username or password: `iamRole` is the
+    // whole credential. The schema carries no `required[]`, so requiredness
+    // resolves from the description heuristic and `credentials` reads as
+    // required, but an IAM_ROLE pipe has nothing to put in it and the sibling
+    // MySQL schema (which does carry `required[]`) leaves it out. Keeping this
+    // `T` would force every IAM_ROLE request to send an empty username and
+    // password pair.
+    ("ClickPipeMutatePostgresSource", "credentials"),
     // Deprecated roles and opt-in pre-hashed keys must stay off the wire when unused.
     ("ApiKeyPostRequest", "roles"),
     ("ApiKeyPostRequest", "hashData"),

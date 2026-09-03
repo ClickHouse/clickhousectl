@@ -10,12 +10,14 @@ pub mod symlink;
 use cli::{ClientVersionArg, InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
 
 use crate::error::{
-    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection,
+    BinaryLaunchProblem, Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection,
     ProjectServerCommand, ProjectServerNotFound, ProjectServerStateMissing, Result,
 };
 use crate::{init, paths, version_manager};
 use std::io::Write;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
+use std::path::Path;
 use std::process::Command;
 
 pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
@@ -34,9 +36,17 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         LocalCommands::Remove { version, force } => remove(&version, force, json),
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
-            init::init()?;
+            let result = init::init()?;
+            let mut paths = vec![".clickhouse/".to_string()];
+            if result.clickhouse_scaffold_created {
+                paths.push("clickhouse/".to_string());
+            }
+            if result.postgres_scaffold_created {
+                paths.push("postgres/".to_string());
+            }
             let out = output::InitOutput {
-                path: ".clickhouse/".to_string(),
+                paths,
+                already_initialized: !result.clickhouse_dir_created,
             };
             output::print_output(&out, json);
             Ok(())
@@ -194,26 +204,42 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         return Err(Error::VersionNotFound(version.to_string()));
     }
 
-    // Recover orphaned servers so we detect a running process even when its
-    // metadata file is missing, then refuse to pull the binary out from under
-    // a server running on this version.
-    server::recover_current_project_servers()?;
-    let in_use: Vec<String> = server::list_running_servers()?
-        .into_iter()
-        .filter(|i| i.version == version)
-        .map(|i| i.name)
-        .collect();
+    // Refuse to delete the default version before the (potentially slow)
+    // running-server discovery below: removing it clears the default marker and
+    // the global symlink, and the exact build is not always re-downloadable.
+    // The raw marker is read rather than `get_default_version` so a marker whose
+    // binary is already missing still guards. This is a cheap early exit over a
+    // snapshot; the authoritative check is repeated under the commit lock.
+    if version_manager::default_version_marker().as_deref() == Some(version) && !force {
+        return Err(Error::VersionIsDefault {
+            version: version.to_string(),
+        });
+    }
+
+    // Refuse to pull the binary out from under a server running on this
+    // version. The lookup spans every project, not just this one: a server
+    // started from another directory is invisible to project-scoped metadata,
+    // but deleting its binary breaks `local client` there just the same.
+    let in_use = server::servers_using_version(version)?;
     if !in_use.is_empty() {
         if !force {
             return Err(Error::VersionInUse {
                 version: version.to_string(),
-                servers: in_use.join(", "),
+                servers: server::describe_version_users(&in_use),
             });
         }
-        for name in &in_use {
-            server::kill_server(name)?;
+        for user in &in_use {
+            // Servers in this project are stopped through their metadata so it
+            // stays consistent; servers elsewhere can only be stopped by PID,
+            // like `server stop --global`, except that a blocker which exited
+            // on its own since discovery is already what --force wants.
+            if user.current_project {
+                server::kill_server(&user.name)?;
+            } else {
+                server::ensure_stopped_by_pid(user.pid)?;
+            }
             if !json {
-                println!("Stopped server '{}'", name);
+                println!("Stopped server '{}' in {}", user.name, user.project);
             }
         }
     }
@@ -225,6 +251,25 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         return Err(Error::VersionNotFound(version.to_string()));
     }
 
+    // Re-read the marker under the commit lock and decide everything default-
+    // related from this one read. `set_default_version` writes the marker under
+    // the same lock, so a `local use` that raced the snapshot above has either
+    // landed (and is seen here) or is blocked until this removal finishes:
+    // without --force the guard must refuse again, and with --force the marker
+    // is cleared only if it still names this version, never a different one.
+    let was_default = version_manager::default_version_marker().as_deref() == Some(version);
+    if was_default && !force {
+        return Err(Error::VersionIsDefault {
+            version: version.to_string(),
+        });
+    }
+    if was_default && !json {
+        eprintln!(
+            "Warning: {version} is the default version; --force is clearing ~/.clickhouse/default \
+             and removing the global `clickhouse` symlink at ~/.local/bin/clickhouse."
+        );
+    }
+
     version_manager::master::invalidate_version(
         &commit_lock,
         &versions_dir,
@@ -232,10 +277,7 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
         version,
     )?;
 
-    // Check if this is the default version
-    if let Ok(default) = version_manager::get_default_version()
-        && default == version
-    {
+    if was_default {
         let default_file = paths::default_file()?;
         let _ = std::fs::remove_file(default_file);
         // Only removes the symlink if it still points into this version's dir.
@@ -247,6 +289,7 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
 
     let out = output::RemoveOutput {
         version: version.to_string(),
+        was_default,
     };
     output::print_output(&out, json);
     Ok(())
@@ -334,6 +377,9 @@ fn run_client(
     };
 
     ensure_repeated_query_supported(&version, query.len())?;
+    // Before the telemetry pre-exec hook, so a binary that cannot be launched
+    // is an ordinary error event rather than a censored handoff attempt (#471).
+    ensure_launchable(&binary, &version)?;
 
     let mut cmd = Command::new(&binary);
     cmd.arg("client")
@@ -352,11 +398,50 @@ fn run_client(
 
     cmd.args(&args);
     // `exec()` replaces the process image on success, so `main`'s telemetry
-    // tail never runs for this invocation; record the event now (#320).
+    // tail never runs for this invocation; record the censored handoff attempt
+    // now (#320, #471). Everything checkable about the launch is checked above
+    // this line, so only a race can still fail below it — and the native
+    // client, once launched, owns the terminal outright: it inherits stdin,
+    // stdout and stderr unchanged, stays in clickhousectl's process group and
+    // session on the same controlling TTY, and keeps this PID, so Ctrl-C,
+    // Ctrl-Z, window resizes and its own exit status or fatal signal reach the
+    // shell exactly as if it had been invoked directly. Preserving that is why
+    // the handoff stays an `exec()` and the outcome is censored instead of
+    // becoming a spawn-and-wait wrapper that would have to relay all of it.
     #[cfg(feature = "telemetry")]
     crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
     Err(Error::Exec(err.to_string()))
+}
+
+/// Reject a selected ClickHouse binary that `exec()` is certain to refuse,
+/// *before* the telemetry pre-exec hook runs (#471).
+///
+/// `exec()` returns only on failure, by which point the invocation has already
+/// been recorded as a censored `exec_attempt`; a launch failure must therefore
+/// be caught here to be observable as a failure at all. The deterministic ones
+/// are: nothing at the path, a path that is not a regular file (a directory,
+/// say), a path that cannot be stat-ed, and a regular file carrying no execute
+/// bit. A binary unlinked or chmod-ed between this check and `exec()`, or one
+/// with a bad executable format, is a race no pre-flight can close — the
+/// correct exit code and message still reach the shell.
+fn ensure_launchable(binary: &Path, version: &str) -> Result<()> {
+    let problem = match std::fs::metadata(binary) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BinaryLaunchProblem::Missing,
+        Err(_) => BinaryLaunchProblem::Unreadable,
+        Ok(metadata) if !metadata.is_file() => BinaryLaunchProblem::NotAFile,
+        // "Can anyone execute this", not "can the owner": a build installed
+        // 0o711 or 0o111 is perfectly launchable.
+        Ok(metadata) if metadata.permissions().mode() & 0o111 == 0 => {
+            BinaryLaunchProblem::NotExecutable
+        }
+        Ok(_) => return Ok(()),
+    };
+    Err(Error::BinaryNotLaunchable {
+        version: version.to_string(),
+        problem,
+        path: binary.display().to_string(),
+    })
 }
 
 const REPEATED_QUERY_MIN_VERSION: &str = "23.9.1.1854";
@@ -510,7 +595,7 @@ async fn start_server(
         .iter()
         .any(|a| a.starts_with("--config") || a.starts_with("-C"))
     {
-        return Err(Error::Exec(
+        return Err(Error::UnsupportedArgument(
             "--config / --config-file / -C cannot be passed through in trailing args. \
              Use `--config <NAME>` with a file in ~/.clickhouse/configs/ \
              (see `clickhousectl local server configs`). \
@@ -1198,11 +1283,10 @@ fn stop_server_global(
 
     if matches.len() > 1 {
         let projects: Vec<_> = matches.iter().map(|e| e.project.as_str()).collect();
-        return Err(Error::Exec(format!(
-            "Server '{}' exists in multiple projects: {}. Use --project to specify which one.",
+        return Err(Error::ServerInMultipleProjects {
             name,
-            projects.join(", ")
-        )));
+            projects: projects.join(", "),
+        });
     }
 
     let entry = matches[0];
@@ -1358,6 +1442,113 @@ mod tests {
         assert!(ensure_repeated_query_supported(REPEATED_QUERY_MIN_VERSION, 2).is_ok());
         assert!(ensure_repeated_query_supported("25.12.9.61", 3).is_ok());
         assert!(ensure_repeated_query_supported("26.8.1.1760", usize::MAX).is_ok());
+    }
+
+    /// Write `contents` at `path` with the given mode, creating parents.
+    fn write_with_mode(path: &Path, contents: &str, mode: u32) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("create parent");
+        std::fs::write(path, contents).expect("write file");
+        let mut permissions = std::fs::metadata(path).expect("metadata").permissions();
+        permissions.set_mode(mode);
+        std::fs::set_permissions(path, permissions).expect("set mode");
+    }
+
+    #[test]
+    fn launchable_binary_passes_the_pre_exec_check() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = dir.path().join("versions/25.12.9.61/clickhouse");
+        write_with_mode(&binary, "#!/bin/sh\nexit 0\n", 0o755);
+        assert!(ensure_launchable(&binary, "25.12.9.61").is_ok());
+    }
+
+    /// The classified problem for a path the pre-flight rejects.
+    fn launch_problem(binary: &Path, version: &str) -> BinaryLaunchProblem {
+        match ensure_launchable(binary, version).expect_err("path must be rejected") {
+            Error::BinaryNotLaunchable { problem, .. } => problem,
+            other => panic!("unexpected error: {other}"),
+        }
+    }
+
+    #[test]
+    fn unlaunchable_binaries_fail_before_the_pre_exec_hook() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        // No execute bit: `exec()` would return EACCES *after* the handoff had
+        // already been recorded, so the check names the file and the repair.
+        let not_executable = dir.path().join("versions/25.12.9.61/clickhouse");
+        write_with_mode(&not_executable, "#!/bin/sh\nexit 0\n", 0o644);
+        assert_eq!(
+            launch_problem(&not_executable, "25.12.9.61"),
+            BinaryLaunchProblem::NotExecutable
+        );
+
+        // A directory in the binary's place: `exists()` is true, so resolution
+        // accepts it and only the pre-flight can reject it.
+        let directory = dir.path().join("versions/26.8.1.1760/clickhouse");
+        std::fs::create_dir_all(&directory).expect("create directory");
+        assert_eq!(
+            launch_problem(&directory, "26.8.1.1760"),
+            BinaryLaunchProblem::NotAFile
+        );
+
+        // Missing entirely: a build removed after version resolution.
+        let missing = dir.path().join("versions/27.1.2.3/clickhouse");
+        assert_eq!(
+            launch_problem(&missing, "27.1.2.3"),
+            BinaryLaunchProblem::Missing
+        );
+    }
+
+    #[test]
+    fn launch_failure_message_names_the_build_the_path_and_the_repair() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let binary = dir.path().join("versions/25.12.9.61/clickhouse");
+        write_with_mode(&binary, "#!/bin/sh\nexit 0\n", 0o644);
+        let message = ensure_launchable(&binary, "25.12.9.61")
+            .expect_err("a non-executable binary cannot be launched")
+            .to_string();
+        assert!(message.contains("not executable"), "{message}");
+        assert!(message.contains(&binary.display().to_string()), "{message}");
+        assert!(
+            message.contains("clickhousectl local install --force 25.12.9.61"),
+            "{message}"
+        );
+    }
+
+    /// `install --force` renames a fresh binary over the path, which fails
+    /// with EISDIR when a directory sits there; that reason has to recommend
+    /// `local remove` first.
+    #[test]
+    fn directory_at_binary_path_recommends_remove_then_install() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let directory = dir.path().join("versions/26.8.1.1760/clickhouse");
+        std::fs::create_dir_all(&directory).expect("create directory");
+        let message = ensure_launchable(&directory, "26.8.1.1760")
+            .expect_err("a directory cannot be launched")
+            .to_string();
+        assert!(message.contains("not a regular file"), "{message}");
+        assert!(
+            message.contains(
+                "clickhousectl local remove 26.8.1.1760 && clickhousectl local install 26.8.1.1760"
+            ),
+            "{message}"
+        );
+        assert!(!message.contains("--force"), "{message}");
+    }
+
+    #[test]
+    fn group_and_other_execute_bits_count_as_launchable() {
+        // The check asks "can anyone execute this", not "can the owner": a
+        // build installed with 0o711 or 0o111 must not be refused.
+        let dir = tempfile::tempdir().expect("tempdir");
+        for mode in [0o711, 0o151, 0o111] {
+            let binary = dir.path().join(format!("mode-{mode:o}/clickhouse"));
+            write_with_mode(&binary, "#!/bin/sh\nexit 0\n", mode);
+            assert!(
+                ensure_launchable(&binary, "25.12.9.61").is_ok(),
+                "mode {mode:o} must be launchable"
+            );
+        }
     }
 
     fn server_info(name: &str, engine: server::Engine, version: &str) -> server::ServerInfo {

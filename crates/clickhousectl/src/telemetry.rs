@@ -11,10 +11,13 @@
 //! repeated notice). `DO_NOT_TRACK` (donottrack.sh convention) overrides
 //! everything: no notice, no file write, no send.
 //!
-//! The payload carries the command path and flag *names* only — never flag
-//! values, never positional arguments. It is built from the clap definitions
-//! ([`capture`] walks `ArgMatches` ids and `Arg` metadata, never touching
-//! `get_one`/`get_raw`), so leaking a value is structurally impossible.
+//! The payload carries the command path plus flag and positional *names* only
+//! — never any values. It is built from the clap definitions ([`capture`] walks
+//! `ArgMatches` ids and `Arg` metadata, never touching `get_one`/`get_raw`), so
+//! leaking a value is structurally impossible. Positional *presence* is
+//! recorded as the definition-owned id (#480), which is what makes
+//! `local server stop` and `local server stop <name>` distinguishable; see
+//! [`Payload::positionals`] for the exclusions.
 //!
 //! Every invocation of the binary goes through the same consent state machine
 //! (#320). Bare, `--help`, `--version`, and mistyped commands show the first-run
@@ -31,9 +34,29 @@
 //! (`local client`, host `psql`), replacing the process image so `main`'s
 //! tail never runs on success. Those call sites invoke
 //! [`finalize_before_exec`] immediately before `exec()`; it records the
-//! stashed invocation with outcome `"exec"` and shares an exactly-once
-//! guard with [`finalize`] so a *failed* `exec()` — where the error
-//! propagates back to `main` — never produces a second event.
+//! stashed invocation with outcome `"exec_attempt"` and shares an
+//! exactly-once guard with [`finalize`] so a *failed* `exec()` — where the
+//! error propagates back to `main` — never produces a second event.
+//!
+//! `"exec_attempt"` is a **censored** outcome (#471): it proves the handoff
+//! hook was reached, never that the process image was replaced and never
+//! anything about the handed-over program's status. The handoff call sites
+//! therefore validate what can be validated *before* the hook runs (the
+//! selected binary is a regular file with an execute bit; `psql` is on
+//! `PATH`), so the deterministic launch failures are ordinary
+//! `"error"`/exit-1 events. What is left — a binary unlinked or chmod-ed
+//! between validation and `exec()`, a bad executable format — is a race no
+//! pre-flight can close, and it lands on `"exec_attempt"` with the correct
+//! exit code and message still reaching the shell.
+//!
+//! A failed *runtime* invocation can also carry a bounded description of how
+//! it failed (#450): `failure_stage`, `failure_kind`, an allowlisted
+//! `http_status`, and retry/provisioning/duration buckets, all of them closed
+//! vocabularies owned by [`crate::failure`] and recorded only at code-owned
+//! error boundaries. The values are `&'static str`s from the definitions and
+//! an allowlisted number, so — like every other field here — they cannot
+//! carry a value the user typed or the API returned. See [`Payload`] for the
+//! omission rules.
 //!
 //! Transport is a detached child process (`clickhousectl telemetry send`,
 //! hidden): the parent spawns it with all stdio nulled and never waits, so
@@ -91,6 +114,11 @@ pub fn init() {
 
 /// The ingest worker caps `flags` at 64 entries; truncate client-side too.
 const MAX_FLAGS: usize = 64;
+
+/// Positional ids are a deduplicated subset of the clap definitions, so the
+/// real bound is a handful per command; the cap is belt-and-braces so a future
+/// definition change can never widen the field.
+const MAX_POSITIONALS: usize = 16;
 
 // ---------------------------------------------------------------------------
 // Consent state
@@ -179,6 +207,19 @@ fn env_truthy(value: Option<String>) -> bool {
 struct Payload {
     command: String,
     flags: Vec<String>,
+    /// Definition-owned ids of the positional slots the user filled on the
+    /// command line (e.g. `["name"]` for `local server stop dev`) — presence
+    /// only, never the value (#480). The privacy boundary:
+    ///
+    /// * every entry is cloned from an `Arg` definition compiled into the
+    ///   binary, so the field's vocabulary is closed and cannot carry argv;
+    /// * only `ValueSource::CommandLine` slots count, so clap defaults,
+    ///   environment-fed values, and names a handler generates at runtime are
+    ///   absent — which is exactly what makes "the user named it" and "we
+    ///   picked one" distinguishable;
+    /// * passthrough slots are excluded ([`is_passthrough_positional`]): the
+    ///   argv they forward to another program is not part of this CLI's shape.
+    positionals: Vec<String>,
     /// Exit code: `Error::exit_code()` for dispatched commands — 0 success,
     /// 1 error, 3 cancelled, 4 auth required, or a child process's passthrough
     /// code — and clap's own code for parse outcomes (0 help/version, 2 usage
@@ -188,9 +229,13 @@ struct Payload {
     /// invocations carry `"ok"`, `"error"` (including non-zero child exits),
     /// `"cancelled"`, or `"auth_required"`. Child exits are explicitly marked
     /// as `"error"`; the remaining dispatched outcomes are derived from the
-    /// exit code by [`dispatched_outcome`]. `"exec"` means the process image was
-    /// replaced by `exec()` — the handed-over program's exit status is
-    /// unknowable, so `exit_code` is a fixed 0 and not meaningful. Failed
+    /// exit code by [`dispatched_outcome`]. `"exec_attempt"` means the
+    /// invocation reached the `exec()` handoff — nothing more. It is a
+    /// *censored* observation: the process image may or may not have been
+    /// replaced, and the handed-over program's exit status is unknowable
+    /// either way, so `exit_code` is a fixed 0 and carries no information.
+    /// Consumers must never count it as a native-client success or read its
+    /// exit code as a status. Failed
     /// parses carry a direct mapping of clap's `ErrorKind` (`"help"`,
     /// `"version"`, `"invalid_subcommand"`, …).
     /// Literal strings only — this field can never carry user data.
@@ -211,13 +256,48 @@ struct Payload {
     version: &'static str,
     os: &'static str,
     arch: &'static str,
+    // -- failure classification (#450) --------------------------------------
+    //
+    // Six fields describing *how* a failure failed, from the closed
+    // vocabularies in [`crate::failure`]. Every one is a `&'static str` from
+    // an enum's `as_str` or an allowlisted `u16`, so — exactly like
+    // `outcome` — no user data can reach them: SQL, identifiers, response
+    // bodies and credentials are structurally unrepresentable rather than
+    // filtered out. They are present only on events that *are* failures and
+    // only when a code-owned boundary classified one (see
+    // [`admits_failure_detail`]); `skip_serializing_if` keeps them off the
+    // wire otherwise, so an absent category is an absent key rather than a
+    // `null` a consumer has to interpret.
+    /// Which stage of the run failed (`"query_request"`, `"key_create"`, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_stage: Option<&'static str>,
+    /// What kind of failure it was (`"sql_error"`, `"rate_limited"`, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    failure_kind: Option<&'static str>,
+    /// The exact HTTP status, when it is one of the allowlisted statuses.
+    /// Absent for non-HTTP failures *and* for a status outside the allowlist,
+    /// whose class is still readable from `failure_kind`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    http_status: Option<u16>,
+    /// Retry attempts as a bucket (`"0"`, `"1"`, `"3_5"`, …), never a count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retry_bucket: Option<&'static str>,
+    /// How far Query API credential provisioning had got (`"stored_key"`,
+    /// `"provisioning"`, …) — the axis that separates a failed query from a
+    /// failed provisioning burst.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provisioning_state: Option<&'static str>,
+    /// Time from the start of the classified operation to the failure, as a
+    /// bucket (`"lt_250ms"`, `"lt_30s"`, …).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    duration_bucket: Option<&'static str>,
 }
 
 /// Derive the dispatched outcome from the process exit code. [`capture`]
 /// marks a successful parse `"ok"` before the command has run; by finalize
 /// time the exit code says how dispatch actually ended, so only that
 /// placeholder is rewritten — the parse kinds from [`capture_lossy`] and
-/// `"exec"` from [`finalize_before_exec`] pass through untouched. The mapping
+/// `"exec_attempt"` from [`finalize_before_exec`] pass through untouched. The mapping
 /// mirrors `Error::exit_code()`, with arbitrary child exit codes classified as
 /// errors.
 fn dispatched_outcome(outcome: &'static str, exit_code: i32) -> &'static str {
@@ -232,15 +312,35 @@ fn dispatched_outcome(outcome: &'static str, exit_code: i32) -> &'static str {
     }
 }
 
-fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) -> Payload {
+/// Whether failure detail belongs on an event with this outcome. A recorded
+/// classification is dropped for a successful run, for the censored
+/// `"exec_attempt"` handoff (which says nothing about the handed-over
+/// program), and for help/version — which are not failures at all — so the
+/// dashboard denominators for parse, auth, completed and censored outcomes
+/// keep counting exactly what they counted before.
+fn admits_failure_detail(outcome: &str) -> bool {
+    !matches!(outcome, "ok" | "exec_attempt" | "help" | "version")
+}
+
+fn build_payload(
+    invocation: &Invocation,
+    exit_code: i32,
+    env: EnvLookup<'_>,
+    failure: Option<crate::failure::Snapshot>,
+) -> Payload {
     let mut flags = invocation.flags.clone();
     flags.truncate(MAX_FLAGS);
+    let mut positionals = invocation.positionals.clone();
+    positionals.truncate(MAX_POSITIONALS);
     let detected = is_ai_agent::detect();
+    let outcome = dispatched_outcome(invocation.outcome, exit_code);
+    let failure = failure.filter(|_| admits_failure_detail(outcome));
     Payload {
         command: invocation.command.clone(),
         flags,
+        positionals,
         exit_code,
-        outcome: dispatched_outcome(invocation.outcome, exit_code),
+        outcome,
         suggestion: invocation.suggestion.clone(),
         is_agent: detected.is_some(),
         agent: detected.map(|a| a.id.as_str().to_string()),
@@ -248,6 +348,12 @@ fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) ->
         version: env!("CARGO_PKG_VERSION"),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
+        failure_stage: failure.map(|f| f.failure_stage),
+        failure_kind: failure.map(|f| f.failure_kind),
+        http_status: failure.and_then(|f| f.http_status),
+        retry_bucket: failure.map(|f| f.retry_bucket),
+        provisioning_state: failure.and_then(|f| f.provisioning_state),
+        duration_bucket: failure.and_then(|f| f.duration_bucket),
     }
 }
 
@@ -255,12 +361,15 @@ fn build_payload(invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) ->
 // Invocation capture
 // ---------------------------------------------------------------------------
 
-/// What the user invoked: the subcommand path (e.g. `"local start"`) and the
-/// long names of the flags they passed. No values, no positionals.
+/// What the user invoked: the subcommand path (e.g. `"local start"`), the long
+/// names of the flags they passed, and the ids of the positional slots they
+/// filled. Names only — never a value.
 #[derive(Clone)]
 pub struct Invocation {
     command: String,
     flags: Vec<String>,
+    /// See [`Payload::positionals`]: definition-owned ids, presence only.
+    positionals: Vec<String>,
     /// See [`Payload::outcome`]: `"ok"` from [`capture`] means *parsed* —
     /// the dispatched outcome is not knowable until the exit code exists, so
     /// [`dispatched_outcome`] derives it at finalize time. From
@@ -348,6 +457,22 @@ fn find_defined_name<'a>(cmd: &'a clap::Command, name: &str) -> Option<&'a str> 
         })
 }
 
+/// Whether a positional slot exists to forward raw argv to another program
+/// rather than to describe this CLI's own shape (`local client [ARGS]…`,
+/// `local postgres client [ARGS]…`, `local server start -- [CLICKHOUSE_ARG]…`).
+///
+/// The test is structural, not a hand-maintained list of ids: these slots are
+/// exactly the ones marked `last`, `trailing_var_arg`, or
+/// `allow_hyphen_values`, because forwarding argv verbatim is what those
+/// markers are for. Recording their presence would classify another program's
+/// argument list — including everything after a `--` — as a clickhousectl
+/// positional, so they are skipped ([`Payload::positionals`]). New passthrough
+/// slots inherit the exclusion automatically; a new *ordinary* positional is
+/// recorded without a config change.
+fn is_passthrough_positional(arg: &clap::Arg) -> bool {
+    arg.is_last_set() || arg.is_trailing_var_arg_set() || arg.is_allow_hyphen_values_set()
+}
+
 #[derive(Default)]
 struct PositionalCursor {
     index: usize,
@@ -382,8 +507,16 @@ impl PositionalCursor {
                 .is_some_and(clap::Arg::is_allow_hyphen_values_set)
     }
 
-    /// Consume a definition-backed positional slot without retaining its value.
-    fn consume(&mut self, cmd: &clap::Command, token: &str) -> bool {
+    /// Consume a definition-backed positional slot without retaining its
+    /// value, recording the slot's *id* in `seen` when it is one of this CLI's
+    /// own positionals. The id is cloned from the `Arg` definition, so the
+    /// token itself still never enters the result.
+    fn consume(
+        &mut self,
+        cmd: &clap::Command,
+        token: &str,
+        seen: &mut std::collections::BTreeSet<String>,
+    ) -> bool {
         let Some(arg) = self.current(cmd) else {
             return false;
         };
@@ -391,12 +524,16 @@ impl PositionalCursor {
             .get_value_terminator()
             .is_some_and(|terminator| terminator.as_str() == token)
         {
+            // A terminator token fills no slot: nothing to record.
             self.index += 1;
             self.values = 0;
             self.active = false;
             return true;
         }
 
+        if !is_passthrough_positional(arg) {
+            seen.insert(arg.get_id().as_str().to_string());
+        }
         self.values += 1;
         self.active = true;
         let max_values = arg.get_num_args().map_or(1, |range| range.max_values());
@@ -438,14 +575,16 @@ fn short_cluster_is_defined(stack: &[&clap::Command], cluster: &str) -> bool {
     true
 }
 
-/// Derive the command path and passed-flag names from the parsed matches.
+/// Derive the command path, passed-flag names, and filled positional ids from
+/// the parsed matches.
 ///
 /// Only ids and `Arg` metadata are consulted — never `get_one`/`get_raw`/
-/// `get_many` — so argument *values* are structurally unreachable here.
-/// Positionals are skipped entirely (their names could still describe user
-/// data), default-valued and env-fed args are excluded by the
+/// `get_many` — so argument *values* are structurally unreachable here. A
+/// positional contributes its definition id and nothing else (#480; see
+/// [`Payload::positionals`]), passthrough slots contribute nothing at all,
+/// default-valued and env-fed args are excluded by the
 /// `ValueSource::CommandLine` filter, and clap's propagation of global flags
-/// into subcommand matches is deduplicated by the set.
+/// into subcommand matches is deduplicated by the sets.
 pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
     use clap::parser::ValueSource;
 
@@ -454,6 +593,7 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
     // subcommand matches but their `Arg` definition lives on an ancestor.
     let mut stack: Vec<&clap::Command> = vec![root];
     let mut flags = std::collections::BTreeSet::new();
+    let mut positionals = std::collections::BTreeSet::new();
     let mut current = matches;
     loop {
         for id in current.ids() {
@@ -477,6 +617,11 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
                 continue;
             };
             if arg.is_positional() {
+                if !is_passthrough_positional(arg) {
+                    // The definition's id, cloned from the definition — a
+                    // positional has no long name to fall back on.
+                    positionals.insert(arg.get_id().as_str().to_string());
+                }
                 continue;
             }
             flags.insert(arg.get_long().unwrap_or(id.as_str()).to_string());
@@ -498,6 +643,7 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
     Invocation {
         command: path.join(" "),
         flags: flags.into_iter().collect(),
+        positionals: positionals.into_iter().collect(),
         outcome: "ok",
         suggestion: None,
     }
@@ -511,10 +657,16 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
 /// enter the result, the same "structurally impossible to leak a value"
 /// guarantee as [`capture`]. The walk stops at the first token that matches
 /// nothing. Defined positional slots are consumed without retaining their
-/// values, allowing later flags to be captured; an unmatched token for which
-/// no slot exists still stops the walk. The token itself is never recorded (a
-/// typo is indistinguishable from a secret pasted into the wrong window — see
-/// #320).
+/// values, recording the slot id like [`capture`] does and allowing later
+/// flags to be captured; an unmatched token for which no slot exists still
+/// stops the walk. The token itself is never recorded (a typo is
+/// indistinguishable from a secret pasted into the wrong window — see #320).
+///
+/// Slot assignment here is the walk's own index arithmetic rather than clap's
+/// parse, so on a failed parse a recorded id says "a token reached this slot",
+/// which is the fact the shape analysis needs; it is definition-owned either
+/// way. The walk breaks at `--`, so nothing beyond it is ever attributed to a
+/// positional.
 pub fn capture_lossy(
     root: &mut clap::Command,
     argv: &[std::ffi::OsString],
@@ -530,6 +682,7 @@ pub fn capture_lossy(
     let mut stack: Vec<&clap::Command> = vec![root];
     let mut path: Vec<&str> = Vec::new();
     let mut flags = std::collections::BTreeSet::new();
+    let mut positionals = std::collections::BTreeSet::new();
     let mut tokens = argv.iter().skip(1);
     let mut positional = PositionalCursor::new();
     'walk: while let Some(token) = tokens.next() {
@@ -545,7 +698,7 @@ pub fn capture_lossy(
         // values (including subcommand-like strings). With hyphen values or a
         // trailing var arg it also owns flag-like strings.
         if positional.active_accepts(current, hyphenated) {
-            positional.consume(current, token);
+            positional.consume(current, token, &mut positionals);
             continue;
         }
         if let Some(rest) = token.strip_prefix("--") {
@@ -561,7 +714,7 @@ pub fn capture_lossy(
                 })
             }) else {
                 if positional.inactive_accepts_hyphen(current) {
-                    positional.consume(current, token);
+                    positional.consume(current, token, &mut positionals);
                     continue;
                 }
                 break;
@@ -589,7 +742,7 @@ pub fn capture_lossy(
             if positional.inactive_accepts_hyphen(current)
                 && !short_cluster_is_defined(&stack, cluster)
             {
-                positional.consume(current, token);
+                positional.consume(current, token, &mut positionals);
                 continue;
             }
             positional.interrupt();
@@ -625,7 +778,7 @@ pub fn capture_lossy(
             path.push(sub.get_name());
             stack.push(sub);
             positional = PositionalCursor::new();
-        } else if positional.consume(current, token) {
+        } else if positional.consume(current, token, &mut positionals) {
             continue;
         } else {
             break;
@@ -634,6 +787,7 @@ pub fn capture_lossy(
     Invocation {
         command: path.join(" "),
         flags: flags.into_iter().collect(),
+        positionals: positionals.into_iter().collect(),
         outcome: outcome_for_error(error.kind()),
         suggestion: suggestion_for_error(root, error),
     }
@@ -657,7 +811,13 @@ enum Action {
     Debug(String),
 }
 
-fn decide(path: &Path, invocation: &Invocation, exit_code: i32, env: EnvLookup<'_>) -> Action {
+fn decide(
+    path: &Path,
+    invocation: &Invocation,
+    exit_code: i32,
+    env: EnvLookup<'_>,
+    failure: Option<crate::failure::Snapshot>,
+) -> Action {
     if env_truthy(env(DNT_ENV)) {
         return Action::Silent;
     }
@@ -674,7 +834,7 @@ fn decide(path: &Path, invocation: &Invocation, exit_code: i32, env: EnvLookup<'
         }
         State::Disabled => Action::Silent,
         State::Enabled => {
-            let json = serde_json::to_string(&build_payload(invocation, exit_code, env))
+            let json = serde_json::to_string(&build_payload(invocation, exit_code, env, failure))
                 .expect("Payload serialization cannot fail");
             if env_truthy(env(DEBUG_ENV)) {
                 Action::Debug(json)
@@ -696,11 +856,12 @@ pub fn stash_invocation(invocation: Invocation) {
 }
 
 /// Exactly-once guard shared by [`finalize`] and [`finalize_before_exec`]:
-/// whichever runs first claims it, the other is a no-op. When `exec()` fails,
-/// the pre-exec hook has already recorded the invocation as `"exec"` and the
-/// error propagating back to `main`'s tail is not recorded — losing the
-/// exec-failure detail is the accepted price for never emitting two events
-/// for one invocation.
+/// whichever runs first claims it, the other is a no-op. When `exec()` fails
+/// the pre-exec hook has already recorded the invocation as `"exec_attempt"`,
+/// and the error propagating back to `main`'s tail is not recorded a second
+/// time — which is why `"exec_attempt"` is defined as censored rather than as
+/// a successful handoff (#471). Launch failures that *can* be detected before
+/// the hook runs never reach it, so they are recorded as ordinary errors.
 static FINALIZED: AtomicBool = AtomicBool::new(false);
 
 /// `true` for exactly one caller per guard: swap semantics, first wins.
@@ -709,11 +870,11 @@ fn claim(guard: &AtomicBool) -> bool {
 }
 
 /// The event recorded when the process image is about to be replaced: the
-/// stashed parse result with its outcome rewritten to the `"exec"` literal
-/// (see [`Payload::outcome`]).
-fn exec_invocation(stashed: &Invocation) -> Invocation {
+/// stashed parse result with its outcome rewritten to the `"exec_attempt"`
+/// literal (see [`Payload::outcome`]).
+fn exec_attempt_invocation(stashed: &Invocation) -> Invocation {
     Invocation {
-        outcome: "exec",
+        outcome: "exec_attempt",
         ..stashed.clone()
     }
 }
@@ -732,10 +893,15 @@ pub fn finalize(invocation: Invocation, exit_code: i32, defer_first_run_notice: 
 
 /// The pre-exec hook, called by the `exec()` handoffs (`local client`, host
 /// `psql`) immediately before the process image is replaced and `main`'s tail
-/// becomes unreachable. On a first run this prints the notice to stderr just
+/// becomes unreachable. Records the censored `"exec_attempt"` outcome, exactly
+/// once per invocation. On a first run this prints the notice to stderr just
 /// before the handed-over program starts — acceptable and intended. The
 /// detached send child survives the `exec()` because it is a separate
 /// process.
+///
+/// Call it as late as possible: everything a handler can check about the
+/// launch belongs *before* this hook, so that failure is a real
+/// `"error"`/exit-1 event instead of a censored attempt (#471).
 pub fn finalize_before_exec() {
     let Some(stashed) = STASHED_INVOCATION.get() else {
         return;
@@ -743,7 +909,7 @@ pub fn finalize_before_exec() {
     if !claim(&FINALIZED) {
         return;
     }
-    finalize_inner(&exec_invocation(stashed), 0, false);
+    finalize_inner(&exec_attempt_invocation(stashed), 0, false);
 }
 
 fn finalize_inner(invocation: &Invocation, exit_code: i32, defer_first_run_notice: bool) {
@@ -751,7 +917,13 @@ fn finalize_inner(invocation: &Invocation, exit_code: i32, defer_first_run_notic
     if defer_first_run_notice && load_state_from(&path) == State::Missing {
         return;
     }
-    match decide(&path, invocation, exit_code, &real_env_lookup) {
+    match decide(
+        &path,
+        invocation,
+        exit_code,
+        &real_env_lookup,
+        crate::failure::snapshot(),
+    ) {
         Action::Silent => {}
         Action::Notice => print_first_run_notice(),
         Action::Debug(_) if defer_first_run_notice => {}
@@ -775,8 +947,10 @@ fn print_first_run_notice() {
     let _ = writeln!(
         std::io::stderr(),
         "\nNote: clickhousectl collects anonymous usage data to help improve the CLI:\n\
-         command name, flag names (never values or arguments), success/failure, version,\n\
-         OS/arch, and CI/agent detection. No user or machine IDs. Nothing was sent this run.\n\
+         command name, flag and argument names (never their values), success/failure\n\
+         with bounded failure categories, version, OS/arch, and CI/agent detection.\n\
+         No user or machine IDs.\n\
+         Nothing was sent this run.\n\
          Opt out: `clickhousectl telemetry disable` or DO_NOT_TRACK=1.\n\
          Details: {DOCS_URL}"
     );
@@ -928,6 +1102,7 @@ mod tests {
         Invocation {
             command: "local list".into(),
             flags: vec!["json".into()],
+            positionals: vec![],
             outcome: "ok",
             suggestion: None,
         }
@@ -951,7 +1126,7 @@ mod tests {
         // Even with an enabled state file present, DNT is fully silent.
         save_state_to(&path, false).unwrap();
         let env = env_of(&[("DO_NOT_TRACK", "1")]);
-        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env, None), Action::Silent);
     }
 
     #[test]
@@ -959,7 +1134,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("telemetry.json");
         let env = env_of(&[("DO_NOT_TRACK", "1")]);
-        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env, None), Action::Silent);
         assert!(!path.exists(), "DNT must not write the marker file");
     }
 
@@ -968,7 +1143,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("telemetry.json");
         let env = env_of(&[]);
-        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Notice);
+        assert_eq!(decide(&path, &invocation(), 0, &env, None), Action::Notice);
         let contents = std::fs::read_to_string(&path).unwrap();
         assert_eq!(contents, r#"{"disabled":false}"#);
     }
@@ -981,9 +1156,9 @@ mod tests {
         std::fs::write(&blocker, "").unwrap();
         let path = blocker.join("telemetry.json");
         let env = env_of(&[]);
-        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env, None), Action::Silent);
         // And again: still silent, never a notice, never a send.
-        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env, None), Action::Silent);
     }
 
     #[test]
@@ -992,7 +1167,7 @@ mod tests {
         let path = dir.path().join("telemetry.json");
         save_state_to(&path, true).unwrap();
         let env = env_of(&[]);
-        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env, None), Action::Silent);
     }
 
     #[test]
@@ -1002,7 +1177,7 @@ mod tests {
         std::fs::write(&path, "not json{{").unwrap();
         assert_eq!(load_state_from(&path), State::Disabled);
         let env = env_of(&[]);
-        assert_eq!(decide(&path, &invocation(), 0, &env), Action::Silent);
+        assert_eq!(decide(&path, &invocation(), 0, &env, None), Action::Silent);
     }
 
     #[test]
@@ -1011,12 +1186,13 @@ mod tests {
         let path = dir.path().join("telemetry.json");
         save_state_to(&path, false).unwrap();
         let env = env_of(&[("CI", "1")]);
-        let Action::Send(json) = decide(&path, &invocation(), 4, &env) else {
+        let Action::Send(json) = decide(&path, &invocation(), 4, &env, None) else {
             panic!("expected Send");
         };
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["command"], "local list");
         assert_eq!(value["flags"], serde_json::json!(["json"]));
+        assert_eq!(value["positionals"], serde_json::json!([]));
         assert_eq!(value["exit_code"], 4);
         // The parse-time "ok" placeholder is rewritten from the exit code.
         assert_eq!(value["outcome"], "auth_required");
@@ -1047,7 +1223,7 @@ mod tests {
             dispatched_outcome("unknown_argument", 2),
             "unknown_argument"
         );
-        assert_eq!(dispatched_outcome("exec", 0), "exec");
+        assert_eq!(dispatched_outcome("exec_attempt", 0), "exec_attempt");
     }
 
     /// The `outcome` field of the payload `decide` builds for the given
@@ -1056,7 +1232,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("telemetry.json");
         save_state_to(&path, false).unwrap();
-        let Action::Send(json) = decide(&path, invocation, exit_code, &env_of(&[])) else {
+        let Action::Send(json) = decide(&path, invocation, exit_code, &env_of(&[]), None) else {
             panic!("expected Send");
         };
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -1075,6 +1251,7 @@ mod tests {
         let inv = Invocation {
             command: "local".into(),
             flags: vec![],
+            positionals: vec![],
             outcome: "unknown_argument",
             suggestion: None,
         };
@@ -1088,14 +1265,14 @@ mod tests {
         save_state_to(&path, false).unwrap();
         let env = env_of(&[("CHCTL_TELEMETRY_DEBUG", "1")]);
         assert!(matches!(
-            decide(&path, &invocation(), 0, &env),
+            decide(&path, &invocation(), 0, &env, None),
             Action::Debug(_)
         ));
     }
 
     #[test]
     fn payload_serializes_exactly_the_wire_fields() {
-        let payload = build_payload(&invocation(), 0, &env_of(&[]));
+        let payload = build_payload(&invocation(), 0, &env_of(&[]), None);
         let value = serde_json::to_value(&payload).unwrap();
         let keys: Vec<&str> = value
             .as_object()
@@ -1108,6 +1285,7 @@ mod tests {
             [
                 "command",
                 "flags",
+                "positionals",
                 "exit_code",
                 "outcome",
                 "suggestion",
@@ -1117,7 +1295,8 @@ mod tests {
                 "version",
                 "os",
                 "arch"
-            ]
+            ],
+            "an unclassified event carries no failure keys at all — not even null"
         );
         // The two agent fields are set from the same single detection and can
         // never disagree.
@@ -1127,16 +1306,189 @@ mod tests {
         );
     }
 
+    // -- failure classification (#450) ---------------------------------------
+
+    /// A fully-populated classification, as `crate::failure` would report it.
+    fn failure_snapshot() -> crate::failure::Snapshot {
+        crate::failure::Snapshot {
+            failure_stage: "key_create",
+            failure_kind: "rate_limited",
+            http_status: Some(429),
+            retry_bucket: "3_5",
+            provisioning_state: Some("provisioning"),
+            duration_bucket: Some("lt_30s"),
+        }
+    }
+
+    #[test]
+    fn classified_failure_serializes_exactly_the_documented_wire_fields() {
+        let payload = build_payload(&invocation(), 1, &env_of(&[]), Some(failure_snapshot()));
+        let value = serde_json::to_value(&payload).unwrap();
+        let keys: Vec<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| k.as_str())
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "command",
+                "flags",
+                "positionals",
+                "exit_code",
+                "outcome",
+                "suggestion",
+                "is_agent",
+                "agent",
+                "ci",
+                "version",
+                "os",
+                "arch",
+                "failure_stage",
+                "failure_kind",
+                "http_status",
+                "retry_bucket",
+                "provisioning_state",
+                "duration_bucket",
+            ]
+        );
+        assert_eq!(value["outcome"], "error");
+        assert_eq!(value["failure_stage"], "key_create");
+        assert_eq!(value["failure_kind"], "rate_limited");
+        assert_eq!(value["http_status"], 429);
+        assert_eq!(value["retry_bucket"], "3_5");
+        assert_eq!(value["provisioning_state"], "provisioning");
+        assert_eq!(value["duration_bucket"], "lt_30s");
+    }
+
+    #[test]
+    fn absent_classification_details_are_omitted_not_nulled() {
+        // A failure with no HTTP status, no provisioning state and no timing
+        // span reports only the two categories plus the retry bucket.
+        let payload = build_payload(
+            &invocation(),
+            1,
+            &env_of(&[]),
+            Some(crate::failure::Snapshot {
+                failure_stage: "sql_input",
+                failure_kind: "other",
+                http_status: None,
+                retry_bucket: "0",
+                provisioning_state: None,
+                duration_bucket: None,
+            }),
+        );
+        let value = serde_json::to_value(&payload).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object["failure_stage"], "sql_input");
+        assert_eq!(object["failure_kind"], "other");
+        assert_eq!(object["retry_bucket"], "0");
+        for key in ["http_status", "provisioning_state", "duration_bucket"] {
+            assert!(
+                !object.contains_key(key),
+                "{key} must be omitted when absent, not sent as null: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn failure_detail_rides_only_on_failure_outcomes() {
+        assert!(admits_failure_detail("error"));
+        assert!(admits_failure_detail("auth_required"));
+        assert!(admits_failure_detail("cancelled"));
+        assert!(admits_failure_detail("unknown_argument"));
+        assert!(!admits_failure_detail("ok"));
+        assert!(!admits_failure_detail("exec_attempt"));
+        assert!(!admits_failure_detail("help"));
+        assert!(!admits_failure_detail("version"));
+    }
+
+    /// The classification is dropped for outcomes that are not failures, so
+    /// the "completed" and "censored/handoff" denominators keep their exact
+    /// meaning even if a boundary recorded something along the way.
+    #[test]
+    fn a_successful_or_censored_event_never_carries_failure_detail() {
+        for (inv, exit_code) in [
+            (invocation(), 0),
+            (exec_attempt_invocation(&invocation()), 0),
+            (
+                Invocation {
+                    outcome: "help",
+                    ..invocation()
+                },
+                0,
+            ),
+        ] {
+            let payload = build_payload(&inv, exit_code, &env_of(&[]), Some(failure_snapshot()));
+            let value = serde_json::to_value(&payload).unwrap();
+            let object = value.as_object().unwrap();
+            for key in [
+                "failure_stage",
+                "failure_kind",
+                "http_status",
+                "retry_bucket",
+                "provisioning_state",
+                "duration_bucket",
+            ] {
+                assert!(
+                    !object.contains_key(key),
+                    "outcome {} must carry no {key}: {value}",
+                    object["outcome"]
+                );
+            }
+        }
+    }
+
+    /// The classification fields are `&'static str`s and an allowlisted
+    /// number, so there is no code path by which SQL, an identifier, a
+    /// response body or a credential could reach them. Pin that with a
+    /// hostile invocation whose every string looks like a secret.
+    #[test]
+    fn a_classified_failure_payload_holds_no_free_text() {
+        let inv = Invocation {
+            command: "cloud service query".into(),
+            flags: vec!["query".into(), "org-id".into()],
+            positionals: vec![],
+            outcome: "ok",
+            suggestion: None,
+        };
+        let json = serde_json::to_string(&build_payload(
+            &inv,
+            1,
+            &env_of(&[]),
+            Some(failure_snapshot()),
+        ))
+        .unwrap();
+        for secret in [
+            "SELECT",
+            "password",
+            "AKIA",
+            "sk-",
+            "org-1",
+            "svc-",
+            "Bearer",
+            "Unknown table",
+        ] {
+            assert!(
+                !json.contains(secret),
+                "classified payload leaked {secret}: {json}"
+            );
+        }
+    }
+
     #[test]
     fn flags_truncated_to_worker_cap() {
         let inv = Invocation {
             command: "x".into(),
             flags: (0..100).map(|i| format!("flag-{i}")).collect(),
+            positionals: (0..100).map(|i| format!("pos-{i}")).collect(),
             outcome: "ok",
             suggestion: None,
         };
-        let payload = build_payload(&inv, 0, &env_of(&[]));
+        let payload = build_payload(&inv, 0, &env_of(&[]), None);
         assert_eq!(payload.flags.len(), MAX_FLAGS);
+        assert_eq!(payload.positionals.len(), MAX_POSITIONALS);
     }
 
     // -- exec handoffs: pre-exec hook building blocks -------------------------
@@ -1152,41 +1504,55 @@ mod tests {
     }
 
     #[test]
-    fn exec_invocation_rewrites_only_the_outcome() {
+    fn exec_attempt_invocation_rewrites_only_the_outcome() {
         let stashed = Invocation {
             command: "local client".into(),
             flags: vec!["port".into()],
+            positionals: vec!["name".into()],
             outcome: "ok",
             suggestion: None,
         };
-        let inv = exec_invocation(&stashed);
-        assert_eq!(inv.outcome, "exec");
+        let inv = exec_attempt_invocation(&stashed);
+        assert_eq!(inv.outcome, "exec_attempt");
         assert_eq!(inv.command, "local client");
         assert_eq!(inv.flags, ["port"]);
+        assert_eq!(inv.positionals, ["name"]);
         assert_eq!(inv.suggestion, None);
     }
 
     #[test]
-    fn exec_outcome_sends_the_expected_payload() {
+    fn exec_attempt_outcome_sends_the_expected_payload() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("telemetry.json");
         save_state_to(&path, false).unwrap();
-        let inv = exec_invocation(&Invocation {
+        let inv = exec_attempt_invocation(&Invocation {
             command: "local client".into(),
             flags: vec!["query".into()],
+            positionals: vec![],
             outcome: "ok",
             suggestion: None,
         });
-        // The hook always passes 0: the handed-over program's exit status is
-        // unknowable, and `outcome` marks the code as not meaningful.
-        let Action::Send(json) = decide(&path, &inv, 0, &env_of(&[])) else {
+        // The hook always passes 0: the handoff is censored, so neither the
+        // launch nor the handed-over program's exit status is observable and
+        // `outcome` marks the code as carrying no information.
+        let Action::Send(json) = decide(&path, &inv, 0, &env_of(&[]), None) else {
             panic!("expected Send");
         };
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["command"], "local client");
         assert_eq!(value["flags"], serde_json::json!(["query"]));
-        assert_eq!(value["outcome"], "exec");
+        assert_eq!(value["outcome"], "exec_attempt");
         assert_eq!(value["exit_code"], 0);
+    }
+
+    #[test]
+    fn exec_attempt_is_never_rewritten_to_a_dispatched_outcome() {
+        // A censored attempt must not be laundered into "ok" (or "error") by
+        // the exit-code mapping, whatever code the tail would have seen.
+        let inv = exec_attempt_invocation(&invocation());
+        for exit_code in [0, 1, 3, 4, 23] {
+            assert_eq!(decided_outcome(&inv, exit_code), "exec_attempt");
+        }
     }
 
     // -- capture: values are structurally unreachable ------------------------
@@ -1211,8 +1577,153 @@ mod tests {
         ]);
         assert_eq!(inv.command, "cloud service get");
         assert_eq!(inv.flags, ["json", "org-id"]);
-        let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]))).unwrap();
+        // The positional's definition id is recorded; its value is not (#480).
+        assert_eq!(inv.positionals, ["service_id"]);
+        let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+    }
+
+    /// The three lifecycle shapes issue #480 could not tell apart.
+    #[test]
+    fn capture_distinguishes_bare_named_and_flag_named_stop() {
+        let bare = capture_from(&["clickhousectl", "local", "server", "stop"]);
+        assert_eq!(bare.command, "local server stop");
+        assert!(bare.flags.is_empty());
+        assert!(
+            bare.positionals.is_empty(),
+            "an omitted positional must stay absent: {:?}",
+            bare.positionals
+        );
+
+        let named = capture_from(&["clickhousectl", "local", "server", "stop", "SECRET-NAME"]);
+        assert_eq!(named.command, "local server stop");
+        assert!(named.flags.is_empty());
+        assert_eq!(named.positionals, ["name"]);
+
+        // The compatibility `--name` form is a flag, so the two ways of naming
+        // a server stay distinguishable without a separate source field.
+        let flagged = capture_from(&[
+            "clickhousectl",
+            "local",
+            "server",
+            "stop",
+            "--name",
+            "SECRET-NAME",
+        ]);
+        assert_eq!(flagged.command, "local server stop");
+        assert_eq!(flagged.flags, ["name"]);
+        assert!(flagged.positionals.is_empty());
+
+        for inv in [&bare, &named, &flagged] {
+            let json = serde_json::to_string(&build_payload(inv, 0, &env_of(&[]), None)).unwrap();
+            assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+        }
+    }
+
+    /// The other half of the #480 signal: a supplied version is visible on the
+    /// successful parse, so it is distinguishable from the missing-required
+    /// parse failure asserted in `lossy_missing_required_positional_is_absent`.
+    #[test]
+    fn capture_records_supplied_version_positional() {
+        for command in [
+            ["clickhousectl", "local", "use", "25.12.9.61"],
+            ["clickhousectl", "local", "remove", "25.12.9.61"],
+        ] {
+            let inv = capture_from(&command);
+            assert_eq!(inv.positionals, ["version"], "for {command:?}");
+            assert_eq!(inv.outcome, "ok");
+        }
+    }
+
+    /// Passthrough slots forward argv to another program (`clickhouse-client`,
+    /// `psql`, `clickhouse-server`). Their presence is not this CLI's shape and
+    /// is never recorded — including everything after a `--`.
+    #[test]
+    fn capture_excludes_passthrough_positionals() {
+        let inv = capture_from(&[
+            "clickhousectl",
+            "local",
+            "client",
+            "--",
+            "--secret-passthrough-flag",
+            "SECRET-VALUE",
+        ]);
+        assert_eq!(inv.command, "local client");
+        assert!(
+            inv.positionals.is_empty(),
+            "passthrough args were recorded: {:?}",
+            inv.positionals
+        );
+
+        // `server start` puts its passthrough behind `last = true`: the named
+        // server is still recorded, the forwarded arguments are not.
+        let inv = capture_from(&[
+            "clickhousectl",
+            "local",
+            "server",
+            "start",
+            "SECRET-NAME",
+            "--",
+            "--logger.level=SECRET-LEVEL",
+        ]);
+        assert_eq!(inv.command, "local server start");
+        assert_eq!(inv.positionals, ["name"]);
+
+        let inv = capture_from(&[
+            "clickhousectl",
+            "local",
+            "postgres",
+            "client",
+            "--",
+            "-c",
+            "SECRET-SQL",
+        ]);
+        assert_eq!(inv.command, "local postgres client");
+        assert!(inv.positionals.is_empty());
+    }
+
+    /// Every passthrough slot in the real command tree is recognized
+    /// structurally, and every recorded id is a source-level identifier — the
+    /// field's vocabulary is closed by the definitions, not by an allowlist
+    /// that can go stale.
+    #[test]
+    fn positional_ids_are_closed_definition_identifiers() {
+        fn walk(cmd: &clap::Command, recorded: &mut Vec<String>, passthrough: &mut Vec<String>) {
+            for arg in cmd.get_positionals() {
+                if is_passthrough_positional(arg) {
+                    passthrough.push(arg.get_id().to_string());
+                } else {
+                    recorded.push(arg.get_id().to_string());
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, recorded, passthrough);
+            }
+        }
+        let mut cmd = crate::cli::Cli::command();
+        cmd.build();
+        let (mut recorded, mut passthrough) = (Vec::new(), Vec::new());
+        walk(&cmd, &mut recorded, &mut passthrough);
+
+        assert!(!recorded.is_empty(), "the tree must have positionals");
+        for id in &recorded {
+            assert!(
+                id.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "positional id {id} is not a Rust identifier, so it is not \
+                 definition-owned"
+            );
+        }
+        // The passthrough slots are the argv-forwarding ones; they all happen
+        // to be spelled `args`, but the exclusion is by marker, not by name.
+        assert!(
+            passthrough.iter().all(|id| id == "args"),
+            "unexpected passthrough slots: {passthrough:?}"
+        );
+        assert!(
+            !recorded.contains(&"args".to_string()),
+            "a forwarding slot is being recorded: {recorded:?}"
+        );
     }
 
     #[test]
@@ -1240,9 +1751,31 @@ mod tests {
             .unwrap();
         let inv = capture(&cmd, &matches);
         assert_eq!(inv.command, "sub");
-        // `level` has a default (ValueSource::DefaultValue) and `target` is
-        // positional — only the explicitly passed named flag is reported.
+        // `level` has a default (ValueSource::DefaultValue), so it is not
+        // reported; `target` was passed on the command line, so its id is.
         assert_eq!(inv.flags, ["verbose"]);
+        assert_eq!(inv.positionals, ["target"]);
+    }
+
+    /// A positional that clap filled from a default (or, by the same
+    /// `ValueSource::CommandLine` comparison, from the environment) is not a
+    /// user-supplied positional and must stay absent — that is what makes an
+    /// omitted default distinguishable from an explicit value.
+    #[test]
+    fn capture_excludes_defaulted_positionals() {
+        use clap::{Arg, Command};
+        let mut cmd = Command::new("root").subcommand(
+            Command::new("sub")
+                .arg(Arg::new("target").default_value("default"))
+                .arg(Arg::new("other")),
+        );
+        let matches = cmd.try_get_matches_from_mut(["root", "sub"]).unwrap();
+        let inv = capture(&cmd, &matches);
+        assert!(
+            inv.positionals.is_empty(),
+            "a defaulted positional was reported as user-supplied: {:?}",
+            inv.positionals
+        );
     }
 
     #[test]
@@ -1250,6 +1783,7 @@ mod tests {
         let inv = capture_from(&["clickhousectl", "local", "list"]);
         assert_eq!(inv.command, "local list");
         assert!(inv.flags.is_empty());
+        assert!(inv.positionals.is_empty());
     }
 
     // -- capture_lossy: failed parses, longest valid prefix only -------------
@@ -1313,7 +1847,7 @@ mod tests {
         assert_eq!(inv.outcome, "invalid_subcommand");
         // Clap's did-you-mean names a *defined* subcommand.
         assert_eq!(inv.suggestion.as_deref(), Some("service"));
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("servce"), "typo leaked into payload: {json}");
     }
 
@@ -1382,7 +1916,7 @@ mod tests {
         assert_eq!(inv.command, "local");
         assert!(inv.flags.is_empty());
         assert_eq!(inv.outcome, "unknown_argument");
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("frobnicate"), "unknown flag leaked: {json}");
     }
 
@@ -1405,7 +1939,7 @@ mod tests {
         assert_eq!(inv.command, "run");
         assert_eq!(inv.flags, ["count"]);
         assert_eq!(inv.outcome, "invalid_value");
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(
             !json.contains("SECRET"),
             "positional or flag value leaked: {json}"
@@ -1485,7 +2019,7 @@ mod tests {
         );
         assert_eq!(inv.command, "run");
         assert!(inv.flags.is_empty());
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "positional value leaked: {json}");
     }
 
@@ -1541,7 +2075,7 @@ mod tests {
         );
         assert_eq!(inv.command, "run");
         assert!(inv.flags.is_empty());
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "unmatched token leaked: {json}");
     }
 
@@ -1577,7 +2111,7 @@ mod tests {
         ]);
         assert_eq!(inv.command, "cloud service list");
         assert_eq!(inv.flags, ["org-id"]);
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "inline value leaked: {json}");
     }
 
@@ -1600,7 +2134,7 @@ mod tests {
         assert_eq!(inv.command, "local server start");
         assert_eq!(inv.flags, ["config", "foreground", "http-port"]);
         assert_eq!(inv.outcome, "invalid_value");
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "flag value leaked: {json}");
     }
 
@@ -1622,7 +2156,7 @@ mod tests {
         assert_eq!(inv.command, "local client");
         assert_eq!(inv.flags, ["port", "query"]);
         assert_eq!(inv.outcome, "invalid_value");
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "flag value leaked: {json}");
     }
 
@@ -1652,7 +2186,7 @@ mod tests {
         let inv = capture_lossy(&mut cmd, &argv, &error);
         assert_eq!(inv.command, "sub");
         assert_eq!(inv.flags, ["level", "quiet", "verbose"]);
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "attached value leaked: {json}");
     }
 
@@ -1672,7 +2206,7 @@ mod tests {
         assert_eq!(inv.command, "cloud service list");
         assert!(inv.flags.is_empty());
         assert_eq!(inv.outcome, "unknown_argument");
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "post-break token leaked: {json}");
 
         // Mid-cluster: chars resolved before the unknown one stay recorded —
@@ -1698,7 +2232,7 @@ mod tests {
         let inv = capture_lossy_from(&["clickhousectl", "local", "--", "SECRET-POSITIONAL"]);
         assert_eq!(inv.command, "local");
         assert!(inv.flags.is_empty());
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "post-`--` token leaked: {json}");
     }
 
@@ -1733,8 +2267,160 @@ mod tests {
         ]);
         assert_eq!(inv.command, "cloud service get");
         assert_eq!(inv.outcome, "unknown_argument");
-        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]))).unwrap();
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
         assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+    }
+
+    // -- capture_lossy: positional presence on failed parses -----------------
+
+    /// A required positional that was never supplied stays absent, so a bare
+    /// `local use` is distinguishable from `local use <version>` (#480).
+    #[test]
+    fn lossy_missing_required_positional_is_absent() {
+        for args in [
+            &["clickhousectl", "local", "use"],
+            &["clickhousectl", "local", "remove"],
+        ] {
+            let inv = capture_lossy_from(args);
+            assert_eq!(inv.outcome, "missing_required", "for {args:?}");
+            assert!(
+                inv.positionals.is_empty(),
+                "a missing positional was recorded for {args:?}: {:?}",
+                inv.positionals
+            );
+        }
+    }
+
+    /// A failed parse that *did* carry a positional records the slot id, so a
+    /// handler-side failure after a supplied version is distinguishable from
+    /// the missing-argument parse failure above.
+    #[test]
+    fn lossy_supplied_positional_records_the_slot_id() {
+        let inv = capture_lossy_from(&[
+            "clickhousectl",
+            "local",
+            "remove",
+            "SECRET-VERSION",
+            "--frobnicate",
+        ]);
+        assert_eq!(inv.command, "local remove");
+        assert_eq!(inv.outcome, "unknown_argument");
+        assert_eq!(inv.positionals, ["version"]);
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
+        assert!(!json.contains("SECRET"), "positional value leaked: {json}");
+    }
+
+    /// Nothing after `--` is a clickhousectl positional: the walk stops there,
+    /// so a forwarded argument list can never be attributed to a slot.
+    #[test]
+    fn lossy_tokens_after_double_dash_are_not_positionals() {
+        let inv = capture_lossy_from(&["clickhousectl", "local", "--", "SECRET-ONE", "SECRET-TWO"]);
+        assert_eq!(inv.command, "local");
+        assert!(inv.positionals.is_empty());
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
+        assert!(!json.contains("SECRET"), "post-`--` token leaked: {json}");
+    }
+
+    /// Passthrough slots are excluded on the lossy path too, including a
+    /// trailing var arg that swallows hostile flag-like tokens.
+    #[test]
+    fn lossy_passthrough_positionals_are_excluded() {
+        use clap::{Arg, Command, value_parser};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("target"))
+                .arg(
+                    Arg::new("args")
+                        .num_args(0..)
+                        .trailing_var_arg(true)
+                        .allow_hyphen_values(true),
+                )
+                .arg(
+                    Arg::new("count")
+                        .long("count")
+                        .value_parser(value_parser!(u16)),
+                ),
+        );
+        // The bad `--count` value is what fails the parse; the trailing var
+        // arg would otherwise swallow the hostile tokens successfully.
+        let inv = capture_lossy_with(
+            cmd,
+            &[
+                "root",
+                "run",
+                "--count",
+                "SECRET-COUNT",
+                "SECRET-TARGET",
+                "--secret-forwarded",
+                "SECRET-FORWARDED-VALUE",
+            ],
+        );
+        assert_eq!(inv.command, "run");
+        assert_eq!(inv.flags, ["count"]);
+        assert_eq!(
+            inv.positionals,
+            ["target"],
+            "only the CLI's own slot may be recorded"
+        );
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
+        assert!(!json.contains("SECRET"), "forwarded argv leaked: {json}");
+    }
+
+    /// A value terminator advances the cursor without filling a slot, so the
+    /// terminator token alone must not look like a supplied positional.
+    #[test]
+    fn lossy_value_terminator_records_no_positional() {
+        use clap::{Arg, Command};
+        let cmd = Command::new("root").subcommand(
+            Command::new("run")
+                .arg(Arg::new("values").num_args(1..).value_terminator(";"))
+                .arg(Arg::new("after")),
+        );
+        let inv = capture_lossy_with(cmd, &["root", "run", ";", "SECRET-JUNK", "SECRET-EXTRA"]);
+        assert_eq!(inv.command, "run");
+        assert_eq!(inv.positionals, ["after"]);
+        let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
+        assert!(!json.contains("SECRET"), "terminated value leaked: {json}");
+    }
+
+    /// Hostile secret-shaped positionals across every capture path: the ids
+    /// recorded are definition strings, the values never appear.
+    #[test]
+    fn hostile_positional_fixtures_never_reach_the_payload() {
+        const HOSTILE: &[&str] = &[
+            "AKIAIOSFODNN7EXAMPLE",
+            "sk-live-0123456789abcdef",
+            "postgres://user:pa55w0rd@db.internal:5432/prod",
+            "s3://bucket/customer-export.csv",
+            "/Users/someone/.ssh/id_rsa",
+            "ghp_0123456789abcdefghijklmnopqrstuvwxyz",
+        ];
+        for hostile in HOSTILE {
+            // Successful parse.
+            let inv = capture_from(&["clickhousectl", "local", "server", "stop", hostile]);
+            assert_eq!(inv.positionals, ["name"]);
+            let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
+            assert!(!json.contains(hostile), "leaked {hostile}: {json}");
+
+            // Failed parse (unknown flag after the positional).
+            let inv = capture_lossy_from(&[
+                "clickhousectl",
+                "local",
+                "server",
+                "stop",
+                hostile,
+                "--frobnicate",
+            ]);
+            assert_eq!(inv.positionals, ["name"]);
+            let json = serde_json::to_string(&build_payload(&inv, 2, &env_of(&[]), None)).unwrap();
+            assert!(!json.contains(hostile), "leaked {hostile}: {json}");
+
+            // Passthrough (forwarded verbatim to clickhouse-client).
+            let inv = capture_from(&["clickhousectl", "local", "client", "--", hostile]);
+            assert!(inv.positionals.is_empty());
+            let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
+            assert!(!json.contains(hostile), "leaked {hostile}: {json}");
+        }
     }
 
     #[test]

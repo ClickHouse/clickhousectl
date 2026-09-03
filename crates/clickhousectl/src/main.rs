@@ -2,6 +2,7 @@ mod cli;
 mod cloud;
 mod dotenv;
 mod error;
+mod failure;
 mod http;
 mod init;
 mod local;
@@ -157,20 +158,43 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
         ));
     }
 
+    // Each reverse private endpoint type has its own required flags, and the
+    // flags of the other types are meaningless for it; clap has no way to
+    // forbid an argument based on another argument's value.
+    if let Some(message) = args.reverse_private_endpoint_validation_error() {
+        let endpoint = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
+            .and_then(|clickpipe| clickpipe.find_subcommand_mut("reverse-private-endpoint"))
+            .and_then(|endpoint| endpoint.find_subcommand_mut("create"))
+            .expect("clickpipe reverse-private-endpoint create command must exist");
+        return Err(endpoint.error(ErrorKind::ArgumentConflict, message));
+    }
+
     // clap can require --iam-role for one auth value, but cannot express the
-    // inverse conflict or condition --replication-slot-name on another value.
-    let Some(message) = args.postgres_clickpipe_validation_error() else {
+    // inverse conflict, require the credential pair only for basic auth, or
+    // condition --replication-slot-name on another value.
+    let Some((source, message)) = args.clickpipe_create_validation_error() else {
         return Ok(());
     };
-    let postgres = cmd
+    let create = cmd
         .find_subcommand_mut("cloud")
         .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
         .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
-        .and_then(|create| create.find_subcommand_mut("postgres"))
-        .expect("clickpipe create postgres command must exist");
+        .expect("clickpipe create command must exist");
+    // The usage error belongs to the source subcommand. If the returned literal
+    // ever drifts from a `#[command(name)]`, report it against `clickpipe
+    // create` instead of panicking on a valid invocation.
+    let owner = if create.find_subcommand(source).is_some() {
+        create
+            .find_subcommand_mut(source)
+            .expect("presence checked immediately above")
+    } else {
+        create
+    };
     // ArgumentConflict is intentional for invalid relationships between valid
     // values, matching existing CLI validation and preserving exit code 2.
-    Err(postgres.error(ErrorKind::ArgumentConflict, message))
+    Err(owner.error(ErrorKind::ArgumentConflict, message))
 }
 
 /// Run a successfully parsed invocation to completion and report the exit
@@ -208,6 +232,10 @@ async fn run_parsed(cli: Cli) -> (i32, bool, bool) {
         Commands::Local(args) => json_output(args.json),
         _ => false,
     };
+    let cloud_json = match &cli.command {
+        Commands::Cloud(args) => json_output(args.json),
+        _ => false,
+    };
 
     let result = run(cli.command).await;
 
@@ -222,17 +250,33 @@ async fn run_parsed(cli: Cli) -> (i32, bool, bool) {
         Ok(()) => (0, false, false),
         Err(e) => {
             let is_child_exit = matches!(&e, Error::ChildExit(_));
+            // A cloud failure that carries a machine-readable detail is
+            // emitted as one JSON object on stderr in JSON mode (#644),
+            // matching the envelope local errors use. Cloud failures without
+            // a detail stay prose: nothing structured has been resolved for
+            // them, and inventing a code per message is exactly the
+            // text-derived vocabulary this codebase avoids.
+            let structured_cloud_error =
+                cloud_json && matches!(&e, Error::CloudDetailed(_)) && !is_child_exit;
             if !is_child_exit {
-                if local_json {
-                    local::output::print_error(&e);
-                } else {
-                    use std::io::Write;
-                    // Not `eprintln!`, which panics on a closed stderr — see
-                    // `telemetry::print_first_run_notice`.
-                    let _ = writeln!(std::io::stderr(), "Error: {}", e);
+                match &e {
+                    _ if local_json => local::output::print_error(&e),
+                    Error::CloudDetailed(details) if cloud_json => {
+                        cloud::output::print_error(details);
+                    }
+                    _ => {
+                        use std::io::Write;
+                        // Not `eprintln!`, which panics on a closed stderr — see
+                        // `telemetry::print_first_run_notice`.
+                        let _ = writeln!(std::io::stderr(), "Error: {}", e);
+                    }
                 }
             }
-            (e.exit_code(), is_child_exit, local_json && !is_child_exit)
+            (
+                e.exit_code(),
+                is_child_exit,
+                (local_json && !is_child_exit) || structured_cloud_error,
+            )
         }
     };
 
