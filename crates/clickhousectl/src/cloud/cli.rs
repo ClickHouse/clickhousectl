@@ -132,10 +132,9 @@ CONTEXT FOR AGENTS:
         name = "clickpipe",
         after_help = "\
 CONTEXT FOR AGENTS:
-  Manage ClickPipes for ingesting data into ClickHouse Cloud.
-  Subcommands: list, get, delete, start, stop, resync, scale, settings, create,
-  reverse-private-endpoint (PrivateLink connectivity for sources).
-  Requires a service ID — get it from `clickhousectl cloud service list`."
+  Service ID: `clickhousectl cloud service list`. ClickPipe ID: `clickpipe list <SERVICE_ID>`.
+  `start` only works on a Stopped or Failed pipe; `stop` works from any state.
+  Typical flow: `clickpipe schema-discover <source>` -> `clickpipe create <source>` -> `clickpipe get`."
     )]
     ClickPipe {
         #[command(subcommand)]
@@ -190,12 +189,11 @@ CONTEXT FOR AGENTS:
     /// Manage ClickHouse Cloud Postgres services (beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage ClickHouse Cloud managed Postgres services. Subcommands cover CRUD, lifecycle
-  (restart/promote/switchover), CA certs, runtime config, password reset, read replicas,
-  and point-in-time restore. Service IDs come from `postgres list`.
-  Role changes are eventually consistent: `promote` and `switchover` accept --wait to poll
-  until the target reports the new isPrimary and fail if it never does.
-  Write commands require API key auth — OAuth is read-only.")]
+  Write commands need API key auth; OAuth is read-only.
+  Service IDs: `cloud postgres list`. Org ID auto-detects only with one org, else pass --org-id.
+  Credentials come only from `create` and `reset-password`; `get` does not return them.
+  promote/switchover are eventually consistent: pass --wait to confirm the new role.
+  Typical flow: `create` -> `get <id>` until state is running -> `certs get` -> `config patch`.")]
     Postgres {
         #[command(subcommand)]
         command: crate::cloud::postgres::PostgresCommands,

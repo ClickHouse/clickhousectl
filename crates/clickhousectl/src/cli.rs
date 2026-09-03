@@ -33,7 +33,7 @@ CONTEXT FOR AGENTS:
   Typical flow: `local server start` -> `local client -q 'SELECT 1'`")]
     Local(LocalArgs),
 
-    /// Work with serverless ClickHouse in ClickHouse Cloud
+    /// Manage ClickHouse and Postgres in ClickHouse Cloud
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Credential precedence, first wins: --api-key/--api-secret flags, .clickhouse/credentials.json,
