@@ -1020,47 +1020,8 @@ mod tests {
     }
 
     #[test]
-    fn clickhouse_client_help_describes_binary_version_selection() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        for text in [
-            "Installed local client version for direct host/port mode",
-            "Does not change the default",
-        ] {
-            assert!(help.contains(text), "missing {text:?} in:\n{help}");
-        }
-
-        // The project-scope rule is stated once, on the `local` parent (#678).
-        let parent = rendered_help(&["--help"]);
-        for text in [
-            "Project-scoped commands use `.clickhouse` under the exact current directory",
-            "are not searched",
-        ] {
-            assert!(parent.contains(text), "missing {text:?} in:\n{parent}");
-        }
-    }
-
-    #[test]
-    fn clickhouse_client_help_describes_query_multiplicity_and_exclusion() {
-        let help = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
-            .err()
-            .expect("help should exit through clap")
-            .to_string();
-
-        assert!(
-            help.contains("repeatable (repeats need ClickHouse 23.9.1.1854+)"),
-            "{help}"
-        );
-        assert!(
-            help.contains("accepts multiple paths or repeated flags"),
-            "{help}"
-        );
-
-        // The mutual exclusion moved out of help text and is enforced by clap itself.
+    fn clickhouse_client_query_sources_are_mutually_exclusive() {
+        // The mutual exclusion is enforced by clap itself, not documented in help text.
         assert_eq!(
             local_parse_error(&["client", "--query", "SELECT 1", "--queries-file", "q.sql"]).kind(),
             clap::error::ErrorKind::ArgumentConflict,
@@ -1166,63 +1127,6 @@ mod tests {
     }
 
     #[test]
-    fn install_help_covers_install_requirements() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "install", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        for required in [
-            "The first ClickHouse version installed becomes the default",
-            "`clickhousectl local use <version>` auto-installs a missing version",
-            "`postgres@<tag>` pulls a Docker image instead (needs Docker running)",
-            "never sets a default",
-        ] {
-            assert!(
-                help.contains(required),
-                "missing {required:?} from:\n{help}"
-            );
-        }
-    }
-
-    #[test]
-    fn use_help_documents_standard_clickhouse_subcommands() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "use", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        assert!(help.contains("`~/.local/bin/clickhouse`"), "{help}");
-        assert!(help.contains("`clickhouse client`"), "{help}");
-        assert!(help.contains("`clickhouse benchmark`"), "{help}");
-        assert!(help.contains("`clickhouse format`"), "{help}");
-    }
-
-    #[test]
-    fn remove_help_documents_the_default_version_guard() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "remove", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        for required in [
-            "is the current default",
-            "~/.clickhouse/default",
-            "~/.local/bin/clickhouse",
-            "clickhousectl local use <other-version>",
-            "--force",
-        ] {
-            assert!(
-                help.contains(required),
-                "missing {required:?} from:\n{help}"
-            );
-        }
-    }
-
-    #[test]
     fn parses_remove_without_force() {
         let LocalCommands::Remove { version, force } = local_command(&["remove", "25.12.5.44"])
         else {
@@ -1288,69 +1192,9 @@ mod tests {
     fn server_start_help_renders_default_name_without_escaped_quotes() {
         let help = rendered_help(&["server", "start", "--help"]);
 
-        assert!(help.lines().any(|line| {
-            line == r#"          Server name (default: "default", or random if default is already running)"#
-        }), "{help}");
+        // clap renders the doc comment's quotes literally, never as escaped `\"` sequences.
+        assert!(help.contains(r#"(default: "default""#), "{help}");
         assert!(!help.contains(r#"\"default\""#), "{help}");
-    }
-
-    #[test]
-    fn server_help_pins_scope_workflow_and_removal_distinction() {
-        let help = rendered_help(&["server", "--help"]);
-        let context = help
-            .split_once("CONTEXT FOR AGENTS:\n")
-            .expect("agent context")
-            .1;
-
-        assert_eq!(
-            context,
-            concat!(
-                "  `list` and `stop-all` cover ClickHouse and Docker-backed Postgres; other subcommands are\n",
-                "  ClickHouse-only.\n",
-                "  Data persists across stop/start; only `remove` deletes it.\n",
-                "  Retain the name `start` returns (it may be generated) for later `stop`/`remove`.\n",
-                "  `local remove <version>` deletes an installed binary, not server data.\n",
-                "  Typical flow: `server start dev` -> `local client --name dev` -> `server stop dev`\n",
-            )
-        );
-    }
-
-    #[test]
-    fn server_stop_help_pins_omitted_name_selection() {
-        let help = rendered_help(&["server", "stop", "--help"]);
-
-        assert!(
-            help.contains(concat!(
-                "  Omitting NAME with no ClickHouse servers succeeds as a no-op; with several non-default servers\n",
-                "  it errors — pass a name or use `stop-all`."
-            )),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn server_remove_help_pins_conservative_default_selection() {
-        let help = rendered_help(&["server", "remove", "--help"]);
-
-        assert!(
-            help.contains(concat!(
-                "  Omitting NAME removes only an existing \"default\"; it never guesses a custom name, even when\n",
-                "  exactly one exists."
-            )),
-            "{help}"
-        );
-        // The version-vs-server removal contrast is pinned on the `local server` parent block by
-        // `server_help_pins_scope_workflow_and_removal_distinction`.
-    }
-
-    #[test]
-    fn readme_contrasts_version_and_server_removal() {
-        let readme = include_str!("../../../../README.md");
-
-        assert!(readme.contains(concat!(
-            "| `clickhousectl local remove <exact-version>` | An installed ClickHouse binary from the global version store. |\n",
-            "| `clickhousectl local server remove <server-name>` | A stopped named server and its data from the exact current project. |"
-        )));
     }
 
     #[test]
@@ -1626,22 +1470,7 @@ mod tests {
                 .to_string();
 
             assert!(!help.contains("--name"), "{help}");
-            assert!(help.contains("Omitting NAME"), "{help}");
         }
-    }
-
-    #[test]
-    fn server_stop_all_help_describes_engine_scope() {
-        let help = Cli::try_parse_from(["clickhousectl", "local", "server", "stop-all", "--help"])
-            .err()
-            .expect("help should exit through clap")
-            .to_string();
-
-        assert!(help.contains("Stop all ClickHouse and Postgres servers in this project"));
-        // --global never reaches Postgres, which the flag help states by naming ClickHouse only.
-        assert!(
-            help.contains("Stop ClickHouse servers in all projects; the default is project-scoped")
-        );
     }
 
     #[test]

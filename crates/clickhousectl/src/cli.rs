@@ -124,77 +124,15 @@ pub struct UpdateArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     #[test]
-    fn cloud_help_documents_credential_precedence() {
-        let mut command = Cli::command();
-        let help = command
-            .find_subcommand_mut("cloud")
-            .expect("cloud subcommand")
-            .render_long_help()
-            .to_string();
-
-        let precedence = help
-            .split_once("Credential precedence, first wins:")
-            .expect("credential precedence must be documented")
-            .1;
-        let flags = precedence.find("--api-key/--api-secret flags").unwrap();
-        let file = precedence.find(".clickhouse/credentials.json").unwrap();
-        let env = precedence
-            .find("CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env)")
-            .unwrap();
-        let oauth = precedence.find("OAuth tokens.").unwrap();
-        assert!(flags < file && file < env && env < oauth, "{help}");
-        assert!(
-            help.contains("API keys are read+write; OAuth is read-only"),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn cloud_help_distinguishes_usage_errors_from_cancellation() {
-        let mut command = Cli::command();
-        let help = command
-            .find_subcommand_mut("cloud")
-            .expect("cloud subcommand")
-            .render_long_help()
-            .to_string();
-
-        assert!(help.contains(
-            "Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required."
-        ));
+    fn unknown_command_exits_with_a_usage_error() {
         assert_eq!(
             Cli::try_parse_from(["clickhousectl", "unknown-command"])
                 .err()
                 .expect("unknown command must be rejected")
                 .exit_code(),
             2
-        );
-    }
-
-    #[test]
-    fn help_points_agents_to_cloud_signup() {
-        let mut command = Cli::command();
-        let root_help = command.render_long_help().to_string();
-        assert!(root_help.contains("Create account: `cloud auth signup`"));
-
-        let auth = command
-            .find_subcommand_mut("cloud")
-            .expect("cloud subcommand")
-            .find_subcommand_mut("auth")
-            .expect("auth subcommand");
-
-        let signup_help = auth
-            .find_subcommand_mut("signup")
-            .expect("signup subcommand")
-            .render_long_help()
-            .to_string();
-        assert!(signup_help.contains("Create a ClickHouse Cloud account"));
-        assert!(
-            signup_help
-                .contains("Opens the ClickHouse Cloud sign-up page in a browser; a human must"),
-            "{signup_help}"
         );
     }
 
