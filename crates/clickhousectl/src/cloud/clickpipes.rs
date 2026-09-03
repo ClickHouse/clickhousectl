@@ -4202,7 +4202,7 @@ mod tests {
             "omitted for every other source",
             // Applicability by pipe type (#643).
             "apply to streaming (Kafka, Kinesis) and\nobject-storage pipes only",
-            "Database CDC pipes (Postgres, MySQL, MongoDB, BigQuery) are refused",
+            "Database pipes (Postgres, MySQL, MongoDB, BigQuery) are refused",
             "`clickhousectl cloud clickpipe get <service-id> <clickpipe-id>`",
         ] {
             assert!(
@@ -5725,7 +5725,7 @@ mod tests {
             "--ca-certificate ./postgres-ca.pem",
             "--tls-host postgres.internal.example.com",
             "TLS and certificate verification are enabled by default",
-            "defaults to `--host`",
+            "different hostname than `--host`",
             "ClickPipes static egress IPs",
             "`wal_level=logical`",
             "publication must contain every source table",
@@ -5763,10 +5763,9 @@ mod tests {
             .0;
 
         for expected in [
-            "`--auth IAM_ROLE` requires `--iam-role`",
-            "rejects `--iam-role` with",
-            "basic-auth only and must be given together",
-            "no `credentials` object is sent",
+            "`--auth IAM_ROLE`",
+            "same auth rules as the [Postgres source](#postgresql-clickpipe-prerequisites)",
+            "`--mysql-type rdsmysql`/`auroramysql`",
             "(exit code 2) before any request is made",
         ] {
             assert!(mysql.contains(expected), "missing `{expected}`:\n{mysql}");
