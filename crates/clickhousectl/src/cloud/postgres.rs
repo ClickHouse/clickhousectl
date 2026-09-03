@@ -20,22 +20,32 @@ use tabled::{Table, Tabled, settings::Style};
 pub enum PostgresCommands {
     /// List Postgres services in the organization
     List {
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
-        /// Filter results client-side by field (repeatable), e.g. --filter
-        /// state=running. Keys: state, region, name, provider, isPrimary
+        /// Filter results client-side, repeatable (KEY=VALUE)
+        ///
+        /// Keys: state, region, name, provider, isPrimary. Every filter must
+        /// match, and a field the API omitted matches nothing.
         #[arg(long, value_parser = parse_postgres_list_filter)]
         filter: Vec<PostgresListFilter>,
     },
 
     /// Get details for a single Postgres service
     Get {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
     /// Create a new Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The password and connection string are returned once, here — save them.
+  `get` never returns credentials; `reset-password --generate` is the only way back.
+  Not usable until `cloud postgres get <id>` reports state=running.")]
     Create {
         /// Service name
         #[arg(long)]
@@ -43,10 +53,10 @@ pub enum PostgresCommands {
         /// Cloud region (e.g. us-east-1)
         #[arg(long)]
         region: String,
-        /// Instance size (e.g. m7i.2xlarge). Server validates — accepts any value.
+        /// Instance size (e.g. c6gd.xlarge); validated by the server
         #[arg(long)]
         size: String,
-        /// Cloud provider
+        /// Cloud provider (aws or gcp)
         #[arg(long, default_value = "aws")]
         provider: String,
         /// Postgres major version
@@ -64,18 +74,22 @@ pub enum PostgresCommands {
         /// Path to a JSON file with a PgBouncerConfig object
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Update an existing Postgres service (metadata only)
+    /// Update a Postgres service's name, size, HA type or tags
     Update {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
         /// New service name
         #[arg(long)]
         name: Option<String>,
+        /// New instance size (e.g. c6gd.xlarge); validated by the server
         #[arg(long)]
         size: Option<String>,
+        /// New high-availability type
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
         ha_type: Option<String>,
         /// Add a tag (repeatable), e.g. --add-tag env=prod
@@ -84,6 +98,7 @@ pub enum PostgresCommands {
         /// Remove a tag by key (repeatable)
         #[arg(long)]
         remove_tag: Vec<String>,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -91,22 +106,29 @@ pub enum PostgresCommands {
     /// Delete a Postgres service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Permanently deletes a managed Postgres service. This action is irreversible.
-  Unlike `cloud service delete`, no stop is needed first: the Cloud API deletes a
-  Postgres service from any state, including 'running'.
-  Related: `clickhousectl cloud postgres list` for service IDs.")]
+  Irreversible: the service and its data cannot be recovered.
+  Deletes from any state, including running — no stop first, unlike `cloud service delete`.")]
     Delete {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Manage CA certificates
+    /// Manage Postgres CA certificates
     #[command(subcommand)]
     Certs(CertsCommands),
 
     /// Manage Postgres runtime configuration
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        after_help = "\
+CONTEXT FOR AGENTS:
+  `get` always prints JSON; --json changes nothing.
+  `replace` sends the whole object — start from `config get` output, not a fragment.
+  `patch --set` only touches pgConfig; use --file to patch pgBouncerConfig."
+    )]
     Config(ConfigCommands),
 
     /// Reset the Postgres service password
@@ -114,24 +136,30 @@ CONTEXT FOR AGENTS:
         group(ArgGroup::new("password_source").required(true).args(["password", "generate"]))
     )]
     ResetPassword {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
         /// New password (min 12, must include upper, lower, digit)
         #[arg(long, conflicts_with = "generate")]
         password: Option<String>,
-        /// Generate a random compliant password and print it
+        /// Generate a random compliant password and print it once
         #[arg(long, conflicts_with = "password")]
         generate: bool,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Manage read replicas
+    /// Manage Postgres read replicas
     #[command(name = "read-replica", subcommand)]
     ReadReplica(ReadReplicaCommands),
 
     /// Restore a Postgres service to a point in time
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Creates a NEW service from the source's backups; the source is untouched.
+  --restore-target must fall inside the source's backup retention window.")]
     Restore {
-        /// Source Postgres service ID
+        /// Source Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
         /// Name for the restored service
         #[arg(long)]
@@ -139,19 +167,25 @@ CONTEXT FOR AGENTS:
         /// Point-in-time target (ISO 8601 / RFC 3339, e.g. 2026-04-16T12:00:00Z)
         #[arg(long, value_parser = parse_datetime)]
         restore_target: String,
+        /// Resource tag (repeatable), e.g. --tag env=prod
         #[arg(long)]
         tag: Vec<String>,
+        /// Path to a JSON file with a PgConfig object
         #[arg(long)]
         pg_config_file: Option<PathBuf>,
+        /// Path to a JSON file with a PgBouncerConfig object
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
     /// Restart a Postgres service
     Restart {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -159,15 +193,12 @@ CONTEXT FOR AGENTS:
     /// Promote a read replica to primary
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Issues the promote command as-is. The API acknowledges it before (or without)
-  applying it, and the response omits isPrimary, so exit 0 alone does not confirm
-  the replica became primary. Pass --wait to poll the service until it reports
-  isPrimary=true; it exits 1 with the last observed role if that never happens.
-  The previous primary is demoted asynchronously and can keep reporting
-  isPrimary=true for minutes; verify with
-  `clickhousectl cloud postgres list --filter isPrimary=true` that exactly one
-  service is primary.")]
+  Exit 0 means accepted, not applied: the response omits isPrimary.
+  Pass --wait to poll until the target reports isPrimary=true; exit 1 if it never does.
+  The old primary can report isPrimary=true for minutes — confirm exactly one primary
+  with `cloud postgres list --filter isPrimary=true`.")]
     Promote {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
         /// Poll until the service reports isPrimary=true, and fail if it never does
         #[arg(long)]
@@ -175,20 +206,19 @@ CONTEXT FOR AGENTS:
         /// Seconds to poll for with --wait (default: 300)
         #[arg(long, requires = "wait", value_name = "SECONDS")]
         wait_timeout: Option<u16>,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Switch over between primary and replica
+    /// Switch over the primary and replica roles
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Issues the switchover command as-is. The API acknowledges it before (or without)
-  applying it, so exit 0 alone does not confirm the roles swapped. Pass --wait to
-  read the service's isPrimary first and poll until it reports the opposite value;
-  it exits 1 with the last observed role if that never happens, and refuses before
-  issuing the command when the pre-command read omits isPrimary. Without --wait no
-  read is performed.")]
+  Exit 0 means accepted, not applied.
+  Pass --wait to poll until isPrimary flips; exit 1 if it never does.
+  --wait reads the pre-command role first and refuses when the API omits isPrimary.")]
     Switchover {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
         /// Poll until the roles actually swap, and fail if they never do
         #[arg(long)]
@@ -196,6 +226,7 @@ CONTEXT FOR AGENTS:
         /// Seconds to poll for with --wait (default: 300)
         #[arg(long, requires = "wait", value_name = "SECONDS")]
         wait_timeout: Option<u16>,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -204,11 +235,17 @@ CONTEXT FOR AGENTS:
 #[derive(Subcommand)]
 pub enum CertsCommands {
     /// Get the CA certificate bundle (PEM) for a Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Prints raw PEM to stdout; --json wraps it as {\"certificate\": ...}, and coding agents
+  get --json automatically — use --output to write a usable file.")]
     Get {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
         /// Write PEM to the given file (mode 0600 on unix) instead of stdout
         #[arg(long)]
         output: Option<PathBuf>,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -216,33 +253,44 @@ pub enum CertsCommands {
 
 #[derive(Subcommand)]
 pub enum ConfigCommands {
-    /// Get current runtime configuration (pgConfig + pgBouncerConfig)
+    /// Get the runtime configuration (pgConfig + pgBouncerConfig)
     Get {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
-    /// Replace the entire runtime configuration
+    /// Replace the whole runtime configuration from a file
     Replace {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// JSON file with a full PostgresInstanceConfig object
+        /// JSON file with a complete PostgresInstanceConfig object
+        ///
+        /// Not a fragment: use a document obtained from `config get`.
         #[arg(long)]
         file: PathBuf,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
-    /// Patch selected runtime configuration fields
+    /// Change selected runtime configuration fields
     #[command(
         group(ArgGroup::new("patch_source").required(true).args(["sets", "file"]))
     )]
     Patch {
+        /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
         /// Set a pgConfig field (repeatable), e.g. --set max_connections=500
+        ///
+        /// Values parse as JSON first, falling back to a string
+        /// (statement_timeout=5s). Last value wins on a duplicate key.
         #[arg(long = "set", conflicts_with = "file")]
         sets: Vec<String>,
         /// JSON file with a partial PostgresInstanceConfig object
         #[arg(long, conflicts_with = "sets")]
         file: Option<PathBuf>,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -251,18 +299,26 @@ pub enum ConfigCommands {
 #[derive(Subcommand)]
 pub enum ReadReplicaCommands {
     /// Create a read replica of an existing Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The replica inherits the source's provider, region, size and version.
+  Next: `cloud postgres promote <replica-id>` to make it primary.")]
     Create {
-        /// Source Postgres service ID
+        /// Source Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
         /// Name for the new replica
         #[arg(long)]
         name: String,
+        /// Resource tag (repeatable), e.g. --tag env=prod
         #[arg(long)]
         tag: Vec<String>,
+        /// Path to a JSON file with a PgConfig object
         #[arg(long)]
         pg_config_file: Option<PathBuf>,
+        /// Path to a JSON file with a PgBouncerConfig object
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -3085,5 +3141,187 @@ mod tests {
     #[test]
     fn apply_filter_with_no_filters_keeps_every_item() {
         assert!(apply_filter(&PostgresServiceListItem::default(), &[]));
+    }
+
+    /// Rendered `--help` for a `cloud postgres` screen, with runs of whitespace
+    /// collapsed so assertions do not depend on clap's line wrapping.
+    fn rendered_help(args: &[&str]) -> String {
+        let mut argv = vec!["clickhousectl", "cloud", "postgres"];
+        argv.extend_from_slice(args);
+        argv.push("--help");
+        let error = Cli::try_parse_from(argv)
+            .err()
+            .expect("--help should stop parsing");
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        error
+            .to_string()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn postgres_size_help_names_a_real_pg_size() {
+        // `m7i.2xlarge` is not a `PgSize`: `parse_pg_size` forwards it through the
+        // `Unknown` catch-all and the server rejects it, so the documented example
+        // must be a value the API accepts.
+        for screen in ["create", "update"] {
+            let help = rendered_help(&[screen]);
+            assert!(help.contains("c6gd.xlarge"), "{screen}: {help}");
+            assert!(!help.contains("m7i"), "{screen}: {help}");
+        }
+    }
+
+    #[test]
+    fn update_help_does_not_claim_metadata_only() {
+        let help = rendered_help(&["update"]);
+        // The PATCH body carries size and haType, so the screen must not say
+        // metadata only and must document both.
+        assert!(!help.contains("metadata only"), "{help}");
+        assert!(help.contains("size, HA type"), "{help}");
+        assert!(help.contains("New instance size"), "{help}");
+        assert!(help.contains("New high-availability type"), "{help}");
+    }
+
+    #[test]
+    fn delete_help_states_it_deletes_from_any_state() {
+        let help = rendered_help(&["delete"]);
+        assert!(help.contains("Irreversible"), "{help}");
+        assert!(
+            help.contains("Deletes from any state, including running"),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn create_help_warns_the_password_is_returned_once() {
+        let help = rendered_help(&["create"]);
+        assert!(help.contains("returned once"), "{help}");
+        assert!(help.contains("`get` never returns credentials"), "{help}");
+    }
+
+    #[test]
+    fn reset_password_help_states_generate_prints_the_password_once() {
+        let help = rendered_help(&["reset-password"]);
+        assert!(help.contains("print it once"), "{help}");
+    }
+
+    #[test]
+    fn certs_get_help_points_agents_at_output() {
+        // Coding agents get `--json` implicitly, so the PEM-to-stdout default is
+        // not what they see unless they pass `--output`.
+        let help = rendered_help(&["certs", "get"]);
+        assert!(help.contains("use --output"), "{help}");
+        assert!(
+            help.contains("coding agents get --json automatically"),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn config_help_states_replace_sends_the_whole_object() {
+        let help = rendered_help(&["config"]);
+        assert!(help.contains("`get` always prints JSON"), "{help}");
+        assert!(help.contains("`replace` sends the whole object"), "{help}");
+        assert!(help.contains("only touches pgConfig"), "{help}");
+
+        let replace = rendered_help(&["config", "replace"]);
+        assert!(replace.contains("Not a fragment"), "{replace}");
+    }
+
+    #[test]
+    fn config_patch_help_documents_set_value_parsing() {
+        let help = rendered_help(&["config", "patch"]);
+        assert!(help.contains("Values parse as JSON first"), "{help}");
+        assert!(
+            help.contains("Last value wins on a duplicate key"),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn list_help_documents_the_filter_keys() {
+        let help = rendered_help(&["list"]);
+        assert!(
+            help.contains("Keys: state, region, name, provider, isPrimary"),
+            "{help}"
+        );
+        assert!(
+            help.contains("a field the API omitted matches nothing"),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn role_change_help_states_exit_zero_is_not_confirmation() {
+        for screen in ["promote", "switchover"] {
+            let help = rendered_help(&[screen]);
+            assert!(
+                help.contains("Exit 0 means accepted, not applied"),
+                "{screen}: {help}"
+            );
+            assert!(help.contains("Pass --wait to poll"), "{screen}: {help}");
+        }
+        let promote = rendered_help(&["promote"]);
+        assert!(promote.contains("confirm exactly one primary"), "{promote}");
+        let switchover = rendered_help(&["switchover"]);
+        assert!(
+            switchover.contains("refuses when the API omits isPrimary"),
+            "{switchover}"
+        );
+    }
+
+    #[test]
+    fn read_replica_create_help_states_what_the_replica_inherits() {
+        // The request body carries only name/tags/configs, so the inherited
+        // settings are the reason there is no --size or --region.
+        let help = rendered_help(&["read-replica", "create"]);
+        assert!(
+            help.contains("inherits the source's provider, region, size and version"),
+            "{help}"
+        );
+    }
+
+    #[test]
+    fn restore_help_states_the_source_is_untouched() {
+        let help = rendered_help(&["restore"]);
+        assert!(help.contains("the source is untouched"), "{help}");
+        assert!(help.contains("backup retention window"), "{help}");
+    }
+
+    #[test]
+    fn postgres_screens_document_org_id_and_the_positional_id() {
+        use clap::CommandFactory;
+
+        fn walk(cmd: &clap::Command, path: &str) {
+            for arg in cmd.get_arguments() {
+                let help = arg.get_help().map(|h| h.to_string());
+                match arg.get_id().as_str() {
+                    "org_id" => assert_eq!(
+                        help.as_deref(),
+                        Some("Organization ID (auto-detected only if you have one org)"),
+                        "{path}: --org-id help must match the shared wording"
+                    ),
+                    "postgres_id" => {
+                        let help = help.unwrap_or_default();
+                        assert!(
+                            help.contains("Postgres service ID"),
+                            "{path}: <POSTGRES_ID> help is {help:?}"
+                        );
+                    }
+                    _ => {}
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()));
+            }
+        }
+
+        let cli = Cli::command();
+        let cloud = cli.find_subcommand("cloud").expect("cloud command");
+        let postgres = cloud
+            .find_subcommand("postgres")
+            .expect("cloud postgres command");
+        walk(postgres, "cloud postgres");
     }
 }
