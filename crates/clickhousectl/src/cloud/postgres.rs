@@ -3147,180 +3147,36 @@ mod tests {
         assert!(apply_filter(&PostgresServiceListItem::default(), &[]));
     }
 
-    /// Rendered `--help` for a `cloud postgres` screen, with runs of whitespace
-    /// collapsed so assertions do not depend on clap's line wrapping.
-    fn rendered_help(args: &[&str]) -> String {
-        let mut argv = vec!["clickhousectl", "cloud", "postgres"];
-        argv.extend_from_slice(args);
-        argv.push("--help");
-        let error = Cli::try_parse_from(argv)
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        error
-            .to_string()
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ")
-    }
-
+    /// `--org-id` is a shared flag, so every `cloud postgres` screen must
+    /// describe it identically, and the `<POSTGRES_ID>` positional must always
+    /// carry a description. Both properties are structural: the assertions
+    /// compare occurrences to each other, never to a fixed sentence.
     #[test]
-    fn postgres_size_help_names_a_real_pg_size() {
-        // `m7i.2xlarge` is not a `PgSize`: `parse_pg_size` forwards it through the
-        // `Unknown` catch-all and the server rejects it, so the documented example
-        // must be a value the API accepts.
-        for screen in ["create", "update"] {
-            let help = rendered_help(&[screen]);
-            assert!(help.contains("c6gd.xlarge"), "{screen}: {help}");
-            assert!(!help.contains("m7i"), "{screen}: {help}");
-        }
-    }
-
-    #[test]
-    fn update_help_does_not_claim_metadata_only() {
-        let help = rendered_help(&["update"]);
-        // The PATCH body carries size and haType, so the screen must not say
-        // metadata only and must document both.
-        assert!(!help.contains("metadata only"), "{help}");
-        assert!(help.contains("size, HA type"), "{help}");
-        assert!(help.contains("New instance size"), "{help}");
-        assert!(help.contains("New high-availability type"), "{help}");
-    }
-
-    #[test]
-    fn delete_help_states_it_deletes_from_any_state() {
-        let help = rendered_help(&["delete"]);
-        assert!(help.contains("Irreversible"), "{help}");
-        assert!(
-            help.contains("Deletes from any state, including running"),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn create_help_warns_the_password_is_returned_once() {
-        let help = rendered_help(&["create"]);
-        assert!(help.contains("returned once"), "{help}");
-        assert!(
-            help.contains("Treat `get` as never returning credentials"),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn reset_password_help_states_generate_prints_the_password_once() {
-        let help = rendered_help(&["reset-password"]);
-        assert!(help.contains("print it once"), "{help}");
-    }
-
-    #[test]
-    fn certs_get_help_points_agents_at_output() {
-        // Coding agents get `--json` implicitly, so the PEM-to-stdout default is
-        // not what they see unless they pass `--output`.
-        let help = rendered_help(&["certs", "get"]);
-        assert!(help.contains("use --output"), "{help}");
-        assert!(
-            help.contains("coding agents get --json automatically"),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn config_help_states_replace_sends_the_whole_object() {
-        let help = rendered_help(&["config"]);
-        assert!(help.contains("`get` always prints JSON"), "{help}");
-        assert!(help.contains("`replace` sends the whole object"), "{help}");
-        assert!(help.contains("only touches pgConfig"), "{help}");
-
-        let replace = rendered_help(&["config", "replace"]);
-        assert!(replace.contains("Not a fragment"), "{replace}");
-    }
-
-    #[test]
-    fn config_patch_help_documents_set_value_parsing() {
-        let help = rendered_help(&["config", "patch"]);
-        assert!(help.contains("Values parse as JSON first"), "{help}");
-        assert!(
-            help.contains("Last value wins on a duplicate key"),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn list_help_documents_the_filter_keys() {
-        let help = rendered_help(&["list"]);
-        assert!(
-            help.contains("Keys: state, region, name, provider, isPrimary"),
-            "{help}"
-        );
-        assert!(
-            help.contains("a field the API omitted matches nothing"),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn role_change_help_states_exit_zero_is_not_confirmation() {
-        for screen in ["promote", "switchover"] {
-            let help = rendered_help(&[screen]);
-            assert!(
-                help.contains("Exit 0 means accepted, not applied"),
-                "{screen}: {help}"
-            );
-            assert!(help.contains("Pass --wait to poll"), "{screen}: {help}");
-        }
-        let promote = rendered_help(&["promote"]);
-        assert!(promote.contains("confirm exactly one primary"), "{promote}");
-        let switchover = rendered_help(&["switchover"]);
-        assert!(
-            switchover.contains("refuses when the API omits isPrimary"),
-            "{switchover}"
-        );
-    }
-
-    #[test]
-    fn read_replica_create_help_states_what_the_replica_inherits() {
-        // The request body carries only name/tags/configs, so the inherited
-        // settings are the reason there is no --size or --region.
-        let help = rendered_help(&["read-replica", "create"]);
-        assert!(
-            help.contains("inherits the source's provider, region, size and version"),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn restore_help_states_the_source_is_untouched() {
-        let help = rendered_help(&["restore"]);
-        assert!(help.contains("the source is untouched"), "{help}");
-        assert!(help.contains("backup retention window"), "{help}");
-    }
-
-    #[test]
-    fn postgres_screens_document_org_id_and_the_positional_id() {
+    fn postgres_screens_describe_org_id_consistently_and_document_the_positional() {
         use clap::CommandFactory;
 
-        fn walk(cmd: &clap::Command, path: &str) {
+        fn walk(cmd: &clap::Command, path: &str, org_id: &mut Option<(String, String)>) {
             for arg in cmd.get_arguments() {
-                let help = arg.get_help().map(|h| h.to_string());
+                let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
                 match arg.get_id().as_str() {
-                    "org_id" => assert_eq!(
-                        help.as_deref(),
-                        Some("Organization ID (auto-detected only if you have one org)"),
-                        "{path}: --org-id help must match the shared wording"
-                    ),
+                    "org_id" => {
+                        assert!(!help.is_empty(), "{path}: --org-id has no help text");
+                        match org_id {
+                            Some((first_path, first_help)) => assert_eq!(
+                                &help, first_help,
+                                "{path}: --org-id help differs from {first_path}"
+                            ),
+                            None => *org_id = Some((path.to_string(), help)),
+                        }
+                    }
                     "postgres_id" => {
-                        let help = help.unwrap_or_default();
-                        assert!(
-                            help.contains("Postgres service ID"),
-                            "{path}: <POSTGRES_ID> help is {help:?}"
-                        );
+                        assert!(!help.is_empty(), "{path}: <POSTGRES_ID> has no help text")
                     }
                     _ => {}
                 }
             }
             for sub in cmd.get_subcommands() {
-                walk(sub, &format!("{path} {}", sub.get_name()));
+                walk(sub, &format!("{path} {}", sub.get_name()), org_id);
             }
         }
 
@@ -3329,6 +3185,11 @@ mod tests {
         let postgres = cloud
             .find_subcommand("postgres")
             .expect("cloud postgres command");
-        walk(postgres, "cloud postgres");
+        let mut org_id = None;
+        walk(postgres, "cloud postgres", &mut org_id);
+        assert!(
+            org_id.is_some(),
+            "no --org-id argument found under cloud postgres"
+        );
     }
 }

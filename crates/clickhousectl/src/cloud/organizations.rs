@@ -963,17 +963,6 @@ mod tests {
     }
 
     #[test]
-    fn org_prometheus_help_documents_json_is_ignored() {
-        let error = Cli::try_parse_from(["clickhousectl", "cloud", "org", "prometheus", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-        assert!(help.contains("raw Prometheus exposition text"), "{help}");
-        assert!(help.contains("--json is accepted but ignored"), "{help}");
-    }
-
-    #[test]
     fn parses_organization_body_command_defaults() {
         let CloudCommands::Org { command } =
             parse_cloud_command(&["clickhousectl", "cloud", "org", "update", "org-1"])

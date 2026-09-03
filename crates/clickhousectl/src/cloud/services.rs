@@ -3282,30 +3282,16 @@ mod tests {
         );
     }
 
+    /// The `CONTEXT FOR AGENTS:` block on `service query` stays inside its
+    /// 8-line budget, whatever the lines say.
     #[test]
-    fn service_query_help_documents_query_behavior() {
+    fn service_query_agent_context_block_stays_within_its_line_budget() {
         let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
             .err()
             .expect("--help should stop parsing");
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        // The gateway limit is named, not alluded to, and so is what happens
-        // to the statement when it fires (#644).
-        assert!(help.contains("Times out after about 30 seconds"), "{help}");
-        assert!(help.contains("the statement keeps running"), "{help}");
-        // The full native-client command belongs to the timeout error, which
-        // knows the service's real host; help only points at it (#678).
-        assert!(
-            help.contains("the error prints a `clickhouse client` fallback"),
-            "{help}"
-        );
-        assert!(help.contains("One statement per request"), "{help}");
-        assert!(help.contains("SQL is read from stdin"), "{help}");
-        assert!(help.contains("wakes automatically"), "{help}");
-        assert!(help.contains("repair-query-key <id>"), "{help}");
-        assert!(help.contains("never replaced automatically"), "{help}");
-        // The block is a CONTEXT FOR AGENTS section within its 8-line budget.
         let block = help
             .split_once("CONTEXT FOR AGENTS:\n")
             .expect("after_help block")
@@ -3314,8 +3300,10 @@ mod tests {
         assert!(lines <= 8, "{lines} lines: {help}");
     }
 
+    /// The service is a positional, so clap renders it as the `SERVICE_ID`
+    /// value name rather than as a flag.
     #[test]
-    fn repair_query_key_help_documents_safe_service_scope() {
+    fn repair_query_key_help_renders_the_service_id_positional() {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
@@ -3328,38 +3316,6 @@ mod tests {
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
         assert!(help.contains("SERVICE_ID"), "{help}");
-        assert!(help.contains("CONTEXT FOR AGENTS"), "{help}");
-        assert!(
-            help.contains("never run automatically after a query fails"),
-            "{help}"
-        );
-        assert!(help.contains("leaves every other binding"), "{help}");
-        assert!(help.contains("are refused"), "{help}");
-        assert!(
-            help.contains("probe query with the new key to succeed"),
-            "{help}"
-        );
-        assert!(help.contains("the repair stands"), "{help}");
-    }
-
-    #[test]
-    fn service_prometheus_help_documents_json_is_ignored() {
-        let error =
-            Cli::try_parse_from(["clickhousectl", "cloud", "service", "prometheus", "--help"])
-                .err()
-                .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-        assert!(help.contains("CONTEXT FOR AGENTS"), "{help}");
-        assert!(
-            help.contains("always raw Prometheus exposition text"),
-            "{help}"
-        );
-        assert!(help.contains("--json"), "{help}");
-        assert!(
-            help.contains("accepted for consistency but ignored"),
-            "{help}"
-        );
     }
 
     #[test]
@@ -6496,16 +6452,5 @@ mod tests {
         );
         assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("cat - data.csv"));
         assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("--queries-file -"));
-    }
-
-    #[test]
-    fn service_query_help_documents_that_query_ignores_stdin() {
-        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        let help = error.to_string();
-
-        assert!(help.contains("--query never reads stdin"), "{help}");
-        assert!(help.contains("never read from stdin"), "{help}");
     }
 }

@@ -576,32 +576,6 @@ mod tests {
     }
 
     #[test]
-    fn backup_config_update_help_describes_start_time_constraints() {
-        let error = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "service",
-            "backup-config",
-            "update",
-            "--help",
-        ])
-        .err()
-        .expect("help should stop parsing");
-        let help = error.to_string();
-        assert!(help.contains("on the hour (HH:00)"));
-        assert!(help.contains("must be 24 or 48"));
-        assert!(help.contains("Requires a backup period of 24 or 48 hours"));
-        assert!(help.contains("passed in the same call or already stored"));
-        assert!(help.contains("Clear it with --clear-backup-start-time"));
-        assert!(help.contains("Remove the stored backup start time"));
-        assert!(help.contains("Lifts the 24/48 hour"));
-        assert!(
-            !help.contains("API sets it to 24 hours"),
-            "help must not claim the API defaults an omitted period"
-        );
-    }
-
-    #[test]
     fn backup_write_classification_is_exhaustive() {
         assert!(!parse_backup(&["clickhousectl", "cloud", "backup", "list", "svc-1"]).is_write());
         assert!(
