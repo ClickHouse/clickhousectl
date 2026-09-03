@@ -96,7 +96,7 @@ pub enum CloudCommands {
     /// Manage organizations
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  `org list` is the source of the org IDs every other cloud command takes as --org-id.
+  `org list` is the source of the org IDs that other cloud commands take as --org-id.
   Next: `cloud service list`, `cloud member list`.")]
     Org {
         #[command(subcommand)]
@@ -106,10 +106,9 @@ CONTEXT FOR AGENTS:
     /// Manage ClickHouse Cloud services
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Service ID: `clickhousectl cloud service list`. Org ID is auto-detected only if you have one org,
-    otherwise pass --org-id (`clickhousectl cloud org list`).
+  Service ID: `clickhousectl cloud service list`.
   Reads: list, get, prometheus, query, query-endpoint get, private-endpoint get-config,
-    backup-config get. Every other subcommand is a write and needs API key auth — OAuth is read-only.
+    backup-config get. Every other subcommand is a write and needs API key auth.
   Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query --id <id> -q 'SELECT 1'`.")]
     Service {
         #[command(subcommand)]
@@ -133,8 +132,10 @@ CONTEXT FOR AGENTS:
         after_help = "\
 CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`. ClickPipe ID: `clickpipe list <SERVICE_ID>`.
+  Everything except list/get is a write and needs API key auth, schema-discover included.
   `start` only works on a Stopped or Failed pipe; `stop` works from any state.
-  Typical flow: `clickpipe schema-discover <source>` -> `clickpipe create <source>` -> `clickpipe get`."
+  Typical flow: `clickpipe schema-discover <service-id> <source>` -> `clickpipe create <source>`
+    -> `clickpipe get`."
     )]
     ClickPipe {
         #[command(subcommand)]
@@ -144,7 +145,7 @@ CONTEXT FOR AGENTS:
     /// Manage organization members
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  User IDs come from `cloud member list`; role IDs only from `cloud member list --json`
+  User IDs come from `cloud member list`; role IDs from `cloud member list --json`
   (the table shows role names). `update` replaces the member's whole role set.
   `remove` takes effect immediately with no confirmation.
   Next: `cloud invitation create --email ...` to add someone who is not yet a member.")]
@@ -157,7 +158,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Role IDs come from `cloud member list --json` (roleId), not from the human table.
-  The invitee must accept from the email; `list` shows only invitations still pending.
+  The invitee must accept from the email.
   Next: `cloud member list` once the invitation is accepted.")]
     Invitation {
         #[command(subcommand)]
@@ -167,7 +168,7 @@ CONTEXT FOR AGENTS:
     /// Manage API keys
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  `create` prints the key secret exactly once — capture stdout or you must create a new key.
+  `create` prints a generated key secret exactly once — capture stdout or create a new key.
   Role IDs come from `cloud member list --json` (roleId) and must be UUIDs here.
   `update` replaces --role-id and --ip-allow wholesale; omitted flags are left as-is.
   Next: `cloud auth login --api-key <id> --api-secret <secret>` to use a new key.")]
@@ -189,9 +190,9 @@ CONTEXT FOR AGENTS:
     /// Manage ClickHouse Cloud Postgres services (beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Write commands need API key auth; OAuth is read-only.
-  Service IDs: `cloud postgres list`. Org ID auto-detects only with one org, else pass --org-id.
-  Credentials come only from `create` and `reset-password`; `get` does not return them.
+  Write commands need API key auth.
+  Service IDs: `cloud postgres list`.
+  Credentials come only from `create` and `reset-password`; treat `get` as never returning them.
   promote/switchover are eventually consistent: pass --wait to confirm the new role.
   Typical flow: `create` -> `get <id>` until state is running -> `certs get` -> `config patch`.")]
     Postgres {

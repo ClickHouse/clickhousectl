@@ -205,8 +205,7 @@ CONTEXT FOR AGENTS:
     /// Discover a source schema without creating a pipe (beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Needs API key auth: the API gateway rejects OAuth on this endpoint even though the
-  command only reads.
+  Needs API key auth even though it only reads; OAuth is rejected here.
   Output is one inferred name/type per field — pass them to `--column name:type` on
   `clickhousectl cloud clickpipe create <source>`, which takes the same source flags.
   object-storage discovery runs on the destination service, which must be running.")]
@@ -241,7 +240,6 @@ CONTEXT FOR AGENTS:
     /// Create a ClickPipe
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Creating a pipe is a write: needs API key auth, OAuth is read-only.
   For kafka, kinesis, object-storage and pubsub, get --column from
   `clickhousectl cloud clickpipe schema-discover <service-id> <source>`.
   The source must be reachable from ClickPipes; allow the static egress IPs:

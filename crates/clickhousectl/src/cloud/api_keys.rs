@@ -82,7 +82,7 @@ pub enum KeyCommands {
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// Expiry as RFC 3339 (e.g. 2025-12-31T23:59:59Z); omit for never
+        /// New expiry as RFC 3339 (e.g. 2025-12-31T23:59:59Z)
         #[arg(long, value_parser = parse_datetime)]
         expires_at: Option<String>,
 

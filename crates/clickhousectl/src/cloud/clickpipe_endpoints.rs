@@ -91,6 +91,8 @@ pub struct ReversePrivateEndpointCreateArgs {
     pub service_id: String,
 
     /// Endpoint type
+    ///
+    /// A flag belonging to another type is rejected before any request is made.
     #[arg(long = "type", value_name = "TYPE", value_parser = PossibleValuesParser::new(CreateReversePrivateEndpointType::VALUES))]
     pub endpoint_type: String,
 

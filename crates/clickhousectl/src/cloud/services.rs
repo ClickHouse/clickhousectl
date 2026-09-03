@@ -89,34 +89,45 @@ CONTEXT FOR AGENTS:
         #[arg(long, default_value = "us-east-1")]
         region: String,
 
-        /// Minimum memory per replica in GB (8-356, multiple of 4). Horizontal
-        /// autoscaling requires it equal to --max-replica-memory-gb.
+        /// Minimum memory per replica in GB
+        ///
+        /// A multiple of 4, at least 8. Horizontal autoscaling requires it equal to
+        /// --max-replica-memory-gb.
         #[arg(long)]
         min_replica_memory_gb: Option<u32>,
 
-        /// Maximum memory per replica in GB (8-356, multiple of 4). Horizontal
+        /// Maximum memory per replica in GB
+        ///
+        /// A multiple of 4; at most 120 for unpaid and 356 for paid services. Horizontal
         /// autoscaling requires it equal to --min-replica-memory-gb.
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Number of replicas (1-20). Vertical autoscaling; mutually exclusive
-        /// with the horizontal band (--min-replicas/--max-replicas).
+        /// Fixed replica count for vertical autoscaling (1-20)
+        ///
+        /// Conflicts with the horizontal band (--min-replicas/--max-replicas).
         #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
-        /// Minimum replicas for horizontal autoscaling. Requires --max-replicas
-        /// and the horizontal autoscaling org feature; conflicts with --num-replicas
+        /// Minimum replicas for horizontal autoscaling (1-20)
+        ///
+        /// Requires --max-replicas and conflicts with --num-replicas. Needs the horizontal
+        /// autoscaling org feature unless the band is equal and the mode is vertical.
         #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
-        /// Maximum replicas for horizontal autoscaling. Requires --min-replicas
-        /// and the horizontal autoscaling org feature; conflicts with --num-replicas
+        /// Maximum replicas for horizontal autoscaling (1-20)
+        ///
+        /// Requires --min-replicas and conflicts with --num-replicas. Needs the horizontal
+        /// autoscaling org feature unless the band is equal and the mode is vertical.
         #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
-        /// Autoscaling mode (vertical when omitted). horizontal needs
-        /// --min-replica-memory-gb equal to --max-replica-memory-gb plus
-        /// --min-replicas/--max-replicas; vertical needs --num-replicas
+        /// Autoscaling mode (vertical when omitted)
+        ///
+        /// vertical scales memory between --min-replica-memory-gb and --max-replica-memory-gb at a
+        /// fixed --num-replicas count; horizontal scales replicas between --min-replicas and
+        /// --max-replicas at a fixed memory (the two memory flags equal).
         #[arg(
             long,
             value_parser = PossibleValuesParser::new(
@@ -221,6 +232,7 @@ CONTEXT FOR AGENTS:
     /// Start a service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
+  Resumes a stopped service; an idle service wakes on its own when queried.
   Returns as soon as the start is accepted: poll `cloud service get <id>` until state is `running`.")]
     Start {
         /// Service ID
@@ -314,33 +326,44 @@ CONTEXT FOR AGENTS:
         /// Service ID
         service_id: String,
 
-        /// Minimum memory per replica in GB (8-356, multiple of 4). Horizontal
-        /// autoscaling requires it equal to --max-replica-memory-gb.
+        /// Minimum memory per replica in GB
+        ///
+        /// A multiple of 4, at least 8. Horizontal autoscaling requires it equal to
+        /// --max-replica-memory-gb.
         #[arg(long)]
         min_replica_memory_gb: Option<u32>,
 
-        /// Maximum memory per replica in GB (8-356, multiple of 4). Horizontal
+        /// Maximum memory per replica in GB
+        ///
+        /// A multiple of 4; at most 120 for unpaid and 356 for paid services. Horizontal
         /// autoscaling requires it equal to --min-replica-memory-gb.
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Number of replicas (1-20). Vertical autoscaling; mutually exclusive
-        /// with the horizontal band (--min-replicas/--max-replicas).
+        /// Fixed replica count for vertical autoscaling (1-20)
+        ///
+        /// Conflicts with the horizontal band (--min-replicas/--max-replicas).
         #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
-        /// Minimum replicas for horizontal autoscaling. Requires --max-replicas
-        /// and the horizontal autoscaling org feature; conflicts with --num-replicas
+        /// Minimum replicas for horizontal autoscaling (1-20)
+        ///
+        /// Requires --max-replicas and conflicts with --num-replicas. Needs the horizontal
+        /// autoscaling org feature unless the band is equal and the mode is vertical.
         #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
-        /// Maximum replicas for horizontal autoscaling. Requires --min-replicas
-        /// and the horizontal autoscaling org feature; conflicts with --num-replicas
+        /// Maximum replicas for horizontal autoscaling (1-20)
+        ///
+        /// Requires --min-replicas and conflicts with --num-replicas. Needs the horizontal
+        /// autoscaling org feature unless the band is equal and the mode is vertical.
         #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
-        /// Autoscaling mode: vertical (default) or horizontal. Omit to keep the
-        /// service's current mode. See `service create --autoscaling-mode`.
+        /// Target autoscaling mode
+        ///
+        /// Omit to keep the service on its current mode. See
+        /// `cloud service create --autoscaling-mode` for what each mode scales.
         #[arg(
             long,
             value_parser = PossibleValuesParser::new(
@@ -437,12 +460,12 @@ CONTEXT FOR AGENTS:
         after_help = "\
 CONTEXT FOR AGENTS:
   One statement per request: a ';'-separated script is rejected. Run statements one call at a time.
-  Times out after about 30 seconds (the statement keeps running, the result is lost); the error prints a `clickhouse client` fallback.
+  Times out after about 30 seconds: the statement keeps running, the result is lost, and
+    the error prints a `clickhouse client` fallback.
   SQL is read from stdin unless --query or --queries-file is given; --query never reads stdin.
-  To load data, pipe the statement and data together: printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | ... --id <id>
   API key auth runs read+write SQL; OAuth is read-only SELECT.
-  Output: PrettyCompact on a TTY, TabSeparated when piped, JSONEachRow with --json (not with --format).
-  An idle service wakes automatically (first query is slow); a stopped one needs `cloud service start <id>` first.
+  Output: PrettyCompact on a TTY, TabSeparated when piped, JSONEachRow with --json (not --format).
+  An idle service wakes automatically; a stopped one needs `cloud service start <id>` first.
   A stored query key rejected with 401/403 is never replaced automatically: `cloud service repair-query-key <id>`."
     )]
     Query {
@@ -6483,7 +6506,6 @@ mod tests {
         let help = error.to_string();
 
         assert!(help.contains("--query never reads stdin"), "{help}");
-        assert!(help.contains("cat - data.csv"), "{help}");
         assert!(help.contains("never read from stdin"), "{help}");
     }
 }

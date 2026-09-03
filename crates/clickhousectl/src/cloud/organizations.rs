@@ -36,7 +36,7 @@ CONTEXT FOR AGENTS:
 
         /// Remove a private endpoint from the org allow list (repeatable)
         ///
-        /// Format: id[,description=TEXT],cloud-provider=aws|gcp|azure,region=REGION
+        /// Format: id[,description=TEXT][,cloud-provider=aws|gcp|azure][,region=REGION]
         ///
         /// Omitting cloud-provider or region sends gcp / ap-northeast-1, not "unchanged".
         #[arg(long = "remove-private-endpoint")]

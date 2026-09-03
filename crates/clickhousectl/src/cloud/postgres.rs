@@ -31,7 +31,7 @@ pub enum PostgresCommands {
         filter: Vec<PostgresListFilter>,
     },
 
-    /// Get details for a single Postgres service
+    /// Get Postgres service details
     Get {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
@@ -40,11 +40,11 @@ pub enum PostgresCommands {
         org_id: Option<String>,
     },
 
-    /// Create a new Postgres service
+    /// Create a Postgres service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   The password and connection string are returned once, here — save them.
-  `get` never returns credentials; `reset-password --generate` is the only way back.
+  Treat `get` as never returning credentials; `reset-password` is the only way back.
   Not usable until `cloud postgres get <id>` reports state=running.")]
     Create {
         /// Service name
@@ -80,6 +80,10 @@ CONTEXT FOR AGENTS:
     },
 
     /// Update a Postgres service's name, size, HA type or tags
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  --name also changes the service host name and its certificates: stored connection strings and
+  pinned CAs break, so re-read `cloud postgres get` and `cloud postgres certs get` afterwards.")]
     Update {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
@@ -3197,7 +3201,10 @@ mod tests {
     fn create_help_warns_the_password_is_returned_once() {
         let help = rendered_help(&["create"]);
         assert!(help.contains("returned once"), "{help}");
-        assert!(help.contains("`get` never returns credentials"), "{help}");
+        assert!(
+            help.contains("Treat `get` as never returning credentials"),
+            "{help}"
+        );
     }
 
     #[test]

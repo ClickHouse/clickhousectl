@@ -9,11 +9,9 @@ pub use crate::local::cli::LocalArgs;
 #[command(version)]
 #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Both `local` and `cloud` manage ClickHouse and Postgres.
   Cloud auth: OAuth (`cloud auth login`) is read-only; API keys
   (`cloud auth login --api-key X --api-secret Y`) allow writes.
   Create account: `cloud auth signup`
-  Typical local flow: `local server start` -> `local client -q 'SELECT 1'`
   Typical cloud flow: `cloud auth signup` -> `cloud auth login --api-key X --api-secret Y` -> `cloud service create`
   Install the ClickHouse agent skills: `clickhousectl skills --agent claude`")]
 pub struct Cli {
@@ -29,7 +27,6 @@ CONTEXT FOR AGENTS:
   Project-scoped commands use `.clickhouse` under the exact current directory; parent directories
   are not searched. Run them from the project root.
   `clickhousectl local server start` bootstraps from zero — installs `latest` if nothing is set up.
-  Local Postgres instances are Docker-backed and need Docker running.
   Typical flow: `local server start` -> `local client -q 'SELECT 1'`")]
     Local(LocalArgs),
 
@@ -48,8 +45,10 @@ CONTEXT FOR AGENTS:
     /// Install ClickHouse agent skills into supported coding agents
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Any flag skips the interactive prompts; with no flags this command prompts on a TTY.
-  Scope is the current project directory unless --global.
+  --all, --detected-only or --agent skip the agent prompt; --global only sets the scope, so agents
+  are still prompted.
+  Agent selection without one of those three flags needs a TTY and errors out without one.
+  Scope: prompted on a TTY, else the current project directory; --global forces your home directory.
   The universal `.agents/skills` target is always installed, alongside any selected agent.
   --agent values: claude, cursor, opencode, codex, agent, roo, trae, windsurf, zencoder, neovate,
   pochi, adal, openclaw, cline, command-code, kiro-cli, agents")]
@@ -192,7 +191,11 @@ mod tests {
             .render_long_help()
             .to_string();
         assert!(signup_help.contains("Create a ClickHouse Cloud account"));
-        assert!(!signup_help.to_lowercase().contains("browser"));
+        assert!(
+            signup_help
+                .contains("Opens the ClickHouse Cloud sign-up page in a browser; a human must"),
+            "{signup_help}"
+        );
     }
 
     #[test]

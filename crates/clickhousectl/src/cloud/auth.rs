@@ -49,6 +49,10 @@ CONTEXT FOR AGENTS:
     /// Show current authentication status
     Status,
     /// Create a ClickHouse Cloud account
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Opens the ClickHouse Cloud sign-up page in a browser; a human must finish it.
+  Next: `cloud auth login --api-key X --api-secret Y`")]
     Signup,
 }
 

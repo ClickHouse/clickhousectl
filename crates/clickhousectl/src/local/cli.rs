@@ -224,8 +224,8 @@ CONTEXT FOR AGENTS:
         group(ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
         after_help = "\
 CONTEXT FOR AGENTS:
-  Default mode looks up a server started by `clickhousectl local server start`. Lookup uses the exact
-  current project directory and does not search parents; the name defaults to \"default\".
+  Default mode looks up a server started by `clickhousectl local server start`; the name defaults
+  to \"default\".
   Extra clickhouse-client arguments go after `--`.
   Next: `clickhousectl local server list` to see running servers."
     )]
@@ -269,8 +269,6 @@ CONTEXT FOR AGENTS:
     /// Manage local server instances
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Project scope is `.clickhouse` in the exact current directory; parent dirs are not searched, so
-  run these from the project root.
   `list` and `stop-all` cover ClickHouse and Docker-backed Postgres; other subcommands are
   ClickHouse-only.
   Data persists across stop/start; only `remove` deletes it.
@@ -288,7 +286,6 @@ CONTEXT FOR AGENTS:
   Requires Docker installed and running.
   Each instance is keyed on (name, major version); pass --version when one name has two majors.
   There is no `postgres list` — `local server list` shows ClickHouse and Postgres together.
-  Project scope is `.clickhouse` in the exact current directory; parent dirs are not searched.
   Typical flow: `postgres start` -> `postgres client` -> `postgres dotenv --local` -> `postgres stop`")]
     Postgres {
         #[command(subcommand)]
@@ -303,8 +300,8 @@ pub enum ServerCommands {
 CONTEXT FOR AGENTS:
   Starting a name that is already running is an error; a bare start with \"default\" already
   running picks a new generated name instead.
-  With no --version and no default set, a bare start installs \"latest\" first (~150 MB) without
-  making it the default.")]
+  With no --version and no default set, start installs \"latest\" first (~150 MB) without making
+  it the default.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
         #[arg(value_name = "NAME", conflicts_with = "name_flag")]
@@ -320,11 +317,15 @@ CONTEXT FOR AGENTS:
         #[arg(long, short = 'v')]
         version: Option<ServerVersionArg>,
 
-        /// HTTP port (default: 8123, auto-assigns a free port if in use)
+        /// HTTP port; when omitted, 8123 if free else an auto-selected free port
+        ///
+        /// An explicitly requested port that is already in use is rejected.
         #[arg(long)]
         http_port: Option<u16>,
 
-        /// TCP port (default: 9000, auto-assigns a free port if in use)
+        /// TCP port; when omitted, 9000 if free else an auto-selected free port
+        ///
+        /// An explicitly requested port that is already in use is rejected.
         #[arg(long)]
         tcp_port: Option<u16>,
 
@@ -338,11 +339,13 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "foreground")]
         no_wait: bool,
 
-        /// Overlay a named config file from ~/.clickhouse/configs/ on top of the defaults (see `server configs`)
+        /// Named config file from ~/.clickhouse/configs/ (see `server configs`)
         #[arg(long = "config", alias = "config-file", value_name = "NAME")]
         config_file: Option<String>,
 
-        /// Arguments passed to clickhouse-server after `--`; --config / --config-file / -C are rejected
+        /// Arguments passed to clickhouse-server after `--`
+        ///
+        /// --config, --config-file and -C are rejected here; use `--config <NAME>` instead.
         #[arg(last = true, allow_hyphen_values = true, value_name = "CLICKHOUSE_ARG")]
         args: Vec<String>,
     },
@@ -426,7 +429,7 @@ CONTEXT FOR AGENTS:
     /// Write ClickHouse connection env vars to a .env file
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Requires a running server; reads its actual host and ports.
+  Requires a running server; reads its actual ports.
   Writes CLICKHOUSE_HOST, CLICKHOUSE_PORT and CLICKHOUSE_HTTP_PORT, plus CLICKHOUSE_USER,
   CLICKHOUSE_PASSWORD and CLICKHOUSE_DATABASE only when their flags are given.
   An existing file is edited in place: only the keys written here are replaced, other
@@ -545,10 +548,11 @@ CONTEXT FOR AGENTS:
     /// Connect to a running Postgres instance with psql
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Managed mode (--name) execs host `psql` when it is on PATH, else runs psql inside the container
-  via `docker exec`.
+  Managed mode (the default; --name selects one) execs host `psql` when it is on PATH, else runs
+  psql inside the container via `docker exec`.
   Direct mode (--host/--port) requires `psql` on PATH and connects as user/database \"postgres\"
-  with no password; it does not read managed credentials.")]
+  with no password; it does not read managed credentials.
+  Extra psql arguments go after `--`.")]
     Client {
         /// Managed instance to connect to (default: "default")
         #[arg(long, short, conflicts_with_all = ["host", "port"])]
@@ -1026,10 +1030,17 @@ mod tests {
         for text in [
             "Installed local client version for direct host/port mode",
             "Does not change the default",
-            "Lookup uses the exact",
-            "current project directory and does not search parents",
         ] {
             assert!(help.contains(text), "missing {text:?} in:\n{help}");
+        }
+
+        // The project-scope rule is stated once, on the `local` parent (#678).
+        let parent = rendered_help(&["--help"]);
+        for text in [
+            "Project-scoped commands use `.clickhouse` under the exact current directory",
+            "are not searched",
+        ] {
+            assert!(parent.contains(text), "missing {text:?} in:\n{parent}");
         }
     }
 
@@ -1294,8 +1305,6 @@ mod tests {
         assert_eq!(
             context,
             concat!(
-                "  Project scope is `.clickhouse` in the exact current directory; parent dirs are not searched, so\n",
-                "  run these from the project root.\n",
                 "  `list` and `stop-all` cover ClickHouse and Docker-backed Postgres; other subcommands are\n",
                 "  ClickHouse-only.\n",
                 "  Data persists across stop/start; only `remove` deletes it.\n",

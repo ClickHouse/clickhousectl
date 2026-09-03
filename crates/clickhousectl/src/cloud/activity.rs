@@ -16,7 +16,7 @@ pub enum ActivityCommands {
         #[arg(long, value_parser = parse_date_only)]
         from_date: Option<String>,
 
-        /// End date in UTC, inclusive (YYYY-MM-DD)
+        /// End date in UTC (YYYY-MM-DD)
         #[arg(long, value_parser = parse_date_only)]
         to_date: Option<String>,
     },
