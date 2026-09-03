@@ -103,14 +103,14 @@ CONTEXT FOR AGENTS:
         command: OrgCommands,
     },
 
-    /// Service commands
+    /// Manage ClickHouse Cloud services
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Most commands need a service ID — get it from `clickhousectl cloud service list`.
-  Org ID is auto-detected if you have only one org; otherwise pass --org-id.
-  Write commands (create, delete, start, stop, update, scale) require API key auth — OAuth is read-only.
-  Use `query` to run SQL against a service over HTTP.
-  Related: `clickhousectl cloud org list` for org IDs.")]
+  Service ID: `clickhousectl cloud service list`. Org ID is auto-detected only if you have one org,
+    otherwise pass --org-id (`clickhousectl cloud org list`).
+  Reads: list, get, prometheus, query, query-endpoint get, private-endpoint get-config,
+    backup-config get. Every other subcommand is a write and needs API key auth — OAuth is read-only.
+  Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query --id <id> -q 'SELECT 1'`.")]
     Service {
         #[command(subcommand)]
         command: ServiceCommands,

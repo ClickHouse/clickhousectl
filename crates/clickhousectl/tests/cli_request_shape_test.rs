@@ -11254,11 +11254,13 @@ async fn service_query_help_names_the_gateway_timeout() {
     assert!(help.contains("times out after about 30 seconds"), "{help}");
     assert!(help.contains("the statement keeps running"), "{help}");
     assert!(help.contains("clickhousectl local use latest"), "{help}");
+    // Help points at the native client; the timeout error above owns the full
+    // command, because only it knows the service's real host (#678).
     assert!(
-        help.contains("clickhouse client --host <host> --secure"),
+        help.contains("the error prints a `clickhouse client` command"),
         "{help}"
     );
-    assert!(help.contains("--port 9440 --user"), "{help}");
+    assert!(!help.contains("--port 9440"), "{help}");
 }
 
 // ── `clickpipe reverse-private-endpoint` CRUD (issue #567) ─────────────────
