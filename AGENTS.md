@@ -16,8 +16,8 @@ learn the current command surface. `README.md` is the user-facing doc; do not du
   If `deprecated-fields` changed, also `cargo check --workspace --all-features`.
 
 **Done** means: `cargo fmt --all`; both clippy configurations clean; tests pass for every crate touched;
-help-pinning tests updated if help text moved; classifier mappings updated if a file was added or renamed;
-`README.md` updated for user-visible behaviour; work on a branch, with an associated issue and a PR.
+classifier mappings updated if a file was added or renamed; `README.md` updated for user-visible behaviour;
+work on a branch, with an associated issue and a PR.
 
 ## Workspace
 
@@ -115,10 +115,11 @@ module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new l
   compatibility notes, reassurance, or anything already in the flag list, `[default:]`, or the `about` line.
 - Put shared context (auth model, how to find IDs, typical flow) on the parent (`cloud service`, `local server`);
   leaves add a block only for a leaf-specific gotcha. A plain `get`/`list` usually needs none.
-- Rendered help wording is pinned by `*help*` tests across `src/` (local, cloud domain and telemetry modules;
-  `rendered_help()` helpers in `src/local/cli.rs` and `src/cloud/postgres.rs`) plus three in `tests/`
-  (`cli_request_shape_test.rs`, `local_postgres_start_validation_test.rs`). When a constraint moves, update the
-  test that pins it; keep one assertion per constraint.
+- Do not write tests that pin help or README wording (`help.contains("some sentence")`, `include_str!` on
+  `README.md`, whole-screen equality). They protect phrasing, not facts, and turn every rewording into a test edit.
+  Test structure instead: `try_parse_from` outcomes, `ErrorKind`, defaults and value names clap renders, hidden
+  flags staying hidden, every subcommand having an `about`, block size, and a flag reading identically everywhere.
+  A fact that must not disappear from help is guarded by review against this section, not by a substring.
 - Content users still need but help must not carry goes to `README.md` as a short example or ≤ 3-line note.
 
 ## Tests
@@ -138,6 +139,7 @@ Test coverage is non-negotiable.
   `telemetry_test.rs`. Add a new file rather than growing `cli_request_shape_test.rs`, which is Cloud-only.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output
   formatting, platform detection, and other module-local helpers.
+- **Help and README text** — structural assertions only (see Writing help text). No wording pins.
 
 ## CI gates
 
