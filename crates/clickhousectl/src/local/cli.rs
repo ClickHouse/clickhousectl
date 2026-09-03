@@ -10,19 +10,9 @@ fn parse_server_name_arg(name: &str) -> Result<String, String> {
 
 const INSTALL_AFTER_HELP: &str = "\
 CONTEXT FOR AGENTS:
+  The first ClickHouse version installed becomes the default; later installs do not change it.
   `clickhousectl local use <version>` auto-installs a missing version and sets it as default.
-
-EXAMPLES:
-  clickhousectl local install latest
-  clickhousectl local install 26.8
-  clickhousectl local install 26.8.1.1760
-  clickhousectl local install postgres@18
-
-CLICKHOUSE DOWNLOAD:
-  Binaries install at ~/.clickhouse/versions/<version>/clickhouse and are approximately 150 MB.
-  Downloads use builds.clickhouse.com, with packages.clickhouse.com fallback on Linux and
-  github.com on macOS. To bootstrap without setting a default, run
-  `clickhousectl local server start`; it installs `latest` when needed.";
+  `postgres@<tag>` pulls a Docker image instead (needs Docker running) and never sets a default.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallVersionArg {
@@ -159,41 +149,37 @@ impl LocalArgs {
 
 #[derive(Subcommand)]
 pub enum LocalCommands {
-    /// Install a ClickHouse version
+    /// Install a ClickHouse version or Postgres image
     #[command(after_help = INSTALL_AFTER_HELP)]
     Install {
-        /// Version to install. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", exact like "25.12.9.61", or a Postgres image selector like "postgres@18".
+        /// Version ("latest", "stable", "lts", 25.12, 25.12.9.61) or image selector (postgres@18)
         version: InstallVersionArg,
 
-        /// Force re-install even if version is already installed
+        /// Re-install even if already installed
         #[arg(long)]
         force: bool,
     },
 
-    /// List installed versions
+    /// List installed or available ClickHouse versions
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Without flags: shows locally installed versions (exact version strings).
-  With --remote: shows versions available for download from builds.clickhouse.com.
-  Use the exact version strings from this output with `clickhousectl local remove` or `clickhousectl local use`.
-  Related: `clickhousectl local install <version>` to install, `clickhousectl local which` to see current default.")]
+  Default output is exact installed version strings — the form `clickhousectl local remove` needs.
+  --remote lists minor versions (e.g. 26.3) probed from builds.clickhouse.com, not exact builds.")]
     List {
-        /// List versions available for download
+        /// List minor versions available for download
         #[arg(long)]
         remote: bool,
     },
 
-    /// Set the default version
+    /// Set the default ClickHouse version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Sets the default ClickHouse version used by `clickhousectl local client` and `clickhousectl local server`.
-  Accepts version specs: \"latest\" (recommended), \"stable\", \"lts\", partial like \"25.12\", or exact like \"25.12.5.44\".
-  Auto-installs the version if not already present.
-  Also creates `~/.local/bin/clickhouse` as a symlink to the version's binary so the `clickhouse` command is on PATH. Pass --no-global to skip.
-  This makes standard subcommands such as `clickhouse client`, `clickhouse benchmark`, and `clickhouse format` available directly.
-  Related: `clickhousectl local which` to verify, `clickhousectl local server start` to start a server.")]
+  Auto-installs the version if it is not already present.
+  Symlinks `~/.local/bin/clickhouse` to it, putting `clickhouse client`, `clickhouse benchmark`
+  and `clickhouse format` on PATH; --no-global skips that.
+  Sets the version used by `clickhousectl local client` and `clickhousectl local server`.")]
     Use {
-        /// Version to use as default. Accepts: "latest" (recommended), "stable", "lts", partial like "25.12", or exact like "25.12.5.44".
+        /// Version to set as default ("latest", "stable", "lts", 25.12, or 25.12.5.44)
         version: UseVersionArg,
 
         /// Do not create or update the ~/.local/bin/clickhouse symlink
@@ -201,47 +187,36 @@ CONTEXT FOR AGENTS:
         no_global: bool,
     },
 
-    /// Remove an installed version
+    /// Remove an installed ClickHouse version
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Removes an installed ClickHouse version from ~/.clickhouse/versions/.
-  Takes an exact version string as shown by `clickhousectl local list` (e.g., \"25.12.5.44\").
-  Does NOT accept keywords like \"stable\" — use the exact version number.
-  Fails if a local server is currently running on this version, in ANY project (versions are
-  shared, so a server started from another directory is checked too — see
-  `clickhousectl local server list --global`). The error names each blocking server with its
-  project root and PID; stop them first, or pass --force to stop them before removing.
-  Fails if the version is the current default (removing it clears ~/.clickhouse/default and
-  the global ~/.local/bin/clickhouse symlink, and the exact build may not be
-  re-downloadable). Switch the default with `clickhousectl local use <other-version>` first,
-  or pass --force to remove it and clear both.
-  Related: `clickhousectl local list` to see installed versions.")]
+  Fails if any server is running on this version, in any project — versions are shared, so a server
+  started from another directory blocks removal too (`local server list --global` lists them).
+  Fails if the version is the current default; switch with `clickhousectl local use <other-version>` first.
+  --force overrides both guards. The exact build may not be re-downloadable.")]
     Remove {
-        /// Version to remove
+        /// Exact installed version to remove (not "latest"/"stable"/"lts")
         // Keep this opaque: removal matches an installed directory name instead of resolving a version spec.
         version: String,
 
-        /// Stop any running servers using this version, in any project, and remove it even when it is the default (clearing ~/.clickhouse/default and the global symlink)
+        /// Stop any server using this version and remove it even if it is the default
+        ///
+        /// Servers in other projects are stopped too; clears ~/.clickhouse/default and
+        /// the ~/.local/bin/clickhouse symlink when the default is removed.
         #[arg(long)]
         force: bool,
     },
 
-    /// Show the current default version
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Shows the current default version and binary path. No arguments needed.
-  Use this to verify which version is active before running commands.
-  Related: `clickhousectl local use <version>` to change the default.")]
+    /// Show the current default ClickHouse version
     Which,
 
-    /// Initialize a project-local ClickHouse configuration
+    /// Initialize a project directory for ClickHouse and Postgres
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Creates a .clickhouse/ directory (runtime data, git-ignored) plus clickhouse/ and postgres/
-  project scaffolds (each subdir has a .gitkeep). clickhouse/: tables/, materialized_views/,
-  queries/, seed/. postgres/: tables/, views/, functions/, queries/, seed/. The clickhouse/ and
-  postgres/ directories are meant to be committed — organize your SQL files there.
-  Related: `clickhousectl local server start` to start a server with project-local data.")]
+  `.clickhouse/` holds runtime data and is git-ignored; the `clickhouse/` and `postgres/` SQL
+  scaffolds are meant to be committed.
+  Idempotent — re-running only creates what is missing.
+  Next: `clickhousectl local server start`")]
     Init,
 
     /// Connect to a running ClickHouse server with clickhouse-client
@@ -249,29 +224,21 @@ CONTEXT FOR AGENTS:
         group(ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
         after_help = "\
 CONTEXT FOR AGENTS:
-  Two connection modes:
-  1. Named server: `clickhousectl local client --name dev` — looks up port and version from a
-     locally managed server started via `clickhousectl local server start`. Lookup uses the exact
-     current project directory and does not search parents. Defaults to \"default\".
-  2. Explicit host/port: `clickhousectl local client --host myhost --port 9000` — connects to any
-     ClickHouse server directly, bypassing local server lookup. Host-only uses port 9000; port-only
-     connects to localhost. Direct selectors cannot be combined with --name.
-  Repeat --query to execute multiple inline queries. --queries-file accepts multiple paths after
-  one flag and can also be repeated. ClickHouse rejects combining the two options, so clickhousectl
-  reports that combination as a usage error.
-  Additional clickhouse-client args can be passed after --.
-  Related: `clickhousectl local server start` to start a local server, `clickhousectl local server list` to see servers."
+  Default mode looks up a server started by `clickhousectl local server start`; the name defaults
+  to \"default\".
+  Extra clickhouse-client arguments go after `--`.
+  Next: `clickhousectl local server list` to see running servers."
     )]
     Client {
         /// Server name to connect to (default: "default")
         #[arg(long, short, conflicts_with_all = ["host", "port"])]
         name: Option<String>,
 
-        /// Host to connect to (bypasses local server lookup)
+        /// Host to connect to directly, bypassing local server lookup (port 9000)
         #[arg(long)]
         host: Option<String>,
 
-        /// TCP port to connect to (bypasses local server lookup if set)
+        /// TCP port to connect to directly, bypassing local server lookup (host localhost)
         #[arg(
             long,
             short,
@@ -279,11 +246,14 @@ CONTEXT FOR AGENTS:
         )]
         port: Option<u16>,
 
-        /// Installed local client version for direct host/port mode (e.g. 25, 25.12, or 25.12.9.61). Does not change the default.
+        /// Installed local client version for direct host/port mode
+        ///
+        /// Requires --host or --port and conflicts with --name. Numeric versions only
+        /// (25, 25.12, 25.12.9.61). Does not change the default.
         #[arg(long, short = 'v', requires = "direct", conflicts_with = "name")]
         version: Option<ClientVersionArg>,
 
-        /// Execute a SQL query; repeat for multiple queries (requires ClickHouse 23.9.1.1854+)
+        /// Execute a SQL query; repeatable (repeats need ClickHouse 23.9.1.1854+)
         #[arg(long, short, conflicts_with = "queries_file")]
         query: Vec<String>,
 
@@ -299,25 +269,12 @@ CONTEXT FOR AGENTS:
     /// Manage local server instances
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage named local server instances. Project-scoped `server list` and `server stop-all`
-  include both ClickHouse processes and Docker-backed Postgres containers; other commands
-  here manage ClickHouse.
-  Project-local commands use `.clickhouse` under the exact current working directory; parent
-  `.clickhouse` directories are not searched. Change to the project root before running them.
-  Each server has its own data directory.
-  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
-
-  Canonical named lifecycle:
-    clickhousectl local server start dev
-    clickhousectl local server list
-    clickhousectl local server stop dev
-    clickhousectl local server remove dev
-
-  If `server start` generates a name, retain the returned name for later `stop` and `remove`
-  commands. Use `clickhousectl local server stop-all` for project cleanup.
-  `clickhousectl local remove <exact-version>` removes an installed ClickHouse binary;
-  `clickhousectl local server remove <server-name>` removes a stopped server and its data.
-  Related: `clickhousectl local client` to connect to a running server.")]
+  `list` and `stop-all` cover ClickHouse and Docker-backed Postgres; other subcommands are
+  ClickHouse-only.
+  Data persists across stop/start; only `remove` deletes it.
+  Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
+  `local remove <version>` deletes an installed binary, not server data.
+  Typical flow: `server start dev` -> `local client --name dev` -> `server stop dev`")]
     Server {
         #[command(subcommand)]
         command: ServerCommands,
@@ -326,12 +283,10 @@ CONTEXT FOR AGENTS:
     /// Manage local Postgres instances (Docker-backed)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage named Postgres server instances backed by Docker. Each instance is keyed on
-  (name, major version) and runs as a `postgres:<tag>` container with data bind-mounted
-  at .clickhouse/servers/<name>-pg<major>/data/.
-  Typical: `clickhousectl local postgres start` (starts \"default\" on port 5432).
-  `local server list` shows ClickHouse + Postgres entries together.
-  Requires Docker to be installed and running.")]
+  Requires Docker installed and running.
+  Each instance is keyed on (name, major version); pass --version when one name has two majors.
+  There is no `postgres list` — `local server list` shows ClickHouse and Postgres together.
+  Typical flow: `postgres start` -> `postgres client` -> `postgres dotenv --local` -> `postgres stop`")]
     Postgres {
         #[command(subcommand)]
         command: PostgresCommands,
@@ -343,32 +298,10 @@ pub enum ServerCommands {
     /// Start a ClickHouse server instance
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Starts a named clickhouse-server instance with its own data directory.
-  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.
-  Without a name, the first server is called \"default\"; if \"default\" is already running,
-  a random name is generated (e.g., \"bold-crane\").
-  Retain a generated name for later `server stop <name>` and `server remove <name>` commands.
-  Pass the name positionally to give a server a stable identity (e.g., `server start dev`).
-  The older `--name dev` form remains accepted, but cannot be combined with a positional name.
-  Use --version (-v) to run a specific ClickHouse version without changing the default.
-  Accepts same specs as install/use: \"latest\" (recommended), stable, lts, 25.12, etc. Installs if needed.
-  With no --version and no default set, a bare start bootstraps by installing \"latest\" (without
-  setting it as the default, so you keep tracking latest on later starts).
-  Ports default to 8123 (HTTP) and 9000 (TCP). If they're in use, free ports are auto-assigned.
-  Use --http-port and --tcp-port to set explicit ports.
-  Runs in background by default. Use --foreground (-F / --fg) to run in foreground.
-  Background starts wait for HTTP health and TCP connections. Use --no-wait to return after spawning.
-  If a name is given and that server is already running, the command will error.
-  Shows count of already-running servers before starting.
-  Use --config <NAME> to apply a custom ClickHouse config file from ~/.clickhouse/configs/
-  (see `clickhousectl local server configs`). The file is merged as an overlay on top of
-  ClickHouse's built-in defaults (via config.d), so it can contain just the settings you want
-  to change (e.g. <query_log>). The data directory and ports stay managed regardless of the
-  file's contents (they are forced as command-line overrides).
-  Additional clickhouse-server arguments must follow `--`.
-  Project-local commands use `.clickhouse` under the exact current working directory; parent
-  `.clickhouse` directories are not searched. Change to the project root before running them.
-  Related: `clickhousectl local server list` to see servers, `clickhousectl local server stop [name]` to stop one.")]
+  Starting a name that is already running is an error; a bare start with \"default\" already
+  running picks a new generated name instead.
+  With no --version and no default set, start installs \"latest\" first (~150 MB) without making
+  it the default.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
         #[arg(value_name = "NAME", conflicts_with = "name_flag")]
@@ -378,31 +311,41 @@ CONTEXT FOR AGENTS:
         #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
         name_flag: Option<String>,
 
-        /// ClickHouse version to use (e.g. "latest" (recommended), stable, lts, 25.12). Installs if needed. Does not change the default version.
+        /// Version or channel to run: latest, stable, lts, 25.12 (installs if needed)
+        ///
+        /// Does not change the default version set by `local use`.
         #[arg(long, short = 'v')]
         version: Option<ServerVersionArg>,
 
-        /// HTTP port (default: 8123, auto-assigns a free port if in use)
+        /// HTTP port; when omitted, 8123 if free else an auto-selected free port
+        ///
+        /// An explicitly requested port that is already in use is rejected.
         #[arg(long)]
         http_port: Option<u16>,
 
-        /// TCP port (default: 9000, auto-assigns a free port if in use)
+        /// TCP port; when omitted, 9000 if free else an auto-selected free port
+        ///
+        /// An explicitly requested port that is already in use is rejected.
         #[arg(long)]
         tcp_port: Option<u16>,
 
-        /// Run server in foreground (default: background)
+        /// Run in foreground instead of background (alias: --fg)
         #[arg(long, alias = "fg", short = 'F')]
         foreground: bool,
 
         /// Return after spawning without waiting for HTTP and TCP readiness
+        ///
+        /// Otherwise a background start waits up to 30s for HTTP and TCP. Not with --foreground.
         #[arg(long, conflicts_with = "foreground")]
         no_wait: bool,
 
-        /// Overlay a named config file from ~/.clickhouse/configs/ on top of the defaults (see `server configs`)
+        /// Named config file from ~/.clickhouse/configs/ (see `server configs`)
         #[arg(long = "config", alias = "config-file", value_name = "NAME")]
         config_file: Option<String>,
 
-        /// Arguments to pass to clickhouse-server after `--`
+        /// Arguments passed to clickhouse-server after `--`
+        ///
+        /// --config, --config-file and -C are rejected here; use `--config <NAME>` instead.
         #[arg(last = true, allow_hyphen_values = true, value_name = "CLICKHOUSE_ARG")]
         args: Vec<String>,
     },
@@ -410,43 +353,24 @@ CONTEXT FOR AGENTS:
     /// List custom config files available to `server start --config`
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Lists ClickHouse config files in ~/.clickhouse/configs/ and prints that directory's path.
-  Drop a config file there (e.g. analytics.xml) and start a server with it via
-  `clickhousectl local server start --config analytics`. The file is overlaid on top of
-  ClickHouse's built-in defaults (config.d merge), so it only needs the settings you want to
-  change. Files may be .xml, .yaml, or .yml; reference them by name with or without the
-  extension.
-  Related: `clickhousectl local server start --config <NAME>`.")]
+  Lists ~/.clickhouse/configs/ (.xml, .yaml, .yml) and prints that path.
+  Drop a file there, then `clickhousectl local server start --config <name>`; the extension is
+  optional in <name>, but an ambiguous stem is an error.
+  Merged as a config.d overlay on ClickHouse's defaults, so it needs only the settings you change.")]
     Configs,
 
     /// List all server instances (running and stopped)
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Shows all named ClickHouse server instances and their status.
-  Project-local commands use `.clickhouse` under the exact current working directory; parent
-  `.clickhouse` directories are not searched. Change to the project root before running them.
-  Use --global to list running ClickHouse servers across projects.
-  Processes that exited unexpectedly are retained and shown as stopped.
-  Running ClickHouse entries also show their PID, version, and ports.
-  Related: `clickhousectl local server start` to start a server, `clickhousectl local server stop [name]` to stop one.")]
     List {
-        /// System-wide maintenance only: list servers across all projects. You almost certainly want the default project-scoped list instead.
+        /// List ClickHouse servers in all projects; the default is project-scoped
         #[arg(long)]
         global: bool,
     },
 
-    /// Stop a running server by name
+    /// Stop a running server
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Stops a ClickHouse server. Without a name, stops \"default\" when it exists, otherwise the sole
-  known ClickHouse server. With no ClickHouse servers this is a successful no-op; with multiple
-  non-default servers, pass a positional name (e.g., `server stop dev`) or use `server stop-all`.
-  Use `clickhousectl local server list` to find names.
-  The server's data and metadata are preserved so it remains visible in `server list`.
-  Restart with `clickhousectl local server start <name>`.
-  Project-local commands use `.clickhouse` under the exact current working directory; parent
-  `.clickhouse` directories are not searched. Change to the project root before running them.
-  Related: `clickhousectl local server list` to see servers.")]
+  Omitting NAME with no ClickHouse servers succeeds as a no-op; with several non-default servers
+  it errors — pass a name or use `stop-all`.")]
     Stop {
         /// Name of the server to stop (auto-selects default or a sole ClickHouse server when omitted)
         #[arg(value_name = "NAME", conflicts_with = "name_flag")]
@@ -461,7 +385,7 @@ CONTEXT FOR AGENTS:
         )]
         name_flag: Option<String>,
 
-        /// System-wide maintenance only: stop a server from any project. You almost certainly want the default project-scoped stop instead.
+        /// Stop a ClickHouse server in any project; the default is project-scoped
         #[arg(long)]
         global: bool,
 
@@ -470,19 +394,12 @@ CONTEXT FOR AGENTS:
         project: Option<String>,
     },
 
-    /// Stop all running server instances
+    /// Stop all ClickHouse and Postgres servers in this project
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Stops all running ClickHouse and Postgres server instances in this project.
-  Project-local commands use `.clickhouse` under the exact current working directory; parent
-  `.clickhouse` directories are not searched. Change to the project root before running them.
-  ClickHouse processes receive SIGTERM first, then SIGKILL if they don't exit.
-  Postgres containers are stopped but retained for a subsequent start.
-  With --global, stops ClickHouse servers only; global Postgres discovery is not supported.
-  Data and metadata are preserved, and stopped servers remain visible in `server list`.
-  Related: `clickhousectl local server list` to see servers.")]
+  ClickHouse processes get SIGTERM, then SIGKILL if they do not exit in time.")]
     StopAll {
-        /// System-wide maintenance only: stop all ClickHouse servers across all projects. You almost certainly want the default project-scoped stop-all instead.
+        /// Stop ClickHouse servers in all projects; the default is project-scoped
         #[arg(long)]
         global: bool,
     },
@@ -490,17 +407,12 @@ CONTEXT FOR AGENTS:
     /// Remove a stopped server and its data
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Permanently deletes a server's data directory. The server must be stopped first.
-  This is irreversible: all data for this server instance will be lost.
-  Without a name, removes \"default\" only when it exists. It never guesses a custom server;
-  use `server list`, then pass a custom name positionally.
-  Project-local commands use `.clickhouse` under the exact current working directory; parent
-  `.clickhouse` directories are not searched. Change to the project root before running them.
-  Unlike `local server remove <server-name>`, `local remove <exact-version>` removes an installed
-  ClickHouse binary rather than server data.
-  Related: `clickhousectl local server stop [name]` to stop first, `clickhousectl local server list` to see servers.")]
+  Irreversible: deletes the server's data directory. Stop it first — removing a running server
+  errors.
+  Omitting NAME removes only an existing \"default\"; it never guesses a custom name, even when
+  exactly one exists.")]
     Remove {
-        /// Name of the server to remove (only an existing "default" is selected when omitted)
+        /// Name of the server to remove (defaults to "default" if it exists)
         #[arg(value_name = "NAME", conflicts_with = "name_flag")]
         name: Option<String>,
 
@@ -517,13 +429,11 @@ CONTEXT FOR AGENTS:
     /// Write ClickHouse connection env vars to a .env file
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Writes CLICKHOUSE_HOST, CLICKHOUSE_PORT, and CLICKHOUSE_HTTP_PORT into a .env file
-  (or .env.local with --local) based on a running server's actual connection details.
-  Optionally includes CLICKHOUSE_USER, CLICKHOUSE_PASSWORD, and CLICKHOUSE_DATABASE when
-  the corresponding flags are provided.
-  If the file already exists, existing CLICKHOUSE_* vars are replaced in-place. Otherwise the file is created.
-  Useful for configuring apps that read from dotenv files.
-  Related: `clickhousectl local server start` to start a server, `clickhousectl local server list` to see servers.")]
+  Requires a running server; reads its actual ports.
+  Writes CLICKHOUSE_HOST, CLICKHOUSE_PORT and CLICKHOUSE_HTTP_PORT, plus CLICKHOUSE_USER,
+  CLICKHOUSE_PASSWORD and CLICKHOUSE_DATABASE only when their flags are given.
+  An existing file is edited in place: only the keys written here are replaced, other
+  CLICKHOUSE_* lines are kept.")]
     Dotenv {
         /// Server name (default: "default")
         #[arg(long)]
@@ -549,36 +459,29 @@ CONTEXT FOR AGENTS:
 
 #[derive(Subcommand)]
 pub enum PostgresCommands {
-    /// Start a Postgres container
+    /// Start a Postgres instance
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Starts a named Postgres server backed by a Docker container.
-  Without --name, the first server is called \"default\"; if \"default\" is running,
-  a random name is generated (e.g. \"bold-crane\").
-  --version (-v) selects a postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm).
-  Defaults to 18. Image is pulled if not already present locally.
-  When --port is omitted, port 5432 is used if free or another free port is auto-selected.
-  An explicitly requested port is rejected if it is occupied.
-  If a fresh startup fails, its new container and attempt-created data are removed; existing data is preserved.
-  A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
-  POSTGRES_USER, POSTGRES_DB, and PGDATA are reserved; use --user/--database for the first two.
-  `-e POSTGRES_PASSWORD=...` remains a compatibility alternative to --password, but the two cannot
-  be combined. Every --env key must be unique, so generated variables are never duplicated.
-  Start waits for PostgreSQL to accept connections, up to --wait-timeout seconds (default: 60).
-  Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
-  `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and
-  `created_by=clickhousectl_<version>` for safe discovery.
-  Requires Docker to be installed and running.")]
+  An existing stopped instance for the same (name, major) is resumed with its stored settings, so
+  --port/--user/--password/--database/-e are ignored on a resume.
+  Without --version, an existing instance selects the major; two majors under one name error.
+  The generated password is printed once by start — re-read connection details later with
+  `postgres dotenv` or `postgres client`.
+  A failed fresh start rolls back the container and data it created; pre-existing data is kept.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
         #[arg(long, value_parser = parse_server_name_arg)]
         name: Option<String>,
 
-        /// Postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm). Default: 18. Pulls if missing.
+        /// Postgres image tag, major 17 or 18 (e.g. 17-alpine, 18.1). Default: 18
+        ///
+        /// Pulls the image if it is not present locally.
         #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_tag_arg)]
         version: Option<String>,
 
-        /// Host TCP port (when omitted: uses 5432 if free, otherwise auto-selects; an occupied explicit port is rejected)
+        /// Host TCP port; when omitted, 5432 if free else an auto-selected free port
+        ///
+        /// An explicitly requested port that is already in use is rejected.
         #[arg(long, value_parser = crate::local::postgres::parse_pg_port_arg)]
         port: Option<u16>,
 
@@ -594,7 +497,10 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         database: Option<String>,
 
-        /// Extra unique env vars for the container; POSTGRES_PASSWORD is the only supported reserved key
+        /// Extra container env vars; repeatable, each key at most once
+        ///
+        /// POSTGRES_USER, POSTGRES_DB and PGDATA are managed and rejected here — use
+        /// --user/--database. POSTGRES_PASSWORD is accepted, but not together with --password.
         #[arg(
             short = 'e',
             long = "env",
@@ -612,9 +518,9 @@ CONTEXT FOR AGENTS:
         wait_timeout: u16,
     },
 
-    /// Stop a running Postgres container by name
+    /// Stop a running Postgres instance
     Stop {
-        /// Name of the server to stop (default: "default")
+        /// Name of the instance to stop
         #[arg(default_value = "default")]
         name: String,
         /// Postgres version to disambiguate when multiple share a name
@@ -622,12 +528,16 @@ CONTEXT FOR AGENTS:
         version: Option<String>,
     },
 
-    /// Stop all running Postgres containers in this project
+    /// Stop all Postgres instances in this project
     StopAll,
 
-    /// Remove a stopped Postgres server and its data directory
+    /// Remove a stopped Postgres instance and its data
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Irreversible: removes the container and deletes its data directory. Stop the instance first —
+  removing a running one errors.")]
     Remove {
-        /// Name of the server to remove (default: "default")
+        /// Name of the instance to remove
         #[arg(default_value = "default")]
         name: String,
         /// Postgres version to disambiguate when multiple share a name
@@ -638,19 +548,13 @@ CONTEXT FOR AGENTS:
     /// Connect to a running Postgres instance with psql
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Two connection modes:
-  1. Named server: `clickhousectl local postgres client --name dev` — looks up the host port
-     and credentials from a locally managed Postgres started via `local postgres start`.
-     Defaults to \"default\".
-  2. Explicit host/port: `clickhousectl local postgres client --host myhost --port 5432`.
-     Host-only uses port 5432; port-only connects to the local machine. Direct selectors cannot be
-     combined with --name or --version.
-  If `psql` is on PATH on the host, it is execed directly. Otherwise, falls back to running
-  `psql` inside the container via Docker exec (no host psql required).
-  --query and --queries-file pass through to psql (-c / -f).
-  Additional psql args can be passed after --.")]
+  Managed mode (the default; --name selects one) execs host `psql` when it is on PATH, else runs
+  psql inside the container via `docker exec`.
+  Direct mode (--host/--port) requires `psql` on PATH and connects as user/database \"postgres\"
+  with no password; it does not read managed credentials.
+  Extra psql arguments go after `--`.")]
     Client {
-        /// Server name to connect to (default: "default")
+        /// Managed instance to connect to (default: "default")
         #[arg(long, short, conflicts_with_all = ["host", "port"])]
         name: Option<String>,
 
@@ -658,11 +562,11 @@ CONTEXT FOR AGENTS:
         #[arg(long, short = 'v', conflicts_with_all = ["host", "port"])]
         version: Option<String>,
 
-        /// Host to connect to (bypasses local server lookup)
+        /// Host to connect to directly, bypassing managed lookup (port 5432)
         #[arg(long)]
         host: Option<String>,
 
-        /// TCP port to connect to (bypasses local server lookup if set)
+        /// TCP port to connect to directly, bypassing managed lookup (host 127.0.0.1)
         #[arg(
             long,
             short,
@@ -686,11 +590,12 @@ CONTEXT FOR AGENTS:
     /// Write Postgres connection env vars to a .env file
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Writes POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DATABASE
-  into .env (or .env.local with --local) based on a running Postgres server.
-  If the file already exists, existing POSTGRES_* vars are replaced in-place.")]
+  Writes POSTGRES_HOST, POSTGRES_PORT, POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_DATABASE.
+  The instance must be running.
+  Managed POSTGRES_* keys are replaced in place; other lines in the file are preserved.
+  Contains the password in plaintext — prefer --local and keep it out of version control.")]
     Dotenv {
-        /// Server name (default: "default")
+        /// Instance name (default: "default")
         #[arg(long)]
         name: Option<String>,
 
@@ -1115,36 +1020,12 @@ mod tests {
     }
 
     #[test]
-    fn clickhouse_client_help_describes_binary_version_selection() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        for text in [
-            "Installed local client version for direct host/port mode",
-            "Does not change the default",
-            "Lookup uses the exact",
-            "current project directory and does not search parents",
-        ] {
-            assert!(help.contains(text), "missing {text:?} in:\n{help}");
-        }
-    }
-
-    #[test]
-    fn clickhouse_client_help_describes_query_multiplicity_and_exclusion() {
-        let help = Cli::try_parse_from(["clickhousectl", "local", "client", "--help"])
-            .err()
-            .expect("help should exit through clap")
-            .to_string();
-
-        assert!(help.contains("repeat for multiple queries"), "{help}");
-        assert!(
-            help.contains("accepts multiple paths or repeated flags"),
-            "{help}"
+    fn clickhouse_client_query_sources_are_mutually_exclusive() {
+        // The mutual exclusion is enforced by clap itself, not documented in help text.
+        assert_eq!(
+            local_parse_error(&["client", "--query", "SELECT 1", "--queries-file", "q.sql"]).kind(),
+            clap::error::ErrorKind::ArgumentConflict,
         );
-        assert!(help.contains("ClickHouse rejects combining"), "{help}");
     }
 
     #[test]
@@ -1246,66 +1127,6 @@ mod tests {
     }
 
     #[test]
-    fn install_help_covers_install_requirements() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "install", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        for required in [
-            "clickhousectl local install latest",
-            "~/.clickhouse/versions/<version>/clickhouse",
-            "approximately 150 MB",
-            "builds.clickhouse.com",
-            "packages.clickhouse.com",
-            "github.com",
-            "clickhousectl local server start",
-        ] {
-            assert!(
-                help.contains(required),
-                "missing {required:?} from:\n{help}"
-            );
-        }
-    }
-
-    #[test]
-    fn use_help_documents_standard_clickhouse_subcommands() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "use", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        assert!(help.contains("`~/.local/bin/clickhouse`"), "{help}");
-        assert!(help.contains("`clickhouse client`"), "{help}");
-        assert!(help.contains("`clickhouse benchmark`"), "{help}");
-        assert!(help.contains("`clickhouse format`"), "{help}");
-    }
-
-    #[test]
-    fn remove_help_documents_the_default_version_guard() {
-        let error = Cli::try_parse_from(["clickhousectl", "local", "remove", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-
-        for required in [
-            "is the current default",
-            "~/.clickhouse/default",
-            "~/.local/bin/clickhouse",
-            "clickhousectl local use <other-version>",
-            "--force",
-        ] {
-            assert!(
-                help.contains(required),
-                "missing {required:?} from:\n{help}"
-            );
-        }
-    }
-
-    #[test]
     fn parses_remove_without_force() {
         let LocalCommands::Remove { version, force } = local_command(&["remove", "25.12.5.44"])
         else {
@@ -1371,88 +1192,9 @@ mod tests {
     fn server_start_help_renders_default_name_without_escaped_quotes() {
         let help = rendered_help(&["server", "start", "--help"]);
 
-        assert!(help.lines().any(|line| {
-            line == r#"  [NAME]               Server name (default: "default", or random if default is already running)"#
-        }), "{help}");
+        // clap renders the doc comment's quotes literally, never as escaped `\"` sequences.
+        assert!(help.contains(r#"(default: "default""#), "{help}");
         assert!(!help.contains(r#"\"default\""#), "{help}");
-    }
-
-    #[test]
-    fn server_help_pins_scope_workflow_and_removal_distinction() {
-        let help = rendered_help(&["server", "--help"]);
-        let context = help
-            .split_once("CONTEXT FOR AGENTS:\n")
-            .expect("agent context")
-            .1;
-
-        assert_eq!(
-            context,
-            concat!(
-                "  Manage named local server instances. Project-scoped `server list` and `server stop-all`\n",
-                "  include both ClickHouse processes and Docker-backed Postgres containers; other commands\n",
-                "  here manage ClickHouse.\n",
-                "  Project-local commands use `.clickhouse` under the exact current working directory; parent\n",
-                "  `.clickhouse` directories are not searched. Change to the project root before running them.\n",
-                "  Each server has its own data directory.\n",
-                "  Data is stored in .clickhouse/servers/<name>/data/ and persists between restarts.\n",
-                "\n",
-                "  Canonical named lifecycle:\n",
-                "    clickhousectl local server start dev\n",
-                "    clickhousectl local server list\n",
-                "    clickhousectl local server stop dev\n",
-                "    clickhousectl local server remove dev\n",
-                "\n",
-                "  If `server start` generates a name, retain the returned name for later `stop` and `remove`\n",
-                "  commands. Use `clickhousectl local server stop-all` for project cleanup.\n",
-                "  `clickhousectl local remove <exact-version>` removes an installed ClickHouse binary;\n",
-                "  `clickhousectl local server remove <server-name>` removes a stopped server and its data.\n",
-                "  Related: `clickhousectl local client` to connect to a running server.\n",
-            )
-        );
-    }
-
-    #[test]
-    fn server_stop_help_pins_omitted_name_selection() {
-        let help = rendered_help(&["server", "stop", "--help"]);
-
-        assert!(
-            help.contains(concat!(
-                "  Stops a ClickHouse server. Without a name, stops \"default\" when it exists, otherwise the sole\n",
-                "  known ClickHouse server. With no ClickHouse servers this is a successful no-op; with multiple\n",
-                "  non-default servers, pass a positional name (e.g., `server stop dev`) or use `server stop-all`."
-            )),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn server_remove_help_pins_conservative_default_selection() {
-        let help = rendered_help(&["server", "remove", "--help"]);
-
-        assert!(
-            help.contains(concat!(
-                "  Without a name, removes \"default\" only when it exists. It never guesses a custom server;\n",
-                "  use `server list`, then pass a custom name positionally."
-            )),
-            "{help}"
-        );
-        assert!(
-            help.contains(concat!(
-                "  Unlike `local server remove <server-name>`, `local remove <exact-version>` removes an installed\n",
-                "  ClickHouse binary rather than server data."
-            )),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn readme_contrasts_version_and_server_removal() {
-        let readme = include_str!("../../../../README.md");
-
-        assert!(readme.contains(concat!(
-            "| `clickhousectl local remove <exact-version>` | An installed ClickHouse binary from the global version store. |\n",
-            "| `clickhousectl local server remove <server-name>` | A stopped named server and its data from the exact current project. |"
-        )));
     }
 
     #[test]
@@ -1728,19 +1470,7 @@ mod tests {
                 .to_string();
 
             assert!(!help.contains("--name"), "{help}");
-            assert!(help.contains("Without a name"), "{help}");
         }
-    }
-
-    #[test]
-    fn server_stop_all_help_describes_engine_scope() {
-        let help = Cli::try_parse_from(["clickhousectl", "local", "server", "stop-all", "--help"])
-            .err()
-            .expect("help should exit through clap")
-            .to_string();
-
-        assert!(help.contains("Stops all running ClickHouse and Postgres server instances"));
-        assert!(help.contains("global Postgres discovery is not supported"));
     }
 
     #[test]

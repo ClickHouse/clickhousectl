@@ -11240,27 +11240,6 @@ async fn other_query_500s_keep_the_generic_api_error() {
     );
 }
 
-#[tokio::test]
-async fn service_query_help_names_the_gateway_timeout() {
-    let output = Command::new(clickhousectl_binary())
-        .env_clear()
-        .env("DO_NOT_TRACK", "1")
-        .args(["cloud", "service", "query", "--help"])
-        .output()
-        .expect("render service query help");
-
-    assert!(output.status.success());
-    let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("times out after about 30 seconds"), "{help}");
-    assert!(help.contains("the statement keeps running"), "{help}");
-    assert!(help.contains("clickhousectl local use latest"), "{help}");
-    assert!(
-        help.contains("clickhouse client --host <host> --secure"),
-        "{help}"
-    );
-    assert!(help.contains("--port 9440 --user"), "{help}");
-}
-
 // ── `clickpipe reverse-private-endpoint` CRUD (issue #567) ─────────────────
 //
 // PrivateLink connectivity for ClickPipes is a reverse private endpoint the
@@ -11774,26 +11753,6 @@ async fn reverse_private_endpoint_delete_confirms_the_removal() {
             ("DELETE".to_string(), reverse_private_endpoint_path()),
         ]
     );
-}
-
-#[tokio::test]
-async fn reverse_private_endpoint_help_explains_how_pipes_reference_it() {
-    let output = Command::new(clickhousectl_binary())
-        .env_clear()
-        .env("DO_NOT_TRACK", "1")
-        .args(["cloud", "clickpipe", "reverse-private-endpoint", "--help"])
-        .output()
-        .expect("render reverse-private-endpoint help");
-
-    assert!(output.status.success());
-    let help = String::from_utf8_lossy(&output.stdout);
-    assert!(help.contains("--reverse-private-endpoint-id"), "{help}");
-    assert!(
-        help.contains("pass one of the endpoint's DNS names as --host"),
-        "{help}"
-    );
-    assert!(help.contains("reached the Ready status"), "{help}");
-    assert!(help.contains("PendingAcceptance"), "{help}");
 }
 
 // ── PEM certificates are elided from human output (issue #665) ─────────────

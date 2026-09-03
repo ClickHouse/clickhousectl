@@ -17,21 +17,19 @@ pub enum AuthCommands {
     /// Log in to ClickHouse Cloud
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Defaults to OAuth device flow (opens browser). OAuth tokens are READ-ONLY.
-  For write operations, use API keys via: --api-key/--api-secret flags, or
-  CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET env vars (exported or in .env).
-  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl
-  Related: use `clickhousectl cloud auth status` to verify.")]
+  No flags: OAuth device flow, opens a browser, needs a human; the tokens are read-only.
+  --api-key/--api-secret: no browser, read+write, saved to .clickhouse/credentials.json.
+  Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl")]
     Login {
-        /// Log in by entering API key/secret interactively
+        /// Prompt for an API key and secret instead of using flags
         #[arg(long)]
         interactive: bool,
 
-        /// API key for non-interactive login (requires --api-secret)
+        /// API key to save (requires --api-secret)
         #[arg(long)]
         api_key: Option<String>,
 
-        /// API secret for non-interactive login (requires --api-key)
+        /// API secret to save (requires --api-key)
         #[arg(long)]
         api_secret: Option<String>,
     },
@@ -53,7 +51,8 @@ CONTEXT FOR AGENTS:
     /// Create a ClickHouse Cloud account
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Create a ClickHouse Cloud account.")]
+  Opens the ClickHouse Cloud sign-up page in a browser; a human must finish it.
+  Next: `cloud auth login --api-key X --api-secret Y`")]
     Signup,
 }
 

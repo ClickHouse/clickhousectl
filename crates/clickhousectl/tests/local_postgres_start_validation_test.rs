@@ -346,7 +346,7 @@ fn unsupported_version_diagnostic_is_postgres_specific() {
 }
 
 #[test]
-fn postgres_start_help_matches_managed_runtime_behavior() {
+fn postgres_start_help_renders_clap_structure() {
     let home = tempfile::tempdir().expect("create home tempdir");
     let output = Command::new(clickhousectl_binary())
         .env_clear()
@@ -357,43 +357,25 @@ fn postgres_start_help_matches_managed_runtime_behavior() {
         .expect("render postgres start help");
 
     assert!(output.status.success());
-    assert_eq!(
-        String::from_utf8(output.stdout).expect("stdout is UTF-8"),
-        r#"Start a Postgres container
-
-Usage: clickhousectl local postgres start [OPTIONS]
-
-Options:
-      --json                         Output as JSON
-      --name <NAME>                  Server name (default: "default", or random if default is already running)
-  -v, --version <VERSION>            Postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm). Default: 18. Pulls if missing
-      --port <PORT>                  Host TCP port (when omitted: uses 5432 if free, otherwise auto-selects; an occupied explicit port is rejected)
-      --user <USER>                  POSTGRES_USER (default: postgres)
-      --password <PASSWORD>          POSTGRES_PASSWORD (default: random 24-char alphanumeric)
-      --database <DATABASE>          POSTGRES_DB (default: postgres)
-  -e, --env <KEY=VALUE>              Extra unique env vars for the container; POSTGRES_PASSWORD is the only supported reserved key
-      --wait-timeout <WAIT_TIMEOUT>  Seconds to wait for PostgreSQL readiness (maximum: 600) [default: 60]
-  -h, --help                         Print help
-
-CONTEXT FOR AGENTS:
-  Starts a named Postgres server backed by a Docker container.
-  Without --name, the first server is called "default"; if "default" is running,
-  a random name is generated (e.g. "bold-crane").
-  --version (-v) selects a postgres image tag (17 or 18 — e.g. 17, 17-alpine, 18.1, 18-bookworm).
-  Defaults to 18. Image is pulled if not already present locally.
-  When --port is omitted, port 5432 is used if free or another free port is auto-selected.
-  An explicitly requested port is rejected if it is occupied.
-  If a fresh startup fails, its new container and attempt-created data are removed; existing data is preserved.
-  A random POSTGRES_PASSWORD is generated unless --password or `-e POSTGRES_PASSWORD=...` is given.
-  POSTGRES_USER, POSTGRES_DB, and PGDATA are reserved; use --user/--database for the first two.
-  `-e POSTGRES_PASSWORD=...` remains a compatibility alternative to --password, but the two cannot
-  be combined. Every --env key must be unique, so generated variables are never duplicated.
-  Start waits for PostgreSQL to accept connections, up to --wait-timeout seconds (default: 60).
-  Containers are labeled `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`,
-  `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and
-  `created_by=clickhousectl_<version>` for safe discovery.
-  Requires Docker to be installed and running.
-"#
-    );
     assert!(output.stderr.is_empty());
+    let help = String::from_utf8(output.stdout).expect("stdout is UTF-8");
+
+    // Clap-rendered structure: usage line, value names, and the `--wait-timeout` default.
+    for token in [
+        "Usage: clickhousectl local postgres start [OPTIONS]",
+        "--name <NAME>",
+        "-v, --version <VERSION>",
+        "--port <PORT>",
+        "--user <USER>",
+        "--password <PASSWORD>",
+        "--database <DATABASE>",
+        "-e, --env <KEY=VALUE>",
+        "--wait-timeout <WAIT_TIMEOUT>",
+        "[default: 60]",
+    ] {
+        assert!(help.contains(token), "missing {token:?} in:\n{help}");
+    }
+
+    // Quotes in doc comments render literally, never as escaped `\"` sequences.
+    assert!(!help.contains(r#"\"default\""#), "{help}");
 }

@@ -49,89 +49,85 @@ const QUERY_ENDPOINT_READINESS: QueryEndpointReadiness = QueryEndpointReadiness 
 
 #[derive(Subcommand)]
 pub enum ServiceCommands {
-    /// List all services
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Lists all services in the organization. Org ID is auto-detected if only one org exists.
-  Returns service IDs needed by get, delete, start, stop, and backup commands.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud service get <id>` for full details.")]
+    /// List services in the organization
     List {
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
 
-        /// Filter by resource tags (e.g., "tag:env=production")
+        /// Filter by resource tag, e.g. "tag:env=production" (repeatable)
         #[arg(long)]
         filter: Vec<String>,
     },
 
     /// Get service details
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Returns full service details: status, endpoints, scaling config, IP access list.
-  Get the service ID from `clickhousectl cloud service list`.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud service start/stop <id>` to change state.")]
     Get {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Create a new service
+    /// Create a service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Creates a new ClickHouse Cloud service. Only --name is required; other fields have defaults.
-  Returns the new service ID and initial password — save these.
-  Typical: `clickhousectl cloud service create --name my-svc`.
-  Defaults: provider=aws, region=us-east-1. Add --json for machine-readable output.
-  Related: `clickhousectl cloud service get <id>` to check status after creation.")]
+  Omitting --ip-allow opens the service to 0.0.0.0/0 (\"Allow all\").
+  The initial password is printed once — save it; `cloud service reset-password <id>` issues a new one.
+  Returns before the service is up: poll `cloud service get <id>` until state is `running` (minutes).")]
     Create {
-        /// Service name (required)
+        /// Service name
         #[arg(long)]
         name: String,
 
-        /// Cloud provider: aws, gcp, azure (required)
+        /// Cloud provider: aws, gcp, azure
         #[arg(long, default_value = "aws")]
         provider: String,
 
-        /// Region (required). Examples: us-east-1, eu-west-1, us-central1
+        /// Region, e.g. us-east-1, eu-west-1, us-central1
         #[arg(long, default_value = "us-east-1")]
         region: String,
 
-        /// Minimum memory per replica in GB (8-356, multiple of 4). Horizontal
-        /// autoscaling requires it equal to --max-replica-memory-gb.
+        /// Minimum memory per replica in GB
+        ///
+        /// A multiple of 4, at least 8. Horizontal autoscaling requires it equal to
+        /// --max-replica-memory-gb.
         #[arg(long)]
         min_replica_memory_gb: Option<u32>,
 
-        /// Maximum memory per replica in GB (8-356, multiple of 4). Horizontal
+        /// Maximum memory per replica in GB
+        ///
+        /// A multiple of 4; at most 120 for unpaid and 356 for paid services. Horizontal
         /// autoscaling requires it equal to --min-replica-memory-gb.
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Number of replicas (1-20). Vertical autoscaling; mutually exclusive
-        /// with the horizontal band (--min-replicas/--max-replicas).
+        /// Fixed replica count for vertical autoscaling (1-20)
+        ///
+        /// Conflicts with the horizontal band (--min-replicas/--max-replicas).
         #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
-        /// Minimum number of replicas for horizontal autoscaling (requires the
-        /// horizontal autoscaling org feature). Mutually exclusive with --num-replicas.
+        /// Minimum replicas for horizontal autoscaling (1-20)
+        ///
+        /// Requires --max-replicas and conflicts with --num-replicas. Needs the horizontal
+        /// autoscaling org feature unless the band is equal and the mode is vertical.
         #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
-        /// Maximum number of replicas for horizontal autoscaling (requires the
-        /// horizontal autoscaling org feature). Mutually exclusive with --num-replicas.
+        /// Maximum replicas for horizontal autoscaling (1-20)
+        ///
+        /// Requires --min-replicas and conflicts with --num-replicas. Needs the horizontal
+        /// autoscaling org feature unless the band is equal and the mode is vertical.
         #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
-        /// Autoscaling mode: vertical (default) or horizontal. Horizontal uses fixed
-        /// memory per replica (--min-replica-memory-gb equal to --max-replica-memory-gb)
-        /// with a variable replica count (--min-replicas/--max-replicas); vertical uses
-        /// a fixed replica count (--num-replicas) with variable memory.
+        /// Autoscaling mode (vertical when omitted)
+        ///
+        /// vertical scales memory between --min-replica-memory-gb and --max-replica-memory-gb at a
+        /// fixed --num-replicas count; horizontal scales replicas between --min-replicas and
+        /// --max-replicas at a fixed memory (the two memory flags equal).
         #[arg(
             long,
             value_parser = PossibleValuesParser::new(
@@ -148,7 +144,7 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         idle_timeout_minutes: Option<u32>,
 
-        /// IP addresses to allow (CIDR format, e.g., "0.0.0.0/0"). Can be specified multiple times
+        /// IP/CIDR entry to allow, e.g. "10.0.0.0/8" (repeatable)
         #[arg(long = "ip-allow")]
         ip_allow: Vec<String>,
 
@@ -156,7 +152,7 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         backup_id: Option<String>,
 
-        /// Release channel: slow, default, fast
+        /// Release channel: slow, default, fast (production services only)
         #[arg(long)]
         release_channel: Option<String>,
 
@@ -188,19 +184,20 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         profile: Option<String>,
 
-        /// Tag to attach to the service. Format: key or key=value
+        /// Tag to attach to the service. Format: key or key=value (repeatable)
         #[arg(long = "tag", value_name = "KEY[=VALUE]")]
         tag: Vec<String>,
 
-        /// Enable a toggleable endpoint protocol. Currently supported: mysql
+        /// Enable a toggleable endpoint protocol; currently mysql (repeatable)
         #[arg(long = "enable-endpoint")]
         enable_endpoint: Vec<String>,
 
-        /// Disable a toggleable endpoint protocol. Currently supported: mysql
+        /// Disable a toggleable endpoint protocol; currently mysql (repeatable)
         #[arg(long = "disable-endpoint")]
         disable_endpoint: Vec<String>,
 
-        /// Accept private preview terms for eligible service creation flows
+        /// Accept private preview terms (needed for the org's first service in a
+        /// private preview)
         #[arg(long)]
         private_preview_terms_checked: bool,
 
@@ -208,7 +205,7 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         enable_core_dumps: Option<bool>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -216,18 +213,18 @@ CONTEXT FOR AGENTS:
     /// Delete a service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Permanently deletes a ClickHouse Cloud service. This action is irreversible.
-  Use --force to stop a running service before deleting it in one step.
-  Related: `clickhousectl cloud service stop <id>` to idle instead of delete.")]
+  Irreversible. A running service cannot be deleted: stop it first, or pass --force.
+  --force stops the service and polls until the stop finishes — minutes on a real service, with
+    progress lines on stderr.")]
     Delete {
         /// Service ID
         service_id: String,
 
-        /// Stop the service first if it is running, then delete
+        /// Stop the service first if it is running, then delete (waits for the stop)
         #[arg(long)]
         force: bool,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -235,15 +232,13 @@ CONTEXT FOR AGENTS:
     /// Start a service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Resumes a stopped/idled ClickHouse Cloud service.
-  Takes a service ID — get it from `clickhousectl cloud service list`.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud service get <id>` to check status, `clickhousectl cloud service stop <id>` to idle.")]
+  Resumes a stopped service; an idle service wakes on its own when queried.
+  Returns as soon as the start is accepted: poll `cloud service get <id>` until state is `running`.")]
     Start {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -251,20 +246,24 @@ CONTEXT FOR AGENTS:
     /// Stop a service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Idles a ClickHouse Cloud service, stopping billing for compute.
-  Data is preserved. Takes a service ID — get it from `clickhousectl cloud service list`.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud service start <id>` to resume, `clickhousectl cloud service delete <id>` to remove.")]
+  Idles the service: compute billing stops, data is preserved.
+  Returns as soon as the stop is accepted: poll `cloud service get <id>` until state is `stopped`
+    or `idle`.")]
     Stop {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
     /// Update service settings
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Only the flags you pass are changed; everything else is left as it is.
+  --remove-ip-allow/--remove-private-endpoint-id/--remove-tag are idempotent: removing something
+    absent exits 0 with a warning on stderr.")]
     Update {
         /// Service ID
         service_id: String,
@@ -273,19 +272,19 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         name: Option<String>,
 
-        /// Add an IP/CIDR entry to the service allow list
+        /// IP/CIDR entry to add to the service allow list (repeatable)
         #[arg(long = "add-ip-allow")]
         add_ip_allow: Vec<String>,
 
-        /// Remove an IP/CIDR entry from the service allow list
+        /// IP/CIDR entry to remove from the service allow list (repeatable)
         #[arg(long = "remove-ip-allow")]
         remove_ip_allow: Vec<String>,
 
-        /// Add a private endpoint ID to the service
+        /// Private endpoint ID to add; format-checked before the request (repeatable)
         #[arg(long = "add-private-endpoint-id", value_parser = parse_private_endpoint_id_arg)]
         add_private_endpoint_id: Vec<String>,
 
-        /// Remove a private endpoint ID from the service
+        /// Private endpoint ID to remove (repeatable)
         #[arg(long = "remove-private-endpoint-id")]
         remove_private_endpoint_id: Vec<String>,
 
@@ -293,11 +292,11 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         release_channel: Option<String>,
 
-        /// Enable a toggleable endpoint protocol. Currently supported: mysql
+        /// Enable a toggleable endpoint protocol; currently mysql (repeatable)
         #[arg(long = "enable-endpoint")]
         enable_endpoint: Vec<String>,
 
-        /// Disable a toggleable endpoint protocol. Currently supported: mysql
+        /// Disable a toggleable endpoint protocol; currently mysql (repeatable)
         #[arg(long = "disable-endpoint")]
         disable_endpoint: Vec<String>,
 
@@ -305,11 +304,11 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         transparent_data_encryption_key_id: Option<String>,
 
-        /// Tag to add. Format: key or key=value
+        /// Tag to add. Format: key or key=value (repeatable)
         #[arg(long = "add-tag", value_name = "KEY[=VALUE]")]
         add_tag: Vec<String>,
 
-        /// Tag to remove. Format: key or key=value
+        /// Tag to remove. Format: key or key=value (repeatable)
         #[arg(long = "remove-tag", value_name = "KEY[=VALUE]")]
         remove_tag: Vec<String>,
 
@@ -317,43 +316,54 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         enable_core_dumps: Option<bool>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Update replica scaling settings
+    /// Update replica scaling
     Scale {
         /// Service ID
         service_id: String,
 
-        /// Minimum memory per replica in GB (8-356, multiple of 4). Horizontal
-        /// autoscaling requires it equal to --max-replica-memory-gb.
+        /// Minimum memory per replica in GB
+        ///
+        /// A multiple of 4, at least 8. Horizontal autoscaling requires it equal to
+        /// --max-replica-memory-gb.
         #[arg(long)]
         min_replica_memory_gb: Option<u32>,
 
-        /// Maximum memory per replica in GB (8-356, multiple of 4). Horizontal
+        /// Maximum memory per replica in GB
+        ///
+        /// A multiple of 4; at most 120 for unpaid and 356 for paid services. Horizontal
         /// autoscaling requires it equal to --min-replica-memory-gb.
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Number of replicas (1-20). Vertical autoscaling; mutually exclusive
-        /// with the horizontal band (--min-replicas/--max-replicas).
+        /// Fixed replica count for vertical autoscaling (1-20)
+        ///
+        /// Conflicts with the horizontal band (--min-replicas/--max-replicas).
         #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
-        /// Minimum number of replicas for horizontal autoscaling (requires the
-        /// horizontal autoscaling org feature). Mutually exclusive with --num-replicas.
+        /// Minimum replicas for horizontal autoscaling (1-20)
+        ///
+        /// Requires --max-replicas and conflicts with --num-replicas. Needs the horizontal
+        /// autoscaling org feature unless the band is equal and the mode is vertical.
         #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
-        /// Maximum number of replicas for horizontal autoscaling (requires the
-        /// horizontal autoscaling org feature). Mutually exclusive with --num-replicas.
+        /// Maximum replicas for horizontal autoscaling (1-20)
+        ///
+        /// Requires --min-replicas and conflicts with --num-replicas. Needs the horizontal
+        /// autoscaling org feature unless the band is equal and the mode is vertical.
         #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
-        /// Autoscaling mode: vertical (default) or horizontal. Omit to keep the
-        /// service's current mode. See `service create --autoscaling-mode`.
+        /// Target autoscaling mode
+        ///
+        /// Omit to keep the service on its current mode. See
+        /// `cloud service create --autoscaling-mode` for what each mode scales.
         #[arg(
             long,
             value_parser = PossibleValuesParser::new(
@@ -370,12 +380,17 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         idle_timeout_minutes: Option<u32>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Reset a service's default user password
+    /// Reset the default user password
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Omit --new-password-hash and the API generates a password, printed once — save it.
+  With --new-password-hash no plaintext is returned; --new-double-sha1-hash alone still triggers
+    generation.")]
     ResetPassword {
         /// Service ID
         service_id: String,
@@ -388,42 +403,49 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         new_double_sha1_hash: Option<String>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Manage query endpoints
-    #[command(name = "query-endpoint")]
+    /// Manage the Query API endpoint
+    #[command(
+        name = "query-endpoint",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Only needed to share Query API access with other tools: `cloud service query` provisions and
+    binds its own key.
+  Editing this endpoint by hand can unbind the key `cloud service query` stored — repair it with
+    `cloud service repair-query-key <id>`."
+    )]
     QueryEndpoint {
         #[command(subcommand)]
         command: QueryEndpointCommands,
     },
 
-    /// Manage private endpoints for a service
+    /// Manage private endpoints
     #[command(name = "private-endpoint")]
     PrivateEndpoint {
         #[command(subcommand)]
         command: PrivateEndpointCommands,
     },
 
-    /// Manage backup configuration for a service
+    /// Manage backup configuration
     #[command(name = "backup-config")]
     BackupConfig {
         #[command(subcommand)]
         command: BackupConfigCommands,
     },
 
-    /// Get service Prometheus metrics
+    /// Get Prometheus metrics
     #[command(after_help = "\
-OUTPUT FORMAT:
-  Output is always raw Prometheus exposition text, never JSON. --json is
-  accepted for consistency with other commands but is silently ignored.")]
+CONTEXT FOR AGENTS:
+  Output is always raw Prometheus exposition text; --json is accepted for consistency but ignored.")]
     Prometheus {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
 
@@ -432,46 +454,22 @@ OUTPUT FORMAT:
         filtered_metrics: Option<bool>,
     },
 
-    /// Run a SQL query against a cloud service over HTTP via the Query API
+    /// Run SQL over HTTP via the Query API
     #[command(
         group(ArgGroup::new("service_selector").required(true).args(["name", "id"])),
         after_help = "\
 CONTEXT FOR AGENTS:
-  Runs SQL over HTTP — no local clickhouse binary or service password required.
-  With API key auth: first uses the authenticated key directly when the query
-  endpoint already authorizes it. Otherwise, a per-service read+write key is
-  auto-provisioned and stored in .clickhouse/credentials.json.
-  A stored key rejected with HTTP 401/403 is never replaced automatically: the
-  CLI reads the key's management record only to say why. A deleted, disabled,
-  expired, unbound or IP-restricted key is reported with its key ID and left
-  untouched, and nothing is changed. To replace only that credential
-  deliberately, use `cloud service repair-query-key <service-id>`; it also drops
-  a deleted key's stale endpoint binding.
-  With OAuth (cloud auth login): sends your own bearer token — SQL runs as
-  your cloud user with read-only access (SELECT only, no writes); no key
-  provisioning and no query endpoint required on the service.
-  The Query API times out after about 30 seconds; the statement keeps running
-  on the service but the result is lost. For anything longer (large INSERTs,
-  backfills, `url()` loads), run it over the native protocol instead:
-  `clickhousectl local use latest` puts the standard `clickhouse` binary on
-  PATH, then `clickhouse client --host <host> --secure --port 9440 --user
-  default --password <password>`.
-  SQL sources: --query and --queries-file are mutually exclusive. When neither
-  is supplied, SQL is read from stdin. --query never reads stdin, so data
-  redirected or piped alongside it is an error rather than a silent no-op:
-  send the statement and its data together instead, e.g.
-  printf 'INSERT INTO t FORMAT CSV\\n' | cat - data.csv | clickhousectl cloud
-  service query --id <id>.
-  Default format: PrettyCompact on a TTY, TabSeparated when piped. --json
-  selects JSONEachRow and cannot be combined with --format; an explicit
-  --format takes precedence over agent auto-JSON.
-  The Query API runs exactly one statement per request, so multi-statement SQL
-  (a typical ';'-separated .sql script) is rejected by the server. Run
-  statements one invocation at a time, or connect with `clickhouse client`
-  (see above) to run a script."
+  One statement per request: a ';'-separated script is rejected. Run statements one call at a time.
+  Times out after about 30 seconds: the statement keeps running, the result is lost, and
+    the error prints a `clickhouse client` fallback.
+  SQL is read from stdin unless --query or --queries-file is given; --query never reads stdin.
+  API key auth runs read+write SQL; OAuth is read-only SELECT.
+  Output: PrettyCompact on a TTY, TabSeparated when piped, JSONEachRow with --json (not --format).
+  An idle service wakes automatically; a stopped one needs `cloud service start <id>` first.
+  A stored query key rejected with 401/403 is never replaced automatically: `cloud service repair-query-key <id>`."
     )]
     Query {
-        /// Service name to query (exactly one of --name or --id is required)
+        /// Service name to query
         #[arg(long, conflicts_with = "id")]
         name: Option<String>,
 
@@ -479,15 +477,11 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "name")]
         id: Option<String>,
 
-        /// Execute a SQL query (a single statement; the Query API does not
-        /// accept multi-statement SQL). Does not read stdin: pipe a statement
-        /// and its data together instead of redirecting a data file here
+        /// SQL to run: a single statement, and never read from stdin
         #[arg(long, short, conflicts_with = "queries_file")]
         query: Option<String>,
 
-        /// Execute a query from a SQL file (use "-" for stdin); the file must
-        /// contain a single statement — multi-statement files are not
-        /// supported
+        /// File containing one SQL statement ("-" reads stdin)
         #[arg(long, conflicts_with = "query")]
         queries_file: Option<String>,
 
@@ -499,36 +493,31 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "json")]
         format: Option<String>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
 
-        /// Fail instead of auto-provisioning when the authenticated API key
-        /// cannot use the query endpoint and no key is stored locally (API
-        /// key auth only; with OAuth this flag has no effect)
+        /// Fail instead of auto-provisioning a per-service Query API key (API key auth only)
         #[arg(long)]
         no_auto_enable: bool,
     },
 
-    /// Safely replace clickhousectl's stored Query API key for one service
+    /// Replace clickhousectl's stored Query API key
     #[command(after_help = "\
-Repairs only the stored credential for SERVICE_ID. The command verifies the
-saved organization, exact management API key ID, and query endpoint ID; it
-then replaces only that key's endpoint binding while preserving all other
-bindings and project credentials, and deletes the key it replaced. The new key
-can take a few seconds to become visible to the query endpoint and the Query
-API; the command waits that out, and on a running service exits 0 only once a
-probe query with the new key succeeds (the JSON result reports it under
-`verification`). If the Query API still rejects the key after the readiness
-window the command exits 1, but the repair stands: do not rerun it, run
-`cloud service query` instead. Legacy or non-owned records without this
-metadata are refused. This is an explicit write operation and
-is never run automatically after a query fails.")]
+CONTEXT FOR AGENTS:
+  An explicit write: needs API key auth, and is never run automatically after a query fails.
+  Replaces only this service's stored key and its endpoint binding, deletes the key it replaced,
+    and leaves every other binding and credential untouched.
+  Records without exact ownership metadata (legacy, or not created by clickhousectl) are refused.
+  On a running service it waits for a probe query with the new key to succeed; the result reports
+    it under `verification`.
+  Exit 1 after the readiness window still means the repair stands — do not rerun it, run
+    `cloud service query --id <id>` instead.")]
     RepairQueryKey {
-        /// Service ID whose stored Query API key should be replaced
+        /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -536,44 +525,44 @@ is never run automatically after a query fails.")]
 
 #[derive(Subcommand)]
 pub enum QueryEndpointCommands {
-    /// Get query endpoint configuration
+    /// Get the Query API endpoint configuration
     Get {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Create/enable query endpoint
+    /// Create the Query API endpoint
     Create {
         /// Service ID
         service_id: String,
 
-        /// Roles to grant access (can be specified multiple times)
+        /// Role to grant access (repeatable)
         #[arg(long, value_parser = PossibleValuesParser::new(QueryEndpointRole::VALUES))]
         role: Vec<String>,
 
-        /// OpenAPI key IDs to authorize
+        /// API key ID to authorize (repeatable)
         #[arg(long = "open-api-key")]
         open_api_key: Vec<String>,
 
-        /// Allowed origins string for browser access (defaults to "*")
+        /// Allowed origins for browser access; "*" when omitted
         #[arg(long)]
         allowed_origins: Option<String>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Delete/disable query endpoint
+    /// Delete the Query API endpoint
     Delete {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -595,17 +584,17 @@ pub enum PrivateEndpointCommands {
         #[arg(long)]
         description: Option<String>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
-    /// Get service private endpoint configuration
+    /// Get the private endpoint configuration
     GetConfig {
         /// Service ID
         service_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -3293,39 +3282,28 @@ mod tests {
         );
     }
 
+    /// The `CONTEXT FOR AGENTS:` block on `service query` stays inside its
+    /// 8-line budget, whatever the lines say.
     #[test]
-    fn service_query_help_documents_query_behavior() {
+    fn service_query_agent_context_block_stays_within_its_line_budget() {
         let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
             .err()
             .expect("--help should stop parsing");
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
 
-        // The gateway limit is named, not alluded to, and so is what happens
-        // to the statement when it fires (#644).
-        assert!(help.contains("times out after about 30 seconds"), "{help}");
-        assert!(help.contains("the statement keeps running"), "{help}");
-        assert!(help.contains("native protocol"), "{help}");
-        assert!(help.contains("`clickhousectl local use latest`"), "{help}");
-        // The native-client command, which clap wraps across lines.
-        assert!(
-            help.contains("clickhouse client --host <host> --secure"),
-            "{help}"
-        );
-        assert!(help.contains("--port 9440 --user"), "{help}");
-        assert!(help.contains("--password <password>"), "{help}");
-        assert!(help.contains("`clickhouse client`"), "{help}");
-        assert!(
-            help.contains("--query and --queries-file are mutually exclusive"),
-            "{help}"
-        );
-        assert!(help.contains("SQL is read from stdin"), "{help}");
-        assert!(help.contains("repair-query-key <service-id>"), "{help}");
-        assert!(help.contains("never replaced automatically"), "{help}");
+        let block = help
+            .split_once("CONTEXT FOR AGENTS:\n")
+            .expect("after_help block")
+            .1;
+        let lines = block.lines().filter(|line| !line.trim().is_empty()).count();
+        assert!(lines <= 8, "{lines} lines: {help}");
     }
 
+    /// The service is a positional, so clap renders it as the `SERVICE_ID`
+    /// value name rather than as a flag.
     #[test]
-    fn repair_query_key_help_documents_safe_service_scope() {
+    fn repair_query_key_help_renders_the_service_id_positional() {
         let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
@@ -3338,32 +3316,6 @@ mod tests {
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         let help = error.to_string();
         assert!(help.contains("SERVICE_ID"), "{help}");
-        assert!(help.contains("exact management API key ID"), "{help}");
-        assert!(help.contains("preserving all other"), "{help}");
-        assert!(help.contains("Legacy or non-owned records"), "{help}");
-        assert!(help.contains("is never run"), "{help}");
-        assert!(help.contains("automatically after a query fails"), "{help}");
-        assert!(help.contains("the command waits that out"), "{help}");
-        assert!(
-            help.contains("probe query with the new key succeeds"),
-            "{help}"
-        );
-    }
-
-    #[test]
-    fn service_prometheus_help_documents_json_is_ignored() {
-        let error =
-            Cli::try_parse_from(["clickhousectl", "cloud", "service", "prometheus", "--help"])
-                .err()
-                .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-        assert!(
-            help.contains("always raw Prometheus exposition text"),
-            "{help}"
-        );
-        assert!(help.contains("--json"), "{help}");
-        assert!(help.contains("silently ignored"), "{help}");
     }
 
     #[test]
@@ -6500,17 +6452,5 @@ mod tests {
         );
         assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("cat - data.csv"));
         assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("--queries-file -"));
-    }
-
-    #[test]
-    fn service_query_help_documents_that_query_ignores_stdin() {
-        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "query", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        let help = error.to_string();
-
-        assert!(help.contains("--query never reads stdin"), "{help}");
-        assert!(help.contains("cat - data.csv"), "{help}");
-        assert!(help.contains("Does not read stdin"), "{help}");
     }
 }

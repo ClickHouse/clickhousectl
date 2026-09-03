@@ -2,7 +2,8 @@
 //!
 //! Users drop named ClickHouse config files into `~/.clickhouse/configs/` and
 //! reference them by name with `clickhousectl local server start --config
-//! <NAME>`. The file is passed to ClickHouse as `--config-file`; the launcher
+//! <NAME>`. The file is staged into the server's `config.d/` directory, so it
+//! is merged as an overlay on ClickHouse's built-in defaults; the launcher
 //! still forces `--path=./` and the ports as command-line overrides (which beat
 //! config-file values), so the managed server lifecycle is preserved regardless
 //! of what the config file contains.

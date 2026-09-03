@@ -8,15 +8,15 @@ use tabled::{Table, Tabled, settings::Style};
 pub enum ActivityCommands {
     /// List activity log entries
     List {
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
 
-        /// Start date filter in UTC (YYYY-MM-DD, e.g. 2024-01-01)
+        /// Start date in UTC (YYYY-MM-DD)
         #[arg(long, value_parser = parse_date_only)]
         from_date: Option<String>,
 
-        /// End date filter in UTC (YYYY-MM-DD, e.g. 2024-12-31)
+        /// End date in UTC (YYYY-MM-DD)
         #[arg(long, value_parser = parse_date_only)]
         to_date: Option<String>,
     },
@@ -26,7 +26,7 @@ pub enum ActivityCommands {
         /// Activity ID
         activity_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },

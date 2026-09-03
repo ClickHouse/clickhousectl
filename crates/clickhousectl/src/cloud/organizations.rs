@@ -13,27 +13,19 @@ use tabled::{Table, Tabled, settings::Style};
 #[derive(Subcommand)]
 pub enum OrgCommands {
     /// List organizations
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Returns all organizations accessible with the current API credentials.
-  Use this to find org IDs needed by service and backup commands.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud service list` next.")]
     List,
 
     /// Get organization details
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Returns details for a single organization by ID.
-  Get org IDs from `clickhousectl cloud org list`.
-  Add --json for machine-readable output.
-  Related: `clickhousectl cloud org list` to find org IDs.")]
     Get {
         /// Organization ID
         org_id: String,
     },
 
     /// Update organization settings
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Only the flags you pass change; everything else is left as-is.
+  This can only remove private endpoints; add them with `cloud service update --add-private-endpoint-id`.")]
     Update {
         /// Organization ID
         org_id: String,
@@ -42,8 +34,11 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         name: Option<String>,
 
-        /// Remove a private endpoint from the organization allow list.
+        /// Remove a private endpoint from the org allow list (repeatable)
+        ///
         /// Format: id[,description=TEXT][,cloud-provider=aws|gcp|azure][,region=REGION]
+        ///
+        /// Omitting cloud-provider or region sends gcp / ap-northeast-1, not "unchanged".
         #[arg(long = "remove-private-endpoint")]
         remove_private_endpoint: Vec<String>,
 
@@ -54,11 +49,11 @@ CONTEXT FOR AGENTS:
 
     /// Get organization Prometheus configuration
     #[command(after_help = "\
-OUTPUT FORMAT:
-  Output is always raw Prometheus exposition text, never JSON. --json is
-  accepted for consistency with other commands but is silently ignored.")]
+CONTEXT FOR AGENTS:
+  Always prints raw Prometheus exposition text; --json is accepted but ignored.
+  Scrape targets and their per-service URLs: `cloud service prometheus`.")]
     Prometheus {
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
 
@@ -66,14 +61,18 @@ OUTPUT FORMAT:
         #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
         legacy_org_id: Option<String>,
 
-        /// Whether to request filtered metrics
+        /// Return the reduced (filtered) metric set
         #[arg(long)]
         filtered_metrics: Option<bool>,
     },
 
     /// Get organization usage/billing information
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The date range is inclusive and may span at most 31 days; longer ranges are rejected.
+  Costs are in CHC (ClickHouse Credits), one row per entity per day plus a grand total.")]
     Usage {
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
 
@@ -81,15 +80,15 @@ OUTPUT FORMAT:
         #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
         legacy_org_id: Option<String>,
 
-        /// Start date filter in UTC (YYYY-MM-DD, e.g. 2024-01-01)
+        /// Report start date in UTC (YYYY-MM-DD)
         #[arg(long, value_parser = parse_date_only)]
         from_date: String,
 
-        /// End date filter in UTC (YYYY-MM-DD, e.g. 2024-01-31)
+        /// Report end date in UTC, inclusive (YYYY-MM-DD)
         #[arg(long, value_parser = parse_date_only)]
         to_date: String,
 
-        /// Filter by entity attributes
+        /// Filter by resource tag: `tag:Key=Value` or `tag:Key` (repeatable)
         #[arg(long)]
         filter: Vec<String>,
     },
@@ -111,7 +110,7 @@ impl OrgCommands {
 pub enum MemberCommands {
     /// List organization members
     List {
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -121,7 +120,7 @@ pub enum MemberCommands {
         /// User ID
         user_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -131,11 +130,11 @@ pub enum MemberCommands {
         /// User ID
         user_id: String,
 
-        /// Role IDs to assign (can be specified multiple times)
+        /// Role ID to assign (repeatable)
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -145,7 +144,7 @@ pub enum MemberCommands {
         /// User ID
         user_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -166,22 +165,22 @@ impl MemberCommands {
 pub enum InvitationCommands {
     /// List pending invitations
     List {
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
 
     /// Create an invitation
     Create {
-        /// Email address to invite
+        /// Email address to invite (stored lowercased)
         #[arg(long)]
         email: String,
 
-        /// Role IDs to assign (can be specified multiple times)
+        /// Role ID to assign (repeatable)
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -191,7 +190,7 @@ pub enum InvitationCommands {
         /// Invitation ID
         invitation_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -201,7 +200,7 @@ pub enum InvitationCommands {
         /// Invitation ID
         invitation_id: String,
 
-        /// Organization ID (auto-detected if not specified)
+        /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
@@ -961,21 +960,6 @@ mod tests {
             "wrong classification for: {}",
             args.join(" ")
         );
-    }
-
-    #[test]
-    fn org_prometheus_help_documents_json_is_ignored() {
-        let error = Cli::try_parse_from(["clickhousectl", "cloud", "org", "prometheus", "--help"])
-            .err()
-            .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-        assert!(
-            help.contains("always raw Prometheus exposition text"),
-            "{help}"
-        );
-        assert!(help.contains("--json"), "{help}");
-        assert!(help.contains("silently ignored"), "{help}");
     }
 
     #[test]

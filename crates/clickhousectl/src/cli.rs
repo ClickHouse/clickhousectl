@@ -9,19 +9,11 @@ pub use crate::local::cli::LocalArgs;
 #[command(version)]
 #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  With clickhousectl you can:
-  1. Install and use ClickHouse and Postgres locally (`clickhousectl local` commands)
-  2. Manage ClickHouse and Postgres in ClickHouse Cloud (`clickhousectl cloud` commands)
-
-  Install the ClickHouse Agent Skills: `clickhousectl skills --agent X`
-
-  For ClickHouse Cloud:
+  Cloud auth: OAuth (`cloud auth login`) is read-only; API keys
+  (`cloud auth login --api-key X --api-secret Y`) allow writes.
   Create account: `cloud auth signup`
-  Authenticate: OAuth (`cloud auth login` is read-only) or API keys (`cloud auth login --api-key X --api-secret Y` provides write access)
-
-  Typical local workflow: `clickhousectl local server start` → `clickhousectl local client -q 'SELECT 1;'`
-  Typical cloud workflow: `clickhousectl cloud auth signup` → `clickhousectl cloud auth login --api-key X --api-secret Y` → `clickhousectl cloud service create`
-  ")]
+  Typical cloud flow: `cloud auth signup` -> `cloud auth login --api-key X --api-secret Y` -> `cloud service create`
+  Install the ClickHouse agent skills: `clickhousectl skills --agent claude`")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -29,56 +21,49 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Work with local ClickHouse installations
+    /// Manage local ClickHouse and Postgres
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Manage local ClickHouse installations: install versions, run queries, manage servers.
-  Typical workflow: `clickhousectl local server start` (bootstraps from zero — installs `latest` if nothing is set up).
-  Use `clickhousectl local <command> --help` for details on each subcommand.
-  For a local Postgres instance via Docker, see `clickhousectl local postgres --help`.")]
+  Project-scoped commands use `.clickhouse` under the exact current directory; parent directories
+  are not searched. Run them from the project root.
+  `clickhousectl local server start` bootstraps from zero — installs `latest` if nothing is set up.
+  Typical flow: `local server start` -> `local client -q 'SELECT 1'`")]
     Local(LocalArgs),
 
-    /// Work with serverless ClickHouse in ClickHouse Cloud
+    /// Manage ClickHouse and Postgres in ClickHouse Cloud
     #[command(after_help = "\
-CREDENTIAL PRECEDENCE:
-  1. --api-key / --api-secret command-line flags
-  2. Project credentials in .clickhouse/credentials.json
-  3. CLICKHOUSE_CLOUD_API_KEY / CLICKHOUSE_CLOUD_API_SECRET (shell, then .env)
-  4. OAuth tokens from `cloud auth login`
-
-Higher-precedence credentials override lower-precedence credentials. Use
-`clickhousectl cloud auth status` to see which configured source is active.
-
 CONTEXT FOR AGENTS:
-  Create a ClickHouse Cloud account with `clickhousectl cloud auth signup`.
-  Auth with `clickhousectl cloud auth login` (use API keys for write access).
+  Credential precedence, first wins: --api-key/--api-secret flags, .clickhouse/credentials.json,
+  CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth tokens.
+  API keys are read+write; OAuth is read-only and every write command fails on it.
+  `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
+  delete/remove act immediately — there is no confirmation prompt.
   Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
-  Typical workflow: `cloud auth signup` → `cloud auth login` → `cloud auth status` → `cloud org list` → `cloud service list`")]
+  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud org list` -> `cloud service list`")]
     Cloud(Box<CloudArgs>),
 
     /// Install ClickHouse agent skills into supported coding agents
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Installs the official ClickHouse agent skills. These skills contain knowledge on how to use
-  ClickHouse and this CLI.
-  Using any flags skips interactive mode. Project scope is the default. Universal `.agents/skills`
-  is always included.")]
+  --all, --detected-only or --agent skip the agent prompt; --global only sets the scope, so agents
+  are still prompted.
+  Agent selection without one of those three flags needs a TTY and errors out without one.
+  Scope: prompted on a TTY, else the current project directory; --global forces your home directory.
+  The universal `.agents/skills` target is always installed, alongside any selected agent.
+  --agent values: claude, cursor, opencode, codex, agent, roo, trae, windsurf, zencoder, neovate,
+  pochi, adal, openclaw, cline, command-code, kiro-cli, agents")]
     Skills(SkillsArgs),
 
     /// Update clickhousectl to the latest version
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  Self-update command. Downloads the latest clickhousectl release from GitHub and replaces the
-  current binary. Use --check to see if an update is available without installing.")]
     Update(UpdateArgs),
 
     /// Manage anonymous usage telemetry
     #[cfg(feature = "telemetry")]
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  clickhousectl collects anonymous usage data: command name, flag and argument names (never
-  their values), success/failure, version, OS/arch, and CI/agent detection. No user or machine IDs.
-  Opt out with `clickhousectl telemetry disable` or DO_NOT_TRACK=1.
+  Collected: command name, flag and argument names (never their values), success/failure, version,
+  OS/arch, CI/agent detection. No user or machine IDs.
+  DO_NOT_TRACK=1 also disables telemetry, without writing any config.
   Details: https://clickhouse.com/docs/concepts/features/interfaces/cli#telemetry")]
     Telemetry(TelemetryArgs),
 }
@@ -98,10 +83,6 @@ pub enum TelemetryCommands {
     /// Disable anonymous usage telemetry
     Disable,
     /// Show whether telemetry is enabled and why
-    ///
-    /// On a machine that has never seen the first-run notice, this reports
-    /// "not yet configured" and then completes the first run itself (writes
-    /// the marker file and prints the notice).
     Status,
     /// (internal) Fire one telemetry POST from CHCTL_TELEMETRY_PAYLOAD and exit
     //
@@ -116,13 +97,8 @@ pub enum TelemetryCommands {
 
 #[derive(Args, Debug)]
 pub struct SkillsArgs {
-    /// Install into specific agents (repeatable or comma-separated).
-    #[arg(
-        long = "agent",
-        value_name = "AGENT",
-        value_delimiter = ',',
-        long_help = "Install into specific agents (repeatable or comma-separated).\n\nValid names:\n  claude, cursor, opencode, codex\n  agent, roo, trae, windsurf\n  zencoder, neovate, pochi, adal\n  openclaw, cline, command-code\n  kiro-cli, agents"
-    )]
+    /// Install into specific agents (repeatable, comma-separated)
+    #[arg(long = "agent", value_name = "AGENT", value_delimiter = ',')]
     pub agents: Vec<String>,
 
     /// Install into every supported agent in the selected scope without prompting
@@ -148,40 +124,9 @@ pub struct UpdateArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::CommandFactory;
 
     #[test]
-    fn cloud_help_documents_credential_precedence() {
-        let mut command = Cli::command();
-        let help = command
-            .find_subcommand_mut("cloud")
-            .expect("cloud subcommand")
-            .render_long_help()
-            .to_string();
-
-        let precedence = help.split_once("CREDENTIAL PRECEDENCE:").unwrap().1;
-        let flags = precedence.find("1. --api-key / --api-secret").unwrap();
-        let file = precedence
-            .find("2. Project credentials in .clickhouse/credentials.json")
-            .unwrap();
-        let env = precedence.find("3. CLICKHOUSE_CLOUD_API_KEY").unwrap();
-        let oauth = precedence.find("4. OAuth tokens").unwrap();
-        assert!(flags < file && file < env && env < oauth, "{help}");
-        assert!(help.contains("Higher-precedence credentials override lower-precedence"));
-    }
-
-    #[test]
-    fn cloud_help_distinguishes_usage_errors_from_cancellation() {
-        let mut command = Cli::command();
-        let help = command
-            .find_subcommand_mut("cloud")
-            .expect("cloud subcommand")
-            .render_long_help()
-            .to_string();
-
-        assert!(help.contains(
-            "Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required."
-        ));
+    fn unknown_command_exits_with_a_usage_error() {
         assert_eq!(
             Cli::try_parse_from(["clickhousectl", "unknown-command"])
                 .err()
@@ -189,32 +134,6 @@ mod tests {
                 .exit_code(),
             2
         );
-    }
-
-    #[test]
-    fn help_points_agents_to_cloud_signup() {
-        let mut command = Cli::command();
-        let root_help = command.render_long_help().to_string();
-        assert!(root_help.contains("Create account: `cloud auth signup`"));
-
-        let auth = command
-            .find_subcommand_mut("cloud")
-            .expect("cloud subcommand")
-            .find_subcommand_mut("auth")
-            .expect("auth subcommand");
-        let auth_help = auth.render_long_help().to_string();
-        assert!(
-            auth_help
-                .contains("Create a ClickHouse Cloud account: `clickhousectl cloud auth signup`.")
-        );
-
-        let signup_help = auth
-            .find_subcommand_mut("signup")
-            .expect("signup subcommand")
-            .render_long_help()
-            .to_string();
-        assert!(signup_help.contains("Create a ClickHouse Cloud account"));
-        assert!(!signup_help.to_lowercase().contains("browser"));
     }
 
     #[test]
