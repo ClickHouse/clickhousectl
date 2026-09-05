@@ -20,9 +20,9 @@ use clickhouse_cloud_api::models::{
     ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
     ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
     ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
-    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceQueryAPIEndpoint,
-    ServiceReplicaScalingPatchRequest, ServiceState, ServiceStatePatchRequest,
-    ServiceStatePatchRequestCommand,
+    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceProfile,
+    ServiceQueryAPIEndpoint, ServiceReplicaScalingPatchRequest, ServiceState,
+    ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
 };
 #[cfg(test)]
 use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Response};
@@ -69,6 +69,12 @@ pub enum ServiceCommands {
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
+    },
+
+    /// Discover available service profiles
+    Profile {
+        #[command(subcommand)]
+        command: ServiceProfileCommands,
     },
 
     /// Create a service
@@ -624,11 +630,38 @@ pub enum PrivateEndpointCommands {
     },
 }
 
+#[derive(Subcommand)]
+pub enum ServiceProfileCommands {
+    /// List available service profiles
+    List {
+        /// Region ID, e.g. us-east-1, eu-west-1, us-central1
+        #[arg(long)]
+        region: String,
+
+        /// BYOC infrastructure ID
+        #[arg(long)]
+        byoc_id: Option<String>,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl ServiceProfileCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            ServiceProfileCommands::List { .. } => false,
+        }
+    }
+}
+
 impl ServiceCommands {
     pub fn is_write(&self) -> bool {
         match self {
             ServiceCommands::List { .. } => false,
             ServiceCommands::Get { .. } => false,
+            ServiceCommands::Profile { command } => command.is_write(),
             ServiceCommands::Prometheus { .. } => false,
             ServiceCommands::Query { .. } => false,
             ServiceCommands::RepairQueryKey { .. } => true,
@@ -662,6 +695,16 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
         ServiceCommands::Get { service_id, org_id } => {
             service_get(client, &service_id, org_id.as_deref(), json).await
         }
+        ServiceCommands::Profile { command } => match command {
+            ServiceProfileCommands::List {
+                region,
+                byoc_id,
+                org_id,
+            } => {
+                service_profile_list(client, &region, byoc_id.as_deref(), org_id.as_deref(), json)
+                    .await
+            }
+        },
         ServiceCommands::Create {
             name,
             provider,
@@ -1156,6 +1199,47 @@ async fn service_get(
         println!("{}", serde_json::to_string_pretty(&service)?);
     } else {
         print_human(&service)?;
+    }
+    Ok(())
+}
+
+async fn service_profile_list(
+    client: &CloudClient,
+    region_id: &str,
+    byoc_id: Option<&str>,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let profiles = client
+        .list_service_profiles(&org_id, region_id, byoc_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&profiles)?);
+    } else {
+        if profiles.is_empty() {
+            println!("No service profiles found");
+            return Ok(());
+        }
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Profile")]
+            profile: String,
+            #[tabled(rename = "CPU cores")]
+            cpu_cores: String,
+            #[tabled(rename = "Memory GiB")]
+            memory_gi: String,
+        }
+        let rows: Vec<Row> = profiles
+            .into_iter()
+            .map(|profile| Row {
+                profile: or_absent(profile.profile),
+                cpu_cores: or_absent(profile.cpu_cores),
+                memory_gi: or_absent(profile.memory_gi),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -3078,6 +3162,20 @@ async fn service_prometheus(
 }
 
 impl CloudClient {
+    pub async fn list_service_profiles(
+        &self,
+        org_id: &str,
+        region_id: &str,
+        byoc_id: Option<&str>,
+    ) -> crate::cloud::client::Result<Vec<ServiceProfile>> {
+        let response = self
+            .api()
+            .service_profiles_list(org_id, region_id, byoc_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     pub async fn list_services(&self, org_id: &str) -> crate::cloud::client::Result<Vec<Service>> {
         let response = self
             .api()
@@ -3607,6 +3705,45 @@ mod tests {
         };
         assert_eq!(org_id.as_deref(), Some("org-1"));
         assert_eq!(filter, vec!["tag:env=prod", "tag:team=analytics"]);
+    }
+
+    #[test]
+    fn parses_service_profile_list_flags_and_requires_region() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "profile",
+            "list",
+            "--region",
+            "eu-west-1",
+            "--byoc-id",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::Profile {
+            command:
+                ServiceProfileCommands::List {
+                    region,
+                    byoc_id,
+                    org_id,
+                },
+        } = command
+        else {
+            panic!("expected service profile list");
+        };
+        assert_eq!(region, "eu-west-1");
+        assert_eq!(byoc_id.as_deref(), Some("byoc-1"));
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "profile", "list"])
+            .err()
+            .expect("missing --region should fail");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]
@@ -4847,6 +4984,18 @@ mod tests {
         assert_write(&["clickhousectl", "cloud", "service", "list"], false);
         assert_write(
             &["clickhousectl", "cloud", "service", "get", "svc-1"],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "profile",
+                "list",
+                "--region",
+                "us-east-1",
+            ],
             false,
         );
         assert_write(
