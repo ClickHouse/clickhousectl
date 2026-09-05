@@ -912,7 +912,14 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
   --object-storage-max-insert-bytes 268435456 \
   --object-storage-use-cluster-function true \
   --clickhouse-max-threads 16 --clickhouse-max-insert-threads 4 \
+  --clickhouse-max-download-threads 8 \
+  --clickhouse-min-insert-block-size-bytes 20971520 \
+  --clickhouse-parallel-distributed-insert-select 1 \
   --clickhouse-parallel-view-processing false
+
+# Change Kafka consumer isolation explicitly
+clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
+  --kafka-read-committed true
 
 # Manage reverse private endpoints for private source connectivity
 clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
@@ -926,12 +933,16 @@ an explanation instead of the API's `NOT_FOUND`: their settings, such as the
 sync interval and pull batch size, live on the pipe itself, so read them with
 `clickhousectl cloud clickpipe get <service-id> <clickpipe-id>`.
 
-`settings update` only sends the settings you name on the command line, and it
-first reads the pipe to find its source type: settings that the API supports for
-one source only — currently the Kafka `kafka_read_committed` setting, which the
-CLI preserves rather than exposing as a flag — are sent for Kafka pipes and
-omitted for every other source. Object-storage-, streaming- and
-ClickHouse-specific settings are validated by the API, so passing (for example)
+Pass at least one setting. Omitted object-storage settings retain their current
+values; an update does not replace the whole configuration. Explicit `0` and
+`false` remain explicit values.
+The three additional ClickHouse controls accept download threads 0–32, minimum
+insert block size 0–10737418240 bytes, and distributed INSERT SELECT mode 0–2.
+
+For Kafka, `--kafka-read-committed true|false` changes consumer isolation. When
+omitted, the CLI preserves the current value; if the API omits that value, pass
+the flag explicitly. The flag is refused unless the pipe is confirmed as Kafka.
+Other settings are validated by the API for source compatibility, so passing
 `--object-storage-max-file-count` to a Kafka pipe is rejected server-side.
 
 #### Creating ClickPipes

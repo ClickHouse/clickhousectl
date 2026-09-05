@@ -9850,11 +9850,10 @@ async fn clickpipe_settings_update_omits_kafka_only_settings_for_non_kafka_pipes
 }
 
 #[tokio::test]
-async fn clickpipe_settings_update_preserves_or_defaults_kafka_read_committed() {
+async fn clickpipe_settings_update_preserves_kafka_read_committed() {
     for (current_settings, expected) in [
         (serde_json::json!({ "kafka_read_committed": true }), true),
         (serde_json::json!({ "kafka_read_committed": false }), false),
-        (serde_json::json!({}), false),
     ] {
         let mock = MockServer::start().await;
         mount_clickpipe_get(
@@ -9913,6 +9912,227 @@ async fn clickpipe_settings_update_preserves_or_defaults_kafka_read_committed() 
             })
         );
     }
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_rejects_empty_or_invalid_updates_before_http() {
+    for flags in [
+        vec![],
+        vec!["--clickhouse-max-download-threads", "33"],
+        vec!["--clickhouse-min-insert-block-size-bytes", "10737418241"],
+        vec!["--clickhouse-parallel-distributed-insert-select", "3"],
+        vec!["--kafka-read-committed", "yes"],
+    ] {
+        let mock = MockServer::start().await;
+        let mut args = vec![
+            "clickpipe",
+            "settings",
+            "update",
+            "svc-id",
+            "pipe-id",
+            "--org-id",
+            "org",
+        ];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(mock.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_sends_new_settings_including_zero() {
+    for (download_threads, block_bytes, distributed_mode) in [(7, 20971520_u64, 1), (0, 0, 0)] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(
+            &mock,
+            serde_json::json!({ "objectStorage": { "type": "s3" } }),
+        )
+        .await;
+        let expected = serde_json::json!({
+            "clickhouse_max_download_threads": download_threads,
+            "clickhouse_min_insert_block_size_bytes": block_bytes,
+            "clickhouse_parallel_distributed_insert_select": distributed_mode,
+        });
+        mount_clickpipe_settings_put(&mock, expected.clone()).await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "update",
+                "svc-id",
+                "pipe-id",
+                "--org-id",
+                "org",
+                "--clickhouse-max-download-threads",
+                &download_threads.to_string(),
+                "--clickhouse-min-insert-block-size-bytes",
+                &block_bytes.to_string(),
+                "--clickhouse-parallel-distributed-insert-select",
+                &distributed_mode.to_string(),
+            ],
+        );
+        assert_success(&output);
+        assert_eq!(recorded_put_body(&mock).await, expected);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            expected
+        );
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![
+                ("GET".into(), CLICKPIPE_PATH.into()),
+                ("PUT".into(), CLICKPIPE_SETTINGS_PATH.into()),
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_can_explicitly_set_kafka_read_committed() {
+    for requested in [true, false] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, serde_json::json!({ "kafka": { "type": "kafka" } })).await;
+        let expected = serde_json::json!({ "kafka_read_committed": requested });
+        mount_clickpipe_settings_put(&mock, expected.clone()).await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "update",
+                "svc-id",
+                "pipe-id",
+                "--org-id",
+                "org",
+                "--kafka-read-committed",
+                &requested.to_string(),
+            ],
+        );
+        assert_success(&output);
+        assert_eq!(recorded_put_body(&mock).await, expected);
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![
+                ("GET".into(), CLICKPIPE_PATH.into()),
+                ("PUT".into(), CLICKPIPE_SETTINGS_PATH.into()),
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_refuses_kafka_setting_for_other_or_unknown_sources() {
+    for source in [
+        serde_json::json!({ "objectStorage": { "type": "s3" } }),
+        serde_json::json!({ "kinesis": {} }),
+        serde_json::json!({ "pubsub": {} }),
+        serde_json::json!({}),
+    ] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, source).await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "update",
+                "svc-id",
+                "pipe-id",
+                "--org-id",
+                "org",
+                "--kafka-read-committed",
+                "false",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("confirmed Kafka source"));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![("GET".into(), CLICKPIPE_PATH.into())]
+        );
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_never_guesses_an_absent_kafka_setting() {
+    for current in [
+        serde_json::json!({}),
+        serde_json::json!({"kafka_read_committed": null}),
+    ] {
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, serde_json::json!({ "kafka": {} })).await;
+        Mock::given(method("GET"))
+            .and(path(CLICKPIPE_SETTINGS_PATH))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": current})),
+            )
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "update",
+                "svc-id",
+                "pipe-id",
+                "--org-id",
+                "org",
+                "--streaming-max-insert-wait-ms",
+                "1000",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("pass --kafka-read-committed"));
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            recorded_request_shape(&mock).await,
+            vec![
+                ("GET".into(), CLICKPIPE_PATH.into()),
+                ("GET".into(), CLICKPIPE_SETTINGS_PATH.into()),
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_settings_update_stops_when_the_preservation_read_fails() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(&mock, serde_json::json!({ "kafka": {} })).await;
+    Mock::given(method("GET"))
+        .and(path(CLICKPIPE_SETTINGS_PATH))
+        .respond_with(
+            ResponseTemplate::new(503).set_body_json(serde_json::json!({"error": "unavailable"})),
+        )
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "settings",
+            "update",
+            "svc-id",
+            "pipe-id",
+            "--org-id",
+            "org",
+            "--streaming-max-insert-wait-ms",
+            "1000",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        recorded_request_shape(&mock).await,
+        vec![
+            ("GET".into(), CLICKPIPE_PATH.into()),
+            ("GET".into(), CLICKPIPE_SETTINGS_PATH.into()),
+        ]
+    );
 }
 
 // ── ClickPipe ingestion settings apply to some pipe types only (#643) ──────

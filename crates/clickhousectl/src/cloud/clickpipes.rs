@@ -344,10 +344,29 @@ pub enum ClickPipeSettingsCommands {
     },
 
     /// Update ingestion settings (streaming, object-storage pipes)
-    #[command(after_help = "\
+    #[command(group(
+        ArgGroup::new("settings")
+            .required(true)
+            .multiple(true)
+            .args([
+                "streaming_max_insert_wait_ms",
+                "object_storage_concurrency",
+                "object_storage_polling_interval_ms",
+                "object_storage_max_insert_bytes",
+                "object_storage_max_file_count",
+                "clickhouse_max_threads",
+                "clickhouse_max_insert_threads",
+                "clickhouse_max_download_threads",
+                "clickhouse_min_insert_block_size_bytes",
+                "clickhouse_parallel_distributed_insert_select",
+                "kafka_read_committed",
+                "object_storage_use_cluster_function",
+                "clickhouse_parallel_view_processing",
+            ])
+    ), after_help = "\
 CONTEXT FOR AGENTS:
-  Only the settings named on the command line are sent; run `clickpipe settings get`
-  first and re-pass every setting you want to keep.")]
+  Omitted object-storage settings keep their current values.
+  Kafka read-committed is preserved unless explicitly changed.")]
     Update {
         /// Service ID
         service_id: String,
@@ -382,6 +401,22 @@ CONTEXT FOR AGENTS:
         /// Max concurrent insert threads (0-16)
         #[arg(long)]
         clickhouse_max_insert_threads: Option<u32>,
+
+        /// Max concurrent download threads (0-32)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=32))]
+        clickhouse_max_download_threads: Option<u32>,
+
+        /// Minimum insert block size in bytes (0-10737418240)
+        #[arg(long, value_parser = clap::value_parser!(u64).range(0..=10737418240))]
+        clickhouse_min_insert_block_size_bytes: Option<u64>,
+
+        /// Distributed INSERT SELECT mode (0-2)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=2))]
+        clickhouse_parallel_distributed_insert_select: Option<u32>,
+
+        /// Read only committed messages (Kafka only)
+        #[arg(long)]
+        kafka_read_committed: Option<bool>,
 
         /// Use ClickHouse cluster function
         #[arg(long)]
@@ -1343,6 +1378,10 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                 object_storage_max_file_count,
                 clickhouse_max_threads,
                 clickhouse_max_insert_threads,
+                clickhouse_max_download_threads,
+                clickhouse_min_insert_block_size_bytes,
+                clickhouse_parallel_distributed_insert_select,
+                kafka_read_committed,
                 object_storage_use_cluster_function,
                 clickhouse_parallel_view_processing,
                 org_id,
@@ -1355,6 +1394,10 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                     object_storage_max_file_count,
                     clickhouse_max_threads,
                     clickhouse_max_insert_threads,
+                    clickhouse_max_download_threads,
+                    clickhouse_min_insert_block_size_bytes,
+                    clickhouse_parallel_distributed_insert_select,
+                    kafka_read_committed,
                     object_storage_use_cluster_function,
                     clickhouse_parallel_view_processing,
                 };
@@ -2197,10 +2240,9 @@ async fn clickpipe_settings_get(
 /// The settings a `clickpipe settings update` invocation carries, decoupled from
 /// clap so the request builder can be unit-tested.
 ///
-/// Every field is source-agnostic: each one is only sent when the user passed
-/// the matching flag, so the API validates applicability per source. Kafka-only
-/// settings are not here — they are resolved from the pipe itself (see
-/// [`build_clickpipe_settings_request`]).
+/// Only explicitly requested settings enter the update. Kafka read-committed
+/// additionally preserves the current value when omitted; it is only ever sent
+/// after the source is confirmed to be Kafka.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct ClickPipeSettingsValues {
     streaming_max_insert_wait_ms: Option<u32>,
@@ -2210,6 +2252,10 @@ struct ClickPipeSettingsValues {
     object_storage_max_file_count: Option<u32>,
     clickhouse_max_threads: Option<u32>,
     clickhouse_max_insert_threads: Option<u32>,
+    clickhouse_max_download_threads: Option<u32>,
+    clickhouse_min_insert_block_size_bytes: Option<u64>,
+    clickhouse_parallel_distributed_insert_select: Option<u32>,
+    kafka_read_committed: Option<bool>,
     object_storage_use_cluster_function: Option<bool>,
     clickhouse_parallel_view_processing: Option<bool>,
 }
@@ -2224,10 +2270,9 @@ struct ClickPipeSettingsValues {
 /// the pipe is gone (#643).
 ///
 /// [`ClickPipeSourceKind::Absent`] covers a response that carries no `source`
-/// (or an unrecognized source arm). Both settings commands proceed in that
-/// case: the API is then the authority, which is the safe direction because
-/// refusing locally on a shape the CLI does not understand would block a pipe
-/// the endpoint does serve.
+/// (or an unrecognized source arm). Settings commands proceed in that case
+/// unless the caller explicitly requests a Kafka-only setting: the API remains
+/// the authority for the other settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClickPipeSourceKind {
     Kafka,
@@ -2321,8 +2366,9 @@ fn ensure_clickpipe_has_ingestion_settings(
 /// Build the settings PUT body from the flags the user passed.
 ///
 /// `kafka_read_committed` is Kafka-only: the API rejects the key for every other
-/// source, so callers pass `None` for a non-Kafka pipe and the pipe's current
-/// value for a Kafka pipe (the PUT would otherwise reset it).
+/// source, so callers reject an explicit Kafka-only flag on other sources and
+/// pass `None` for the preserved value. An explicitly requested value takes
+/// precedence over the current Kafka setting, including `false`.
 fn build_clickpipe_settings_request(
     values: &ClickPipeSettingsValues,
     kafka_read_committed: Option<bool>,
@@ -2341,10 +2387,14 @@ fn build_clickpipe_settings_request(
         clickhouse_max_insert_threads: values.clickhouse_max_insert_threads.map(i64::from),
         object_storage_use_cluster_function: values.object_storage_use_cluster_function,
         clickhouse_parallel_view_processing: values.clickhouse_parallel_view_processing,
-        kafka_read_committed,
-        clickhouse_max_download_threads: None,
-        clickhouse_min_insert_block_size_bytes: None,
-        clickhouse_parallel_distributed_insert_select: None,
+        kafka_read_committed: values.kafka_read_committed.or(kafka_read_committed),
+        clickhouse_max_download_threads: values.clickhouse_max_download_threads.map(i64::from),
+        clickhouse_min_insert_block_size_bytes: values
+            .clickhouse_min_insert_block_size_bytes
+            .map(|value| value as i64),
+        clickhouse_parallel_distributed_insert_select: values
+            .clickhouse_parallel_distributed_insert_select
+            .map(i64::from),
     }
 }
 
@@ -2357,23 +2407,32 @@ async fn clickpipe_settings_update(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    // The source decides which settings may appear in the body at all: sending
-    // `kafka_read_committed` for a non-Kafka pipe fails the entire request, so
-    // the pipe is fetched to classify it, and its current value is only read
-    // back (a PUT that omits it would reset it) for a Kafka pipe. The same
-    // classification refuses a database CDC pipe, whose settings endpoint does
-    // not exist at all.
+    // Live verification for #682 showed that object-storage PUT merges omitted
+    // keys, including nondefault values of the three previously hidden settings.
+    // Kafka-specific omission was not live-verified, so retain read-before-write
+    // preservation for its non-nullable boolean without fabricating a default.
     let clickpipe = client
         .get_clickpipe(&org_id, service_id, clickpipe_id)
         .await?;
     ensure_clickpipe_has_ingestion_settings(&clickpipe, service_id, clickpipe_id)?;
-    let kafka_read_committed = if classify_clickpipe_source(&clickpipe).is_kafka() {
+    let source = classify_clickpipe_source(&clickpipe);
+    if values.kafka_read_committed.is_some() && !source.is_kafka() {
+        return Err(CloudError::new(
+            "--kafka-read-committed requires a ClickPipe with a confirmed Kafka source",
+        ));
+    }
+    let kafka_read_committed = if source.is_kafka() && values.kafka_read_committed.is_none() {
         Some(
             client
                 .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
                 .await?
                 .kafka_read_committed
-                .unwrap_or(false),
+                .ok_or_else(|| {
+                    CloudError::new(
+                        "Cannot preserve Kafka read-committed: the settings response omitted \
+                         kafka_read_committed; pass --kafka-read-committed true or false explicitly",
+                    )
+                })?,
         )
     } else {
         None
@@ -2386,15 +2445,7 @@ async fn clickpipe_settings_update(
     if json {
         println!("{}", serde_json::to_string_pretty(&settings)?);
     } else {
-        println!("ClickPipe settings updated");
-        let value = serde_json::to_value(&settings)?;
-        if let Some(object) = value.as_object() {
-            for (key, value) in object {
-                if !value.is_null() {
-                    println!("  {}: {}", key, value);
-                }
-            }
-        }
+        print_human(&settings)?;
     }
     Ok(())
 }
@@ -4046,6 +4097,10 @@ mod tests {
                     object_storage_max_file_count,
                     clickhouse_max_threads,
                     clickhouse_max_insert_threads,
+                    clickhouse_max_download_threads,
+                    clickhouse_min_insert_block_size_bytes,
+                    clickhouse_parallel_distributed_insert_select,
+                    kafka_read_committed,
                     object_storage_use_cluster_function,
                     clickhouse_parallel_view_processing,
                     org_id,
@@ -4069,6 +4124,14 @@ mod tests {
             "6",
             "--clickhouse-max-insert-threads",
             "7",
+            "--clickhouse-max-download-threads",
+            "8",
+            "--clickhouse-min-insert-block-size-bytes",
+            "20971520",
+            "--clickhouse-parallel-distributed-insert-select",
+            "1",
+            "--kafka-read-committed",
+            "false",
             "--object-storage-use-cluster-function",
             "true",
             "--clickhouse-parallel-view-processing",
@@ -4088,6 +4151,10 @@ mod tests {
         assert_eq!(object_storage_max_file_count, Some(5));
         assert_eq!(clickhouse_max_threads, Some(6));
         assert_eq!(clickhouse_max_insert_threads, Some(7));
+        assert_eq!(clickhouse_max_download_threads, Some(8));
+        assert_eq!(clickhouse_min_insert_block_size_bytes, Some(20971520));
+        assert_eq!(clickhouse_parallel_distributed_insert_select, Some(1));
+        assert_eq!(kafka_read_committed, Some(false));
         assert_eq!(object_storage_use_cluster_function, Some(true));
         assert_eq!(clickhouse_parallel_view_processing, Some(false));
         assert_eq!(org_id.as_deref(), Some("org-1"));
@@ -4102,12 +4169,23 @@ mod tests {
                     object_storage_max_file_count,
                     clickhouse_max_threads,
                     clickhouse_max_insert_threads,
+                    clickhouse_max_download_threads,
+                    clickhouse_min_insert_block_size_bytes,
+                    clickhouse_parallel_distributed_insert_select,
+                    kafka_read_committed,
                     object_storage_use_cluster_function,
                     clickhouse_parallel_view_processing,
                     org_id,
                     ..
                 },
-        } = parse_clickpipe(&["settings", "update", "svc-1", "pipe-1"])
+        } = parse_clickpipe(&[
+            "settings",
+            "update",
+            "svc-1",
+            "pipe-1",
+            "--object-storage-max-file-count",
+            "200",
+        ])
         else {
             panic!("expected settings update");
         };
@@ -4115,9 +4193,13 @@ mod tests {
         assert_eq!(object_storage_concurrency, None);
         assert_eq!(object_storage_polling_interval_ms, None);
         assert_eq!(object_storage_max_insert_bytes, None);
-        assert_eq!(object_storage_max_file_count, None);
+        assert_eq!(object_storage_max_file_count, Some(200));
         assert_eq!(clickhouse_max_threads, None);
         assert_eq!(clickhouse_max_insert_threads, None);
+        assert_eq!(clickhouse_max_download_threads, None);
+        assert_eq!(clickhouse_min_insert_block_size_bytes, None);
+        assert_eq!(clickhouse_parallel_distributed_insert_select, None);
+        assert_eq!(kafka_read_committed, None);
         assert_eq!(object_storage_use_cluster_function, None);
         assert_eq!(clickhouse_parallel_view_processing, None);
         assert_eq!(org_id, None);
@@ -4146,14 +4228,6 @@ mod tests {
         assert_eq!(request.clickhouse_max_download_threads, None);
         assert_eq!(request.clickhouse_min_insert_block_size_bytes, None);
         assert_eq!(request.clickhouse_parallel_distributed_insert_select, None);
-        // Nothing at all was passed: the body stays empty rather than
-        // resetting settings the user did not name.
-        let empty = build_clickpipe_settings_request(&ClickPipeSettingsValues::default(), None);
-        assert_eq!(
-            serde_json::to_value(&empty).unwrap(),
-            serde_json::json!({}),
-            "a non-Kafka update with no flags must send an empty body"
-        );
     }
 
     #[test]
@@ -4166,6 +4240,10 @@ mod tests {
             object_storage_max_file_count: Some(5),
             clickhouse_max_threads: Some(6),
             clickhouse_max_insert_threads: Some(7),
+            clickhouse_max_download_threads: Some(8),
+            clickhouse_min_insert_block_size_bytes: Some(20971520),
+            clickhouse_parallel_distributed_insert_select: Some(1),
+            kafka_read_committed: None,
             object_storage_use_cluster_function: Some(true),
             clickhouse_parallel_view_processing: Some(false),
         };
@@ -4177,6 +4255,15 @@ mod tests {
         assert_eq!(request.object_storage_max_file_count, Some(5));
         assert_eq!(request.clickhouse_max_threads, Some(6));
         assert_eq!(request.clickhouse_max_insert_threads, Some(7));
+        assert_eq!(request.clickhouse_max_download_threads, Some(8));
+        assert_eq!(
+            request.clickhouse_min_insert_block_size_bytes,
+            Some(20971520)
+        );
+        assert_eq!(
+            request.clickhouse_parallel_distributed_insert_select,
+            Some(1)
+        );
         assert_eq!(request.object_storage_use_cluster_function, Some(true));
         assert_eq!(request.clickhouse_parallel_view_processing, Some(false));
         assert_eq!(request.kafka_read_committed, Some(true));
@@ -4184,6 +4271,78 @@ mod tests {
         // the PUT does not silently flip it.
         let request = build_clickpipe_settings_request(&values, Some(false));
         assert_eq!(request.kafka_read_committed, Some(false));
+    }
+
+    #[test]
+    fn explicit_settings_zero_and_false_override_preserved_values() {
+        let values = ClickPipeSettingsValues {
+            clickhouse_max_download_threads: Some(0),
+            clickhouse_min_insert_block_size_bytes: Some(0),
+            clickhouse_parallel_distributed_insert_select: Some(0),
+            kafka_read_committed: Some(false),
+            ..Default::default()
+        };
+        let request = build_clickpipe_settings_request(&values, Some(true));
+        assert_eq!(request.clickhouse_max_download_threads, Some(0));
+        assert_eq!(request.clickhouse_min_insert_block_size_bytes, Some(0));
+        assert_eq!(
+            request.clickhouse_parallel_distributed_insert_select,
+            Some(0)
+        );
+        assert_eq!(request.kafka_read_committed, Some(false));
+    }
+
+    #[test]
+    fn settings_added_integer_flags_enforce_api_ranges() {
+        for (flag, maximum) in [
+            ("--clickhouse-max-download-threads", 32_u64),
+            ("--clickhouse-min-insert-block-size-bytes", 10737418240),
+            ("--clickhouse-parallel-distributed-insert-select", 2),
+        ] {
+            for value in [0, maximum] {
+                parse_clickpipe(&[
+                    "settings",
+                    "update",
+                    "svc",
+                    "pipe",
+                    flag,
+                    &value.to_string(),
+                ]);
+            }
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "settings",
+                "update",
+                "svc",
+                "pipe",
+                flag,
+                &(maximum + 1).to_string(),
+            ])
+            .err()
+            .expect("an out-of-range setting should fail parsing");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn settings_update_requires_at_least_one_setting() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "settings",
+            "update",
+            "svc",
+            "pipe",
+        ])
+        .err()
+        .expect("an empty update should fail parsing");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]
@@ -6470,7 +6629,17 @@ mod tests {
         assert_write(&["resync", "svc-1", "pipe-1"], true);
         assert_write(&["scale", "svc-1", "pipe-1", "--replicas", "4"], true);
         assert_write(&["settings", "get", "svc-1", "pipe-1"], false);
-        assert_write(&["settings", "update", "svc-1", "pipe-1"], true);
+        assert_write(
+            &[
+                "settings",
+                "update",
+                "svc-1",
+                "pipe-1",
+                "--kafka-read-committed",
+                "false",
+            ],
+            true,
+        );
         assert_write(
             &[
                 "schema-discover",
