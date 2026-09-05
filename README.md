@@ -1319,6 +1319,11 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
   --name my-bq-pipe \
   --service-account-file ./sa-key.json \
   --staging-path gs://bucket/staging \
+  --replication-mode snapshot \
+  --allow-nullable-columns true \
+  --initial-load-parallelism 4 \
+  --snapshot-rows-per-partition 1000000 \
+  --snapshot-parallel-tables 3 \
   --table-mapping "dataset.table:target_table"
 
 # From Google Cloud Pub/Sub (limited preview: contact support to enable it)
@@ -1359,6 +1364,10 @@ PostgreSQL, MySQL, MongoDB, and BigQuery creates accept
 `--destination-database <DATABASE>` for the ClickHouse database that receives
 their mapped tables. It defaults to `default`; source database, schema, and
 dataset names remain part of the source flags and table mappings shown above.
+
+BigQuery supports snapshot replication. Its nullability and snapshot tuning
+flags are optional; when omitted, the request leaves those settings to the
+ClickPipes service defaults.
 
 `--role` is available on every `clickpipe create` subcommand and is repeatable.
 ClickPipes creates a ClickHouse user for the pipe; when `--role` is omitted that
