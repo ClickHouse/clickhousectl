@@ -77,6 +77,8 @@ pub(crate) struct EnumConstraint {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OpenApiInventory {
     pub(crate) operations: BTreeMap<String, OperationInfo>,
+    /// Inline object branches retain their parent direction and exact spec pointer.
+    pub(crate) inline_union_objects: Vec<(String, String, Value)>,
     pub(crate) schemas: BTreeMap<String, String>,
     /// Pascalized Rust type names of every named spec schema. Used to
     /// distinguish a split `{Name}Response` Rust variant from a Rust type that
@@ -189,6 +191,23 @@ impl OpenApiInventory {
             ]);
             self.schemas
                 .insert(schema_name.clone(), schema_pointer.clone());
+            for composition in ["oneOf", "anyOf"] {
+                if let Some(branches) = schema.get(composition).and_then(Value::as_array) {
+                    for (index, branch) in branches.iter().enumerate() {
+                        if branch
+                            .get("properties")
+                            .and_then(Value::as_object)
+                            .is_some()
+                        {
+                            self.inline_union_objects.push((
+                                schema_name.clone(),
+                                format!("{schema_pointer}/{composition}/{index}"),
+                                branch.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
             if let Some(additional) = schema
                 .get("additionalProperties")
                 .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
@@ -358,7 +377,11 @@ fn transitive_schema_closure(
     seen
 }
 
-fn required_fields(schema_name: &str, schema: &Value, config: &AnalyzerConfig) -> BTreeSet<String> {
+pub(crate) fn required_fields(
+    schema_name: &str,
+    schema: &Value,
+    config: &AnalyzerConfig,
+) -> BTreeSet<String> {
     let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
         return BTreeSet::new();
     };

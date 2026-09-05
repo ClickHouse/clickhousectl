@@ -304,6 +304,10 @@ impl std::fmt::Display for UdfCreateRequest {
 /// The `executable` variant of [`UdfCreateRequest`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UdfCreateRequestV1 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deterministic: Option<bool>,
+    #[serde(rename = "memoryLimitMib", skip_serializing_if = "Option::is_none")]
+    pub memory_limit_mib: Option<i64>,
     pub arguments: Vec<UdfArgument>,
     #[serde(rename = "commandReadTimeout", skip_serializing_if = "Option::is_none")]
     pub command_read_timeout: Option<i64>,
@@ -363,6 +367,10 @@ impl std::fmt::Display for UdfCreateRequestV1Type {
 /// The `executable_pool` variant of [`UdfCreateRequest`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UdfCreateRequestV2 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deterministic: Option<bool>,
+    #[serde(rename = "memoryLimitMib", skip_serializing_if = "Option::is_none")]
+    pub memory_limit_mib: Option<i64>,
     pub arguments: Vec<UdfArgument>,
     #[serde(rename = "commandReadTimeout", skip_serializing_if = "Option::is_none")]
     pub command_read_timeout: Option<i64>,
@@ -478,6 +486,10 @@ impl std::fmt::Display for UdfVersionCreateRequest {
 /// The `executable` variant of [`UdfVersionCreateRequest`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UdfVersionCreateRequestV1 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deterministic: Option<bool>,
+    #[serde(rename = "memoryLimitMib", skip_serializing_if = "Option::is_none")]
+    pub memory_limit_mib: Option<i64>,
     pub arguments: Vec<UdfArgument>,
     #[serde(rename = "commandReadTimeout", skip_serializing_if = "Option::is_none")]
     pub command_read_timeout: Option<i64>,
@@ -535,6 +547,10 @@ impl std::fmt::Display for UdfVersionCreateRequestV1Type {
 /// The `executable_pool` variant of [`UdfVersionCreateRequest`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct UdfVersionCreateRequestV2 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deterministic: Option<bool>,
+    #[serde(rename = "memoryLimitMib", skip_serializing_if = "Option::is_none")]
+    pub memory_limit_mib: Option<i64>,
     pub arguments: Vec<UdfArgument>,
     #[serde(rename = "commandReadTimeout", skip_serializing_if = "Option::is_none")]
     pub command_read_timeout: Option<i64>,

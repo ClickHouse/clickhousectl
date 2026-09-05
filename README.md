@@ -1786,6 +1786,8 @@ To see exactly what would be sent without sending it, set `CHCTL_TELEMETRY_DEBUG
 
 Distribution packagers can compile telemetry out entirely (including the `telemetry` subcommand) with `cargo build --no-default-features`.
 
+UDF API request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation. The OpenAPI analyzer checks inline union payload fields and their request requiredness; its report format is version 5.
+
 ## Cloud integration testing
 
 Maintainer operation, exact-SHA overrides, stacked-PR policy, and the required

@@ -2635,13 +2635,15 @@ async fn create_udf_encodes_request_body() {
             "returnType": "String",
             "runtime": "python3.11",
             "type": "executable",
-            "uploadId": "upload-1"
+            "uploadId": "upload-1", "deterministic": false, "memoryLimitMib": 256
         })))
         .respond_with(created_json(serde_json::json!({"functionName": "my_udf"})))
         .mount(&s)
         .await;
 
     let body = UdfCreateRequest::UdfCreateRequestV1(UdfCreateRequestV1 {
+        deterministic: Some(false),
+        memory_limit_mib: Some(256),
         arguments: vec![],
         function_name: "my_udf".to_string(),
         return_type: "String".to_string(),
@@ -2672,13 +2674,15 @@ async fn create_udf_version_encodes_request_body() {
             "returnType": "String",
             "runtime": "python3.11",
             "type": "executable",
-            "uploadId": "upload-1"
+            "uploadId": "upload-1", "deterministic": false, "memoryLimitMib": 256
         })))
         .respond_with(created_json(serde_json::json!({"functionName": "my_udf"})))
         .mount(&s)
         .await;
 
     let body = UdfVersionCreateRequest::UdfVersionCreateRequestV1(UdfVersionCreateRequestV1 {
+        deterministic: Some(false),
+        memory_limit_mib: Some(256),
         arguments: vec![],
         return_type: "String".to_string(),
         runtime: UdfRuntime::Python3_11,
