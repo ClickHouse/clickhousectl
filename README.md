@@ -1107,7 +1107,52 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 ```bash
 clickhousectl cloud backup list <service-id>
 clickhousectl cloud backup get <service-id> <backup-id>
+
+# Inspect or remove the service's bring-your-own backup bucket
+clickhousectl cloud backup bucket get <service-id>
+clickhousectl cloud backup bucket delete <service-id>
 ```
+
+The backup-bucket commands use the beta Cloud API. Create and update a bucket from a strict provider-specific JSON document. Pass a file path to `--config-file`, or `-` to read JSON from stdin so credentials do not appear in the process arguments. The provider must be exactly `AWS`, `GCP`, or `AZURE`; unknown and cross-provider fields are rejected before the request is sent.
+
+```json
+{
+  "bucketProvider": "AWS",
+  "bucketPath": "s3://company-backups/clickhouse",
+  "iamRoleArn": "arn:aws:iam::123456789012:role/clickhouse-backups",
+  "iamRoleSessionName": "clickhouse-cloud"
+}
+```
+
+```json
+{
+  "bucketProvider": "GCP",
+  "bucketPath": "gs://company-backups/clickhouse",
+  "accessKeyId": "<access-key-id>",
+  "secretAccessKey": "<secret-access-key>"
+}
+```
+
+```json
+{
+  "bucketProvider": "AZURE",
+  "containerName": "clickhouse-backups",
+  "connectionString": "<azure-storage-connection-string>"
+}
+```
+
+Save one object as a permissions-restricted file, then use it for the matching operation:
+
+```bash
+chmod 600 backup-bucket.json
+clickhousectl cloud backup bucket create <service-id> --config-file backup-bucket.json
+clickhousectl cloud backup bucket update <service-id> --config-file backup-bucket.json
+
+# Or keep the document out of a named file
+generate-backup-bucket-json | clickhousectl cloud backup bucket create <service-id> --config-file -
+```
+
+`update` calls the API's PATCH operation, but its provider schema still requires every field shown above except AWS `iamRoleSessionName`, which is optional on update. AWS create requires that session name. GCP and Azure credentials must be supplied again on every update; no bucket ID argument is used because each service has one backup-bucket resource.
 
 ### ClickPipes
 

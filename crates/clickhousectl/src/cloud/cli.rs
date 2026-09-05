@@ -129,10 +129,12 @@ CONTEXT FOR AGENTS:
         command: ServiceCommands,
     },
 
-    /// View service backups
+    /// Manage service backups and backup buckets
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Service IDs come from `cloud service list`; backup IDs from `cloud backup list <service-id>`.
+  Backup list/get and bucket get support OAuth; bucket writes require API key auth.
+  Bucket create/update read strict provider JSON from `--config-file`, with `-` for stdin.
   Restore a backup into a new service: `cloud service create --backup-id <backup-id>`.
   Change schedule or retention with `cloud service backup-config update`, not here.")]
     Backup {

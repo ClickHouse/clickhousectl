@@ -991,6 +991,280 @@ async fn backup_config_rejects_incompatible_period_before_any_request() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+// ── Bring-your-own backup buckets (issue #576) ─────────────────────────────
+
+const BACKUP_BUCKET_PATH: &str = "/v1/organizations/org-1/services/svc-1/backupBucket";
+const TEST_BASIC_AUTH: &str = "Basic ZmFrZS1rZXktZm9yLXRlc3RzOmZha2Utc2VjcmV0LWZvci10ZXN0cw==";
+
+#[tokio::test]
+async fn backup_bucket_get_uses_oauth_and_preserves_sparse_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(BACKUP_BUCKET_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "bucketProvider": "AWS" },
+            "status": 200,
+            "requestId": "bucket-get",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "backup",
+            "bucket",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .expect("run backup bucket get");
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({ "bucketProvider": "AWS" })
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].url.query().is_none());
+}
+
+#[tokio::test]
+async fn backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body() {
+    let mock = MockServer::start().await;
+    let expected = serde_json::json!({
+        "bucketProvider": "GCP",
+        "bucketPath": "gs://company-backups/clickhouse",
+        "accessKeyId": "gcp-access",
+        "secretAccessKey": "gcp-secret",
+    });
+    Mock::given(method("POST"))
+        .and(path(BACKUP_BUCKET_PATH))
+        .and(header("authorization", TEST_BASIC_AUTH))
+        .and(body_json(expected.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "bucketProvider": "GCP",
+                "bucketPath": "gs://company-backups/clickhouse",
+                "accessKeyId": "gcp-access"
+            },
+            "status": 200,
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let body = invoke_cli_capture_body_with_stdin(
+        &mock,
+        &[
+            "backup",
+            "bucket",
+            "create",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--config-file",
+            "-",
+        ],
+        serde_json::to_string(&expected).unwrap().as_bytes(),
+    )
+    .await;
+    assert_eq!(body, expected);
+}
+
+#[tokio::test]
+async fn backup_bucket_update_reads_file_and_delete_use_the_service_resource_path() {
+    let mock = MockServer::start().await;
+    let expected = serde_json::json!({
+        "bucketProvider": "AZURE",
+        "containerName": "backups",
+        "connectionString": "DefaultEndpointsProtocol=https;AccountName=company",
+    });
+    Mock::given(method("PATCH"))
+        .and(path(BACKUP_BUCKET_PATH))
+        .and(header("authorization", TEST_BASIC_AUTH))
+        .and(body_json(expected.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "bucketProvider": "AZURE", "containerName": "backups" },
+            "status": 200,
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(BACKUP_BUCKET_PATH))
+        .and(header("authorization", TEST_BASIC_AUTH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "bucket-delete",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let config_dir = tempfile::tempdir().unwrap();
+    let config = config_dir.path().join("azure-bucket.json");
+    std::fs::write(&config, serde_json::to_vec(&expected).unwrap()).unwrap();
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "backup",
+            "bucket",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--config-file",
+            config.to_str().unwrap(),
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({ "bucketProvider": "AZURE", "containerName": "backups" })
+    );
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["backup", "bucket", "delete", "svc-1", "--org-id", "org-1"],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({ "status": 200, "requestId": "bucket-delete" })
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests.iter().all(|request| request.url.query().is_none()));
+}
+
+#[tokio::test]
+async fn backup_bucket_invalid_stdin_unknown_provider_and_field_fail_before_http() {
+    let mock = MockServer::start().await;
+
+    for input in [
+        b"not JSON".as_slice(),
+        br#"{"bucketProvider":"S3"}"#.as_slice(),
+        br#"{"bucketProvider":"AZURE","containerName":"backups","connectionString":"secret","bucketPath":"s3://wrong"}"#.as_slice(),
+    ] {
+        let url = mock.uri();
+        let mut child = Command::new(clickhousectl_binary())
+            .env("DO_NOT_TRACK", "1")
+            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+            .args([
+                "cloud",
+                "--url",
+                &url,
+                "--json",
+                "backup",
+                "bucket",
+                "create",
+                "svc-1",
+                "--org-id",
+                "org-1",
+                "--config-file",
+                "-",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(input).unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn backup_bucket_api_error_is_reported() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(BACKUP_BUCKET_PATH))
+        .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+            "status": 503,
+            "error": "backup bucket temporarily unavailable",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["backup", "bucket", "get", "svc-1", "--org-id", "org-1"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("backup bucket temporarily unavailable")
+    );
+}
+
+#[tokio::test]
+async fn backup_bucket_writes_reject_oauth_before_http() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let config = project.path().join("bucket.json");
+    std::fs::write(
+        &config,
+        br#"{"bucketProvider":"AWS","bucketPath":"s3://backups","iamRoleArn":"arn:aws:iam::123:role/backups","iamRoleSessionName":"clickhouse"}"#,
+    )
+    .unwrap();
+
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "backup",
+            "bucket",
+            "create",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--config-file",
+            config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 // ── Backup start time against the stored period (issue #642) ────────────────
 
 /// The API keeps the stored period when a start-time update omits one, and
