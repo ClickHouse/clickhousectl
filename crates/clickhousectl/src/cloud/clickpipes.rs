@@ -1,4 +1,5 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::config::read_typed_config;
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::PossibleValuesParser;
@@ -631,6 +632,7 @@ impl ClickPipeSettingsCommands {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum ClickPipeCreateCommands {
     /// Create a ClickPipe from S3, GCS, Azure Blob, or other object storage
     #[command(
@@ -698,6 +700,32 @@ pub struct DestinationRoleArgs {
     /// API-reserved names `clickpipes` and `clickpipes_system` are rejected.
     #[arg(long = "role", value_name = "ROLE", value_parser = parse_destination_role)]
     pub roles: Vec<String>,
+}
+
+/// Destination-table controls shared by streaming ClickPipe creates.
+#[derive(Args, Debug)]
+pub struct StreamingDestinationTableArgs {
+    /// Whether ClickPipes manages the destination table
+    #[arg(
+        long,
+        default_value_t = true,
+        value_name = "true|false",
+        action = clap::ArgAction::Set
+    )]
+    pub managed_table: bool,
+
+    /// Complete destination table definition JSON path, or - for stdin
+    #[arg(long, value_name = "PATH|-")]
+    pub table_definition_file: Option<String>,
+}
+
+impl Default for StreamingDestinationTableArgs {
+    fn default() -> Self {
+        Self {
+            managed_table: true,
+            table_definition_file: None,
+        }
+    }
 }
 
 /// Destination database shared by database-source ClickPipe creates.
@@ -821,6 +849,9 @@ pub struct ObjectStorageCreateArgs {
     /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
     #[arg(long = "column")]
     pub columns: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_table: StreamingDestinationTableArgs,
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
@@ -992,6 +1023,9 @@ pub struct KafkaCreateArgs {
     pub columns: Vec<String>,
 
     #[command(flatten)]
+    pub destination_table: StreamingDestinationTableArgs,
+
+    #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
     /// Organization ID (auto-detected only if you have one org)
@@ -1076,6 +1110,9 @@ pub struct KinesisCreateArgs {
     /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
     #[arg(long = "column")]
     pub columns: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_table: StreamingDestinationTableArgs,
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
@@ -1657,6 +1694,9 @@ pub struct PubSubCreateArgs {
     pub columns: Vec<String>,
 
     #[command(flatten)]
+    pub destination_table: StreamingDestinationTableArgs,
+
+    #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
     /// Organization ID (auto-detected only if you have one org)
@@ -2106,6 +2146,13 @@ async fn clickpipe_create_object_storage(
     // invocations fail fast.
     let parsed_columns = parse_columns(&args.columns)?;
     let source = build_object_storage_source(&args.source)?;
+    let destination = build_streaming_destination(
+        &args.database,
+        &args.table,
+        parsed_columns,
+        build_destination_roles(&args.destination_roles.roles),
+        &args.destination_table,
+    )?;
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
 
     let request = ClickPipePostRequest {
@@ -2114,12 +2161,7 @@ async fn clickpipe_create_object_storage(
             object_storage: Some(source),
             ..Default::default()
         },
-        destination: build_destination(
-            &args.database,
-            &args.table,
-            parsed_columns,
-            build_destination_roles(&args.destination_roles.roles),
-        ),
+        destination,
         ..Default::default()
     };
 
@@ -2563,12 +2605,13 @@ async fn clickpipe_create_kafka(
             kafka: Some(source),
             ..Default::default()
         },
-        destination: build_destination(
+        destination: build_streaming_destination(
             &args.database,
             &args.table,
             parsed_columns,
             build_destination_roles(&args.destination_roles.roles),
-        ),
+            &args.destination_table,
+        )?,
         ..Default::default()
     };
 
@@ -2587,7 +2630,6 @@ async fn clickpipe_create_kinesis(
 ) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
 
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
     let parsed_columns = parse_columns(&args.columns)?;
     let source = build_kinesis_source(&args.source)?;
 
@@ -2597,15 +2639,17 @@ async fn clickpipe_create_kinesis(
             kinesis: Some(source),
             ..Default::default()
         },
-        destination: build_destination(
+        destination: build_streaming_destination(
             &args.database,
             &args.table,
             parsed_columns,
             build_destination_roles(&args.destination_roles.roles),
-        ),
+            &args.destination_table,
+        )?,
         ..Default::default()
     };
 
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
@@ -2764,12 +2808,13 @@ async fn clickpipe_create_pubsub(
             pubsub: Some(source),
             ..Default::default()
         },
-        destination: build_destination(
+        destination: build_streaming_destination(
             &args.database,
             &args.table,
             parsed_columns,
             build_destination_roles(&args.destination_roles.roles),
-        ),
+            &args.destination_table,
+        )?,
         ..Default::default()
     };
 
@@ -3374,6 +3419,47 @@ fn build_destination_roles(roles: &[String]) -> Option<Vec<String>> {
         }
     }
     Some(deduped)
+}
+
+fn read_destination_table_definition(
+    config_file: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition> {
+    use clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType;
+
+    let definition: clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition =
+        read_typed_config(config_file)?;
+    if let ClickPipeDestinationTableEngineType::Unknown(value) = &definition.engine.r#type {
+        return Err(CloudError::new(format!(
+            "invalid destination table definition in config {config_file}: unknown engine.type value `{value}`"
+        )));
+    }
+    Ok(definition)
+}
+
+/// Build the destination shared by Kafka, Kinesis, object-storage, and Pub/Sub.
+/// Omitting both new flags retains the historical managed MergeTree request.
+fn build_streaming_destination(
+    database: &str,
+    table: &str,
+    columns: Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>,
+    roles: Option<Vec<String>>,
+    options: &StreamingDestinationTableArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeMutateDestination> {
+    let table_definition = options
+        .table_definition_file
+        .as_deref()
+        .map(read_destination_table_definition)
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(clickhouse_cloud_api::models::ClickPipeMutateDestination {
+        database: database.to_string(),
+        table: Some(table.to_string()),
+        columns,
+        managed_table: Some(options.managed_table),
+        roles,
+        table_definition: Some(table_definition),
+    })
 }
 
 /// Build a managed-table destination with the default MergeTree engine.
@@ -10057,8 +10143,15 @@ mod tests {
     }
 
     #[test]
-    fn build_destination_uses_defaults_for_table_definition() {
-        let destination = build_destination("mydb", "events", vec![], None);
+    fn build_streaming_destination_uses_compatible_defaults() {
+        let destination = build_streaming_destination(
+            "mydb",
+            "events",
+            vec![],
+            None,
+            &StreamingDestinationTableArgs::default(),
+        )
+        .unwrap();
         assert_eq!(destination.database, "mydb");
         assert_eq!(destination.table.as_deref(), Some("events"));
         assert_eq!(destination.managed_table, Some(true));
@@ -10071,6 +10164,168 @@ mod tests {
                 .engine
                 .r#type,
             clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType::MergeTree
+        );
+    }
+
+    #[test]
+    fn build_streaming_destination_reads_the_complete_typed_definition() {
+        use clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType;
+        use std::io::Write as _;
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            config,
+            "{}",
+            serde_json::json!({
+                "engine": {
+                    "columnIds": ["amount", "tax"],
+                    "type": "SummingMergeTree",
+                    "versionColumnId": null
+                },
+                "partitionBy": "toYYYYMM(created_at)",
+                "primaryKey": "event_id",
+                "sortingKey": ["event_id", "created_at"]
+            })
+        )
+        .unwrap();
+        let options = StreamingDestinationTableArgs {
+            managed_table: false,
+            table_definition_file: Some(config.path().to_string_lossy().into_owned()),
+        };
+
+        let destination =
+            build_streaming_destination("analytics", "events", vec![], None, &options).unwrap();
+        assert_eq!(destination.managed_table, Some(false));
+        let definition = destination.table_definition.unwrap();
+        assert_eq!(
+            definition.engine.r#type,
+            ClickPipeDestinationTableEngineType::SummingMergeTree
+        );
+        assert_eq!(definition.engine.column_ids, ["amount", "tax"]);
+        assert_eq!(definition.engine.version_column_id, None);
+        assert_eq!(definition.partition_by, "toYYYYMM(created_at)");
+        assert_eq!(definition.primary_key, "event_id");
+        assert_eq!(definition.sorting_key, ["event_id", "created_at"]);
+    }
+
+    #[test]
+    fn destination_table_definition_accepts_every_engine_and_nullable_version() {
+        use clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType;
+        use std::io::Write as _;
+
+        for (wire_value, expected) in [
+            ("MergeTree", ClickPipeDestinationTableEngineType::MergeTree),
+            (
+                "ReplacingMergeTree",
+                ClickPipeDestinationTableEngineType::ReplacingMergeTree,
+            ),
+            (
+                "SummingMergeTree",
+                ClickPipeDestinationTableEngineType::SummingMergeTree,
+            ),
+            ("Null", ClickPipeDestinationTableEngineType::Null),
+        ] {
+            let mut config = tempfile::NamedTempFile::new().unwrap();
+            write!(
+                config,
+                "{}",
+                serde_json::json!({
+                    "engine": {
+                        "columnIds": [],
+                        "type": wire_value,
+                        "versionColumnId": null
+                    },
+                    "partitionBy": "tuple()",
+                    "primaryKey": "event_id",
+                    "sortingKey": ["event_id"]
+                })
+            )
+            .unwrap();
+            let definition =
+                read_destination_table_definition(config.path().to_str().unwrap()).unwrap();
+            assert_eq!(definition.engine.r#type, expected);
+            assert_eq!(definition.engine.version_column_id, None);
+        }
+    }
+
+    #[test]
+    fn destination_table_definition_rejects_unknown_nested_fields_and_enums() {
+        use std::io::Write as _;
+
+        for (value, rejected_value) in [
+            (
+                serde_json::json!({
+                    "engine": {
+                        "columnIds": [],
+                        "type": "MergeTree",
+                        "versionColumnId": null
+                    },
+                    "partitionBy": "tuple()",
+                    "primaryKey": "event_id",
+                    "sortingKey": ["event_id"],
+                    "sortingKeys": ["typo"]
+                }),
+                "sortingKeys",
+            ),
+            (
+                serde_json::json!({
+                "engine": {
+                    "columnIds": [],
+                    "type": "MergeTree",
+                    "versionColumnId": null,
+                    "versionColumn": "typo"
+                },
+                "partitionBy": "tuple()",
+                "primaryKey": "event_id",
+                "sortingKey": ["event_id"]
+                }),
+                "versionColumn",
+            ),
+            (
+                serde_json::json!({
+                "engine": {
+                    "columnIds": [],
+                    "type": "MergeTreeWithTypo",
+                    "versionColumnId": null
+                },
+                "partitionBy": "tuple()",
+                "primaryKey": "event_id",
+                "sortingKey": ["event_id"]
+                }),
+                "MergeTreeWithTypo",
+            ),
+        ] {
+            let mut config = tempfile::NamedTempFile::new().unwrap();
+            write!(config, "{value}").unwrap();
+            let error = read_destination_table_definition(config.path().to_str().unwrap())
+                .expect_err("invalid definitions fail before an API request");
+            assert!(error.message.contains(rejected_value), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn destination_table_definition_does_not_default_missing_required_fields() {
+        use std::io::Write as _;
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            config,
+            "{}",
+            serde_json::json!({
+                "engine": {
+                    "type": "MergeTree",
+                    "versionColumnId": null
+                },
+                "partitionBy": "tuple()",
+                "sortingKey": ["event_id"]
+            })
+        )
+        .unwrap();
+        let error = read_destination_table_definition(config.path().to_str().unwrap())
+            .expect_err("required fields are not fabricated");
+        assert!(
+            error.message.contains("columnIds") || error.message.contains("primaryKey"),
+            "{error:?}"
         );
     }
 
@@ -10172,6 +10427,86 @@ mod tests {
             panic!("expected clickpipe create kafka");
         };
         assert!(parsed.destination_roles.roles.is_empty());
+    }
+
+    #[test]
+    fn streaming_destination_options_parse_on_every_streaming_create() {
+        let mut pubsub = vec!["create", "pubsub", "svc-1", "--name", "pipe-1"];
+        pubsub.extend(pubsub_source_flags("./sa-key.json"));
+        pubsub.extend(["--database", "db", "--table", "events"]);
+
+        for mut args in [
+            vec![
+                "create",
+                "object-storage",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--source-url",
+                "https://bucket.example/events",
+                "--format",
+                "JSONEachRow",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ],
+            kafka_create_cli_args(),
+            vec![
+                "create",
+                "kinesis",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--stream-name",
+                "events",
+                "--region",
+                "eu-west-1",
+                "--format",
+                "JSONEachRow",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ],
+            pubsub,
+        ] {
+            args.extend([
+                "--managed-table",
+                "false",
+                "--table-definition-file",
+                "definition.json",
+            ]);
+            let options = match parse_clickpipe(&args) {
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::ObjectStorage(args),
+                } => args.destination_table,
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kafka(args),
+                } => args.destination_table,
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kinesis(args),
+                } => args.destination_table,
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::PubSub(args),
+                } => args.destination_table,
+                _ => panic!("expected streaming create"),
+            };
+            assert!(!options.managed_table);
+            assert_eq!(
+                options.table_definition_file.as_deref(),
+                Some("definition.json")
+            );
+        }
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(args),
+        } = parse_clickpipe(&kafka_create_cli_args())
+        else {
+            panic!("expected Kafka create");
+        };
+        assert!(args.destination_table.managed_table);
+        assert_eq!(args.destination_table.table_definition_file, None);
     }
 
     #[test]
@@ -10354,6 +10689,7 @@ mod tests {
             database: "d".into(),
             table: "t".into(),
             columns: vec![],
+            destination_table: StreamingDestinationTableArgs::default(),
             destination_roles: DestinationRoleArgs::default(),
             org_id: None,
         }
