@@ -12,7 +12,7 @@ use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
 use clap::builder::PossibleValuesParser;
-use clap::{Args, Subcommand};
+use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
     CreateReversePrivateEndpoint, CreateReversePrivateEndpointMskauthentication,
     CreateReversePrivateEndpointType, CustomPrivateDnsMapping, UpdateReversePrivateEndpoint,
@@ -55,6 +55,11 @@ pub enum ReversePrivateEndpointCommands {
     Create(Box<ReversePrivateEndpointCreateArgs>),
 
     /// Replace the custom private DNS mappings of a reverse private endpoint
+    #[command(group(
+        ArgGroup::new("mapping_change")
+            .required(true)
+            .args(["custom_private_dns_mappings", "clear_custom_private_dns_mappings"])
+    ))]
     Update {
         /// Service ID
         service_id: String,
@@ -63,8 +68,12 @@ pub enum ReversePrivateEndpointCommands {
         endpoint_id: String,
 
         /// Custom private DNS name (repeatable; replaces the whole list)
-        #[arg(long = "custom-private-dns-mapping", required = true)]
+        #[arg(long = "custom-private-dns-mapping")]
         custom_private_dns_mappings: Vec<String>,
+
+        /// Remove all custom private DNS mappings
+        #[arg(long)]
+        clear_custom_private_dns_mappings: bool,
 
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
@@ -179,6 +188,7 @@ pub async fn run(
             service_id,
             endpoint_id,
             custom_private_dns_mappings,
+            clear_custom_private_dns_mappings,
             org_id,
         } => {
             endpoint_update(
@@ -186,6 +196,7 @@ pub async fn run(
                 &service_id,
                 &endpoint_id,
                 &custom_private_dns_mappings,
+                clear_custom_private_dns_mappings,
                 org_id.as_deref(),
                 json,
             )
@@ -304,11 +315,15 @@ async fn endpoint_update(
     service_id: &str,
     endpoint_id: &str,
     custom_private_dns_mappings: &[String],
+    clear_custom_private_dns_mappings: bool,
     org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let request = build_update_reverse_private_endpoint_request(custom_private_dns_mappings);
+    let request = build_update_reverse_private_endpoint_request(
+        custom_private_dns_mappings,
+        clear_custom_private_dns_mappings,
+    );
     let endpoint = client
         .update_clickpipe_reverse_private_endpoint(&org_id, service_id, endpoint_id, &request)
         .await?;
@@ -477,9 +492,16 @@ fn build_create_reverse_private_endpoint_request(
     })
 }
 
-fn build_update_reverse_private_endpoint_request(names: &[String]) -> UpdateReversePrivateEndpoint {
+fn build_update_reverse_private_endpoint_request(
+    names: &[String],
+    clear_custom_private_dns_mappings: bool,
+) -> UpdateReversePrivateEndpoint {
     UpdateReversePrivateEndpoint {
-        custom_private_dns_mappings: build_custom_private_dns_mappings(names),
+        custom_private_dns_mappings: if clear_custom_private_dns_mappings {
+            Some(Vec::new())
+        } else {
+            build_custom_private_dns_mappings(names)
+        },
     }
 }
 
@@ -670,6 +692,7 @@ mod tests {
             service_id,
             endpoint_id,
             custom_private_dns_mappings,
+            clear_custom_private_dns_mappings,
             org_id,
         } = parse_endpoint_command(&[
             "update",
@@ -691,13 +714,46 @@ mod tests {
             custom_private_dns_mappings,
             vec!["db.example.com".to_string(), "*.example.com".to_string()]
         );
+        assert!(!clear_custom_private_dns_mappings);
         assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
-    /// The PATCH body only carries the mappings, so an update with none would
-    /// send `{}`: clap must reject it instead.
     #[test]
-    fn update_requires_at_least_one_mapping() {
+    fn parses_update_clear_custom_private_dns_mappings() {
+        let ReversePrivateEndpointCommands::Update {
+            custom_private_dns_mappings,
+            clear_custom_private_dns_mappings,
+            ..
+        } = parse_endpoint_command(&[
+            "update",
+            "svc-1",
+            "rpe-1",
+            "--clear-custom-private-dns-mappings",
+        ])
+        else {
+            panic!("expected update command");
+        };
+        assert!(custom_private_dns_mappings.is_empty());
+        assert!(clear_custom_private_dns_mappings);
+    }
+
+    #[test]
+    fn update_rejects_set_and_clear_mappings_together() {
+        let error = parse_error(&[
+            "update",
+            "svc-1",
+            "rpe-1",
+            "--custom-private-dns-mapping",
+            "db.example.com",
+            "--clear-custom-private-dns-mappings",
+        ]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    /// The PATCH body only carries mappings, so clap must reject an update
+    /// without either a replacement list or an explicit clear.
+    #[test]
+    fn update_requires_a_mapping_change() {
         let error = parse_error(&["update", "svc-1", "rpe-1"]);
         assert_eq!(
             error.kind(),
@@ -1049,10 +1105,10 @@ mod tests {
 
     #[test]
     fn build_update_request_sends_the_complete_mapping_list() {
-        let request = build_update_reverse_private_endpoint_request(&[
-            "db.example.com".to_string(),
-            "*.example.com".to_string(),
-        ]);
+        let request = build_update_reverse_private_endpoint_request(
+            &["db.example.com".to_string(), "*.example.com".to_string()],
+            false,
+        );
         assert_eq!(
             request.custom_private_dns_mappings,
             Some(vec![
@@ -1065,11 +1121,15 @@ mod tests {
             ])
         );
 
-        // Clap requires a mapping, so this shape is unreachable from the CLI;
-        // pinned so the builder never invents an empty array either.
+        // The required clap group makes this omitted shape unreachable, while
+        // the builder still preserves omitted versus explicitly cleared.
         assert_eq!(
-            build_update_reverse_private_endpoint_request(&[]).custom_private_dns_mappings,
+            build_update_reverse_private_endpoint_request(&[], false).custom_private_dns_mappings,
             None
+        );
+        assert_eq!(
+            build_update_reverse_private_endpoint_request(&[], true).custom_private_dns_mappings,
+            Some(Vec::new())
         );
     }
 

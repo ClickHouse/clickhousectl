@@ -97,12 +97,15 @@ CONTEXT FOR AGENTS:
         /// New high-availability type
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
         ha_type: Option<String>,
-        /// Add a tag (repeatable), e.g. --add-tag env=prod
-        #[arg(long)]
+        /// Add a tag (repeatable; conflicts with --clear-tags)
+        #[arg(long, conflicts_with = "clear_tags")]
         add_tag: Vec<String>,
-        /// Remove a tag by key (repeatable)
-        #[arg(long)]
+        /// Remove a tag by key (repeatable; conflicts with --clear-tags)
+        #[arg(long, conflicts_with = "clear_tags")]
         remove_tag: Vec<String>,
+        /// Remove all tags; conflicts with --add-tag and --remove-tag
+        #[arg(long, conflicts_with_all = ["add_tag", "remove_tag"])]
+        clear_tags: bool,
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
@@ -393,6 +396,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             ha_type,
             add_tag,
             remove_tag,
+            clear_tags,
             org_id,
         } => {
             let opts = PostgresUpdateOptions {
@@ -401,6 +405,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 ha_type: ha_type.as_deref(),
                 add_tag: &add_tag,
                 remove_tag: &remove_tag,
+                clear_tags,
                 org_id: org_id.as_deref(),
             };
             postgres_update(client, &postgres_id, opts, json).await
@@ -994,6 +999,7 @@ pub struct PostgresUpdateOptions<'a> {
     pub ha_type: Option<&'a str>,
     pub add_tag: &'a [String],
     pub remove_tag: &'a [String],
+    pub clear_tags: bool,
     pub org_id: Option<&'a str>,
 }
 
@@ -1250,8 +1256,11 @@ pub async fn postgres_update(
         .map(|v| parse_serde_enum::<PgHaType>(v, "ha-type", PgHaType::VALUES))
         .transpose()?;
 
-    // Merge tag add/remove against current tags if any tag changes requested.
-    let tags = if !opts.add_tag.is_empty() || !opts.remove_tag.is_empty() {
+    // Clearing is already a complete replacement, so it never needs a GET.
+    // Add/remove still merges against a complete current tag snapshot.
+    let tags = if opts.clear_tags {
+        Some(Vec::new())
+    } else if !opts.add_tag.is_empty() || !opts.remove_tag.is_empty() {
         let current = client
             .api()
             .postgres_service_get(&org_id, postgres_id)
@@ -2194,6 +2203,7 @@ mod tests {
             size,
             add_tag,
             remove_tag,
+            clear_tags,
             ..
         } = cmd
         else {
@@ -2203,6 +2213,7 @@ mod tests {
         assert_eq!(size.as_deref(), Some("c6gd.large"));
         assert_eq!(add_tag, vec!["env=prod", "team=data"]);
         assert_eq!(remove_tag, vec!["old"]);
+        assert!(!clear_tags);
     }
 
     #[test]
@@ -2212,6 +2223,10 @@ mod tests {
             postgres_id,
             name,
             size,
+            add_tag,
+            remove_tag,
+            clear_tags,
+            org_id,
             ..
         } = cmd
         else {
@@ -2220,6 +2235,54 @@ mod tests {
         assert_eq!(postgres_id, "pg-1");
         assert!(name.is_none());
         assert!(size.is_none());
+        assert!(add_tag.is_empty());
+        assert!(remove_tag.is_empty());
+        assert!(!clear_tags);
+        assert!(org_id.is_none());
+    }
+
+    #[test]
+    fn parses_postgres_update_clear_tags() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "update",
+            "pg-1",
+            "--clear-tags",
+        ]);
+        let PostgresCommands::Update {
+            add_tag,
+            remove_tag,
+            clear_tags,
+            ..
+        } = cmd
+        else {
+            panic!("expected update");
+        };
+        assert!(add_tag.is_empty());
+        assert!(remove_tag.is_empty());
+        assert!(clear_tags);
+    }
+
+    #[test]
+    fn rejects_conflicting_postgres_tag_changes() {
+        for flags in [
+            ["--add-tag", "env=prod", "--clear-tags"],
+            ["--clear-tags", "--add-tag", "env=prod"],
+            ["--remove-tag", "env", "--clear-tags"],
+            ["--clear-tags", "--remove-tag", "env"],
+        ] {
+            let result = Cli::try_parse_from(
+                ["clickhousectl", "cloud", "postgres", "update", "pg-1"]
+                    .into_iter()
+                    .chain(flags),
+            );
+            let Err(error) = result else {
+                panic!("tag diff and clear flags must conflict");
+            };
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]
@@ -2983,6 +3046,17 @@ mod tests {
         assert!(req.size.is_none());
         assert!(req.ha_type.is_none());
         assert!(req.tags.is_none());
+    }
+
+    #[test]
+    fn build_postgres_update_request_clears_tags_explicitly() {
+        let req = build_postgres_update_request(None, None, None, Some(Vec::new()));
+
+        assert_eq!(req.tags, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(req).unwrap(),
+            serde_json::json!({"tags": []})
+        );
     }
 
     #[test]

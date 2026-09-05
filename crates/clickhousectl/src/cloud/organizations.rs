@@ -130,9 +130,13 @@ pub enum MemberCommands {
         /// User ID
         user_id: String,
 
-        /// Role ID to assign (repeatable)
-        #[arg(long)]
+        /// Role ID to assign (repeatable; conflicts with --clear-roles)
+        #[arg(long, conflicts_with = "clear_roles")]
         role_id: Vec<String>,
+
+        /// Remove all assigned roles; conflicts with --role-id
+        #[arg(long, conflicts_with = "role_id")]
+        clear_roles: bool,
 
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
@@ -268,8 +272,19 @@ pub async fn run_member(
         MemberCommands::Update {
             user_id,
             role_id,
+            clear_roles,
             org_id,
-        } => member_update(client, &user_id, &role_id, org_id.as_deref(), json).await,
+        } => {
+            member_update(
+                client,
+                &user_id,
+                &role_id,
+                clear_roles,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
         MemberCommands::Remove { user_id, org_id } => {
             member_remove(client, &user_id, org_id.as_deref(), json).await
         }
@@ -396,9 +411,11 @@ fn build_org_update_request(options: &OrgUpdateOptions) -> CloudResult<Organizat
     })
 }
 
-fn build_member_update_request(role_ids: &[String]) -> MemberPatchRequest {
+fn build_member_update_request(role_ids: &[String], clear_roles: bool) -> MemberPatchRequest {
     MemberPatchRequest {
-        assigned_role_ids: if role_ids.is_empty() {
+        assigned_role_ids: if clear_roles {
+            Some(Vec::new())
+        } else if role_ids.is_empty() {
             None
         } else {
             Some(role_ids.to_vec())
@@ -612,11 +629,12 @@ async fn member_update(
     client: &CloudClient,
     user_id: &str,
     role_ids: &[String],
+    clear_roles: bool,
     org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
-    let request = build_member_update_request(role_ids);
+    let request = build_member_update_request(role_ids, clear_roles);
     let member = client.update_member(&org_id, user_id, &request).await?;
 
     if json {
@@ -991,6 +1009,7 @@ mod tests {
         let MemberCommands::Update {
             user_id,
             role_id,
+            clear_roles,
             org_id,
         } = command
         else {
@@ -998,6 +1017,7 @@ mod tests {
         };
         assert_eq!(user_id, "user-1");
         assert!(role_id.is_empty());
+        assert!(!clear_roles);
         assert!(org_id.is_none());
 
         let CloudCommands::Invitation { command } = parse_cloud_command(&[
@@ -1080,6 +1100,7 @@ mod tests {
         let MemberCommands::Update {
             user_id,
             role_id,
+            clear_roles,
             org_id,
         } = command
         else {
@@ -1087,6 +1108,7 @@ mod tests {
         };
         assert_eq!(user_id, "user-1");
         assert_eq!(role_id, vec!["role-1", "role-2"]);
+        assert!(!clear_roles);
         assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let CloudCommands::Invitation { command } = parse_cloud_command(&[
@@ -1116,6 +1138,48 @@ mod tests {
         assert_eq!(email, "user@example.com");
         assert_eq!(role_id, vec!["role-1", "role-2"]);
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn parses_member_clear_roles() {
+        let CloudCommands::Member { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "member",
+            "update",
+            "user-1",
+            "--clear-roles",
+        ]) else {
+            panic!("expected member command");
+        };
+        let MemberCommands::Update {
+            role_id,
+            clear_roles,
+            ..
+        } = command
+        else {
+            panic!("expected member update");
+        };
+        assert!(role_id.is_empty());
+        assert!(clear_roles);
+    }
+
+    #[test]
+    fn rejects_conflicting_member_role_changes() {
+        for flags in [
+            ["--role-id", "role-1", "--clear-roles"],
+            ["--clear-roles", "--role-id", "role-1"],
+        ] {
+            let result = Cli::try_parse_from(
+                ["clickhousectl", "cloud", "member", "update", "user-1"]
+                    .into_iter()
+                    .chain(flags),
+            );
+            let Err(error) = result else {
+                panic!("set and clear flags must conflict");
+            };
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]
@@ -1468,7 +1532,7 @@ mod tests {
 
     #[test]
     fn build_member_update_request_supports_minimal_fields() {
-        let request = build_member_update_request(&[]);
+        let request = build_member_update_request(&[], false);
 
         assert!(request.assigned_role_ids.is_none());
         #[cfg(feature = "deprecated-fields")]
@@ -1477,7 +1541,8 @@ mod tests {
 
     #[test]
     fn build_member_update_request_supports_maximal_fields() {
-        let request = build_member_update_request(&["role-1".to_string(), "role-2".to_string()]);
+        let request =
+            build_member_update_request(&["role-1".to_string(), "role-2".to_string()], false);
 
         assert_eq!(
             request.assigned_role_ids,
@@ -1485,6 +1550,17 @@ mod tests {
         );
         #[cfg(feature = "deprecated-fields")]
         assert!(request.role.is_none());
+    }
+
+    #[test]
+    fn build_member_update_request_clears_roles_explicitly() {
+        let request = build_member_update_request(&[], true);
+
+        assert_eq!(request.assigned_role_ids, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({"assignedRoleIds": []})
+        );
     }
 
     #[test]

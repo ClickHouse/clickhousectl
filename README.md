@@ -824,6 +824,10 @@ clickhousectl cloud postgres update <pg-id> \
   --size c6gd.4xlarge \
   --ha-type sync \
   --add-tag env=prod --remove-tag legacy
+clickhousectl cloud postgres update <pg-id> --clear-tags
+
+# --clear-tags replaces the tag list with an empty list and conflicts with
+# --add-tag and --remove-tag; omitting all three leaves tags unchanged.
 
 # Delete (works from any state, including running; no stop needed first)
 clickhousectl cloud postgres delete <pg-id>
@@ -1418,9 +1422,11 @@ clickhousectl cloud clickpipe reverse-private-endpoint create <service-id> \
   --custom-private-dns-mapping db.example.com \
   --custom-private-dns-mapping '*.example.com'
 
-# Replace the custom private DNS mappings, or delete the endpoint
+# Replace or clear the custom private DNS mappings, or delete the endpoint
 clickhousectl cloud clickpipe reverse-private-endpoint update <service-id> <endpoint-id> \
   --custom-private-dns-mapping db.example.com
+clickhousectl cloud clickpipe reverse-private-endpoint update <service-id> <endpoint-id> \
+  --clear-custom-private-dns-mappings
 clickhousectl cloud clickpipe reverse-private-endpoint delete <service-id> <endpoint-id>
 
 # Reference a Ready endpoint from a Kafka pipe
@@ -1461,7 +1467,8 @@ leading-wildcard name (`*.example.com`). The API does not support it for
 PrivateLink types it has to be enabled for the service by ClickHouse support.
 The custom private DNS mappings are the only field the API's PATCH accepts, so
 `update` sends the complete list given on the command line: repeat every mapping
-the endpoint should keep.
+the endpoint should keep, or pass `--clear-custom-private-dns-mappings` to remove
+all mappings. The replace and clear flags conflict.
 
 #### Discovering a source schema (beta)
 
@@ -1516,8 +1523,12 @@ Role IDs used by member, invitation, and API-key commands currently come from th
 clickhousectl cloud member list
 clickhousectl cloud member get <user-id>
 clickhousectl cloud member update <user-id> --role-id <role-id>
+clickhousectl cloud member update <user-id> --clear-roles
 clickhousectl cloud member remove <user-id>
 ```
+
+Omitting both member role flags leaves assigned roles unchanged.
+`--clear-roles` removes them all and conflicts with `--role-id`.
 
 ### Invitations
 
@@ -1545,10 +1556,13 @@ clickhousectl cloud key update <key-id> \
   --state disabled
 clickhousectl cloud key update <key-id> --expires-at 2030-12-31T23:59:59Z
 clickhousectl cloud key update <key-id> --clear-expiry
+clickhousectl cloud key update <key-id> --clear-roles --clear-ip-allow
 clickhousectl cloud key delete <key-id>
 ```
 
-On update, omitting both expiry flags keeps the current expiry. `--clear-expiry` removes it and conflicts with `--expires-at`; other key settings change only when their flags are supplied.
+On update, omitting expiry, role, or IP allowlist flags keeps that setting.
+`--clear-expiry`, `--clear-roles`, and `--clear-ip-allow` remove the respective
+setting and conflict with the corresponding set flag.
 
 ### Activity
 
