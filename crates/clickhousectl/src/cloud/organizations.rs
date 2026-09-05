@@ -21,6 +21,12 @@ pub enum OrgCommands {
         org_id: String,
     },
 
+    /// View organization quotas (Beta)
+    Quota {
+        #[command(subcommand)]
+        command: QuotaCommands,
+    },
+
     /// Update organization settings
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -99,11 +105,32 @@ impl OrgCommands {
         match self {
             OrgCommands::List => false,
             OrgCommands::Get { .. } => false,
+            OrgCommands::Quota { .. } => false,
             OrgCommands::Prometheus { .. } => false,
             OrgCommands::Usage { .. } => false,
             OrgCommands::Update { .. } => true,
         }
     }
+}
+
+#[derive(Subcommand)]
+pub enum QuotaCommands {
+    /// List organization quotas
+    List {
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get organization quota details
+    Get {
+        /// Quota code
+        quota_code: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -225,6 +252,7 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
     match command {
         OrgCommands::List => org_list(client, json).await,
         OrgCommands::Get { org_id } => org_get(client, &org_id, json).await,
+        OrgCommands::Quota { command } => run_quota(client, command, json).await,
         OrgCommands::Update {
             org_id,
             name,
@@ -255,6 +283,15 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         } => {
             let org_id = org_id.as_deref().or(legacy_org_id.as_deref());
             org_usage(client, org_id, &from_date, &to_date, &filter, json).await
+        }
+    }
+}
+
+async fn run_quota(client: &CloudClient, command: QuotaCommands, json: bool) -> CloudResult<()> {
+    match command {
+        QuotaCommands::List { org_id } => quota_list(client, org_id.as_deref(), json).await,
+        QuotaCommands::Get { quota_code, org_id } => {
+            quota_get(client, &quota_code, org_id.as_deref(), json).await
         }
     }
 }
@@ -477,6 +514,65 @@ async fn org_get(client: &CloudClient, org_id: &str, json: bool) -> CloudResult<
         println!("{}", serde_json::to_string_pretty(&organization)?);
     } else {
         print_human(&organization)?;
+    }
+    Ok(())
+}
+
+async fn quota_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let quotas = client.list_organization_quotas(&org_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&quotas)?);
+    } else {
+        if quotas.is_empty() {
+            println!("No organization quotas found");
+            return Ok(());
+        }
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "Code")]
+            code: String,
+            #[tabled(rename = "Scope")]
+            scope: String,
+            #[tabled(rename = "Usage")]
+            usage: String,
+            #[tabled(rename = "Limit")]
+            limit: String,
+            #[tabled(rename = "Adjustable")]
+            adjustable: String,
+        }
+        let rows: Vec<Row> = quotas
+            .into_iter()
+            .map(|quota| Row {
+                name: or_absent(quota.name.as_deref()),
+                code: or_absent(quota.quota_code.as_ref()),
+                scope: or_absent(quota.scope.as_ref()),
+                usage: or_absent(quota.usage),
+                limit: or_absent(quota.value),
+                adjustable: or_absent(quota.adjustable),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::markdown()));
+    }
+    Ok(())
+}
+
+async fn quota_get(
+    client: &CloudClient,
+    quota_code: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let quota = client.get_organization_quota(&org_id, quota_code).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&quota)?);
+    } else {
+        print_human(&quota)?;
     }
     Ok(())
 }
@@ -780,6 +876,31 @@ impl CloudClient {
             // missing organization, not a bad request (#666).
             self.convert_error_for_lookup(error, ResourceLookup::organization(org_id))
         })?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn list_organization_quotas(
+        &self,
+        org_id: &str,
+    ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::OrganizationQuota>> {
+        let response = self
+            .api()
+            .organization_quotas_get_list(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_organization_quota(
+        &self,
+        org_id: &str,
+        quota_code: &str,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::OrganizationQuota> {
+        let response = self
+            .api()
+            .organization_quota_get(org_id, quota_code)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
     }
 
@@ -1266,6 +1387,47 @@ mod tests {
     }
 
     #[test]
+    fn parses_org_quota_commands() {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "quota",
+            "list",
+            "--org-id",
+            "org-1",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Quota {
+            command: QuotaCommands::List { org_id },
+        } = command
+        else {
+            panic!("expected quota list command");
+        };
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "quota",
+            "get",
+            "replicas-per-warehouse",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Quota {
+            command: QuotaCommands::Get { quota_code, org_id },
+        } = command
+        else {
+            panic!("expected quota get command");
+        };
+        assert_eq!(quota_code, "replicas-per-warehouse");
+        assert!(org_id.is_none());
+    }
+
+    #[test]
     fn parses_legacy_org_id_positionals() {
         let prometheus =
             Cli::try_parse_from(["clickhousectl", "cloud", "org", "prometheus", "org-1"]).unwrap();
@@ -1393,6 +1555,18 @@ mod tests {
     fn top_level_write_classification_covers_every_organization_access_command() {
         assert_write(&["clickhousectl", "cloud", "org", "list"], false);
         assert_write(&["clickhousectl", "cloud", "org", "get", "org-1"], false);
+        assert_write(&["clickhousectl", "cloud", "org", "quota", "list"], false);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "quota",
+                "get",
+                "services-per-organization",
+            ],
+            false,
+        );
         assert_write(&["clickhousectl", "cloud", "org", "prometheus"], false);
         assert_write(
             &[

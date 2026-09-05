@@ -641,6 +641,8 @@ Reading a service, Postgres service or organization â€” or deleting a service â€
 ```bash
 clickhousectl cloud org list              # List organizations
 clickhousectl cloud org get <org-id>      # Get organization details
+clickhousectl cloud org quota list --org-id <org-id>
+clickhousectl cloud org quota get services-per-organization --org-id <org-id>
 clickhousectl cloud org update <org-id> --name "Renamed Org"
 clickhousectl cloud org update <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
@@ -650,8 +652,10 @@ clickhousectl cloud org usage \
   --from-date 2024-01-01 \
   --to-date 2024-01-31 \
   --filter tag:Environment=Production   # max 31-day window (to-date inclusive), costs in CHC
-# Of the org commands, --org-id applies to prometheus/usage only; list takes none and get/update take a positional <org-id>.
+# Org quota, prometheus, and usage commands auto-detect the org when --org-id is omitted.
+# Org list takes no ID; org get/update take a positional <org-id>.
 # It is auto-detected only when your credentials reach exactly one organization.
+# Organization quota commands are beta and read-only, so they support OAuth.
 ```
 
 ### Services
