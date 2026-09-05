@@ -5,7 +5,7 @@ use crate::openapi::{
     EnumConstraint, EnumContext, EnumValues, OpenApiInventory, PropertyStep, pascalize,
 };
 use crate::report::{DriftReport, Finding, FindingKind, UnsupportedEnumConstraint};
-use crate::rust_inventory::RustInventory;
+use crate::rust_inventory::{RustInventory, TypeNode};
 
 pub(crate) fn compare(
     rust: &RustInventory,
@@ -17,6 +17,7 @@ pub(crate) fn compare(
     compare_operations(rust, spec, config, &mut report);
     compare_models_and_refs(rust, spec, &mut report);
     compare_fields(rust, spec, config, &mut report);
+    compare_additional_properties(rust, spec, &mut report);
     compare_beta_and_deprecation(rust, spec, config, &mut report);
     compare_enums(rust, spec, config, &mut report);
     compare_snapshot(spec, snapshot, &mut report);
@@ -237,7 +238,7 @@ fn compare_fields(
                 continue;
             };
             for (spec_name, field) in &struct_info.fields {
-                if property_names.contains(spec_name.as_str()) {
+                if field.flatten || property_names.contains(spec_name.as_str()) {
                     continue;
                 }
                 let key = (rust_name.clone(), spec_name.clone());
@@ -264,6 +265,120 @@ fn compare_fields(
         &extra_hits,
         report,
     );
+}
+
+/// Dynamic keys are invisible to ordinary named-property comparison. Require a
+/// typed string-keyed map (directly, through aliases, or in a flattened field)
+/// so deserialization cannot silently discard those keys.
+fn compare_additional_properties(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    report: &mut DriftReport,
+) {
+    for (schema_name, additional) in &spec.additional_properties {
+        for (name, direction) in field_check_targets(rust, spec, schema_name) {
+            if !rust.model_types.contains(&name) {
+                continue;
+            }
+            let named = TypeNode::Path(name.clone());
+            let resolved = rust.resolve_alias(&named);
+            let candidate = match resolved {
+                TypeNode::Map(_, _) => Some(resolved),
+                TypeNode::Path(struct_name) => rust.structs.get(struct_name).and_then(|info| {
+                    info.fields
+                        .values()
+                        .find(|field| field.flatten)
+                        .map(|field| &field.rust_type)
+                }),
+                _ => None,
+            };
+            let candidate = candidate.map(|ty| {
+                let ty = rust.resolve_alias(ty);
+                // A flattened response map can itself be absent.
+                if let TypeNode::Option(inner) = ty {
+                    rust.resolve_alias(inner)
+                } else {
+                    ty
+                }
+            });
+            let matches = candidate.is_some_and(|ty| {
+                let TypeNode::Map(key, value) = ty else {
+                    return false;
+                };
+                matches!(rust.resolve_alias(key), TypeNode::Path(name) if name == "String")
+                    && map_value_matches(rust, spec, value, &additional.value_schema, direction)
+            });
+            if !matches {
+                let actual = candidate.unwrap_or(resolved).display();
+                report.findings.push(Finding::new(
+                    FindingKind::AdditionalPropertiesMismatch,
+                    format!("{name} must preserve additionalProperties in a typed string-keyed map, found {actual}"),
+                )
+                .at_spec(&additional.pointer)
+                .at_rust(format!("models.rs::{name}"))
+                .detail("schema", schema_name)
+                .detail("expected_value_schema", additional.value_schema.to_string())
+                .detail("actual", actual));
+            }
+        }
+    }
+}
+
+fn map_value_matches(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    ty: &TypeNode,
+    schema: &serde_json::Value,
+    direction: Direction,
+) -> bool {
+    let ty = rust.resolve_alias(ty);
+    if schema.get("nullable").and_then(serde_json::Value::as_bool) == Some(true) {
+        let TypeNode::Option(inner) = ty else {
+            return false;
+        };
+        let mut non_nullable = schema.clone();
+        non_nullable.as_object_mut().unwrap().remove("nullable");
+        return map_value_matches(rust, spec, inner, &non_nullable, direction);
+    }
+    if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
+        let Some(schema_name) = reference.strip_prefix("#/components/schemas/") else {
+            return false;
+        };
+        let schema_name = schema_name.replace("~1", "/").replace("~0", "~");
+        let expected = match direction {
+            Direction::Request => pascalize(&schema_name),
+            Direction::Response => response_position_type(rust, spec, &pascalize(&schema_name)),
+        };
+        return ty == rust.resolve_alias(&TypeNode::Path(expected));
+    }
+    match schema.get("type").and_then(serde_json::Value::as_str) {
+        Some("string") => matches!(ty, TypeNode::Path(name) if name == "String"),
+        Some("boolean") => matches!(ty, TypeNode::Path(name) if name == "bool"),
+        Some("integer") => {
+            matches!(ty, TypeNode::Path(name) if matches!(name.as_str(), "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "isize" | "usize"))
+        }
+        Some("number") => {
+            matches!(ty, TypeNode::Path(name) if matches!(name.as_str(), "f32" | "f64"))
+        }
+        Some("array") => match ty {
+            TypeNode::Vec(inner) => schema
+                .get("items")
+                .is_some_and(|items| map_value_matches(rust, spec, inner, items, direction)),
+            _ => false,
+        },
+        Some("object") => match ty {
+            TypeNode::Map(key, value) => {
+                matches!(rust.resolve_alias(key), TypeNode::Path(name) if name == "String")
+                    && schema
+                        .get("additionalProperties")
+                        .is_some_and(|additional| {
+                            map_value_matches(rust, spec, value, additional, direction)
+                        })
+            }
+            _ => false,
+        },
+        _ => false,
+    }
 }
 
 fn compare_beta_and_deprecation(
@@ -961,6 +1076,174 @@ mod tests {
         .unwrap();
         let openapi = OpenApiInventory::build(&spec, &config).unwrap();
         compare(&rust, &openapi, &openapi, &config)
+    }
+
+    #[test]
+    fn additional_properties_detects_empty_structs_in_both_directions() {
+        let report = analyze_directional(
+            "pub struct Widget {} pub struct WidgetResponse {}",
+            directional_spec(
+                serde_json::json!({
+                    "type": "object", "additionalProperties": {"type": "string"}
+                }),
+                true,
+                true,
+            ),
+            AnalyzerConfig::default(),
+        );
+        assert_eq!(report.findings.len(), 2, "{}", report.render_text());
+        for finding in &report.findings {
+            assert_eq!(finding.kind, FindingKind::AdditionalPropertiesMismatch);
+            assert_eq!(
+                finding.spec_pointer.as_deref(),
+                Some("/components/schemas/Widget/additionalProperties")
+            );
+        }
+        assert_eq!(
+            report.findings[0].rust_item.as_deref(),
+            Some("models.rs::Widget")
+        );
+        assert_eq!(
+            report.findings[1].rust_item.as_deref(),
+            Some("models.rs::WidgetResponse")
+        );
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["schema_version"], 4);
+        assert_eq!(
+            json["findings"][0]["kind"],
+            "additional_properties_mismatch"
+        );
+        assert!(
+            report
+                .render_text()
+                .contains("AdditionalPropertiesMismatch")
+        );
+    }
+
+    #[test]
+    fn additional_properties_accepts_map_aliases_and_flattened_maps() {
+        for models in [
+            "pub type Widget = std::collections::BTreeMap<String, String>; pub type WidgetResponse = Widget;",
+            "pub type Text = String; pub type Widget = HashMap<Text, Text>; pub type WidgetResponse = Widget;",
+            "pub struct Widget { #[serde(flatten)] pub values: BTreeMap<String, String> } pub type WidgetResponse = Widget;",
+        ] {
+            let report = analyze_directional(
+                models,
+                directional_spec(
+                    serde_json::json!({
+                        "type": "object", "additionalProperties": {"type": "string"}
+                    }),
+                    true,
+                    true,
+                ),
+                AnalyzerConfig::default(),
+            );
+            assert!(!report.has_drift(), "{}", report.render_text());
+        }
+    }
+
+    #[test]
+    fn additional_properties_rejects_losing_or_untyped_representations() {
+        for models in [
+            "pub type Widget = serde_json::Value;",
+            "pub type Widget = BTreeMap<String, serde_json::Value>;",
+            "pub type Widget = BTreeMap<i64, String>;",
+            "pub type Widget = BTreeMap<String, i64>;",
+            "pub type Widget = BTreeMap<String, Option<String>>;",
+            "pub struct Widget { pub values: BTreeMap<String, String> }",
+            "pub type Widget = Cycle; pub type Cycle = Widget;",
+        ] {
+            let report = analyze_fixture(
+                models,
+                serde_json::json!({
+                    "type": "object", "additionalProperties": {"type": "string"}
+                }),
+                AnalyzerConfig::default(),
+            );
+            assert_eq!(
+                report.findings.len(),
+                1,
+                "{models}: {}",
+                report.render_text()
+            );
+            assert_eq!(
+                report.findings[0].kind,
+                FindingKind::AdditionalPropertiesMismatch
+            );
+        }
+    }
+
+    #[test]
+    fn additional_properties_leaves_untyped_and_closed_objects_alone() {
+        for additional in [
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!({}),
+        ] {
+            let report = analyze_fixture(
+                "pub struct Widget {}",
+                serde_json::json!({
+                    "type": "object", "additionalProperties": additional
+                }),
+                AnalyzerConfig::default(),
+            );
+            assert!(!report.has_drift(), "{}", report.render_text());
+        }
+    }
+
+    #[test]
+    fn additional_properties_maps_coexist_with_named_properties() {
+        let report = analyze_fixture(
+            "pub struct Widget { pub name: String, #[serde(flatten)] pub values: BTreeMap<String, String> }",
+            serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}, "additionalProperties": {"type": "string"}}),
+            AnalyzerConfig::default(),
+        );
+        assert!(!report.has_drift(), "{}", report.render_text());
+    }
+
+    #[test]
+    fn additional_properties_checks_nested_and_nullable_values() {
+        for (value_type, value_schema) in [
+            ("bool", serde_json::json!({"type": "boolean"})),
+            ("i64", serde_json::json!({"type": "integer"})),
+            ("f64", serde_json::json!({"type": "number"})),
+            (
+                "Vec<String>",
+                serde_json::json!({"type": "array", "items": {"type": "string"}}),
+            ),
+            (
+                "BTreeMap<String, String>",
+                serde_json::json!({"type": "object", "additionalProperties": {"type": "string"}}),
+            ),
+            (
+                "Option<String>",
+                serde_json::json!({"type": "string", "nullable": true}),
+            ),
+        ] {
+            let report = analyze_fixture(
+                &format!("pub type Widget = BTreeMap<String, {value_type}>;"),
+                serde_json::json!({"type": "object", "additionalProperties": value_schema}),
+                AnalyzerConfig::default(),
+            );
+            assert!(!report.has_drift(), "{}", report.render_text());
+        }
+    }
+
+    #[test]
+    fn additional_properties_resolves_referenced_value_models_by_direction() {
+        let mut spec = directional_spec(
+            serde_json::json!({"type": "object", "additionalProperties": {"$ref": "#/components/schemas/Entry"}}),
+            true,
+            true,
+        );
+        spec["components"]["schemas"]["Entry"] =
+            serde_json::json!({"type": "object", "properties": {"name": {"type": "string"}}});
+        let report = analyze_directional(
+            "pub type Widget = BTreeMap<String, Entry>; pub type WidgetResponse = BTreeMap<String, EntryResponse>; pub struct Entry {pub name: String} pub struct EntryResponse {pub name: Option<String>}",
+            spec,
+            AnalyzerConfig::default(),
+        );
+        assert!(!report.has_drift(), "{}", report.render_text());
     }
 
     #[test]

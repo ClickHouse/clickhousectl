@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const REPORT_SCHEMA_VERSION: u32 = 3;
+pub const REPORT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -14,6 +14,7 @@ pub enum FindingKind {
     MissingStructField,
     ExtraStructField,
     FieldOptionalityMismatch,
+    AdditionalPropertiesMismatch,
     NewlyBetaOperation,
     GraduatedBetaOperation,
     NewlyDeprecatedField,

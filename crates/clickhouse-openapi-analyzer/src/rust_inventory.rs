@@ -358,6 +358,7 @@ fn evaluate_name_value_cfg(value: &syn::MetaNameValue) -> syn::Result<CfgValue> 
 pub(crate) enum TypeNode {
     Option(Box<TypeNode>),
     Vec(Box<TypeNode>),
+    Map(Box<TypeNode>, Box<TypeNode>),
     Boxed(Box<TypeNode>),
     Reference(Box<TypeNode>),
     Path(String),
@@ -375,18 +376,24 @@ impl TypeNode {
                     return Self::Other(ty.to_token_stream().to_string());
                 };
                 let name = segment.ident.unraw().to_string();
-                let first_type = match &segment.arguments {
-                    PathArguments::AngleBracketed(arguments) => {
-                        arguments.args.iter().find_map(|arg| {
+                let types: Vec<_> = match &segment.arguments {
+                    PathArguments::AngleBracketed(arguments) => arguments
+                        .args
+                        .iter()
+                        .filter_map(|arg| {
                             if let GenericArgument::Type(inner) = arg {
                                 Some(Self::from_syn(inner))
                             } else {
                                 None
                             }
                         })
-                    }
-                    _ => None,
+                        .collect(),
+                    _ => Vec::new(),
                 };
+                if matches!(name.as_str(), "BTreeMap" | "HashMap" | "Map") && types.len() >= 2 {
+                    return Self::Map(Box::new(types[0].clone()), Box::new(types[1].clone()));
+                }
+                let first_type = types.into_iter().next();
                 match (name.as_str(), first_type) {
                     ("Option", Some(inner)) => Self::Option(Box::new(inner)),
                     ("Vec", Some(inner)) => Self::Vec(Box::new(inner)),
@@ -415,15 +422,15 @@ impl TypeNode {
             | Self::Boxed(inner)
             | Self::Reference(inner) => inner.terminal(),
             Self::Path(name) => Some(name),
-            Self::Other(_) => None,
+            Self::Map(_, _) | Self::Other(_) => None,
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn display(&self) -> String {
         match self {
             Self::Option(inner) => format!("Option<{}>", inner.display()),
             Self::Vec(inner) => format!("Vec<{}>", inner.display()),
+            Self::Map(key, value) => format!("Map<{}, {}>", key.display(), value.display()),
             Self::Boxed(inner) => format!("Box<{}>", inner.display()),
             Self::Reference(inner) => format!("&{}", inner.display()),
             Self::Path(name) | Self::Other(name) => name.clone(),
@@ -450,6 +457,7 @@ pub(crate) struct FieldInfo {
     /// Response-tree `Option` fields must all carry it so an absent field is
     /// omitted from serialized output rather than emitted as `null`.
     pub(crate) skip_serializing_if: bool,
+    pub(crate) flatten: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -618,6 +626,7 @@ impl RustInventory {
                                     // the attribute up to the struct.
                                     serde_default: options.default || container.default,
                                     skip_serializing_if: options.skip_serializing_if,
+                                    flatten: options.flatten,
                                 },
                             );
                         }
@@ -781,6 +790,20 @@ impl RustInventory {
         seen
     }
 
+    pub(crate) fn resolve_alias<'a>(&'a self, mut ty: &'a TypeNode) -> &'a TypeNode {
+        let mut seen = BTreeSet::new();
+        while let TypeNode::Path(name) = ty {
+            if !seen.insert(name) {
+                break;
+            }
+            let Some(alias) = self.aliases.get(name) else {
+                break;
+            };
+            ty = alias;
+        }
+        ty
+    }
+
     pub(crate) fn terminal_type(&self, ty: &TypeNode) -> Option<String> {
         self.resolve_terminal(ty, &mut BTreeSet::new())
     }
@@ -819,7 +842,7 @@ impl RustInventory {
                     .get(name)
                     .and_then(|alias| self.resolve_array_item(alias, seen))
             }
-            TypeNode::Other(_) => None,
+            TypeNode::Map(_, _) | TypeNode::Other(_) => None,
         }
     }
 }
@@ -889,6 +912,7 @@ struct SerdeOptions {
     other: bool,
     default: bool,
     skip_serializing_if: bool,
+    flatten: bool,
 }
 
 fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
@@ -934,6 +958,8 @@ fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
                 if meta.input.peek(syn::Token![=]) {
                     let _: Expr = meta.value()?.parse()?;
                 }
+            } else if meta.path.is_ident("flatten") {
+                options.flatten = true;
             } else if meta.path.is_ident("skip_serializing_if") {
                 options.skip_serializing_if = true;
                 let _: Expr = meta.value()?.parse()?;

@@ -1713,7 +1713,10 @@ fn postgres_instance_config_response_converts_back_into_a_request_body() {
             max_connections: Some(serde_json::json!(200)),
             ..Default::default()
         }),
-        pg_bouncer_config: Some(PgBouncerConfigResponse {}),
+        pg_bouncer_config: Some(PgBouncerConfigResponse::from([
+            ("default_pool_size".to_string(), "16".to_string()),
+            ("future_parameter".to_string(), "on".to_string()),
+        ])),
     };
     let request = PostgresInstanceConfig::try_from(response).unwrap();
     assert_eq!(
@@ -1722,7 +1725,7 @@ fn postgres_instance_config_response_converts_back_into_a_request_body() {
     );
     assert_eq!(
         serde_json::to_value(&request).unwrap(),
-        serde_json::json!({ "pgConfig": { "max_connections": 200 }, "pgBouncerConfig": {} })
+        serde_json::json!({ "pgConfig": { "max_connections": 200 }, "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"} })
     );
 }
 
@@ -6251,4 +6254,60 @@ fn clickstack_nested_writeback_preserves_number_format_and_source_expressions() 
     let response: ClickStackSourceResponse = serde_json::from_value(trace.clone()).unwrap();
     let request = ClickStackSource::try_from(response).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), trace);
+}
+
+#[test]
+fn pgbouncer_map_round_trips_arbitrary_string_parameters() {
+    let document = serde_json::json!({
+        "default_pool_size": "16", "future_parameter": "on", "empty": ""
+    });
+    let request: PgBouncerConfig = serde_json::from_value(document.clone()).unwrap();
+    let response: PgBouncerConfigResponse = serde_json::from_value(document.clone()).unwrap();
+    assert_eq!(request, response);
+    assert_eq!(serde_json::to_value(request).unwrap(), document);
+    assert_eq!(serde_json::to_value(response).unwrap(), document);
+}
+
+#[test]
+fn pgbouncer_requests_reject_non_string_values() {
+    for value in [
+        serde_json::json!(16),
+        serde_json::json!(true),
+        serde_json::json!(null),
+        serde_json::json!([]),
+        serde_json::json!({}),
+    ] {
+        assert!(
+            serde_json::from_value::<PgBouncerConfig>(
+                serde_json::json!({"default_pool_size": value})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn pgbouncer_parent_responses_preserve_missing_null_and_empty_sections() {
+    for document in [
+        serde_json::json!({}),
+        serde_json::json!({"pgBouncerConfig": null}),
+    ] {
+        let config: PostgresInstanceConfigResponse =
+            serde_json::from_value(document.clone()).unwrap();
+        assert!(config.pg_bouncer_config.is_none());
+        assert_eq!(serde_json::to_value(config).unwrap(), serde_json::json!({}));
+        let update: PostgresInstanceUpdateConfigResponse =
+            serde_json::from_value(document).unwrap();
+        assert!(update.pg_bouncer_config.is_none());
+        assert_eq!(serde_json::to_value(update).unwrap(), serde_json::json!({}));
+    }
+    let config: PostgresInstanceConfigResponse = serde_json::from_value(
+        serde_json::json!({"pgBouncerConfig": {}, "futureField": "ignored"}),
+    )
+    .unwrap();
+    assert_eq!(config.pg_bouncer_config, Some(PgBouncerConfig::new()));
+    assert_eq!(
+        serde_json::to_value(config).unwrap(),
+        serde_json::json!({"pgBouncerConfig": {}})
+    );
 }

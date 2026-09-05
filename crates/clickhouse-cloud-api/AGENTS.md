@@ -35,6 +35,8 @@ outage. Tolerance lives in the **type system**, not in serde attributes:
   `false` that a get → edit → write-back caller silently persists; on an `Option` field it is dead weight.
   Sweeping it across every field was the superseded policy of #312/#313 — do not reintroduce it.
 - **Unknown fields are ignored.** Never `deny_unknown_fields`.
+- **Typed `additionalProperties` maps preserve dynamic keys.** Use typed string-keyed map aliases instead of
+  empty structs; keep parent response fields optional. The analyzer checks named map schemas in both directions.
 
 ### Naming and the split
 
