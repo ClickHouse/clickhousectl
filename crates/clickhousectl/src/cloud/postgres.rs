@@ -5,11 +5,12 @@ use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_line};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
-    ApiResponse, PgBouncerConfig, PgConfig, PgHaType, PgIdProperty, PgProvider, PgSize, PgVersion,
-    PostgresInstanceConfig, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
-    PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
-    PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
-    ResourceTagsV1, ResourceTagsV1Response,
+    ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultTransactionIsolation,
+    PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType, PgIdProperty, PgProvider,
+    PgSize, PgVersion, PostgresInstanceConfig, PostgresService, PostgresServiceListItem,
+    PostgresServicePatchRequest, PostgresServicePostRequest, PostgresServiceReadReplicaRequest,
+    PostgresServiceRestoreRequest, PostgresServiceSetPassword, PostgresServiceSetState,
+    PostgresServiceSetStateCommand, ResourceTagsV1, ResourceTagsV1Response,
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -291,7 +292,7 @@ pub enum ConfigCommands {
         /// (statement_timeout=5s). Last value wins on a duplicate key.
         #[arg(long = "set", conflicts_with = "file")]
         sets: Vec<String>,
-        /// JSON file with a partial PostgresInstanceConfig object
+        /// JSON file with explicit pgConfig and pgBouncerConfig objects
         #[arg(long, conflicts_with = "sets")]
         file: Option<PathBuf>,
         /// Organization ID (auto-detected only if you have one org)
@@ -574,29 +575,131 @@ fn load_json_file<T: DeserializeOwned>(path: &Path) -> CloudResult<T> {
         .map_err(|e| CloudError::new(format!("failed to parse {} as JSON: {}", path.display(), e)))
 }
 
+/// The closed set of Postgres GUCs accepted by the Cloud API's `pgConfig`
+/// schema. The library stays tolerant when reading responses, so write inputs
+/// are checked here before serde can discard a misspelled field.
+const PG_CONFIG_KEYS: [&str; 31] = [
+    "autovacuum_analyze_scale_factor",
+    "autovacuum_max_workers",
+    "autovacuum_naptime",
+    "autovacuum_vacuum_cost_delay",
+    "autovacuum_vacuum_cost_limit",
+    "autovacuum_vacuum_insert_scale_factor",
+    "autovacuum_vacuum_scale_factor",
+    "autovacuum_work_mem",
+    "default_transaction_isolation",
+    "effective_cache_size",
+    "effective_io_concurrency",
+    "idle_in_transaction_session_timeout",
+    "idle_session_timeout",
+    "lock_timeout",
+    "maintenance_work_mem",
+    "max_connections",
+    "max_parallel_maintenance_workers",
+    "max_parallel_workers",
+    "max_parallel_workers_per_gather",
+    "max_slot_wal_keep_size",
+    "max_wal_size",
+    "max_worker_processes",
+    "min_wal_size",
+    "random_page_cost",
+    "ssl_min_protocol_version",
+    "statement_timeout",
+    "transaction_timeout",
+    "wal_compression",
+    "wal_keep_size",
+    "wal_sender_timeout",
+    "work_mem",
+];
+
+fn validate_pg_config(doc: &serde_json::Value) -> CloudResult<()> {
+    let config = doc
+        .as_object()
+        .ok_or_else(|| CloudError::new("pgConfig must be a JSON object"))?;
+
+    for (key, value) in config {
+        if !PG_CONFIG_KEYS.contains(&key.as_str()) {
+            return Err(CloudError::new(format!(
+                "unknown pgConfig key '{key}'; expected one of: {}",
+                PG_CONFIG_KEYS.join(", ")
+            )));
+        }
+
+        if value.is_null() {
+            return Err(CloudError::new(format!(
+                "invalid pgConfig value for '{key}': null is not supported"
+            )));
+        }
+
+        let allowed = match key.as_str() {
+            "default_transaction_isolation" => Some(PgConfigDefaultTransactionIsolation::VALUES),
+            "ssl_min_protocol_version" => Some(PgConfigSslMinProtocolVersion::VALUES),
+            "wal_compression" => Some(PgConfigWalCompression::VALUES),
+            _ => None,
+        };
+        if let Some(allowed) = allowed {
+            let Some(value) = value.as_str() else {
+                return Err(CloudError::new(format!(
+                    "invalid pgConfig value for '{key}': expected one of: {}",
+                    allowed.join(", ")
+                )));
+            };
+            if !allowed.contains(&value) {
+                return Err(CloudError::new(format!(
+                    "invalid pgConfig value '{value}' for '{key}'; expected one of: {}",
+                    allowed.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn pg_config_from_json(doc: serde_json::Value) -> CloudResult<PgConfig> {
+    validate_pg_config(&doc).map_err(|e| CloudError::new(format!("invalid pgConfig: {e}")))?;
+    serde_json::from_value(doc).map_err(|e| CloudError::new(format!("invalid pgConfig: {e}")))
+}
+
+fn load_pg_config_file(path: &Path) -> CloudResult<PgConfig> {
+    let doc = load_json_file::<serde_json::Value>(path)?;
+    pg_config_from_json(doc)
+        .map_err(|e| CloudError::new(format!("invalid PgConfig file {}: {e}", path.display())))
+}
+
 /// Builds the `postgres config` write body from a user-supplied JSON document.
 ///
 /// The document root must be a JSON object; anything else (a scalar, an array,
 /// `null`) is rejected rather than read as "no sections", which would send an
 /// empty body and reset the configuration.
 ///
-/// The API rejects a body that omits either `pgConfig` or `pgBouncerConfig`, and
-/// the request model is strict (no serde defaults), so an omitted key of an
-/// object root resolves to an empty object here — explicitly, at the point of use.
+/// The API schema requires both `pgConfig` and `pgBouncerConfig`. Require each
+/// section explicitly so a missing section cannot be mistaken for an intentional
+/// empty object.
 fn instance_config_from_json(doc: &serde_json::Value) -> CloudResult<PostgresInstanceConfig> {
     let root = doc
         .as_object()
         .ok_or_else(|| CloudError::new("configuration document must be a JSON object"))?;
-    let section = |key: &str| {
-        root.get(key)
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({}))
-    };
+    for key in root.keys() {
+        if key != "pgConfig" && key != "pgBouncerConfig" {
+            return Err(CloudError::new(format!(
+                "unknown configuration section '{key}'; expected pgConfig and pgBouncerConfig"
+            )));
+        }
+    }
+    let pg_config = root.get("pgConfig").ok_or_else(|| {
+        CloudError::new(
+            "configuration document is missing required 'pgConfig' section; use {} to make it explicitly empty",
+        )
+    })?;
+    let pg_bouncer_config = root.get("pgBouncerConfig").ok_or_else(|| {
+        CloudError::new(
+            "configuration document is missing required 'pgBouncerConfig' section; use {} to make it explicitly empty",
+        )
+    })?;
     Ok(PostgresInstanceConfig {
-        pg_config: serde_json::from_value(section("pgConfig"))
-            .map_err(|e| CloudError::new(format!("invalid pgConfig: {}", e)))?,
-        pg_bouncer_config: serde_json::from_value(section("pgBouncerConfig"))
-            .map_err(|e| CloudError::new(format!("invalid pgBouncerConfig: {}", e)))?,
+        pg_config: pg_config_from_json(pg_config.clone())?,
+        pg_bouncer_config: serde_json::from_value(pg_bouncer_config.clone())
+            .map_err(|e| CloudError::new(format!("invalid pgBouncerConfig: {e}")))?,
     })
 }
 
@@ -623,6 +726,7 @@ pub(super) fn parse_pg_config_overrides(
             .unwrap_or_else(|_| serde_json::Value::String(val.to_string()));
         out.insert(key.to_string(), parsed);
     }
+    validate_pg_config(&serde_json::Value::Object(out.clone()))?;
     Ok(out)
 }
 
@@ -1062,10 +1166,7 @@ pub async fn postgres_create(
         .map(|v| parse_serde_enum(v, "ha-type", PgHaType::VALUES))
         .transpose()?;
     let tags = parse_tags(opts.tags)?;
-    let pg_config = opts
-        .pg_config_file
-        .map(load_json_file::<PgConfig>)
-        .transpose()?;
+    let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
         .map(load_json_file::<PgBouncerConfig>)
@@ -1325,6 +1426,7 @@ pub async fn postgres_config_patch(
         let overrides = parse_pg_config_overrides(sets)?;
         instance_config_from_json(&serde_json::json!({
             "pgConfig": serde_json::Value::Object(overrides),
+            "pgBouncerConfig": {},
         }))
         .map_err(|e| CloudError::new(format!("failed to build config from --set entries: {}", e)))?
     };
@@ -1408,10 +1510,7 @@ pub async fn postgres_read_replica_create(
     json: bool,
 ) -> CloudResult<()> {
     let tags = parse_tags(opts.tags)?;
-    let pg_config = opts
-        .pg_config_file
-        .map(load_json_file::<PgConfig>)
-        .transpose()?;
+    let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
         .map(load_json_file::<PgBouncerConfig>)
@@ -1449,10 +1548,7 @@ pub async fn postgres_restore(
     json: bool,
 ) -> CloudResult<()> {
     let tags = parse_tags(opts.tags)?;
-    let pg_config = opts
-        .pg_config_file
-        .map(load_json_file::<PgConfig>)
-        .transpose()?;
+    let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
         .map(load_json_file::<PgBouncerConfig>)
@@ -2778,6 +2874,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_pg_config_overrides_rejects_unknown_keys_and_enum_values() {
+        let err = parse_pg_config_overrides(&["max_conections=500".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unknown pgConfig key 'max_conections'"),
+            "{err}"
+        );
+        assert!(err.contains("max_connections"), "{err}");
+
+        for entry in [
+            "default_transaction_isolation=read uncommitted",
+            "ssl_min_protocol_version=SSLv3",
+            "wal_compression=gzip",
+        ] {
+            let err = parse_pg_config_overrides(&[entry.into()])
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("invalid pgConfig value"), "{entry}: {err}");
+            assert!(err.contains("expected one of"), "{entry}: {err}");
+        }
+
+        let err = parse_pg_config_overrides(&["work_mem=null".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("null is not supported"), "{err}");
+    }
+
+    #[test]
     fn parse_pg_config_overrides_last_wins_on_duplicates() {
         let m = parse_pg_config_overrides(&[
             "max_connections=100".into(),
@@ -2981,25 +3106,32 @@ mod tests {
     }
 
     #[test]
-    fn instance_config_from_json_fills_omitted_sections() {
-        // The request model is strict, so the handler resolves an omitted
-        // section to `{}` — the minimal body the API accepts.
-        let cfg = instance_config_from_json(&serde_json::json!({
-            "pgConfig": { "max_connections": 500 },
-        }))
-        .unwrap();
-        assert_eq!(cfg.pg_config.max_connections, Some(serde_json::json!(500)));
-        assert_eq!(cfg.pg_bouncer_config, PgBouncerConfig::default());
-        assert_eq!(
-            serde_json::to_value(&cfg).unwrap(),
-            serde_json::json!({ "pgConfig": { "max_connections": 500 }, "pgBouncerConfig": {} })
-        );
+    fn instance_config_from_json_requires_explicit_sections() {
+        for (document, missing) in [
+            (serde_json::json!({}), "pgConfig"),
+            (
+                serde_json::json!({ "pgConfig": { "max_connections": 500 } }),
+                "pgBouncerConfig",
+            ),
+            (
+                serde_json::json!({ "pgBouncerConfig": { "default_pool_size": "16" } }),
+                "pgConfig",
+            ),
+        ] {
+            let err = instance_config_from_json(&document)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("missing required"), "{err}");
+            assert!(err.contains(missing), "{err}");
+            assert!(err.contains("explicitly empty"), "{err}");
+        }
 
-        let empty = instance_config_from_json(&serde_json::json!({})).unwrap();
-        assert_eq!(
-            serde_json::to_value(&empty).unwrap(),
-            serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} })
-        );
+        let empty = instance_config_from_json(
+            &serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} }),
+        )
+        .unwrap();
+        assert_eq!(empty.pg_config, PgConfig::default());
+        assert_eq!(empty.pg_bouncer_config, PgBouncerConfig::default());
     }
 
     #[test]
@@ -3033,10 +3165,51 @@ mod tests {
 
     #[test]
     fn instance_config_from_json_reports_an_invalid_section() {
-        let err = instance_config_from_json(&serde_json::json!({ "pgConfig": 7 }))
-            .unwrap_err()
-            .to_string();
+        let err =
+            instance_config_from_json(&serde_json::json!({ "pgConfig": 7, "pgBouncerConfig": {} }))
+                .unwrap_err()
+                .to_string();
         assert!(err.contains("invalid pgConfig"), "unexpected error: {err}");
+
+        let err = instance_config_from_json(
+            &serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": [] }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("invalid pgBouncerConfig"),
+            "unexpected error: {err}"
+        );
+
+        let err = instance_config_from_json(&serde_json::json!({
+            "pgConfig": {},
+            "pgBouncerConfig": {},
+            "pgBouncerConfigs": {}
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("unknown configuration section 'pgBouncerConfigs'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pg_config_validation_preserves_every_known_key_and_value() {
+        let mut values = serde_json::Map::new();
+        for key in PG_CONFIG_KEYS {
+            let value = match key {
+                "default_transaction_isolation" => serde_json::json!("repeatable read"),
+                "ssl_min_protocol_version" => serde_json::json!("TLSv1.3"),
+                "wal_compression" => serde_json::json!("zstd"),
+                "autovacuum_analyze_scale_factor" => serde_json::json!(false),
+                _ => serde_json::json!(0),
+            };
+            values.insert(key.to_string(), value);
+        }
+        let input = serde_json::Value::Object(values);
+        let parsed = pg_config_from_json(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), input);
     }
 
     #[test]
