@@ -23,6 +23,7 @@ use wiremock::matchers::{body_json, header, method, path, path_regex, query_para
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const SERVICE_PROFILES_PATH: &str = "/v1/organizations/org-1/serviceProfiles";
+const SCALING_SCHEDULE_PATH: &str = "/v1/organizations/org-1/services/svc-1/scalingSchedule";
 
 /// Locate the `clickhousectl` binary. cargo populates `CARGO_BIN_EXE_<name>`
 /// for integration tests in the same package — so this is just the absolute
@@ -1998,6 +1999,354 @@ async fn service_wake_rejects_oauth_before_http() {
 
     assert_eq!(output.status.code(), Some(4));
     assert!(output.stdout.is_empty());
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn scaling_schedule_get_uses_oauth_and_preserves_the_full_response() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!({
+        "activeEntryId": "11111111-2222-3333-4444-555555555555",
+        "baseConfig": {
+            "autoscalingMode": "vertical",
+            "minReplicaMemoryGb": 8.0,
+            "maxReplicaMemoryGb": 32.0,
+            "minReplicas": 1,
+            "maxReplicas": 1,
+            "idleScaling": true,
+            "idleTimeoutMinutes": 10
+        },
+        "entries": [{
+            "id": "11111111-2222-3333-4444-555555555555",
+            "name": "weekday traffic",
+            "weekdays": [1, 2, 3, 4, 5],
+            "startHourUtc": 8,
+            "endHourUtc": 20,
+            "autoscalingMode": "horizontal",
+            "minReplicaMemoryGb": 16.0,
+            "maxReplicaMemoryGb": 16.0,
+            "minReplicas": 2,
+            "maxReplicas": 8,
+            "idleScaling": false,
+            "idleTimeoutMinutes": 0,
+            "isActiveNow": true
+        }]
+    });
+    Mock::given(method("GET"))
+        .and(path(SCALING_SCHEDULE_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-scaling-schedule-get"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "service",
+            "scaling-schedule",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].url.query().is_none());
+}
+
+#[tokio::test]
+async fn scaling_schedule_get_renders_a_sparse_response_and_routes_errors() {
+    let sparse = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SCALING_SCHEDULE_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"baseConfig": {}, "entries": [{}]},
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&sparse)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &sparse,
+        &[
+            "service",
+            "scaling-schedule",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+
+    let failure = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SCALING_SCHEDULE_PATH))
+        .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+            "status": 503,
+            "error": "schedule temporarily unavailable"
+        })))
+        .expect(1)
+        .mount(&failure)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &failure,
+        &[
+            "service",
+            "scaling-schedule",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: schedule temporarily unavailable\n"
+    );
+}
+
+#[tokio::test]
+async fn scaling_schedule_set_reads_stdin_and_sends_the_exact_complete_body() {
+    let mock = MockServer::start().await;
+    let request = serde_json::json!({
+        "entries": [
+            {
+                "name": "minimal",
+                "weekdays": [0],
+                "startHourUtc": 0,
+                "endHourUtc": 24
+            },
+            {
+                "name": "horizontal",
+                "weekdays": [1, 2, 3, 4, 5],
+                "startHourUtc": 8,
+                "endHourUtc": 20,
+                "autoscalingMode": "horizontal",
+                "idleScaling": false,
+                "idleTimeoutMinutes": 0,
+                "minReplicaMemoryGb": 16.0,
+                "maxReplicaMemoryGb": 16.0,
+                "minReplicas": 2,
+                "maxReplicas": 8
+            }
+        ]
+    });
+    let response = serde_json::json!({"entries": [{"name": "minimal"}], "baseConfig": {}});
+    Mock::given(method("POST"))
+        .and(path(SCALING_SCHEDULE_PATH))
+        .and(wiremock::matchers::basic_auth(
+            "schedule-test-key",
+            "schedule-test-secret",
+        ))
+        .and(body_json(request.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": response,
+            "status": 200,
+            "requestId": "stub-scaling-schedule-set"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let mut child = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "schedule-test-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "schedule-test-secret")
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "service",
+            "scaling-schedule",
+            "set",
+            "svc-1",
+            "--file",
+            "-",
+            "--org-id",
+            "org-1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(serde_json::to_string(&request).unwrap().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        response
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].url.query().is_none());
+}
+
+#[tokio::test]
+async fn scaling_schedule_delete_uses_the_exact_route_and_preserves_metadata() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(SCALING_SCHEDULE_PATH))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-scaling-schedule-delete"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "scaling-schedule",
+            "delete",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({"status": 200, "requestId": "stub-scaling-schedule-delete"})
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].url.query().is_none());
+}
+
+#[tokio::test]
+async fn scaling_schedule_set_rejects_bad_input_before_http() {
+    let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    for (name, body, expected) in [
+        (
+            "unknown.json",
+            r#"{"entries":[{"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"idleScalng":true}]}"#,
+            "idleScalng",
+        ),
+        (
+            "time.json",
+            r#"{"entries":[{"name":"x","weekdays":[1],"startHourUtc":24,"endHourUtc":9}]}"#,
+            "startHourUtc must be between 0 and 23",
+        ),
+        ("syntax.json", r#"{"entries":["#, "failed to parse config"),
+    ] {
+        let file = directory.path().join(name);
+        std::fs::write(&file, body).unwrap();
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "service",
+                "scaling-schedule",
+                "set",
+                "svc-1",
+                "--file",
+                file.to_str().unwrap(),
+                "--org-id",
+                "org-1",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn scaling_schedule_writes_reject_oauth_before_http() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let file = project.path().join("schedule.json");
+    std::fs::write(&file, r#"{"entries":[]}"#).unwrap();
+    let url = mock.uri();
+
+    for args in [
+        vec![
+            "service",
+            "scaling-schedule",
+            "set",
+            "svc-1",
+            "--file",
+            file.to_str().unwrap(),
+            "--org-id",
+            "org-1",
+        ],
+        vec![
+            "service",
+            "scaling-schedule",
+            "delete",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    ] {
+        let mut full_args = vec!["cloud", "--url", &url, "--json"];
+        full_args.extend(args);
+        let output = Command::new(clickhousectl_binary())
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", &home)
+            .current_dir(project.path())
+            .args(full_args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("read-only"));
+    }
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 

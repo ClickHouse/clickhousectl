@@ -823,6 +823,11 @@ clickhousectl cloud service scale <service-id> \
   --min-replica-memory-gb 24 --max-replica-memory-gb 24 \
   --min-replicas 2 --max-replicas 8 --autoscaling-mode horizontal
 
+# Inspect, replace, or delete a service scaling schedule
+clickhousectl cloud service scaling-schedule get <service-id> --json
+clickhousectl cloud service scaling-schedule set <service-id> --file schedule.json
+clickhousectl cloud service scaling-schedule delete <service-id>
+
 # Reset password with generated credentials
 clickhousectl cloud service reset-password <service-id>
 
@@ -877,6 +882,40 @@ clickhousectl cloud service delete <service-id> --force
 
 IP allowlist flags accept `IP_OR_CIDR` or `IP_OR_CIDR=DESCRIPTION`. The `=`
 delimiter is safe with IPv6; quote entries whose descriptions contain spaces.
+
+Scaling schedule hours are always UTC, with weekdays numbered Sunday `0` through Saturday `6`. `startHourUtc` is inclusive; `endHourUtc` is exclusive, may be `24` for midnight, and a smaller end than start creates an overnight window. For example, `schedule.json` can mix vertical memory scaling and horizontal replica scaling:
+
+```json
+{
+  "entries": [
+    {
+      "name": "Weekday traffic",
+      "weekdays": [1, 2, 3, 4, 5],
+      "startHourUtc": 8,
+      "endHourUtc": 20,
+      "autoscalingMode": "horizontal",
+      "minReplicaMemoryGb": 16,
+      "maxReplicaMemoryGb": 16,
+      "minReplicas": 2,
+      "maxReplicas": 8,
+      "idleScaling": false
+    },
+    {
+      "name": "Overnight",
+      "weekdays": [0, 1, 2, 3, 4, 5, 6],
+      "startHourUtc": 20,
+      "endHourUtc": 8,
+      "minReplicaMemoryGb": 8,
+      "maxReplicaMemoryGb": 32,
+      "numReplicas": 1,
+      "idleScaling": true,
+      "idleTimeoutMinutes": 10
+    }
+  ]
+}
+```
+
+`scaling-schedule set` replaces the complete entry list, including when `--file -` reads the request from stdin; `{"entries":[]}` clears it. A safe edit flow is to run `get --json`, copy only the entry request fields into a request file, edit that full list, then run `set`. The GET response also contains response-only `id`, `isActiveNow`, `activeEntryId`, and `baseConfig` fields, so it cannot be sent back unchanged. The base config applies outside scheduled windows and is managed separately with `cloud service scale`. `scaling-schedule delete` removes all entries and restores that base config when an entry is active.
 
 `query-endpoint create` adds and deduplicates API keys while preserving existing browser origins. `--role` is required and replaces the endpoint-wide roles for **all** authorized keys; roles are not assigned per key.
 Pass `--allowed-origins` on first creation or to change browser access (`'*'` explicitly allows every origin). Use `--replace-open-api-keys` with `--open-api-key` to deliberately replace the entire authorized-key list.
