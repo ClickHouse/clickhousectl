@@ -86,6 +86,16 @@ fn parse_cdc_memory_gb(value: &str) -> Result<f64, String> {
     Ok(value)
 }
 
+fn parse_create_memory_gb(value: &str) -> Result<f64, String> {
+    let value = value
+        .parse::<f64>()
+        .map_err(|_| "must be a number from 0.5 to 8".to_string())?;
+    if !value.is_finite() || !(0.5..=8.0).contains(&value) {
+        return Err("must be from 0.5 to 8".to_string());
+    }
+    Ok(value)
+}
+
 fn parse_kafka_authentication(value: &str) -> CloudResult<ClickPipePostKafkaSourceAuthentication> {
     let authentication = parse_serde_enum(
         value,
@@ -417,9 +427,22 @@ impl ClickPipeCommands {
             return None;
         };
 
-        // Exhaustive so a new database source has to decide whether its flag
-        // relationships need checking here.
+        // Exhaustive so every source runs common request validation before
+        // credentials, file reads, or HTTP. Database-specific validation runs
+        // after the common shape and compatibility checks.
         let (source, error) = match command {
+            ClickPipeCreateCommands::ObjectStorage(args) => (
+                "object-storage",
+                build_create_request_args(&args.request, ClickPipeSourceKind::ObjectStorage).err(),
+            ),
+            ClickPipeCreateCommands::Kafka(args) => (
+                "kafka",
+                build_create_request_args(&args.request, ClickPipeSourceKind::Kafka).err(),
+            ),
+            ClickPipeCreateCommands::Kinesis(args) => (
+                "kinesis",
+                build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis).err(),
+            ),
             ClickPipeCreateCommands::Postgres(args) => {
                 ("postgres", validate_postgres_create_args(args).err())
             }
@@ -432,10 +455,10 @@ impl ClickPipeCommands {
             ClickPipeCreateCommands::BigQuery(args) => {
                 ("bigquery", validate_bigquery_create_args(args).err())
             }
-            ClickPipeCreateCommands::ObjectStorage(_)
-            | ClickPipeCreateCommands::Kafka(_)
-            | ClickPipeCreateCommands::Kinesis(_)
-            | ClickPipeCreateCommands::PubSub(_) => return None,
+            ClickPipeCreateCommands::PubSub(args) => (
+                "pubsub",
+                build_create_request_args(&args.request, ClickPipeSourceKind::PubSub).err(),
+            ),
         };
 
         error.map(|error| (source, error.message))
@@ -569,62 +592,73 @@ CONTEXT FOR AGENTS:
         /// ClickPipe ID
         clickpipe_id: String,
 
-        /// Max wait before inserting data (ms, 500-60000)
-        #[arg(long)]
-        streaming_max_insert_wait_ms: Option<u32>,
-
-        /// Concurrent file processing threads (1-35)
-        #[arg(long)]
-        object_storage_concurrency: Option<u32>,
-
-        /// Polling interval for continuous ingest (ms, 100-3600000)
-        #[arg(long)]
-        object_storage_polling_interval_ms: Option<u32>,
-
-        /// Bytes per insert batch
-        #[arg(long)]
-        object_storage_max_insert_bytes: Option<u64>,
-
-        /// Max files per insert batch (1-10000)
-        #[arg(long)]
-        object_storage_max_file_count: Option<u32>,
-
-        /// Max concurrent threads for file processing (0-64)
-        #[arg(long)]
-        clickhouse_max_threads: Option<u32>,
-
-        /// Max concurrent insert threads (0-16)
-        #[arg(long)]
-        clickhouse_max_insert_threads: Option<u32>,
-
-        /// Max concurrent download threads (0-32)
-        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=32))]
-        clickhouse_max_download_threads: Option<u32>,
-
-        /// Minimum insert block size in bytes (0-10737418240)
-        #[arg(long, value_parser = clap::value_parser!(u64).range(0..=10737418240))]
-        clickhouse_min_insert_block_size_bytes: Option<u64>,
-
-        /// Distributed INSERT SELECT mode (0-2)
-        #[arg(long, value_parser = clap::value_parser!(u32).range(0..=2))]
-        clickhouse_parallel_distributed_insert_select: Option<u32>,
-
-        /// Read only committed messages (Kafka only)
-        #[arg(long)]
-        kafka_read_committed: Option<bool>,
-
-        /// Use ClickHouse cluster function
-        #[arg(long)]
-        object_storage_use_cluster_function: Option<bool>,
-
-        /// Push to attached views concurrently
-        #[arg(long)]
-        clickhouse_parallel_view_processing: Option<bool>,
+        #[command(flatten)]
+        settings: ClickPipeSettingsValues,
 
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
     },
+}
+
+/// Ingestion settings shared by create and `settings update`.
+///
+/// Every field is optional so an omitted create sends no `settings` block and
+/// an update only changes the selected keys. `false` and zero remain distinct
+/// from omission because clap stores explicit values in `Option`.
+#[derive(Args, Debug, Clone, Default, PartialEq)]
+pub struct ClickPipeSettingsValues {
+    /// Max wait before inserting data (ms, 500-60000)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(500..=60000))]
+    streaming_max_insert_wait_ms: Option<u32>,
+
+    /// Concurrent file processing threads (1-35)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=35))]
+    object_storage_concurrency: Option<u32>,
+
+    /// Polling interval for continuous ingest (ms, 100-3600000)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(100..=3600000))]
+    object_storage_polling_interval_ms: Option<u32>,
+
+    /// Bytes per insert batch (10485760-53687091200)
+    #[arg(long, value_parser = clap::value_parser!(u64).range(10485760..=53687091200))]
+    object_storage_max_insert_bytes: Option<u64>,
+
+    /// Max files per insert batch (1-10000)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10000))]
+    object_storage_max_file_count: Option<u32>,
+
+    /// Max concurrent threads for file processing (0-64)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=64))]
+    clickhouse_max_threads: Option<u32>,
+
+    /// Max concurrent insert threads (0-16)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=16))]
+    clickhouse_max_insert_threads: Option<u32>,
+
+    /// Max concurrent download threads (0-32)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=32))]
+    clickhouse_max_download_threads: Option<u32>,
+
+    /// Minimum insert block size in bytes (0-10737418240)
+    #[arg(long, value_parser = clap::value_parser!(u64).range(0..=10737418240))]
+    clickhouse_min_insert_block_size_bytes: Option<u64>,
+
+    /// Distributed INSERT SELECT mode (0-2)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=2))]
+    clickhouse_parallel_distributed_insert_select: Option<u32>,
+
+    /// Read only committed messages (Kafka only)
+    #[arg(long)]
+    kafka_read_committed: Option<bool>,
+
+    /// Use ClickHouse cluster function
+    #[arg(long)]
+    object_storage_use_cluster_function: Option<bool>,
+
+    /// Push to attached views concurrently
+    #[arg(long)]
+    clickhouse_parallel_view_processing: Option<bool>,
 }
 
 impl ClickPipeSettingsCommands {
@@ -705,6 +739,40 @@ pub struct DestinationRoleArgs {
     /// API-reserved names `clickpipes` and `clickpipes_system` are rejected.
     #[arg(long = "role", value_name = "ROLE", value_parser = parse_destination_role)]
     pub roles: Vec<String>,
+}
+
+/// Sample validation shared by every `clickpipe create` source.
+#[derive(Args, Debug, Default)]
+pub struct ClickPipeCreateValidationArgs {
+    /// Validate source data samples, not only connectivity
+    #[arg(long, value_name = "true|false")]
+    pub validate_samples: Option<bool>,
+}
+
+/// Request controls shared by streaming and object-storage creates.
+#[derive(Args, Debug, Default)]
+pub struct ClickPipeCreateRequestArgs {
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
+
+    /// Initial number of replicas (1-40)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=40))]
+    pub replicas: Option<u32>,
+
+    /// Initial CPU millicores per replica (125-2000)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(125..=2000))]
+    pub cpu_millicores: Option<u32>,
+
+    /// Initial memory GB per replica (0.5-8)
+    #[arg(long, value_parser = parse_create_memory_gb)]
+    pub memory_gb: Option<f64>,
+
+    /// Field mapping JSON with sourceField and destinationField (repeatable)
+    #[arg(long = "field-mapping", value_name = "JSON")]
+    pub field_mappings: Vec<String>,
+
+    #[command(flatten)]
+    settings: ClickPipeSettingsValues,
 }
 
 /// Destination-table controls shared by streaming ClickPipe creates.
@@ -839,6 +907,9 @@ pub struct ObjectStorageCreateArgs {
     /// ClickPipe name
     #[arg(long)]
     pub name: String,
+
+    #[command(flatten)]
+    pub request: ClickPipeCreateRequestArgs,
 
     #[command(flatten)]
     pub source: ObjectStorageSourceFields,
@@ -1009,6 +1080,9 @@ pub struct KafkaCreateArgs {
     pub name: String,
 
     #[command(flatten)]
+    pub request: ClickPipeCreateRequestArgs,
+
+    #[command(flatten)]
     pub source: KafkaSourceFields,
 
     /// Enable exactly-once delivery
@@ -1102,6 +1176,9 @@ pub struct KinesisCreateArgs {
     pub name: String,
 
     #[command(flatten)]
+    pub request: ClickPipeCreateRequestArgs,
+
+    #[command(flatten)]
     pub source: KinesisSourceFields,
 
     /// Destination database
@@ -1143,6 +1220,9 @@ pub struct PostgresCreateArgs {
     /// ClickPipe name
     #[arg(long)]
     pub name: String,
+
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
 
     /// PostgreSQL host
     #[arg(long)]
@@ -1302,6 +1382,9 @@ pub struct MySqlCreateArgs {
     #[arg(long)]
     pub name: String,
 
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
+
     /// MySQL host
     #[arg(long)]
     pub host: String,
@@ -1458,6 +1541,9 @@ pub struct MongoDbCreateArgs {
     #[arg(long)]
     pub name: String,
 
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
+
     /// MongoDB connection URI (e.g., mongodb+srv://cluster0.example.mongodb.net/mydb)
     #[arg(long)]
     pub uri: String,
@@ -1569,6 +1655,9 @@ pub struct BigQueryCreateArgs {
     /// ClickPipe name
     #[arg(long)]
     pub name: String,
+
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
 
     /// Authentication method
     #[arg(
@@ -1738,6 +1827,9 @@ pub struct PubSubCreateArgs {
     pub name: String,
 
     #[command(flatten)]
+    pub request: ClickPipeCreateRequestArgs,
+
+    #[command(flatten)]
     pub source: PubSubSourceFields,
 
     /// Destination database
@@ -1873,41 +1965,14 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
             ClickPipeSettingsCommands::Update {
                 service_id,
                 clickpipe_id,
-                streaming_max_insert_wait_ms,
-                object_storage_concurrency,
-                object_storage_polling_interval_ms,
-                object_storage_max_insert_bytes,
-                object_storage_max_file_count,
-                clickhouse_max_threads,
-                clickhouse_max_insert_threads,
-                clickhouse_max_download_threads,
-                clickhouse_min_insert_block_size_bytes,
-                clickhouse_parallel_distributed_insert_select,
-                kafka_read_committed,
-                object_storage_use_cluster_function,
-                clickhouse_parallel_view_processing,
+                settings,
                 org_id,
             } => {
-                let values = ClickPipeSettingsValues {
-                    streaming_max_insert_wait_ms,
-                    object_storage_concurrency,
-                    object_storage_polling_interval_ms,
-                    object_storage_max_insert_bytes,
-                    object_storage_max_file_count,
-                    clickhouse_max_threads,
-                    clickhouse_max_insert_threads,
-                    clickhouse_max_download_threads,
-                    clickhouse_min_insert_block_size_bytes,
-                    clickhouse_parallel_distributed_insert_select,
-                    kafka_read_committed,
-                    object_storage_use_cluster_function,
-                    clickhouse_parallel_view_processing,
-                };
                 clickpipe_settings_update(
                     client,
                     &service_id,
                     &clickpipe_id,
-                    &values,
+                    &settings,
                     org_id.as_deref(),
                     json,
                 )
@@ -2203,6 +2268,8 @@ async fn clickpipe_create_object_storage(
 
     // Validate args and build the source before any network call so bad
     // invocations fail fast.
+    let request_args =
+        build_create_request_args(&args.request, ClickPipeSourceKind::ObjectStorage)?;
     let parsed_columns = parse_columns(&args.columns)?;
     let source = build_object_storage_source(&args.source)?;
     let destination = build_streaming_destination(
@@ -2214,7 +2281,7 @@ async fn clickpipe_create_object_storage(
     )?;
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
 
-    let request = ClickPipePostRequest {
+    let mut request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             object_storage: Some(source),
@@ -2223,6 +2290,7 @@ async fn clickpipe_create_object_storage(
         destination,
         ..Default::default()
     };
+    apply_create_request_args(&mut request, request_args);
 
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
@@ -2655,10 +2723,11 @@ async fn clickpipe_create_kafka(
 
     // Validate args and build the source before any network call so bad
     // invocations fail fast.
+    let request_args = build_create_request_args(&args.request, ClickPipeSourceKind::Kafka)?;
     let parsed_columns = parse_columns(&args.columns)?;
     let source = build_kafka_source_with_exactly_once(&args.source, args.exactly_once)?;
 
-    let request = ClickPipePostRequest {
+    let mut request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             kafka: Some(source),
@@ -2673,6 +2742,7 @@ async fn clickpipe_create_kafka(
         )?,
         ..Default::default()
     };
+    apply_create_request_args(&mut request, request_args);
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
     let clickpipe = client
@@ -2689,10 +2759,11 @@ async fn clickpipe_create_kinesis(
 ) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
 
+    let request_args = build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis)?;
     let parsed_columns = parse_columns(&args.columns)?;
     let source = build_kinesis_source(&args.source)?;
 
-    let request = ClickPipePostRequest {
+    let mut request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             kinesis: Some(source),
@@ -2707,6 +2778,7 @@ async fn clickpipe_create_kinesis(
         )?,
         ..Default::default()
     };
+    apply_create_request_args(&mut request, request_args);
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
     let clickpipe = client
@@ -2858,10 +2930,11 @@ async fn clickpipe_create_pubsub(
 
     // Validate args and build the source before any network call so bad
     // invocations fail fast.
+    let request_args = build_create_request_args(&args.request, ClickPipeSourceKind::PubSub)?;
     let parsed_columns = parse_columns(&args.columns)?;
     let source = build_pubsub_source(&args.source)?;
 
-    let request = ClickPipePostRequest {
+    let mut request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             pubsub: Some(source),
@@ -2876,6 +2949,7 @@ async fn clickpipe_create_pubsub(
         )?,
         ..Default::default()
     };
+    apply_create_request_args(&mut request, request_args);
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
     let clickpipe = client
@@ -3197,23 +3271,6 @@ async fn clickpipe_settings_get(
 /// Only explicitly requested settings enter the update. Kafka read-committed
 /// additionally preserves the current value when omitted; it is only ever sent
 /// after the source is confirmed to be Kafka.
-#[derive(Debug, Clone, Default, PartialEq)]
-struct ClickPipeSettingsValues {
-    streaming_max_insert_wait_ms: Option<u32>,
-    object_storage_concurrency: Option<u32>,
-    object_storage_polling_interval_ms: Option<u32>,
-    object_storage_max_insert_bytes: Option<u64>,
-    object_storage_max_file_count: Option<u32>,
-    clickhouse_max_threads: Option<u32>,
-    clickhouse_max_insert_threads: Option<u32>,
-    clickhouse_max_download_threads: Option<u32>,
-    clickhouse_min_insert_block_size_bytes: Option<u64>,
-    clickhouse_parallel_distributed_insert_select: Option<u32>,
-    kafka_read_committed: Option<bool>,
-    object_storage_use_cluster_function: Option<bool>,
-    clickhouse_parallel_view_processing: Option<bool>,
-}
-
 /// Which source a fetched pipe reads from, as a closed vocabulary.
 ///
 /// Two decisions hang off this: whether the Kafka-only `kafka_read_committed`
@@ -3260,6 +3317,200 @@ impl ClickPipeSourceKind {
             Self::Kafka | Self::Kinesis | Self::PubSub | Self::ObjectStorage | Self::Absent => None,
         }
     }
+}
+
+impl ClickPipeSettingsValues {
+    fn has_any(&self) -> bool {
+        self.streaming_max_insert_wait_ms.is_some()
+            || self.object_storage_concurrency.is_some()
+            || self.object_storage_polling_interval_ms.is_some()
+            || self.object_storage_max_insert_bytes.is_some()
+            || self.object_storage_max_file_count.is_some()
+            || self.clickhouse_max_threads.is_some()
+            || self.clickhouse_max_insert_threads.is_some()
+            || self.clickhouse_max_download_threads.is_some()
+            || self.clickhouse_min_insert_block_size_bytes.is_some()
+            || self.clickhouse_parallel_distributed_insert_select.is_some()
+            || self.kafka_read_committed.is_some()
+            || self.object_storage_use_cluster_function.is_some()
+            || self.clickhouse_parallel_view_processing.is_some()
+    }
+
+    fn has_object_storage_setting(&self) -> bool {
+        self.object_storage_concurrency.is_some()
+            || self.object_storage_polling_interval_ms.is_some()
+            || self.object_storage_max_insert_bytes.is_some()
+            || self.object_storage_max_file_count.is_some()
+            || self.object_storage_use_cluster_function.is_some()
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClickPipeFieldMappingJson {
+    #[serde(rename = "sourceField")]
+    source_field: String,
+    #[serde(rename = "destinationField")]
+    destination_field: String,
+}
+
+fn parse_create_field_mappings(
+    raw_mappings: &[String],
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeFieldMapping>> {
+    raw_mappings
+        .iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            let mapping: ClickPipeFieldMappingJson =
+                serde_json::from_str(raw).map_err(|error| {
+                    CloudError::new(format!(
+                        "--field-mapping #{}: invalid JSON object: {error}",
+                        index + 1
+                    ))
+                })?;
+            if mapping.source_field.is_empty() {
+                return Err(CloudError::new(format!(
+                    "--field-mapping #{}: sourceField must not be empty",
+                    index + 1
+                )));
+            }
+            if mapping.destination_field.is_empty() {
+                return Err(CloudError::new(format!(
+                    "--field-mapping #{}: destinationField must not be empty",
+                    index + 1
+                )));
+            }
+            Ok(clickhouse_cloud_api::models::ClickPipeFieldMapping {
+                source_field: mapping.source_field,
+                destination_field: mapping.destination_field,
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+struct BuiltCreateRequestArgs {
+    validate_samples: bool,
+    scaling: Option<clickhouse_cloud_api::models::ClickPipeScaling>,
+    settings: Option<clickhouse_cloud_api::models::ClickPipeSettings>,
+    field_mappings: Vec<clickhouse_cloud_api::models::ClickPipeFieldMapping>,
+}
+
+fn build_create_request_args(
+    args: &ClickPipeCreateRequestArgs,
+    source: ClickPipeSourceKind,
+) -> CloudResult<BuiltCreateRequestArgs> {
+    let scaling = match (args.replicas, args.cpu_millicores, args.memory_gb) {
+        (None, None, None) => None,
+        (Some(replicas), Some(cpu), Some(memory)) => {
+            if !(1..=40).contains(&replicas) {
+                return Err(CloudError::new("--replicas must be in the range 1..=40"));
+            }
+            if !(125..=2000).contains(&cpu) {
+                return Err(CloudError::new(
+                    "--cpu-millicores must be in the range 125..=2000",
+                ));
+            }
+            if !memory.is_finite() || !(0.5..=8.0).contains(&memory) {
+                return Err(CloudError::new("--memory-gb must be in the range 0.5..=8"));
+            }
+            Some(clickhouse_cloud_api::models::ClickPipeScaling {
+                replicas: i64::from(replicas),
+                replica_cpu_millicores: i64::from(cpu),
+                replica_memory_gb: memory,
+                #[cfg(feature = "deprecated-fields")]
+                concurrency: 0,
+            })
+        }
+        _ => {
+            return Err(CloudError::new(
+                "initial scaling requires --replicas, --cpu-millicores, and --memory-gb together",
+            ));
+        }
+    };
+
+    if args.settings.kafka_read_committed.is_some() && !source.is_kafka() {
+        return Err(CloudError::new(
+            "--kafka-read-committed can only be used with clickpipe create kafka",
+        ));
+    }
+    if args.settings.has_object_storage_setting() && source != ClickPipeSourceKind::ObjectStorage {
+        return Err(CloudError::new(
+            "--object-storage-* settings can only be used with clickpipe create object-storage",
+        ));
+    }
+    let settings =
+        args.settings
+            .has_any()
+            .then(|| clickhouse_cloud_api::models::ClickPipeSettings {
+                streaming_max_insert_wait_ms: args
+                    .settings
+                    .streaming_max_insert_wait_ms
+                    .map(i64::from),
+                object_storage_concurrency: args.settings.object_storage_concurrency.map(i64::from),
+                object_storage_polling_interval_ms: args
+                    .settings
+                    .object_storage_polling_interval_ms
+                    .map(i64::from),
+                object_storage_max_insert_bytes: args
+                    .settings
+                    .object_storage_max_insert_bytes
+                    .map(|value| value as i64),
+                object_storage_max_file_count: args
+                    .settings
+                    .object_storage_max_file_count
+                    .map(i64::from),
+                clickhouse_max_threads: args.settings.clickhouse_max_threads.map(i64::from),
+                clickhouse_max_insert_threads: args
+                    .settings
+                    .clickhouse_max_insert_threads
+                    .map(i64::from),
+                clickhouse_max_download_threads: args
+                    .settings
+                    .clickhouse_max_download_threads
+                    .map(i64::from),
+                clickhouse_min_insert_block_size_bytes: args
+                    .settings
+                    .clickhouse_min_insert_block_size_bytes
+                    .map(|value| value as i64),
+                clickhouse_parallel_distributed_insert_select: args
+                    .settings
+                    .clickhouse_parallel_distributed_insert_select
+                    .map(i64::from),
+                kafka_read_committed: args.settings.kafka_read_committed.unwrap_or(false),
+                object_storage_use_cluster_function: args
+                    .settings
+                    .object_storage_use_cluster_function,
+                clickhouse_parallel_view_processing: args
+                    .settings
+                    .clickhouse_parallel_view_processing,
+            });
+
+    Ok(BuiltCreateRequestArgs {
+        validate_samples: args.validation.validate_samples.unwrap_or(false),
+        scaling,
+        settings,
+        field_mappings: parse_create_field_mappings(&args.field_mappings)?,
+    })
+}
+
+fn build_create_validation_args(args: &ClickPipeCreateValidationArgs) -> BuiltCreateRequestArgs {
+    BuiltCreateRequestArgs {
+        validate_samples: args.validate_samples.unwrap_or(false),
+        scaling: None,
+        settings: None,
+        field_mappings: Vec::new(),
+    }
+}
+
+fn apply_create_request_args(
+    request: &mut clickhouse_cloud_api::models::ClickPipePostRequest,
+    args: BuiltCreateRequestArgs,
+) {
+    request.source.validate_samples = args.validate_samples;
+    request.scaling = args.scaling;
+    request.settings = args.settings;
+    request.field_mappings = args.field_mappings;
 }
 
 /// Classify the source of a fetched pipe.
@@ -4188,6 +4439,7 @@ fn build_postgres_request(
         ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
 
+    let request_args = build_create_validation_args(&args.validation);
     let table_mappings = validate_postgres_create_args(args)?;
     let ca_certificate = args
         .ca_certificate
@@ -4233,7 +4485,7 @@ fn build_postgres_request(
         table_mappings,
     };
 
-    Ok(ClickPipePostRequest {
+    let mut request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             postgres: Some(source),
@@ -4246,7 +4498,9 @@ fn build_postgres_request(
             build_destination_roles(&args.destination_roles.roles),
         ),
         ..Default::default()
-    })
+    };
+    apply_create_request_args(&mut request, request_args);
+    Ok(request)
 }
 
 fn postgres_tls_error_hint(message: &str) -> Option<&'static str> {
@@ -4402,6 +4656,7 @@ fn build_mysql_request(
         ClickPipeMySQLPipeSettings, ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
 
+    let request_args = build_create_validation_args(&args.validation);
     validate_mysql_create_args(args)?;
     let source_type = parse_serde_enum(
         &args.mysql_type,
@@ -4484,7 +4739,7 @@ fn build_mysql_request(
         table_mappings,
     };
 
-    Ok(ClickPipePostRequest {
+    let mut request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             mysql: Some(source),
@@ -4497,7 +4752,9 @@ fn build_mysql_request(
             build_destination_roles(&args.destination_roles.roles),
         ),
         ..Default::default()
-    })
+    };
+    apply_create_request_args(&mut request, request_args);
+    Ok(request)
 }
 
 async fn clickpipe_create_mysql(
@@ -4584,6 +4841,7 @@ fn build_mongodb_request(
         ClickPipePostSource, PLAIN,
     };
 
+    let request_args = build_create_validation_args(&args.validation);
     validate_mongodb_create_args(args)?;
     let read_preference = parse_serde_enum(
         &args.read_preference,
@@ -4630,7 +4888,7 @@ fn build_mongodb_request(
         table_mappings,
     };
 
-    let request = ClickPipePostRequest {
+    let mut request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             mongodb: Some(source),
@@ -4644,6 +4902,7 @@ fn build_mongodb_request(
         ),
         ..Default::default()
     };
+    apply_create_request_args(&mut request, request_args);
 
     Ok(request)
 }
@@ -4746,6 +5005,7 @@ fn build_bigquery_request(
         ClickPipePostSource, ServiceAccount,
     };
 
+    let request_args = build_create_validation_args(&args.validation);
     validate_bigquery_create_args(args)?;
     let authentication = parse_bigquery_authentication(&args.auth)?;
     let table_mappings = resolve_bigquery_table_mappings(args)?;
@@ -4789,7 +5049,7 @@ fn build_bigquery_request(
         .into(),
     };
 
-    let request = ClickPipePostRequest {
+    let mut request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
             bigquery: Some(source),
@@ -4803,6 +5063,7 @@ fn build_bigquery_request(
         ),
         ..Default::default()
     };
+    apply_create_request_args(&mut request, request_args);
 
     Ok(request)
 }
@@ -5718,19 +5979,7 @@ mod tests {
                 ClickPipeSettingsCommands::Update {
                     service_id,
                     clickpipe_id,
-                    streaming_max_insert_wait_ms,
-                    object_storage_concurrency,
-                    object_storage_polling_interval_ms,
-                    object_storage_max_insert_bytes,
-                    object_storage_max_file_count,
-                    clickhouse_max_threads,
-                    clickhouse_max_insert_threads,
-                    clickhouse_max_download_threads,
-                    clickhouse_min_insert_block_size_bytes,
-                    clickhouse_parallel_distributed_insert_select,
-                    kafka_read_committed,
-                    object_storage_use_cluster_function,
-                    clickhouse_parallel_view_processing,
+                    settings,
                     org_id,
                 },
         } = parse_clickpipe(&[
@@ -5745,7 +5994,7 @@ mod tests {
             "--object-storage-polling-interval-ms",
             "3000",
             "--object-storage-max-insert-bytes",
-            "4000",
+            "10485760",
             "--object-storage-max-file-count",
             "5",
             "--clickhouse-max-threads",
@@ -5772,39 +6021,31 @@ mod tests {
         };
         assert_eq!(service_id, "svc-1");
         assert_eq!(clickpipe_id, "pipe-1");
-        assert_eq!(streaming_max_insert_wait_ms, Some(1000));
-        assert_eq!(object_storage_concurrency, Some(2));
-        assert_eq!(object_storage_polling_interval_ms, Some(3000));
-        assert_eq!(object_storage_max_insert_bytes, Some(4000));
-        assert_eq!(object_storage_max_file_count, Some(5));
-        assert_eq!(clickhouse_max_threads, Some(6));
-        assert_eq!(clickhouse_max_insert_threads, Some(7));
-        assert_eq!(clickhouse_max_download_threads, Some(8));
-        assert_eq!(clickhouse_min_insert_block_size_bytes, Some(20971520));
-        assert_eq!(clickhouse_parallel_distributed_insert_select, Some(1));
-        assert_eq!(kafka_read_committed, Some(false));
-        assert_eq!(object_storage_use_cluster_function, Some(true));
-        assert_eq!(clickhouse_parallel_view_processing, Some(false));
+        assert_eq!(settings.streaming_max_insert_wait_ms, Some(1000));
+        assert_eq!(settings.object_storage_concurrency, Some(2));
+        assert_eq!(settings.object_storage_polling_interval_ms, Some(3000));
+        assert_eq!(settings.object_storage_max_insert_bytes, Some(10_485_760));
+        assert_eq!(settings.object_storage_max_file_count, Some(5));
+        assert_eq!(settings.clickhouse_max_threads, Some(6));
+        assert_eq!(settings.clickhouse_max_insert_threads, Some(7));
+        assert_eq!(settings.clickhouse_max_download_threads, Some(8));
+        assert_eq!(
+            settings.clickhouse_min_insert_block_size_bytes,
+            Some(20971520)
+        );
+        assert_eq!(
+            settings.clickhouse_parallel_distributed_insert_select,
+            Some(1)
+        );
+        assert_eq!(settings.kafka_read_committed, Some(false));
+        assert_eq!(settings.object_storage_use_cluster_function, Some(true));
+        assert_eq!(settings.clickhouse_parallel_view_processing, Some(false));
         assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Settings {
             command:
                 ClickPipeSettingsCommands::Update {
-                    streaming_max_insert_wait_ms,
-                    object_storage_concurrency,
-                    object_storage_polling_interval_ms,
-                    object_storage_max_insert_bytes,
-                    object_storage_max_file_count,
-                    clickhouse_max_threads,
-                    clickhouse_max_insert_threads,
-                    clickhouse_max_download_threads,
-                    clickhouse_min_insert_block_size_bytes,
-                    clickhouse_parallel_distributed_insert_select,
-                    kafka_read_committed,
-                    object_storage_use_cluster_function,
-                    clickhouse_parallel_view_processing,
-                    org_id,
-                    ..
+                    settings, org_id, ..
                 },
         } = parse_clickpipe(&[
             "settings",
@@ -5817,20 +6058,229 @@ mod tests {
         else {
             panic!("expected settings update");
         };
-        assert_eq!(streaming_max_insert_wait_ms, None);
-        assert_eq!(object_storage_concurrency, None);
-        assert_eq!(object_storage_polling_interval_ms, None);
-        assert_eq!(object_storage_max_insert_bytes, None);
-        assert_eq!(object_storage_max_file_count, Some(200));
-        assert_eq!(clickhouse_max_threads, None);
-        assert_eq!(clickhouse_max_insert_threads, None);
-        assert_eq!(clickhouse_max_download_threads, None);
-        assert_eq!(clickhouse_min_insert_block_size_bytes, None);
-        assert_eq!(clickhouse_parallel_distributed_insert_select, None);
-        assert_eq!(kafka_read_committed, None);
-        assert_eq!(object_storage_use_cluster_function, None);
-        assert_eq!(clickhouse_parallel_view_processing, None);
+        assert_eq!(settings.streaming_max_insert_wait_ms, None);
+        assert_eq!(settings.object_storage_concurrency, None);
+        assert_eq!(settings.object_storage_polling_interval_ms, None);
+        assert_eq!(settings.object_storage_max_insert_bytes, None);
+        assert_eq!(settings.object_storage_max_file_count, Some(200));
+        assert_eq!(settings.clickhouse_max_threads, None);
+        assert_eq!(settings.clickhouse_max_insert_threads, None);
+        assert_eq!(settings.clickhouse_max_download_threads, None);
+        assert_eq!(settings.clickhouse_min_insert_block_size_bytes, None);
+        assert_eq!(settings.clickhouse_parallel_distributed_insert_select, None);
+        assert_eq!(settings.kafka_read_committed, None);
+        assert_eq!(settings.object_storage_use_cluster_function, None);
+        assert_eq!(settings.clickhouse_parallel_view_processing, None);
         assert_eq!(org_id, None);
+    }
+
+    #[test]
+    fn every_create_source_exposes_cross_source_request_flags() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let create = command
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
+            .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
+            .expect("clickpipe create command");
+        for source in [
+            "object-storage",
+            "kafka",
+            "kinesis",
+            "postgres",
+            "mysql",
+            "mongodb",
+            "bigquery",
+            "pubsub",
+        ] {
+            let command = create.find_subcommand(source).expect("source subcommand");
+            assert!(
+                command
+                    .get_arguments()
+                    .any(|argument| argument.get_id() == "validate_samples"),
+                "clickpipe create {source} is missing sample validation"
+            );
+        }
+        for source in ["object-storage", "kafka", "kinesis", "pubsub"] {
+            let command = create.find_subcommand(source).expect("source subcommand");
+            for id in [
+                "replicas",
+                "cpu_millicores",
+                "memory_gb",
+                "field_mappings",
+                "streaming_max_insert_wait_ms",
+                "kafka_read_committed",
+            ] {
+                assert!(
+                    command
+                        .get_arguments()
+                        .any(|argument| argument.get_id() == id),
+                    "clickpipe create {source} is missing argument id {id}"
+                );
+            }
+        }
+        for source in ["postgres", "mysql", "mongodb", "bigquery"] {
+            let command = create.find_subcommand(source).expect("source subcommand");
+            for id in ["replicas", "cpu_millicores", "memory_gb", "field_mappings"] {
+                assert!(
+                    command
+                        .get_arguments()
+                        .all(|argument| argument.get_id() != id),
+                    "clickpipe create {source} unexpectedly exposes {id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parses_cross_source_create_request_values() {
+        let mut args = kafka_create_cli_args();
+        args.extend([
+            "--validate-samples",
+            "false",
+            "--replicas",
+            "2",
+            "--cpu-millicores",
+            "500",
+            "--memory-gb",
+            "2",
+            "--field-mapping",
+            r#"{"sourceField":"source","destinationField":"destination"}"#,
+            "--clickhouse-max-threads",
+            "0",
+            "--kafka-read-committed",
+            "false",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(args),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected kafka create");
+        };
+
+        assert_eq!(args.request.validation.validate_samples, Some(false));
+        assert_eq!(args.request.replicas, Some(2));
+        assert_eq!(args.request.cpu_millicores, Some(500));
+        assert_eq!(args.request.memory_gb, Some(2.0));
+        assert_eq!(args.request.field_mappings.len(), 1);
+        assert_eq!(args.request.settings.clickhouse_max_threads, Some(0));
+        assert_eq!(args.request.settings.kafka_read_committed, Some(false));
+    }
+
+    #[test]
+    fn build_create_request_args_preserves_omission_and_explicit_values() {
+        let minimal = build_create_request_args(
+            &ClickPipeCreateRequestArgs::default(),
+            ClickPipeSourceKind::Kafka,
+        )
+        .unwrap();
+        assert!(!minimal.validate_samples);
+        assert_eq!(minimal.scaling, None);
+        assert_eq!(minimal.settings, None);
+        assert!(minimal.field_mappings.is_empty());
+
+        let maximal = build_create_request_args(
+            &ClickPipeCreateRequestArgs {
+                validation: ClickPipeCreateValidationArgs {
+                    validate_samples: Some(false),
+                },
+                replicas: Some(1),
+                cpu_millicores: Some(125),
+                memory_gb: Some(0.5),
+                field_mappings: vec![
+                    r#"{"sourceField":"source:a=b","destinationField":"destination:x=y"}"#.into(),
+                ],
+                settings: ClickPipeSettingsValues {
+                    streaming_max_insert_wait_ms: Some(500),
+                    clickhouse_max_threads: Some(0),
+                    clickhouse_max_insert_threads: Some(0),
+                    clickhouse_max_download_threads: Some(0),
+                    clickhouse_min_insert_block_size_bytes: Some(0),
+                    clickhouse_parallel_distributed_insert_select: Some(0),
+                    kafka_read_committed: Some(false),
+                    clickhouse_parallel_view_processing: Some(false),
+                    ..Default::default()
+                },
+            },
+            ClickPipeSourceKind::Kafka,
+        )
+        .unwrap();
+        assert!(!maximal.validate_samples);
+        let scaling = maximal.scaling.unwrap();
+        assert_eq!(scaling.replicas, 1);
+        assert_eq!(scaling.replica_cpu_millicores, 125);
+        assert_eq!(scaling.replica_memory_gb, 0.5);
+        let settings = maximal.settings.unwrap();
+        assert_eq!(settings.clickhouse_max_threads, Some(0));
+        assert!(!settings.kafka_read_committed);
+        assert_eq!(maximal.field_mappings.len(), 1);
+        assert_eq!(maximal.field_mappings[0].source_field, "source:a=b");
+        assert_eq!(
+            maximal.field_mappings[0].destination_field,
+            "destination:x=y"
+        );
+
+        let object_storage = build_create_request_args(
+            &ClickPipeCreateRequestArgs {
+                settings: ClickPipeSettingsValues {
+                    object_storage_concurrency: Some(1),
+                    object_storage_polling_interval_ms: Some(100),
+                    object_storage_max_insert_bytes: Some(10_485_760),
+                    object_storage_max_file_count: Some(1),
+                    object_storage_use_cluster_function: Some(false),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ClickPipeSourceKind::ObjectStorage,
+        )
+        .unwrap();
+        let settings = object_storage.settings.unwrap();
+        assert_eq!(settings.object_storage_concurrency, Some(1));
+        assert_eq!(settings.object_storage_use_cluster_function, Some(false));
+        assert!(!settings.kafka_read_committed);
+    }
+
+    #[test]
+    fn build_create_request_args_validates_shape_and_source_compatibility() {
+        let partial_scaling = ClickPipeCreateRequestArgs {
+            replicas: Some(1),
+            ..Default::default()
+        };
+        assert!(
+            build_create_request_args(&partial_scaling, ClickPipeSourceKind::Kafka)
+                .unwrap_err()
+                .message
+                .contains("requires --replicas, --cpu-millicores, and --memory-gb")
+        );
+
+        let unknown_mapping_field = ClickPipeCreateRequestArgs {
+            field_mappings: vec![
+                r#"{"sourceField":"source","destinationField":"target","typo":true}"#.into(),
+            ],
+            ..Default::default()
+        };
+        assert!(
+            build_create_request_args(&unknown_mapping_field, ClickPipeSourceKind::Kafka)
+                .unwrap_err()
+                .message
+                .contains("unknown field `typo`")
+        );
+
+        let non_kafka = ClickPipeCreateRequestArgs {
+            settings: ClickPipeSettingsValues {
+                kafka_read_committed: Some(false),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(
+            build_create_request_args(&non_kafka, ClickPipeSourceKind::PubSub)
+                .unwrap_err()
+                .message
+                .contains("only be used with clickpipe create kafka")
+        );
     }
 
     // A non-Kafka pipe must not carry `kafka_read_committed`: the API rejects
@@ -9399,6 +9849,7 @@ mod tests {
         PostgresCreateArgs {
             service_id: "svc-1".into(),
             name: "pipe-1".into(),
+            validation: ClickPipeCreateValidationArgs::default(),
             host: "postgres.example".into(),
             port: 5432,
             pg_database: "source-db".into(),
@@ -10185,6 +10636,7 @@ mod tests {
         MySqlCreateArgs {
             service_id: "svc-1".into(),
             name: "pipe-1".into(),
+            validation: ClickPipeCreateValidationArgs::default(),
             host: "mysql.example".into(),
             port: 3306,
             username: Some("user".into()),
@@ -10434,6 +10886,7 @@ mod tests {
         MongoDbCreateArgs {
             service_id: "svc-1".into(),
             name: "pipe-1".into(),
+            validation: ClickPipeCreateValidationArgs::default(),
             uri: "mongodb://mongo.example/source".into(),
             username: "user".into(),
             password: "password".into(),
@@ -10556,6 +11009,7 @@ mod tests {
         BigQueryCreateArgs {
             service_id: "svc-1".into(),
             name: "pipe-1".into(),
+            validation: ClickPipeCreateValidationArgs::default(),
             auth: "SERVICE_ACCOUNT".into(),
             service_account_file: Some(service_account_file),
             project_id: None,
@@ -11276,6 +11730,7 @@ mod tests {
         KafkaCreateArgs {
             service_id: "svc".into(),
             name: "pipe".into(),
+            request: ClickPipeCreateRequestArgs::default(),
             source: KafkaSourceFields {
                 brokers: "b:9092".into(),
                 topics: "t".into(),

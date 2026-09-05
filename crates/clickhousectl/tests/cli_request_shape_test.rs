@@ -4880,6 +4880,281 @@ fn kafka_args_minimal() -> Vec<&'static str> {
     args
 }
 
+fn append_initial_scaling_and_validation(args: &mut Vec<String>) {
+    args.extend([
+        "--replicas".into(),
+        "2".into(),
+        "--cpu-millicores".into(),
+        "500".into(),
+        "--memory-gb".into(),
+        "2".into(),
+    ]);
+    append_sample_validation(args);
+}
+
+fn append_sample_validation(args: &mut Vec<String>) {
+    args.extend(["--validate-samples".into(), "true".into()]);
+}
+
+fn append_streaming_create_controls(args: &mut Vec<String>) {
+    append_initial_scaling_and_validation(args);
+    args.extend([
+        "--field-mapping".into(),
+        r#"{"sourceField":"source:a=b","destinationField":"destination:x=y"}"#.into(),
+        "--clickhouse-max-threads".into(),
+        "0".into(),
+        "--clickhouse-parallel-view-processing".into(),
+        "false".into(),
+    ]);
+}
+
+#[tokio::test]
+async fn cross_source_create_controls_reach_all_eight_request_shapes() {
+    let directory = tempfile::tempdir().unwrap();
+    let service_account = directory.path().join("service-account.json");
+    std::fs::write(&service_account, "{}").unwrap();
+    let service_account = service_account.to_str().unwrap();
+
+    let mut object_storage = [
+        "clickpipe",
+        "create",
+        "object-storage",
+        "svc-id",
+        "--name",
+        "object-pipe",
+        "--source-url",
+        "https://example.test/events.json",
+        "--format",
+        "JSONEachRow",
+        "--database",
+        "default",
+        "--table",
+        "events",
+        "--org-id",
+        "org",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    append_streaming_create_controls(&mut object_storage);
+    object_storage.extend([
+        "--object-storage-concurrency".into(),
+        "1".into(),
+        "--object-storage-polling-interval-ms".into(),
+        "100".into(),
+        "--object-storage-max-insert-bytes".into(),
+        "10485760".into(),
+        "--object-storage-max-file-count".into(),
+        "1".into(),
+        "--object-storage-use-cluster-function".into(),
+        "false".into(),
+    ]);
+
+    let mut kafka = kafka_args_minimal()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    append_streaming_create_controls(&mut kafka);
+    kafka.extend([
+        "--streaming-max-insert-wait-ms".into(),
+        "500".into(),
+        "--kafka-read-committed".into(),
+        "false".into(),
+    ]);
+
+    let mut kinesis = [
+        "clickpipe",
+        "create",
+        "kinesis",
+        "svc-id",
+        "--name",
+        "kinesis-pipe",
+        "--stream-name",
+        "events",
+        "--region",
+        "us-east-1",
+        "--format",
+        "JSONEachRow",
+        "--iam-role",
+        "arn:aws:iam::123456789012:role/clickpipe",
+        "--database",
+        "default",
+        "--table",
+        "events",
+        "--org-id",
+        "org",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    append_streaming_create_controls(&mut kinesis);
+    kinesis.extend(["--streaming-max-insert-wait-ms".into(), "500".into()]);
+
+    let mut postgres = postgres_args_minimal();
+    append_sample_validation(&mut postgres);
+    let mut mysql = mysql_args_minimal();
+    append_sample_validation(&mut mysql);
+
+    let mut mongodb = [
+        "clickpipe",
+        "create",
+        "mongodb",
+        "svc-id",
+        "--name",
+        "mongo-pipe",
+        "--uri",
+        "mongodb://mongo.example/source",
+        "--username",
+        "u",
+        "--password",
+        "p",
+        "--table-mapping",
+        "source.events:events",
+        "--destination-database",
+        "default",
+        "--org-id",
+        "org",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    append_sample_validation(&mut mongodb);
+
+    let mut bigquery = [
+        "clickpipe",
+        "create",
+        "bigquery",
+        "svc-id",
+        "--name",
+        "bigquery-pipe",
+        "--service-account-file",
+        service_account,
+        "--staging-path",
+        "gs://bucket/staging",
+        "--table-mapping",
+        "source.events:events",
+        "--destination-database",
+        "default",
+        "--org-id",
+        "org",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    append_sample_validation(&mut bigquery);
+
+    let mut pubsub = pubsub_create_args(service_account);
+    append_streaming_create_controls(&mut pubsub);
+    pubsub.extend(["--streaming-max-insert-wait-ms".into(), "500".into()]);
+
+    for (source, args, has_streaming_controls) in [
+        ("objectStorage", object_storage, true),
+        ("kafka", kafka, true),
+        ("kinesis", kinesis, true),
+        ("postgres", postgres, false),
+        ("mysql", mysql, false),
+        ("mongodb", mongodb, false),
+        ("bigquery", bigquery, false),
+        ("pubsub", pubsub, true),
+    ] {
+        let mock = start_mock_clickpipes_api().await;
+        let body = invoke_cli_capture_body(&mock, &as_str_args(&args)).await;
+        assert_eq!(body["source"]["validateSamples"], true, "{source}");
+        assert!(body["source"][source].is_object(), "{source}: {body}");
+        if has_streaming_controls {
+            assert_eq!(
+                body["scaling"],
+                serde_json::json!({
+                    "replicas": 2,
+                    "replicaCpuMillicores": 500,
+                    "replicaMemoryGb": 2.0,
+                }),
+                "{source}"
+            );
+            assert_eq!(
+                body["fieldMappings"],
+                serde_json::json!([{
+                    "sourceField": "source:a=b",
+                    "destinationField": "destination:x=y",
+                }]),
+                "{source}"
+            );
+            assert_eq!(body["settings"]["clickhouse_max_threads"], 0, "{source}");
+            assert_eq!(
+                body["settings"]["clickhouse_parallel_view_processing"], false,
+                "{source}"
+            );
+            assert_eq!(body["settings"]["kafka_read_committed"], false, "{source}");
+            if source == "objectStorage" {
+                assert_eq!(body["settings"]["object_storage_concurrency"], 1);
+                assert_eq!(
+                    body["settings"]["object_storage_use_cluster_function"],
+                    false
+                );
+                assert!(
+                    body["settings"]
+                        .get("streaming_max_insert_wait_ms")
+                        .is_none(),
+                    "{body}"
+                );
+            } else {
+                assert_eq!(body["settings"]["streaming_max_insert_wait_ms"], 500);
+            }
+        } else {
+            assert!(body.get("scaling").is_none(), "{source}: {body}");
+            assert!(body.get("fieldMappings").is_none(), "{source}: {body}");
+            assert!(body.get("settings").is_none(), "{source}: {body}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn invalid_create_controls_fail_before_file_io_or_http() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut postgres = postgres_args_minimal();
+    postgres.extend([
+        "--replicas".into(),
+        "2".into(),
+        "--ca-certificate".into(),
+        "/definitely/missing/clickpipe-ca.pem".into(),
+    ]);
+    let output = invoke_cli_with_cloud_credentials(&mock, &as_str_args(&postgres));
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unexpected argument '--replicas'"),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("clickpipe-ca.pem"), "{stderr}");
+    assert!(mock.received_requests().await.unwrap().is_empty());
+
+    let mut object_storage = [
+        "clickpipe",
+        "create",
+        "object-storage",
+        "svc-id",
+        "--name",
+        "object-pipe",
+        "--source-url",
+        "https://example.test/events.json",
+        "--format",
+        "JSONEachRow",
+        "--database",
+        "default",
+        "--table",
+        "events",
+        "--org-id",
+        "org",
+    ]
+    .map(str::to_string)
+    .to_vec();
+    object_storage.extend([
+        "--field-mapping".into(),
+        r#"{"sourceField":"source","destinationField":"target","typo":true}"#.into(),
+    ]);
+    let output = invoke_cli_with_cloud_credentials(&mock, &as_str_args(&object_storage));
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown field `typo`"), "{stderr}");
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn kafka_optional_fields_absent_when_flags_omitted() {
     let mock = start_mock_clickpipes_api().await;
