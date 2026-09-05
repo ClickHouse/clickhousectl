@@ -12889,6 +12889,414 @@ async fn schema_discover_pubsub_posts_source_body() {
     }
 }
 
+// ── ClickPipes GCP workload identity (issue #690) ──────────────────────────
+
+fn assert_workload_identity_source(source: &Value) {
+    assert_eq!(
+        source["authentication"],
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
+    );
+    for field in [
+        "iamRole",
+        "accessKey",
+        "connectionString",
+        "serviceAccountKey",
+    ] {
+        assert!(source.get(field).is_none(), "{field} leaked into {source}");
+    }
+}
+
+#[tokio::test]
+async fn workload_identity_create_requests_cover_every_supported_gcp_source() {
+    let cases: Vec<(&str, Vec<&str>)> = vec![
+        (
+            "kafka",
+            vec![
+                "clickpipe",
+                "create",
+                "kafka",
+                "svc-id",
+                "--name",
+                "gcmk-pipe",
+                "--brokers",
+                "broker:9092",
+                "--topics",
+                "events",
+                "--format",
+                "JSONEachRow",
+                "--kafka-type",
+                "gcmk",
+                "--auth",
+                "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+                "--database",
+                "default",
+                "--table",
+                "events",
+                "--column",
+                "id:Int64",
+                "--org-id",
+                "org",
+            ],
+        ),
+        (
+            "objectStorage",
+            vec![
+                "clickpipe",
+                "create",
+                "object-storage",
+                "svc-id",
+                "--name",
+                "gcs-pipe",
+                "--source-url",
+                "gs://bucket/events/*.json",
+                "--format",
+                "JSONEachRow",
+                "--storage-type",
+                "gcs",
+                "--auth",
+                "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+                "--database",
+                "default",
+                "--table",
+                "events",
+                "--column",
+                "id:Int64",
+                "--org-id",
+                "org",
+            ],
+        ),
+        (
+            "pubsub",
+            vec![
+                "clickpipe",
+                "create",
+                "pubsub",
+                "svc-id",
+                "--name",
+                "pubsub-pipe",
+                "--topic",
+                "events",
+                "--project-id",
+                "project-1",
+                "--format",
+                "JSONEachRow",
+                "--seek-type",
+                "earliest",
+                "--auth",
+                "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+                "--database",
+                "default",
+                "--table",
+                "events",
+                "--column",
+                "id:Int64",
+                "--org-id",
+                "org",
+            ],
+        ),
+        (
+            "bigquery",
+            vec![
+                "clickpipe",
+                "create",
+                "bigquery",
+                "svc-id",
+                "--name",
+                "bigquery-pipe",
+                "--auth",
+                "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+                "--project-id",
+                "project-1",
+                "--staging-path",
+                "gs://bucket/staging",
+                "--table-mapping",
+                "dataset.events:events",
+                "--destination-database",
+                "analytics",
+                "--org-id",
+                "org",
+            ],
+        ),
+    ];
+
+    for (source_name, args) in cases {
+        let mock = start_mock_clickpipes_api().await;
+        let body = invoke_cli_capture_body(&mock, &args).await;
+        let source = &body["source"][source_name];
+        assert_workload_identity_source(source);
+        assert!(
+            !body.to_string().contains("must-not-be-read"),
+            "local credential material leaked into {body}"
+        );
+        if source_name == "kafka" {
+            assert_eq!(source["type"], "gcmk");
+            assert!(source["credentials"].is_null());
+        }
+        if source_name == "bigquery" {
+            assert_eq!(source["projectId"], "project-1");
+            assert_eq!(body["destination"]["database"], "analytics");
+            assert!(source.get("credentials").is_none());
+        }
+    }
+}
+
+#[tokio::test]
+async fn workload_identity_schema_discovery_covers_every_supported_arm() {
+    let cases: Vec<(&str, Vec<&str>)> = vec![
+        (
+            "kafka",
+            vec![
+                "clickpipe",
+                "schema-discover",
+                "svc-id",
+                "--org-id",
+                "org",
+                "kafka",
+                "--brokers",
+                "broker:9092",
+                "--topics",
+                "events",
+                "--format",
+                "JSONEachRow",
+                "--kafka-type",
+                "gcmk",
+                "--auth",
+                "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            ],
+        ),
+        (
+            "objectStorage",
+            vec![
+                "clickpipe",
+                "schema-discover",
+                "svc-id",
+                "--org-id",
+                "org",
+                "object-storage",
+                "--source-url",
+                "gs://bucket/events/*.json",
+                "--format",
+                "JSONEachRow",
+                "--storage-type",
+                "gcs",
+                "--auth",
+                "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            ],
+        ),
+        (
+            "pubsub",
+            vec![
+                "clickpipe",
+                "schema-discover",
+                "svc-id",
+                "--org-id",
+                "org",
+                "pubsub",
+                "--topic",
+                "events",
+                "--project-id",
+                "project-1",
+                "--format",
+                "JSONEachRow",
+                "--seek-type",
+                "earliest",
+                "--auth",
+                "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            ],
+        ),
+    ];
+
+    for (source_name, args) in cases {
+        let mock = start_mock_schema_discovery_api().await;
+        let body = invoke_cli_capture_body(&mock, &args).await;
+        let source = &body["source"][source_name];
+        assert_workload_identity_source(source);
+        if source_name == "kafka" {
+            assert!(source["credentials"].is_null());
+        }
+    }
+}
+
+#[tokio::test]
+async fn contradictory_workload_identity_credentials_fail_before_http() {
+    let mock = start_mock_clickpipes_api().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "object-storage",
+            "svc-id",
+            "--name",
+            "gcs-pipe",
+            "--source-url",
+            "gs://bucket/events.json",
+            "--format",
+            "JSONEachRow",
+            "--storage-type",
+            "gcs",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            "--service-account-file",
+            "/missing/must-not-be-read.json",
+            "--database",
+            "default",
+            "--table",
+            "events",
+            "--org-id",
+            "org",
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("cannot be combined"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        mock.received_requests()
+            .await
+            .expect("request log")
+            .is_empty(),
+        "invalid credentials reached HTTP"
+    );
+}
+
+async fn mount_clickpipe_context(mock: &MockServer, result: Value) {
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org/services/svc-id/clickpipes/context",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-clickpipes-context",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn clickpipe_context_get_renders_full_and_sparse_responses() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_context(
+        &mock,
+        serde_json::json!({
+            "gcpWorkloadIdentity": {
+                "supported": true,
+                "ready": true,
+                "principal": "clickpipes@project.iam.gserviceaccount.com",
+            }
+        }),
+    )
+    .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["clickpipe", "context", "get", "svc-id", "--org-id", "org"],
+    );
+    assert_success(&output);
+    let output_json: Value = serde_json::from_slice(&output.stdout).expect("JSON output");
+    assert_eq!(
+        output_json["gcpWorkloadIdentity"]["principal"],
+        "clickpipes@project.iam.gserviceaccount.com"
+    );
+
+    let human = MockServer::start().await;
+    mount_clickpipe_context(
+        &human,
+        serde_json::json!({
+            "gcpWorkloadIdentity": {
+                "supported": true,
+                "ready": true,
+                "principal": "clickpipes@project.iam.gserviceaccount.com",
+            }
+        }),
+    )
+    .await;
+    let output = invoke_cli_human(
+        &human,
+        &["clickpipe", "context", "get", "svc-id", "--org-id", "org"],
+    );
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "gcpWorkloadIdentity:\n  supported: true\n  ready: true\n  principal: clickpipes@project.iam.gserviceaccount.com\n"
+    );
+
+    let sparse = MockServer::start().await;
+    mount_clickpipe_context(&sparse, serde_json::json!({})).await;
+    let output = invoke_cli_human(
+        &sparse,
+        &["clickpipe", "context", "get", "svc-id", "--org-id", "org"],
+    );
+    assert_success(&output);
+    assert!(output.stdout.is_empty());
+
+    let not_ready = MockServer::start().await;
+    mount_clickpipe_context(
+        &not_ready,
+        serde_json::json!({
+            "gcpWorkloadIdentity": { "supported": true, "ready": false }
+        }),
+    )
+    .await;
+    let output = invoke_cli_human(
+        &not_ready,
+        &["clickpipe", "context", "get", "svc-id", "--org-id", "org"],
+    );
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "gcpWorkloadIdentity:\n  supported: true\n  ready: false\n"
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_context_get_accepts_oauth_bearer_auth() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org/services/svc-id/clickpipes/context",
+        ))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "gcpWorkloadIdentity": { "supported": false } },
+            "status": 200,
+            "requestId": "stub-clickpipes-context",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "clickpipe",
+            "context",
+            "get",
+            "svc-id",
+            "--org-id",
+            "org",
+        ])
+        .output()
+        .expect("run OAuth context get");
+    assert_success(&output);
+}
+
 // ── Generated service passwords are never silently dropped ─────────────────
 //
 // `service reset-password` without either hash flag sends an empty PATCH

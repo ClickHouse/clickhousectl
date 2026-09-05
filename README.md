@@ -1104,6 +1104,9 @@ clickhousectl cloud clickpipe list <service-id>
 # Get ClickPipe details
 clickhousectl cloud clickpipe get <service-id> <clickpipe-id>
 
+# Get service capabilities and the GCP workload-identity principal
+clickhousectl cloud clickpipe context get <service-id>
+
 # Start/stop/resync a ClickPipe
 clickhousectl cloud clickpipe start <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe stop <service-id> <clickpipe-id>
@@ -1165,6 +1168,33 @@ Other settings are validated by the API for source compatibility, so passing
 #### Creating ClickPipes
 
 Each source type has its own subcommand under `clickpipe create`:
+
+GCP workload identity is in private preview and must be enabled for the
+organization. Once enabled, get the service's ClickPipes principal, grant that
+GCP service account access to the source resources, then create the pipe
+without a customer key:
+
+```bash
+clickhousectl cloud clickpipe context get <service-id>
+
+# After granting gcpWorkloadIdentity.principal access in GCP:
+clickhousectl cloud clickpipe create object-storage <service-id> \
+  --name my-gcs-pipe \
+  --storage-type gcs \
+  --source-url 'gs://my-bucket/data/**' \
+  --format JSONEachRow \
+  --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY \
+  --database default --table events \
+  --column "event_id:Int64"
+```
+
+The same authentication mode is available for `--kafka-type gcmk`, Pub/Sub,
+and BigQuery. BigQuery workload identity requires `--project-id`; its staging
+path and table mappings remain required. Kafka, object-storage, and Pub/Sub
+schema discovery accepts the same workload-identity source flags. Context
+lookup is read-only and supports OAuth; create and schema discovery follow the
+existing API-key requirements. The CLI only configures the ClickPipe request:
+it does not grant GCP IAM permissions.
 
 The current source commands accept credentials as command-line options. Load values from your secret manager into environment variables, run them only in a trusted environment, and do not commit source credentials to scripts; expanded values may still be visible in process listings while a command runs.
 
@@ -1617,6 +1647,14 @@ path itself is never sent, the key is never accepted as an inline flag value, so
 it stays out of process listings and shell history, and it is never echoed back
 in output or errors. An empty key file (or empty stdin) is refused before any
 request is made.
+
+For those GCP sources, `--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY` rejects
+`--service-account-file` and every other source credential flag. It is valid
+only with GCS object storage and GCMK Kafka; Pub/Sub and BigQuery select their
+typed workload-identity request variants. Existing service-account-key
+authentication remains the default for Pub/Sub and BigQuery, while object
+storage continues to infer it from `--service-account-file` when `--auth` is
+omitted.
 
 `--seek-type` has no default: `earliest` reads the backlog, `latest` only new
 messages, and `timestamp` starts from `--seek-timestamp` (required for that seek
