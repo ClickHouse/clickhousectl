@@ -14011,3 +14011,629 @@ async fn clickstack_human_lists_render_sparse_fields_and_api_errors_include_org(
         "{error}"
     );
 }
+
+// UDF operations and artifact uploads run against separate hosts so auth and
+// presigned-query isolation are exercised by the real executable.
+fn udf_test_command(
+    server: &MockServer,
+    project: &Path,
+    oauth: bool,
+    json: bool,
+    args: &[&str],
+) -> Command {
+    let home = project.join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    if oauth {
+        write_oauth_tokens(&cloud_dir, &server.uri());
+    }
+    let mut cmd = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut cmd);
+    cmd.env("HOME", home)
+        .env("DO_NOT_TRACK", "1")
+        .current_dir(project)
+        .args(["cloud", "--url", &server.uri()]);
+    if !oauth {
+        cmd.args(["--api-key", "udf-key", "--api-secret", "udf-secret"]);
+    }
+    if json {
+        cmd.arg("--json");
+    }
+    cmd.args(["udf", "--org-id", "org-1"])
+        .args(args)
+        .stdin(Stdio::null());
+    cmd
+}
+
+fn udf_definition(kind: &str, create: bool) -> Value {
+    let mut value = serde_json::json!({"type": kind, "runtime": "native", "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64"});
+    if create {
+        value["functionName"] = serde_json::json!("my_udf");
+    }
+    value
+}
+
+#[tokio::test]
+async fn udf_all_reads_preserve_pagination_and_sparse_responses_with_oauth() {
+    for (args, suffix, list) in [
+        (vec!["list"], "", true),
+        (vec!["get", "my_udf"], "/my_udf", false),
+        (
+            vec!["attachment", "list", "my_udf"],
+            "/my_udf/attachments",
+            true,
+        ),
+        (
+            vec!["attachment", "get", "my_udf", "svc-1"],
+            "/my_udf/attachments/svc-1",
+            false,
+        ),
+        (vec!["version", "list", "my_udf"], "/my_udf/versions", true),
+    ] {
+        for sparse in [false, true] {
+            let server = MockServer::start().await;
+            let project = tempfile::tempdir().unwrap();
+            let item = if sparse {
+                serde_json::json!({})
+            } else {
+                serde_json::json!({"functionName":"my_udf", "serviceId":"svc-1", "version":2, "status":"future", "deterministic":false})
+            };
+            let result = if list {
+                serde_json::json!({"items": [item], "pagination":{"nextCursor":"next page", "limit":2, "totalRecords":3}})
+            } else {
+                item
+            };
+            Mock::given(method("GET"))
+                .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+                .and(header("authorization", "Bearer test-bearer-token"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":result})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let mut args = args.clone();
+            if list {
+                args.extend(["--cursor", "page /+?", "--limit", "2"]);
+            }
+            let output = udf_test_command(&server, project.path(), true, true, &args)
+                .output()
+                .unwrap();
+            assert_success(&output);
+            let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+            if list {
+                assert_eq!(output["pagination"], result["pagination"]);
+                assert_eq!(output["items"][0]["status"], result["items"][0]["status"]);
+                let req = server.received_requests().await.unwrap().pop().unwrap();
+                let query: std::collections::HashMap<_, _> =
+                    req.url.query_pairs().into_owned().collect();
+                assert_eq!(query.get("cursor").map(String::as_str), Some("page /+?"));
+                assert_eq!(query.get("limit").map(String::as_str), Some("2"));
+            } else {
+                assert_eq!(output["status"], result["status"]);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn udf_delete_attach_detach_methods_and_auth() {
+    for (args, suffix, verb, expected_body) in [
+        (vec!["delete", "my_udf"], "/my_udf", "DELETE", None),
+        (
+            vec!["version", "delete", "my_udf", "2"],
+            "/my_udf/versions/2",
+            "DELETE",
+            None,
+        ),
+        (
+            vec!["detach", "my_udf", "svc-1"],
+            "/my_udf/attachments/svc-1",
+            "DELETE",
+            None,
+        ),
+        (
+            vec!["attach", "my_udf", "svc-1"],
+            "/my_udf/attachments/svc-1",
+            "PUT",
+            Some(serde_json::json!({})),
+        ),
+        (
+            vec!["attach", "my_udf", "svc-1", "--version", "2"],
+            "/my_udf/attachments/svc-1",
+            "PUT",
+            Some(serde_json::json!({"version":2})),
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        Mock::given(method(verb))
+            .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+            .and(header("authorization", "Basic dWRmLWtleTp1ZGYtc2VjcmV0"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(if verb == "DELETE" {
+                    serde_json::json!({"status":200,"requestId":"delete-request"})
+                } else {
+                    serde_json::json!({"result":{}})
+                }),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        assert_success(
+            &udf_test_command(&server, project.path(), false, true, &args)
+                .output()
+                .unwrap(),
+        );
+        let request = server.received_requests().await.unwrap().pop().unwrap();
+        match expected_body {
+            Some(body) => assert_eq!(
+                serde_json::from_slice::<Value>(&request.body).unwrap(),
+                body
+            ),
+            None => assert!(request.body.is_empty()),
+        }
+    }
+}
+
+#[tokio::test]
+async fn udf_create_and_version_upload_full_definitions_without_auth_leakage() {
+    for create in [true, false] {
+        for kind in ["executable", "executable_pool"] {
+            let server = MockServer::start().await;
+            let storage = MockServer::start().await;
+            let project = tempfile::tempdir().unwrap();
+            let archive = b"PK\x03\x04test archive";
+            std::fs::write(project.path().join("code.zip"), archive).unwrap();
+            let mut definition = udf_definition(kind, create);
+            definition.as_object_mut().unwrap().extend(serde_json::json!({
+                "commandReadTimeout": 5000, "commandWriteTimeout": 6000, "memoryLimitMib": 128,
+                "deterministic": false, "sendChunkHeader": false, "returnName":"result", "format":"JSONEachRow",
+                "sandboxType":"netenable", "sandboxVersion":"v3", "maxCommandExecutionTime":20,
+                "poolSize": if kind == "executable_pool" { serde_json::json!(4) } else { Value::Null }
+            }).as_object().unwrap().clone());
+            std::fs::write(
+                project.path().join("definition.json"),
+                definition.to_string(),
+            )
+            .unwrap();
+            Mock::given(method("POST")).and(path("/v1/organizations/org-1/udfUploads/url"))
+                .and(header("authorization", "Basic dWRmLWtleTp1ZGYtc2VjcmV0"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{
+                    "uploadId":"fresh-upload", "uploadUrl":format!("{}/artifact?signature=upload-secret", storage.uri())
+                }}))).expect(1).mount(&server).await;
+            Mock::given(method("PUT"))
+                .and(path("/artifact"))
+                .and(header("content-type", "application/zip"))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&storage)
+                .await;
+            let mut expected = definition;
+            expected["uploadId"] = serde_json::json!("fresh-upload");
+            if kind == "executable" {
+                expected.as_object_mut().unwrap().remove("poolSize");
+            }
+            let suffix = if create { "" } else { "/my_udf/versions" };
+            Mock::given(method("POST")).and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+                .and(header("authorization", "Basic dWRmLWtleTp1ZGYtc2VjcmV0"))
+                .and(body_json(expected))
+                .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"result":{"functionName":"my_udf","version":2,"status":"building","deterministic":false}})))
+                .expect(1).mount(&server).await;
+            let mut args = if create {
+                vec!["create"]
+            } else {
+                vec!["version", "create", "my_udf"]
+            };
+            args.extend([
+                "--config-file",
+                "definition.json",
+                "--artifact",
+                "code.zip",
+                "--debug",
+            ]);
+            let output = udf_test_command(&server, project.path(), false, true, &args)
+                .output()
+                .unwrap();
+            assert_success(&output);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap()["deterministic"],
+                false
+            );
+            let upload = storage.received_requests().await.unwrap().pop().unwrap();
+            assert_eq!(upload.body, archive);
+            assert_eq!(upload.url.query(), Some("signature=upload-secret"));
+            assert!(!upload.headers.contains_key("authorization"));
+            assert!(!upload.headers.contains_key("cookie"));
+            let logged = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            for secret in ["upload-secret", "fresh-upload", "udf-key", "udf-secret"] {
+                assert!(!logged.contains(secret), "leaked {secret}");
+            }
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 2);
+            assert!(requests[0].body.is_empty());
+        }
+    }
+}
+
+#[tokio::test]
+async fn udf_upload_failures_never_create_or_leak_presigned_url() {
+    for scenario in [
+        "missing_id",
+        "missing_url",
+        "bad_url",
+        "credentials",
+        "redirect",
+        "storage_error",
+        "connection_error",
+        "session_error",
+    ] {
+        let server = MockServer::start().await;
+        let storage = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("code.zip"), b"PK\x03\x04archive").unwrap();
+        std::fs::write(
+            project.path().join("definition.json"),
+            udf_definition("executable", true).to_string(),
+        )
+        .unwrap();
+        let url = match scenario {
+            "bad_url" => "not-a-url?signature=upload-secret".to_string(),
+            "credentials" => "https://user:upload-secret@example.com/code".to_string(),
+            "connection_error" => "http://127.0.0.1:1/code?signature=upload-secret".to_string(),
+            _ => format!("{}/code?signature=upload-secret", storage.uri()),
+        };
+        let mut session = serde_json::json!({"uploadId":"upload-1","uploadUrl":url});
+        if scenario == "missing_id" {
+            session.as_object_mut().unwrap().remove("uploadId");
+        }
+        if scenario == "missing_url" {
+            session.as_object_mut().unwrap().remove("uploadUrl");
+        }
+        let response = if scenario == "session_error" {
+            ResponseTemplate::new(503).set_body_json(
+                serde_json::json!({"error":"session unavailable signature=upload-secret"}),
+            )
+        } else {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":session}))
+        };
+        Mock::given(method("POST"))
+            .and(path("/v1/organizations/org-1/udfUploads/url"))
+            .respond_with(response)
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = if scenario == "redirect" {
+            ResponseTemplate::new(307).insert_header(
+                "location",
+                format!("{}/redirected?signature=upload-secret", storage.uri()),
+            )
+        } else {
+            ResponseTemplate::new(403).set_body_string("signature=upload-secret")
+        };
+        Mock::given(method("PUT"))
+            .and(path("/code"))
+            .respond_with(response)
+            .mount(&storage)
+            .await;
+        let output = udf_test_command(
+            &server,
+            project.path(),
+            false,
+            true,
+            &[
+                "create",
+                "--config-file",
+                "definition.json",
+                "--artifact",
+                "code.zip",
+                "--debug",
+            ],
+        )
+        .output()
+        .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{scenario}");
+        let logged = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!logged.contains("upload-secret"), "{scenario}: {logged}");
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        assert!(storage.received_requests().await.unwrap().len() <= 1);
+    }
+}
+
+#[tokio::test]
+async fn udf_invalid_definition_and_artifact_fail_before_api() {
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("code.zip"), b"PK\x03\x04archive").unwrap();
+    for definition in [
+        serde_json::json!({}),
+        serde_json::json!({"functionName":"sparse_get","version":3}),
+        serde_json::json!({"type":"future","runtime":"native","arguments":[],"returnType":"UInt64","functionName":"my_udf"}),
+        serde_json::json!({"type":"executable","runtime":"native","arguments":[{"name":"x","type":"UInt64","typo":null}],"returnType":"UInt64","functionName":"my_udf"}),
+    ] {
+        std::fs::write(
+            project.path().join("definition.json"),
+            definition.to_string(),
+        )
+        .unwrap();
+        let output = udf_test_command(
+            &server,
+            project.path(),
+            false,
+            true,
+            &[
+                "create",
+                "--config-file",
+                "definition.json",
+                "--artifact",
+                "code.zip",
+            ],
+        )
+        .output()
+        .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+    }
+    std::fs::write(
+        project.path().join("definition.json"),
+        udf_definition("executable", true).to_string(),
+    )
+    .unwrap();
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &[
+            "create",
+            "--config-file",
+            "definition.json",
+            "--artifact",
+            "missing.zip",
+        ],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn udf_every_write_rejects_oauth_before_api() {
+    let server = MockServer::start().await;
+    for args in [
+        vec!["delete", "my_udf"],
+        vec!["detach", "my_udf", "svc-1"],
+        vec!["attach", "my_udf", "svc-1"],
+        vec!["version", "delete", "my_udf", "2"],
+        vec![
+            "create",
+            "--config-file",
+            "missing",
+            "--artifact",
+            "missing",
+        ],
+        vec![
+            "version",
+            "create",
+            "my_udf",
+            "--config-file",
+            "missing",
+            "--artifact",
+            "missing",
+        ],
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        assert_eq!(
+            udf_test_command(&server, project.path(), true, true, &args)
+                .output()
+                .unwrap()
+                .status
+                .code(),
+            Some(4)
+        );
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn udf_all_read_and_action_errors_preserve_exit_codes() {
+    for (args, verb, suffix) in [
+        (vec!["list"], "GET", ""),
+        (vec!["get", "my_udf"], "GET", "/my_udf"),
+        (
+            vec!["attachment", "list", "my_udf"],
+            "GET",
+            "/my_udf/attachments",
+        ),
+        (
+            vec!["attachment", "get", "my_udf", "svc-1"],
+            "GET",
+            "/my_udf/attachments/svc-1",
+        ),
+        (vec!["version", "list", "my_udf"], "GET", "/my_udf/versions"),
+        (vec!["delete", "my_udf"], "DELETE", "/my_udf"),
+        (
+            vec!["detach", "my_udf", "svc-1"],
+            "DELETE",
+            "/my_udf/attachments/svc-1",
+        ),
+        (
+            vec!["version", "delete", "my_udf", "2"],
+            "DELETE",
+            "/my_udf/versions/2",
+        ),
+        (
+            vec!["attach", "my_udf", "svc-1"],
+            "PUT",
+            "/my_udf/attachments/svc-1",
+        ),
+    ] {
+        for status in [403, 424] {
+            let server = MockServer::start().await;
+            let project = tempfile::tempdir().unwrap();
+            Mock::given(method(verb))
+                .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .set_body_json(serde_json::json!({"error":"dependency unavailable"})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let output = udf_test_command(&server, project.path(), false, true, &args)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(if status == 403 { 4 } else { 1 })
+            );
+            assert!(String::from_utf8_lossy(&output.stderr).contains("dependency unavailable"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn udf_create_api_failures_consume_one_upload_attempt() {
+    for create in [true, false] {
+        let server = MockServer::start().await;
+        let storage = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("code.zip"), b"PK\x03\x04archive").unwrap();
+        std::fs::write(
+            project.path().join("definition.json"),
+            udf_definition("executable", create).to_string(),
+        )
+        .unwrap();
+        Mock::given(method("POST")).and(path("/v1/organizations/org-1/udfUploads/url"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{
+                "uploadId":"one-attempt", "uploadUrl":format!("{}/code?signature=upload-secret", storage.uri())
+            }}))).expect(1).mount(&server).await;
+        Mock::given(method("PUT"))
+            .and(path("/code"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&storage)
+            .await;
+        let suffix = if create { "" } else { "/my_udf/versions" };
+        Mock::given(method("POST"))
+            .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+            .respond_with(
+                ResponseTemplate::new(424)
+                    .set_body_json(serde_json::json!({"error":"build dependency unavailable"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut args = if create {
+            vec!["create"]
+        } else {
+            vec!["version", "create", "my_udf"]
+        };
+        args.extend(["--config-file", "definition.json", "--artifact", "code.zip"]);
+        let output = udf_test_command(&server, project.path(), false, true, &args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("build dependency unavailable"));
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+}
+
+#[tokio::test]
+async fn udf_stdin_minimal_definition_and_sparse_human_output() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("code.zip"), b"PK\x03\x04archive").unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfUploads/url"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{
+                "uploadId":"fresh-upload", "uploadUrl":format!("{}/code", storage.uri())
+            }})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/code"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&storage)
+        .await;
+    let mut expected = udf_definition("executable", true);
+    expected["uploadId"] = serde_json::json!("fresh-upload");
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .and(body_json(expected))
+        .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({"result":{}})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let mut cmd = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        false,
+        &["create", "--config-file", "-", "--artifact", "code.zip"],
+    );
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(udf_definition("executable", true).to_string().as_bytes())
+        .unwrap();
+    assert_success(&child.wait_with_output().unwrap());
+    for (args, suffix, result) in [
+        (
+            vec!["get", "my_udf"],
+            "/my_udf",
+            serde_json::json!({"functionName":null}),
+        ),
+        (
+            vec!["list"],
+            "",
+            serde_json::json!({"items":[{}],"pagination":{"nextCursor":"next"}}),
+        ),
+        (
+            vec!["attachment", "list", "my_udf"],
+            "/my_udf/attachments",
+            serde_json::json!({"items":[{}]}),
+        ),
+        (
+            vec!["version", "list", "my_udf"],
+            "/my_udf/versions",
+            serde_json::json!({"items":null,"pagination":null}),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":result})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let output = udf_test_command(&server, project.path(), false, false, &args)
+            .output()
+            .unwrap();
+        assert_success(&output);
+        if args == vec!["list"] {
+            assert!(String::from_utf8_lossy(&output.stdout).contains("next"));
+        }
+        let request = server.received_requests().await.unwrap().pop().unwrap();
+        assert!(request.url.query().is_none());
+    }
+}
