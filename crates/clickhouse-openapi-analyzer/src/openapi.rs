@@ -24,6 +24,13 @@ pub(crate) struct PropertyInfo {
     pub(crate) schema_type: Option<String>,
 }
 
+/// A named schema whose dynamic keys have a declared value schema.
+#[derive(Debug, Clone)]
+pub(crate) struct AdditionalPropertiesInfo {
+    pub(crate) pointer: String,
+    pub(crate) value_schema: Value,
+}
+
 /// One hop in a property chain from a named schema down to an enum position.
 ///
 /// `property` is the spec property name entered at this step. `array_item` is
@@ -76,6 +83,7 @@ pub(crate) struct OpenApiInventory {
     /// models a spec schema literally named `{Name}Response`.
     pub(crate) rust_schema_names: BTreeSet<String>,
     pub(crate) properties: BTreeMap<(String, String), PropertyInfo>,
+    pub(crate) additional_properties: BTreeMap<String, AdditionalPropertiesInfo>,
     pub(crate) referenced_schemas: BTreeMap<String, String>,
     /// Schemas transitively reachable from a request body or an operation
     /// parameter. Requiredness/optionality drift is checked only here.
@@ -181,6 +189,18 @@ impl OpenApiInventory {
             ]);
             self.schemas
                 .insert(schema_name.clone(), schema_pointer.clone());
+            if let Some(additional) = schema
+                .get("additionalProperties")
+                .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+            {
+                self.additional_properties.insert(
+                    schema_name.clone(),
+                    AdditionalPropertiesInfo {
+                        pointer: format!("{schema_pointer}/additionalProperties"),
+                        value_schema: additional.clone(),
+                    },
+                );
+            }
             let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
                 continue;
             };

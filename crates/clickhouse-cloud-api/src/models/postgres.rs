@@ -1191,17 +1191,16 @@ pub struct PostgresSlowQueryPatternDetail {
     pub recent_executions: Option<Vec<PostgresQueryExecution>>,
 }
 
-/// `pgBouncerConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct PgBouncerConfig {}
-
-/// `pgBouncerConfig` from the ClickHouse Cloud API, in response position.
+/// PgBouncer configuration parameters, with string values as required by the API.
 ///
-/// Response variant of [`PgBouncerConfig`]: every field is `Option<T>`, so a
-/// field the API drops or sends as `null` deserializes to `None` instead of
-/// failing. The schema currently declares no properties.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct PgBouncerConfigResponse {}
+/// Keys are open-ended: newly supported PgBouncer parameters are preserved.
+pub type PgBouncerConfig = std::collections::BTreeMap<String, String>;
+
+/// PgBouncer configuration returned by the API.
+///
+/// Parent response fields are optional, preserving missing and null sections.
+/// Present map entries retain their wire string values for lossless write-back.
+pub type PgBouncerConfigResponse = PgBouncerConfig;
 
 /// `pgConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

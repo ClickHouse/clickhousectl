@@ -14,7 +14,7 @@ With `clickhousectl` you can:
 
 `clickhousectl` helps humans and coding agents develop with ClickHouse and Postgres.
 
-The workspace also publishes the [typed Rust Cloud API client](crates/clickhouse-cloud-api/README.md). Its latest OpenAPI snapshot adds credit balances, service profile discovery, ClickPipes workload identity context, and expanded ClickPipes and ClickStack models; [CLI exposure is tracked separately](https://github.com/ClickHouse/clickhousectl/issues/699).
+The workspace also publishes the [typed Rust Cloud API client](crates/clickhouse-cloud-api/README.md). PgBouncer configuration uses an open string map, preserving arbitrary parameters when reading and writing configurations. Its latest OpenAPI snapshot adds credit balances, service profile discovery, ClickPipes workload identity context, and expanded ClickPipes and ClickStack models; [CLI exposure is tracked separately](https://github.com/ClickHouse/clickhousectl/issues/699).
 
 ## Installation
 

@@ -3274,7 +3274,7 @@ async fn create_postgres_service() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres"))
-        .and(body_partial_json(serde_json::json!({"name": "pg-svc", "provider": "aws", "region": "us-east-1", "size": "c6gd.large"})))
+        .and(body_partial_json(serde_json::json!({"name": "pg-svc", "provider": "aws", "region": "us-east-1", "size": "c6gd.large", "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}})))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "name": "pg-svc",
@@ -3291,6 +3291,10 @@ async fn create_postgres_service() {
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
         size: PgSize::C6gd_large,
+        pg_bouncer_config: Some(PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ])),
         ..Default::default()
     };
     let resp = c.postgres_service_create("org-1", &body).await.unwrap();
@@ -3465,7 +3469,7 @@ async fn get_postgres_config() {
             "pgConfig": {
                 "max_connections": 100
             },
-            "pgBouncerConfig": {}
+            "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}
         })))
         .mount(&s)
         .await;
@@ -3475,6 +3479,14 @@ async fn get_postgres_config() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
+    assert_eq!(
+        config.pg_bouncer_config.as_ref().unwrap()["default_pool_size"],
+        "16"
+    );
+    assert_eq!(
+        config.pg_bouncer_config.as_ref().unwrap()["future_parameter"],
+        "on"
+    );
     assert_eq!(
         config
             .pg_config
@@ -3491,12 +3503,12 @@ async fn replace_postgres_config() {
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
         .and(body_partial_json(
-            serde_json::json!({"pgConfig": {"max_connections": 200}, "pgBouncerConfig": {}}),
+            serde_json::json!({"pgConfig": {"max_connections": 200}, "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "message": "Configuration updated",
             "pgConfig": { "max_connections": 200 },
-            "pgBouncerConfig": {}
+            "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}
         })))
         .mount(&s)
         .await;
@@ -3506,13 +3518,24 @@ async fn replace_postgres_config() {
             max_connections: Some(serde_json::json!(200)),
             ..Default::default()
         },
-        pg_bouncer_config: PgBouncerConfig::default(),
+        pg_bouncer_config: PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ]),
     };
     let resp = c
         .postgres_instance_config_post("org-1", "pg-1", &body)
         .await
         .unwrap();
     let result = resp.result.unwrap();
+    assert_eq!(
+        result.pg_bouncer_config.as_ref().unwrap()["default_pool_size"],
+        "16"
+    );
+    assert_eq!(
+        result.pg_bouncer_config.as_ref().unwrap()["future_parameter"],
+        "on"
+    );
     assert_eq!(result.message, Some("Configuration updated".to_string()));
     assert_eq!(
         result
@@ -3530,12 +3553,12 @@ async fn patch_postgres_config() {
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
         .and(body_partial_json(
-            serde_json::json!({"pgConfig": {"max_connections": 150}, "pgBouncerConfig": {}}),
+            serde_json::json!({"pgConfig": {"max_connections": 150}, "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "message": "OK",
             "pgConfig": { "max_connections": 150 },
-            "pgBouncerConfig": {}
+            "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}
         })))
         .mount(&s)
         .await;
@@ -3545,13 +3568,24 @@ async fn patch_postgres_config() {
             max_connections: Some(serde_json::json!(150)),
             ..Default::default()
         },
-        pg_bouncer_config: PgBouncerConfig::default(),
+        pg_bouncer_config: PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ]),
     };
     let resp = c
         .postgres_instance_config_patch("org-1", "pg-1", &body)
         .await
         .unwrap();
     let result = resp.result.unwrap();
+    assert_eq!(
+        result.pg_bouncer_config.as_ref().unwrap()["default_pool_size"],
+        "16"
+    );
+    assert_eq!(
+        result.pg_bouncer_config.as_ref().unwrap()["future_parameter"],
+        "on"
+    );
     assert_eq!(
         result
             .pg_config
@@ -3568,7 +3602,7 @@ async fn create_postgres_read_replica() {
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/readReplica"))
         .and(body_partial_json(
-            serde_json::json!({"name": "pg-1-replica"}),
+            serde_json::json!({"name": "pg-1-replica", "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
@@ -3580,6 +3614,10 @@ async fn create_postgres_read_replica() {
 
     let body = PostgresServiceReadReplicaRequest {
         name: "pg-1-replica".to_string(),
+        pg_bouncer_config: Some(PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ])),
         ..Default::default()
     };
     let resp = c
@@ -3599,7 +3637,7 @@ async fn restore_postgres_service() {
             "/v1/organizations/org-1/postgres/pg-1/restoredService",
         ))
         .and(body_partial_json(
-            serde_json::json!({"name": "pg-1-restored"}),
+            serde_json::json!({"name": "pg-1-restored", "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "id": "cccccccc-dddd-eeee-ffff-000000000000",
@@ -3611,6 +3649,10 @@ async fn restore_postgres_service() {
 
     let body = PostgresServiceRestoreRequest {
         name: "pg-1-restored".to_string(),
+        pg_bouncer_config: Some(PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ])),
         restore_target: Utc::now(),
         ..Default::default()
     };
