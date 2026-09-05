@@ -1195,6 +1195,38 @@ Other settings are validated by the API for source compatibility, so passing
 
 Each source type has its own subcommand under `clickpipe create`:
 
+Every create subcommand accepts source sample validation through
+`--validate-samples true|false`. The value is written under `source`; omission
+keeps the historical `false` value. The API documents sample validation as
+having no effect for PostgreSQL and MySQL.
+
+Kafka, Kinesis, object-storage, and Pub/Sub creates also accept repeatable
+`--field-mapping '{"sourceField":"...","destinationField":"..."}'` values and
+initial scaling. Scaling is one complete allocation, so pass `--replicas`,
+`--cpu-millicores`, and `--memory-gb` together; omitting all three leaves the
+whole `scaling` block out of the request. Database CDC scaling is service-wide
+and configured through `clickpipe cdc-scaling update` instead.
+
+Those four source types also accept the ingestion-setting flags shown under
+`clickpipe settings update`. The JSON pair form preserves field names containing
+punctuation and rejects missing or unknown keys before a request. Object-storage
+settings only apply to object-storage creates, and `--kafka-read-committed` only
+applies to Kafka. Database-source creates use their source-specific CDC setting
+and table-mapping flags instead. With no common setting flag, the request omits
+the whole `settings` block; explicit `0` and `false` remain present.
+
+```bash
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name mapped-events \
+  --brokers 'broker:9092' --topics events --format JSONEachRow \
+  --database default --table events --column 'event_id:Int64' \
+  --replicas 2 --cpu-millicores 500 --memory-gb 2 \
+  --validate-samples true \
+  --field-mapping '{"sourceField":"payload:event=id","destinationField":"event_id"}' \
+  --clickhouse-max-threads 0 \
+  --kafka-read-committed false
+```
+
 GCP workload identity is in private preview and must be enabled for the
 organization. Once enabled, get the service's ClickPipes principal, grant that
 GCP service account access to the source resources, then create the pipe
