@@ -4,7 +4,8 @@ use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
-    ClickPipePostgresPipeTableMapping, ClickPipePostgresPipeTableMappingTableengine,
+    ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipePostgresPipeTableMapping,
+    ClickPipePostgresPipeTableMappingTableengine,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -1200,6 +1201,45 @@ pub struct BigQueryCreateArgs {
     #[arg(long = "table-mapping", value_name = "DATASET.TABLE:TARGET_TABLE")]
     pub table_mappings: Vec<String>,
 
+    /// Replication mode
+    #[arg(
+        long,
+        default_value = "snapshot",
+        value_parser = PossibleValuesParser::new(ClickPipeBigQueryPipeSettingsReplicationmode::VALUES),
+    )]
+    pub replication_mode: String,
+
+    /// Preserve BigQuery nullability in destination columns
+    #[arg(long, value_name = "true|false")]
+    pub allow_nullable_columns: Option<bool>,
+
+    /// Parallel workers during the initial snapshot
+    #[arg(
+        long,
+        value_name = "WORKERS",
+        value_parser = parse_finite_f64,
+        allow_hyphen_values = true
+    )]
+    pub initial_load_parallelism: Option<f64>,
+
+    /// Rows per partition during the snapshot
+    #[arg(
+        long,
+        value_name = "ROWS",
+        value_parser = parse_finite_f64,
+        allow_hyphen_values = true
+    )]
+    pub snapshot_rows_per_partition: Option<f64>,
+
+    /// Tables to snapshot in parallel
+    #[arg(
+        long,
+        value_name = "TABLES",
+        value_parser = parse_finite_f64,
+        allow_hyphen_values = true
+    )]
+    pub snapshot_parallel_tables: Option<f64>,
+
     #[command(flatten)]
     pub destination: DatabaseDestinationArgs,
 
@@ -1912,6 +1952,17 @@ fn parse_pubsub_filter(value: &str) -> Result<String, String> {
         ));
     }
     Ok(value.to_string())
+}
+
+fn parse_finite_f64(value: &str) -> Result<f64, String> {
+    let value = value
+        .parse::<f64>()
+        .map_err(|error| format!("expected a number: {error}"))?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err("expected a finite number".into())
+    }
 }
 
 /// Parse `--seek-timestamp` into the library's UTC timestamp. clap already
@@ -3327,6 +3378,21 @@ fn build_bigquery_request(
         ServiceAccount,
     };
 
+    for (flag, value) in [
+        ("--initial-load-parallelism", args.initial_load_parallelism),
+        (
+            "--snapshot-rows-per-partition",
+            args.snapshot_rows_per_partition,
+        ),
+        ("--snapshot-parallel-tables", args.snapshot_parallel_tables),
+    ] {
+        if value.is_some_and(|value| !value.is_finite()) {
+            return Err(CloudError::new(format!(
+                "invalid {flag}: expected a finite number"
+            )));
+        }
+    }
+
     let service_account_file = read_gcp_service_account_file(&args.service_account_file)?;
 
     // BigQuery uses `dataset.table:target_table` format.
@@ -3363,8 +3429,11 @@ fn build_bigquery_request(
         },
         snapshot_staging_path: args.staging_path.clone(),
         settings: ClickPipeBigQueryPipeSettings {
-            replication_mode: parse_enum("snapshot")?,
-            ..Default::default()
+            replication_mode: parse_enum(&args.replication_mode)?,
+            allow_nullable_columns: args.allow_nullable_columns,
+            initial_load_parallelism: args.initial_load_parallelism,
+            snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
+            snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
         },
         table_mappings,
     };
@@ -3937,6 +4006,22 @@ mod tests {
             "user",
             "--password",
             "password",
+            flag,
+            value,
+        ]);
+    }
+
+    fn assert_bigquery_value(flag: &str, value: &str) {
+        parse_clickpipe(&[
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
             flag,
             value,
         ]);
@@ -6223,6 +6308,16 @@ mod tests {
             "dataset.one:one",
             "--table-mapping",
             "dataset.two:two",
+            "--replication-mode",
+            "snapshot",
+            "--allow-nullable-columns",
+            "false",
+            "--initial-load-parallelism",
+            "2.5",
+            "--snapshot-rows-per-partition",
+            "1000000",
+            "--snapshot-parallel-tables",
+            "3",
             "--destination-database",
             "analytics",
             "--org-id",
@@ -6236,6 +6331,11 @@ mod tests {
         assert_eq!(args.service_account_file, "/tmp/account.json");
         assert_eq!(args.staging_path, "gs://bucket/staging");
         assert_eq!(args.table_mappings, ["dataset.one:one", "dataset.two:two"]);
+        assert_eq!(args.replication_mode, "snapshot");
+        assert_eq!(args.allow_nullable_columns, Some(false));
+        assert_eq!(args.initial_load_parallelism, Some(2.5));
+        assert_eq!(args.snapshot_rows_per_partition, Some(1_000_000.0));
+        assert_eq!(args.snapshot_parallel_tables, Some(3.0));
         assert_eq!(args.destination.destination_database, "analytics");
         assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
@@ -6256,8 +6356,50 @@ mod tests {
             panic!("expected bigquery create");
         };
         assert!(args.table_mappings.is_empty());
+        assert_eq!(args.replication_mode, "snapshot");
+        assert_eq!(args.allow_nullable_columns, None);
+        assert_eq!(args.initial_load_parallelism, None);
+        assert_eq!(args.snapshot_rows_per_partition, None);
+        assert_eq!(args.snapshot_parallel_tables, None);
         assert_eq!(args.destination.destination_database, "default");
         assert_eq!(args.org_id, None);
+    }
+
+    #[test]
+    fn bigquery_tuning_numbers_require_finite_values() {
+        for (flag, value) in [
+            ("--initial-load-parallelism", "NaN"),
+            ("--snapshot-rows-per-partition", "inf"),
+            ("--snapshot-parallel-tables", "-inf"),
+        ] {
+            let error = clickpipe_parse_error(&[
+                "create",
+                "bigquery",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--service-account-file",
+                "/tmp/account.json",
+                "--staging-path",
+                "gs://bucket/staging",
+                flag,
+                value,
+            ]);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            let message = error.to_string();
+            assert!(message.contains(flag), "{message}");
+            assert!(message.contains("finite number"), "{message}");
+        }
+
+        assert_eq!(parse_finite_f64("-1.5"), Ok(-1.5));
+        assert_eq!(parse_finite_f64("2.5"), Ok(2.5));
+        for flag in [
+            "--initial-load-parallelism",
+            "--snapshot-rows-per-partition",
+            "--snapshot-parallel-tables",
+        ] {
+            assert_bigquery_value(flag, "-1.5");
+        }
     }
 
     #[test]
@@ -6409,6 +6551,9 @@ mod tests {
             assert_postgres_value("--replication-mode", value);
             assert_mysql_value("--replication-mode", value);
             assert_mongodb_value("--replication-mode", value);
+        }
+        for &value in ClickPipeBigQueryPipeSettingsReplicationmode::VALUES {
+            assert_bigquery_value("--replication-mode", value);
         }
         for &value in MYSQL_TYPES {
             assert_mysql_value("--mysql-type", value);
@@ -6617,6 +6762,20 @@ mod tests {
             args.extend([flag, invalid]);
             assert_rejected(&args);
         }
+
+        assert_rejected(&[
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--replication-mode",
+            invalid,
+        ]);
 
         for flag in ["--format", "--auth", "--seek-type"] {
             let mut flags = pubsub_source_flags("./sa-key.json");
@@ -8359,6 +8518,11 @@ mod tests {
             service_account_file,
             staging_path: "gs://bucket/staging".into(),
             table_mappings: vec!["source.events:events".into()],
+            replication_mode: "snapshot".into(),
+            allow_nullable_columns: None,
+            initial_load_parallelism: None,
+            snapshot_rows_per_partition: None,
+            snapshot_parallel_tables: None,
             destination: DatabaseDestinationArgs {
                 destination_database: "default".into(),
             },
@@ -8388,6 +8552,11 @@ mod tests {
         assert_eq!(source.table_mappings[0].source_dataset_name, "source");
         assert_eq!(source.table_mappings[0].source_table, "events");
         assert_eq!(source.table_mappings[0].target_table, "events");
+        assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
+        assert_eq!(source.settings.allow_nullable_columns, None);
+        assert_eq!(source.settings.initial_load_parallelism, None);
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
     }
 
     #[test]
@@ -8404,6 +8573,10 @@ mod tests {
         ];
         args.destination.destination_database = "analytics".into();
         args.destination_roles.roles = vec!["analytics_reader".into()];
+        args.allow_nullable_columns = Some(true);
+        args.initial_load_parallelism = Some(2.5);
+        args.snapshot_rows_per_partition = Some(1_000_000.0);
+        args.snapshot_parallel_tables = Some(3.0);
 
         let request = build_bigquery_request(&args).unwrap();
 
@@ -8423,6 +8596,52 @@ mod tests {
             "eyJwcm9qZWN0X2lkIjoic291cmNlLXByb2plY3QifQ=="
         );
         assert_eq!(source.table_mappings.len(), 2);
+        assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
+        assert_eq!(source.settings.allow_nullable_columns, Some(true));
+        assert_eq!(source.settings.initial_load_parallelism, Some(2.5));
+        assert_eq!(
+            source.settings.snapshot_num_rows_per_partition,
+            Some(1_000_000.0)
+        );
+        assert_eq!(
+            source.settings.snapshot_number_of_parallel_tables,
+            Some(3.0)
+        );
+    }
+
+    #[test]
+    fn build_bigquery_request_rejects_non_finite_settings_before_key_file() {
+        fn set_initial_load_parallelism(args: &mut BigQueryCreateArgs) {
+            args.initial_load_parallelism = Some(f64::NAN);
+        }
+        fn set_snapshot_rows(args: &mut BigQueryCreateArgs) {
+            args.snapshot_rows_per_partition = Some(f64::INFINITY);
+        }
+        fn set_snapshot_tables(args: &mut BigQueryCreateArgs) {
+            args.snapshot_parallel_tables = Some(f64::NEG_INFINITY);
+        }
+
+        for (flag, set_value) in [
+            (
+                "--initial-load-parallelism",
+                set_initial_load_parallelism as fn(&mut BigQueryCreateArgs),
+            ),
+            (
+                "--snapshot-rows-per-partition",
+                set_snapshot_rows as fn(&mut BigQueryCreateArgs),
+            ),
+            (
+                "--snapshot-parallel-tables",
+                set_snapshot_tables as fn(&mut BigQueryCreateArgs),
+            ),
+        ] {
+            let mut args = bigquery_builder_args("/missing/service-account.json".into());
+            set_value(&mut args);
+
+            let error = build_bigquery_request(&args).unwrap_err().to_string();
+
+            assert_eq!(error, format!("invalid {flag}: expected a finite number"));
+        }
     }
 
     #[test]

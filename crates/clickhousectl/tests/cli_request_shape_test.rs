@@ -4169,8 +4169,9 @@ async fn kinesis_iam_user_omits_iam_role() {
 
 // ── BigQuery ───────────────────────────────────────────────────────────────
 //
-// BigQuery has fewer optional flags than other sources, but still falls into
-// the "database pipe" bucket — destination MUST omit table/columns/etc.
+// BigQuery falls into the "database pipe" bucket — destination MUST omit
+// table/columns/etc. Its optional snapshot tuning fields must also remain
+// absent unless the user chooses them.
 
 #[tokio::test]
 async fn bigquery_destination_omits_table_columns_managed_table_definition() {
@@ -4222,6 +4223,112 @@ async fn bigquery_destination_omits_table_columns_managed_table_definition() {
         body["source"]["bigquery"]["tableMappings"][0]["sourceDatasetName"],
         "dataset"
     );
+    let settings = &body["source"]["bigquery"]["settings"];
+    assert_eq!(settings["replicationMode"], "snapshot");
+    for field in [
+        "allowNullableColumns",
+        "initialLoadParallelism",
+        "snapshotNumRowsPerPartition",
+        "snapshotNumberOfParallelTables",
+    ] {
+        assert!(
+            settings.get(field).is_none(),
+            "{field} was sent without a corresponding flag: {settings}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn bigquery_snapshot_tuning_flags_are_sent_exactly() {
+    let mock = start_mock_clickpipes_api().await;
+    let dir = tempfile::tempdir().unwrap();
+    let sa_path = dir.path().join("service-account.json");
+    std::fs::write(&sa_path, "{}").unwrap();
+
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "bigquery",
+            "svc-id",
+            "--name",
+            "tuned-pipe",
+            "--service-account-file",
+            sa_path.to_str().unwrap(),
+            "--staging-path",
+            "gs://bucket/staging",
+            "--replication-mode",
+            "snapshot",
+            "--allow-nullable-columns",
+            "true",
+            "--initial-load-parallelism",
+            "2.5",
+            "--snapshot-rows-per-partition",
+            "1000000",
+            "--snapshot-parallel-tables",
+            "3",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body["source"]["bigquery"]["settings"],
+        serde_json::json!({
+            "replicationMode": "snapshot",
+            "allowNullableColumns": true,
+            "initialLoadParallelism": 2.5,
+            "snapshotNumRowsPerPartition": 1_000_000.0,
+            "snapshotNumberOfParallelTables": 3.0,
+        })
+    );
+}
+
+#[tokio::test]
+async fn bigquery_non_finite_tuning_is_rejected_before_key_file_or_http() {
+    let mock = MockServer::start().await;
+    let missing_key = "/missing/bigquery-service-account.json";
+
+    for (flag, value) in [
+        ("--initial-load-parallelism", "NaN"),
+        ("--snapshot-rows-per-partition", "inf"),
+        ("--snapshot-parallel-tables", "-inf"),
+    ] {
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "create",
+                "bigquery",
+                "svc-id",
+                "--name",
+                "invalid-pipe",
+                "--service-account-file",
+                missing_key,
+                "--staging-path",
+                "gs://bucket/staging",
+                flag,
+                value,
+                "--org-id",
+                "org",
+            ],
+        );
+
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(flag), "{stderr}");
+        assert!(stderr.contains("finite number"), "{stderr}");
+        assert!(!stderr.contains(missing_key), "key file was read: {stderr}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
