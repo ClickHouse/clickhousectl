@@ -732,6 +732,12 @@ impl std::fmt::Display for PgConfigDefaultTransactionIsolation {
     }
 }
 
+impl PgConfigDefaultTransactionIsolation {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] =
+        &["read committed", "repeatable read", "serializable"];
+}
+
 /// Inline enum for `pgConfig.ssl_min_protocol_version`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgConfigSslMinProtocolVersion {
@@ -761,6 +767,11 @@ impl std::fmt::Display for PgConfigSslMinProtocolVersion {
     }
 }
 
+impl PgConfigSslMinProtocolVersion {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"];
+}
+
 /// Inline enum for `pgConfig.wal_compression`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgConfigWalCompression {
@@ -788,6 +799,11 @@ impl std::fmt::Display for PgConfigWalCompression {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl PgConfigWalCompression {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["off", "on", "lz4", "zstd"];
 }
 
 /// Type alias for `pgCreatedAtProperty`.
