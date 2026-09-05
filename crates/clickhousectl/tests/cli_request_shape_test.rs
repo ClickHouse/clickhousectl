@@ -12559,3 +12559,148 @@ async fn pgbouncer_config_get_json_preserves_values_and_tolerates_absent_section
         }
     }
 }
+
+// API key nullable expiry updates (#698).
+async fn invoke_key_update_expiry(server: &MockServer, flags: &[&str]) -> std::process::Output {
+    let project = tempfile::tempdir().unwrap();
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", project.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "expiry-test-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "expiry-test-secret")
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &server.uri(),
+            "--json",
+            "key",
+            "update",
+            "key-1",
+            "--org-id",
+            "org-1",
+        ])
+        .args(flags)
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run key update")
+}
+
+#[tokio::test]
+async fn key_update_expiry_sends_exact_omitted_set_and_clear_bodies() {
+    let cases: &[(&[&str], Value)] = &[
+        (&[], serde_json::json!({})),
+        (
+            &["--name", "renamed"],
+            serde_json::json!({"name": "renamed"}),
+        ),
+        (&["--clear-expiry"], serde_json::json!({"expireAt": null})),
+        (
+            &["--expires-at", "2030-01-01T00:00:00Z"],
+            serde_json::json!({"expireAt": "2030-01-01T00:00:00Z"}),
+        ),
+        (
+            &[
+                "--clear-expiry",
+                "--name",
+                "renamed",
+                "--role-id",
+                "11111111-2222-3333-4444-555555555555",
+                "--state",
+                "disabled",
+                "--ip-allow",
+                "10.0.0.0/8",
+            ],
+            serde_json::json!({
+                "expireAt": null, "name": "renamed", "state": "disabled",
+                "assignedRoleIds": ["11111111-2222-3333-4444-555555555555"],
+                "ipAccessList": [{"source": "10.0.0.0/8"}],
+            }),
+        ),
+    ];
+    for (flags, expected) in cases {
+        let server = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/v1/organizations/org-1/keys/key-1"))
+            .and(wiremock::matchers::basic_auth(
+                "expiry-test-key",
+                "expiry-test-secret",
+            ))
+            .and(body_json(expected.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {"name": "updated", "expireAt": null}, "status": 200,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let output = invoke_key_update_expiry(&server, flags).await;
+        assert_success(&output);
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result, serde_json::json!({"name": "updated"}));
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn key_update_expiry_conflict_sends_no_http() {
+    let server = MockServer::start().await;
+    let output = invoke_key_update_expiry(
+        &server,
+        &["--clear-expiry", "--expires-at", "2030-01-01T00:00:00Z"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(2));
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn key_update_expiry_preserves_auth_error_conversion() {
+    let server = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/keys/key-1"))
+        .and(body_json(serde_json::json!({"expireAt": null})))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "error": "not permitted", "status": 403,
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = invoke_key_update_expiry(&server, &["--clear-expiry"]).await;
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+}
+
+#[tokio::test]
+async fn key_update_expiry_rejects_oauth_before_http() {
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &server.uri());
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &server.uri(),
+            "--json",
+            "key",
+            "update",
+            "key-1",
+            "--org-id",
+            "org-1",
+            "--clear-expiry",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run OAuth key update");
+    assert_eq!(output.status.code(), Some(4));
+    assert!(server.received_requests().await.unwrap().is_empty());
+}

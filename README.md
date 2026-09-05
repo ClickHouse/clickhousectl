@@ -1515,8 +1515,12 @@ clickhousectl cloud key create --name ci-key \
 clickhousectl cloud key update <key-id> \
   --name renamed-key \
   --state disabled
+clickhousectl cloud key update <key-id> --expires-at 2030-12-31T23:59:59Z
+clickhousectl cloud key update <key-id> --clear-expiry
 clickhousectl cloud key delete <key-id>
 ```
+
+On update, omitting both expiry flags keeps the current expiry. `--clear-expiry` removes it and conflicts with `--expires-at`; other key settings change only when their flags are supplied.
 
 ### Activity
 
