@@ -2,6 +2,18 @@
 
 Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/cloud/manage/openapi).
 
+## Updated Cloud API surface
+
+The live snapshot adds `credit_balances_get` (trial and prepaid credit balances), `service_profiles_list` (region and optional BYOC infrastructure), and `click_pipes_service_context_get` (GCP workload identity readiness and principal).
+
+BigQuery and Pub/Sub source models now distinguish service-account and workload-identity authentication with typed unions. Build `ClickPipePostBigQueryServiceAccountSource` or `ClickPipePostPubSubServiceAccountSource` and call `.into()` for existing service-account flows; workload-identity variants omit customer credentials. BigQuery settings and table mappings now permit the optional fields the API accepts. Kafka requests gain optional `protobuf_schema`, which is only supported for Protobuf without a schema registry; MySQL table mappings gain `partition_by_expr`.
+
+`ServiceProfile` now represents the profile discovery response (`profile`, `cpu_cores`, `memory_gi`); the former `Service.profile` value enum is named `ServiceProfileName`. Dynamic profile names remain lossless through its `Unknown(String)` variant.
+
+ClickStack models now include alert channel lists, 30-second alert intervals, query-timeout errors, chart formulas and series limits, dashboard variables and broadcast filters, service-version expressions, and typed SQL/variable saved-filter unions. New formula and saved-filter response/request pairs support explicit fallible write-back through `TryFrom`; absent nested required fields return their wire names. UDF responses include `deterministic`.
+
+The current alert request schemas have no `required` array or optional marker on either `channel` or `channels`, so both fields remain strict in the Rust request models. This mirrors the documented requiredness policy; it does not establish whether the server accepts a channels-only request. Supply the channel list explicitly rather than relying on the empty `Default` value (the API specifies 1–10 channels).
+
 ## Development
 
 ### Structure

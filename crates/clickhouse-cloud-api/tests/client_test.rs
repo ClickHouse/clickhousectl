@@ -4289,3 +4289,118 @@ async fn default_base_url_is_production() {
     // but we can verify the client is constructable without panicking.
     let _client = Client::new("key", "secret");
 }
+
+#[tokio::test]
+async fn credit_balances_get_includes_trial_and_prepaid_balances() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/creditBalances"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "totalRemainingCredits": 12.5,
+            "balances": [{"type": "trial", "remainingCredits": 2.5}, {"type": "prepaid", "remainingCredits": 10.0}]
+        })))
+        .expect(1).mount(&server).await;
+    let result = client
+        .credit_balances_get("org")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(result.total_remaining_credits, Some(12.5));
+    let balances = result.balances.unwrap();
+    assert_eq!(balances[0].r#type, Some(CreditBalanceType::Trial));
+    assert_eq!(balances[1].r#type, Some(CreditBalanceType::Prepaid));
+}
+
+#[tokio::test]
+async fn service_profiles_list_encodes_region_and_optional_byoc() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/serviceProfiles"))
+        .and(basic_auth("key", "secret"))
+        .and(query_param("region_id", "us-east-1"))
+        .respond_with(ok_json(
+            serde_json::json!([{"profile": "v1-standard-byoc-4", "cpuCores": 4, "memoryGi": 16}]),
+        ))
+        .expect(2)
+        .mount(&server)
+        .await;
+    for byoc in [None, Some("byoc +/id")] {
+        let result = client
+            .service_profiles_list("org", "us-east-1", byoc)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(result[0].profile.as_deref(), Some("v1-standard-byoc-4"));
+        assert_eq!(result[0].cpu_cores, Some(4.0));
+        assert_eq!(result[0].memory_gi, Some(16.0));
+    }
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        !requests[0]
+            .url
+            .query_pairs()
+            .any(|(key, _)| key == "byoc_id")
+    );
+    assert!(
+        requests[1]
+            .url
+            .query_pairs()
+            .any(|(key, value)| key == "byoc_id" && value == "byoc +/id")
+    );
+}
+
+#[tokio::test]
+async fn clickpipes_context_returns_workload_identity_and_tolerates_omissions() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/services/service/clickpipes/context"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({"gcpWorkloadIdentity": {
+            "supported": true, "ready": null, "principal": "clickpipes@example.iam.gserviceaccount.com"
+        }})))
+        .expect(1).mount(&server).await;
+    let result = client
+        .click_pipes_service_context_get("org", "service")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    let identity = result.gcp_workload_identity.unwrap();
+    assert_eq!(identity.supported, Some(true));
+    assert_eq!(identity.ready, None);
+    assert_eq!(
+        identity.principal.as_deref(),
+        Some("clickpipes@example.iam.gserviceaccount.com")
+    );
+}
+
+#[tokio::test]
+async fn new_discovery_operations_preserve_api_errors() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_json(serde_json::json!({"error": "forbidden"})),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+    let errors = [
+        client.credit_balances_get("org").await.unwrap_err(),
+        client
+            .service_profiles_list("org", "region", None)
+            .await
+            .unwrap_err(),
+        client
+            .click_pipes_service_context_get("org", "service")
+            .await
+            .unwrap_err(),
+    ];
+    for error in errors {
+        assert!(
+            matches!(error, clickhouse_cloud_api::Error::Api { status: 403, message } if message == "forbidden")
+        );
+    }
+}

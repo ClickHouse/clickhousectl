@@ -35,7 +35,12 @@ impl TryFrom<ClickStackFilterSettingsColumnResponse> for ClickStackFilterSetting
             missing.push("name");
         }
         match (value.label, value.name) {
-            (Some(label), Some(name)) => Ok(Self { label, name }),
+            (Some(label), Some(name)) => Ok(Self {
+                label,
+                name,
+                allow_all: value.allow_all,
+                value_expression: value.value_expression,
+            }),
             _ => Err(MissingRequiredFields::new(missing)),
         }
     }
@@ -193,6 +198,7 @@ impl TryFrom<ClickStackLogSourceResponse> for ClickStackLogSource {
                 resource_attributes_expression: value.resource_attributes_expression,
                 section: value.section,
                 service_name_expression: value.service_name_expression,
+                service_version_expression: value.service_version_expression,
                 severity_text_expression: value.severity_text_expression,
                 span_id_expression: value.span_id_expression,
                 timestamp_value_expression,
@@ -773,6 +779,7 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
                 resource_attributes_expression: value.resource_attributes_expression,
                 section: value.section,
                 service_name_expression: value.service_name_expression,
+                service_version_expression: value.service_version_expression,
                 session_source_id: value.session_source_id,
                 span_events_value_expression: value.span_events_value_expression,
                 span_id_expression,
@@ -786,5 +793,147 @@ impl TryFrom<ClickStackTraceSourceResponse> for ClickStackTraceSource {
             }),
             _ => Err(MissingRequiredFields::new(missing)),
         }
+    }
+}
+
+impl TryFrom<ClickStackNumberFormatResponse> for ClickStackNumberFormat {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackNumberFormatResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.average.is_none() {
+            missing.push("average");
+        }
+        if value.currency_symbol.is_none() {
+            missing.push("currencySymbol");
+        }
+        if value.decimal_bytes.is_none() {
+            missing.push("decimalBytes");
+        }
+        if value.factor.is_none() {
+            missing.push("factor");
+        }
+        if value.mantissa.is_none() {
+            missing.push("mantissa");
+        }
+        if value.numeric_unit.is_none() {
+            missing.push("numericUnit");
+        }
+        if value.output.is_none() {
+            missing.push("output");
+        }
+        if value.thousand_separated.is_none() {
+            missing.push("thousandSeparated");
+        }
+        if value.unit.is_none() {
+            missing.push("unit");
+        }
+        match (
+            value.average,
+            value.currency_symbol,
+            value.decimal_bytes,
+            value.factor,
+            value.mantissa,
+            value.numeric_unit,
+            value.output,
+            value.thousand_separated,
+            value.unit,
+        ) {
+            (
+                Some(average),
+                Some(currency_symbol),
+                Some(decimal_bytes),
+                Some(factor),
+                Some(mantissa),
+                Some(numeric_unit),
+                Some(output),
+                Some(thousand_separated),
+                Some(unit),
+            ) => Ok(Self {
+                average,
+                currency_symbol,
+                decimal_bytes,
+                factor,
+                mantissa,
+                numeric_unit,
+                output,
+                thousand_separated,
+                unit,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackFormulaResponse> for ClickStackFormula {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackFormulaResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.expression.is_none() {
+            missing.push("expression");
+        }
+        match (value.expression,) {
+            (Some(expression),) => Ok(Self {
+                expression,
+                alias: value.alias,
+                number_format: value.number_format.map(TryInto::try_into).transpose()?,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackSqlSavedFilterValueResponse> for ClickStackSqlSavedFilterValue {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackSqlSavedFilterValueResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.condition.is_none() {
+            missing.push("condition");
+        }
+        match (value.condition,) {
+            (Some(condition),) => Ok(Self {
+                condition,
+                r#type: value.r#type,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackVariableSavedFilterValueResponse> for ClickStackVariableSavedFilterValue {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackVariableSavedFilterValueResponse) -> Result<Self, Self::Error> {
+        let mut missing = Vec::new();
+        if value.r#type.is_none() {
+            missing.push("type");
+        }
+        if value.name.is_none() {
+            missing.push("name");
+        }
+        if value.values.is_none() {
+            missing.push("values");
+        }
+        match (value.r#type, value.name, value.values) {
+            (Some(r#type), Some(name), Some(values)) => Ok(Self {
+                r#type,
+                name,
+                values,
+            }),
+            _ => Err(MissingRequiredFields::new(missing)),
+        }
+    }
+}
+
+impl TryFrom<ClickStackSavedFilterValueResponse> for ClickStackSavedFilterValue {
+    type Error = MissingRequiredFields;
+    fn try_from(value: ClickStackSavedFilterValueResponse) -> Result<Self, Self::Error> {
+        Ok(match value {
+            ClickStackSavedFilterValueResponse::ClickStackSqlSavedFilterValue(value) => {
+                Self::ClickStackSqlSavedFilterValue(value.try_into()?)
+            }
+            ClickStackSavedFilterValueResponse::ClickStackVariableSavedFilterValue(value) => {
+                Self::ClickStackVariableSavedFilterValue(value.try_into()?)
+            }
+            ClickStackSavedFilterValueResponse::Unknown(value) => Self::Unknown(value),
+        })
     }
 }

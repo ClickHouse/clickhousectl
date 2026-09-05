@@ -50,6 +50,9 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
 }
 
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
+    // The spec allows protobufSchema only for Protobuf without schemaRegistry;
+    // requiring it would reject JSON/Avro and schema-registry Kafka requests.
+    ("ClickPipePostKafkaSource", "protobufSchema"),
     // The legacy service-create schema marks almost every property required,
     // but the API requires only name/provider/region and rejects many defaults.
     ("ServicePostRequest", "autoscalingMode"),

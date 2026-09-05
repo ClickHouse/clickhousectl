@@ -3,6 +3,29 @@ use crate::error::Error;
 use crate::models::*;
 
 impl Client {
+    /// Get active organization credit balances.
+    pub async fn credit_balances_get(
+        &self,
+        organization_id: &str,
+    ) -> Result<ApiResponse<CreditBalances>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/creditBalances");
+        let req = self.request(reqwest::Method::GET, &path);
+
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Get organization active prepaid balances
     pub async fn active_balances_get(
         &self,

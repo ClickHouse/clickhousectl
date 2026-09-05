@@ -3,6 +3,36 @@ use crate::error::Error;
 use crate::models::*;
 
 impl Client {
+    /// List available custom service profiles.
+    pub async fn service_profiles_list(
+        &self,
+        organization_id: &str,
+        region_id: &str,
+        byoc_id: Option<&str>,
+    ) -> Result<ApiResponse<Vec<ServiceProfile>>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/serviceProfiles");
+        let req = self.request(reqwest::Method::GET, &path);
+        let req = req.query(&[("region_id", region_id)]);
+        let req = if let Some(byoc_id) = byoc_id {
+            req.query(&[("byoc_id", byoc_id)])
+        } else {
+            req
+        };
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// List of organization services
     pub async fn instance_get_list(
         &self,

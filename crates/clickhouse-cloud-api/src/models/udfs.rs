@@ -88,6 +88,8 @@ pub struct UdfArgument {
 /// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Udf {
+    #[serde(rename = "deterministic", skip_serializing_if = "Option::is_none")]
+    pub deterministic: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<Vec<UdfArgumentResponse>>,
     #[serde(rename = "commandReadTimeout", skip_serializing_if = "Option::is_none")]
