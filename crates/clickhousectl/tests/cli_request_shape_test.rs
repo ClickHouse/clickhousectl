@@ -13918,6 +13918,246 @@ async fn clickpipe_scale_with_a_single_flag_sends_the_request() {
     assert_eq!(body["replicas"], 4);
 }
 
+// ── service-wide ClickPipes CDC scaling (issue #586) ───────────────────────
+
+const CDC_SCALING_PATH: &str = "/v1/organizations/org-1/services/svc-1/clickpipesCdcScaling";
+
+fn cdc_scaling_envelope(result: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": "stub-cdc-scaling",
+    }))
+}
+
+#[tokio::test]
+async fn clickpipe_cdc_scaling_get_supports_oauth_and_preserves_sparse_json() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(CDC_SCALING_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(cdc_scaling_envelope(serde_json::json!({
+            "replicaCpuMillicores": 2000,
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "clickpipe",
+            "cdc-scaling",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .expect("failed to run CDC scaling get with OAuth");
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({ "replicaCpuMillicores": 2000 })
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_cdc_scaling_get_prints_sparse_human_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(CDC_SCALING_PATH))
+        .respond_with(cdc_scaling_envelope(serde_json::json!({
+            "replicaMemoryGb": 8,
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "clickpipe",
+            "cdc-scaling",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("replicaMemoryGb: 8"), "{stdout}");
+    assert!(!stdout.contains("replicaCpuMillicores"), "{stdout}");
+}
+
+#[tokio::test]
+async fn clickpipe_cdc_scaling_update_preserves_omitted_fields() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(CDC_SCALING_PATH))
+        .and(body_json(serde_json::json!({
+            "replicaCpuMillicores": 1000,
+        })))
+        .respond_with(cdc_scaling_envelope(serde_json::json!({
+            "replicaCpuMillicores": 1000,
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "cdc-scaling",
+            "update",
+            "svc-1",
+            "--cpu-millicores",
+            "1000",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({ "replicaCpuMillicores": 1000 })
+    );
+    let requests = mock.received_requests().await.unwrap();
+    let authorization = requests[0]
+        .headers
+        .get("authorization")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(authorization.starts_with("Basic "), "{authorization}");
+}
+
+#[tokio::test]
+async fn clickpipe_cdc_scaling_update_sends_maximum_allocation() {
+    let mock = MockServer::start().await;
+    let scaling = serde_json::json!({
+        "replicaCpuMillicores": 32000,
+        "replicaMemoryGb": 128.0,
+    });
+    Mock::given(method("PATCH"))
+        .and(path(CDC_SCALING_PATH))
+        .and(body_json(scaling.clone()))
+        .respond_with(cdc_scaling_envelope(scaling.clone()))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "cdc-scaling",
+            "update",
+            "svc-1",
+            "--cpu-millicores",
+            "32000",
+            "--memory-gb",
+            "128",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        scaling
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_cdc_scaling_update_rejects_oauth_before_http() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "clickpipe",
+            "cdc-scaling",
+            "update",
+            "svc-1",
+            "--memory-gb",
+            "4",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .expect("failed to run CDC scaling update with OAuth");
+
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn clickpipe_cdc_scaling_get_scopes_not_found_errors_to_the_organization() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(CDC_SCALING_PATH))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "NOT_FOUND",
+            "requestId": "stub-cdc-scaling-error",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "cdc-scaling",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: NOT_FOUND: request scoped to organization org-1\n"
+    );
+}
+
 // ── the Query API gateway timeout (issue #644) ─────────────────────────────
 //
 // The gateway stops waiting after roughly 30 seconds and answers HTTP 500

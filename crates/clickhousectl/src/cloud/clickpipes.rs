@@ -64,6 +64,26 @@ const PUBSUB_FILTER_MAX_LENGTH: usize = 256;
 /// `maxLength` of the base64-encoded Kafka `protobufSchema` field.
 const PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH: usize = 1_048_576;
 
+fn parse_cdc_cpu_millicores(value: &str) -> Result<u32, String> {
+    let value = value
+        .parse::<u32>()
+        .map_err(|_| "must be an integer from 1000 to 32000".to_string())?;
+    if !(1000..=32000).contains(&value) || value % 1000 != 0 {
+        return Err("must be from 1000 to 32000 in increments of 1000".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_cdc_memory_gb(value: &str) -> Result<f64, String> {
+    let value = value
+        .parse::<f64>()
+        .map_err(|_| "must be a number from 4 to 128".to_string())?;
+    if !value.is_finite() || !(4.0..=128.0).contains(&value) || (value / 4.0).fract() != 0.0 {
+        return Err("must be from 4 to 128 in increments of 4".to_string());
+    }
+    Ok(value)
+}
+
 fn parse_kafka_authentication(value: &str) -> CloudResult<ClickPipePostKafkaSourceAuthentication> {
     let authentication = parse_serde_enum(
         value,
@@ -283,6 +303,17 @@ pub enum ClickPipeCommands {
         org_id: Option<String>,
     },
 
+    /// Manage service-wide CDC scaling
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The allocation applies to database CDC ClickPipes on the service.
+  Omitted update values keep their current settings.
+  Typical flow: `get` -> `update` -> `get`.")]
+    CdcScaling {
+        #[command(subcommand)]
+        command: ClickPipeCdcScalingCommands,
+    },
+
     /// Manage ingestion settings (streaming, object-storage pipes)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -362,6 +393,7 @@ impl ClickPipeCommands {
             ClickPipeCommands::Stop { .. } => true,
             ClickPipeCommands::Resync { .. } => true,
             ClickPipeCommands::Scale { .. } => true,
+            ClickPipeCommands::CdcScaling { command } => command.is_write(),
             // Side-effect-free, but the API gateway rejects OAuth/JWT on
             // POST /clickpipes/schemaDiscovery ("This endpoint is not
             // available for JWT authentication"), so classify it as a
@@ -423,6 +455,49 @@ pub enum ClickPipeContextCommands {
         #[arg(long)]
         org_id: Option<String>,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeCdcScalingCommands {
+    /// Get CDC scaling
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update CDC scaling
+    #[command(
+        group(ArgGroup::new("cdc_scale_target").required(true).multiple(true).args(["cpu_millicores", "memory_gb"]))
+    )]
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// CPU millicores per replica (1000-32000, in increments of 1000)
+        #[arg(long, value_parser = parse_cdc_cpu_millicores)]
+        cpu_millicores: Option<u32>,
+
+        /// Memory GiB per replica (4-128, in increments of 4)
+        #[arg(long, value_parser = parse_cdc_memory_gb)]
+        memory_gb: Option<f64>,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl ClickPipeCdcScalingCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::Get { .. } => false,
+            Self::Update { .. } => true,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -1669,6 +1744,24 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
             )
             .await
         }
+        ClickPipeCommands::CdcScaling { command } => match command {
+            ClickPipeCdcScalingCommands::Get { service_id, org_id } => {
+                clickpipe_cdc_scaling_get(client, &service_id, org_id.as_deref(), json).await
+            }
+            ClickPipeCdcScalingCommands::Update {
+                service_id,
+                cpu_millicores,
+                memory_gb,
+                org_id,
+            } => {
+                let values = CdcScalingValues {
+                    cpu_millicores,
+                    memory_gb,
+                };
+                clickpipe_cdc_scaling_update(client, &service_id, &values, org_id.as_deref(), json)
+                    .await
+            }
+        },
         ClickPipeCommands::Settings { command } => match command {
             ClickPipeSettingsCommands::Get {
                 service_id,
@@ -2897,6 +2990,72 @@ async fn clickpipe_scale(
         println!("  Replicas: {}", or_absent(scaling.replicas));
         println!("  CPU: {}m", or_absent(scaling.replica_cpu_millicores));
         println!("  Memory: {} GB", or_absent(scaling.replica_memory_gb));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct CdcScalingValues {
+    cpu_millicores: Option<u32>,
+    memory_gb: Option<f64>,
+}
+
+fn build_cdc_scaling_request(
+    values: &CdcScalingValues,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipesCdcScalingPatchRequest> {
+    if let (Some(cpu_millicores), Some(memory_gb)) = (values.cpu_millicores, values.memory_gb) {
+        let required_memory_gb = f64::from(cpu_millicores) / 250.0;
+        if memory_gb != required_memory_gb {
+            return Err(CloudError::new(format!(
+                "--memory-gb must be {required_memory_gb} when --cpu-millicores is {cpu_millicores}"
+            )));
+        }
+    }
+
+    Ok(
+        clickhouse_cloud_api::models::ClickPipesCdcScalingPatchRequest {
+            replica_cpu_millicores: values.cpu_millicores.map(i64::from),
+            replica_memory_gb: values.memory_gb,
+        },
+    )
+}
+
+async fn clickpipe_cdc_scaling_get(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let scaling = client
+        .get_clickpipe_cdc_scaling(&org_id, service_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&scaling)?);
+    } else {
+        print_human(&scaling)?;
+    }
+    Ok(())
+}
+
+async fn clickpipe_cdc_scaling_update(
+    client: &CloudClient,
+    service_id: &str,
+    values: &CdcScalingValues,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_cdc_scaling_request(values)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let scaling = client
+        .update_clickpipe_cdc_scaling(&org_id, service_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&scaling)?);
+    } else {
+        print_human(&scaling)?;
     }
     Ok(())
 }
@@ -4341,6 +4500,33 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    pub async fn get_clickpipe_cdc_scaling(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipesCdcScaling> {
+        let response = self
+            .api()
+            .click_pipe_cdc_scaling_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_clickpipe_cdc_scaling(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &clickhouse_cloud_api::models::ClickPipesCdcScalingPatchRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipesCdcScaling> {
+        let response = self
+            .api()
+            .click_pipe_cdc_scaling_update(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     pub async fn get_clickpipe_settings(
         &self,
         org_id: &str,
@@ -4989,6 +5175,91 @@ mod tests {
         assert_eq!(replicas, Some(4));
         assert_eq!(cpu_millicores, None);
         assert_eq!(memory_gb, Some(1.5));
+    }
+
+    #[test]
+    fn parses_cdc_scaling_get_and_update_flags() {
+        let ClickPipeCommands::CdcScaling {
+            command: ClickPipeCdcScalingCommands::Get { service_id, org_id },
+        } = parse_clickpipe(&["cdc-scaling", "get", "svc-get", "--org-id", "org-get"])
+        else {
+            panic!("expected CDC scaling get");
+        };
+        assert_eq!(service_id, "svc-get");
+        assert_eq!(org_id.as_deref(), Some("org-get"));
+
+        let ClickPipeCommands::CdcScaling {
+            command:
+                ClickPipeCdcScalingCommands::Update {
+                    service_id,
+                    cpu_millicores,
+                    memory_gb,
+                    org_id,
+                },
+        } = parse_clickpipe(&[
+            "cdc-scaling",
+            "update",
+            "svc-update",
+            "--cpu-millicores",
+            "32000",
+            "--memory-gb",
+            "128",
+            "--org-id",
+            "org-update",
+        ])
+        else {
+            panic!("expected CDC scaling update");
+        };
+        assert_eq!(service_id, "svc-update");
+        assert_eq!(cpu_millicores, Some(32000));
+        assert_eq!(memory_gb, Some(128.0));
+        assert_eq!(org_id.as_deref(), Some("org-update"));
+    }
+
+    #[test]
+    fn cdc_scaling_update_requires_a_target_and_enforces_schema_ranges() {
+        assert_rejected(&["cdc-scaling", "update", "svc-1"]);
+        for value in ["999", "1500", "33000"] {
+            assert_rejected(&["cdc-scaling", "update", "svc-1", "--cpu-millicores", value]);
+        }
+        for value in ["3", "6", "132", "NaN"] {
+            assert_rejected(&["cdc-scaling", "update", "svc-1", "--memory-gb", value]);
+        }
+    }
+
+    #[test]
+    fn build_cdc_scaling_request_preserves_omission() {
+        let request = build_cdc_scaling_request(&CdcScalingValues {
+            cpu_millicores: Some(1000),
+            memory_gb: None,
+        })
+        .unwrap();
+        assert_eq!(request.replica_cpu_millicores, Some(1000));
+        assert_eq!(request.replica_memory_gb, None);
+    }
+
+    #[test]
+    fn build_cdc_scaling_request_accepts_maximum_balanced_allocation() {
+        let request = build_cdc_scaling_request(&CdcScalingValues {
+            cpu_millicores: Some(32000),
+            memory_gb: Some(128.0),
+        })
+        .unwrap();
+        assert_eq!(request.replica_cpu_millicores, Some(32000));
+        assert_eq!(request.replica_memory_gb, Some(128.0));
+    }
+
+    #[test]
+    fn build_cdc_scaling_request_rejects_unbalanced_allocation() {
+        let error = build_cdc_scaling_request(&CdcScalingValues {
+            cpu_millicores: Some(2000),
+            memory_gb: Some(4.0),
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.message,
+            "--memory-gb must be 8 when --cpu-millicores is 2000"
+        );
     }
 
     #[test]
@@ -7823,6 +8094,11 @@ mod tests {
         assert_write(&["stop", "svc-1", "pipe-1"], true);
         assert_write(&["resync", "svc-1", "pipe-1"], true);
         assert_write(&["scale", "svc-1", "pipe-1", "--replicas", "4"], true);
+        assert_write(&["cdc-scaling", "get", "svc-1"], false);
+        assert_write(
+            &["cdc-scaling", "update", "svc-1", "--cpu-millicores", "1000"],
+            true,
+        );
         assert_write(&["settings", "get", "svc-1", "pipe-1"], false);
         assert_write(
             &[
