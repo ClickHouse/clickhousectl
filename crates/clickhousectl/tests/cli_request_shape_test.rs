@@ -1945,6 +1945,368 @@ async fn postgres_logs_reports_empty_results_and_structured_api_errors() {
     }
 }
 
+// ── Postgres slow query patterns (issue #585) ─────────────────────────────
+
+#[tokio::test]
+async fn postgres_slow_query_list_sends_exact_query_supports_oauth_and_preserves_json() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([{
+        "queryId": "query-1",
+        "queryText": "SELECT * FROM events WHERE id = $1",
+        "dbName": "app db",
+        "dbUser": "reader+worker",
+        "dbOperation": "SELECT",
+        "app": "reporting/api",
+        "callCount": 42,
+        "errorCount": 1,
+        "totalDurationUs": 950000,
+        "avgDurationUs": 22619,
+        "maxDurationUs": 81000,
+        "p50DurationUs": 18000,
+        "p95DurationUs": 70000,
+        "p99DurationUs": 80000,
+        "totalRows": 420,
+        "totalSharedBlksRead": 12,
+        "totalSharedBlksHit": 900,
+        "totalCpuTimeUs": 700000,
+        "totalWalBytes": 128
+    }]);
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
+        ))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-slow-query-list"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00+01:00",
+            "--to-date",
+            "2026-04-16T13:00:00+01:00",
+            "--db-name",
+            "app db",
+            "--db-user",
+            "reader+worker",
+            "--db-operation",
+            "SELECT & EXPLAIN",
+            "--app",
+            "reporting/api",
+            "--sort-by",
+            "total_cpu_time",
+            "--sort-order",
+            "asc",
+            "--limit",
+            "500",
+            "--offset",
+            "0",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let query: Vec<_> = requests[0]
+        .url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    assert_eq!(
+        query,
+        [
+            (
+                "from_date".to_string(),
+                "2026-04-16T12:00:00+01:00".to_string()
+            ),
+            (
+                "to_date".to_string(),
+                "2026-04-16T13:00:00+01:00".to_string()
+            ),
+            ("db_name".to_string(), "app db".to_string()),
+            ("db_user".to_string(), "reader+worker".to_string()),
+            ("db_operation".to_string(), "SELECT & EXPLAIN".to_string()),
+            ("app".to_string(), "reporting/api".to_string()),
+            ("sort_by".to_string(), "total_cpu_time".to_string()),
+            ("sort_order".to_string(), "asc".to_string()),
+            ("limit".to_string(), "500".to_string()),
+            ("offset".to_string(), "0".to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn postgres_slow_query_list_omits_filters_and_renders_sparse_human_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{ "queryId": "query-1", "callCount": 2 }],
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+            "--to-date",
+            "2026-04-16T13:00:00Z",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("queryId: query-1"), "{stdout}");
+    assert!(stdout.contains("callCount: 2"), "{stdout}");
+    let requests = mock.received_requests().await.unwrap();
+    let query: Vec<_> = requests[0].url.query_pairs().collect();
+    assert_eq!(query.len(), 2, "unexpected query parameters: {query:?}");
+}
+
+#[tokio::test]
+async fn postgres_slow_query_list_rejects_reverse_range_and_surfaces_api_errors() {
+    let mock = MockServer::start().await;
+    let reverse_args = [
+        "postgres",
+        "slow-queries",
+        "list",
+        "pg-1",
+        "--from-date",
+        "2026-04-16T13:00:00Z",
+        "--to-date",
+        "2026-04-16T12:00:00Z",
+        "--org-id",
+        "org-1",
+    ];
+    let output = invoke_cli_with_cloud_credentials(&mock, &reverse_args);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--from-date must not be after --to-date")
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
+        ))
+        .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+            "status": 429,
+            "error": "RATE_LIMIT_EXCEEDED: try later",
+            "requestId": "stub-slow-query-error"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let valid_args = [
+        "postgres",
+        "slow-queries",
+        "list",
+        "pg-1",
+        "--from-date",
+        "2026-04-16T12:00:00Z",
+        "--to-date",
+        "2026-04-16T13:00:00Z",
+        "--org-id",
+        "org-1",
+    ];
+    let output = invoke_cli_with_cloud_credentials(&mock, &valid_args);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("RATE_LIMIT_EXCEEDED: try later"));
+}
+
+#[tokio::test]
+async fn postgres_slow_query_get_has_distinct_query_and_preserves_recent_executions() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!({
+        "aggregate": {
+            "queryId": "query-1",
+            "queryText": "SELECT $1",
+            "dbName": "app db",
+            "dbUser": "reader+worker",
+            "dbOperation": "SELECT & EXPLAIN",
+            "app": "reporting/api",
+            "callCount": 2
+        },
+        "recentExecutions": [{
+            "queryId": "query-1",
+            "queryText": "SELECT 42",
+            "timestamp": "2026-04-16T12:30:00Z",
+            "durationUs": 1234,
+            "rows": 1,
+            "errMessage": "optional detail"
+        }]
+    });
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns/query-1",
+        ))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-slow-query-detail"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "query-1",
+            "--db-name",
+            "app db",
+            "--db-user",
+            "reader+worker",
+            "--db-operation",
+            "SELECT & EXPLAIN",
+            "--app",
+            "reporting/api",
+            "--timestamp",
+            "2026-04-16T12:30:00+01:00",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    let query: Vec<_> = requests[0]
+        .url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    assert_eq!(
+        query,
+        [
+            ("db_name".to_string(), "app db".to_string()),
+            ("db_user".to_string(), "reader+worker".to_string()),
+            ("db_operation".to_string(), "SELECT & EXPLAIN".to_string()),
+            ("app".to_string(), "reporting/api".to_string()),
+            (
+                "timestamp".to_string(),
+                "2026-04-16T12:30:00+01:00".to_string()
+            ),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn postgres_slow_query_get_omits_optional_query_and_renders_sparse_detail() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns/query-1",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "aggregate": { "queryId": "query-1" },
+                "recentExecutions": [{ "timestamp": "2026-04-16T12:30:00Z" }]
+            },
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "query-1",
+            "--db-name",
+            "app",
+            "--db-user",
+            "reader",
+            "--db-operation",
+            "SELECT",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for text in [
+        "aggregate:",
+        "queryId: query-1",
+        "recentExecutions:",
+        "timestamp: 2026-04-16T12:30:00Z",
+    ] {
+        assert!(stdout.contains(text), "missing {text:?} from:\n{stdout}");
+    }
+    let requests = mock.received_requests().await.unwrap();
+    let query: Vec<_> = requests[0].url.query_pairs().collect();
+    assert_eq!(query.len(), 3, "unexpected query parameters: {query:?}");
+    assert!(
+        query
+            .iter()
+            .all(|(key, _)| key != "app" && key != "timestamp"),
+        "optional detail filters must be omitted: {query:?}"
+    );
+}
+
 // ── Postgres Prometheus metrics (issue #584) ──────────────────────────────
 
 #[tokio::test]

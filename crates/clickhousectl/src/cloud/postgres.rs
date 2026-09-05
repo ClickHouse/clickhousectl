@@ -11,7 +11,8 @@ use clickhouse_cloud_api::models::{
     PostgresMetrics, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
     PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
     PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
-    ResourceTagsV1, ResourceTagsV1Response,
+    PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail, ResourceTagsV1,
+    ResourceTagsV1Response, SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -214,6 +215,10 @@ CONTEXT FOR AGENTS:
         org_id: Option<String>,
     },
 
+    /// Inspect Postgres slow query patterns
+    #[command(name = "slow-queries", subcommand)]
+    SlowQueries(SlowQueryCommands),
+
     /// Get raw Postgres Prometheus metrics
     #[command(
         subcommand,
@@ -413,6 +418,83 @@ pub enum PrometheusCommands {
     },
 }
 
+#[derive(Subcommand)]
+pub enum SlowQueryCommands {
+    /// List slow query patterns
+    List {
+        /// Postgres service ID (from `cloud postgres list`)
+        postgres_id: String,
+        /// Inclusive start time (ISO 8601 / RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        from_date: String,
+        /// Exclusive end time (ISO 8601 / RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        to_date: String,
+        /// Filter by database name
+        #[arg(long)]
+        db_name: Option<String>,
+        /// Filter by database user
+        #[arg(long)]
+        db_user: Option<String>,
+        /// Filter by database operation
+        #[arg(long)]
+        db_operation: Option<String>,
+        /// Filter by application name
+        #[arg(long)]
+        app: Option<String>,
+        /// Field used to sort results
+        #[arg(
+            long,
+            value_parser = clap::builder::PossibleValuesParser::new(
+                SlowQueryPatternsGetListSortby::VALUES
+            )
+        )]
+        sort_by: Option<String>,
+        /// Sort order
+        #[arg(
+            long,
+            value_parser = clap::builder::PossibleValuesParser::new(
+                SlowQueryPatternsGetListSortorder::VALUES
+            )
+        )]
+        sort_order: Option<String>,
+        /// Maximum number of patterns to return
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=500))]
+        limit: Option<i64>,
+        /// Number of patterns to skip
+        #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
+        offset: Option<i64>,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Get a slow query pattern with recent executions
+    Get {
+        /// Postgres service ID (from `cloud postgres list`)
+        postgres_id: String,
+        /// Stable query pattern ID (from `slow-queries list`)
+        query_id: String,
+        /// Database name from the list result
+        #[arg(long)]
+        db_name: String,
+        /// Database user from the list result
+        #[arg(long)]
+        db_user: String,
+        /// Database operation from the list result
+        #[arg(long)]
+        db_operation: String,
+        /// Application name from the list result
+        #[arg(long)]
+        app: Option<String>,
+        /// Timestamp of a specific execution (ISO 8601 / RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        timestamp: Option<String>,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
 impl PostgresCommands {
     pub fn is_write(&self) -> bool {
         match self {
@@ -420,6 +502,7 @@ impl PostgresCommands {
             | PostgresCommands::Get { .. }
             | PostgresCommands::Metrics { .. }
             | PostgresCommands::Logs { .. }
+            | PostgresCommands::SlowQueries(_)
             | PostgresCommands::Prometheus(_) => false,
             PostgresCommands::Certs(CertsCommands::Get { .. }) => false,
             PostgresCommands::Config(ConfigCommands::Get { .. }) => false,
@@ -606,6 +689,61 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 &from_date,
                 &to_date,
                 bucket_size_seconds,
+                org_id.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::SlowQueries(SlowQueryCommands::List {
+            postgres_id,
+            from_date,
+            to_date,
+            db_name,
+            db_user,
+            db_operation,
+            app,
+            sort_by,
+            sort_order,
+            limit,
+            offset,
+            org_id,
+        }) => {
+            let input = SlowQueryListInput {
+                from_date: &from_date,
+                to_date: &to_date,
+                db_name: db_name.as_deref(),
+                db_user: db_user.as_deref(),
+                db_operation: db_operation.as_deref(),
+                app: app.as_deref(),
+                sort_by: sort_by.as_deref(),
+                sort_order: sort_order.as_deref(),
+                limit,
+                offset,
+            };
+            postgres_slow_queries_list(client, &postgres_id, input, org_id.as_deref(), json).await
+        }
+        PostgresCommands::SlowQueries(SlowQueryCommands::Get {
+            postgres_id,
+            query_id,
+            db_name,
+            db_user,
+            db_operation,
+            app,
+            timestamp,
+            org_id,
+        }) => {
+            let input = SlowQueryDetailInput {
+                db_name: &db_name,
+                db_user: &db_user,
+                db_operation: &db_operation,
+                app: app.as_deref(),
+                timestamp: timestamp.as_deref(),
+            };
+            postgres_slow_query_get(
+                client,
+                &postgres_id,
+                &query_id,
+                input,
                 org_id.as_deref(),
                 json,
             )
@@ -1850,7 +1988,7 @@ pub async fn postgres_state_change(
     Ok(())
 }
 
-fn validate_metrics_date_range(from_date: &str, to_date: &str) -> CloudResult<()> {
+fn validate_datetime_range(from_date: &str, to_date: &str) -> CloudResult<()> {
     let from = chrono::DateTime::parse_from_rfc3339(from_date)
         .map_err(|_| CloudError::new("invalid --from-date: expected ISO 8601 / RFC 3339"))?;
     let to = chrono::DateTime::parse_from_rfc3339(to_date)
@@ -1872,7 +2010,7 @@ pub async fn postgres_metrics(
     org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    validate_metrics_date_range(from_date, to_date)?;
+    validate_datetime_range(from_date, to_date)?;
     let org_id = resolve_org_id(client, org_id).await?;
     let metrics = client
         .get_postgres_metrics(
@@ -1888,6 +2026,150 @@ pub async fn postgres_metrics(
         println!("{}", serde_json::to_string_pretty(&metrics)?);
     } else {
         print_human(&metrics)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SlowQueryListInput<'a> {
+    from_date: &'a str,
+    to_date: &'a str,
+    db_name: Option<&'a str>,
+    db_user: Option<&'a str>,
+    db_operation: Option<&'a str>,
+    app: Option<&'a str>,
+    sort_by: Option<&'a str>,
+    sort_order: Option<&'a str>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlowQueryListQuery<'a> {
+    from_date: &'a str,
+    to_date: &'a str,
+    db_name: Option<&'a str>,
+    db_user: Option<&'a str>,
+    db_operation: Option<&'a str>,
+    app: Option<&'a str>,
+    sort_by: Option<SlowQueryPatternsGetListSortby>,
+    sort_order: Option<SlowQueryPatternsGetListSortorder>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+fn build_slow_query_list_query(
+    input: SlowQueryListInput<'_>,
+) -> CloudResult<SlowQueryListQuery<'_>> {
+    validate_datetime_range(input.from_date, input.to_date)?;
+    if input.limit.is_some_and(|limit| !(1..=500).contains(&limit)) {
+        return Err(CloudError::new(
+            "invalid --limit: expected a value from 1 to 500",
+        ));
+    }
+    if input.offset.is_some_and(|offset| offset < 0) {
+        return Err(CloudError::new(
+            "invalid --offset: expected a non-negative value",
+        ));
+    }
+
+    Ok(SlowQueryListQuery {
+        from_date: input.from_date,
+        to_date: input.to_date,
+        db_name: input.db_name,
+        db_user: input.db_user,
+        db_operation: input.db_operation,
+        app: input.app,
+        sort_by: input
+            .sort_by
+            .map(|value| parse_serde_enum(value, "sort_by", SlowQueryPatternsGetListSortby::VALUES))
+            .transpose()?,
+        sort_order: input
+            .sort_order
+            .map(|value| {
+                parse_serde_enum(
+                    value,
+                    "sort_order",
+                    SlowQueryPatternsGetListSortorder::VALUES,
+                )
+            })
+            .transpose()?,
+        limit: input.limit,
+        offset: input.offset,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SlowQueryDetailInput<'a> {
+    db_name: &'a str,
+    db_user: &'a str,
+    db_operation: &'a str,
+    app: Option<&'a str>,
+    timestamp: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlowQueryDetailQuery<'a> {
+    db_name: &'a str,
+    db_user: &'a str,
+    db_operation: &'a str,
+    app: Option<&'a str>,
+    timestamp: Option<&'a str>,
+}
+
+fn build_slow_query_detail_query(
+    input: SlowQueryDetailInput<'_>,
+) -> CloudResult<SlowQueryDetailQuery<'_>> {
+    if let Some(timestamp) = input.timestamp {
+        chrono::DateTime::parse_from_rfc3339(timestamp)
+            .map_err(|_| CloudError::new("invalid --timestamp: expected ISO 8601 / RFC 3339"))?;
+    }
+    Ok(SlowQueryDetailQuery {
+        db_name: input.db_name,
+        db_user: input.db_user,
+        db_operation: input.db_operation,
+        app: input.app,
+        timestamp: input.timestamp,
+    })
+}
+
+async fn postgres_slow_queries_list(
+    client: &CloudClient,
+    postgres_id: &str,
+    input: SlowQueryListInput<'_>,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let query = build_slow_query_list_query(input)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let patterns = client
+        .list_postgres_slow_query_patterns(&org_id, postgres_id, &query)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&patterns)?);
+    } else {
+        print_human(&patterns)?;
+    }
+    Ok(())
+}
+
+async fn postgres_slow_query_get(
+    client: &CloudClient,
+    postgres_id: &str,
+    query_id: &str,
+    input: SlowQueryDetailInput<'_>,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let query = build_slow_query_detail_query(input)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let pattern = client
+        .get_postgres_slow_query_pattern(&org_id, postgres_id, query_id, &query)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&pattern)?);
+    } else {
+        print_human(&pattern)?;
     }
     Ok(())
 }
@@ -1965,6 +2247,59 @@ impl CloudClient {
                 from_date,
                 to_date,
                 bucket_size_seconds,
+            )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    /// Fetch aggregate slow query patterns for a Postgres service.
+    pub async fn list_postgres_slow_query_patterns(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        query: &SlowQueryListQuery<'_>,
+    ) -> CloudResult<Vec<PostgresSlowQueryPattern>> {
+        let response = self
+            .api()
+            .slow_query_patterns_get_list(
+                org_id,
+                postgres_id,
+                query.from_date,
+                query.to_date,
+                query.db_name,
+                query.db_user,
+                query.db_operation,
+                query.app,
+                query.sort_by.as_ref(),
+                query.sort_order.as_ref(),
+                query.limit,
+                query.offset,
+            )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    /// Fetch one slow query pattern and its recent executions.
+    pub async fn get_postgres_slow_query_pattern(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        query_id: &str,
+        query: &SlowQueryDetailQuery<'_>,
+    ) -> CloudResult<PostgresSlowQueryPatternDetail> {
+        let response = self
+            .api()
+            .slow_query_pattern_get(
+                org_id,
+                postgres_id,
+                query_id,
+                query.db_name,
+                query.db_user,
+                query.db_operation,
+                query.app,
+                query.timestamp,
             )
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
@@ -3263,14 +3598,378 @@ mod tests {
     #[test]
     fn postgres_metrics_validates_chronological_range() {
         assert!(
-            validate_metrics_date_range("2026-04-16T12:00:00+01:00", "2026-04-16T11:00:00Z")
-                .is_ok()
+            validate_datetime_range("2026-04-16T12:00:00+01:00", "2026-04-16T11:00:00Z").is_ok()
         );
-        let error = validate_metrics_date_range("2026-04-16T12:00:01Z", "2026-04-16T12:00:00Z")
-            .unwrap_err();
+        let error =
+            validate_datetime_range("2026-04-16T12:00:01Z", "2026-04-16T12:00:00Z").unwrap_err();
         assert_eq!(
             error.to_string(),
             "invalid date range: --from-date must not be after --to-date"
+        );
+    }
+
+    #[test]
+    fn parses_slow_query_list_with_all_query_inputs_as_read() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00+01:00",
+            "--to-date",
+            "2026-04-16T13:00:00+01:00",
+            "--db-name",
+            "app db",
+            "--db-user",
+            "reader+worker",
+            "--db-operation",
+            "SELECT",
+            "--app",
+            "reporting/api",
+            "--sort-by",
+            "p95_duration",
+            "--sort-order",
+            "asc",
+            "--limit",
+            "500",
+            "--offset",
+            "0",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!cmd.is_write());
+        let PostgresCommands::SlowQueries(SlowQueryCommands::List {
+            postgres_id,
+            from_date,
+            to_date,
+            db_name,
+            db_user,
+            db_operation,
+            app,
+            sort_by,
+            sort_order,
+            limit,
+            offset,
+            org_id,
+        }) = cmd
+        else {
+            panic!("expected slow-query list");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(from_date, "2026-04-16T12:00:00+01:00");
+        assert_eq!(to_date, "2026-04-16T13:00:00+01:00");
+        assert_eq!(db_name.as_deref(), Some("app db"));
+        assert_eq!(db_user.as_deref(), Some("reader+worker"));
+        assert_eq!(db_operation.as_deref(), Some("SELECT"));
+        assert_eq!(app.as_deref(), Some("reporting/api"));
+        assert_eq!(sort_by.as_deref(), Some("p95_duration"));
+        assert_eq!(sort_order.as_deref(), Some("asc"));
+        assert_eq!(limit, Some(500));
+        assert_eq!(offset, Some(0));
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn slow_query_list_requires_dates_and_validates_schema_bounds() {
+        let missing_date = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(
+            missing_date.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+
+        for (flag, value, expected_kind) in [
+            (
+                "--from-date",
+                "yesterday",
+                clap::error::ErrorKind::ValueValidation,
+            ),
+            (
+                "--to-date",
+                "tomorrow",
+                clap::error::ErrorKind::ValueValidation,
+            ),
+            (
+                "--sort-by",
+                "duration",
+                clap::error::ErrorKind::InvalidValue,
+            ),
+            (
+                "--sort-order",
+                "sideways",
+                clap::error::ErrorKind::InvalidValue,
+            ),
+            ("--limit", "0", clap::error::ErrorKind::ValueValidation),
+            ("--limit", "501", clap::error::ErrorKind::ValueValidation),
+            ("--offset", "-1", clap::error::ErrorKind::UnknownArgument),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "slow-queries",
+                "list",
+                "pg-1",
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+            ];
+            let position = args.iter().position(|arg| *arg == flag);
+            if let Some(position) = position {
+                args[position + 1] = value;
+            } else {
+                args.extend([flag, value]);
+            }
+            let error = Cli::try_parse_from(args)
+                .err()
+                .expect("expected parse error");
+            assert_eq!(error.kind(), expected_kind);
+        }
+    }
+
+    #[test]
+    fn slow_query_list_builder_uses_every_library_sort_value() {
+        for &sort_by in SlowQueryPatternsGetListSortby::VALUES {
+            let query = build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                db_name: None,
+                db_user: None,
+                db_operation: None,
+                app: None,
+                sort_by: Some(sort_by),
+                sort_order: Some("desc"),
+                limit: Some(1),
+                offset: Some(0),
+            })
+            .unwrap();
+            assert_eq!(query.sort_by.as_ref().unwrap().to_string(), sort_by);
+            assert_eq!(
+                query.sort_order,
+                Some(SlowQueryPatternsGetListSortorder::Desc)
+            );
+        }
+        for &sort_order in SlowQueryPatternsGetListSortorder::VALUES {
+            let query = build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                db_name: None,
+                db_user: None,
+                db_operation: None,
+                app: None,
+                sort_by: None,
+                sort_order: Some(sort_order),
+                limit: None,
+                offset: None,
+            })
+            .unwrap();
+            assert_eq!(query.sort_order.as_ref().unwrap().to_string(), sort_order);
+        }
+    }
+
+    #[test]
+    fn slow_query_list_builder_rejects_invalid_ranges_and_typed_values() {
+        let input = SlowQueryListInput {
+            from_date: "2026-04-16T13:00:00Z",
+            to_date: "2026-04-16T12:00:00Z",
+            db_name: None,
+            db_user: None,
+            db_operation: None,
+            app: None,
+            sort_by: None,
+            sort_order: None,
+            limit: None,
+            offset: None,
+        };
+        assert!(
+            build_slow_query_list_query(input)
+                .unwrap_err()
+                .to_string()
+                .contains("--from-date must not be after --to-date")
+        );
+        assert!(
+            build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                sort_by: Some("future_sort"),
+                ..input
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("invalid sort_by")
+        );
+        assert!(
+            build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                limit: Some(501),
+                ..input
+            })
+            .is_err()
+        );
+        assert!(
+            build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                offset: Some(-1),
+                ..input
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn slow_query_builders_preserve_minimal_and_maximal_queries() {
+        let minimal = build_slow_query_list_query(SlowQueryListInput {
+            from_date: "2026-04-16T12:00:00Z",
+            to_date: "2026-04-16T13:00:00Z",
+            db_name: None,
+            db_user: None,
+            db_operation: None,
+            app: None,
+            sort_by: None,
+            sort_order: None,
+            limit: None,
+            offset: None,
+        })
+        .unwrap();
+        assert_eq!(minimal.from_date, "2026-04-16T12:00:00Z");
+        assert_eq!(minimal.to_date, "2026-04-16T13:00:00Z");
+        assert_eq!(minimal.db_name, None);
+        assert_eq!(minimal.sort_by, None);
+        assert_eq!(minimal.limit, None);
+        assert_eq!(minimal.offset, None);
+
+        let detail = build_slow_query_detail_query(SlowQueryDetailInput {
+            db_name: "app db",
+            db_user: "reader",
+            db_operation: "SELECT",
+            app: Some("reporter"),
+            timestamp: Some("2026-04-16T12:30:00+01:00"),
+        })
+        .unwrap();
+        assert_eq!(detail.db_name, "app db");
+        assert_eq!(detail.db_user, "reader");
+        assert_eq!(detail.db_operation, "SELECT");
+        assert_eq!(detail.app, Some("reporter"));
+        assert_eq!(detail.timestamp, Some("2026-04-16T12:30:00+01:00"));
+
+        assert!(
+            build_slow_query_detail_query(SlowQueryDetailInput {
+                db_name: "app",
+                db_user: "reader",
+                db_operation: "SELECT",
+                app: None,
+                timestamp: Some("now"),
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_slow_query_detail_with_its_distinct_inputs_as_read() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "query-1",
+            "--db-name",
+            "app",
+            "--db-user",
+            "reader",
+            "--db-operation",
+            "SELECT",
+            "--app",
+            "reporter",
+            "--timestamp",
+            "2026-04-16T12:30:00Z",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!cmd.is_write());
+        let PostgresCommands::SlowQueries(SlowQueryCommands::Get {
+            postgres_id,
+            query_id,
+            db_name,
+            db_user,
+            db_operation,
+            app,
+            timestamp,
+            org_id,
+        }) = cmd
+        else {
+            panic!("expected slow-query detail");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(query_id, "query-1");
+        assert_eq!(db_name, "app");
+        assert_eq!(db_user, "reader");
+        assert_eq!(db_operation, "SELECT");
+        assert_eq!(app.as_deref(), Some("reporter"));
+        assert_eq!(timestamp.as_deref(), Some("2026-04-16T12:30:00Z"));
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn slow_query_detail_requires_identity_filters_and_validates_timestamp() {
+        let missing_operation = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "query-1",
+            "--db-name",
+            "app",
+            "--db-user",
+            "reader",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(
+            missing_operation.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let invalid_timestamp = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "query-1",
+            "--db-name",
+            "app",
+            "--db-user",
+            "reader",
+            "--db-operation",
+            "SELECT",
+            "--timestamp",
+            "now",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(
+            invalid_timestamp.kind(),
+            clap::error::ErrorKind::ValueValidation
         );
     }
 

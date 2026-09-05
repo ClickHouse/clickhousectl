@@ -974,6 +974,14 @@ clickhousectl cloud postgres logs <pg-id> \
   --severity ERROR --body-contains "connection refused" \
   --sort-order asc --limit 200 --offset 0
 
+# Find costly normalized queries, then inspect one pattern and recent executions
+clickhousectl cloud postgres slow-queries list <pg-id> \
+  --from-date 2026-04-16T12:00:00Z \
+  --to-date 2026-04-16T13:00:00Z \
+  --sort-by total_cpu_time --limit 20
+clickhousectl cloud postgres slow-queries get <pg-id> <query-id> \
+  --db-name app --db-user reporter --db-operation SELECT
+
 # Raw Prometheus scrape text for one service or the whole organization
 clickhousectl cloud postgres prometheus service <pg-id>
 clickhousectl cloud postgres prometheus org
@@ -1066,6 +1074,8 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 `postgres metrics` requires an RFC 3339 start and end time, with the start no later than the end. Its JSON output preserves metric metadata, series labels, and data points; the default output renders the same nested response as a readable tree. `--bucket-size-seconds` must be positive and is omitted from the API request when not supplied.
 
 `postgres logs` reads an inclusive RFC 3339 time window of at most 30 days. Results default to the API's newest-first order and page size; use `--sort-order`, `--limit` and `--offset` to control pagination.
+
+`postgres slow-queries list` requires an RFC 3339 start and end time and supports database, user, operation and application filters, sorting, limits and offsets. Copy `queryId`, `dbName`, `dbUser` and `dbOperation` from a list result into `slow-queries get`; add `--app` when the list result has one, and optionally select a recent execution with `--timestamp`. JSON and human output preserve every aggregate and execution field the API returns, including sparse beta responses.
 
 `postgres prometheus service` and `postgres prometheus org` return the beta API's raw Prometheus exposition text for scraping. In `--json` mode, including automatic coding-agent mode, the complete text is emitted as one JSON string; it is not parsed into metric series. These endpoints have no filtered-metrics query parameter. Use `postgres metrics` when you need time-bucketed metric objects over a chosen date range.
 
