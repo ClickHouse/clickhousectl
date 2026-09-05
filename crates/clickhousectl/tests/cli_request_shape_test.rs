@@ -13506,3 +13506,508 @@ async fn postgres_config_files_preserve_explicit_empty_sections() {
         assert_success(&output);
     }
 }
+
+// ── ClickStack source and role commands (issue #692) ────────────────────────
+
+fn invoke_clickstack_cli(
+    mock: &MockServer,
+    cli_args: &[&str],
+    stdin: Option<&str>,
+    json: bool,
+) -> std::process::Output {
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", url.as_str()];
+    if json {
+        args.push("--json");
+    }
+    args.extend_from_slice(cli_args);
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(directory.path())
+        .args(args);
+    if let Some(input) = stdin {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn clickhousectl");
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    } else {
+        command.output().expect("failed to spawn clickhousectl")
+    }
+}
+
+async fn mount_clickstack_success_routes(mock: &MockServer) {
+    let sources = "/v1/organizations/org-1/services/svc-1/clickstack/sources";
+    let roles = "/v1/organizations/org-1/services/svc-1/clickstack/roles";
+    Mock::given(method("GET"))
+        .and(path(sources))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{}]
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{sources}/source-get")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"kind": "log", "name": null}
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(sources))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"kind": "promql", "id": "source-created"}
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{sources}/source-update")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"kind": "promql", "id": "source-update"}
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{sources}/source-delete")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": 200})))
+        .expect(1)
+        .mount(mock)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path(roles))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{}]
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{roles}/role-get")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"name": null}
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(roles))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "role-created"}
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{roles}/role-update")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "role-update"}
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{roles}/role-delete")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": 200})))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies() {
+    let mock = MockServer::start().await;
+    mount_clickstack_success_routes(&mock).await;
+    let directory = tempfile::tempdir().unwrap();
+    let source_file = directory.path().join("source.json");
+    let role_file = directory.path().join("role.json");
+    let source = serde_json::json!({
+        "kind": "promql",
+        "name": "Prometheus",
+        "connection": "connection-1",
+        "from": {"databaseName": "default", "tableName": "metrics"},
+        "timestampValueExpression": "timestamp",
+        "section": "production",
+        "disabled": false,
+        "querySettings": [{"setting": "max_threads", "value": "2"}]
+    });
+    let role = serde_json::json!({
+        "name": "Operators",
+        "description": "Production operators",
+        "permissions": [{
+            "action": "manage",
+            "subject": "Dashboard",
+            "inverted": false,
+            "integration": "slack",
+            "conditions": {"teamId": "team-1"}
+        }]
+    });
+    std::fs::write(&source_file, source.to_string()).unwrap();
+    std::fs::write(&role_file, role.to_string()).unwrap();
+    let source_path = source_file.to_str().unwrap();
+    let role_path = role_file.to_str().unwrap();
+    let role_stdin = role.to_string();
+    let commands: Vec<(Vec<&str>, Option<&str>)> = vec![
+        (
+            vec!["clickstack", "source", "list", "svc-1", "--org-id", "org-1"],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "source",
+                "get",
+                "svc-1",
+                "source-get",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "source",
+                "create",
+                "svc-1",
+                "--config-file",
+                source_path,
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "source",
+                "update",
+                "svc-1",
+                "source-update",
+                "--config-file",
+                source_path,
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "source",
+                "delete",
+                "svc-1",
+                "source-delete",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec!["clickstack", "role", "list", "svc-1", "--org-id", "org-1"],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "role",
+                "get",
+                "svc-1",
+                "role-get",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "role",
+                "create",
+                "svc-1",
+                "--config-file",
+                role_path,
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "role",
+                "update",
+                "svc-1",
+                "role-update",
+                "--config-file",
+                "-",
+                "--org-id",
+                "org-1",
+            ],
+            Some(role_stdin.as_str()),
+        ),
+        (
+            vec![
+                "clickstack",
+                "role",
+                "delete",
+                "svc-1",
+                "role-delete",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+    ];
+    for (args, stdin) in commands {
+        let output = invoke_clickstack_cli(&mock, &args, stdin, true);
+        assert_success(&output);
+        serde_json::from_slice::<Value>(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "invalid JSON output for {args:?}: {error}\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
+    }
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 10);
+    for request in &requests {
+        assert!(
+            request
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Basic "),
+            "{} {}",
+            request.method,
+            request.url.path()
+        );
+    }
+    let write_bodies = requests
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::POST
+                || request.method == wiremock::http::Method::PUT
+        })
+        .map(|request| request.body_json::<Value>().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        write_bodies,
+        vec![source.clone(), source, role.clone(), role]
+    );
+}
+
+#[tokio::test]
+async fn clickstack_source_create_accepts_all_variants_and_nested_log_fields() {
+    let bodies = vec![
+        serde_json::json!({
+            "kind":"log", "name":"logs", "connection":"c",
+            "from":{"databaseName":"d","tableName":"logs"},
+            "defaultTableSelectExpression":"*", "timestampValueExpression":"Timestamp",
+            "serviceVersionExpression":"ServiceVersion",
+            "filterSettings":{"databaseName":"d","tableName":"filters","columns":[
+                {"name":"service","label":"Service","allowAll":true,"valueExpression":"ServiceName"}
+            ]},
+            "materializedViews":[{"databaseName":"d","tableName":"mv","dimensionColumns":"ServiceName",
+                "minGranularity":"1m","timestampColumn":"Timestamp","aggregatedColumns":[
+                    {"aggFn":"count","mvColumn":"count"}
+                ]}],
+            "metadataMaterializedViews":{"keyRollupTable":"keys","kvRollupTable":"kv","granularity":"1m"}
+        }),
+        serde_json::json!({"kind":"trace","name":"traces","connection":"c","from":{"databaseName":"d","tableName":"traces"},"defaultTableSelectExpression":"*","timestampValueExpression":"ts","durationExpression":"duration","durationPrecision":9,"traceIdExpression":"trace","spanIdExpression":"span","parentSpanIdExpression":"parent","spanNameExpression":"name","spanKindExpression":"kind","serviceVersionExpression":"version"}),
+        serde_json::json!({"kind":"metric","name":"metrics","connection":"c","from":{"databaseName":"d"},"metricTables":{"gauge":"g","histogram":"h","sum":"s","summary":"summary","exponential histogram":"eh"},"timestampValueExpression":"ts","resourceAttributesExpression":"resource"}),
+        serde_json::json!({"kind":"session","name":"sessions","connection":"c","from":{"databaseName":"d","tableName":"sessions"},"traceSourceId":"traces"}),
+        serde_json::json!({"kind":"promql","name":"promql","connection":"c","from":{"databaseName":"d","tableName":"metrics"},"timestampValueExpression":"ts"}),
+    ];
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/sources",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"kind": "promql"}
+        })))
+        .expect(5)
+        .mount(&mock)
+        .await;
+    let directory = tempfile::tempdir().unwrap();
+    for (index, body) in bodies.iter().enumerate() {
+        let file = directory.path().join(format!("source-{index}.json"));
+        std::fs::write(&file, body.to_string()).unwrap();
+        let output = invoke_clickstack_cli(
+            &mock,
+            &[
+                "clickstack",
+                "source",
+                "create",
+                "svc-1",
+                "--config-file",
+                file.to_str().unwrap(),
+                "--org-id",
+                "org-1",
+            ],
+            None,
+            true,
+        );
+        assert_success(&output);
+    }
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.body_json::<Value>().unwrap())
+            .collect::<Vec<_>>(),
+        bodies
+    );
+}
+
+#[tokio::test]
+async fn clickstack_invalid_config_fails_before_org_discovery_or_resource_request() {
+    let invalid = [
+        (
+            serde_json::json!({"kind":"logs"}),
+            "unknown source discriminator",
+        ),
+        (
+            serde_json::json!({"kind":"promql","name":"p","connection":"c","from":{"databaseName":"d","tableName":"t","tableNaem":null},"timestampValueExpression":"ts"}),
+            "tableNaem",
+        ),
+        (
+            serde_json::json!({"kind":"log","name":"l"}),
+            "missing field",
+        ),
+        (
+            serde_json::json!({"kind":"log","name":"l","connection":"c","from":{"databaseName":"d","tableName":"t"},"defaultTableSelectExpression":"*","timestampValueExpression":"ts","useTextIndexForImplicitColumn":"enabledd"}),
+            "unknown useTextIndexForImplicitColumn",
+        ),
+    ];
+    for (body, expected) in invalid {
+        let mock = MockServer::start().await;
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("invalid.json");
+        std::fs::write(&file, body.to_string()).unwrap();
+        let output = invoke_clickstack_cli(
+            &mock,
+            &[
+                "clickstack",
+                "source",
+                "create",
+                "svc-1",
+                "--config-file",
+                file.to_str().unwrap(),
+            ],
+            None,
+            false,
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(mock.received_requests().await.unwrap().is_empty());
+    }
+
+    let mock = MockServer::start().await;
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "role",
+            "create",
+            "svc-1",
+            "--config-file",
+            "-",
+        ],
+        Some(
+            r#"{"name":"reader","permissions":[{"action":"read","subject":"Dashboard","conditons":null}]}"#,
+        ),
+        false,
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("conditons"));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn clickstack_human_lists_render_sparse_fields_and_api_errors_include_org() {
+    for (resource, result) in [
+        ("source", serde_json::json!([{}])),
+        ("role", serde_json::json!([{}])),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1/organizations/org-1/services/svc-1/clickstack/{resource}s"
+            )))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_clickstack_cli(
+            &mock,
+            &["clickstack", resource, "list", "svc-1", "--org-id", "org-1"],
+            None,
+            false,
+        );
+        assert_success(&output);
+        assert!(String::from_utf8_lossy(&output.stdout).contains('-'));
+    }
+
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-sensitive/services/svc-1/clickstack/roles/role-1",
+        ))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({"error":"NOT_FOUND"})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "role",
+            "get",
+            "svc-1",
+            "role-1",
+            "--org-id",
+            "org-sensitive",
+        ],
+        None,
+        false,
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("org-sensitive") && error.contains("NOT_FOUND"),
+        "{error}"
+    );
+}

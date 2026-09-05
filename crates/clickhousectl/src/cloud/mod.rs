@@ -5,7 +5,9 @@ pub mod backups;
 pub mod cli;
 pub mod clickpipe_endpoints;
 pub mod clickpipes;
+pub mod clickstack;
 pub mod client;
+mod config;
 pub mod credentials;
 pub mod organizations;
 pub mod output;
@@ -128,6 +130,7 @@ async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> c
         CloudCommands::Backup { command } => backups::run(client, command, json).await,
         CloudCommands::Postgres { command } => postgres::run(client, command, json).await,
         CloudCommands::ClickPipe { command } => clickpipes::run(client, *command, json).await,
+        CloudCommands::ClickStack { command } => clickstack::run(client, command, json).await,
     }
 }
 

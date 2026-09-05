@@ -14,6 +14,7 @@ pub(crate) use crate::cloud::clickpipes::{
     KinesisCreateArgs, KinesisSourceFields, MongoDbCreateArgs, MySqlCreateArgs,
     ObjectStorageCreateArgs, PostgresCreateArgs,
 };
+pub(crate) use crate::cloud::clickstack::ClickStackCommands;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::services::{
@@ -142,6 +143,21 @@ CONTEXT FOR AGENTS:
         command: Box<ClickPipeCommands>,
     },
 
+    /// Manage ClickStack observability resources
+    #[command(
+        name = "clickstack",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Service ID: `clickhousectl cloud service list`.
+  Source and role IDs come from their respective `list` commands.
+  Everything except list/get is a write and needs API key auth.
+  Create/update read complete JSON bodies from --config-file; `-` reads stdin."
+    )]
+    ClickStack {
+        #[command(subcommand)]
+        command: ClickStackCommands,
+    },
+
     /// Manage organization members
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -220,6 +236,7 @@ impl CloudCommands {
             CloudCommands::Activity { command } => command.is_write(),
             CloudCommands::Postgres { command } => command.is_write(),
             CloudCommands::ClickPipe { command } => command.is_write(),
+            CloudCommands::ClickStack { command } => command.is_write(),
         }
     }
 }
