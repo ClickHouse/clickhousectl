@@ -84,6 +84,11 @@ pub enum ClickPipeBigQueryPipeTableMappingTableengine {
     Unknown(String),
 }
 
+impl ClickPipeBigQueryPipeTableMappingTableengine {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["MergeTree", "ReplacingMergeTree", "Null"];
+}
+
 impl std::fmt::Display for ClickPipeBigQueryPipeTableMappingTableengine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -377,6 +382,11 @@ pub enum ClickPipeMongoDBPipeTableMappingTableengine {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeMongoDBPipeTableMappingTableengine {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["MergeTree", "ReplacingMergeTree", "Null"];
 }
 
 impl std::fmt::Display for ClickPipeMongoDBPipeTableMappingTableengine {
@@ -683,6 +693,11 @@ pub enum ClickPipeMySQLPipeTableMappingTableengine {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeMySQLPipeTableMappingTableengine {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["MergeTree", "ReplacingMergeTree", "Null"];
 }
 
 impl std::fmt::Display for ClickPipeMySQLPipeTableMappingTableengine {

@@ -638,6 +638,30 @@ fn postgres_table_mapping_table_engines_round_trip_and_match_values() {
 }
 
 #[test]
+fn database_table_mapping_table_engines_round_trip_and_match_values() {
+    macro_rules! assert_values {
+        ($engine:ty) => {{
+            assert_eq!(
+                <$engine>::VALUES,
+                &["MergeTree", "ReplacingMergeTree", "Null"]
+            );
+            for value in <$engine>::VALUES {
+                let parsed: $engine = serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+                assert_eq!(parsed.to_string(), *value);
+                assert_eq!(
+                    serde_json::to_string(&parsed).unwrap(),
+                    format!(r#""{value}""#)
+                );
+            }
+        }};
+    }
+
+    assert_values!(ClickPipeMySQLPipeTableMappingTableengine);
+    assert_values!(ClickPipeMongoDBPipeTableMappingTableengine);
+    assert_values!(ClickPipeBigQueryPipeTableMappingTableengine);
+}
+
+#[test]
 fn deserialize_activity() {
     let json = r#"{
         "actorType": "api",
