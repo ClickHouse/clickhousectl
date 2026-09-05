@@ -12360,3 +12360,202 @@ async fn service_delete_reports_a_well_formed_unknown_id_as_not_found() {
         vec![("DELETE".to_string(), service_path)]
     );
 }
+
+// PgBouncer parameters must survive all advertised file-input paths (#697).
+fn pgbouncer_write_commands<'a>(
+    map_file: &'a str,
+    config_file: &'a str,
+) -> Vec<(Vec<&'a str>, &'static str, &'static str)> {
+    vec![
+        (
+            vec![
+                "postgres",
+                "create",
+                "--name",
+                "pg-test",
+                "--region",
+                "us-east-1",
+                "--size",
+                "c6gd.large",
+                "--pg-bouncer-config-file",
+                map_file,
+            ],
+            "POST",
+            "/v1/organizations/org-1/postgres",
+        ),
+        (
+            vec![
+                "postgres",
+                "read-replica",
+                "create",
+                "pg-1",
+                "--name",
+                "replica-test",
+                "--pg-bouncer-config-file",
+                map_file,
+            ],
+            "POST",
+            "/v1/organizations/org-1/postgres/pg-1/readReplica",
+        ),
+        (
+            vec![
+                "postgres",
+                "restore",
+                "pg-1",
+                "--name",
+                "restored-test",
+                "--restore-target",
+                "2026-08-01T00:00:00Z",
+                "--pg-bouncer-config-file",
+                map_file,
+            ],
+            "POST",
+            "/v1/organizations/org-1/postgres/pg-1/restoredService",
+        ),
+        (
+            vec!["postgres", "config", "patch", "pg-1", "--file", config_file],
+            "PATCH",
+            "/v1/organizations/org-1/postgres/pg-1/config",
+        ),
+        (
+            vec![
+                "postgres",
+                "config",
+                "replace",
+                "pg-1",
+                "--file",
+                config_file,
+            ],
+            "POST",
+            "/v1/organizations/org-1/postgres/pg-1/config",
+        ),
+    ]
+}
+
+fn invoke_pgbouncer_cli(mock: &MockServer, args: &[&str]) -> std::process::Output {
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("HOME", directory.path())
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(directory.path())
+        .args(["cloud", "--url", &mock.uri(), "--json"])
+        .args(args)
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn pgbouncer_file_inputs_preserve_string_maps_in_every_write_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let map_file = directory.path().join("pgbouncer.json");
+    let config_file = directory.path().join("config.json");
+    let parameters =
+        serde_json::json!({"default_pool_size": "16", "future_parameter": "on", "empty": ""});
+    let configuration =
+        serde_json::json!({"pgConfig": {"work_mem": "64MB"}, "pgBouncerConfig": parameters});
+    std::fs::write(&map_file, parameters.to_string()).unwrap();
+    std::fs::write(&config_file, configuration.to_string()).unwrap();
+
+    for (mut args, verb, endpoint) in
+        pgbouncer_write_commands(map_file.to_str().unwrap(), config_file.to_str().unwrap())
+    {
+        let mock = MockServer::start().await;
+        Mock::given(method(verb))
+            .and(path(endpoint))
+            .and(wiremock::matchers::basic_auth(
+                "fake-key-for-tests",
+                "fake-secret-for-tests",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": configuration, "status": 200,
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        args.extend(["--org-id", "org-1"]);
+        let output = invoke_pgbouncer_cli(&mock, &args);
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["pgBouncerConfig"], parameters, "{args:?}");
+        if endpoint.ends_with("/config") {
+            assert_eq!(body, configuration);
+            let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(output["pgBouncerConfig"], parameters);
+        }
+    }
+}
+
+#[tokio::test]
+async fn pgbouncer_invalid_file_values_fail_before_any_api_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let map_file = directory.path().join("pgbouncer.json");
+    let config_file = directory.path().join("config.json");
+    for value in [
+        serde_json::json!(16),
+        serde_json::json!(false),
+        serde_json::json!(null),
+    ] {
+        let parameters = serde_json::json!({"default_pool_size": value});
+        std::fs::write(&map_file, parameters.to_string()).unwrap();
+        std::fs::write(
+            &config_file,
+            serde_json::json!({"pgConfig": {}, "pgBouncerConfig": parameters}).to_string(),
+        )
+        .unwrap();
+        for (args, _, _) in
+            pgbouncer_write_commands(map_file.to_str().unwrap(), config_file.to_str().unwrap())
+        {
+            let mock = MockServer::start().await;
+            // No --org-id: validation must precede even organization discovery.
+            let output = invoke_pgbouncer_cli(&mock, &args);
+            assert_eq!(output.status.code(), Some(1), "{args:?}");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains("string"), "{args:?}: {error}");
+            assert!(
+                error.contains("pgBouncerConfig") || error.contains("pgbouncer.json"),
+                "{error}"
+            );
+            assert!(
+                mock.received_requests().await.unwrap().is_empty(),
+                "{args:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn pgbouncer_config_get_json_preserves_values_and_tolerates_absent_sections() {
+    for result in [
+        serde_json::json!({"pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
+        serde_json::json!({"pgBouncerConfig": {}}),
+        serde_json::json!({"pgBouncerConfig": null}),
+        serde_json::json!({}),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_pgbouncer_cli(
+            &mock,
+            &["postgres", "config", "get", "pg-1", "--org-id", "org-1"],
+        );
+        assert_success(&output);
+        let actual: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if result.get("pgBouncerConfig").is_none_or(Value::is_null) {
+            assert!(actual.get("pgBouncerConfig").is_none());
+        } else {
+            assert_eq!(actual["pgBouncerConfig"], result["pgBouncerConfig"]);
+        }
+    }
+}
