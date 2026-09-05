@@ -6453,6 +6453,79 @@ fn api_key_patch_deserialization_rejects_invalid_recognized_fields() {
     }
 }
 
+#[test]
+fn kafka_patch_source_preserves_partial_and_explicit_list_updates() {
+    let partial: ClickPipePatchKafkaSource = serde_json::from_value(serde_json::json!({
+        "caCertificate": "new-ca"
+    }))
+    .unwrap();
+    assert!(partial.credentials.is_none());
+    assert!(partial.reverse_private_endpoint_ids.is_none());
+    assert_eq!(
+        serde_json::to_value(partial).unwrap(),
+        serde_json::json!({"caCertificate": "new-ca"})
+    );
+
+    let cleared: ClickPipePatchKafkaSource = serde_json::from_value(serde_json::json!({
+        "reversePrivateEndpointIds": []
+    }))
+    .unwrap();
+    assert_eq!(cleared.reverse_private_endpoint_ids, Some(vec![]));
+    assert_eq!(
+        serde_json::to_value(cleared).unwrap(),
+        serde_json::json!({"reversePrivateEndpointIds": []})
+    );
+
+    let nulls: ClickPipePatchKafkaSource = serde_json::from_value(serde_json::json!({
+        "credentials": null,
+        "reversePrivateEndpointIds": null
+    }))
+    .unwrap();
+    assert_eq!(nulls, ClickPipePatchKafkaSource::default());
+    assert_eq!(serde_json::to_value(nulls).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn clickpipe_patch_nested_objects_preserve_omission_and_explicit_empty_values() {
+    let partial = serde_json::json!({
+        "source": {
+            "postgres": {"host": "postgres.example.com"}
+        }
+    });
+    let request: ClickPipePatchRequest = serde_json::from_value(partial.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), partial);
+
+    let explicit = serde_json::json!({
+        "destination": {"columns": []},
+        "source": {
+            "postgres": {
+                "tableMappingsToAdd": [],
+                "tableMappingsToRemove": []
+            },
+            "validateSamples": false
+        }
+    });
+    let request: ClickPipePatchRequest = serde_json::from_value(explicit.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), explicit);
+
+    let nulls: ClickPipePatchRequest = serde_json::from_value(serde_json::json!({
+        "source": {
+            "postgres": {
+                "credentials": null,
+                "settings": null,
+                "tableMappingsToAdd": null,
+                "tableMappingsToRemove": null
+            },
+            "validateSamples": null
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(nulls).unwrap(),
+        serde_json::json!({"source": {"postgres": {}}})
+    );
+}
+
 #[cfg(feature = "deprecated-fields")]
 #[test]
 fn api_key_patch_deserialization_preserves_deprecated_roles() {
