@@ -148,6 +148,20 @@ psql "$POSTGRES_CONNECTION_STRING" --command "SELECT version()"
 
 `postgres create` returns an initial password, which the CLI prints once; store it securely.
 
+Manage ClickStack data sources and roles for an existing service with JSON configuration files:
+
+```bash
+clickhousectl cloud clickstack source list <service-id> --org-id <org-id>
+clickhousectl cloud clickstack source create <service-id> \
+  --config-file source.json --org-id <org-id>
+clickhousectl cloud clickstack role create <service-id> \
+  --config-file role.json --org-id <org-id>
+```
+
+Pass `--config-file -` to read the JSON body from stdin. Source IDs and role IDs come from their
+respective `list` commands. `source update` and `role update` use PUT replacement semantics, so the
+configuration must contain the complete desired resource rather than only changed fields.
+
 ## Local
 
 ### Installing and managing ClickHouse versions

@@ -115,6 +115,8 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             classifier.NON_INSTALL_EXACT_PATHS,
             frozenset(
                 {
+                    "crates/clickhousectl/src/cloud/clickstack.rs",
+                    "crates/clickhousectl/src/cloud/config.rs",
                     "crates/clickhousectl/src/dotenv.rs",
                     "crates/clickhousectl/src/failure.rs",
                     "crates/clickhousectl/src/local/config.rs",
