@@ -1489,6 +1489,210 @@ async fn service_delete_running_conflict_suggests_force() {
     );
 }
 
+// ── Postgres metrics (issue #583) ─────────────────────────────────────────
+
+#[tokio::test]
+async fn postgres_metrics_sends_exact_query_supports_oauth_and_preserves_json() {
+    let mock = MockServer::start().await;
+    let postgres_id = "11111111-2222-3333-4444-555555555555";
+    let result = serde_json::json!({
+        "metrics": [{
+            "key": "cpu",
+            "name": "CPU usage",
+            "description": "Average CPU usage",
+            "unit": "percent",
+            "series": [{
+                "label": "primary",
+                "dataPoints": [
+                    { "timestamp": 1776337200, "value": 12.5 },
+                    { "timestamp": 1776337260, "value": 13.25 }
+                ]
+            }]
+        }, {
+            "key": "replication-lag",
+            "series": []
+        }]
+    });
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/org-1/postgres/{postgres_id}/metrics"
+        )))
+        .and(query_param("from_date", "2026-04-16T12:00:00+01:00"))
+        .and(query_param("to_date", "2026-04-16T13:00:00+01:00"))
+        .and(query_param("bucket_size_seconds", "60"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-postgres-metrics"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "postgres",
+            "metrics",
+            postgres_id,
+            "--from-date",
+            "2026-04-16T12:00:00+01:00",
+            "--to-date",
+            "2026-04-16T13:00:00+01:00",
+            "--bucket-size-seconds",
+            "60",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let query: Vec<_> = requests[0]
+        .url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    assert_eq!(
+        query,
+        [
+            (
+                "from_date".to_string(),
+                "2026-04-16T12:00:00+01:00".to_string()
+            ),
+            (
+                "to_date".to_string(),
+                "2026-04-16T13:00:00+01:00".to_string()
+            ),
+            ("bucket_size_seconds".to_string(), "60".to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn postgres_metrics_omits_bucket_and_renders_sparse_human_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/metrics"))
+        .and(query_param("from_date", "2026-04-16T12:00:00Z"))
+        .and(query_param("to_date", "2026-04-16T13:00:00Z"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "metrics": [{
+                    "key": "connections",
+                    "series": [{ "dataPoints": [{ "timestamp": 1776337200 }] }]
+                }]
+            },
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "postgres",
+            "metrics",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+            "--to-date",
+            "2026-04-16T13:00:00Z",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for text in [
+        "metrics:",
+        "key: connections",
+        "dataPoints:",
+        "timestamp: 1776337200",
+    ] {
+        assert!(stdout.contains(text), "missing {text:?} from:\n{stdout}");
+    }
+    let requests = mock.received_requests().await.unwrap();
+    let query: Vec<_> = requests[0].url.query_pairs().collect();
+    assert_eq!(query.len(), 2, "unexpected query parameters: {query:?}");
+    assert!(
+        query.iter().all(|(key, _)| key != "bucket_size_seconds"),
+        "bucket size must be omitted when the flag is absent: {query:?}"
+    );
+}
+
+#[tokio::test]
+async fn postgres_metrics_rejects_reverse_range_before_request_and_surfaces_api_errors() {
+    let mock = MockServer::start().await;
+    let base_args = [
+        "postgres",
+        "metrics",
+        "pg-1",
+        "--from-date",
+        "2026-04-16T13:00:00Z",
+        "--to-date",
+        "2026-04-16T12:00:00Z",
+        "--org-id",
+        "org-1",
+    ];
+    let output = invoke_cli_with_cloud_credentials(&mock, &base_args);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--from-date must not be after --to-date")
+    );
+    assert!(mock.received_requests().await.unwrap().is_empty());
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/metrics"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(serde_json::json!({
+            "status": 429,
+            "error": "RATE_LIMIT_EXCEEDED: try later",
+            "requestId": "stub-postgres-metrics-error"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let valid_args = [
+        "postgres",
+        "metrics",
+        "pg-1",
+        "--from-date",
+        "2026-04-16T12:00:00Z",
+        "--to-date",
+        "2026-04-16T13:00:00Z",
+        "--org-id",
+        "org-1",
+    ];
+    let output = invoke_cli_with_cloud_credentials(&mock, &valid_args);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("RATE_LIMIT_EXCEEDED: try later"),
+        "{stderr}"
+    );
+}
+
 // ── Postgres deletion JSON output (issue #614) ────────────────────────────
 
 /// `postgres delete --json` must emit the Postgres resource object, not the

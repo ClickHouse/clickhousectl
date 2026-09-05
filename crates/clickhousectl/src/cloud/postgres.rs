@@ -1,16 +1,17 @@
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
-use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_line};
+use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultTransactionIsolation,
     PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType, PgIdProperty, PgProvider,
-    PgSize, PgVersion, PostgresInstanceConfig, PostgresService, PostgresServiceListItem,
-    PostgresServicePatchRequest, PostgresServicePostRequest, PostgresServiceReadReplicaRequest,
-    PostgresServiceRestoreRequest, PostgresServiceSetPassword, PostgresServiceSetState,
-    PostgresServiceSetStateCommand, ResourceTagsV1, ResourceTagsV1Response,
+    PgSize, PgVersion, PostgresInstanceConfig, PostgresMetrics, PostgresService,
+    PostgresServiceListItem, PostgresServicePatchRequest, PostgresServicePostRequest,
+    PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest, PostgresServiceSetPassword,
+    PostgresServiceSetState, PostgresServiceSetStateCommand, ResourceTagsV1,
+    ResourceTagsV1Response,
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -160,6 +161,24 @@ CONTEXT FOR AGENTS:
     /// Manage Postgres read replicas
     #[command(name = "read-replica", subcommand)]
     ReadReplica(ReadReplicaCommands),
+
+    /// Get Postgres service metrics
+    Metrics {
+        /// Postgres service ID (from `cloud postgres list`)
+        postgres_id: String,
+        /// Start time (ISO 8601 / RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        from_date: String,
+        /// End time (ISO 8601 / RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        to_date: String,
+        /// Time bucket size in seconds
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+        bucket_size_seconds: Option<i64>,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
 
     /// Restore a Postgres service to a point in time
     #[command(after_help = "\
@@ -335,7 +354,9 @@ CONTEXT FOR AGENTS:
 impl PostgresCommands {
     pub fn is_write(&self) -> bool {
         match self {
-            PostgresCommands::List { .. } | PostgresCommands::Get { .. } => false,
+            PostgresCommands::List { .. }
+            | PostgresCommands::Get { .. }
+            | PostgresCommands::Metrics { .. } => false,
             PostgresCommands::Certs(CertsCommands::Get { .. }) => false,
             PostgresCommands::Config(ConfigCommands::Get { .. }) => false,
 
@@ -485,6 +506,24 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 org_id: org_id.as_deref(),
             };
             postgres_read_replica_create(client, &postgres_id, opts, json).await
+        }
+        PostgresCommands::Metrics {
+            postgres_id,
+            from_date,
+            to_date,
+            bucket_size_seconds,
+            org_id,
+        } => {
+            postgres_metrics(
+                client,
+                &postgres_id,
+                &from_date,
+                &to_date,
+                bucket_size_seconds,
+                org_id.as_deref(),
+                json,
+            )
+            .await
         }
         PostgresCommands::Restore {
             postgres_id,
@@ -1622,11 +1661,76 @@ pub async fn postgres_state_change(
     Ok(())
 }
 
+fn validate_metrics_date_range(from_date: &str, to_date: &str) -> CloudResult<()> {
+    let from = chrono::DateTime::parse_from_rfc3339(from_date)
+        .map_err(|_| CloudError::new("invalid --from-date: expected ISO 8601 / RFC 3339"))?;
+    let to = chrono::DateTime::parse_from_rfc3339(to_date)
+        .map_err(|_| CloudError::new("invalid --to-date: expected ISO 8601 / RFC 3339"))?;
+    if from > to {
+        return Err(CloudError::new(
+            "invalid date range: --from-date must not be after --to-date",
+        ));
+    }
+    Ok(())
+}
+
+pub async fn postgres_metrics(
+    client: &CloudClient,
+    postgres_id: &str,
+    from_date: &str,
+    to_date: &str,
+    bucket_size_seconds: Option<i64>,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    validate_metrics_date_range(from_date, to_date)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let metrics = client
+        .get_postgres_metrics(
+            &org_id,
+            postgres_id,
+            from_date,
+            to_date,
+            bucket_size_seconds,
+        )
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&metrics)?);
+    } else {
+        print_human(&metrics)?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Role changes: promote / switchover (issue #604)
 // ---------------------------------------------------------------------------
 
 impl CloudClient {
+    /// Fetch time-bucketed metrics for a Postgres service.
+    pub async fn get_postgres_metrics(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        from_date: &str,
+        to_date: &str,
+        bucket_size_seconds: Option<i64>,
+    ) -> CloudResult<PostgresMetrics> {
+        let response = self
+            .api()
+            .postgres_instance_metrics_get(
+                org_id,
+                postgres_id,
+                from_date,
+                to_date,
+                bucket_size_seconds,
+            )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     /// Fetch a single Postgres service.
     pub async fn get_postgres_service(
         &self,
@@ -2575,6 +2679,125 @@ mod tests {
         .err()
         .expect("expected parse error");
         assert!(err.to_string().contains("invalid datetime"));
+    }
+
+    #[test]
+    fn parses_postgres_metrics_with_all_query_inputs() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "metrics",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00+01:00",
+            "--to-date",
+            "2026-04-16T13:00:00+01:00",
+            "--bucket-size-seconds",
+            "60",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!cmd.is_write());
+        let PostgresCommands::Metrics {
+            postgres_id,
+            from_date,
+            to_date,
+            bucket_size_seconds,
+            org_id,
+        } = cmd
+        else {
+            panic!("expected metrics");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(from_date, "2026-04-16T12:00:00+01:00");
+        assert_eq!(to_date, "2026-04-16T13:00:00+01:00");
+        assert_eq!(bucket_size_seconds, Some(60));
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn postgres_metrics_requires_dates_without_defaulting_bucket_size() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "metrics",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+            "--to-date",
+            "2026-04-16T13:00:00Z",
+        ]);
+        let PostgresCommands::Metrics {
+            bucket_size_seconds,
+            ..
+        } = cmd
+        else {
+            panic!("expected metrics");
+        };
+        assert_eq!(bucket_size_seconds, None);
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "metrics",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn postgres_metrics_rejects_invalid_dates_and_bucket_sizes() {
+        for (flag, value) in [
+            ("--from-date", "yesterday"),
+            ("--to-date", "tomorrow"),
+            ("--bucket-size-seconds", "0"),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "metrics",
+                "pg-1",
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+            ];
+            let position = args.iter().position(|arg| *arg == flag);
+            if let Some(position) = position {
+                args[position + 1] = value;
+            } else {
+                args.extend([flag, value]);
+            }
+            let error = Cli::try_parse_from(args)
+                .err()
+                .expect("expected parse error");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn postgres_metrics_validates_chronological_range() {
+        assert!(
+            validate_metrics_date_range("2026-04-16T12:00:00+01:00", "2026-04-16T11:00:00Z")
+                .is_ok()
+        );
+        let error = validate_metrics_date_range("2026-04-16T12:00:01Z", "2026-04-16T12:00:00Z")
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid date range: --from-date must not be after --to-date"
+        );
     }
 
     #[test]
