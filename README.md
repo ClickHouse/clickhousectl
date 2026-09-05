@@ -1327,8 +1327,7 @@ jq '.source.postgres.credentials.password = env.CLICKPIPE_PASSWORD' patch-templa
 
 Root fields can rename a pipe, replace destination columns or field mappings,
 and update the root settings object. Nested objects use Cloud API wire names.
-A settings patch currently must contain `kafka_read_committed` because that
-field is required by the shared typed settings model.
+The `kafka_read_committed` setting applies only to Kafka pipes.
 
 ```json
 {
@@ -1544,8 +1543,9 @@ Each source type has its own subcommand under `clickpipe create`:
 
 Every create subcommand accepts source sample validation through
 `--validate-samples true|false`. The value is written under `source`; omission
-keeps the historical `false` value. The API documents sample validation as
-having no effect for PostgreSQL and MySQL.
+leaves `validateSamples` out of the request, while explicit `false` remains an
+explicit value. The API documents sample validation as having no effect for
+PostgreSQL and MySQL.
 
 Kafka, Kinesis, object-storage, and Pub/Sub creates also accept repeatable
 `--field-mapping '{"sourceField":"...","destinationField":"..."}'` values and
@@ -1558,9 +1558,10 @@ Those four source types also accept the ingestion-setting flags shown under
 `clickpipe settings update`. The JSON pair form preserves field names containing
 punctuation and rejects missing or unknown keys before a request. Object-storage
 settings only apply to object-storage creates, and `--kafka-read-committed` only
-applies to Kafka. Database-source creates use their source-specific CDC setting
-and table-mapping flags instead. With no common setting flag, the request omits
-the whole `settings` block; explicit `0` and `false` remain present.
+applies to Kafka. Other source types omit that Kafka-only setting even when their
+request contains other settings. Database-source creates use their source-specific
+CDC setting and table-mapping flags instead. With no common setting flag, the
+request omits the whole `settings` block; explicit `0` and `false` remain present.
 
 ```bash
 clickhousectl cloud clickpipe create kafka <service-id> \

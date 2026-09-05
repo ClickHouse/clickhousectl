@@ -6010,7 +6010,14 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
                 body["settings"]["clickhouse_parallel_view_processing"], false,
                 "{source}"
             );
-            assert_eq!(body["settings"]["kafka_read_committed"], false, "{source}");
+            if source == "kafka" {
+                assert_eq!(body["settings"]["kafka_read_committed"], false, "{source}");
+            } else {
+                assert!(
+                    body["settings"].get("kafka_read_committed").is_none(),
+                    "{source}: {body}"
+                );
+            }
             if source == "objectStorage" {
                 assert_eq!(body["settings"]["object_storage_concurrency"], 1);
                 assert_eq!(
@@ -6106,6 +6113,32 @@ async fn kafka_optional_fields_absent_when_flags_omitted() {
         kafka["offset"].get("timestamp").is_none(),
         "offset.timestamp leaked when --offset-timestamp not passed: {kafka}",
     );
+    assert!(body["source"].get("validateSamples").is_none(), "{body}");
+    assert!(body.get("settings").is_none(), "{body}");
+}
+
+#[tokio::test]
+async fn kafka_create_preserves_explicit_read_committed_true_and_false() {
+    for (value, expected) in [("true", true), ("false", false)] {
+        let mock = start_mock_clickpipes_api().await;
+        let mut args = kafka_args_minimal()
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        args.extend([
+            "--kafka-read-committed".into(),
+            value.into(),
+            "--validate-samples".into(),
+            "false".into(),
+        ]);
+
+        let body = invoke_cli_capture_body(&mock, &as_str_args(&args)).await;
+        assert_eq!(
+            body["settings"],
+            serde_json::json!({ "kafka_read_committed": expected })
+        );
+        assert_eq!(body["source"]["validateSamples"], false, "{body}");
+    }
 }
 
 #[tokio::test]
