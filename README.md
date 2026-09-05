@@ -1092,6 +1092,7 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --host db.example.com --pg-database mydb \
   --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
   --publication-name clickpipes \
+  --destination-database analytics \
   --table-mapping "public.users:public_users" \
   --table-mapping "public.orders:public_orders"
 
@@ -1226,6 +1227,11 @@ clickhousectl cloud clickpipe create kafka <service-id> \
   --column "event_id:Int64" \
   --role analytics_reader --role analytics_writer
 ```
+
+PostgreSQL, MySQL, MongoDB, and BigQuery creates accept
+`--destination-database <DATABASE>` for the ClickHouse database that receives
+their mapped tables. It defaults to `default`; source database, schema, and
+dataset names remain part of the source flags and table mappings shown above.
 
 `--role` is available on every `clickpipe create` subcommand and is repeatable.
 ClickPipes creates a ClickHouse user for the pipe; when `--role` is omitted that
