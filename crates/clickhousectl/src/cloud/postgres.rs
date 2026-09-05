@@ -7,11 +7,11 @@ use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultTransactionIsolation,
     PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType, PgIdProperty, PgProvider,
-    PgSize, PgVersion, PostgresInstanceConfig, PostgresMetrics, PostgresService,
-    PostgresServiceListItem, PostgresServicePatchRequest, PostgresServicePostRequest,
-    PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest, PostgresServiceSetPassword,
-    PostgresServiceSetState, PostgresServiceSetStateCommand, ResourceTagsV1,
-    ResourceTagsV1Response,
+    PgSize, PgVersion, PostgresInstanceConfig, PostgresLogEntry, PostgresLogsGetListSortorder,
+    PostgresMetrics, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
+    PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
+    PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
+    ResourceTagsV1, ResourceTagsV1Response,
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
@@ -37,6 +37,40 @@ pub enum PostgresCommands {
     Get {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// List Postgres server logs
+    Logs {
+        /// Postgres service ID (from `cloud postgres list`)
+        postgres_id: String,
+        /// Inclusive start of the time window (RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        from_date: String,
+        /// Inclusive end of the time window (RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        to_date: String,
+        /// Case-sensitive substring the log body must contain
+        #[arg(long)]
+        body_contains: Option<String>,
+        /// PostgreSQL severity, such as ERROR, WARNING, or LOG
+        #[arg(long)]
+        severity: Option<String>,
+        /// Sort order
+        #[arg(long, value_parser = parse_postgres_logs_sort_order)]
+        sort_order: Option<PostgresLogsGetListSortorder>,
+        /// Maximum number of log entries
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=2000))]
+        limit: Option<i64>,
+        /// Number of log entries to skip
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(i64).range(0..)
+        )]
+        offset: Option<i64>,
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
@@ -356,7 +390,8 @@ impl PostgresCommands {
         match self {
             PostgresCommands::List { .. }
             | PostgresCommands::Get { .. }
-            | PostgresCommands::Metrics { .. } => false,
+            | PostgresCommands::Metrics { .. }
+            | PostgresCommands::Logs { .. } => false,
             PostgresCommands::Certs(CertsCommands::Get { .. }) => false,
             PostgresCommands::Config(ConfigCommands::Get { .. }) => false,
 
@@ -384,6 +419,28 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             postgres_id,
             org_id,
         } => postgres_get(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Logs {
+            postgres_id,
+            from_date,
+            to_date,
+            body_contains,
+            severity,
+            sort_order,
+            limit,
+            offset,
+            org_id,
+        } => {
+            let query = build_postgres_logs_query(
+                &from_date,
+                &to_date,
+                body_contains.as_deref(),
+                severity.as_deref(),
+                sort_order.as_ref(),
+                limit,
+                offset,
+            )?;
+            postgres_logs(client, &postgres_id, &query, org_id.as_deref(), json).await
+        }
         PostgresCommands::Create {
             name,
             region,
@@ -1059,6 +1116,80 @@ pub struct PostgresRestoreOptions<'a> {
     pub org_id: Option<&'a str>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+struct PostgresLogsQuery {
+    from_date: String,
+    to_date: String,
+    body_contains: Option<String>,
+    severity: Option<String>,
+    sort_order: Option<PostgresLogsGetListSortorder>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_postgres_logs_query(
+    from_date: &str,
+    to_date: &str,
+    body_contains: Option<&str>,
+    severity: Option<&str>,
+    sort_order: Option<&PostgresLogsGetListSortorder>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> CloudResult<PostgresLogsQuery> {
+    let from = chrono::DateTime::parse_from_rfc3339(from_date)
+        .map_err(|error| CloudError::new(format!("invalid from-date: {error}")))?;
+    let to = chrono::DateTime::parse_from_rfc3339(to_date)
+        .map_err(|error| CloudError::new(format!("invalid to-date: {error}")))?;
+    if to <= from {
+        return Err(CloudError::new("to-date must be after from-date"));
+    }
+    if to.signed_duration_since(from) > chrono::Duration::days(30) {
+        return Err(CloudError::new(
+            "the Postgres log time window must not exceed 30 days",
+        ));
+    }
+    if !matches!(limit, None | Some(1..=2000)) {
+        return Err(CloudError::new("limit must be between 1 and 2000"));
+    }
+    if offset.is_some_and(|value| value < 0) {
+        return Err(CloudError::new("offset must be at least 0"));
+    }
+
+    let sort_order = sort_order
+        .cloned()
+        .map(validate_postgres_logs_sort_order)
+        .transpose()
+        .map_err(CloudError::new)?;
+
+    Ok(PostgresLogsQuery {
+        from_date: from_date.to_string(),
+        to_date: to_date.to_string(),
+        body_contains: body_contains.map(str::to_string),
+        severity: severity.map(str::to_string),
+        sort_order,
+        limit,
+        offset,
+    })
+}
+
+fn parse_postgres_logs_sort_order(value: &str) -> Result<PostgresLogsGetListSortorder, String> {
+    let parsed = serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|error| format!("invalid sort order '{value}': {error}"))?;
+    validate_postgres_logs_sort_order(parsed)
+}
+
+fn validate_postgres_logs_sort_order(
+    value: PostgresLogsGetListSortorder,
+) -> Result<PostgresLogsGetListSortorder, String> {
+    match value {
+        PostgresLogsGetListSortorder::Unknown(value) => Err(format!(
+            "invalid sort order '{value}': expected a value supported by the Cloud API"
+        )),
+        known => Ok(known),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
@@ -1149,6 +1280,28 @@ pub async fn postgres_get(
         // credentials on July 31, 2026 — they are only available from
         // `postgres create` and `postgres reset-password`.
         render_postgres_service(&svc);
+    }
+    Ok(())
+}
+
+async fn postgres_logs(
+    client: &CloudClient,
+    postgres_id: &str,
+    query: &PostgresLogsQuery,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let logs = client
+        .list_postgres_logs(&org_id, postgres_id, query)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&logs)?);
+    } else if logs.is_empty() {
+        println!("No Postgres logs found");
+    } else {
+        print_human(&logs)?;
     }
     Ok(())
 }
@@ -1752,6 +1905,31 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    /// Fetch Postgres server logs for a validated time window.
+    async fn list_postgres_logs(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        query: &PostgresLogsQuery,
+    ) -> CloudResult<Vec<PostgresLogEntry>> {
+        let response = self
+            .api()
+            .postgres_logs_get_list(
+                org_id,
+                postgres_id,
+                &query.from_date,
+                &query.to_date,
+                query.body_contains.as_deref(),
+                query.severity.as_deref(),
+                query.sort_order.as_ref(),
+                query.limit,
+                query.offset,
+            )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     /// Issue a `restart`/`promote`/`switchover` command against a Postgres service.
     pub async fn set_postgres_service_state(
         &self,
@@ -2153,6 +2331,215 @@ mod tests {
             panic!("expected get");
         };
         assert_eq!(postgres_id, "pg-1");
+    }
+
+    #[test]
+    fn parses_postgres_logs_minimal() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "logs",
+            "pg-1",
+            "--from-date",
+            "2026-08-01T00:00:00Z",
+            "--to-date",
+            "2026-08-02T00:00:00Z",
+        ]);
+        let PostgresCommands::Logs {
+            postgres_id,
+            from_date,
+            to_date,
+            body_contains,
+            severity,
+            sort_order,
+            limit,
+            offset,
+            ..
+        } = &cmd
+        else {
+            panic!("expected logs");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(from_date, "2026-08-01T00:00:00Z");
+        assert_eq!(to_date, "2026-08-02T00:00:00Z");
+        assert_eq!(body_contains, &None);
+        assert_eq!(severity, &None);
+        assert_eq!(sort_order, &None);
+        assert_eq!(limit, &None);
+        assert_eq!(offset, &None);
+        assert!(!cmd.is_write());
+    }
+
+    #[test]
+    fn parses_postgres_logs_maximal() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "logs",
+            "pg-1",
+            "--from-date",
+            "2026-08-01T00:00:00+01:00",
+            "--to-date",
+            "2026-08-02T00:00:00+01:00",
+            "--body-contains",
+            "checkpoint complete",
+            "--severity",
+            "LOG",
+            "--sort-order",
+            "asc",
+            "--limit",
+            "2000",
+            "--offset",
+            "0",
+            "--org-id",
+            "org-1",
+        ]);
+        let PostgresCommands::Logs {
+            body_contains,
+            severity,
+            sort_order,
+            limit,
+            offset,
+            org_id,
+            ..
+        } = cmd
+        else {
+            panic!("expected logs");
+        };
+        assert_eq!(body_contains.as_deref(), Some("checkpoint complete"));
+        assert_eq!(severity.as_deref(), Some("LOG"));
+        assert_eq!(sort_order, Some(PostgresLogsGetListSortorder::Asc));
+        assert_eq!(limit, Some(2000));
+        assert_eq!(offset, Some(0));
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn rejects_invalid_postgres_logs_flag_values() {
+        let invalid_datetime = PostgresCli::try_parse_from([
+            "clickhousectl",
+            "logs",
+            "pg-1",
+            "--from-date",
+            "yesterday",
+            "--to-date",
+            "2026-08-02T00:00:00Z",
+        ])
+        .err()
+        .expect("expected invalid datetime");
+        assert_eq!(
+            invalid_datetime.kind(),
+            clap::error::ErrorKind::ValueValidation
+        );
+
+        for (flag, value, expected_kind) in [
+            (
+                "--sort-order",
+                "newest",
+                clap::error::ErrorKind::ValueValidation,
+            ),
+            ("--limit", "0", clap::error::ErrorKind::ValueValidation),
+            ("--limit", "2001", clap::error::ErrorKind::ValueValidation),
+            ("--offset", "-1", clap::error::ErrorKind::ValueValidation),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "logs",
+                "pg-1",
+                "--from-date",
+                "2026-08-01T00:00:00Z",
+                "--to-date",
+                "2026-08-02T00:00:00Z",
+            ];
+            args.extend([flag, value]);
+            let error = PostgresCli::try_parse_from(args)
+                .err()
+                .expect("expected invalid logs option");
+            assert_eq!(error.kind(), expected_kind);
+        }
+    }
+
+    #[test]
+    fn builds_minimal_postgres_logs_query() {
+        let query = build_postgres_logs_query(
+            "2026-08-01T00:00:00Z",
+            "2026-08-02T00:00:00Z",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(query.from_date, "2026-08-01T00:00:00Z");
+        assert_eq!(query.to_date, "2026-08-02T00:00:00Z");
+        assert_eq!(query.body_contains, None);
+        assert_eq!(query.severity, None);
+        assert_eq!(query.sort_order, None);
+        assert_eq!(query.limit, None);
+        assert_eq!(query.offset, None);
+    }
+
+    #[test]
+    fn builds_maximal_postgres_logs_query() {
+        let query = build_postgres_logs_query(
+            "2026-08-01T00:00:00Z",
+            "2026-08-31T00:00:00Z",
+            Some("checkpoint"),
+            Some("LOG"),
+            Some(&PostgresLogsGetListSortorder::Asc),
+            Some(2000),
+            Some(0),
+        )
+        .unwrap();
+        assert_eq!(query.body_contains.as_deref(), Some("checkpoint"));
+        assert_eq!(query.severity.as_deref(), Some("LOG"));
+        assert_eq!(query.sort_order, Some(PostgresLogsGetListSortorder::Asc));
+        assert_eq!(query.limit, Some(2000));
+        assert_eq!(query.offset, Some(0));
+    }
+
+    #[test]
+    fn rejects_invalid_postgres_logs_time_windows() {
+        for (from, to, message) in [
+            (
+                "2026-08-02T00:00:00Z",
+                "2026-08-01T00:00:00Z",
+                "to-date must be after from-date",
+            ),
+            (
+                "2026-08-01T00:00:00Z",
+                "2026-08-01T00:00:00Z",
+                "to-date must be after from-date",
+            ),
+            (
+                "2026-08-01T00:00:00Z",
+                "2026-09-01T00:00:01Z",
+                "must not exceed 30 days",
+            ),
+        ] {
+            let error =
+                build_postgres_logs_query(from, to, None, None, None, None, None).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_typed_postgres_logs_sort_order() {
+        let unknown = PostgresLogsGetListSortorder::Unknown("future".to_string());
+        let error = build_postgres_logs_query(
+            "2026-08-01T00:00:00Z",
+            "2026-08-02T00:00:00Z",
+            None,
+            None,
+            Some(&unknown),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid sort order 'future'"));
     }
 
     #[test]

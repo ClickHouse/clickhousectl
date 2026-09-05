@@ -939,6 +939,16 @@ clickhousectl cloud postgres metrics <pg-id> \
   --to-date 2026-04-16T13:00:00Z \
   --bucket-size-seconds 60
 
+# Server logs (RFC 3339 range, at most 30 days)
+clickhousectl cloud postgres logs <pg-id> \
+  --from-date 2026-08-01T00:00:00Z \
+  --to-date 2026-08-02T00:00:00Z
+clickhousectl cloud postgres logs <pg-id> \
+  --from-date 2026-08-01T00:00:00Z \
+  --to-date 2026-08-02T00:00:00Z \
+  --severity ERROR --body-contains "connection refused" \
+  --sort-order asc --limit 200 --offset 0
+
 # Create
 clickhousectl cloud postgres create \
   --name my-pg \
@@ -1025,6 +1035,8 @@ PgBouncer parameter names are open-ended; values must be quoted strings, includi
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
 
 `postgres metrics` requires an RFC 3339 start and end time, with the start no later than the end. Its JSON output preserves metric metadata, series labels, and data points; the default output renders the same nested response as a readable tree. `--bucket-size-seconds` must be positive and is omitted from the API request when not supplied.
+
+`postgres logs` reads an inclusive RFC 3339 time window of at most 30 days. Results default to the API's newest-first order and page size; use `--sort-order`, `--limit` and `--offset` to control pagination.
 
 `postgres list --filter KEY=VALUE` is applied client-side to the listing and is repeatable; every filter must match. Supported keys are `state`, `region`, `name`, `provider` and `isPrimary` (the `Primary` column; `true`/`false`, or the `yes`/`no` the column shows). Keys are case-insensitive, `state` and `provider` match the wire value case-insensitively, and `region`/`name` match exactly. An unknown key, a missing `=` or an empty value is a usage error (exit 2) listing the valid keys — it never returns an unfiltered list. A field the API omitted matches no filter value, so filtering on it excludes that service. This is unrelated to `cloud service list --filter`, which sends server-side resource-tag filters (`tag:env=production`) to the API.
 

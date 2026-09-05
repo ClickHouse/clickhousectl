@@ -1693,6 +1693,215 @@ async fn postgres_metrics_rejects_reverse_range_before_request_and_surfaces_api_
     );
 }
 
+// ── Postgres logs (issue #582) ────────────────────────────────────────────
+
+fn invoke_postgres_logs(
+    mock: &MockServer,
+    home: &Path,
+    json: bool,
+    args: &[&str],
+) -> std::process::Output {
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(home)
+        .args(["cloud", "--url", &mock.uri()]);
+    if json {
+        command.arg("--json");
+    }
+    command.args(["postgres", "logs", "pg-1"]).args(args);
+    command.output().expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn postgres_logs_routes_all_query_parameters_and_preserves_json_with_oauth() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([
+        {
+            "timestamp": "2026-08-01T12:00:00Z",
+            "severity": "LOG",
+            "body": "checkpoint complete"
+        },
+        { "severity": "WARNING" }
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/logs"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-postgres-logs"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = invoke_postgres_logs(
+        &mock,
+        &home,
+        true,
+        &[
+            "--from-date",
+            "2026-08-01T00:00:00+01:00",
+            "--to-date",
+            "2026-08-02T00:00:00+01:00",
+            "--body-contains",
+            "checkpoint complete",
+            "--severity",
+            "LOG",
+            "--sort-order",
+            "asc",
+            "--limit",
+            "2000",
+            "--offset",
+            "0",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].body.is_empty(), "GET must not carry a body");
+    let query: std::collections::BTreeMap<_, _> = requests[0]
+        .url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+    assert_eq!(
+        query,
+        std::collections::BTreeMap::from([
+            (
+                "body_contains".to_string(),
+                "checkpoint complete".to_string()
+            ),
+            (
+                "from_date".to_string(),
+                "2026-08-01T00:00:00+01:00".to_string()
+            ),
+            ("limit".to_string(), "2000".to_string()),
+            ("offset".to_string(), "0".to_string()),
+            ("severity".to_string(), "LOG".to_string()),
+            ("sort_order".to_string(), "asc".to_string()),
+            (
+                "to_date".to_string(),
+                "2026-08-02T00:00:00+01:00".to_string()
+            ),
+        ])
+    );
+}
+
+#[tokio::test]
+async fn postgres_logs_minimal_query_and_sparse_human_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/logs"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{ "severity": "WARNING" }, { "body": "recovery complete" }],
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    let output = invoke_postgres_logs(
+        &mock,
+        home.path(),
+        false,
+        &[
+            "--from-date",
+            "2026-08-01T00:00:00Z",
+            "--to-date",
+            "2026-08-02T00:00:00Z",
+            "--org-id",
+            "org-1",
+            "--api-key",
+            "logs-key",
+            "--api-secret",
+            "logs-secret",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("severity: WARNING"), "{stdout}");
+    assert!(stdout.contains("body: recovery complete"), "{stdout}");
+    assert!(!stdout.contains("timestamp:"), "{stdout}");
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url.query(),
+        Some("from_date=2026-08-01T00%3A00%3A00Z&to_date=2026-08-02T00%3A00%3A00Z")
+    );
+}
+
+#[tokio::test]
+async fn postgres_logs_reports_empty_results_and_structured_api_errors() {
+    for (response, expected_status, expected_text) in [
+        (
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [], "status": 200
+            })),
+            0,
+            "No Postgres logs found",
+        ),
+        (
+            ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "status": 400,
+                "error": "BAD_REQUEST: invalid log window",
+                "requestId": "stub-invalid-window"
+            })),
+            1,
+            "invalid log window",
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/postgres/pg-1/logs"))
+            .respond_with(response)
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let home = tempfile::tempdir().unwrap();
+        let output = invoke_postgres_logs(
+            &mock,
+            home.path(),
+            false,
+            &[
+                "--from-date",
+                "2026-08-01T00:00:00Z",
+                "--to-date",
+                "2026-08-02T00:00:00Z",
+                "--org-id",
+                "org-1",
+                "--api-key",
+                "logs-key",
+                "--api-secret",
+                "logs-secret",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(expected_status));
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(combined.contains(expected_text), "{combined}");
+    }
+}
+
 // ── Postgres deletion JSON output (issue #614) ────────────────────────────
 
 /// `postgres delete --json` must emit the Postgres resource object, not the
