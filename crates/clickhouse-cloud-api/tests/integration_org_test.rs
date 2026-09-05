@@ -1231,6 +1231,42 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 )
                 .await?;
 
+            // Expiry PATCH must distinguish a timestamp from explicit null.
+            let api_key_uuid_for_expiry = api_key_uuid.clone();
+            failures
+                .run(&ctx, StepKind::NonBlocking, "openapi_key_update expiry round-trip", || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let api_key_uuid = api_key_uuid_for_expiry.clone();
+                    async move {
+                        let before = client.openapi_key_get(&org_id, &api_key_uuid).await?
+                            .result.ok_or("key missing before expiry update")?;
+                        let expires = chrono::Utc::now() + chrono::Duration::days(7);
+                        // Use whole seconds because the API may normalize timestamp precision.
+                        let expires = chrono::DateTime::from_timestamp(expires.timestamp(), 0)
+                            .ok_or("invalid expiry timestamp")?;
+                        for expire_at in [Some(expires), None] {
+                            let request = ApiKeyPatchRequest {
+                                expire_at: Some(expire_at),
+                                ..Default::default()
+                            };
+                            client.openapi_key_update(&org_id, &api_key_uuid, &request).await?;
+                            let after = client.openapi_key_get(&org_id, &api_key_uuid).await?
+                                .result.ok_or("key missing after expiry update")?;
+                            if after.expire_at != expire_at {
+                                return Err(format!("key expiry {:?}, expected {:?}", after.expire_at, expire_at).into());
+                            }
+                            if after.name != before.name || after.state != before.state
+                                || after.assigned_roles != before.assigned_roles
+                                || after.ip_access_list != before.ip_access_list {
+                                return Err("expiry update changed other key settings".into());
+                            }
+                        }
+                        Ok(())
+                    }
+                })
+                .await?;
+
             // openapi_key_delete — end of phase. On success, drop it from
             // the cleanup registry; if delete fails (or never runs because
             // an earlier blocking step bailed) the registry teardown will
