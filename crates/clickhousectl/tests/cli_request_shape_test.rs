@@ -3104,10 +3104,36 @@ async fn postgres_optional_fields_absent_when_flags_omitted() {
     .await;
 
     let pg = &body["source"]["postgres"];
+    assert_eq!(pg["disableTls"], false, "secure TLS default changed: {pg}");
+    assert_eq!(
+        pg["skipCertVerification"], false,
+        "certificate verification default changed: {pg}"
+    );
     for field in ["iamRole", "tlsHost", "caCertificate"] {
         assert!(
             pg.get(field).is_none(),
             "{field} leaked into postgres source body: {pg}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_tls_opt_outs_change_only_the_selected_wire_field() {
+    for (flag, disable_tls, skip_cert_verification) in [
+        ("--disable-tls", true, false),
+        ("--skip-cert-verification", false, true),
+    ] {
+        let mock = start_mock_clickpipes_api().await;
+        let mut args = postgres_args_minimal();
+        args.push(flag.into());
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+        let pg = &body["source"]["postgres"];
+
+        assert_eq!(pg["disableTls"], disable_tls, "{flag}: {pg}");
+        assert_eq!(
+            pg["skipCertVerification"], skip_cert_verification,
+            "{flag}: {pg}"
         );
     }
 }
@@ -3734,17 +3760,19 @@ fn postgres_args_iam_role() -> Vec<String> {
 async fn postgres_invalid_inputs_exit_as_usage_errors_before_auth_file_or_network() {
     let mock = MockServer::start().await;
     let missing_ca = "/missing/postgres-ca.pem";
-    let base = || {
-        let mut args = postgres_args_minimal();
-        args.extend(["--ca-certificate".into(), missing_ca.into()]);
-        args
-    };
+    let secret_password = "postgres-password-must-not-appear";
     let replace_value = |args: &mut Vec<String>, flag: &str, value: &str| {
         let index = args
             .iter()
             .position(|arg| arg == flag)
             .unwrap_or_else(|| panic!("missing test flag {flag}"));
         args[index + 1] = value.into();
+    };
+    let base = || {
+        let mut args = postgres_args_minimal();
+        replace_value(&mut args, "--password", secret_password);
+        args.extend(["--ca-certificate".into(), missing_ca.into()]);
+        args
     };
 
     let mut cases = Vec::new();
@@ -3796,6 +3824,24 @@ async fn postgres_invalid_inputs_exit_as_usage_errors_before_auth_file_or_networ
         ));
     }
 
+    let mut disable_with_ca = base();
+    disable_with_ca.push("--disable-tls".into());
+    cases.push((disable_with_ca, "--disable-tls"));
+
+    for (tls_args, diagnostic) in [
+        (
+            vec!["--tls-host", "postgres.internal.example"],
+            "--tls-host",
+        ),
+        (vec!["--skip-cert-verification"], "--skip-cert-verification"),
+    ] {
+        let mut args = postgres_args_minimal();
+        replace_value(&mut args, "--password", secret_password);
+        args.push("--disable-tls".into());
+        args.extend(tls_args.into_iter().map(String::from));
+        cases.push((args, diagnostic));
+    }
+
     for (args, diagnostic) in cases {
         let output = invoke_cli_without_cloud_credentials(&mock, &args);
         assert_eq!(
@@ -3807,6 +3853,10 @@ async fn postgres_invalid_inputs_exit_as_usage_errors_before_auth_file_or_networ
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(diagnostic), "{stderr}");
         assert!(!stderr.contains(missing_ca), "CA file was read: {stderr}");
+        assert!(
+            !stderr.contains(secret_password),
+            "password leaked into diagnostic: {stderr}"
+        );
     }
 
     assert!(mock.received_requests().await.unwrap().is_empty());
@@ -4168,11 +4218,19 @@ async fn postgres_ca_certificate_file_contents_flow_to_body() {
         "caCertificate body should contain the file's PEM content, got {}",
         body["source"]["postgres"]["caCertificate"]
     );
+    assert_eq!(body["source"]["postgres"]["disableTls"], false);
+    assert_eq!(body["source"]["postgres"]["skipCertVerification"], false);
 }
 
 #[tokio::test]
 async fn postgres_unknown_authority_error_preserves_api_detail_and_adds_ca_hint() {
     let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let ca_path = directory.path().join("private-ca.pem");
+    let ca_path_display = ca_path.to_string_lossy().into_owned();
+    let ca_contents = "certificate-body-must-not-appear";
+    std::fs::write(&ca_path, ca_contents).unwrap();
+    let password = "postgres-password-must-not-appear";
     let api_error = "BAD_REQUEST: failed to establish connection: tls: failed to verify \
                      certificate: x509: certificate signed by unknown authority";
     Mock::given(method("POST"))
@@ -4186,7 +4244,10 @@ async fn postgres_unknown_authority_error_preserves_api_detail_and_adds_ca_hint(
         .mount(&mock)
         .await;
 
-    let args = postgres_args_minimal();
+    let mut args = postgres_args_minimal();
+    let password_index = args.iter().position(|arg| arg == "--password").unwrap();
+    args[password_index + 1] = password.into();
+    args.extend(["--ca-certificate".into(), ca_path_display.clone()]);
     let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
     let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
     assert_eq!(output.status.code(), Some(1));
@@ -4197,6 +4258,12 @@ async fn postgres_unknown_authority_error_preserves_api_detail_and_adds_ca_hint(
         stderr.contains("private or self-signed source CA"),
         "{stderr}"
     );
+    for secret in [password, ca_contents, ca_path_display.as_str()] {
+        assert!(
+            !stderr.contains(secret),
+            "secret leaked into error: {stderr}"
+        );
+    }
 }
 
 #[tokio::test]

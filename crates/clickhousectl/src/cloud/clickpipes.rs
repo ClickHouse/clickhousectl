@@ -466,8 +466,8 @@ CONTEXT FOR AGENTS:
   For CDC the source needs logical replication, a publication containing every
   mapped table, and REPLICATION on the source user:
   https://clickhouse.com/docs/integrations/clickpipes/postgres
-  TLS and certificate verification are always on; --ca-certificate and --tls-host
-  adjust them, they cannot disable them.
+  TLS and certificate verification are on by default; prefer --ca-certificate
+  over either security opt-out for a private source CA.
   Only --sync-interval-seconds and --pull-batch-size can change after creation; the
   three <true|false> settings send false when omitted.")]
     Postgres(PostgresCreateArgs),
@@ -938,6 +938,17 @@ pub struct PostgresCreateArgs {
     /// Path to a PEM CA bundle for a private or self-signed source certificate
     #[arg(long, value_name = "PATH")]
     pub ca_certificate: Option<String>,
+
+    /// Disable TLS and send source traffic unencrypted (unsafe)
+    #[arg(
+        long,
+        conflicts_with_all = ["tls_host", "ca_certificate", "skip_cert_verification"]
+    )]
+    pub disable_tls: bool,
+
+    /// Skip certificate verification (unsafe; prefer --ca-certificate)
+    #[arg(long)]
+    pub skip_cert_verification: bool,
 
     /// Postgres publication name
     #[arg(long)]
@@ -2866,6 +2877,21 @@ fn validate_postgres_create_args(
             "--replication-slot-name can only be used with --replication-mode cdc_only",
         ));
     }
+    if args.disable_tls && args.tls_host.is_some() {
+        return Err(CloudError::new(
+            "--tls-host cannot be used with --disable-tls",
+        ));
+    }
+    if args.disable_tls && args.ca_certificate.is_some() {
+        return Err(CloudError::new(
+            "--ca-certificate cannot be used with --disable-tls",
+        ));
+    }
+    if args.disable_tls && args.skip_cert_verification {
+        return Err(CloudError::new(
+            "--skip-cert-verification cannot be used with --disable-tls",
+        ));
+    }
 
     // The simple mappings are sent first, then the JSON ones, each in the
     // order given: clap's derive API does not expose argv indices, so
@@ -2964,8 +2990,8 @@ fn build_postgres_request(
         host: args.host.clone(),
         port: i64::from(args.port),
         database: args.pg_database.clone(),
-        disable_tls: false,
-        skip_cert_verification: false,
+        disable_tls: args.disable_tls,
+        skip_cert_verification: args.skip_cert_verification,
         authentication,
         iam_role: args.iam_role.clone(),
         tls_host: args.tls_host.clone(),
@@ -5209,6 +5235,7 @@ mod tests {
             "tls.example",
             "--ca-certificate",
             "/tmp/ca.pem",
+            "--skip-cert-verification",
             "--publication-name",
             "publication",
             "--replication-slot-name",
@@ -5233,6 +5260,8 @@ mod tests {
         assert_eq!(args.iam_role.as_deref(), Some("arn:role"));
         assert_eq!(args.tls_host.as_deref(), Some("tls.example"));
         assert_eq!(args.ca_certificate.as_deref(), Some("/tmp/ca.pem"));
+        assert!(!args.disable_tls);
+        assert!(args.skip_cert_verification);
         assert_eq!(args.publication_name.as_deref(), Some("publication"));
         assert_eq!(args.replication_slot_name.as_deref(), Some("slot"));
         assert_eq!(args.org_id.as_deref(), Some("org-1"));
@@ -5267,6 +5296,8 @@ mod tests {
         assert_eq!(args.iam_role, None);
         assert_eq!(args.tls_host, None);
         assert_eq!(args.ca_certificate, None);
+        assert!(!args.disable_tls);
+        assert!(!args.skip_cert_verification);
         assert_eq!(args.publication_name, None);
         assert_eq!(args.replication_slot_name, None);
         assert_eq!(args.sync_interval_seconds, None);
@@ -5660,6 +5691,18 @@ mod tests {
                 Some("--replication-slot-name can only be used with --replication-mode cdc_only")
             );
         }
+
+        for tls_only_flag in [
+            vec!["--tls-host", "postgres.internal.example"],
+            vec!["--ca-certificate", "/tmp/postgres-ca.pem"],
+            vec!["--skip-cert-verification"],
+        ] {
+            let mut args = postgres_cli_args(Some("public.events:events"));
+            args.push("--disable-tls");
+            args.extend(tls_only_flag);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
     }
 
     /// `<JSON>` is the value name clap renders for the flag's attribute.
@@ -5691,6 +5734,8 @@ mod tests {
             "--delete-on-merge <true|false>",
             "--ca-certificate <PATH>",
             "--tls-host <HOSTNAME>",
+            "--disable-tls",
+            "--skip-cert-verification",
         ] {
             assert!(help.contains(flag), "missing `{flag}`:\n{help}");
         }
@@ -7430,6 +7475,8 @@ mod tests {
             iam_role: None,
             tls_host: None,
             ca_certificate: None,
+            disable_tls: false,
+            skip_cert_verification: false,
             publication_name: None,
             replication_slot_name: None,
             sync_interval_seconds: None,
@@ -7529,6 +7576,7 @@ mod tests {
         args.iam_role = Some("arn:aws:iam::123456789012:role/clickpipe".into());
         args.tls_host = Some("database.internal".into());
         args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
+        args.skip_cert_verification = true;
         args.publication_name = Some("clickpipe_publication".into());
         args.replication_slot_name = Some("clickpipe_slot".into());
         args.sync_interval_seconds = Some(30);
@@ -7568,6 +7616,8 @@ mod tests {
         );
         assert_eq!(source.tls_host.as_deref(), Some("database.internal"));
         assert_eq!(source.ca_certificate.as_deref(), Some("POSTGRES_CA"));
+        assert!(!source.disable_tls);
+        assert!(source.skip_cert_verification);
         assert_eq!(source.settings.replication_mode.to_string(), "cdc_only");
         assert_eq!(
             source.settings.publication_name.as_deref(),
@@ -7595,6 +7645,23 @@ mod tests {
         assert_eq!(source.table_mappings[1].source_schema_name, "audit");
         assert_eq!(source.table_mappings[1].source_table, "events");
         assert_eq!(source.table_mappings[1].target_table, "audit_events");
+    }
+
+    #[test]
+    fn build_postgres_request_supports_explicit_tls_opt_outs() {
+        let mut args = postgres_builder_args();
+        args.skip_cert_verification = true;
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        assert!(!source.disable_tls);
+        assert!(source.skip_cert_verification);
+
+        args.skip_cert_verification = false;
+        args.disable_tls = true;
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        assert!(source.disable_tls);
+        assert!(!source.skip_cert_verification);
     }
 
     #[test]
@@ -7952,6 +8019,27 @@ mod tests {
                 let mut args = postgres_builder_args();
                 args.replication_slot_name = Some("slot".into());
                 (args, "--replication-slot-name can only be used")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.disable_tls = true;
+                args.tls_host = Some("postgres.internal.example".into());
+                (args, "--tls-host cannot be used with --disable-tls")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.disable_tls = true;
+                args.ca_certificate = Some("secret-ca-path".into());
+                (args, "--ca-certificate cannot be used with --disable-tls")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.disable_tls = true;
+                args.skip_cert_verification = true;
+                (
+                    args,
+                    "--skip-cert-verification cannot be used with --disable-tls",
+                )
             },
         ];
 
