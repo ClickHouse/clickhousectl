@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use serde_json::Value;
-use wiremock::matchers::{body_json, header, method, path, path_regex};
+use wiremock::matchers::{body_json, header, method, path, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Locate the `clickhousectl` binary. cargo populates `CARGO_BIN_EXE_<name>`
@@ -2930,6 +2930,130 @@ async fn org_prometheus_auto_detects_the_only_organization() {
         format!("/v1/organizations/{AUTO_DETECTED_ORG_ID}/prometheus")
     );
     assert_eq!(requests[1].url.query(), Some("filtered_metrics=true"));
+}
+
+#[tokio::test]
+async fn org_prometheus_discovery_preserves_groups_and_supports_oauth() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([{
+        "targets": ["api.clickhouse.cloud:443"],
+        "labels": {
+            "__scheme__": "https",
+            "__metrics_path__": "/v1/organizations/org-1/services/svc-1/prometheus",
+            "__param_filtered_metrics": "false",
+            "clickhouse_org_id": "11111111-2222-3333-4444-555555555555",
+            "clickhouse_service_id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "clickhouse_discovery_service_name": "analytics"
+        }
+    }]);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/prometheus/discovery"))
+        .and(query_param("filtered_metrics", "false"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(&result))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "org",
+            "prometheus",
+            "discovery",
+            "--org-id",
+            "org-1",
+            "--filtered-metrics",
+            "false",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+}
+
+#[tokio::test]
+async fn org_prometheus_discovery_renders_sparse_human_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/prometheus/discovery"))
+        .and(query_param("filtered_metrics", "true"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+            { "targets": ["api.clickhouse.cloud:443"] },
+            { "labels": { "__scheme__": "https" } }
+        ])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "org",
+            "prometheus",
+            "discovery",
+            "--org-id",
+            "org-1",
+            "--filtered-metrics",
+            "true",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "- targets: [api.clickhouse.cloud:443]\n- labels:\n    __scheme__: https\n"
+    );
+}
+
+#[tokio::test]
+async fn org_prometheus_discovery_omits_filter_query_when_unspecified() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/prometheus/discovery"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "prometheus", "discovery", "--org-id", "org-1"],
+    );
+    assert_success(&output);
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "[]\n");
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.query(), None);
 }
 
 #[tokio::test]
