@@ -1621,7 +1621,7 @@ fn build_kafka_credentials(
                 "MUTUAL_TLS requires --client-certificate and --client-key",
             )),
         },
-        Auth::Unknown(_) => Ok(serde_json::Value::Null),
+        Auth::ServiceAccountWorkloadIdentity | Auth::Unknown(_) => Ok(serde_json::Value::Null),
     }
 }
 
@@ -1712,6 +1712,7 @@ fn build_kafka_source(
             timestamp: args.offset_timestamp.clone(),
         }),
         schema_registry,
+        protobuf_schema: None,
         ca_certificate,
         reverse_private_endpoint_ids: args.reverse_private_endpoint_ids.clone(),
     })
@@ -1859,9 +1860,9 @@ fn parse_pubsub_seek_timestamp(value: &str) -> CloudResult<chrono::DateTime<chro
 /// creation send an identical `pubsub` source.
 fn build_pubsub_source(
     args: &PubSubSourceFields,
-) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostPubSubSource> {
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostPubSubServiceAccountSource> {
     use clickhouse_cloud_api::models::{
-        ClickPipePostPubSubSource, ClickPipePostPubSubSourceSeektype, ServiceAccount,
+        ClickPipePostPubSubServiceAccountSource, ClickPipePostPubSubSourceSeektype, ServiceAccount,
     };
 
     let seek_type: ClickPipePostPubSubSourceSeektype = parse_enum(&args.seek_type)?;
@@ -1875,7 +1876,7 @@ fn build_pubsub_source(
         )));
     }
 
-    Ok(ClickPipePostPubSubSource {
+    Ok(ClickPipePostPubSubServiceAccountSource {
         topic: args.topic.clone(),
         project_id: args.project_id.clone(),
         format: parse_enum(&args.format)?,
@@ -1913,7 +1914,7 @@ fn build_pubsub_schema_discovery_request(
             kafka: None,
             kinesis: None,
             object_storage: None,
-            pubsub: Some(build_pubsub_source(args)?),
+            pubsub: Some(build_pubsub_source(args)?.into()),
         },
     })
 }
@@ -1933,7 +1934,7 @@ async fn clickpipe_create_pubsub(
     let request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
-            pubsub: Some(source),
+            pubsub: Some(source.into()),
             ..Default::default()
         },
         destination: build_destination(
@@ -3220,7 +3221,8 @@ async fn clickpipe_create_bigquery(
 ) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{
         ClickPipeBigQueryPipeSettings, ClickPipeBigQueryPipeTableMapping,
-        ClickPipeMutateBigQuerySource, ClickPipePostRequest, ClickPipePostSource, ServiceAccount,
+        ClickPipePostBigQueryServiceAccountSource, ClickPipePostRequest, ClickPipePostSource,
+        ServiceAccount,
     };
 
     let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
@@ -3252,7 +3254,9 @@ async fn clickpipe_create_bigquery(
         })
         .collect::<CloudResult<Vec<_>>>()?;
 
-    let source = ClickPipeMutateBigQuerySource {
+    let source = ClickPipePostBigQueryServiceAccountSource {
+        authentication: None,
+        project_id: None,
         credentials: ServiceAccount {
             service_account_file,
         },
@@ -3267,7 +3271,7 @@ async fn clickpipe_create_bigquery(
     let request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
-            bigquery: Some(source),
+            bigquery: Some(source.into()),
             ..Default::default()
         },
         destination: build_destination(
@@ -7135,7 +7139,7 @@ mod tests {
         assert!(request.source.kafka.is_none());
         assert!(request.source.kinesis.is_none());
         assert!(request.source.object_storage.is_none());
-        let source = request.source.pubsub.expect("pubsub source is set");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(source) = request.source.pubsub.expect("pubsub source is set") else { panic!("expected service-account source") };
         assert_eq!(source.topic, "events");
         assert_eq!(source.project_id, "my-gcp-project");
         assert_eq!(source.format, ClickPipePostPubSubSourceFormat::JSONEachRow);
@@ -7180,7 +7184,7 @@ mod tests {
         assert!(request.source.kafka.is_none());
         assert!(request.source.kinesis.is_none());
         assert!(request.source.object_storage.is_none());
-        let source = request.source.pubsub.expect("pubsub source is set");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(source) = request.source.pubsub.expect("pubsub source is set") else { panic!("expected service-account source") };
         assert_eq!(
             source.seek_type,
             ClickPipePostPubSubSourceSeektype::Timestamp

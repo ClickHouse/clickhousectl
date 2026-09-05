@@ -89,6 +89,8 @@ pub enum ClickStackAlertExecutionErrorType {
     WEBHOOK_ERROR,
     INVALID_ALERT,
     UNKNOWN,
+    #[serde(rename = "QUERY_TIMEOUT")]
+    QueryTimeout,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -101,6 +103,7 @@ impl std::fmt::Display for ClickStackAlertExecutionErrorType {
             Self::WEBHOOK_ERROR => write!(f, "WEBHOOK_ERROR"),
             Self::INVALID_ALERT => write!(f, "INVALID_ALERT"),
             Self::UNKNOWN => write!(f, "UNKNOWN"),
+            Self::QueryTimeout => write!(f, "QUERY_TIMEOUT"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -126,6 +129,8 @@ pub enum ClickStackAlertResponseInterval {
     _12h,
     #[serde(rename = "1d")]
     _1d,
+    #[serde(rename = "30s")]
+    Value30s,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -142,6 +147,7 @@ impl std::fmt::Display for ClickStackAlertResponseInterval {
             Self::_6h => write!(f, "6h"),
             Self::_12h => write!(f, "12h"),
             Self::_1d => write!(f, "1d"),
+            Self::Value30s => write!(f, "30s"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -481,6 +487,8 @@ pub enum ClickStackCreateAlertRequestInterval {
     _12h,
     #[serde(rename = "1d")]
     _1d,
+    #[serde(rename = "30s")]
+    Value30s,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -497,6 +505,7 @@ impl std::fmt::Display for ClickStackCreateAlertRequestInterval {
             Self::_6h => write!(f, "6h"),
             Self::_12h => write!(f, "12h"),
             Self::_1d => write!(f, "1d"),
+            Self::Value30s => write!(f, "30s"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -2641,6 +2650,8 @@ pub enum ClickStackUpdateAlertRequestInterval {
     _12h,
     #[serde(rename = "1d")]
     _1d,
+    #[serde(rename = "30s")]
+    Value30s,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -2657,6 +2668,7 @@ impl std::fmt::Display for ClickStackUpdateAlertRequestInterval {
             Self::_6h => write!(f, "6h"),
             Self::_12h => write!(f, "12h"),
             Self::_1d => write!(f, "1d"),
+            Self::Value30s => write!(f, "30s"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -2771,6 +2783,24 @@ impl std::fmt::Display for ClickStackWebhookInputService {
             Self::Incidentio => write!(f, "incidentio"),
             Self::Generic => write!(f, "generic"),
             Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+/// Values of `ClickStackVariableSavedFilterValueType` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickStackVariableSavedFilterValueType {
+    #[serde(rename = "variable")]
+    #[default]
+    Variable,
+    #[serde(untagged)]
+    Unknown(String),
+}
+impl std::fmt::Display for ClickStackVariableSavedFilterValueType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Variable => write!(f, "variable"),
+            Self::Unknown(value) => write!(f, "{value}"),
         }
     }
 }

@@ -95,3 +95,55 @@ pub struct OrganizationPatchRequest {
     #[serde(rename = "privateEndpoints", skip_serializing_if = "Option::is_none")]
     pub private_endpoints: Option<OrganizationPrivateEndpointsPatch>,
 }
+
+/// Values of `CreditBalanceType` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum CreditBalanceType {
+    #[serde(rename = "prepaid")]
+    #[default]
+    Prepaid,
+    #[serde(rename = "trial")]
+    Trial,
+    #[serde(untagged)]
+    Unknown(String),
+}
+impl std::fmt::Display for CreditBalanceType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Prepaid => write!(f, "prepaid"),
+            Self::Trial => write!(f, "trial"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `CreditBalance` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CreditBalance {
+    #[serde(rename = "id", skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<CreditBalanceType>,
+    #[serde(rename = "remainingCredits", skip_serializing_if = "Option::is_none")]
+    pub remaining_credits: Option<f64>,
+    #[serde(rename = "totalAmount", skip_serializing_if = "Option::is_none")]
+    pub total_amount: Option<f64>,
+    #[serde(rename = "amountSpent", skip_serializing_if = "Option::is_none")]
+    pub amount_spent: Option<f64>,
+    #[serde(rename = "startDate", skip_serializing_if = "Option::is_none")]
+    pub start_date: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "expirationDate", skip_serializing_if = "Option::is_none")]
+    pub expiration_date: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// `CreditBalances` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct CreditBalances {
+    #[serde(
+        rename = "totalRemainingCredits",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub total_remaining_credits: Option<f64>,
+    #[serde(rename = "balances", skip_serializing_if = "Option::is_none")]
+    pub balances: Option<Vec<CreditBalance>>,
+}
