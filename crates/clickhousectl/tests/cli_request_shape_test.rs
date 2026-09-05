@@ -198,6 +198,171 @@ fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> st
         .expect("failed to spawn clickhousectl")
 }
 
+#[tokio::test]
+async fn org_quota_list_preserves_sparse_json_and_supports_oauth() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{ "id": AUTO_DETECTED_ORG_ID, "name": "Only org" }],
+            "status": 200,
+            "requestId": "stub-org-list"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let result = serde_json::json!([
+        {
+            "quotaCode": "services-per-organization",
+            "name": "Services per organization",
+            "description": "Limits services.",
+            "scope": "organization",
+            "value": 20,
+            "usage": 3,
+            "adjustable": true
+        },
+        { "quotaCode": "future-quota" }
+    ]);
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/{AUTO_DETECTED_ORG_ID}/quotas"
+        )))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-quota-list"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "org",
+            "quota",
+            "list",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+}
+
+#[tokio::test]
+async fn org_quota_get_uses_lookup_key_and_human_detail_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/quotas/replicas-per-warehouse",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "quotaCode": "replicas-per-warehouse",
+                "name": "Replicas per warehouse",
+                "scope": "warehouse",
+                "value": 20,
+                "adjustable": true
+            },
+            "status": 200,
+            "requestId": "stub-quota-get"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "org",
+            "quota",
+            "get",
+            "replicas-per-warehouse",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "adjustable: true\nname: Replicas per warehouse\nquotaCode: replicas-per-warehouse\nscope: warehouse\nvalue: 20\n"
+    );
+}
+
+#[tokio::test]
+async fn org_quota_list_human_output_handles_missing_fields() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/quotas"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{ "quotaCode": "future-quota" }],
+            "status": 200,
+            "requestId": "stub-sparse-quota-list"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "org",
+            "quota",
+            "list",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("| Name | Code         | Scope | Usage | Limit | Adjustable |"));
+    assert!(stdout.contains("| -    | future-quota | -     | -     | -     | -          |"));
+}
+
 fn invoke_cli_without_cloud_credentials(
     mock: &MockServer,
     cli_args: &[String],
