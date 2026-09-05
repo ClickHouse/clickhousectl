@@ -6462,6 +6462,20 @@ fn api_key_patch_deserialization_preserves_deprecated_roles() {
 }
 
 #[test]
+fn role_update_request_omits_fields_that_are_not_being_changed() {
+    let request = RoleUpdateRequest {
+        name: Some("auditor".to_string()),
+        actors: None,
+        policies: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"name": "auditor"})
+    );
+}
+
+#[test]
 fn udf_request_inline_variants_preserve_determinism_and_memory() {
     fn check<T: serde::de::DeserializeOwned + serde::Serialize>(kind: &str, create: bool) {
         let mut input = serde_json::json!({"uploadId": "upload-1", "runtime": "native",

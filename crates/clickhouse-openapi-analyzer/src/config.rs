@@ -134,6 +134,12 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // Deprecated request fields are feature-gated out in favour of replacements.
     ("InvitationPostRequest", "role"),
     ("OrganizationPrivateEndpointsPatch", "add"),
+    // Despite its non-Patch name and descriptions that omit the "Optional"
+    // prefix, RoleUpdateRequest is used only by PATCH and the operation states
+    // that all three fields are optional and only supplied fields are changed.
+    ("RoleUpdateRequest", "actors"),
+    ("RoleUpdateRequest", "name"),
+    ("RoleUpdateRequest", "policies"),
     // PgConfig is partial: zero-value defaults fail, omission selects server defaults.
     ("PgConfig", "autovacuum_analyze_scale_factor"),
     ("PgConfig", "autovacuum_max_workers"),
