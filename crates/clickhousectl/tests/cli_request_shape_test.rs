@@ -21626,3 +21626,343 @@ async fn upgrade_window_errors_preserve_the_api_message() {
     assert!(output.stdout.is_empty());
     assert!(String::from_utf8_lossy(&output.stderr).contains("no upgrade window is configured"));
 }
+
+// ── Complete ClickPipe PATCH input (#569) ──────────────────────────────────
+
+const CLICKPIPE_UPDATE_PATH: &str = "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1";
+
+fn invoke_clickpipe_update_file(mock: &MockServer, patch: &Value) -> std::process::Output {
+    let project = tempfile::tempdir().unwrap();
+    let config_path = project.path().join("patch.json");
+    std::fs::write(&config_path, serde_json::to_vec(patch).unwrap()).unwrap();
+    let config_path = config_path.to_str().unwrap();
+    invoke_cli_with_cloud_credentials(
+        mock,
+        &[
+            "clickpipe",
+            "update",
+            "svc-1",
+            "pipe-1",
+            "--config-file",
+            config_path,
+            "--org-id",
+            "org-1",
+        ],
+    )
+}
+
+async fn mount_clickpipe_update(mock: &MockServer, patch: Value) {
+    Mock::given(method("PATCH"))
+        .and(path(CLICKPIPE_UPDATE_PATH))
+        .and(body_json(patch))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "00000000-0000-0000-0000-000000000001",
+                "name": "updated"
+            },
+            "status": 200,
+            "requestId": "stub-clickpipe-update"
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn clickpipe_update_sends_patch_source_variants_and_partial_auth_exactly() {
+    let patches = [
+        serde_json::json!({
+            "name": "renamed",
+            "destination": {"columns": [{"name": "id", "type": "UInt64"}]},
+            "fieldMappings": [{"sourceField": "event_id", "destinationField": "id"}],
+            "settings": {
+                "kafka_read_committed": false,
+                "streaming_max_insert_wait_ms": 0
+            },
+            "source": {
+                "kafka": {
+                    "authentication": "MUTUAL_TLS",
+                    "caCertificate": "ca",
+                    "credentials": {"certificate": "cert", "privateKey": "key"},
+                    "reversePrivateEndpointIds": []
+                },
+                "validateSamples": false
+            }
+        }),
+        serde_json::json!({"source": {
+            "kinesis": {
+                "authentication": "IAM_USER",
+                "accessKey": {"accessKeyId": "key-id", "secretKey": "secret"}
+            },
+            "validateSamples": true
+        }}),
+        serde_json::json!({"source": {
+            "objectStorage": {
+                "authentication": "SERVICE_ACCOUNT",
+                "serviceAccountKey": "base64-key",
+                "skipInitialLoad": false,
+                "startAfter": "events/2026-06-01/",
+                "path": "events/*.json"
+            },
+            "validateSamples": false
+        }}),
+        serde_json::json!({"source": {
+            "pubsub": {
+                "authentication": "SERVICE_ACCOUNT",
+                "ackDeadline": 10,
+                "serviceAccountKey": {"serviceAccountFile": "base64-key"}
+            },
+            "validateSamples": true
+        }}),
+        serde_json::json!({"source": {
+            "postgres": {
+                "credentials": {"username": "rotated", "password": "secret"},
+                "host": "postgres.example.com",
+                "port": 5432,
+                "database": "source_db",
+                "disableTls": false,
+                "skipCertVerification": false,
+                "settings": {"syncIntervalSeconds": 0, "pullBatchSize": 0},
+                "tableMappingsToAdd": [{
+                    "sourceSchemaName": "public",
+                    "sourceTable": "events",
+                    "targetTable": "events",
+                    "excludedColumns": [],
+                    "useCustomSortingKey": false,
+                    "sortingKeys": [],
+                    "tableEngine": "ReplacingMergeTree",
+                    "partitionKey": "id",
+                    "partitionByExpr": "toYYYYMM(ts)"
+                }],
+                "tableMappingsToRemove": [{
+                    "sourceSchemaName": "public",
+                    "sourceTable": "old_events",
+                    "targetTable": "old_events"
+                }]
+            },
+            "validateSamples": false
+        }}),
+        serde_json::json!({"source": {
+            "mysql": {
+                "authentication": "basic",
+                "credentials": {"username": "rotated", "password": "secret"},
+                "host": "mysql.example.com",
+                "port": 3306,
+                "serverId": 0,
+                "settings": {
+                    "syncIntervalSeconds": 0,
+                    "pullBatchSize": 0,
+                    "useCompression": false
+                },
+                "tableMappingsToAdd": [],
+                "tableMappingsToRemove": [{
+                    "sourceSchemaName": "sales",
+                    "sourceTable": "old_orders",
+                    "targetTable": "old_orders",
+                    "tableEngine": "MergeTree",
+                    "partitionKey": "id",
+                    "partitionByExpr": "toYYYYMM(created_at)"
+                }]
+            },
+            "validateSamples": false
+        }}),
+        serde_json::json!({"source": {
+            "mongodb": {
+                "credentials": {"username": "rotated", "password": "secret"},
+                "uri": "mongodb+srv://mongo.example/source",
+                "readPreference": "secondaryPreferred",
+                "disableTls": false,
+                "skipCertVerification": false,
+                "settings": {"syncIntervalSeconds": 0, "pullBatchSize": 0},
+                "tableMappingsToAdd": [],
+                "tableMappingsToRemove": [{
+                    "sourceDatabaseName": "source",
+                    "sourceCollection": "old_events",
+                    "targetTable": "old_events",
+                    "tableEngine": "Null"
+                }]
+            },
+            "validateSamples": false
+        }}),
+        serde_json::json!({"source": {
+            "kafka": {"caCertificate": "new-ca"}
+        }}),
+        serde_json::json!({"source": {
+            "kafka": {
+                "authentication": "IAM_ROLE",
+                "iamRole": "arn:aws:iam::123456789012:role/clickpipe"
+            }
+        }}),
+        serde_json::json!({"source": {
+            "kafka": {
+                "authentication": "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
+            }
+        }}),
+        serde_json::json!({"source": {
+            "postgres": {"host": "postgres.example.com"}
+        }}),
+    ];
+
+    for patch in patches {
+        let mock = MockServer::start().await;
+        mount_clickpipe_update(&mock, patch.clone()).await;
+        let output = invoke_clickpipe_update_file(&mock, &patch);
+        assert_success(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            serde_json::json!({
+                "id": "00000000-0000-0000-0000-000000000001",
+                "name": "updated"
+            })
+        );
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values() {
+    let mock = MockServer::start().await;
+    let patch = serde_json::json!({"fieldMappings": []});
+    mount_clickpipe_update(&mock, patch.clone()).await;
+    let project = tempfile::tempdir().unwrap();
+    let mut child = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "clickpipe",
+            "update",
+            "svc-1",
+            "pipe-1",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&serde_json::to_vec(&patch).unwrap())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn clickpipe_update_rejects_noop_unknown_nested_fields_and_bigquery_before_http() {
+    for patch in [
+        serde_json::json!({}),
+        serde_json::json!({"destination": {}}),
+        serde_json::json!({"destination": {"colums": []}}),
+        serde_json::json!({"source": {
+            "bigquery": {},
+            "validateSamples": false
+        }}),
+        serde_json::json!({"source": {
+            "kafka": {
+                "credentials": {"username": "user", "password": "pw", "token": "bad"},
+                "reversePrivateEndpointIds": []
+            },
+            "validateSamples": false
+        }}),
+        serde_json::json!({"source": {
+            "mysql": {"host": "db", "port": 3306, "authentication": "future"},
+            "validateSamples": false
+        }}),
+        serde_json::json!({"source": {"kafka": {
+            "authentication": "PLAIN",
+            "credentials": {"accessKeyId": "key", "secretKey": "secret"}
+        }}}),
+        serde_json::json!({"source": {"kafka": {
+            "authentication": "IAM_ROLE",
+            "iamRole": "arn:aws:iam::123456789012:role/clickpipe",
+            "credentials": {"username": "user", "password": "secret"}
+        }}}),
+        serde_json::json!({"source": {"kafka": {
+            "authentication": "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            "credentials": {"username": "user", "password": "secret"}
+        }}}),
+        serde_json::json!({"source": {"mysql": {
+            "settings": {"syncIntervalSeconds": 5}
+        }}}),
+        serde_json::json!({"source": {"mongodb": {
+            "settings": {"syncIntervalSeconds": 5}
+        }}}),
+        serde_json::json!({"source": {"pubsub": {
+            "ackDeadline": 10
+        }}}),
+    ] {
+        let mock = MockServer::start().await;
+        let output = invoke_clickpipe_update_file(&mock, &patch);
+        assert_eq!(output.status.code(), Some(1), "patch: {patch}");
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("invalid request body"),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(mock.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_update_propagates_api_errors_and_rejects_oauth_before_http() {
+    let error_mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(CLICKPIPE_UPDATE_PATH))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .set_body_json(serde_json::json!({"error": "update conflict"})),
+        )
+        .expect(1)
+        .mount(&error_mock)
+        .await;
+    let output = invoke_clickpipe_update_file(&error_mock, &serde_json::json!({"name": "new"}));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("update conflict"));
+
+    let oauth_mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &oauth_mock.uri());
+    let config_path = project.path().join("patch.json");
+    std::fs::write(&config_path, br#"{"name":"new"}"#).unwrap();
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &oauth_mock.uri(),
+            "--json",
+            "clickpipe",
+            "update",
+            "svc-1",
+            "pipe-1",
+            "--config-file",
+            config_path.to_str().unwrap(),
+            "--org-id",
+            "org-1",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    assert!(oauth_mock.received_requests().await.unwrap().is_empty());
+}
