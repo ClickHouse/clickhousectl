@@ -1332,6 +1332,28 @@ clickhousectl cloud clickpipe create kinesis <service-id> \
   --database default --table events \
   --column "event_id:Int64"
 
+# Use a complete destination table definition for any Kafka, Kinesis,
+# object-storage, or Pub/Sub create. This example selects SummingMergeTree.
+cat > table-definition.json <<'JSON'
+{
+  "engine": {
+    "type": "SummingMergeTree",
+    "versionColumnId": null,
+    "columnIds": ["amount", "tax"]
+  },
+  "partitionBy": "toYYYYMM(created_at)",
+  "primaryKey": "event_id",
+  "sortingKey": ["event_id", "created_at"]
+}
+JSON
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-summing-pipe \
+  --brokers 'broker:9092' --topics events --format JSONEachRow \
+  --database analytics --table events \
+  --column "event_id:UInt64" --column "created_at:DateTime" \
+  --column "amount:Decimal(18,2)" --column "tax:Decimal(18,2)" \
+  --managed-table true --table-definition-file table-definition.json
+
 # From PostgreSQL with a publicly trusted certificate (CDC)
 clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-pg-pipe \
@@ -1496,6 +1518,15 @@ dataset names remain part of the source flags and table mappings shown above.
 BigQuery supports snapshot replication. Its nullability and snapshot tuning
 flags are optional; when omitted, the request leaves those settings to the
 ClickPipes service defaults.
+
+Kafka, Kinesis, object-storage, and Pub/Sub creates accept
+`--table-definition-file <PATH|->`. The JSON is deserialized into the typed
+ClickPipes table definition and must include the complete required shape shown
+above. Engine types are `MergeTree`, `ReplacingMergeTree`, `SummingMergeTree`,
+and `Null`; `versionColumnId` may be `null`, while `columnIds` selects columns
+for `SummingMergeTree`. Unknown fields at any level and unknown engine types are
+rejected before an API request. `--managed-table <true|false>` defaults to
+`true`; omitting both flags preserves the managed `MergeTree` destination.
 
 `--role` is available on every `clickpipe create` subcommand and is repeatable.
 ClickPipes creates a ClickHouse user for the pipe; when `--role` is omitted that

@@ -5753,6 +5753,226 @@ async fn kafka_destination_roles_absent_when_role_omitted() {
 }
 
 #[tokio::test]
+async fn kafka_destination_table_definition_file_controls_the_complete_wire_shape() {
+    let mock = start_mock_clickpipes_api().await;
+    let directory = tempfile::tempdir().unwrap();
+    let definition_path = directory.path().join("table-definition.json");
+    std::fs::write(
+        &definition_path,
+        serde_json::json!({
+            "engine": {
+                "columnIds": ["amount", "tax"],
+                "type": "SummingMergeTree",
+                "versionColumnId": null
+            },
+            "partitionBy": "toYYYYMM(created_at)",
+            "primaryKey": "event_id",
+            "sortingKey": ["event_id", "created_at"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut args: Vec<String> = kafka_args_minimal().into_iter().map(String::from).collect();
+    args.extend([
+        "--managed-table".into(),
+        "false".into(),
+        "--table-definition-file".into(),
+        definition_path.to_string_lossy().into_owned(),
+    ]);
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+
+    assert_eq!(
+        body["destination"],
+        serde_json::json!({
+            "columns": [{"name": "id", "type": "Int64"}],
+            "database": "default",
+            "managedTable": false,
+            "table": "events",
+            "tableDefinition": {
+                "engine": {
+                    "columnIds": ["amount", "tax"],
+                    "type": "SummingMergeTree"
+                },
+                "partitionBy": "toYYYYMM(created_at)",
+                "primaryKey": "event_id",
+                "sortingKey": ["event_id", "created_at"]
+            }
+        })
+    );
+}
+
+#[tokio::test]
+async fn object_storage_create_uses_the_shared_destination_table_definition() {
+    let mock = start_mock_clickpipes_api().await;
+    let directory = tempfile::tempdir().unwrap();
+    let definition_path = directory.path().join("table-definition.json");
+    std::fs::write(
+        &definition_path,
+        serde_json::json!({
+            "engine": {
+                "columnIds": [],
+                "type": "MergeTree",
+                "versionColumnId": null
+            },
+            "partitionBy": "toYYYYMM(created_at)",
+            "primaryKey": "event_id",
+            "sortingKey": ["event_id"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let definition_path = definition_path.to_string_lossy();
+    let args = [
+        "clickpipe",
+        "create",
+        "object-storage",
+        "svc-id",
+        "--name",
+        "objects",
+        "--source-url",
+        "https://bucket.example/events",
+        "--format",
+        "JSONEachRow",
+        "--database",
+        "analytics",
+        "--table",
+        "events",
+        "--column",
+        "event_id:Int64",
+        "--table-definition-file",
+        definition_path.as_ref(),
+        "--org-id",
+        "org",
+    ];
+
+    let body = invoke_cli_capture_body(&mock, &args).await;
+
+    assert_eq!(body["destination"]["managedTable"], true);
+    assert_eq!(
+        body["destination"]["tableDefinition"],
+        serde_json::json!({
+            "engine": {"type": "MergeTree"},
+            "partitionBy": "toYYYYMM(created_at)",
+            "primaryKey": "event_id",
+            "sortingKey": ["event_id"]
+        })
+    );
+    assert_eq!(
+        body["source"]["objectStorage"]["url"],
+        "https://bucket.example/events"
+    );
+}
+
+#[tokio::test]
+async fn kinesis_destination_table_definition_can_be_read_from_stdin() {
+    let mock = start_mock_clickpipes_api().await;
+    let args = [
+        "clickpipe",
+        "create",
+        "kinesis",
+        "svc-id",
+        "--name",
+        "kinesis-pipe",
+        "--stream-name",
+        "events",
+        "--region",
+        "eu-west-1",
+        "--format",
+        "JSONEachRow",
+        "--database",
+        "analytics",
+        "--table",
+        "events",
+        "--column",
+        "event_id:Int64",
+        "--table-definition-file",
+        "-",
+        "--org-id",
+        "org",
+    ];
+    let definition = serde_json::json!({
+        "engine": {
+            "columnIds": [],
+            "type": "ReplacingMergeTree",
+            "versionColumnId": "version"
+        },
+        "partitionBy": "toYYYYMM(created_at)",
+        "primaryKey": "event_id",
+        "sortingKey": ["event_id"]
+    });
+
+    let body =
+        invoke_cli_capture_body_with_stdin(&mock, &args, definition.to_string().as_bytes()).await;
+
+    assert_eq!(body["destination"]["managedTable"], true);
+    assert_eq!(
+        body["destination"]["tableDefinition"],
+        serde_json::json!({
+            "engine": {
+                "type": "ReplacingMergeTree",
+                "versionColumnId": "version"
+            },
+            "partitionBy": "toYYYYMM(created_at)",
+            "primaryKey": "event_id",
+            "sortingKey": ["event_id"]
+        })
+    );
+}
+
+#[tokio::test]
+async fn invalid_destination_table_definition_fails_before_the_api_request() {
+    let mock = start_mock_clickpipes_api().await;
+    let directory = tempfile::tempdir().unwrap();
+
+    for (definition, diagnostic) in [
+        (
+            serde_json::json!({
+                "engine": {
+                    "columnIds": [],
+                    "type": "MergeTree",
+                    "versionColumnId": null,
+                    "versionColumn": "typo"
+                },
+                "partitionBy": "tuple()",
+                "primaryKey": "event_id",
+                "sortingKey": ["event_id"]
+            }),
+            "versionColumn",
+        ),
+        (
+            serde_json::json!({
+                "engine": {
+                    "columnIds": [],
+                    "type": "UnknownTree",
+                    "versionColumnId": null
+                },
+                "partitionBy": "tuple()",
+                "primaryKey": "event_id",
+                "sortingKey": ["event_id"]
+            }),
+            "UnknownTree",
+        ),
+    ] {
+        let definition_path = directory.path().join(format!("{diagnostic}.json"));
+        std::fs::write(&definition_path, definition.to_string()).unwrap();
+        let mut args: Vec<String> = kafka_args_minimal().into_iter().map(String::from).collect();
+        args.extend([
+            "--table-definition-file".into(),
+            definition_path.to_string_lossy().into_owned(),
+        ]);
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(diagnostic), "{stderr}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn postgres_destination_roles_serialize_on_database_pipes() {
     let mock = start_mock_clickpipes_api().await;
     let mut args = postgres_args_minimal();
@@ -12749,6 +12969,50 @@ async fn pubsub_create_posts_source_body_with_the_key_read_from_the_file() {
             body["source"],
         );
     }
+}
+
+#[tokio::test]
+async fn pubsub_create_posts_the_typed_destination_table_definition() {
+    let mock = start_mock_clickpipes_api().await;
+    let directory = tempfile::tempdir().unwrap();
+    let key_path = write_service_account_key(directory.path());
+    let definition_path = directory.path().join("table-definition.json");
+    std::fs::write(
+        &definition_path,
+        serde_json::json!({
+            "engine": {
+                "columnIds": [],
+                "type": "Null",
+                "versionColumnId": null
+            },
+            "partitionBy": "tuple()",
+            "primaryKey": "event_id",
+            "sortingKey": ["event_id"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut args = pubsub_create_args(key_path.to_str().expect("utf-8 temp path"));
+    args.extend([
+        "--table-definition-file".into(),
+        definition_path.to_string_lossy().into_owned(),
+        "--managed-table".into(),
+        "false".into(),
+    ]);
+
+    let body = invoke_cli_capture_body(&mock, &as_str_args(&args)).await;
+
+    assert_eq!(body["destination"]["managedTable"], false);
+    assert_eq!(
+        body["destination"]["tableDefinition"],
+        serde_json::json!({
+            "engine": {"type": "Null"},
+            "partitionBy": "tuple()",
+            "primaryKey": "event_id",
+            "sortingKey": ["event_id"]
+        })
+    );
+    assert_eq!(body["source"]["pubsub"]["topic"], "events");
 }
 
 #[tokio::test]
