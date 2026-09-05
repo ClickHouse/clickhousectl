@@ -3823,7 +3823,7 @@ fn parse_create_field_mappings(
 
 #[derive(Debug)]
 struct BuiltCreateRequestArgs {
-    validate_samples: bool,
+    validate_samples: Option<bool>,
     scaling: Option<clickhouse_cloud_api::models::ClickPipeScaling>,
     settings: Option<clickhouse_cloud_api::models::ClickPipeSettings>,
     field_mappings: Vec<clickhouse_cloud_api::models::ClickPipeFieldMapping>,
@@ -3910,7 +3910,7 @@ fn build_create_request_args(
                     .settings
                     .clickhouse_parallel_distributed_insert_select
                     .map(i64::from),
-                kafka_read_committed: Some(args.settings.kafka_read_committed.unwrap_or(false)),
+                kafka_read_committed: args.settings.kafka_read_committed,
                 object_storage_use_cluster_function: args
                     .settings
                     .object_storage_use_cluster_function,
@@ -3920,7 +3920,7 @@ fn build_create_request_args(
             });
 
     Ok(BuiltCreateRequestArgs {
-        validate_samples: args.validation.validate_samples.unwrap_or(false),
+        validate_samples: args.validation.validate_samples,
         scaling,
         settings,
         field_mappings: parse_create_field_mappings(&args.field_mappings)?,
@@ -3929,7 +3929,7 @@ fn build_create_request_args(
 
 fn build_create_validation_args(args: &ClickPipeCreateValidationArgs) -> BuiltCreateRequestArgs {
     BuiltCreateRequestArgs {
-        validate_samples: args.validate_samples.unwrap_or(false),
+        validate_samples: args.validate_samples,
         scaling: None,
         settings: None,
         field_mappings: Vec::new(),
@@ -3940,7 +3940,7 @@ fn apply_create_request_args(
     request: &mut clickhouse_cloud_api::models::ClickPipePostRequest,
     args: BuiltCreateRequestArgs,
 ) {
-    request.source.validate_samples = Some(args.validate_samples);
+    request.source.validate_samples = args.validate_samples;
     request.scaling = args.scaling;
     request.settings = args.settings;
     request.field_mappings = args.field_mappings;
@@ -6623,7 +6623,7 @@ mod tests {
             ClickPipeSourceKind::Kafka,
         )
         .unwrap();
-        assert!(!minimal.validate_samples);
+        assert_eq!(minimal.validate_samples, None);
         assert_eq!(minimal.scaling, None);
         assert_eq!(minimal.settings, None);
         assert!(minimal.field_mappings.is_empty());
@@ -6654,7 +6654,7 @@ mod tests {
             ClickPipeSourceKind::Kafka,
         )
         .unwrap();
-        assert!(!maximal.validate_samples);
+        assert_eq!(maximal.validate_samples, Some(false));
         let scaling = maximal.scaling.unwrap();
         assert_eq!(scaling.replicas, 1);
         assert_eq!(scaling.replica_cpu_millicores, 125);
@@ -6687,7 +6687,7 @@ mod tests {
         let settings = object_storage.settings.unwrap();
         assert_eq!(settings.object_storage_concurrency, Some(1));
         assert_eq!(settings.object_storage_use_cluster_function, Some(false));
-        assert_eq!(settings.kafka_read_committed, Some(false));
+        assert_eq!(settings.kafka_read_committed, None);
     }
 
     #[test]
@@ -10533,7 +10533,7 @@ mod tests {
         assert!(request.source.mysql.is_none());
         assert!(request.source.object_storage.is_none());
         assert!(request.source.pubsub.is_none());
-        assert_eq!(request.source.validate_samples, Some(false));
+        assert_eq!(request.source.validate_samples, None);
 
         let source = request.source.postgres.as_ref().expect("postgres source");
         assert_eq!(source.r#type.as_ref().unwrap().to_string(), "postgres");
