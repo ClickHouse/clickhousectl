@@ -71,7 +71,7 @@ CONTEXT FOR AGENTS:
         /// Path to a JSON file with a PgConfig object
         #[arg(long)]
         pg_config_file: Option<PathBuf>,
-        /// Path to a JSON file with a PgBouncerConfig object
+        /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
         /// Organization ID (auto-detected only if you have one org)
@@ -177,7 +177,7 @@ CONTEXT FOR AGENTS:
         /// Path to a JSON file with a PgConfig object
         #[arg(long)]
         pg_config_file: Option<PathBuf>,
-        /// Path to a JSON file with a PgBouncerConfig object
+        /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
         /// Organization ID (auto-detected only if you have one org)
@@ -319,7 +319,7 @@ CONTEXT FOR AGENTS:
         /// Path to a JSON file with a PgConfig object
         #[arg(long)]
         pg_config_file: Option<PathBuf>,
-        /// Path to a JSON file with a PgBouncerConfig object
+        /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
         /// Organization ID (auto-detected only if you have one org)
@@ -1051,8 +1051,6 @@ pub async fn postgres_create(
     opts: PostgresCreateOptions<'_>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
-
     let provider: PgProvider = parse_serde_enum(opts.provider, "provider", PgProvider::VALUES)?;
     let size = parse_pg_size(opts.size)?;
     let pg_version: Option<PgVersion> = opts
@@ -1085,6 +1083,7 @@ pub async fn postgres_create(
         pg_bouncer_config,
     };
 
+    let org_id = resolve_org_id(client, opts.org_id).await?;
     let resp = client
         .api()
         .postgres_service_create(&org_id, &req)
@@ -1285,8 +1284,8 @@ pub async fn postgres_config_replace(
     org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
     let cfg = instance_config_from_json(&load_json_file::<serde_json::Value>(file)?)?;
+    let org_id = resolve_org_id(client, org_id).await?;
     let resp = client
         .api()
         .postgres_instance_config_post(&org_id, postgres_id, &cfg)
@@ -1313,8 +1312,6 @@ pub async fn postgres_config_patch(
     org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
-
     debug_assert!(
         !sets.is_empty() || file.is_some(),
         "clap ArgGroup(\"patch_source\") requires --set or --file"
@@ -1332,6 +1329,7 @@ pub async fn postgres_config_patch(
         .map_err(|e| CloudError::new(format!("failed to build config from --set entries: {}", e)))?
     };
 
+    let org_id = resolve_org_id(client, org_id).await?;
     let resp = client
         .api()
         .postgres_instance_config_patch(&org_id, postgres_id, &cfg)
@@ -1409,7 +1407,6 @@ pub async fn postgres_read_replica_create(
     opts: PostgresReadReplicaOptions<'_>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
     let tags = parse_tags(opts.tags)?;
     let pg_config = opts
         .pg_config_file
@@ -1427,6 +1424,7 @@ pub async fn postgres_read_replica_create(
         pg_bouncer_config,
     };
 
+    let org_id = resolve_org_id(client, opts.org_id).await?;
     let resp = client
         .api()
         .postgres_instance_create_read_replica(&org_id, postgres_id, &req)
@@ -1450,7 +1448,6 @@ pub async fn postgres_restore(
     opts: PostgresRestoreOptions<'_>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
     let tags = parse_tags(opts.tags)?;
     let pg_config = opts
         .pg_config_file
@@ -1472,6 +1469,7 @@ pub async fn postgres_restore(
         pg_bouncer_config,
     };
 
+    let org_id = resolve_org_id(client, opts.org_id).await?;
     let resp = client
         .api()
         .postgres_instance_restore(&org_id, postgres_id, &req)
@@ -3008,12 +3006,13 @@ mod tests {
     fn instance_config_from_json_accepts_both_sections() {
         let cfg = instance_config_from_json(&serde_json::json!({
             "pgConfig": { "max_connections": 500, "work_mem": "64MB" },
-            "pgBouncerConfig": {},
+            "pgBouncerConfig": { "default_pool_size": "16", "future_parameter": "on" },
         }))
         .unwrap();
         assert_eq!(cfg.pg_config.max_connections, Some(serde_json::json!(500)));
         assert_eq!(cfg.pg_config.work_mem, Some(serde_json::json!("64MB")));
-        assert_eq!(cfg.pg_bouncer_config, PgBouncerConfig::default());
+        assert_eq!(cfg.pg_bouncer_config["default_pool_size"], "16");
+        assert_eq!(cfg.pg_bouncer_config["future_parameter"], "on");
     }
 
     #[test]
