@@ -16,17 +16,23 @@ use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
     InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole,
-    ServicPrivateEndpointePostRequest, Service, ServiceEndpoint, ServiceEndpointChange,
-    ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
-    ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
-    ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
-    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceProfile,
-    ServiceQueryAPIEndpoint, ServiceReplicaScalingPatchRequest, ServiceState,
+    ServicPrivateEndpointePostRequest, Service, ServiceClickhouseSetting,
+    ServiceClickhouseSettingsList, ServiceClickhouseSettingsPatchRequest,
+    ServiceClickhouseSettingsPatchResponse, ServiceClickhouseSettingsSchema, ServiceEndpoint,
+    ServiceEndpointChange, ServiceEndpointChangeProtocol, ServiceEndpointProtocol,
+    ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
+    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
+    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
+    ServiceProfile, ServiceQueryAPIEndpoint, ServiceReplicaScalingPatchRequest, ServiceState,
     ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
 };
 #[cfg(test)]
 use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Response};
-use std::{collections::HashSet, io::IsTerminal, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    io::IsTerminal,
+    time::Duration,
+};
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Clone, Copy)]
@@ -75,6 +81,12 @@ pub enum ServiceCommands {
     Profile {
         #[command(subcommand)]
         command: ServiceProfileCommands,
+    },
+
+    /// Manage ClickHouse settings
+    Settings {
+        #[command(subcommand)]
+        command: ServiceSettingsCommands,
     },
 
     /// Create a service
@@ -652,10 +664,95 @@ pub enum ServiceProfileCommands {
     },
 }
 
+#[derive(Subcommand)]
+pub enum ServiceSettingsCommands {
+    /// List configured ClickHouse settings
+    List {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get a ClickHouse setting
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Setting name
+        setting_name: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get the configurable ClickHouse settings schema
+    Schema {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Set one or more ClickHouse settings
+    #[command(
+        group(ArgGroup::new("settings_input").required(true).args(["setting", "settings_file"])),
+        after_help = "CONTEXT FOR AGENTS:\n\
+  Discover supported names and types with `settings schema <service-id>`.\n\
+  --setting values are JSON literals; quote string values inside the argument.\n\
+  --settings-file reads a JSON settings map; `-` reads stdin. Only named settings change."
+    )]
+    Set {
+        /// Service ID
+        service_id: String,
+
+        /// Setting as NAME=JSON_VALUE (repeatable)
+        #[arg(long, value_name = "NAME=JSON_VALUE")]
+        setting: Vec<String>,
+
+        /// JSON settings map file (`-` reads stdin)
+        #[arg(long, value_name = "PATH")]
+        settings_file: Option<String>,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Reset a ClickHouse setting to its platform default
+    Unset {
+        /// Service ID
+        service_id: String,
+
+        /// Setting name
+        setting_name: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
 impl ServiceProfileCommands {
     fn is_write(&self) -> bool {
         match self {
             ServiceProfileCommands::List { .. } => false,
+        }
+    }
+}
+
+impl ServiceSettingsCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            ServiceSettingsCommands::List { .. }
+            | ServiceSettingsCommands::Get { .. }
+            | ServiceSettingsCommands::Schema { .. } => false,
+            ServiceSettingsCommands::Set { .. } | ServiceSettingsCommands::Unset { .. } => true,
         }
     }
 }
@@ -666,6 +763,7 @@ impl ServiceCommands {
             ServiceCommands::List { .. } => false,
             ServiceCommands::Get { .. } => false,
             ServiceCommands::Profile { command } => command.is_write(),
+            ServiceCommands::Settings { command } => command.is_write(),
             ServiceCommands::Prometheus { .. } => false,
             ServiceCommands::Query { .. } => false,
             ServiceCommands::RepairQueryKey { .. } => true,
@@ -706,6 +804,46 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 org_id,
             } => {
                 service_profile_list(client, &region, byoc_id.as_deref(), org_id.as_deref(), json)
+                    .await
+            }
+        },
+        ServiceCommands::Settings { command } => match command {
+            ServiceSettingsCommands::List { service_id, org_id } => {
+                service_settings_list(client, &service_id, org_id.as_deref(), json).await
+            }
+            ServiceSettingsCommands::Get {
+                service_id,
+                setting_name,
+                org_id,
+            } => {
+                service_setting_get(client, &service_id, &setting_name, org_id.as_deref(), json)
+                    .await
+            }
+            ServiceSettingsCommands::Schema { service_id, org_id } => {
+                service_settings_schema(client, &service_id, org_id.as_deref(), json).await
+            }
+            ServiceSettingsCommands::Set {
+                service_id,
+                setting,
+                settings_file,
+                org_id,
+            } => {
+                service_settings_set(
+                    client,
+                    &service_id,
+                    &setting,
+                    settings_file.as_deref(),
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ServiceSettingsCommands::Unset {
+                service_id,
+                setting_name,
+                org_id,
+            } => {
+                service_setting_unset(client, &service_id, &setting_name, org_id.as_deref(), json)
                     .await
             }
         },
@@ -1246,6 +1384,218 @@ async fn service_profile_list(
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
+    }
+    Ok(())
+}
+
+fn parse_settings_map_document(
+    raw: &str,
+    source: &str,
+) -> CloudResult<BTreeMap<String, serde_json::Value>> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|error| CloudError::new(format!("invalid JSON in {source}: {error}")))?;
+    let object = value.as_object().ok_or_else(|| {
+        CloudError::new(format!(
+            "{source} must contain a JSON object mapping setting names to values"
+        ))
+    })?;
+    if object.is_empty() {
+        return Err(CloudError::new(format!(
+            "{source} must contain at least one setting"
+        )));
+    }
+    if object.len() == 1
+        && object
+            .get("settings")
+            .is_some_and(|value| value.is_string() || value.is_object())
+    {
+        return Err(CloudError::new(format!(
+            "{source} looks like the API request wrapper; provide the decoded settings map, for example {{\"compatibility\":\"24.8\"}}"
+        )));
+    }
+    Ok(object
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect())
+}
+
+fn parse_setting_assignments(
+    assignments: &[String],
+) -> CloudResult<BTreeMap<String, serde_json::Value>> {
+    let mut settings = BTreeMap::new();
+    for (index, assignment) in assignments.iter().enumerate() {
+        let position = index + 1;
+        let (name, raw_value) = assignment.split_once('=').ok_or_else(|| {
+            CloudError::new(format!("--setting #{position} must use NAME=JSON_VALUE"))
+        })?;
+        if name.trim().is_empty() {
+            return Err(CloudError::new(format!(
+                "--setting #{position} has an empty setting name"
+            )));
+        }
+        let value = serde_json::from_str(raw_value).map_err(|error| {
+            CloudError::new(format!(
+                "--setting #{position} value is not valid JSON: {error}; quote string values, for example compatibility=\"24.8\""
+            ))
+        })?;
+        if settings.insert(name.to_string(), value).is_some() {
+            return Err(CloudError::new(format!(
+                "setting '{name}' was provided more than once"
+            )));
+        }
+    }
+    Ok(settings)
+}
+
+fn read_service_settings(
+    assignments: &[String],
+    settings_file: Option<&str>,
+) -> CloudResult<BTreeMap<String, serde_json::Value>> {
+    if let Some(path) = settings_file {
+        use std::io::Read as _;
+
+        let (raw, source) = if path == "-" {
+            let mut raw = String::new();
+            std::io::stdin().read_to_string(&mut raw)?;
+            (raw, "stdin".to_string())
+        } else {
+            (
+                std::fs::read_to_string(path)?,
+                format!("settings file '{path}'"),
+            )
+        };
+        return parse_settings_map_document(&raw, &source);
+    }
+
+    parse_setting_assignments(assignments)
+}
+
+fn build_service_settings_patch_request(
+    settings: &BTreeMap<String, serde_json::Value>,
+) -> CloudResult<ServiceClickhouseSettingsPatchRequest> {
+    if settings.is_empty() {
+        return Err(CloudError::new("provide at least one ClickHouse setting"));
+    }
+    Ok(ServiceClickhouseSettingsPatchRequest {
+        settings: Some(serde_json::to_string(settings)?),
+    })
+}
+
+async fn service_settings_list(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client.list_clickhouse_settings(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        let Some(settings) = response.settings else {
+            println!("No ClickHouse settings returned");
+            return Ok(());
+        };
+        if settings.is_empty() {
+            println!("No ClickHouse settings configured");
+            return Ok(());
+        }
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "Value")]
+            value: String,
+        }
+        let rows = settings
+            .into_iter()
+            .map(|setting| Row {
+                name: or_absent(setting.name),
+                value: or_absent(setting.value),
+            })
+            .collect::<Vec<_>>();
+        println!("{}", Table::new(rows).with(Style::markdown()));
+    }
+    Ok(())
+}
+
+async fn service_setting_get(
+    client: &CloudClient,
+    service_id: &str,
+    setting_name: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let setting = client
+        .get_clickhouse_setting(&org_id, service_id, setting_name)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&setting)?);
+    } else {
+        print_human(&setting)?;
+    }
+    Ok(())
+}
+
+async fn service_settings_schema(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let schema = client
+        .get_clickhouse_settings_schema(&org_id, service_id)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&schema)?);
+    } else {
+        print_human(&schema)?;
+    }
+    Ok(())
+}
+
+async fn service_settings_set(
+    client: &CloudClient,
+    service_id: &str,
+    assignments: &[String],
+    settings_file: Option<&str>,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    // Parse before organization discovery so malformed local input never
+    // causes an HTTP request, even when --org-id was omitted.
+    let settings = read_service_settings(assignments, settings_file)?;
+    let request = build_service_settings_patch_request(&settings)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client
+        .update_clickhouse_settings(&org_id, service_id, &request)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        print_human(&response)?;
+    }
+    Ok(())
+}
+
+async fn service_setting_unset(
+    client: &CloudClient,
+    service_id: &str,
+    setting_name: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client
+        .reset_clickhouse_setting(&org_id, service_id, setting_name)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Reset ClickHouse setting '{setting_name}' to its platform default");
     }
     Ok(())
 }
@@ -3291,6 +3641,77 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    pub async fn list_clickhouse_settings(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<ServiceClickhouseSettingsList> {
+        let response = self
+            .api()
+            .service_clickhouse_settings_list_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_clickhouse_setting(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        setting_name: &str,
+    ) -> crate::cloud::client::Result<ServiceClickhouseSetting> {
+        let response = self
+            .api()
+            .service_clickhouse_setting_get(org_id, service_id, setting_name)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_clickhouse_settings_schema(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<ServiceClickhouseSettingsSchema> {
+        let response = self
+            .api()
+            .service_clickhouse_settings_schema_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_clickhouse_settings(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ServiceClickhouseSettingsPatchRequest,
+    ) -> crate::cloud::client::Result<ServiceClickhouseSettingsPatchResponse> {
+        let response = self
+            .api()
+            .service_clickhouse_settings_update(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn reset_clickhouse_setting(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        setting_name: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .service_clickhouse_setting_delete(org_id, service_id, setting_name)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
+    }
+
     pub async fn list_services_filtered(
         &self,
         org_id: &str,
@@ -5143,6 +5564,56 @@ mod tests {
                 "us-east-1",
             ],
             false,
+        );
+        for action in ["list", "schema"] {
+            assert_write(
+                &[
+                    "clickhousectl",
+                    "cloud",
+                    "service",
+                    "settings",
+                    action,
+                    "svc-1",
+                ],
+                false,
+            );
+        }
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "settings",
+                "get",
+                "svc-1",
+                "compatibility",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "settings",
+                "set",
+                "svc-1",
+                "--setting",
+                "compatibility=\"24.8\"",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "settings",
+                "unset",
+                "svc-1",
+                "compatibility",
+            ],
+            true,
         );
         assert_write(
             &[
@@ -7062,5 +7533,158 @@ mod tests {
         );
         assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("cat - data.csv"));
         assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("--queries-file -"));
+    }
+
+    #[test]
+    fn parses_service_settings_set_inputs() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--setting",
+            "compatibility=\"24.8\"",
+            "--setting",
+            "enable_analyzer=1",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::Settings {
+            command:
+                ServiceSettingsCommands::Set {
+                    service_id,
+                    setting,
+                    settings_file,
+                    org_id,
+                },
+        } = command
+        else {
+            panic!("expected settings set");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(setting, ["compatibility=\"24.8\"", "enable_analyzer=1"]);
+        assert!(settings_file.is_none());
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--settings-file",
+            "-",
+        ]);
+        let ServiceCommands::Settings {
+            command: ServiceSettingsCommands::Set { settings_file, .. },
+        } = command
+        else {
+            panic!("expected settings set");
+        };
+        assert_eq!(settings_file.as_deref(), Some("-"));
+    }
+
+    #[test]
+    fn service_settings_set_requires_exactly_one_input_kind() {
+        let missing = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+        ])
+        .err()
+        .expect("missing settings input should fail");
+        assert_eq!(
+            missing.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+
+        let conflict = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--setting",
+            "compatibility=\"24.8\"",
+            "--settings-file",
+            "settings.json",
+        ])
+        .err()
+        .expect("conflicting settings inputs should fail");
+        assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn builds_settings_patch_with_json_encoded_string_and_preserved_types() {
+        let minimal = BTreeMap::from([("compatibility".to_string(), serde_json::json!("24.8"))]);
+        let request = build_service_settings_patch_request(&minimal).unwrap();
+        assert_eq!(
+            request.settings.as_deref(),
+            Some(r#"{"compatibility":"24.8"}"#)
+        );
+
+        let maximal = BTreeMap::from([
+            ("bool_setting".to_string(), serde_json::json!(false)),
+            ("null_setting".to_string(), serde_json::Value::Null),
+            ("number_setting".to_string(), serde_json::json!(42)),
+            ("string_setting".to_string(), serde_json::json!("literal")),
+            (
+                "unknown_future_setting".to_string(),
+                serde_json::json!([1, 2]),
+            ),
+        ]);
+        let request = build_service_settings_patch_request(&maximal).unwrap();
+        let encoded = request.settings.as_deref().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(encoded).unwrap(),
+            serde_json::json!({
+                "bool_setting": false,
+                "null_setting": null,
+                "number_setting": 42,
+                "string_setting": "literal",
+                "unknown_future_setting": [1, 2]
+            })
+        );
+    }
+
+    #[test]
+    fn parses_dynamic_setting_assignments_without_a_name_allowlist() {
+        let settings = parse_setting_assignments(&[
+            "future_setting={\"nested\":true}".to_string(),
+            "compatibility=\"24.8\"".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            settings["future_setting"],
+            serde_json::json!({"nested": true})
+        );
+        assert_eq!(settings["compatibility"], serde_json::json!("24.8"));
+    }
+
+    #[test]
+    fn settings_file_rejects_api_wrapper_shape() {
+        let error = parse_settings_map_document(
+            r#"{"settings":"{\"compatibility\":\"24.8\"}"}"#,
+            "settings file",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("API request wrapper"));
+    }
+
+    #[test]
+    fn settings_file_reads_a_plain_dynamic_map() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, r#"{"compatibility":"24.8","future_setting":false}"#).unwrap();
+        let settings = read_service_settings(&[], Some(path.to_str().unwrap())).unwrap();
+        assert_eq!(settings["compatibility"], serde_json::json!("24.8"));
+        assert_eq!(settings["future_setting"], serde_json::json!(false));
     }
 }

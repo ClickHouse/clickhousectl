@@ -121,8 +121,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`.
-  Reads: list, get, prometheus, query, query-endpoint get, private-endpoint get-config,
-    backup-config get. Every other subcommand is a write and needs API key auth.
+  Reads: list, get, settings list/get/schema, prometheus, query, query-endpoint get,
+    private-endpoint get-config, backup-config get. Other commands need API key auth.
   Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query --id <id> -q 'SELECT 1'`.")]
     Service {
         #[command(subcommand)]
