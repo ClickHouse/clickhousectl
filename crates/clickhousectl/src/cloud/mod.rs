@@ -16,6 +16,7 @@ pub mod service_query;
 pub mod services;
 mod shared;
 pub mod types;
+pub mod udfs;
 
 #[cfg(test)]
 mod types_test;
@@ -126,6 +127,7 @@ async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> c
             organizations::run_invitation(client, command, json).await
         }
         CloudCommands::Key { command } => api_keys::run(client, command, json).await,
+        CloudCommands::Udf(args) => udfs::run(client, args, json).await,
         CloudCommands::Activity { command } => activity::run(client, command, json).await,
         CloudCommands::Backup { command } => backups::run(client, command, json).await,
         CloudCommands::Postgres { command } => postgres::run(client, command, json).await,

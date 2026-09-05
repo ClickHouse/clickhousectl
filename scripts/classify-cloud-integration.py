@@ -16,6 +16,7 @@ NO_SUITES = frozenset()
 SOURCE_PATH_SUITES = {
     "crates/clickhousectl/src/cloud/clickstack.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/config.rs": NO_SUITES,
+    "crates/clickhousectl/src/cloud/udfs.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/client.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/client/activity.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/client/api_keys.rs": frozenset(

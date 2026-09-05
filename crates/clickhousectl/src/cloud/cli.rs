@@ -20,6 +20,7 @@ pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands,
 pub(crate) use crate::cloud::services::{
     PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands,
 };
+use crate::cloud::udfs::UdfArgs;
 use clap::{Args, Subcommand};
 
 #[derive(Args)]
@@ -88,6 +89,15 @@ impl CloudArgs {
 
 #[derive(Subcommand)]
 pub enum CloudCommands {
+    /// Manage user-defined functions (Beta)
+    #[command(after_help = "CONTEXT FOR AGENTS:
+  UDF operations are beta and may change.
+  Writes require API key authentication; list/get support OAuth.
+  Function names: `cloud udf list`; service IDs: `cloud service list`.
+  Create uploads a ZIP archive and starts an asynchronous build.
+  Typical flow: create -> get until ready -> attach -> attachment get.")]
+    Udf(UdfArgs),
+
     /// Manage authentication (OAuth login, API keys)
     Auth {
         #[command(subcommand)]
@@ -233,6 +243,7 @@ impl CloudCommands {
             CloudCommands::Member { command } => command.is_write(),
             CloudCommands::Invitation { command } => command.is_write(),
             CloudCommands::Key { command } => command.is_write(),
+            CloudCommands::Udf(args) => args.is_write(),
             CloudCommands::Activity { command } => command.is_write(),
             CloudCommands::Postgres { command } => command.is_write(),
             CloudCommands::ClickPipe { command } => command.is_write(),
