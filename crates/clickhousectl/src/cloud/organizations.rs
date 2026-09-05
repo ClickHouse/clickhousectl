@@ -63,11 +63,14 @@ CONTEXT FOR AGENTS:
     /// Get organization Prometheus configuration
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Always prints raw Prometheus exposition text; --json is accepted but ignored.
-  Scrape targets and their per-service URLs: `cloud service prometheus`.")]
+  With no subcommand, prints raw metrics text from the legacy endpoint; --json is ignored.
+  Use `discovery` for Prometheus HTTP service-discovery target groups.")]
     Prometheus {
+        #[command(subcommand)]
+        command: Option<PrometheusCommands>,
+
         /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
+        #[arg(long, global = true)]
         org_id: Option<String>,
 
         /// Organization ID (deprecated positional form; use --org-id)
@@ -75,7 +78,7 @@ CONTEXT FOR AGENTS:
         legacy_org_id: Option<String>,
 
         /// Return the reduced (filtered) metric set
-        #[arg(long)]
+        #[arg(long, global = true)]
         filtered_metrics: Option<bool>,
     },
 
@@ -119,6 +122,12 @@ impl OrgCommands {
             OrgCommands::Update { .. } => true,
         }
     }
+}
+
+#[derive(Subcommand)]
+pub enum PrometheusCommands {
+    /// List Prometheus scrape targets (Beta)
+    Discovery,
 }
 
 #[derive(Subcommand)]
@@ -276,12 +285,18 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
             org_update(client, &org_id, options, json).await
         }
         OrgCommands::Prometheus {
+            command,
             org_id,
             legacy_org_id,
             filtered_metrics,
         } => {
             let org_id = org_id.as_deref().or(legacy_org_id.as_deref());
-            org_prometheus(client, org_id, filtered_metrics, json).await
+            match command {
+                Some(PrometheusCommands::Discovery) => {
+                    org_prometheus_discovery(client, org_id, filtered_metrics, json).await
+                }
+                None => org_prometheus(client, org_id, filtered_metrics, json).await,
+            }
         }
         OrgCommands::Usage {
             org_id,
@@ -670,6 +685,24 @@ async fn org_prometheus(
     Ok(())
 }
 
+async fn org_prometheus_discovery(
+    client: &CloudClient,
+    org_id: Option<&str>,
+    filtered_metrics: Option<bool>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let groups = client
+        .discover_org_prometheus_targets(&org_id, filtered_metrics)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&groups)?);
+    } else {
+        print_human(&groups)?;
+    }
+    Ok(())
+}
+
 async fn org_usage(
     client: &CloudClient,
     org_id: Option<&str>,
@@ -997,6 +1030,20 @@ impl CloudClient {
         let filtered_metrics = filtered_metrics.map(|value| if value { "true" } else { "false" });
         self.api()
             .organization_prometheus_get(org_id, filtered_metrics)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))
+    }
+
+    pub async fn discover_org_prometheus_targets(
+        &self,
+        org_id: &str,
+        filtered_metrics: Option<bool>,
+    ) -> crate::cloud::client::Result<
+        Vec<clickhouse_cloud_api::models::PrometheusDiscoveryTargetGroup>,
+    > {
+        let filtered_metrics = filtered_metrics.map(|value| if value { "true" } else { "false" });
+        self.api()
+            .organization_prometheus_discovery_get(org_id, filtered_metrics)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))
     }
@@ -1459,6 +1506,40 @@ mod tests {
     }
 
     #[test]
+    fn parses_org_prometheus_discovery_flags() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "prometheus",
+            "discovery",
+            "--org-id",
+            "org-1",
+            "--filtered-metrics",
+            "false",
+        ])
+        .unwrap();
+
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let crate::cloud::cli::CloudCommands::Org { command } = args.command else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Prometheus {
+            command: Some(PrometheusCommands::Discovery),
+            org_id,
+            filtered_metrics,
+            ..
+        } = command
+        else {
+            panic!("expected prometheus discovery");
+        };
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+        assert_eq!(filtered_metrics, Some(false));
+    }
+
+    #[test]
     fn parses_org_quota_commands() {
         let CloudCommands::Org { command } = parse_cloud_command(&[
             "clickhousectl",
@@ -1659,6 +1740,10 @@ mod tests {
         );
         assert_write(&["clickhousectl", "cloud", "org", "balance"], false);
         assert_write(&["clickhousectl", "cloud", "org", "prometheus"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "org", "prometheus", "discovery"],
+            false,
+        );
         assert_write(
             &[
                 "clickhousectl",

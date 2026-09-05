@@ -649,6 +649,7 @@ clickhousectl cloud org update <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
   --enable-core-dumps false
 clickhousectl cloud org prometheus --filtered-metrics true
+clickhousectl cloud org prometheus discovery --filtered-metrics false
 clickhousectl cloud org usage \
   --from-date 2024-01-01 \
   --to-date 2024-01-31 \
@@ -658,6 +659,8 @@ clickhousectl cloud org usage \
 # It is auto-detected only when your credentials reach exactly one organization.
 # Organization quota and balance commands are beta and read-only, so they support OAuth.
 ```
+
+`cloud org prometheus discovery` returns the beta HTTP service-discovery target groups used by Prometheus `http_sd_configs`; `--json` preserves the complete target and label array. The command defaults discovered scrape targets to filtered metrics. The command without `discovery` still calls the deprecated organization metrics endpoint and emits raw Prometheus exposition text for compatibility.
 
 ### Services
 
@@ -1724,7 +1727,7 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
-`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `cloud org prometheus` and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: the legacy `cloud org prometheus` command and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
 
 Human-readable detail views (`cloud clickpipe get` and every other `get`-style command) never print PEM-framed material. Each well-formed PEM block in a value is replaced, where it stands, by a one-line summary of that block: `<PEM CERTIFICATE, SHA-256 fingerprint AB:CD:...>` for a certificate, certificate request or CRL, using the fingerprint `openssl x509 -fingerprint -sha256` prints for that block, and `<PEM EC PRIVATE KEY, 121 bytes>` for any other label, because a private key is reported by size and never fingerprinted. Text around the blocks, such as a bundle's header comments, is kept as it was. This affects human output only: `--json` still returns the value verbatim, and `cloud postgres certs get` deliberately still prints the raw PEM, since emitting the certificate is that command's purpose.
 
