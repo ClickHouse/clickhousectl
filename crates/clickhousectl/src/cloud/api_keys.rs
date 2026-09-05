@@ -78,9 +78,13 @@ pub enum KeyCommands {
         #[arg(long)]
         name: Option<String>,
 
-        /// Role UUID to assign (repeatable)
-        #[arg(long)]
+        /// Role UUID to assign (repeatable; conflicts with --clear-roles)
+        #[arg(long, conflicts_with = "clear_roles")]
         role_id: Vec<String>,
+
+        /// Remove all assigned roles; conflicts with --role-id
+        #[arg(long, conflicts_with = "role_id")]
+        clear_roles: bool,
 
         /// New expiry as RFC 3339; conflicts with --clear-expiry
         #[arg(long, value_parser = parse_datetime, conflicts_with = "clear_expiry")]
@@ -94,9 +98,13 @@ pub enum KeyCommands {
         #[arg(long)]
         state: Option<String>,
 
-        /// IP or CIDR allowed to use the key (repeatable)
-        #[arg(long = "ip-allow")]
+        /// IP or CIDR to allow (repeatable; conflicts with --clear-ip-allow)
+        #[arg(long = "ip-allow", conflicts_with = "clear_ip_allow")]
         ip_allow: Vec<String>,
+
+        /// Clear the IP allowlist; conflicts with --ip-allow
+        #[arg(long, conflicts_with = "ip_allow")]
+        clear_ip_allow: bool,
 
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
@@ -160,19 +168,23 @@ pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> Clou
             key_id,
             name,
             role_id,
+            clear_roles,
             expires_at,
             clear_expiry,
             state,
             ip_allow,
+            clear_ip_allow,
             org_id,
         } => {
             let options = KeyUpdateOptions {
                 name,
                 role_ids: role_id,
+                clear_roles,
                 expires_at,
                 clear_expiry,
                 state,
                 ip_allow,
+                clear_ip_allow,
                 org_id,
             };
             key_update(client, &key_id, options, json).await
@@ -200,10 +212,12 @@ struct KeyCreateOptions {
 struct KeyUpdateOptions {
     name: Option<String>,
     role_ids: Vec<String>,
+    clear_roles: bool,
     expires_at: Option<String>,
     clear_expiry: bool,
     state: Option<String>,
     ip_allow: Vec<String>,
+    clear_ip_allow: bool,
     org_id: Option<String>,
 }
 
@@ -315,7 +329,9 @@ fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKe
     }
     Ok(ApiKeyPatchRequest {
         name: options.name.clone(),
-        assigned_role_ids: if options.role_ids.is_empty() {
+        assigned_role_ids: if options.clear_roles {
+            Some(Vec::new())
+        } else if options.role_ids.is_empty() {
             None
         } else {
             Some(parse_uuid_list(&options.role_ids, "role_id")?)
@@ -335,7 +351,11 @@ fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKe
             .as_deref()
             .map(parse_api_key_state_patch)
             .transpose()?,
-        ip_access_list: parse_ip_access_entries(&options.ip_allow),
+        ip_access_list: if options.clear_ip_allow {
+            Some(Vec::new())
+        } else {
+            parse_ip_access_entries(&options.ip_allow)
+        },
         #[cfg(feature = "deprecated-fields")]
         roles: None,
     })
@@ -748,10 +768,12 @@ mod tests {
             key_id,
             name,
             role_id,
+            clear_roles,
             expires_at,
             clear_expiry,
             state,
             ip_allow,
+            clear_ip_allow,
             org_id,
         } = parse_top_level_key(&["clickhousectl", "cloud", "key", "update", "key-1"])
         else {
@@ -760,10 +782,12 @@ mod tests {
         assert_eq!(key_id, "key-1");
         assert!(name.is_none());
         assert!(role_id.is_empty());
+        assert!(!clear_roles);
         assert!(expires_at.is_none());
         assert!(!clear_expiry);
         assert!(state.is_none());
         assert!(ip_allow.is_empty());
+        assert!(!clear_ip_allow);
         assert!(org_id.is_none());
     }
 
@@ -853,10 +877,12 @@ mod tests {
             key_id,
             name,
             role_id,
+            clear_roles,
             expires_at,
             clear_expiry,
             state,
             ip_allow,
+            clear_ip_allow,
             org_id,
         } = command
         else {
@@ -865,11 +891,60 @@ mod tests {
         assert_eq!(key_id, "key-1");
         assert_eq!(name.as_deref(), Some("renamed"));
         assert_eq!(role_id, vec!["role-1", "role-2"]);
+        assert!(!clear_roles);
         assert_eq!(expires_at.as_deref(), Some("2025-01-01T00:00:00Z"));
         assert!(!clear_expiry);
         assert_eq!(state.as_deref(), Some("enabled"));
         assert_eq!(ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
+        assert!(!clear_ip_allow);
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn parses_key_update_list_clear_flags() {
+        let command = parse_top_level_key(&[
+            "clickhousectl",
+            "cloud",
+            "key",
+            "update",
+            "key-1",
+            "--clear-roles",
+            "--clear-ip-allow",
+        ]);
+        let KeyCommands::Update {
+            role_id,
+            clear_roles,
+            ip_allow,
+            clear_ip_allow,
+            ..
+        } = command
+        else {
+            panic!("expected key update");
+        };
+        assert!(role_id.is_empty());
+        assert!(clear_roles);
+        assert!(ip_allow.is_empty());
+        assert!(clear_ip_allow);
+    }
+
+    #[test]
+    fn rejects_conflicting_key_update_list_flags() {
+        for flags in [
+            ["--role-id", "role-1", "--clear-roles"],
+            ["--clear-roles", "--role-id", "role-1"],
+            ["--ip-allow", "10.0.0.0/8", "--clear-ip-allow"],
+            ["--clear-ip-allow", "--ip-allow", "10.0.0.0/8"],
+        ] {
+            let result = Cli::try_parse_from(
+                ["clickhousectl", "cloud", "key", "update", "key-1"]
+                    .into_iter()
+                    .chain(flags),
+            );
+            let Err(error) = result else {
+                panic!("set and clear flags must conflict");
+            };
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
     }
 
     #[test]
@@ -994,6 +1069,23 @@ mod tests {
     }
 
     #[test]
+    fn build_api_key_update_request_clears_lists_explicitly() {
+        let request = build_api_key_update_request(&KeyUpdateOptions {
+            clear_roles: true,
+            clear_ip_allow: true,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(request.assigned_role_ids, Some(Vec::new()));
+        assert_eq!(request.ip_access_list, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({"assignedRoleIds": [], "ipAccessList": []})
+        );
+    }
+
+    #[test]
     fn build_api_key_update_request_combines_clear_with_explicit_changes() {
         let role_id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
         let request = build_api_key_update_request(&KeyUpdateOptions {
@@ -1104,10 +1196,12 @@ mod tests {
         let update = build_api_key_update_request(&KeyUpdateOptions {
             name: Some("renamed".to_string()),
             role_ids: vec![role_id.to_string()],
+            clear_roles: false,
             expires_at: Some("2025-01-01T00:00:00Z".to_string()),
             clear_expiry: false,
             state: Some("disabled".to_string()),
             ip_allow: vec!["0.0.0.0/0".to_string()],
+            clear_ip_allow: false,
             org_id: None,
         })
         .unwrap();

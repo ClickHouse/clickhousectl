@@ -12934,8 +12934,8 @@ async fn pgbouncer_config_get_json_preserves_values_and_tolerates_absent_section
     }
 }
 
-// API key nullable expiry updates (#698).
-async fn invoke_key_update_expiry(server: &MockServer, flags: &[&str]) -> std::process::Output {
+// API key nullable expiry (#698) and explicit list clearing (#597).
+async fn invoke_key_update(server: &MockServer, flags: &[&str]) -> std::process::Output {
     let project = tempfile::tempdir().unwrap();
     let mut command = Command::new(clickhousectl_binary());
     clear_inherited_env(&mut command);
@@ -12963,7 +12963,7 @@ async fn invoke_key_update_expiry(server: &MockServer, flags: &[&str]) -> std::p
 }
 
 #[tokio::test]
-async fn key_update_expiry_sends_exact_omitted_set_and_clear_bodies() {
+async fn key_update_sends_exact_omitted_set_and_clear_bodies() {
     let cases: &[(&[&str], Value)] = &[
         (&[], serde_json::json!({})),
         (
@@ -12971,6 +12971,10 @@ async fn key_update_expiry_sends_exact_omitted_set_and_clear_bodies() {
             serde_json::json!({"name": "renamed"}),
         ),
         (&["--clear-expiry"], serde_json::json!({"expireAt": null})),
+        (
+            &["--clear-roles", "--clear-ip-allow"],
+            serde_json::json!({"assignedRoleIds": [], "ipAccessList": []}),
+        ),
         (
             &["--expires-at", "2030-01-01T00:00:00Z"],
             serde_json::json!({"expireAt": "2030-01-01T00:00:00Z"}),
@@ -13009,7 +13013,7 @@ async fn key_update_expiry_sends_exact_omitted_set_and_clear_bodies() {
             .expect(1)
             .mount(&server)
             .await;
-        let output = invoke_key_update_expiry(&server, flags).await;
+        let output = invoke_key_update(&server, flags).await;
         assert_success(&output);
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result, serde_json::json!({"name": "updated"}));
@@ -13018,30 +13022,36 @@ async fn key_update_expiry_sends_exact_omitted_set_and_clear_bodies() {
 }
 
 #[tokio::test]
-async fn key_update_expiry_conflict_sends_no_http() {
-    let server = MockServer::start().await;
-    let output = invoke_key_update_expiry(
-        &server,
-        &["--clear-expiry", "--expires-at", "2030-01-01T00:00:00Z"],
-    )
-    .await;
-    assert_eq!(output.status.code(), Some(2));
-    assert!(server.received_requests().await.unwrap().is_empty());
+async fn key_update_conflicts_send_no_http() {
+    for flags in [
+        vec!["--clear-expiry", "--expires-at", "2030-01-01T00:00:00Z"],
+        vec![
+            "--clear-roles",
+            "--role-id",
+            "11111111-2222-3333-4444-555555555555",
+        ],
+        vec!["--clear-ip-allow", "--ip-allow", "10.0.0.0/8"],
+    ] {
+        let server = MockServer::start().await;
+        let output = invoke_key_update(&server, &flags).await;
+        assert_eq!(output.status.code(), Some(2));
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
 }
 
 #[tokio::test]
-async fn key_update_expiry_preserves_auth_error_conversion() {
+async fn key_update_preserves_auth_error_conversion() {
     let server = MockServer::start().await;
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/keys/key-1"))
-        .and(body_json(serde_json::json!({"expireAt": null})))
+        .and(body_json(serde_json::json!({"assignedRoleIds": []})))
         .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
             "error": "not permitted", "status": 403,
         })))
         .expect(1)
         .mount(&server)
         .await;
-    let output = invoke_key_update_expiry(&server, &["--clear-expiry"]).await;
+    let output = invoke_key_update(&server, &["--clear-roles"]).await;
     assert_eq!(output.status.code(), Some(4));
     assert!(output.stdout.is_empty());
 }
@@ -14635,5 +14645,266 @@ async fn udf_stdin_minimal_definition_and_sparse_human_output() {
         }
         let request = server.received_requests().await.unwrap().pop().unwrap();
         assert!(request.url.query().is_none());
+    }
+}
+
+// Explicit list clearing (#597).
+
+#[tokio::test]
+async fn member_update_preserves_omitted_set_and_clear_role_lists() {
+    let cases: &[(&[&str], Value)] = &[
+        (&[], serde_json::json!({})),
+        (
+            &["--role-id", "role-1", "--role-id", "role-2"],
+            serde_json::json!({"assignedRoleIds": ["role-1", "role-2"]}),
+        ),
+        (
+            &["--clear-roles"],
+            serde_json::json!({"assignedRoleIds": []}),
+        ),
+    ];
+
+    for (flags, expected_body) in cases {
+        let mock = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/v1/organizations/org-1/members/user-1"))
+            .and(body_json(expected_body.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {"email": "member@example.com"},
+                "status": 200,
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let mut args = vec!["member", "update", "user-1", "--org-id", "org-1"];
+        args.extend_from_slice(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_success(&output);
+        assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn member_update_role_conflict_sends_no_http() {
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "member",
+            "update",
+            "user-1",
+            "--org-id",
+            "org-1",
+            "--role-id",
+            "role-1",
+            "--clear-roles",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+const CLEAR_TAGS_POSTGRES_ID: &str = "11111111-2222-3333-4444-555555555555";
+
+#[tokio::test]
+async fn postgres_update_clear_tags_sends_an_empty_array_without_a_get() {
+    let mock = MockServer::start().await;
+    let postgres_path = format!("/v1/organizations/org-1/postgres/{CLEAR_TAGS_POSTGRES_ID}");
+    Mock::given(method("PATCH"))
+        .and(path(postgres_path.clone()))
+        .and(body_json(serde_json::json!({"tags": []})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": CLEAR_TAGS_POSTGRES_ID, "name": "pg-clear-tags"},
+            "status": 200,
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            CLEAR_TAGS_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+            "--clear-tags",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("PATCH".to_string(), postgres_path)],
+        "clearing a complete list must not fetch the current service"
+    );
+}
+
+#[tokio::test]
+async fn postgres_update_tag_diff_refuses_a_sparse_get_without_writing() {
+    let mock = MockServer::start().await;
+    let postgres_path = format!("/v1/organizations/org-1/postgres/{CLEAR_TAGS_POSTGRES_ID}");
+    Mock::given(method("GET"))
+        .and(path(postgres_path.clone()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": CLEAR_TAGS_POSTGRES_ID, "name": "pg-sparse"},
+            "status": 200,
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(postgres_path.clone()))
+        .respond_with(ResponseTemplate::new(500))
+        .expect(0)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            CLEAR_TAGS_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+            "--add-tag",
+            "env=prod",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("omitted the tags field"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("GET".to_string(), postgres_path)]
+    );
+}
+
+#[tokio::test]
+async fn postgres_update_clear_tags_conflict_sends_no_http() {
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            CLEAR_TAGS_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+            "--clear-tags",
+            "--remove-tag",
+            "env",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn postgres_update_clear_tags_propagates_api_errors_without_retrying() {
+    let mock = MockServer::start().await;
+    let postgres_path = format!("/v1/organizations/org-1/postgres/{CLEAR_TAGS_POSTGRES_ID}");
+    Mock::given(method("PATCH"))
+        .and(path(postgres_path.clone()))
+        .and(body_json(serde_json::json!({"tags": []})))
+        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "error": "update failed",
+            "status": 500,
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "update",
+            CLEAR_TAGS_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+            "--clear-tags",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("PATCH".to_string(), postgres_path)]
+    );
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_update_clears_the_mapping_list() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(reverse_private_endpoint_path()))
+        .and(body_json(serde_json::json!({
+            "customPrivateDnsMappings": []
+        })))
+        .respond_with(reverse_private_endpoint_envelope(
+            reverse_private_endpoint_json(),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "update",
+            "svc-1",
+            RPE_ID,
+            "--clear-custom-private-dns-mappings",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("PATCH".to_string(), reverse_private_endpoint_path())]
+    );
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_update_rejects_noop_and_conflict_without_http() {
+    for flags in [
+        Vec::<&str>::new(),
+        vec![
+            "--custom-private-dns-mapping",
+            "db.example.com",
+            "--clear-custom-private-dns-mappings",
+        ],
+    ] {
+        let mock = MockServer::start().await;
+        let mut args = vec![
+            "clickpipe",
+            "reverse-private-endpoint",
+            "update",
+            "svc-1",
+            RPE_ID,
+            "--org-id",
+            "org-1",
+        ];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(mock.received_requests().await.unwrap().is_empty());
     }
 }
