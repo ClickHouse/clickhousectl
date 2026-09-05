@@ -1637,9 +1637,78 @@ error (exit code 2):
   `--table-mapping-json #2: targetTable is required and must not be empty`.
 
 The mappings are sent in flag order: the `--table-mapping` values first, then
-the `--table-mapping-json` ones. The JSON form is not yet available on
-`clickpipe create mysql`, `mongodb` or `bigquery`, whose table mappings have
-analogous fields.
+the `--table-mapping-json` ones.
+
+#### MySQL, MongoDB, and BigQuery table mappings
+
+The MySQL, MongoDB, and BigQuery create commands accept the same two mapping
+forms. At least one mapping is required; both flags are repeatable and may be
+combined. Simple mappings leave every optional per-table field to the service
+default, while JSON mappings preserve optional fields exactly when present.
+
+MySQL supports excluded columns, custom sorting keys, the destination table
+engine, and two distinct partition controls. `partitionKey` selects an indexed
+source column for parallel snapshotting. `partitionByExpr` sets the ClickHouse
+`PARTITION BY` expression on the destination table.
+
+```bash
+clickhousectl cloud clickpipe create mysql <service-id> \
+  --name my-mysql-pipe \
+  --host mysql.example.com \
+  --username "$MYSQL_USERNAME" --password "$MYSQL_PASSWORD" \
+  --table-mapping-json '{
+    "sourceSchemaName": "sales",
+    "sourceTable": "orders",
+    "targetTable": "orders_raw",
+    "excludedColumns": ["private_note"],
+    "sortingKeys": ["created_at", "id"],
+    "partitionKey": "id",
+    "partitionByExpr": "toYYYYMM(created_at)",
+    "tableEngine": "ReplacingMergeTree"
+  }'
+```
+
+MongoDB JSON mappings add a destination table engine to the source database,
+collection, and target table names:
+
+```bash
+clickhousectl cloud clickpipe create mongodb <service-id> \
+  --name my-mongodb-pipe \
+  --uri mongodb://mongo.example.com:27017 \
+  --username "$MONGODB_USERNAME" --password "$MONGODB_PASSWORD" \
+  --table-mapping-json '{
+    "sourceDatabaseName": "sales",
+    "sourceCollection": "orders",
+    "targetTable": "orders_raw",
+    "tableEngine": "ReplacingMergeTree"
+  }'
+```
+
+BigQuery supports excluded columns, custom sorting keys, and the destination
+table engine with either service-account or workload-identity authentication:
+
+```bash
+clickhousectl cloud clickpipe create bigquery <service-id> \
+  --name my-bigquery-pipe \
+  --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY \
+  --project-id my-gcp-project \
+  --staging-path gs://my-bucket/clickpipes-staging \
+  --table-mapping-json '{
+    "sourceDatasetName": "sales",
+    "sourceTable": "orders",
+    "targetTable": "orders_raw",
+    "excludedColumns": ["private_note"],
+    "sortingKeys": ["created_at", "id"],
+    "tableEngine": "MergeTree"
+  }'
+```
+
+For MySQL and BigQuery, non-empty `sortingKeys` enable
+`useCustomSortingKey`; explicitly setting it to `false` is rejected. Setting
+`useCustomSortingKey` to `true` requires at least one sorting key. Supported
+table engines are `MergeTree`, `ReplacingMergeTree`, and `Null`. Unknown
+fields and engines, missing required names, blank list entries, and duplicate
+MySQL excluded columns or sorting keys are rejected before the create request.
 
 #### PostgreSQL CDC pipe settings
 

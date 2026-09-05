@@ -5421,6 +5421,8 @@ async fn bigquery_snapshot_tuning_flags_are_sent_exactly() {
             sa_path.to_str().unwrap(),
             "--staging-path",
             "gs://bucket/staging",
+            "--table-mapping",
+            "dataset.events:events",
             "--replication-mode",
             "snapshot",
             "--allow-nullable-columns",
@@ -6572,6 +6574,281 @@ async fn postgres_invalid_table_mapping_json_is_a_usage_error_before_any_request
         );
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains(diagnostic), "{stderr}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+// ── MySQL, MongoDB and BigQuery JSON table mappings (issue #691) ───────────
+
+#[tokio::test]
+async fn mysql_table_mapping_json_reproduces_every_field_after_simple_mappings() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mysql",
+            "svc-id",
+            "--name",
+            "mysql-mappings",
+            "--host",
+            "mysql.example",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "source.events:events",
+            "--table-mapping-json",
+            r#"{"sourceSchemaName":"sales","sourceTable":"orders","targetTable":"orders_raw","excludedColumns":["private_note"],"sortingKeys":["created_at","id"],"partitionKey":"id","partitionByExpr":"toYYYYMM(created_at)","tableEngine":"ReplacingMergeTree"}"#,
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body["source"]["mysql"]["tableMappings"],
+        serde_json::json!([
+            {
+                "sourceSchemaName": "source",
+                "sourceTable": "events",
+                "targetTable": "events",
+            },
+            {
+                "sourceSchemaName": "sales",
+                "sourceTable": "orders",
+                "targetTable": "orders_raw",
+                "excludedColumns": ["private_note"],
+                "sortingKeys": ["created_at", "id"],
+                "useCustomSortingKey": true,
+                "partitionKey": "id",
+                "partitionByExpr": "toYYYYMM(created_at)",
+                "tableEngine": "ReplacingMergeTree",
+            }
+        ])
+    );
+}
+
+#[tokio::test]
+async fn mongodb_table_mapping_json_can_be_the_only_mapping() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mongodb",
+            "svc-id",
+            "--name",
+            "mongodb-mappings",
+            "--uri",
+            "mongodb://mongo.example/source",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping-json",
+            r#"{"sourceDatabaseName":"sales","sourceCollection":"orders","targetTable":"orders_raw","tableEngine":"Null"}"#,
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body["source"]["mongodb"]["tableMappings"],
+        serde_json::json!([{
+            "sourceDatabaseName": "sales",
+            "sourceCollection": "orders",
+            "targetTable": "orders_raw",
+            "tableEngine": "Null",
+        }])
+    );
+}
+
+#[tokio::test]
+async fn bigquery_service_account_table_mapping_json_preserves_optional_shapes() {
+    let mock = start_mock_clickpipes_api().await;
+    let directory = tempfile::tempdir().unwrap();
+    let key = directory.path().join("service-account.json");
+    std::fs::write(&key, "{}").unwrap();
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "bigquery",
+            "svc-id",
+            "--name",
+            "bigquery-service-account",
+            "--service-account-file",
+            key.to_str().unwrap(),
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping-json",
+            r#"{"sourceDatasetName":"sales","sourceTable":"orders","targetTable":"orders_raw","excludedColumns":[],"sortingKeys":[],"useCustomSortingKey":false}"#,
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    let source = &body["source"]["bigquery"];
+    assert!(source.get("authentication").is_none());
+    assert!(source.get("credentials").is_some());
+    assert_eq!(
+        source["tableMappings"],
+        serde_json::json!([{
+            "sourceDatasetName": "sales",
+            "sourceTable": "orders",
+            "targetTable": "orders_raw",
+            "excludedColumns": [],
+            "sortingKeys": [],
+            "useCustomSortingKey": false,
+        }])
+    );
+    let mapping = &source["tableMappings"][0];
+    assert!(mapping.get("tableEngine").is_none());
+}
+
+#[tokio::test]
+async fn bigquery_workload_identity_table_mapping_json_stays_in_the_union_arm() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "bigquery",
+            "svc-id",
+            "--name",
+            "bigquery-workload-identity",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            "--project-id",
+            "source-project",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping-json",
+            r#"{"sourceDatasetName":"sales","sourceTable":"orders","targetTable":"orders_raw","excludedColumns":["private_note"],"sortingKeys":["id"],"tableEngine":"MergeTree"}"#,
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    let source = &body["source"]["bigquery"];
+    assert_eq!(
+        source["authentication"],
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
+    );
+    assert_eq!(source["projectId"], "source-project");
+    assert!(source.get("credentials").is_none());
+    assert_eq!(
+        source["tableMappings"],
+        serde_json::json!([{
+            "sourceDatasetName": "sales",
+            "sourceTable": "orders",
+            "targetTable": "orders_raw",
+            "excludedColumns": ["private_note"],
+            "sortingKeys": ["id"],
+            "useCustomSortingKey": true,
+            "tableEngine": "MergeTree",
+        }])
+    );
+}
+
+#[tokio::test]
+async fn non_postgres_invalid_table_mapping_json_is_a_usage_error_before_files_or_http() {
+    let mock = MockServer::start().await;
+    let cases = [
+        (
+            "mysql",
+            vec![
+                "clickpipe",
+                "create",
+                "mysql",
+                "svc-id",
+                "--name",
+                "invalid-mysql",
+                "--host",
+                "mysql.example",
+                "--username",
+                "u",
+                "--password",
+                "p",
+                "--ca-certificate",
+                "/missing/mysql-ca.pem",
+                "--table-mapping-json",
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","partitionKey":"snapshot_id","partitionByExpr":"toYYYYMM(ts)","tableEngine":"MergeTre"}"#,
+                "--org-id",
+                "org",
+            ],
+            "invalid tableEngine",
+        ),
+        (
+            "mongodb",
+            vec![
+                "clickpipe",
+                "create",
+                "mongodb",
+                "svc-id",
+                "--name",
+                "invalid-mongodb",
+                "--uri",
+                "mongodb://mongo.example/source",
+                "--username",
+                "u",
+                "--password",
+                "p",
+                "--ca-certificate",
+                "/missing/mongodb-ca.pem",
+                "--table-mapping-json",
+                r#"{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","sortingKeys":[]}"#,
+                "--org-id",
+                "org",
+            ],
+            "unknown field sortingKeys",
+        ),
+        (
+            "bigquery",
+            vec![
+                "clickpipe",
+                "create",
+                "bigquery",
+                "svc-id",
+                "--name",
+                "invalid-bigquery",
+                "--service-account-file",
+                "/missing/bigquery-key.json",
+                "--staging-path",
+                "gs://bucket/staging",
+                "--table-mapping-json",
+                r#"{"sourceDatasetName":"ds","sourceTable":"t","targetTable":"t","useCustomSortingKey":true}"#,
+                "--org-id",
+                "org",
+            ],
+            "useCustomSortingKey is true but sortingKeys is empty",
+        ),
+    ];
+
+    for (source, args, diagnostic) in cases {
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{source} stderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(diagnostic), "{source}: {stderr}");
+        assert!(
+            !stderr.contains("No such file"),
+            "{source} read a sensitive file before validation: {stderr}"
+        );
     }
 
     assert!(mock.received_requests().await.unwrap().is_empty());

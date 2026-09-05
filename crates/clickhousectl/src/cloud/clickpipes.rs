@@ -5,13 +5,14 @@ use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
-    ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipeKafkaOffsetStrategy,
-    ClickPipeMongoDBPipeSettingsReplicationmode, ClickPipeMutateMongoDBSourceReadpreference,
+    ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipeBigQueryPipeTableMappingTableengine,
+    ClickPipeKafkaOffsetStrategy, ClickPipeMongoDBPipeSettingsReplicationmode,
+    ClickPipeMongoDBPipeTableMappingTableengine, ClickPipeMutateMongoDBSourceReadpreference,
     ClickPipeMutateMySQLSourceAuthentication, ClickPipeMutateMySQLSourceType,
     ClickPipeMySQLPipeSettingsReplicationmechanism, ClickPipeMySQLPipeSettingsReplicationmode,
-    ClickPipePostKafkaSourceAuthentication, ClickPipePostKafkaSourceFormat,
-    ClickPipePostKafkaSourceType, ClickPipePostgresPipeTableMapping,
-    ClickPipePostgresPipeTableMappingTableengine,
+    ClickPipeMySQLPipeTableMappingTableengine, ClickPipePostKafkaSourceAuthentication,
+    ClickPipePostKafkaSourceFormat, ClickPipePostKafkaSourceType,
+    ClickPipePostgresPipeTableMapping, ClickPipePostgresPipeTableMappingTableengine,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -425,11 +426,15 @@ impl ClickPipeCommands {
             ClickPipeCreateCommands::MySQL(args) => {
                 ("mysql", validate_mysql_create_args(args).err())
             }
+            ClickPipeCreateCommands::MongoDB(args) => {
+                ("mongodb", validate_mongodb_create_args(args).err())
+            }
+            ClickPipeCreateCommands::BigQuery(args) => {
+                ("bigquery", validate_bigquery_create_args(args).err())
+            }
             ClickPipeCreateCommands::ObjectStorage(_)
             | ClickPipeCreateCommands::Kafka(_)
             | ClickPipeCreateCommands::Kinesis(_)
-            | ClickPipeCreateCommands::MongoDB(_)
-            | ClickPipeCreateCommands::BigQuery(_)
             | ClickPipeCreateCommands::PubSub(_) => return None,
         };
 
@@ -1283,6 +1288,12 @@ pub struct PostgresCreateArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("mysql_table_mappings")
+        .required(true)
+        .multiple(true)
+        .args(["table_mappings", "table_mappings_json"])
+))]
 pub struct MySqlCreateArgs {
     /// Service ID
     pub service_id: String,
@@ -1308,8 +1319,22 @@ pub struct MySqlCreateArgs {
     pub password: Option<String>,
 
     /// Table mappings as schema.table:target_table (repeatable)
-    #[arg(long = "table-mapping", value_name = "SCHEMA.TABLE:TARGET_TABLE")]
+    ///
+    /// Leaves every other per-table option at the ClickPipes default.
+    #[arg(
+        long = "table-mapping",
+        value_name = "SCHEMA.TABLE:TARGET_TABLE",
+        value_parser = parse_postgres_table_mapping
+    )]
     pub table_mappings: Vec<String>,
+
+    /// Full table mapping as a JSON object (repeatable)
+    ///
+    /// Supports excludedColumns, sortingKeys, useCustomSortingKey,
+    /// partitionKey, partitionByExpr and tableEngine. Combinable with
+    /// --table-mapping; unknown fields are rejected.
+    #[arg(long = "table-mapping-json", value_name = "JSON")]
+    pub table_mappings_json: Vec<String>,
 
     /// MySQL type
     #[arg(
@@ -1419,6 +1444,12 @@ pub struct MySqlCreateArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("mongodb_table_mappings")
+        .required(true)
+        .multiple(true)
+        .args(["table_mappings", "table_mappings_json"])
+))]
 pub struct MongoDbCreateArgs {
     /// Service ID
     pub service_id: String,
@@ -1442,9 +1473,17 @@ pub struct MongoDbCreateArgs {
     /// Table mappings as database.collection:target_table (repeatable)
     #[arg(
         long = "table-mapping",
-        value_name = "DATABASE.COLLECTION:TARGET_TABLE"
+        value_name = "DATABASE.COLLECTION:TARGET_TABLE",
+        value_parser = parse_mongodb_table_mapping
     )]
     pub table_mappings: Vec<String>,
+
+    /// Full table mapping as a JSON object (repeatable)
+    ///
+    /// Supports tableEngine. Combinable with --table-mapping; unknown fields
+    /// are rejected.
+    #[arg(long = "table-mapping-json", value_name = "JSON")]
+    pub table_mappings_json: Vec<String>,
 
     /// Replication mode
     #[arg(
@@ -1517,6 +1556,12 @@ pub struct MongoDbCreateArgs {
 }
 
 #[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("bigquery_table_mappings")
+        .required(true)
+        .multiple(true)
+        .args(["table_mappings", "table_mappings_json"])
+))]
 pub struct BigQueryCreateArgs {
     /// Service ID
     pub service_id: String,
@@ -1550,8 +1595,22 @@ pub struct BigQueryCreateArgs {
     pub staging_path: String,
 
     /// Table mappings as dataset.table:target_table (repeatable)
-    #[arg(long = "table-mapping", value_name = "DATASET.TABLE:TARGET_TABLE")]
+    ///
+    /// Leaves every other per-table option at the ClickPipes default.
+    #[arg(
+        long = "table-mapping",
+        value_name = "DATASET.TABLE:TARGET_TABLE",
+        value_parser = parse_postgres_table_mapping
+    )]
     pub table_mappings: Vec<String>,
+
+    /// Full table mapping as a JSON object (repeatable)
+    ///
+    /// Supports excludedColumns, sortingKeys, useCustomSortingKey and
+    /// tableEngine. Combinable with --table-mapping; unknown fields are
+    /// rejected.
+    #[arg(long = "table-mapping-json", value_name = "JSON")]
+    pub table_mappings_json: Vec<String>,
 
     /// Replication mode
     #[arg(
@@ -3542,29 +3601,6 @@ fn print_created(
     Ok(())
 }
 
-/// Parse `schema.table:target_table` mappings into (schema, table, target) tuples.
-/// Source-specific handlers map these into their own TableMapping struct.
-fn parse_db_table_mappings(mappings: &[String]) -> CloudResult<Vec<(String, String, String)>> {
-    mappings
-        .iter()
-        .map(|mapping| {
-            let (source, target) = mapping.split_once(':').ok_or_else(|| {
-                CloudError::new(format!(
-                    "Invalid table mapping '{}': expected schema.table:target_table",
-                    mapping
-                ))
-            })?;
-            let (schema, table) = source.split_once('.').ok_or_else(|| {
-                CloudError::new(format!(
-                    "Invalid source '{}': expected schema.table",
-                    source
-                ))
-            })?;
-            Ok((schema.to_string(), table.to_string(), target.to_string()))
-        })
-        .collect()
-}
-
 fn parse_postgres_table_mapping_parts(mapping: &str) -> CloudResult<(String, String, String)> {
     let (source, target) = mapping.split_once(':').ok_or_else(|| {
         CloudError::new(format!(
@@ -3608,6 +3644,278 @@ fn parse_postgres_table_mapping(mapping: &str) -> Result<String, String> {
     parse_postgres_table_mapping_parts(mapping)
         .map(|_| mapping.to_string())
         .map_err(|error| error.message)
+}
+
+fn parse_mongodb_table_mapping_parts(mapping: &str) -> CloudResult<(String, String, String)> {
+    let (source, target) = mapping.split_once(':').ok_or_else(|| {
+        CloudError::new(format!(
+            "invalid table mapping '{}': expected database.collection:target_table",
+            mapping
+        ))
+    })?;
+    let (database, collection) = source.split_once('.').ok_or_else(|| {
+        CloudError::new(format!(
+            "invalid table mapping '{}': expected database.collection:target_table",
+            mapping
+        ))
+    })?;
+    if database.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "invalid table mapping '{}': source database must not be empty",
+            mapping
+        )));
+    }
+    if collection.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "invalid table mapping '{}': source collection must not be empty",
+            mapping
+        )));
+    }
+    if target.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "invalid table mapping '{}': target table must not be empty",
+            mapping
+        )));
+    }
+
+    Ok((
+        database.trim().to_string(),
+        collection.trim().to_string(),
+        target.trim().to_string(),
+    ))
+}
+
+fn parse_mongodb_table_mapping(mapping: &str) -> Result<String, String> {
+    parse_mongodb_table_mapping_parts(mapping)
+        .map(|_| mapping.to_string())
+        .map_err(|error| error.message)
+}
+
+fn parse_strict_table_mapping_json<T>(position: usize, raw: &str, fields: &[&str]) -> CloudResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let invalid = |detail: String| CloudError::new(format!("{flag}: {detail}"));
+    let field_list = fields.join(", ");
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|error| invalid(format!("invalid JSON: {error}")))?;
+    let object = value.as_object().ok_or_else(|| {
+        invalid(format!(
+            "expected a JSON object with the fields {field_list}"
+        ))
+    })?;
+    let unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !fields.contains(key))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(invalid(format!(
+            "unknown field{} {}; valid fields are {field_list}",
+            if unknown.len() == 1 { "" } else { "s" },
+            unknown.join(", "),
+        )));
+    }
+
+    crate::cloud::config::deserialize_strict_config(value, &flag).map_err(|error| {
+        let prefix = format!("invalid request body in config {flag}: ");
+        invalid(
+            error
+                .message
+                .strip_prefix(&prefix)
+                .unwrap_or(&error.message)
+                .to_string(),
+        )
+    })
+}
+
+fn required_table_mapping_name(flag: &str, field: &str, value: String) -> CloudResult<String> {
+    if value.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "{flag}: {field} is required and must not be empty"
+        )));
+    }
+    Ok(value.trim().to_string())
+}
+
+fn validate_table_mapping_entries(
+    flag: &str,
+    field: &str,
+    values: Option<Vec<String>>,
+    unique: bool,
+) -> CloudResult<Option<Vec<String>>> {
+    values
+        .map(|values| {
+            let mut seen = std::collections::HashSet::new();
+            values
+                .into_iter()
+                .map(|entry| {
+                    let entry = entry.trim().to_string();
+                    if entry.is_empty() {
+                        return Err(CloudError::new(format!(
+                            "{flag}: {field} must not contain an empty entry"
+                        )));
+                    }
+                    if unique && !seen.insert(entry.clone()) {
+                        return Err(CloudError::new(format!(
+                            "{flag}: {field} must not contain duplicate entry '{entry}'"
+                        )));
+                    }
+                    Ok(entry)
+                })
+                .collect()
+        })
+        .transpose()
+}
+
+fn resolve_custom_sorting_key(
+    flag: &str,
+    sorting_keys: &Option<Vec<String>>,
+    use_custom_sorting_key: Option<bool>,
+) -> CloudResult<Option<bool>> {
+    let has_sorting_keys = sorting_keys
+        .as_ref()
+        .is_some_and(|sorting_keys| !sorting_keys.is_empty());
+    match use_custom_sorting_key {
+        Some(true) if !has_sorting_keys => Err(CloudError::new(format!(
+            "{flag}: useCustomSortingKey is true but sortingKeys is empty; list the destination \
+             ORDER BY columns in sortingKeys"
+        ))),
+        Some(false) if has_sorting_keys => Err(CloudError::new(format!(
+            "{flag}: sortingKeys is set but useCustomSortingKey is false, which would ignore the \
+             keys; omit useCustomSortingKey or set it to true"
+        ))),
+        None if has_sorting_keys => Ok(Some(true)),
+        explicit => Ok(explicit),
+    }
+}
+
+fn validate_table_mapping_engine<T>(
+    flag: &str,
+    table_engine: &Option<T>,
+    values: &[&str],
+) -> CloudResult<()>
+where
+    T: std::fmt::Display,
+{
+    let Some(table_engine) = table_engine else {
+        return Ok(());
+    };
+    let table_engine = table_engine.to_string();
+    if values.contains(&table_engine.as_str()) {
+        Ok(())
+    } else {
+        Err(CloudError::new(format!(
+            "{flag}: invalid tableEngine: unknown value '{table_engine}', expected one of: {}",
+            values.join(", ")
+        )))
+    }
+}
+
+const MYSQL_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
+    "sourceSchemaName",
+    "sourceTable",
+    "targetTable",
+    "excludedColumns",
+    "sortingKeys",
+    "useCustomSortingKey",
+    "partitionKey",
+    "partitionByExpr",
+    "tableEngine",
+];
+
+fn parse_mysql_table_mapping_json(
+    position: usize,
+    raw: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeMySQLPipeTableMapping> {
+    use clickhouse_cloud_api::models::ClickPipeMySQLPipeTableMapping;
+
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let mut mapping: ClickPipeMySQLPipeTableMapping =
+        parse_strict_table_mapping_json(position, raw, MYSQL_TABLE_MAPPING_JSON_FIELDS)?;
+    mapping.source_schema_name =
+        required_table_mapping_name(&flag, "sourceSchemaName", mapping.source_schema_name)?;
+    mapping.source_table = required_table_mapping_name(&flag, "sourceTable", mapping.source_table)?;
+    mapping.target_table = required_table_mapping_name(&flag, "targetTable", mapping.target_table)?;
+    mapping.excluded_columns =
+        validate_table_mapping_entries(&flag, "excludedColumns", mapping.excluded_columns, true)?;
+    mapping.sorting_keys =
+        validate_table_mapping_entries(&flag, "sortingKeys", mapping.sorting_keys, true)?;
+    mapping.use_custom_sorting_key =
+        resolve_custom_sorting_key(&flag, &mapping.sorting_keys, mapping.use_custom_sorting_key)?;
+    validate_table_mapping_engine(
+        &flag,
+        &mapping.table_engine,
+        ClickPipeMySQLPipeTableMappingTableengine::VALUES,
+    )?;
+    Ok(mapping)
+}
+
+const MONGODB_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
+    "sourceDatabaseName",
+    "sourceCollection",
+    "targetTable",
+    "tableEngine",
+];
+
+fn parse_mongodb_table_mapping_json(
+    position: usize,
+    raw: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMapping> {
+    use clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMapping;
+
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let mut mapping: ClickPipeMongoDBPipeTableMapping =
+        parse_strict_table_mapping_json(position, raw, MONGODB_TABLE_MAPPING_JSON_FIELDS)?;
+    mapping.source_database_name =
+        required_table_mapping_name(&flag, "sourceDatabaseName", mapping.source_database_name)?;
+    mapping.source_collection =
+        required_table_mapping_name(&flag, "sourceCollection", mapping.source_collection)?;
+    mapping.target_table = required_table_mapping_name(&flag, "targetTable", mapping.target_table)?;
+    validate_table_mapping_engine(
+        &flag,
+        &mapping.table_engine,
+        ClickPipeMongoDBPipeTableMappingTableengine::VALUES,
+    )?;
+    Ok(mapping)
+}
+
+const BIGQUERY_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
+    "sourceDatasetName",
+    "sourceTable",
+    "targetTable",
+    "excludedColumns",
+    "sortingKeys",
+    "useCustomSortingKey",
+    "tableEngine",
+];
+
+fn parse_bigquery_table_mapping_json(
+    position: usize,
+    raw: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeBigQueryPipeTableMapping> {
+    use clickhouse_cloud_api::models::ClickPipeBigQueryPipeTableMapping;
+
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let mut mapping: ClickPipeBigQueryPipeTableMapping =
+        parse_strict_table_mapping_json(position, raw, BIGQUERY_TABLE_MAPPING_JSON_FIELDS)?;
+    mapping.source_dataset_name =
+        required_table_mapping_name(&flag, "sourceDatasetName", mapping.source_dataset_name)?;
+    mapping.source_table = required_table_mapping_name(&flag, "sourceTable", mapping.source_table)?;
+    mapping.target_table = required_table_mapping_name(&flag, "targetTable", mapping.target_table)?;
+    mapping.excluded_columns =
+        validate_table_mapping_entries(&flag, "excludedColumns", mapping.excluded_columns, false)?;
+    mapping.sorting_keys =
+        validate_table_mapping_entries(&flag, "sortingKeys", mapping.sorting_keys, false)?;
+    mapping.use_custom_sorting_key =
+        resolve_custom_sorting_key(&flag, &mapping.sorting_keys, mapping.use_custom_sorting_key)?;
+    validate_table_mapping_engine(
+        &flag,
+        &mapping.table_engine,
+        ClickPipeBigQueryPipeTableMappingTableengine::VALUES,
+    )?;
+    Ok(mapping)
 }
 
 /// Wire field names `ClickPipePostgresPipeTableMapping` accepts, in the order
@@ -3992,6 +4300,7 @@ async fn clickpipe_create_postgres(
 /// Check the `clickpipe create mysql` flag relationships clap cannot express,
 /// because each one depends on the value of `--auth` rather than its presence.
 fn validate_mysql_create_args(args: &MySqlCreateArgs) -> CloudResult<()> {
+    resolve_mysql_table_mappings(args)?;
     // Clap enforces this for parsed input via `required_if_eq`; hand-built
     // args reach it here.
     if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
@@ -4056,13 +4365,41 @@ fn validate_mysql_create_args(args: &MySqlCreateArgs) -> CloudResult<()> {
     Ok(())
 }
 
+fn resolve_mysql_table_mappings(
+    args: &MySqlCreateArgs,
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeMySQLPipeTableMapping>> {
+    use clickhouse_cloud_api::models::ClickPipeMySQLPipeTableMapping;
+
+    if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
+        return Err(CloudError::new(
+            "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> or \
+             --table-mapping-json <JSON> is required",
+        ));
+    }
+    let mut mappings =
+        Vec::with_capacity(args.table_mappings.len() + args.table_mappings_json.len());
+    for mapping in &args.table_mappings {
+        let (source_schema_name, source_table, target_table) =
+            parse_postgres_table_mapping_parts(mapping)?;
+        mappings.push(ClickPipeMySQLPipeTableMapping {
+            source_schema_name,
+            source_table,
+            target_table,
+            ..Default::default()
+        });
+    }
+    for (position, mapping) in args.table_mappings_json.iter().enumerate() {
+        mappings.push(parse_mysql_table_mapping_json(position, mapping)?);
+    }
+    Ok(mappings)
+}
+
 fn build_mysql_request(
     args: &MySqlCreateArgs,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
         ClickPipeMutateMySQLSource, ClickPipeMutateMySQLSourceAuthentication,
-        ClickPipeMySQLPipeSettings, ClickPipeMySQLPipeTableMapping, ClickPipePostRequest,
-        ClickPipePostSource, PLAIN,
+        ClickPipeMySQLPipeSettings, ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
 
     validate_mysql_create_args(args)?;
@@ -4086,25 +4423,13 @@ fn build_mysql_request(
         "MySQL authentication",
         ClickPipeMutateMySQLSourceAuthentication::VALUES,
     )?;
-    let mappings = parse_db_table_mappings(&args.table_mappings)?;
+    let table_mappings = resolve_mysql_table_mappings(args)?;
 
     let ca_certificate = args
         .ca_certificate
         .as_deref()
         .map(std::fs::read_to_string)
         .transpose()?;
-
-    let table_mappings = mappings
-        .into_iter()
-        .map(
-            |(source_schema_name, source_table, target_table)| ClickPipeMySQLPipeTableMapping {
-                source_schema_name,
-                source_table,
-                target_table,
-                ..Default::default()
-            },
-        )
-        .collect();
 
     // Match the parsed authentication mode, not the raw `--auth` string, so a
     // new mode added to the library enum is a compile error here rather than a
@@ -4191,6 +4516,7 @@ async fn clickpipe_create_mysql(
 }
 
 fn validate_mongodb_create_args(args: &MongoDbCreateArgs) -> CloudResult<()> {
+    resolve_mongodb_table_mappings(args)?;
     if args.disable_tls
         && (args.tls_host.is_some() || args.ca_certificate.is_some() || args.skip_cert_verification)
     {
@@ -4221,12 +4547,41 @@ fn validate_mongodb_create_args(args: &MongoDbCreateArgs) -> CloudResult<()> {
     Ok(())
 }
 
+fn resolve_mongodb_table_mappings(
+    args: &MongoDbCreateArgs,
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMapping>> {
+    use clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMapping;
+
+    if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
+        return Err(CloudError::new(
+            "at least one --table-mapping <DATABASE.COLLECTION:TARGET_TABLE> or \
+             --table-mapping-json <JSON> is required",
+        ));
+    }
+    let mut mappings =
+        Vec::with_capacity(args.table_mappings.len() + args.table_mappings_json.len());
+    for mapping in &args.table_mappings {
+        let (source_database_name, source_collection, target_table) =
+            parse_mongodb_table_mapping_parts(mapping)?;
+        mappings.push(ClickPipeMongoDBPipeTableMapping {
+            source_database_name,
+            source_collection,
+            target_table,
+            ..Default::default()
+        });
+    }
+    for (position, mapping) in args.table_mappings_json.iter().enumerate() {
+        mappings.push(parse_mongodb_table_mapping_json(position, mapping)?);
+    }
+    Ok(mappings)
+}
+
 fn build_mongodb_request(
     args: &MongoDbCreateArgs,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
-        ClickPipeMongoDBPipeSettings, ClickPipeMongoDBPipeTableMapping,
-        ClickPipeMutateMongoDBSource, ClickPipePostRequest, ClickPipePostSource, PLAIN,
+        ClickPipeMongoDBPipeSettings, ClickPipeMutateMongoDBSource, ClickPipePostRequest,
+        ClickPipePostSource, PLAIN,
     };
 
     validate_mongodb_create_args(args)?;
@@ -4241,32 +4596,7 @@ fn build_mongodb_request(
         ClickPipeMongoDBPipeSettingsReplicationmode::VALUES,
     )?;
 
-    // MongoDB uses `database.collection:target_table` format.
-    let table_mappings: Vec<ClickPipeMongoDBPipeTableMapping> = args
-        .table_mappings
-        .iter()
-        .map(|mapping| {
-            let (source, target_table) = mapping.split_once(':').ok_or_else(|| {
-                CloudError::new(format!(
-                    "Invalid table mapping '{}': expected database.collection:target_table",
-                    mapping
-                ))
-            })?;
-            let (source_database_name, source_collection) =
-                source.split_once('.').ok_or_else(|| {
-                    CloudError::new(format!(
-                        "Invalid source '{}': expected database.collection",
-                        source
-                    ))
-                })?;
-            Ok(ClickPipeMongoDBPipeTableMapping {
-                source_database_name: source_database_name.to_string(),
-                source_collection: source_collection.to_string(),
-                target_table: target_table.to_string(),
-                table_engine: None,
-            })
-        })
-        .collect::<CloudResult<Vec<_>>>()?;
+    let table_mappings = resolve_mongodb_table_mappings(args)?;
 
     let ca_certificate = match args.ca_certificate.as_deref() {
         Some(path) => Some(std::fs::read_to_string(path)?),
@@ -4333,16 +4663,7 @@ async fn clickpipe_create_mongodb(
     Ok(())
 }
 
-fn build_bigquery_request(
-    args: &BigQueryCreateArgs,
-) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
-    use clickhouse_cloud_api::models::{
-        ClickPipeBigQueryPipeSettings, ClickPipeBigQueryPipeTableMapping,
-        ClickPipePostBigQueryServiceAccountSource, ClickPipePostBigQueryWorkloadIdentitySource,
-        ClickPipePostBigQueryWorkloadIdentitySourceAuthentication, ClickPipePostRequest,
-        ClickPipePostSource, ServiceAccount,
-    };
-
+fn validate_bigquery_create_args(args: &BigQueryCreateArgs) -> CloudResult<()> {
     for (flag, value) in [
         ("--initial-load-parallelism", args.initial_load_parallelism),
         (
@@ -4382,31 +4703,52 @@ fn build_bigquery_request(
         _ => {}
     }
 
-    // BigQuery uses `dataset.table:target_table` format.
-    let table_mappings: Vec<ClickPipeBigQueryPipeTableMapping> = args
-        .table_mappings
-        .iter()
-        .map(|mapping| {
-            let (source, target_table) = mapping.split_once(':').ok_or_else(|| {
-                CloudError::new(format!(
-                    "Invalid table mapping '{}': expected dataset.table:target_table",
-                    mapping
-                ))
-            })?;
-            let (source_dataset_name, source_table) = source.split_once('.').ok_or_else(|| {
-                CloudError::new(format!(
-                    "Invalid source '{}': expected dataset.table",
-                    source
-                ))
-            })?;
-            Ok(ClickPipeBigQueryPipeTableMapping {
-                source_dataset_name: source_dataset_name.to_string(),
-                source_table: source_table.to_string(),
-                target_table: target_table.to_string(),
-                ..Default::default()
-            })
-        })
-        .collect::<CloudResult<Vec<_>>>()?;
+    resolve_bigquery_table_mappings(args)?;
+    Ok(())
+}
+
+fn resolve_bigquery_table_mappings(
+    args: &BigQueryCreateArgs,
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeBigQueryPipeTableMapping>> {
+    use clickhouse_cloud_api::models::ClickPipeBigQueryPipeTableMapping;
+
+    if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
+        return Err(CloudError::new(
+            "at least one --table-mapping <DATASET.TABLE:TARGET_TABLE> or \
+             --table-mapping-json <JSON> is required",
+        ));
+    }
+    let mut mappings =
+        Vec::with_capacity(args.table_mappings.len() + args.table_mappings_json.len());
+    for mapping in &args.table_mappings {
+        let (source_dataset_name, source_table, target_table) =
+            parse_postgres_table_mapping_parts(mapping)?;
+        mappings.push(ClickPipeBigQueryPipeTableMapping {
+            source_dataset_name,
+            source_table,
+            target_table,
+            ..Default::default()
+        });
+    }
+    for (position, mapping) in args.table_mappings_json.iter().enumerate() {
+        mappings.push(parse_bigquery_table_mapping_json(position, mapping)?);
+    }
+    Ok(mappings)
+}
+
+fn build_bigquery_request(
+    args: &BigQueryCreateArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeBigQueryPipeSettings, ClickPipePostBigQueryServiceAccountSource,
+        ClickPipePostBigQueryWorkloadIdentitySource,
+        ClickPipePostBigQueryWorkloadIdentitySourceAuthentication, ClickPipePostRequest,
+        ClickPipePostSource, ServiceAccount,
+    };
+
+    validate_bigquery_create_args(args)?;
+    let authentication = parse_bigquery_authentication(&args.auth)?;
+    let table_mappings = resolve_bigquery_table_mappings(args)?;
 
     let settings = ClickPipeBigQueryPipeSettings {
         replication_mode: parse_enum(&args.replication_mode)?,
@@ -5028,6 +5370,8 @@ mod tests {
             "pipe-1",
             "--host",
             "mysql.example",
+            "--table-mapping",
+            "source.events:events",
             flag,
             value,
         ];
@@ -5055,6 +5399,8 @@ mod tests {
             "user",
             "--password",
             "password",
+            "--table-mapping",
+            "source.events:events",
             flag,
             value,
         ]);
@@ -5071,6 +5417,8 @@ mod tests {
             "/tmp/account.json",
             "--staging-path",
             "gs://bucket/staging",
+            "--table-mapping",
+            "dataset.events:events",
             flag,
             value,
         ]);
@@ -7193,6 +7541,8 @@ mod tests {
             "source.one:one",
             "--table-mapping",
             "source.two:two",
+            "--table-mapping-json",
+            r#"{"sourceSchemaName":"source","sourceTable":"three","targetTable":"three"}"#,
             "--mysql-type",
             "mariadb",
             "--replication-mode",
@@ -7242,6 +7592,7 @@ mod tests {
         assert_eq!(args.username, None);
         assert_eq!(args.password, None);
         assert_eq!(args.table_mappings, ["source.one:one", "source.two:two"]);
+        assert_eq!(args.table_mappings_json.len(), 1);
         assert_eq!(args.mysql_type, "mariadb");
         assert_eq!(args.replication_mode, "cdc_only");
         assert_eq!(args.replication_mechanism, "FILE_POS");
@@ -7277,6 +7628,8 @@ mod tests {
             "user",
             "--password",
             "password",
+            "--table-mapping-json",
+            r#"{"sourceSchemaName":"source","sourceTable":"events","targetTable":"events"}"#,
             "--server-id",
             "1",
         ])
@@ -7287,6 +7640,7 @@ mod tests {
         assert_eq!(args.username.as_deref(), Some("user"));
         assert_eq!(args.password.as_deref(), Some("password"));
         assert!(args.table_mappings.is_empty());
+        assert_eq!(args.table_mappings_json.len(), 1);
         assert_eq!(args.mysql_type, "mysql");
         assert_eq!(args.replication_mode, "cdc");
         assert_eq!(args.replication_mechanism, "GTID");
@@ -7321,6 +7675,8 @@ mod tests {
                 "user",
                 "--password",
                 "password",
+                "--table-mapping",
+                "source.events:events",
                 "--server-id",
                 invalid,
             ]);
@@ -7498,6 +7854,8 @@ mod tests {
             "source.one:one",
             "--table-mapping",
             "source.two:two",
+            "--table-mapping-json",
+            r#"{"sourceDatabaseName":"source","sourceCollection":"three","targetTable":"three"}"#,
             "--replication-mode",
             "snapshot",
             "--read-preference",
@@ -7533,6 +7891,7 @@ mod tests {
         assert_eq!(args.username, "user");
         assert_eq!(args.password, "password");
         assert_eq!(args.table_mappings, ["source.one:one", "source.two:two"]);
+        assert_eq!(args.table_mappings_json.len(), 1);
         assert_eq!(args.replication_mode, "snapshot");
         assert_eq!(args.read_preference, "nearest");
         assert_eq!(args.tls_host.as_deref(), Some("tls.example"));
@@ -7562,11 +7921,14 @@ mod tests {
             "user",
             "--password",
             "password",
+            "--table-mapping-json",
+            r#"{"sourceDatabaseName":"source","sourceCollection":"events","targetTable":"events"}"#,
         ])
         else {
             panic!("expected mongodb create");
         };
         assert!(args.table_mappings.is_empty());
+        assert_eq!(args.table_mappings_json.len(), 1);
         assert_eq!(args.replication_mode, "cdc");
         assert_eq!(args.read_preference, "secondaryPreferred");
         assert_eq!(args.tls_host, None);
@@ -7600,6 +7962,8 @@ mod tests {
                 "user",
                 "--password",
                 "password",
+                "--table-mapping",
+                "source.events:events",
                 flag,
                 invalid,
             ]);
@@ -7624,6 +7988,8 @@ mod tests {
             "dataset.one:one",
             "--table-mapping",
             "dataset.two:two",
+            "--table-mapping-json",
+            r#"{"sourceDatasetName":"dataset","sourceTable":"three","targetTable":"three"}"#,
             "--replication-mode",
             "snapshot",
             "--allow-nullable-columns",
@@ -7652,6 +8018,7 @@ mod tests {
         assert_eq!(args.project_id, None);
         assert_eq!(args.staging_path, "gs://bucket/staging");
         assert_eq!(args.table_mappings, ["dataset.one:one", "dataset.two:two"]);
+        assert_eq!(args.table_mappings_json.len(), 1);
         assert_eq!(args.replication_mode, "snapshot");
         assert_eq!(args.allow_nullable_columns, Some(false));
         assert_eq!(args.initial_load_parallelism, Some(2.5));
@@ -7672,11 +8039,14 @@ mod tests {
             "/tmp/account.json",
             "--staging-path",
             "gs://bucket/staging",
+            "--table-mapping-json",
+            r#"{"sourceDatasetName":"dataset","sourceTable":"events","targetTable":"events"}"#,
         ])
         else {
             panic!("expected bigquery create");
         };
         assert!(args.table_mappings.is_empty());
+        assert_eq!(args.table_mappings_json.len(), 1);
         assert_eq!(args.replication_mode, "snapshot");
         assert_eq!(args.allow_nullable_columns, None);
         assert_eq!(args.initial_load_parallelism, None);
@@ -7684,6 +8054,60 @@ mod tests {
         assert_eq!(args.snapshot_parallel_tables, None);
         assert_eq!(args.destination.destination_database, "default");
         assert_eq!(args.org_id, None);
+    }
+
+    #[test]
+    fn non_postgres_database_sources_require_one_mapping_form() {
+        let cases = [
+            vec![
+                "create",
+                "mysql",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--host",
+                "mysql.example",
+                "--username",
+                "user",
+                "--password",
+                "password",
+            ],
+            vec![
+                "create",
+                "mongodb",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--uri",
+                "mongodb://mongo.example/source",
+                "--username",
+                "user",
+                "--password",
+                "password",
+            ],
+            vec![
+                "create",
+                "bigquery",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--service-account-file",
+                "/tmp/account.json",
+                "--staging-path",
+                "gs://bucket/staging",
+            ],
+        ];
+
+        for args in cases {
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+            let message = error.to_string();
+            assert!(message.contains("--table-mapping"), "{message}");
+            assert!(message.contains("--table-mapping-json"), "{message}");
+        }
     }
 
     #[test]
@@ -7703,6 +8127,8 @@ mod tests {
                 "/tmp/account.json",
                 "--staging-path",
                 "gs://bucket/staging",
+                "--table-mapping",
+                "dataset.events:events",
                 flag,
                 value,
             ]);
@@ -9416,6 +9842,197 @@ mod tests {
         );
     }
 
+    const MAXIMAL_MYSQL_TABLE_MAPPING_JSON: &str = r#"{
+        "sourceSchemaName":"sales",
+        "sourceTable":"orders",
+        "targetTable":"orders_raw",
+        "excludedColumns":["internal_id","temporary"],
+        "sortingKeys":["created_at","id"],
+        "useCustomSortingKey":true,
+        "partitionKey":"id",
+        "partitionByExpr":"toYYYYMM(created_at)",
+        "tableEngine":"ReplacingMergeTree"
+    }"#;
+
+    const MAXIMAL_MONGODB_TABLE_MAPPING_JSON: &str = r#"{
+        "sourceDatabaseName":"sales",
+        "sourceCollection":"orders",
+        "targetTable":"orders_raw",
+        "tableEngine":"Null"
+    }"#;
+
+    const MAXIMAL_BIGQUERY_TABLE_MAPPING_JSON: &str = r#"{
+        "sourceDatasetName":"sales",
+        "sourceTable":"orders",
+        "targetTable":"orders_raw",
+        "excludedColumns":["internal_id","temporary"],
+        "sortingKeys":["created_at","id"],
+        "useCustomSortingKey":true,
+        "tableEngine":"MergeTree"
+    }"#;
+
+    #[test]
+    fn non_postgres_table_mapping_json_accepts_every_field() {
+        let mysql = parse_mysql_table_mapping_json(0, MAXIMAL_MYSQL_TABLE_MAPPING_JSON).unwrap();
+        assert_eq!(mysql.source_schema_name, "sales");
+        assert_eq!(mysql.source_table, "orders");
+        assert_eq!(mysql.target_table, "orders_raw");
+        assert_eq!(
+            mysql.excluded_columns.unwrap(),
+            ["internal_id", "temporary"]
+        );
+        assert_eq!(mysql.sorting_keys.unwrap(), ["created_at", "id"]);
+        assert_eq!(mysql.use_custom_sorting_key, Some(true));
+        assert_eq!(mysql.partition_key.as_deref(), Some("id"));
+        assert_eq!(
+            mysql.partition_by_expr.as_deref(),
+            Some("toYYYYMM(created_at)")
+        );
+        assert_eq!(
+            mysql.table_engine,
+            Some(ClickPipeMySQLPipeTableMappingTableengine::ReplacingMergeTree)
+        );
+
+        let mongodb =
+            parse_mongodb_table_mapping_json(0, MAXIMAL_MONGODB_TABLE_MAPPING_JSON).unwrap();
+        assert_eq!(mongodb.source_database_name, "sales");
+        assert_eq!(mongodb.source_collection, "orders");
+        assert_eq!(mongodb.target_table, "orders_raw");
+        assert_eq!(
+            mongodb.table_engine,
+            Some(ClickPipeMongoDBPipeTableMappingTableengine::Null)
+        );
+
+        let bigquery =
+            parse_bigquery_table_mapping_json(0, MAXIMAL_BIGQUERY_TABLE_MAPPING_JSON).unwrap();
+        assert_eq!(bigquery.source_dataset_name, "sales");
+        assert_eq!(bigquery.source_table, "orders");
+        assert_eq!(bigquery.target_table, "orders_raw");
+        assert_eq!(
+            bigquery.excluded_columns.unwrap(),
+            ["internal_id", "temporary"]
+        );
+        assert_eq!(bigquery.sorting_keys.unwrap(), ["created_at", "id"]);
+        assert_eq!(bigquery.use_custom_sorting_key, Some(true));
+        assert_eq!(
+            bigquery.table_engine,
+            Some(ClickPipeBigQueryPipeTableMappingTableengine::MergeTree)
+        );
+    }
+
+    #[test]
+    fn non_postgres_table_mapping_json_preserves_optional_omission_and_empty_lists() {
+        let mysql = parse_mysql_table_mapping_json(
+            0,
+            r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t"}"#,
+        )
+        .unwrap();
+        assert_eq!(mysql.excluded_columns, None);
+        assert_eq!(mysql.sorting_keys, None);
+        assert_eq!(mysql.use_custom_sorting_key, None);
+        assert_eq!(mysql.partition_key, None);
+        assert_eq!(mysql.partition_by_expr, None);
+        assert_eq!(mysql.table_engine, None);
+
+        let bigquery = parse_bigquery_table_mapping_json(
+            0,
+            r#"{"sourceDatasetName":"ds","sourceTable":"t","targetTable":"t","excludedColumns":[],"sortingKeys":[],"useCustomSortingKey":false}"#,
+        )
+        .unwrap();
+        assert_eq!(bigquery.excluded_columns, Some(vec![]));
+        assert_eq!(bigquery.sorting_keys, Some(vec![]));
+        assert_eq!(bigquery.use_custom_sorting_key, Some(false));
+        assert_eq!(bigquery.table_engine, None);
+    }
+
+    #[test]
+    fn non_postgres_table_mapping_json_accepts_every_table_engine() {
+        for engine in ClickPipeMySQLPipeTableMappingTableengine::VALUES {
+            let mapping = parse_mysql_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","tableEngine":"{engine}"}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(mapping.table_engine.unwrap().to_string(), *engine);
+        }
+        for engine in ClickPipeMongoDBPipeTableMappingTableengine::VALUES {
+            let mapping = parse_mongodb_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","tableEngine":"{engine}"}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(mapping.table_engine.unwrap().to_string(), *engine);
+        }
+        for engine in ClickPipeBigQueryPipeTableMappingTableengine::VALUES {
+            let mapping = parse_bigquery_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceDatasetName":"ds","sourceTable":"t","targetTable":"t","tableEngine":"{engine}"}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(mapping.table_engine.unwrap().to_string(), *engine);
+        }
+    }
+
+    #[test]
+    fn non_postgres_table_mapping_json_rejects_invalid_objects() {
+        let mysql_cases = [
+            ("{ nope", "invalid JSON"),
+            (r#"["db.t"]"#, "expected a JSON object"),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","excludeColumns":[]}"#,
+                "unknown field excludeColumns",
+            ),
+            (
+                r#"{"sourceTable":"t","targetTable":"t"}"#,
+                "missing field `sourceSchemaName`",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","excludedColumns":["id",""]}"#,
+                "excludedColumns must not contain an empty entry",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","sortingKeys":["id","id"]}"#,
+                "sortingKeys must not contain duplicate entry 'id'",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","useCustomSortingKey":true}"#,
+                "useCustomSortingKey is true but sortingKeys is empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","sortingKeys":["id"],"useCustomSortingKey":false}"#,
+                "sortingKeys is set but useCustomSortingKey is false",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","tableEngine":"MergeTre"}"#,
+                "invalid tableEngine: unknown value 'MergeTre'",
+            ),
+        ];
+        for (raw, diagnostic) in mysql_cases {
+            let error = parse_mysql_table_mapping_json(1, raw).unwrap_err();
+            assert!(error.message.starts_with("--table-mapping-json #2: "));
+            assert!(error.message.contains(diagnostic), "{}", error.message);
+        }
+
+        let mongodb = parse_mongodb_table_mapping_json(
+            0,
+            r#"{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","sortingKeys":[]}"#,
+        )
+        .unwrap_err();
+        assert!(mongodb.message.contains("unknown field sortingKeys"));
+        let bigquery = parse_bigquery_table_mapping_json(
+            0,
+            r#"{"sourceDatasetName":"ds","sourceTable":"","targetTable":"t"}"#,
+        )
+        .unwrap_err();
+        assert!(bigquery.message.contains("sourceTable is required"));
+    }
+
     #[test]
     fn build_postgres_request_combines_both_table_mapping_flags() {
         let mut args = postgres_builder_args();
@@ -9573,6 +10190,7 @@ mod tests {
             username: Some("user".into()),
             password: Some("password".into()),
             table_mappings: vec!["source.events:events".into()],
+            table_mappings_json: vec![],
             mysql_type: "mysql".into(),
             replication_mode: "cdc".into(),
             replication_mechanism: "GTID".into(),
@@ -9661,7 +10279,8 @@ mod tests {
         // credential, so the `credentials` object is omitted entirely.
         args.username = None;
         args.password = None;
-        args.table_mappings = vec!["source.users:users_raw".into(), "audit.log:audit".into()];
+        args.table_mappings = vec!["source.users:users_raw".into()];
+        args.table_mappings_json = vec![MAXIMAL_MYSQL_TABLE_MAPPING_JSON.into()];
         args.mysql_type = "rdsmysql".into();
         args.replication_mode = "cdc_only".into();
         args.replication_mechanism = "FILE_POS".into();
@@ -9732,6 +10351,28 @@ mod tests {
         assert_eq!(source.settings.delete_on_merge, Some(true));
         assert_eq!(source.settings.use_compression, Some(false));
         assert_eq!(source.table_mappings.len(), 2);
+        let mapping = &source.table_mappings[1];
+        assert_eq!(mapping.source_schema_name, "sales");
+        assert_eq!(mapping.source_table, "orders");
+        assert_eq!(mapping.target_table, "orders_raw");
+        assert_eq!(
+            mapping.excluded_columns.as_deref(),
+            Some(&["internal_id".into(), "temporary".into()][..])
+        );
+        assert_eq!(
+            mapping.sorting_keys.as_deref(),
+            Some(&["created_at".into(), "id".into()][..])
+        );
+        assert_eq!(mapping.use_custom_sorting_key, Some(true));
+        assert_eq!(mapping.partition_key.as_deref(), Some("id"));
+        assert_eq!(
+            mapping.partition_by_expr.as_deref(),
+            Some("toYYYYMM(created_at)")
+        );
+        assert_eq!(
+            mapping.table_engine,
+            Some(ClickPipeMySQLPipeTableMappingTableengine::ReplacingMergeTree)
+        );
     }
 
     #[test]
@@ -9768,7 +10409,7 @@ mod tests {
             {
                 let mut args = mysql_builder_args();
                 args.table_mappings = vec!["source.events".into()];
-                (args, "Invalid table mapping")
+                (args, "invalid table mapping")
             },
             {
                 let mut args = mysql_builder_args();
@@ -9797,6 +10438,7 @@ mod tests {
             username: "user".into(),
             password: "password".into(),
             table_mappings: vec!["source.events:events".into()],
+            table_mappings_json: vec![],
             replication_mode: "cdc".into(),
             read_preference: "secondaryPreferred".into(),
             tls_host: None,
@@ -9846,6 +10488,7 @@ mod tests {
         std::fs::write(&ca_certificate, "MONGODB_CA").unwrap();
         let mut args = mongodb_builder_args();
         args.table_mappings = vec!["sales.orders:orders_raw".into()];
+        args.table_mappings_json = vec![MAXIMAL_MONGODB_TABLE_MAPPING_JSON.into()];
         args.replication_mode = "snapshot".into();
         args.read_preference = "nearest".into();
         args.tls_host = Some("mongodb.internal".into());
@@ -9881,6 +10524,14 @@ mod tests {
         assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(3));
         assert_eq!(source.settings.delete_on_merge, Some(false));
         assert_eq!(source.settings.use_json_native_format, Some(true));
+        assert_eq!(source.table_mappings.len(), 2);
+        assert_eq!(source.table_mappings[1].source_database_name, "sales");
+        assert_eq!(source.table_mappings[1].source_collection, "orders");
+        assert_eq!(source.table_mappings[1].target_table, "orders_raw");
+        assert_eq!(
+            source.table_mappings[1].table_engine,
+            Some(ClickPipeMongoDBPipeTableMappingTableengine::Null)
+        );
     }
 
     #[test]
@@ -9910,6 +10561,7 @@ mod tests {
             project_id: None,
             staging_path: "gs://bucket/staging".into(),
             table_mappings: vec!["source.events:events".into()],
+            table_mappings_json: vec![],
             replication_mode: "snapshot".into(),
             allow_nullable_columns: None,
             initial_load_parallelism: None,
@@ -9960,10 +10612,8 @@ mod tests {
         args.name = "maximal-pipe".into();
         args.staging_path = "gs://other-bucket/snapshots".into();
         args.project_id = Some("source-project".into());
-        args.table_mappings = vec![
-            "sales.orders:orders_raw".into(),
-            "audit.events:audit_events".into(),
-        ];
+        args.table_mappings = vec!["audit.events:audit_events".into()];
+        args.table_mappings_json = vec![MAXIMAL_BIGQUERY_TABLE_MAPPING_JSON.into()];
         args.destination.destination_database = "analytics".into();
         args.destination_roles.roles = vec!["analytics_reader".into()];
         args.allow_nullable_columns = Some(true);
@@ -9990,6 +10640,23 @@ mod tests {
             "eyJwcm9qZWN0X2lkIjoic291cmNlLXByb2plY3QifQ=="
         );
         assert_eq!(source.table_mappings.len(), 2);
+        let mapping = &source.table_mappings[1];
+        assert_eq!(mapping.source_dataset_name, "sales");
+        assert_eq!(mapping.source_table, "orders");
+        assert_eq!(mapping.target_table, "orders_raw");
+        assert_eq!(
+            mapping.excluded_columns.as_deref(),
+            Some(&["internal_id".into(), "temporary".into()][..])
+        );
+        assert_eq!(
+            mapping.sorting_keys.as_deref(),
+            Some(&["created_at".into(), "id".into()][..])
+        );
+        assert_eq!(mapping.use_custom_sorting_key, Some(true));
+        assert_eq!(
+            mapping.table_engine,
+            Some(ClickPipeBigQueryPipeTableMappingTableengine::MergeTree)
+        );
         assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
         assert_eq!(source.settings.allow_nullable_columns, Some(true));
         assert_eq!(source.settings.initial_load_parallelism, Some(2.5));
@@ -10036,57 +10703,6 @@ mod tests {
 
             assert_eq!(error, format!("invalid {flag}: expected a finite number"));
         }
-    }
-
-    #[test]
-    fn parse_db_table_mappings_valid() {
-        let mappings = vec![
-            "public.users:public_users".to_string(),
-            "schema1.orders:schema1_orders".to_string(),
-        ];
-        let result = parse_db_table_mappings(&mappings).unwrap();
-        assert_eq!(result.len(), 2);
-        assert_eq!(
-            result[0],
-            ("public".into(), "users".into(), "public_users".into())
-        );
-        assert_eq!(
-            result[1],
-            ("schema1".into(), "orders".into(), "schema1_orders".into())
-        );
-    }
-
-    #[test]
-    fn parse_db_table_mappings_missing_colon() {
-        let mappings = vec!["public.users".to_string()];
-        let result = parse_db_table_mappings(&mappings);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .message
-                .contains("expected schema.table:target_table")
-        );
-    }
-
-    #[test]
-    fn parse_db_table_mappings_missing_dot() {
-        let mappings = vec!["users:target".to_string()];
-        let result = parse_db_table_mappings(&mappings);
-        assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .message
-                .contains("expected schema.table")
-        );
-    }
-
-    #[test]
-    fn parse_db_table_mappings_empty() {
-        let mappings: Vec<String> = vec![];
-        let result = parse_db_table_mappings(&mappings).unwrap();
-        assert!(result.is_empty());
     }
 
     #[test]
