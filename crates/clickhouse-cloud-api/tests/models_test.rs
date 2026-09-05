@@ -682,6 +682,37 @@ fn postgres_gcp_provider_roundtrips() {
 }
 
 #[test]
+fn postgres_config_enum_values_roundtrip_and_match_values() {
+    for value in PgConfigDefaultTransactionIsolation::VALUES {
+        let parsed: PgConfigDefaultTransactionIsolation =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigDefaultTransactionIsolation::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in PgConfigSslMinProtocolVersion::VALUES {
+        let parsed: PgConfigSslMinProtocolVersion =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigSslMinProtocolVersion::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in PgConfigWalCompression::VALUES {
+        let parsed: PgConfigWalCompression =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigWalCompression::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+}
+
+#[test]
 fn postgres_gcp_sizes_roundtrip_as_known_variants() {
     let sizes = [
         "c4a-highmem-4",
