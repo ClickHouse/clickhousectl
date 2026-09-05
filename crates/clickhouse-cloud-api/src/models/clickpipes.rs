@@ -67,6 +67,11 @@ impl std::fmt::Display for ClickPipeBigQueryPipeSettingsReplicationmode {
     }
 }
 
+impl ClickPipeBigQueryPipeSettingsReplicationmode {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["snapshot"];
+}
+
 /// Inline enum for `ClickPipeBigQueryPipeTableMapping.tableEngine`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickPipeBigQueryPipeTableMappingTableengine {
