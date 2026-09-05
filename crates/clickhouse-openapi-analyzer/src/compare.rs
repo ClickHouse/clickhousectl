@@ -16,7 +16,7 @@ pub(crate) fn compare(
     let mut report = DriftReport::default();
     compare_operations(rust, spec, config, &mut report);
     compare_models_and_refs(rust, spec, &mut report);
-    compare_fields(rust, spec, config, &mut report);
+    compare_inline_union_fields(rust, spec, config, &mut report);
     compare_additional_properties(rust, spec, &mut report);
     compare_beta_and_deprecation(rust, spec, config, &mut report);
     compare_enums(rust, spec, config, &mut report);
@@ -265,6 +265,96 @@ fn compare_fields(
         &extra_hits,
         report,
     );
+}
+
+/// Resolve inline object branches using their constant discriminator and the
+/// value enums on the union's actual payload structs, never source ordering or
+/// guessed variant names. Reuse the ordinary field checks in each direction.
+fn compare_inline_union_fields(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    config: &AnalyzerConfig,
+    report: &mut DriftReport,
+) {
+    let mut inline = spec.clone();
+    for (parent, pointer, branch) in &spec.inline_union_objects {
+        let properties = branch["properties"].as_object().unwrap();
+        let discriminators: Vec<_> = properties
+            .iter()
+            .filter_map(|(key, value)| {
+                value
+                    .get("const")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| (key, value))
+            })
+            .collect();
+        for (union_name, direction) in field_check_targets(rust, spec, parent) {
+            let candidates: Vec<_> = rust
+                .enums
+                .get(&union_name)
+                .into_iter()
+                .flat_map(|info| &info.variant_type_names)
+                .filter(|name| {
+                    rust.structs.get(*name).is_some_and(|info| {
+                        !discriminators.is_empty()
+                            && discriminators.iter().all(|(key, value)| {
+                                info.fields
+                                    .get(*key)
+                                    .and_then(|field| rust.terminal_type(&field.rust_type))
+                                    .and_then(|name| rust.enums.get(&name))
+                                    .is_some_and(|info| {
+                                        info.is_value_enum
+                                            && info.values.len() == 1
+                                            && info.values.contains(*value)
+                                    })
+                            })
+                    })
+                })
+                .collect();
+            let [name] = candidates.as_slice() else {
+                report.findings.push(
+                    Finding::new(
+                        FindingKind::MissingModelType,
+                        format!(
+                            "{union_name} has no unique typed payload for inline object branch"
+                        ),
+                    )
+                    .at_spec(pointer)
+                    .at_rust(format!("models.rs::{union_name}")),
+                );
+                continue;
+            };
+            let name = (*name).clone();
+            inline.schemas.insert(name.clone(), pointer.clone());
+            inline.rust_schema_names.insert(name.clone());
+            match direction {
+                Direction::Request => {
+                    inline.request_position_schemas.insert(name.clone());
+                }
+                Direction::Response => {
+                    inline.response_position_schemas.insert(name.clone());
+                }
+            }
+            let required = crate::openapi::required_fields(parent, branch, config);
+            for (key, value) in properties {
+                inline.properties.insert(
+                    (name.clone(), key.clone()),
+                    crate::openapi::PropertyInfo {
+                        pointer: format!(
+                            "{pointer}/properties/{}",
+                            key.replace('~', "~0").replace('/', "~1")
+                        ),
+                        required_non_nullable: required.contains(key),
+                        schema_type: value
+                            .get("type")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                    },
+                );
+            }
+        }
+    }
+    compare_fields(rust, &inline, config, report);
 }
 
 /// Dynamic keys are invisible to ordinary named-property comparison. Require a
@@ -1027,6 +1117,91 @@ mod tests {
         compare(&rust, &openapi, &openapi, &config)
     }
 
+    #[test]
+    fn inline_union_fields_follow_discriminators_and_keep_exact_pointers() {
+        let models = r#"
+            pub enum Widget { Second(B), First(A), Unknown(serde_json::Value) }
+            pub struct A { pub kind: KindA, pub required: Option<String>, pub extra: bool }
+            pub struct B { pub kind: KindB, pub required: String, pub memory: Option<i64> }
+            pub enum KindA { #[serde(rename = "a")] A }
+            pub enum KindB { #[serde(rename = "b")] B }
+        "#;
+        let schema = serde_json::json!({"oneOf": [
+            {"properties": {"kind": {"const": "a"}, "required": {"type": "string"},
+                "memory": {"type": "integer", "nullable": true}}, "required": ["kind", "required"]},
+            {"properties": {"kind": {"const": "b"}, "required": {"type": "string"},
+                "memory": {"type": "integer", "nullable": true}}, "required": ["kind", "required"]}
+        ]});
+        let report = analyze_fixture(models, schema, AnalyzerConfig::default());
+        assert_eq!(report.findings.len(), 3);
+        let missing = report
+            .findings
+            .iter()
+            .find(|f| f.kind == FindingKind::MissingStructField)
+            .unwrap();
+        assert_eq!(
+            missing.spec_pointer.as_deref(),
+            Some("/components/schemas/Widget/oneOf/0/properties/memory")
+        );
+        assert_eq!(missing.rust_item.as_deref(), Some("models.rs::A::memory"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.kind == FindingKind::ExtraStructField)
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.kind == FindingKind::FieldOptionalityMismatch)
+        );
+        assert_eq!(
+            serde_json::from_str::<DriftReport>(&serde_json::to_string(&report).unwrap()).unwrap(),
+            report
+        );
+        assert!(report.render_text().contains("A.memory"));
+    }
+
+    #[test]
+    fn inline_union_response_fields_remain_optional_and_presence_checked() {
+        let schema = serde_json::json!({"oneOf": [{"properties": {
+            "kind": {"const": "a"}, "required": {"type": "string"},
+            "memory": {"type": "integer"}}, "required": ["kind", "required", "memory"]}]});
+        let report = analyze_directional(
+            r#"
+            pub enum Widget { A(A) }
+            pub enum WidgetResponse { A(AResponse) }
+            pub struct A { pub kind: Kind, pub required: String, pub memory: i64 }
+            pub struct AResponse { pub kind: Option<Kind>, pub required: Option<String> }
+            pub enum Kind { #[serde(rename = "a")] A }
+        "#,
+            directional_spec(schema, true, true),
+            AnalyzerConfig::default(),
+        );
+        assert_eq!(report.findings.len(), 1, "{}", report.render_text());
+        assert_eq!(report.findings[0].kind, FindingKind::MissingStructField);
+        assert_eq!(
+            report.findings[0].rust_item.as_deref(),
+            Some("models.rs::AResponse::memory")
+        );
+    }
+
+    #[test]
+    fn inline_union_unmapped_branch_is_actionable() {
+        let report = analyze_fixture(
+            "pub enum Widget { Unknown(serde_json::Value) }",
+            serde_json::json!({"anyOf": [{"properties": {"kind": {"const": "future"}}}]}),
+            AnalyzerConfig::default(),
+        );
+        assert_eq!(report.findings.len(), 1);
+        assert_eq!(report.findings[0].kind, FindingKind::MissingModelType);
+        assert_eq!(
+            report.findings[0].spec_pointer.as_deref(),
+            Some("/components/schemas/Widget/anyOf/0")
+        );
+    }
+
     /// A minimal spec with one operation that sends `Widget` as the request
     /// body when `request` is set, and returns `Widget` when `response` is set,
     /// so fixtures can place the schema in either or both positions.
@@ -1108,7 +1283,7 @@ mod tests {
             Some("models.rs::WidgetResponse")
         );
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 4);
+        assert_eq!(json["schema_version"], 5);
         assert_eq!(
             json["findings"][0]["kind"],
             "additional_properties_mismatch"

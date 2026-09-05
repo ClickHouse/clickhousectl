@@ -6414,3 +6414,30 @@ fn api_key_patch_deserialization_preserves_deprecated_roles() {
     let request: ApiKeyPatchRequest = serde_json::from_value(wire.clone()).unwrap();
     assert_eq!(serde_json::to_value(request).unwrap(), wire);
 }
+
+#[test]
+fn udf_request_inline_variants_preserve_determinism_and_memory() {
+    fn check<T: serde::de::DeserializeOwned + serde::Serialize>(kind: &str, create: bool) {
+        let mut input = serde_json::json!({"uploadId": "upload-1", "runtime": "native",
+            "arguments": [], "returnType": "UInt64", "type": kind});
+        if create {
+            input["functionName"] = serde_json::json!("my_udf");
+        }
+        let minimal: T = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(minimal).unwrap(), input);
+        input["deterministic"] = serde_json::json!(false);
+        input["memoryLimitMib"] = serde_json::json!(128);
+        let full: T = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(full).unwrap(), input);
+        input["memoryLimitMib"] = serde_json::Value::Null;
+        let nullable: T = serde_json::from_value(input.clone()).unwrap();
+        input.as_object_mut().unwrap().remove("memoryLimitMib");
+        assert_eq!(serde_json::to_value(nullable).unwrap(), input);
+        input.as_object_mut().unwrap().remove("runtime");
+        assert!(serde_json::from_value::<T>(input).is_err());
+    }
+    check::<UdfCreateRequestV1>("executable", true);
+    check::<UdfCreateRequestV2>("executable_pool", true);
+    check::<UdfVersionCreateRequestV1>("executable", false);
+    check::<UdfVersionCreateRequestV2>("executable_pool", false);
+}
