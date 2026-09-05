@@ -1292,6 +1292,252 @@ the flag explicitly. The flag is refused unless the pipe is confirmed as Kafka.
 Other settings are validated by the API for source compatibility, so passing
 `--object-storage-max-file-count` to a Kafka pipe is rejected server-side.
 
+#### Updating ClickPipes
+
+`clickpipe update` accepts a typed JSON PATCH body from a file or stdin. Omitted
+and `null` top-level fields are not sent. Explicit `false`, `0`, empty strings,
+and empty arrays are preserved; an empty `{}` is refused. Unknown fields and
+enum values are rejected before a request is made.
+
+The file surface matches the current PATCH request models:
+
+| Object | Writable fields |
+|---|---|
+| Root | `name`, `source`, `destination`, `fieldMappings`, `settings` |
+| `destination` | `columns` |
+| `source.kafka` | `authentication`, `iamRole`, `caCertificate`, `reversePrivateEndpointIds`, `credentials` |
+| `source.kinesis` | `authentication`, `iamRole`, `accessKey` |
+| `source.objectStorage` | `skipInitialLoad`, `startAfter`, `authentication`, `iamRole`, `connectionString`, `path`, `azureContainerName`, `accessKey`, `serviceAccountKey` |
+| `source.pubsub` | `authentication`, `ackDeadline`, `serviceAccountKey` |
+| `source.postgres` | `credentials`, `host`, `port`, `database`, TLS fields, `settings`, `tableMappingsToAdd`, `tableMappingsToRemove` |
+| `source.mysql` | `credentials`, `host`, `port`, `authentication`, `iamRole`, TLS fields, `serverId`, `settings`, `tableMappingsToAdd`, `tableMappingsToRemove` |
+| `source.mongodb` | `credentials`, `uri`, `readPreference`, TLS fields, `settings`, `tableMappingsToAdd`, `tableMappingsToRemove` |
+
+TLS fields are `tlsHost`, `caCertificate`, `disableTls`, and
+`skipCertVerification`. The source object can also carry `validateSamples`.
+
+```bash
+clickhousectl cloud clickpipe update <service-id> <clickpipe-id> \
+  --config-file patch.json
+
+# Read a generated JSON PATCH body from stdin.
+jq '.source.postgres.credentials.password = env.CLICKPIPE_PASSWORD' patch-template.json |
+  clickhousectl cloud clickpipe update <service-id> <clickpipe-id> --config-file -
+```
+
+Root fields can rename a pipe, replace destination columns or field mappings,
+and update the root settings object. Nested objects use Cloud API wire names.
+A settings patch currently must contain `kafka_read_committed` because that
+field is required by the shared typed settings model.
+
+```json
+{
+  "name": "events-v2",
+  "destination": {
+    "columns": [{ "name": "id", "type": "UInt64" }]
+  },
+  "fieldMappings": [
+    { "sourceField": "event_id", "destinationField": "id" }
+  ],
+  "settings": {
+    "kafka_read_committed": false,
+    "streaming_max_insert_wait_ms": 0
+  }
+}
+```
+
+A source patch selects at most one of the seven supported arms.
+`validateSamples` is optional. Kafka credentials must match the selected
+authentication: username and password for PLAIN/SCRAM, access key and secret
+for IAM user, or certificate and private key for mutual TLS. Event Hubs
+connection-string credentials use PLAIN. IAM role uses `iamRole` without a
+credentials object, and workload identity uses neither field. Authentication,
+credentials, CA certificate, and reverse private endpoints can each be omitted
+when changing an unrelated Kafka field.
+
+```json
+{
+  "source": {
+    "kafka": {
+      "authentication": "SCRAM-SHA-512",
+      "credentials": { "username": "rotated", "password": "secret" },
+      "reversePrivateEndpointIds": []
+    },
+    "validateSamples": false
+  }
+}
+```
+
+For example, rotate only Kafka's CA certificate without resending credentials:
+
+```json
+{
+  "source": {
+    "kafka": { "caCertificate": "-----BEGIN CERTIFICATE-----..." }
+  }
+}
+```
+
+An IAM-role update carries the role separately:
+
+```json
+{
+  "source": {
+    "kafka": {
+      "authentication": "IAM_ROLE",
+      "iamRole": "arn:aws:iam::123456789012:role/clickpipe"
+    }
+  }
+}
+```
+
+Kinesis credentials use the access-key object:
+
+```json
+{
+  "source": {
+    "kinesis": {
+      "authentication": "IAM_USER",
+      "accessKey": { "accessKeyId": "key-id", "secretKey": "secret" }
+    },
+    "validateSamples": true
+  }
+}
+```
+
+Object-storage updates include credential changes and the post-create resume
+controls. `skipInitialLoad` and `startAfter` have the same mutual-exclusion
+semantics as create.
+
+```json
+{
+  "source": {
+    "objectStorage": {
+      "authentication": "SERVICE_ACCOUNT",
+      "serviceAccountKey": "base64-key",
+      "skipInitialLoad": false,
+      "startAfter": "events/2026-06-01/",
+      "path": "events/*.json"
+    },
+    "validateSamples": false
+  }
+}
+```
+
+Pub/Sub supports service-account key rotation and workload identity:
+
+```json
+{
+  "source": {
+    "pubsub": {
+      "authentication": "SERVICE_ACCOUNT",
+      "ackDeadline": 30,
+      "serviceAccountKey": { "serviceAccountFile": "base64-key" }
+    },
+    "validateSamples": true
+  }
+}
+```
+
+Postgres source fields are independent PATCH values, so a credential rotation,
+host change, settings change, or mapping change can omit the others. Empty
+mapping arrays remain explicit values. Add mappings use the full table shape;
+remove mappings can identify only the source and target tables.
+The API revalidates source connectivity when connection fields change. Include
+the matching credentials in the same patch when changing a host, URI, database,
+or TLS connection field; a failed validation rejects the whole update.
+
+```json
+{
+  "source": {
+    "postgres": {
+      "credentials": { "username": "rotated", "password": "secret" },
+      "host": "postgres.example.com",
+      "port": 5432,
+      "database": "source_db",
+      "settings": { "syncIntervalSeconds": 5, "pullBatchSize": 100000 },
+      "tableMappingsToAdd": [{
+        "sourceSchemaName": "public",
+        "sourceTable": "events",
+        "targetTable": "events",
+        "excludedColumns": [],
+        "useCustomSortingKey": false,
+        "sortingKeys": [],
+        "tableEngine": "ReplacingMergeTree",
+        "partitionKey": "id",
+        "partitionByExpr": "toYYYYMM(ts)"
+      }],
+      "tableMappingsToRemove": [{
+        "sourceSchemaName": "public",
+        "sourceTable": "old_events",
+        "targetTable": "old_events"
+      }]
+    },
+    "validateSamples": false
+  }
+}
+```
+
+MySQL supports connection and credential rotation, its three patchable
+settings, and add/remove mappings. `partitionByExpr` is accepted on both add
+and remove mappings.
+
+```json
+{
+  "source": {
+    "mysql": {
+      "authentication": "basic",
+      "credentials": { "username": "rotated", "password": "secret" },
+      "host": "mysql.example.com",
+      "port": 3306,
+      "serverId": 4242,
+      "settings": {
+        "syncIntervalSeconds": 5,
+        "pullBatchSize": 100000,
+        "useCompression": false
+      },
+      "tableMappingsToAdd": [],
+      "tableMappingsToRemove": [{
+        "sourceSchemaName": "sales",
+        "sourceTable": "old_orders",
+        "targetTable": "old_orders",
+        "partitionByExpr": "toYYYYMM(created_at)"
+      }]
+    },
+    "validateSamples": false
+  }
+}
+```
+
+MongoDB supports URI or username/password rotation, TLS and read-preference
+changes, its two patchable settings, and collection mapping changes:
+
+```json
+{
+  "source": {
+    "mongodb": {
+      "credentials": { "username": "rotated", "password": "secret" },
+      "uri": "mongodb+srv://mongo.example/source",
+      "readPreference": "secondaryPreferred",
+      "disableTls": false,
+      "skipCertVerification": false,
+      "settings": { "syncIntervalSeconds": 5, "pullBatchSize": 100000 },
+      "tableMappingsToAdd": [],
+      "tableMappingsToRemove": [{
+        "sourceDatabaseName": "source",
+        "sourceCollection": "old_events",
+        "targetTable": "old_events"
+      }]
+    },
+    "validateSamples": false
+  }
+}
+```
+
+BigQuery has no PATCH source arm in the Cloud API and is rejected by this
+command. Use a root-only patch for fields the API allows on an existing
+BigQuery pipe.
+
 #### Creating ClickPipes
 
 Each source type has its own subcommand under `clickpipe create`:
