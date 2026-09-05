@@ -14908,3 +14908,377 @@ async fn reverse_private_endpoint_update_rejects_noop_and_conflict_without_http(
         assert!(mock.received_requests().await.unwrap().is_empty());
     }
 }
+
+// ── ClickStack saved-search commands (issue #694) ──────────────────────────
+
+#[tokio::test]
+async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output() {
+    let mock = MockServer::start().await;
+    let searches = "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches";
+    Mock::given(method("GET"))
+        .and(path(searches))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{}]
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{searches}/search-get")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "search-get", "name": null, "futureField": "kept-compatible"}
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(searches))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "search-created"}
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{searches}/search-update")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "search-update", "sourceId": null}
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{searches}/search-delete")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": 200})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("saved-search.json");
+    let body = serde_json::json!({
+        "name": "production errors",
+        "sourceId": "source-1",
+        "select": "Timestamp, Body",
+        "where": "SeverityText = 'ERROR'",
+        "whereLanguage": "sql",
+        "orderBy": "Timestamp DESC",
+        "tags": ["production", "errors"],
+        "filters": [{"type": "sql", "condition": "ServiceName = 'api'"}]
+    });
+    std::fs::write(&file, body.to_string()).unwrap();
+    let body_stdin = body.to_string();
+    let commands: Vec<(Vec<&str>, Option<&str>)> = vec![
+        (
+            vec![
+                "clickstack",
+                "saved-search",
+                "list",
+                "svc-1",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "saved-search",
+                "get",
+                "svc-1",
+                "search-get",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "saved-search",
+                "create",
+                "svc-1",
+                "--config-file",
+                file.to_str().unwrap(),
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "saved-search",
+                "update",
+                "svc-1",
+                "search-update",
+                "--config-file",
+                "-",
+                "--org-id",
+                "org-1",
+            ],
+            Some(body_stdin.as_str()),
+        ),
+        (
+            vec![
+                "clickstack",
+                "saved-search",
+                "delete",
+                "svc-1",
+                "search-delete",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+    ];
+    for (args, stdin) in commands {
+        let output = invoke_clickstack_cli(&mock, &args, stdin, true);
+        assert_success(&output);
+        serde_json::from_slice::<Value>(&output.stdout).unwrap_or_else(|error| {
+            panic!(
+                "invalid JSON output for {args:?}: {error}\n{}",
+                String::from_utf8_lossy(&output.stdout)
+            )
+        });
+    }
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 5);
+    for request in &requests {
+        assert!(
+            request
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Basic "),
+            "{} {}",
+            request.method,
+            request.url.path()
+        );
+    }
+    let write_bodies = requests
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::POST
+                || request.method == wiremock::http::Method::PUT
+        })
+        .map(|request| request.body_json::<Value>().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(write_bodies, vec![body.clone(), body]);
+}
+
+#[tokio::test]
+async fn clickstack_saved_search_rejects_invalid_file_and_stdin_before_http() {
+    let invalid = [
+        (
+            serde_json::json!({"name":"errors","sourceId":"source-1","whereLanguage":"lucenee"}).to_string(),
+            "unknown whereLanguage",
+        ),
+        (
+            serde_json::json!({"name":"errors","sourceId":"source-1","filters":[{"type":"lucene","condition":"x"}]}).to_string(),
+            "unknown filters[0].type",
+        ),
+        (
+            serde_json::json!({"name":"errors"}).to_string(),
+            "missing field",
+        ),
+        (
+            serde_json::json!({"name":"errors","sourceId":"source-1","selcet":null}).to_string(),
+            "selcet",
+        ),
+        ("{".to_string(), "failed to parse config"),
+    ];
+    for (index, (body, expected)) in invalid.iter().enumerate() {
+        let mock = MockServer::start().await;
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("invalid.json");
+        std::fs::write(&file, body).unwrap();
+        let (config_file, stdin) = if index % 2 == 0 {
+            (file.to_str().unwrap(), None)
+        } else {
+            ("-", Some(body.as_str()))
+        };
+        let output = invoke_clickstack_cli(
+            &mock,
+            &[
+                "clickstack",
+                "saved-search",
+                "create",
+                "svc-1",
+                "--config-file",
+                config_file,
+            ],
+            stdin,
+            false,
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(mock.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn clickstack_saved_search_sparse_human_output_and_errors_are_safe() {
+    let mock = MockServer::start().await;
+    let searches = "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches";
+    Mock::given(method("GET"))
+        .and(path(searches))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{}]
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{searches}/sparse")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {}
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "saved-search",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+        None,
+        false,
+    );
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains('-'));
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "saved-search",
+            "get",
+            "svc-1",
+            "sparse",
+            "--org-id",
+            "org-1",
+        ],
+        None,
+        false,
+    );
+    assert_success(&output);
+
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-sensitive/services/svc-1/clickstack/saved-searches/search-1",
+        ))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({"error":"NOT_FOUND"})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "saved-search",
+            "get",
+            "svc-1",
+            "search-1",
+            "--org-id",
+            "org-sensitive",
+        ],
+        None,
+        false,
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        error.contains("org-sensitive") && error.contains("NOT_FOUND"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn clickstack_saved_search_oauth_reads_and_rejects_writes_before_http() {
+    let mock = MockServer::start().await;
+    let searches = "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches";
+    Mock::given(method("GET"))
+        .and(path(searches))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": []
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let invoke = |args: &[&str], stdin: Option<&str>| {
+        let mut command = Command::new(clickhousectl_binary());
+        clear_inherited_env(&mut command);
+        command
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", &home)
+            .current_dir(project.path())
+            .args(["cloud", "--url", &mock.uri()])
+            .args(args);
+        if let Some(input) = stdin {
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output().unwrap()
+        } else {
+            command.output().unwrap()
+        }
+    };
+    let output = invoke(
+        &[
+            "clickstack",
+            "saved-search",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+        None,
+    );
+    assert_success(&output);
+    let output = invoke(
+        &[
+            "clickstack",
+            "saved-search",
+            "create",
+            "svc-1",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        Some(r#"{"name":"errors","sourceId":"source-1"}"#),
+    );
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+}
