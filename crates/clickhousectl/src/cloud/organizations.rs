@@ -1,4 +1,5 @@
 use crate::cloud::client::{CloudClient, CloudError, ResourceLookup, Result as CloudResult};
+use crate::cloud::config::read_typed_config;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
@@ -8,7 +9,8 @@ use clickhouse_cloud_api::models::{
     ByocInfrastructurePostRequestRegionid, InvitationPostRequest, MemberPatchRequest,
     OrganizationPatchPrivateEndpoint, OrganizationPatchPrivateEndpointCloudprovider,
     OrganizationPatchPrivateEndpointRegion, OrganizationPatchRequest,
-    OrganizationPrivateEndpointsPatch,
+    OrganizationPrivateEndpointsPatch, RBACPolicyCreateRequest, RBACPolicyCreateRequestAllowdeny,
+    RBACPolicyTagsRolev2, RoleCreateRequest, RoleUpdateRequest,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -40,6 +42,17 @@ pub enum OrgCommands {
     Byoc {
         #[command(subcommand)]
         command: ByocCommands,
+    },
+
+    /// Manage organization roles
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Role IDs from `list` can be used with member, invitation, and API key commands.
+  Create/update read JSON request bodies from --config-file; `-` reads stdin.
+  Only custom roles can be updated or deleted.")]
+    Role {
+        #[command(subcommand)]
+        command: RoleCommands,
     },
 
     /// Update organization settings
@@ -126,9 +139,77 @@ impl OrgCommands {
             OrgCommands::Quota { .. } => false,
             OrgCommands::Balance { .. } => false,
             OrgCommands::Byoc { command } => command.is_write(),
+            OrgCommands::Role { command } => command.is_write(),
             OrgCommands::Prometheus { .. } => false,
             OrgCommands::Usage { .. } => false,
             OrgCommands::Update { .. } => true,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum RoleCommands {
+    /// List organization roles
+    List {
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get organization role details
+    Get {
+        /// Role ID (from `cloud org role list`)
+        role_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a custom organization role
+    Create {
+        /// JSON request body path, or `-` for stdin
+        #[arg(long, value_name = "PATH|-", required = true)]
+        config_file: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update a custom organization role
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Only fields present in the JSON body change; actors and policies replace their whole lists.")]
+    Update {
+        /// Role ID (from `cloud org role list`)
+        role_id: String,
+
+        /// JSON request body path, or `-` for stdin
+        #[arg(long, value_name = "PATH|-", required = true)]
+        config_file: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete a custom organization role
+    Delete {
+        /// Role ID (from `cloud org role list`)
+        role_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl RoleCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::List { .. } | Self::Get { .. } => false,
+            Self::Create { .. } | Self::Update { .. } | Self::Delete { .. } => true,
         }
     }
 }
@@ -349,6 +430,7 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         OrgCommands::Quota { command } => run_quota(client, command, json).await,
         OrgCommands::Balance { org_id } => org_balance(client, org_id.as_deref(), json).await,
         OrgCommands::Byoc { command } => run_byoc(client, command, json).await,
+        OrgCommands::Role { command } => run_role(client, command, json).await,
         OrgCommands::Update {
             org_id,
             name,
@@ -385,6 +467,33 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         } => {
             let org_id = org_id.as_deref().or(legacy_org_id.as_deref());
             org_usage(client, org_id, &from_date, &to_date, &filter, json).await
+        }
+    }
+}
+
+async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> CloudResult<()> {
+    match command {
+        RoleCommands::List { org_id } => role_list(client, org_id.as_deref(), json).await,
+        RoleCommands::Get { role_id, org_id } => {
+            role_get(client, &role_id, org_id.as_deref(), json).await
+        }
+        RoleCommands::Create {
+            config_file,
+            org_id,
+        } => {
+            let request = build_role_create_request(&config_file)?;
+            role_create(client, request, org_id.as_deref(), json).await
+        }
+        RoleCommands::Update {
+            role_id,
+            config_file,
+            org_id,
+        } => {
+            let request = build_role_update_request(&config_file)?;
+            role_update(client, &role_id, request, org_id.as_deref(), json).await
+        }
+        RoleCommands::Delete { role_id, org_id } => {
+            role_delete(client, &role_id, org_id.as_deref(), json).await
         }
     }
 }
@@ -641,6 +750,48 @@ fn build_byoc_update_request(display_name: &str) -> ByocInfrastructurePatchReque
     }
 }
 
+fn invalid_role_request(source: &str, message: impl std::fmt::Display) -> CloudError {
+    CloudError::new(format!(
+        "invalid request body in config {source}: {message}"
+    ))
+}
+
+fn validate_role_policies(policies: &[RBACPolicyCreateRequest], source: &str) -> CloudResult<()> {
+    for (index, policy) in policies.iter().enumerate() {
+        if let RBACPolicyCreateRequestAllowdeny::Unknown(value) = &policy.allow_deny {
+            return Err(invalid_role_request(
+                source,
+                format!("unknown policies[{index}].allowDeny `{value}`; expected ALLOW or DENY"),
+            ));
+        }
+        if let Some(tags) = &policy.tags
+            && let Some(RBACPolicyTagsRolev2::Unknown(value)) = &tags.role_v2
+        {
+            return Err(invalid_role_request(
+                source,
+                format!(
+                    "unknown policies[{index}].tags.roleV2 `{value}`; expected sql-console-readonly or sql-console-admin"
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn build_role_create_request(config_file: &str) -> CloudResult<RoleCreateRequest> {
+    let request: RoleCreateRequest = read_typed_config(config_file)?;
+    validate_role_policies(&request.policies, config_file)?;
+    Ok(request)
+}
+
+fn build_role_update_request(config_file: &str) -> CloudResult<RoleUpdateRequest> {
+    let request: RoleUpdateRequest = read_typed_config(config_file)?;
+    if let Some(policies) = &request.policies {
+        validate_role_policies(policies, config_file)?;
+    }
+    Ok(request)
+}
+
 fn build_member_update_request(role_ids: &[String], clear_roles: bool) -> MemberPatchRequest {
     MemberPatchRequest {
         assigned_role_ids: if clear_roles {
@@ -891,6 +1042,123 @@ async fn byoc_delete(
         println!("{}", serde_json::to_string_pretty(&response)?);
     } else {
         println!("BYOC infrastructure {byoc_id} deleted");
+    }
+    Ok(())
+}
+
+async fn role_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let roles = client.list_organization_roles(&org_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&roles)?);
+    } else {
+        if roles.is_empty() {
+            println!("No organization roles found");
+            return Ok(());
+        }
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "Type")]
+            role_type: String,
+            #[tabled(rename = "Actors")]
+            actors: String,
+            #[tabled(rename = "Policies")]
+            policies: String,
+        }
+        let rows = roles
+            .into_iter()
+            .map(|role| Row {
+                name: or_absent(role.name.as_deref()),
+                id: or_absent(role.id.as_deref()),
+                role_type: or_absent(role.r#type.as_ref()),
+                actors: role
+                    .actors
+                    .as_ref()
+                    .map(|actors| actors.len().to_string())
+                    .unwrap_or_else(|| ABSENT.to_string()),
+                policies: role
+                    .policies
+                    .as_ref()
+                    .map(|policies| policies.len().to_string())
+                    .unwrap_or_else(|| ABSENT.to_string()),
+            })
+            .collect::<Vec<_>>();
+        println!("{}", Table::new(rows).with(Style::markdown()));
+    }
+    Ok(())
+}
+
+async fn role_get(
+    client: &CloudClient,
+    role_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let role = client.get_organization_role(&org_id, role_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&role)?);
+    } else {
+        print_human(&role)?;
+    }
+    Ok(())
+}
+
+async fn role_create(
+    client: &CloudClient,
+    request: RoleCreateRequest,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let role = client.create_organization_role(&org_id, &request).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&role)?);
+    } else {
+        print_human(&role)?;
+    }
+    Ok(())
+}
+
+async fn role_update(
+    client: &CloudClient,
+    role_id: &str,
+    request: RoleUpdateRequest,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let role = client
+        .update_organization_role(&org_id, role_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&role)?);
+    } else {
+        print_human(&role)?;
+    }
+    Ok(())
+}
+
+async fn role_delete(
+    client: &CloudClient,
+    role_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client.delete_organization_role(&org_id, role_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Organization role {role_id} deleted");
     }
     Ok(())
 }
@@ -1327,6 +1595,74 @@ impl CloudClient {
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
+    }
+
+    pub async fn list_organization_roles(
+        &self,
+        org_id: &str,
+    ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::RBACRole>> {
+        let response = self
+            .api()
+            .organization_roles_get_list(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_organization_role(
+        &self,
+        org_id: &str,
+        role_id: &str,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::RBACRole> {
+        let response = self
+            .api()
+            .organization_role_get(org_id, role_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn create_organization_role(
+        &self,
+        org_id: &str,
+        request: &RoleCreateRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::RBACRole> {
+        let response = self
+            .api()
+            .organization_role_post(org_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_organization_role(
+        &self,
+        org_id: &str,
+        role_id: &str,
+        request: &RoleUpdateRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::RBACRole> {
+        let response = self
+            .api()
+            .organization_role_patch(org_id, role_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn delete_organization_role(
+        &self,
+        org_id: &str,
+        role_id: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .organization_role_delete(org_id, role_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
     }
 
     pub async fn list_members(
@@ -2399,5 +2735,149 @@ mod tests {
             serde_json::to_value(update).unwrap(),
             serde_json::json!({"displayName": "renamed"})
         );
+    }
+
+    #[test]
+    fn parses_role_body_commands_and_classifies_access() {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "role",
+            "create",
+            "--config-file",
+            "role.json",
+            "--org-id",
+            "org-1",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Role {
+            command:
+                RoleCommands::Create {
+                    config_file,
+                    org_id,
+                },
+        } = command
+        else {
+            panic!("expected role create");
+        };
+        assert_eq!(config_file, "role.json");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        assert_write(&["clickhousectl", "cloud", "org", "role", "list"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "org", "role", "get", "role-1"],
+            false,
+        );
+        for verb in ["create", "update", "delete"] {
+            let mut args = vec!["clickhousectl", "cloud", "org", "role", verb];
+            if verb != "create" {
+                args.push("role-1");
+            }
+            if verb != "delete" {
+                args.extend(["--config-file", "role.json"]);
+            }
+            assert_write(&args, true);
+        }
+    }
+
+    #[test]
+    fn role_builders_preserve_minimal_and_maximal_bodies() {
+        let directory = tempfile::tempdir().unwrap();
+        let create_file = directory.path().join("create.json");
+        std::fs::write(
+            &create_file,
+            r#"{"name":"reader","actors":[],"policies":[]}"#,
+        )
+        .unwrap();
+        let minimal = build_role_create_request(create_file.to_str().unwrap()).unwrap();
+        assert_eq!(minimal.name, "reader");
+        assert!(minimal.actors.is_empty());
+        assert!(minimal.policies.is_empty());
+
+        std::fs::write(
+            &create_file,
+            serde_json::json!({
+                "name": "console-admin",
+                "actors": ["user/user-1", "apiKey/key-1"],
+                "policies": [{
+                    "allowDeny": "DENY",
+                    "permissions": ["control-plane:organization:update"],
+                    "resources": ["organization/org-1", "instance/*"],
+                    "tags": {
+                        "grants": ["select", "insert"],
+                        "roleV2": "sql-console-admin"
+                    }
+                }, {
+                    "allowDeny": "ALLOW",
+                    "permissions": ["control-plane:service:view"],
+                    "resources": ["instance/*"]
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let maximal = build_role_create_request(create_file.to_str().unwrap()).unwrap();
+        assert_eq!(maximal.actors.len(), 2);
+        assert_eq!(maximal.policies.len(), 2);
+        let policy = &maximal.policies[0];
+        assert_eq!(policy.allow_deny, RBACPolicyCreateRequestAllowdeny::DENY);
+        let tags = policy.tags.as_ref().unwrap();
+        assert_eq!(
+            tags.grants.as_deref(),
+            Some(&["select".into(), "insert".into()][..])
+        );
+        assert_eq!(tags.role_v2, Some(RBACPolicyTagsRolev2::Sql_console_admin));
+
+        let update_file = directory.path().join("update.json");
+        std::fs::write(&update_file, r#"{"name":"renamed"}"#).unwrap();
+        let minimal_update = build_role_update_request(update_file.to_str().unwrap()).unwrap();
+        assert_eq!(minimal_update.name.as_deref(), Some("renamed"));
+        assert!(minimal_update.actors.is_none());
+        assert!(minimal_update.policies.is_none());
+
+        std::fs::write(
+            &update_file,
+            serde_json::json!({
+                "name": "full-update",
+                "actors": [],
+                "policies": [{
+                    "allowDeny": "ALLOW",
+                    "permissions": [],
+                    "resources": [],
+                    "tags": {"grants": [], "roleV2": "sql-console-readonly"}
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let maximal_update = build_role_update_request(update_file.to_str().unwrap()).unwrap();
+        assert_eq!(maximal_update.actors, Some(vec![]));
+        assert_eq!(maximal_update.policies.as_ref().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn role_builders_reject_unknown_nested_fields_and_enums() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_file = directory.path().join("role.json");
+        for (body, expected) in [
+            (
+                serde_json::json!({"name":"bad","actors":[],"policies":[{"allowDeny":"ALLOW","permissions":[],"resources":[],"tagz":{}}]}),
+                "tagz",
+            ),
+            (
+                serde_json::json!({"name":"bad","actors":[],"policies":[{"allowDeny":"AUDIT","permissions":[],"resources":[]}]}),
+                "allowDeny",
+            ),
+            (
+                serde_json::json!({"name":"bad","actors":[],"policies":[{"allowDeny":"ALLOW","permissions":[],"resources":[],"tags":{"roleV2":"future-role"}}]}),
+                "roleV2",
+            ),
+        ] {
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            let error = build_role_create_request(config_file.to_str().unwrap()).unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+        }
     }
 }

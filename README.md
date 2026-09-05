@@ -1971,9 +1971,45 @@ clickhousectl cloud clickpipe schema-discover <service-id> pubsub \
 
 Add `--json` (or run as a coding agent) for machine-readable output.
 
-### Members
+### Organization roles
 
-Role IDs used by member, invitation, and API-key commands currently come from the ClickHouse Cloud Console or API.
+List system and custom roles to discover the role IDs used by member, invitation,
+and API-key commands. Custom roles are created and updated from strict JSON files;
+pass `--config-file -` to read the body from stdin.
+
+```bash
+clickhousectl cloud org role list
+clickhousectl cloud org role get <role-id>
+
+cat > role.json <<'JSON'
+{
+  "name": "service-auditor",
+  "actors": ["user/<user-id>", "apiKey/<api-key-id>"],
+  "policies": [
+    {
+      "allowDeny": "ALLOW",
+      "permissions": ["control-plane:organization:view"],
+      "resources": ["organization/<org-id>"],
+      "tags": {
+        "grants": ["SELECT"],
+        "roleV2": "sql-console-readonly"
+      }
+    }
+  ]
+}
+JSON
+clickhousectl cloud org role create --config-file role.json
+
+# Updates are partial; actors and policies replace their complete lists when present.
+printf '%s\n' '{"name":"renamed-auditor"}' | \
+  clickhousectl cloud org role update <role-id> --config-file -
+clickhousectl cloud org role delete <role-id>
+```
+
+Only custom roles can be updated or deleted. `allowDeny` accepts `ALLOW` or
+`DENY`; `roleV2` accepts `sql-console-readonly` or `sql-console-admin`.
+
+### Members
 
 ```bash
 clickhousectl cloud member list
