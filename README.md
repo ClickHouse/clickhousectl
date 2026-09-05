@@ -1119,6 +1119,11 @@ clickhousectl cloud clickpipe delete <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe scale <service-id> <clickpipe-id> \
   --replicas 2 --cpu-millicores 250 --memory-gb 1
 
+# Inspect and update service-wide scaling for database CDC ClickPipes
+clickhousectl cloud clickpipe cdc-scaling get <service-id>
+clickhousectl cloud clickpipe cdc-scaling update <service-id> \
+  --cpu-millicores 2000 --memory-gb 8
+
 # Get/update settings
 clickhousectl cloud clickpipe settings get <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
@@ -1144,6 +1149,11 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
 # Manage reverse private endpoints for private source connectivity
 clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
 ```
+
+CDC scaling CPU accepts 1000-32000 millicores in increments of 1000, and
+memory accepts 4-128 GiB in increments of 4. Memory must be four times the CPU
+core count when both are changed together; omitted update flags preserve their
+current values.
 
 `settings get` and `settings update` apply to streaming (Kafka, Kinesis) and
 object-storage pipes only; Pub/Sub counts as streaming and is accepted too,
