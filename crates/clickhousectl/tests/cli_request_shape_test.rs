@@ -13853,7 +13853,10 @@ async fn service_update_does_not_warn_when_remove_ip_allow_matches() {
         serde_json::json!({
             "id": "22222222-3333-4444-5555-666666666666",
             "name": "demo",
-            "ipAccessList": [{ "source": "10.0.0.0/8" }],
+            "ipAccessList": [
+                { "source": "10.0.0.0/8" },
+                { "source": "2001:db8::/32" },
+            ],
         }),
     )
     .await;
@@ -13867,7 +13870,9 @@ async fn service_update_does_not_warn_when_remove_ip_allow_matches() {
             "--org-id",
             "org-1",
             "--remove-ip-allow",
-            "10.0.0.0/8",
+            " 10.0.0.0/8 =retired office",
+            "--remove-ip-allow",
+            " 2001:db8::/32 =retired ipv6 range",
         ],
     );
 
@@ -13876,6 +13881,20 @@ async fn service_update_does_not_warn_when_remove_ip_allow_matches() {
         output.stderr.is_empty(),
         "unexpected stderr: {}",
         String::from_utf8_lossy(&output.stderr)
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    let patch = requests
+        .iter()
+        .find(|request| request.method.as_str() == "PATCH")
+        .unwrap();
+    let body: Value = serde_json::from_slice(&patch.body).unwrap();
+    assert_eq!(
+        body["ipAccessList"]["remove"],
+        serde_json::json!([
+            { "source": "10.0.0.0/8", "description": "retired office" },
+            { "source": "2001:db8::/32", "description": "retired ipv6 range" },
+        ])
     );
 }
 
@@ -15970,6 +15989,15 @@ async fn invalid_allowlist_sources_fail_before_service_or_key_requests() {
             "key-1",
             "--ip-allow",
             "not-an-ip=invalid",
+            "--org-id",
+            "org-1",
+        ],
+        vec![
+            "service",
+            "update",
+            "svc-1",
+            "--remove-ip-allow",
+            "2001:db8::/129=invalid",
             "--org-id",
             "org-1",
         ],

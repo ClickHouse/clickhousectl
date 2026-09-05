@@ -1537,9 +1537,14 @@ fn unmatched<'a>(requested: &'a [String], current: &HashSet<&str>) -> Vec<&'a st
         .collect()
 }
 
-/// Human-readable warnings for every `--remove-*` value on `options` that
-/// does not match anything in `current`.
-fn unmatched_removal_warnings(options: &ServiceUpdateOptions, current: &Service) -> Vec<String> {
+/// Human-readable warnings for every `--remove-*` value that does not match
+/// anything in `current`. IP entries come from the validated request so the
+/// comparison uses the same parsed source that the API receives.
+fn unmatched_removal_warnings(
+    options: &ServiceUpdateOptions,
+    validated_request: &ServicePatchRequest,
+    current: &Service,
+) -> Vec<String> {
     let mut warnings = Vec::new();
 
     let current_ip_allow: HashSet<&str> = current
@@ -1548,7 +1553,16 @@ fn unmatched_removal_warnings(options: &ServiceUpdateOptions, current: &Service)
         .flatten()
         .filter_map(|entry| entry.source.as_deref())
         .collect();
-    for value in unmatched(&options.remove_ip_allow, &current_ip_allow) {
+    let remove_ip_allow = validated_request
+        .ip_access_list
+        .as_ref()
+        .map(|patch| patch.remove.as_slice())
+        .unwrap_or_default();
+    for entry in remove_ip_allow {
+        if current_ip_allow.contains(entry.source.as_str()) {
+            continue;
+        }
+        let value = &entry.source;
         warnings.push(format!(
             "--remove-ip-allow {value} did not match any entry in the service's current IP allow list; no entry was removed"
         ));
@@ -1967,7 +1981,7 @@ async fn service_update(
 
     if has_removals(&options) {
         let current = client.get_service(&org_id, service_id).await?;
-        for warning in unmatched_removal_warnings(&options, &current) {
+        for warning in unmatched_removal_warnings(&options, &request, &current) {
             eprint_line(format!("Warning: {warning}"));
         }
     }
@@ -6476,24 +6490,53 @@ mod tests {
     fn unmatched_removal_warnings_is_empty_when_everything_matches() {
         let current = service_with_ip_allow_endpoints_and_tags();
         let options = ServiceUpdateOptions {
-            remove_ip_allow: vec!["10.0.0.0/8".to_string()],
+            remove_ip_allow: vec![" 10.0.0.0/8 =retired office".to_string()],
             remove_private_endpoint_ids: vec!["pe-1".to_string()],
             remove_tags: vec!["env".to_string()],
             ..Default::default()
         };
-        assert!(unmatched_removal_warnings(&options, &current).is_empty());
+        let request = build_update_service_request(&options).unwrap();
+        assert!(unmatched_removal_warnings(&options, &request, &current).is_empty());
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_match_parsed_ipv4_and_ipv6_sources() {
+        let current = Service {
+            ip_access_list: Some(vec![
+                IpAccessListEntryResponse {
+                    source: Some("192.0.2.0/24".to_string()),
+                    description: None,
+                },
+                IpAccessListEntryResponse {
+                    source: Some("2001:db8::/32".to_string()),
+                    description: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        let options = ServiceUpdateOptions {
+            remove_ip_allow: vec![
+                " 192.0.2.0/24 =old office".to_string(),
+                " 2001:db8::/32 =old ipv6 range".to_string(),
+            ],
+            ..Default::default()
+        };
+        let request = build_update_service_request(&options).unwrap();
+
+        assert!(unmatched_removal_warnings(&options, &request, &current).is_empty());
     }
 
     #[test]
     fn unmatched_removal_warnings_names_every_unmatched_entry() {
         let current = service_with_ip_allow_endpoints_and_tags();
         let options = ServiceUpdateOptions {
-            remove_ip_allow: vec!["10.99.99.99/32".to_string()],
+            remove_ip_allow: vec![" 10.99.99.99/32 =old office".to_string()],
             remove_private_endpoint_ids: vec!["pe-missing".to_string()],
             remove_tags: vec!["missing=value".to_string()],
             ..Default::default()
         };
-        let warnings = unmatched_removal_warnings(&options, &current);
+        let request = build_update_service_request(&options).unwrap();
+        let warnings = unmatched_removal_warnings(&options, &request, &current);
         assert_eq!(warnings.len(), 3);
         assert!(
             warnings[0].contains("--remove-ip-allow 10.99.99.99/32")
@@ -6516,7 +6559,8 @@ mod tests {
             remove_tags: vec!["env=staging".to_string()],
             ..Default::default()
         };
-        assert!(unmatched_removal_warnings(&options, &current).is_empty());
+        let request = build_update_service_request(&options).unwrap();
+        assert!(unmatched_removal_warnings(&options, &request, &current).is_empty());
     }
 
     #[test]
@@ -6525,7 +6569,8 @@ mod tests {
             remove_ip_allow: vec!["10.0.0.0/8".to_string()],
             ..Default::default()
         };
-        let warnings = unmatched_removal_warnings(&options, &Service::default());
+        let request = build_update_service_request(&options).unwrap();
+        let warnings = unmatched_removal_warnings(&options, &request, &Service::default());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("--remove-ip-allow 10.0.0.0/8"));
     }
