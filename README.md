@@ -1238,11 +1238,17 @@ any request.
 
 #### PostgreSQL ClickPipe prerequisites
 
-TLS and certificate verification are enabled by default and stay on. Pass the CA
-certificate or bundle as PEM with `--ca-certificate <PATH>` for a private or
-self-signed CA, and `--tls-host <HOSTNAME>` only when the certificate names a
-different hostname than `--host` (for example when `--host` is an IP address).
-The CLI reads the file and sends its contents, not the path.
+TLS and certificate verification are enabled by default. The private-CA example
+above is the preferred secure setup: pass the CA certificate or bundle as PEM
+with `--ca-certificate <PATH>`, and `--tls-host <HOSTNAME>` only when the
+certificate names a different hostname than `--host` (for example when `--host`
+is an IP address). The CLI reads the file and sends its contents, not the path.
+
+For controlled diagnosis, add `--skip-cert-verification` to keep the connection
+encrypted while accepting an untrusted or mismatched source certificate. Use
+`--disable-tls` only for a source intentionally configured for plaintext; source
+traffic is then unencrypted. `--disable-tls` cannot be combined with
+`--ca-certificate`, `--tls-host`, or `--skip-cert-verification`.
 
 Before creating a PostgreSQL CDC ClickPipe:
 
