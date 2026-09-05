@@ -688,8 +688,8 @@ clickhousectl cloud service create --name my-service \
 clickhousectl cloud service create --name my-service \
   --provider aws \
   --region us-east-1 \
-  --ip-allow <trusted-egress-cidr> \
-  --ip-allow <another-trusted-egress-cidr>
+  --ip-allow '<trusted-egress-cidr>=office' \
+  --ip-allow '<another-trusted-egress-cidr>=CI runners'
 
 # Create from backup
 clickhousectl cloud service create --name restored-service \
@@ -745,7 +745,7 @@ clickhousectl cloud service repair-query-key <service-id> --org-id <org-id>
 # Update service metadata and patches
 clickhousectl cloud service update <service-id> \
   --name my-renamed-service \
-  --add-ip-allow <trusted-egress-cidr> \
+  --add-ip-allow '<trusted-egress-cidr>=office' \
   --remove-ip-allow 0.0.0.0/0 \
   --add-private-endpoint-id pe-1 \
   --release-channel fast \
@@ -820,6 +820,9 @@ clickhousectl cloud service delete <service-id>
 # Force delete: stops a running service then deletes
 clickhousectl cloud service delete <service-id> --force
 ```
+
+IP allowlist flags accept `IP_OR_CIDR` or `IP_OR_CIDR=DESCRIPTION`. The `=`
+delimiter is safe with IPv6; quote entries whose descriptions contain spaces.
 
 `query-endpoint create` adds and deduplicates API keys while preserving existing browser origins. `--role` is required and replaces the endpoint-wide roles for **all** authorized keys; roles are not assigned per key.
 Pass `--allowed-origins` on first creation or to change browser access (`'*'` explicitly allows every origin). Use `--replace-open-api-keys` with `--open-api-key` to deliberately replace the entire authorized-key list.
@@ -1688,7 +1691,7 @@ clickhousectl cloud key get <key-id>
 clickhousectl cloud key create --name ci-key \
   --role-id <role-id> \
   --expires-at <future-RFC3339-time> \
-  --ip-allow <trusted-egress-ip>/32 \
+  --ip-allow '<trusted-egress-ip>/32=CI runners' \
   --state disabled   # create the key already disabled
 # --hash-key-id/--hash-key-id-suffix/--hash-key-secret submit a pre-hashed key; no secret is returned
 clickhousectl cloud key update <key-id> \

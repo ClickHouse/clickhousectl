@@ -1,13 +1,14 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials;
 use crate::cloud::output::{eprint_line, or_absent, print_human};
-use crate::cloud::shared::{parse_datetime, resolve_org_id};
+use crate::cloud::shared::{parse_datetime, parse_ip_access_entries, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::FailureStage;
 use clap::Subcommand;
+#[cfg(test)]
+use clickhouse_cloud_api::models::IpAccessListEntry;
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
-    IpAccessListEntry,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -38,8 +39,8 @@ pub enum KeyCommands {
         #[arg(long)]
         state: Option<String>,
 
-        /// IP or CIDR allowed to use the key (repeatable)
-        #[arg(long = "ip-allow")]
+        /// Allowed IP/CIDR, optionally IP_OR_CIDR=DESCRIPTION (repeatable)
+        #[arg(long = "ip-allow", value_name = "IP_OR_CIDR[=DESCRIPTION]")]
         ip_allow: Vec<String>,
 
         /// Pre-hashed key ID digest; needs --hash-key-id-suffix and --hash-key-secret
@@ -98,8 +99,12 @@ pub enum KeyCommands {
         #[arg(long)]
         state: Option<String>,
 
-        /// IP or CIDR to allow (repeatable; conflicts with --clear-ip-allow)
-        #[arg(long = "ip-allow", conflicts_with = "clear_ip_allow")]
+        /// Allowed IP/CIDR, optionally IP_OR_CIDR=DESCRIPTION (repeatable)
+        #[arg(
+            long = "ip-allow",
+            value_name = "IP_OR_CIDR[=DESCRIPTION]",
+            conflicts_with = "clear_ip_allow"
+        )]
         ip_allow: Vec<String>,
 
         /// Clear the IP allowlist; conflicts with --ip-allow
@@ -241,18 +246,6 @@ fn parse_api_key_hash_data(
     }
 }
 
-fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessListEntry>> {
-    (!values.is_empty()).then(|| {
-        values
-            .iter()
-            .map(|value| IpAccessListEntry {
-                source: value.clone(),
-                description: None,
-            })
-            .collect()
-    })
-}
-
 fn parse_uuid_list(values: &[String], field: &str) -> CloudResult<Vec<uuid::Uuid>> {
     values
         .iter()
@@ -310,7 +303,7 @@ fn build_api_key_create_request(options: &KeyCreateOptions) -> CloudResult<ApiKe
             None => ApiKeyPostRequestState::default(),
         },
         assigned_role_ids: parse_uuid_list(&options.role_ids, "role_id")?,
-        ip_access_list: parse_ip_access_entries(&options.ip_allow).unwrap_or_default(),
+        ip_access_list: parse_ip_access_entries(&options.ip_allow)?.unwrap_or_default(),
         hash_data: parse_api_key_hash_data(
             options.hash_key_id.as_deref(),
             options.hash_key_id_suffix.as_deref(),
@@ -354,7 +347,7 @@ fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKe
         ip_access_list: if options.clear_ip_allow {
             Some(Vec::new())
         } else {
-            parse_ip_access_entries(&options.ip_allow)
+            parse_ip_access_entries(&options.ip_allow)?
         },
         #[cfg(feature = "deprecated-fields")]
         roles: None,
@@ -805,9 +798,9 @@ mod tests {
             "--role-id",
             "role-2",
             "--ip-allow",
-            "10.0.0.0/8",
+            "10.0.0.0/8=office",
             "--ip-allow",
-            "192.0.2.0/24",
+            "2001:db8::/32=\u{6771}\u{4eac}",
             "--hash-key-id",
             "id-hash",
             "--hash-key-id-suffix",
@@ -840,7 +833,10 @@ mod tests {
         assert_eq!(role_id, vec!["role-1", "role-2"]);
         assert_eq!(expires_at.as_deref(), Some("2025-12-31T23:59:59Z"));
         assert_eq!(state.as_deref(), Some("disabled"));
-        assert_eq!(ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
+        assert_eq!(
+            ip_allow,
+            vec!["10.0.0.0/8=office", "2001:db8::/32=\u{6771}\u{4eac}"]
+        );
         assert_eq!(hash_key_id.as_deref(), Some("id-hash"));
         assert_eq!(hash_key_id_suffix.as_deref(), Some("abcd"));
         assert_eq!(hash_key_secret.as_deref(), Some("secret-hash"));
@@ -866,9 +862,9 @@ mod tests {
             "--state",
             "enabled",
             "--ip-allow",
-            "10.0.0.0/8",
+            "10.0.0.0/8=office",
             "--ip-allow",
-            "192.0.2.0/24",
+            "2001:db8::/32=\u{6771}\u{4eac}",
             "--org-id",
             "org-1",
         ]);
@@ -895,7 +891,10 @@ mod tests {
         assert_eq!(expires_at.as_deref(), Some("2025-01-01T00:00:00Z"));
         assert!(!clear_expiry);
         assert_eq!(state.as_deref(), Some("enabled"));
-        assert_eq!(ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
+        assert_eq!(
+            ip_allow,
+            vec!["10.0.0.0/8=office", "2001:db8::/32=\u{6771}\u{4eac}"]
+        );
         assert!(!clear_ip_allow);
         assert_eq!(org_id.as_deref(), Some("org-1"));
     }
@@ -1167,7 +1166,7 @@ mod tests {
             role_ids: vec![role_id.to_string()],
             expires_at: Some("2025-12-31T23:59:59Z".to_string()),
             state: Some("disabled".to_string()),
-            ip_allow: vec!["10.0.0.0/8".to_string()],
+            ip_allow: vec!["10.0.0.0/8=office".to_string()],
             hash_key_id: Some("id-hash".to_string()),
             hash_key_id_suffix: Some("abcd".to_string()),
             hash_key_secret: Some("secret-hash".to_string()),
@@ -1185,7 +1184,10 @@ mod tests {
         assert_eq!(create.state, ApiKeyPostRequestState::Disabled);
         assert_eq!(create.ip_access_list.len(), 1);
         assert_eq!(create.ip_access_list[0].source, "10.0.0.0/8");
-        assert!(create.ip_access_list[0].description.is_none());
+        assert_eq!(
+            create.ip_access_list[0].description.as_deref(),
+            Some("office")
+        );
         let hash_data = create.hash_data.as_ref().expect("maximal hash data");
         assert_eq!(hash_data.key_id_hash, "id-hash");
         assert_eq!(hash_data.key_id_suffix, "abcd");
@@ -1200,7 +1202,7 @@ mod tests {
             expires_at: Some("2025-01-01T00:00:00Z".to_string()),
             clear_expiry: false,
             state: Some("disabled".to_string()),
-            ip_allow: vec!["0.0.0.0/0".to_string()],
+            ip_allow: vec!["2001:db8::/32=\u{6771}\u{4eac}".to_string()],
             clear_ip_allow: false,
             org_id: None,
         })
@@ -1215,8 +1217,11 @@ mod tests {
         assert_eq!(update.state, Some(ApiKeyPatchRequestState::Disabled));
         let ip_access_list = update.ip_access_list.as_ref().unwrap();
         assert_eq!(ip_access_list.len(), 1);
-        assert_eq!(ip_access_list[0].source, "0.0.0.0/0");
-        assert!(ip_access_list[0].description.is_none());
+        assert_eq!(ip_access_list[0].source, "2001:db8::/32");
+        assert_eq!(
+            ip_access_list[0].description.as_deref(),
+            Some("\u{6771}\u{4eac}")
+        );
         #[cfg(feature = "deprecated-fields")]
         assert!(update.roles.is_none());
     }

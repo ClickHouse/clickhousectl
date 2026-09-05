@@ -8,7 +8,7 @@ use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
 use crate::cloud::service_query::{RepairVerification, existing_open_api_keys};
-use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
+use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
 use clap::builder::PossibleValuesParser;
@@ -145,8 +145,8 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         idle_timeout_minutes: Option<u32>,
 
-        /// IP/CIDR entry to allow, e.g. "10.0.0.0/8" (repeatable)
-        #[arg(long = "ip-allow")]
+        /// Allowed IP/CIDR, optionally IP_OR_CIDR=DESCRIPTION (repeatable)
+        #[arg(long = "ip-allow", value_name = "IP_OR_CIDR[=DESCRIPTION]")]
         ip_allow: Vec<String>,
 
         /// Backup ID to restore from
@@ -287,12 +287,12 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         name: Option<String>,
 
-        /// IP/CIDR entry to add to the service allow list (repeatable)
-        #[arg(long = "add-ip-allow")]
+        /// IP/CIDR to add, optionally IP_OR_CIDR=DESCRIPTION (repeatable)
+        #[arg(long = "add-ip-allow", value_name = "IP_OR_CIDR[=DESCRIPTION]")]
         add_ip_allow: Vec<String>,
 
-        /// IP/CIDR entry to remove from the service allow list (repeatable)
-        #[arg(long = "remove-ip-allow")]
+        /// IP or CIDR to remove from the service allow list (repeatable)
+        #[arg(long = "remove-ip-allow", value_name = "IP_OR_CIDR")]
         remove_ip_allow: Vec<String>,
 
         /// Private endpoint ID to add; format-checked before the request (repeatable)
@@ -947,25 +947,16 @@ async fn resolve_service(
     }
 }
 
-fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessListEntry>> {
-    (!values.is_empty()).then(|| {
-        values
-            .iter()
-            .map(|value| IpAccessListEntry {
-                source: value.clone(),
-                description: None,
-            })
-            .collect()
-    })
-}
-
-fn parse_ip_access_list_patch(add: &[String], remove: &[String]) -> Option<IpAccessListPatch> {
+fn parse_ip_access_list_patch(
+    add: &[String],
+    remove: &[String],
+) -> CloudResult<Option<IpAccessListPatch>> {
     let patch = IpAccessListPatch {
-        add: parse_ip_access_entries(add).unwrap_or_default(),
-        remove: parse_ip_access_entries(remove).unwrap_or_default(),
+        add: parse_ip_access_entries(add)?.unwrap_or_default(),
+        remove: parse_ip_access_entries(remove)?.unwrap_or_default(),
     };
 
-    (!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch)
+    Ok((!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch))
 }
 
 /// Prefix of an AWS PrivateLink VPC endpoint ID.
@@ -1268,7 +1259,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
             description: Some("Allow all (created by clickhousectl)".to_string()),
         }]
     } else {
-        parse_ip_access_entries(&options.ip_allow).unwrap_or_default()
+        parse_ip_access_entries(&options.ip_allow)?.unwrap_or_default()
     };
 
     let horizontal = resolve_horizontal_autoscaling(
@@ -1365,7 +1356,10 @@ fn build_update_service_request(
 ) -> CloudResult<ServicePatchRequest> {
     Ok(ServicePatchRequest {
         name: options.name.clone(),
-        ip_access_list: parse_ip_access_list_patch(&options.add_ip_allow, &options.remove_ip_allow),
+        ip_access_list: parse_ip_access_list_patch(
+            &options.add_ip_allow,
+            &options.remove_ip_allow,
+        )?,
         private_endpoint_ids: parse_private_endpoint_ids_patch(
             &options.add_private_endpoint_ids,
             &options.remove_private_endpoint_ids,
@@ -3492,9 +3486,9 @@ mod tests {
             "--idle-timeout-minutes",
             "10",
             "--ip-allow",
-            "10.0.0.0/8",
+            "10.0.0.0/8=office",
             "--ip-allow",
-            "192.0.2.0/24",
+            "2001:db8::/32=\u{6771}\u{4eac}",
             "--backup-id",
             "backup-1",
             "--release-channel",
@@ -3566,7 +3560,10 @@ mod tests {
         assert_eq!(autoscaling_mode.as_deref(), Some("vertical"));
         assert_eq!(idle_scaling, Some(false));
         assert_eq!(idle_timeout_minutes, Some(10));
-        assert_eq!(ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
+        assert_eq!(
+            ip_allow,
+            vec!["10.0.0.0/8=office", "2001:db8::/32=\u{6771}\u{4eac}"]
+        );
         assert_eq!(backup_id.as_deref(), Some("backup-1"));
         assert_eq!(release_channel.as_deref(), Some("fast"));
         assert_eq!(data_warehouse_id.as_deref(), Some("dw-1"));
@@ -3860,7 +3857,7 @@ mod tests {
             "update",
             "svc-1",
             "--add-ip-allow",
-            "10.0.0.0/8",
+            "2001:db8::/32=office",
             "--remove-ip-allow",
             "0.0.0.0/0",
             "--add-private-endpoint-id",
@@ -3892,7 +3889,7 @@ mod tests {
             panic!("expected service update");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(add_ip_allow, vec!["10.0.0.0/8"]);
+        assert_eq!(add_ip_allow, vec!["2001:db8::/32=office"]);
         assert_eq!(remove_ip_allow, vec!["0.0.0.0/0"]);
         assert_eq!(add_private_endpoint_id, vec!["pe-1"]);
         assert_eq!(remove_private_endpoint_id, vec!["pe-2"]);
@@ -3913,9 +3910,9 @@ mod tests {
             "--name",
             "renamed",
             "--add-ip-allow",
-            "10.0.0.0/8",
+            "10.0.0.0/8=office",
             "--add-ip-allow",
-            "192.0.2.0/24",
+            "2001:db8::/32=\u{6771}\u{4eac}",
             "--remove-ip-allow",
             "0.0.0.0/0",
             "--add-private-endpoint-id",
@@ -3965,7 +3962,10 @@ mod tests {
 
         assert_eq!(service_id, "svc-1");
         assert_eq!(name.as_deref(), Some("renamed"));
-        assert_eq!(add_ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
+        assert_eq!(
+            add_ip_allow,
+            vec!["10.0.0.0/8=office", "2001:db8::/32=\u{6771}\u{4eac}"]
+        );
         assert_eq!(remove_ip_allow, vec!["0.0.0.0/0"]);
         assert_eq!(add_private_endpoint_id, vec!["pe-1", "pe-2"]);
         assert_eq!(remove_private_endpoint_id, vec!["pe-3"]);
@@ -5876,7 +5876,7 @@ mod tests {
             autoscaling_mode: Some("vertical".to_string()),
             idle_scaling: Some(true),
             idle_timeout_minutes: Some(10),
-            ip_allow: vec!["10.0.0.0/8".to_string()],
+            ip_allow: vec!["2001:db8::/32=office".to_string()],
             backup_id: Some("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6".to_string()),
             release_channel: Some("fast".to_string()),
             data_warehouse_id: Some("dw-1".to_string()),
@@ -5907,8 +5907,11 @@ mod tests {
         assert_eq!(request.idle_scaling, Some(true));
         assert_eq!(request.idle_timeout_minutes, Some(10.0));
         assert_eq!(request.ip_access_list.len(), 1);
-        assert_eq!(request.ip_access_list[0].source, "10.0.0.0/8");
-        assert!(request.ip_access_list[0].description.is_none());
+        assert_eq!(request.ip_access_list[0].source, "2001:db8::/32");
+        assert_eq!(
+            request.ip_access_list[0].description.as_deref(),
+            Some("office")
+        );
         assert_eq!(
             request.backup_id,
             Some(uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap())
@@ -5988,7 +5991,7 @@ mod tests {
     fn build_update_service_request_supports_maximal_fields() {
         let options = ServiceUpdateOptions {
             name: Some("updated".to_string()),
-            add_ip_allow: vec!["10.0.0.0/8".to_string()],
+            add_ip_allow: vec!["10.0.0.0/8=office".to_string()],
             remove_ip_allow: vec!["0.0.0.0/0".to_string()],
             add_private_endpoint_ids: vec!["pe-1".to_string()],
             remove_private_endpoint_ids: vec!["pe-2".to_string()],
@@ -6007,7 +6010,7 @@ mod tests {
         let ip_access_list = request.ip_access_list.as_ref().unwrap();
         assert_eq!(ip_access_list.add.len(), 1);
         assert_eq!(ip_access_list.add[0].source, "10.0.0.0/8");
-        assert!(ip_access_list.add[0].description.is_none());
+        assert_eq!(ip_access_list.add[0].description.as_deref(), Some("office"));
         assert_eq!(ip_access_list.remove.len(), 1);
         assert_eq!(ip_access_list.remove[0].source, "0.0.0.0/0");
         assert!(ip_access_list.remove[0].description.is_none());

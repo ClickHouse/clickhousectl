@@ -13304,6 +13304,189 @@ async fn pgbouncer_config_get_json_preserves_values_and_tolerates_absent_section
     }
 }
 
+// IP allowlist descriptions (#589).
+
+#[tokio::test]
+async fn service_allowlist_descriptions_reach_create_and_additive_update_requests() {
+    let create = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services"))
+        .and(body_json(serde_json::json!({
+            "name": "described-service",
+            "provider": "aws",
+            "region": "us-east-1",
+            "ipAccessList": [
+                {"source": "192.0.2.0/24"},
+                {"source": "2001:db8::/32", "description": "\u{6771}\u{4eac} \u{1f5fc}"},
+            ],
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "service": {"id": "22222222-3333-4444-5555-666666666666", "name": "described-service"},
+                "password": "generated-password"
+            },
+            "status": 200,
+            "requestId": "stub-service-create"
+        })))
+        .expect(1)
+        .mount(&create)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &create,
+        &[
+            "service",
+            "create",
+            "--name",
+            "described-service",
+            "--ip-allow",
+            "192.0.2.0/24",
+            "--ip-allow",
+            "2001:db8::/32=\u{6771}\u{4eac} \u{1f5fc}",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+
+    let update = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .and(body_json(serde_json::json!({
+            "ipAccessList": {
+                "add": [{"source": "2001:db8:1::/48", "description": "branch office"}],
+                "remove": []
+            }
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "22222222-3333-4444-5555-666666666666", "name": "described-service"},
+            "status": 200,
+            "requestId": "stub-service-update"
+        })))
+        .expect(1)
+        .mount(&update)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &update,
+        &[
+            "service",
+            "update",
+            "svc-1",
+            "--add-ip-allow",
+            "2001:db8:1::/48=branch office",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn api_key_allowlist_descriptions_reach_create_and_update_requests() {
+    let create = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/keys"))
+        .and(body_json(serde_json::json!({
+            "name": "described-key",
+            "state": "enabled",
+            "assignedRoleIds": [],
+            "ipAccessList": [
+                {"source": "198.51.100.4"},
+                {"source": "2001:db8::/32", "description": "production"},
+            ]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "key": {"id": "11111111-2222-3333-4444-555555555555", "name": "described-key"},
+                "keyId": "generated-key-id",
+                "keySecret": "generated-key-secret"
+            },
+            "status": 200,
+            "requestId": "stub-key-create"
+        })))
+        .expect(1)
+        .mount(&create)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &create,
+        &[
+            "key",
+            "create",
+            "--name",
+            "described-key",
+            "--ip-allow",
+            "198.51.100.4",
+            "--ip-allow",
+            "2001:db8::/32=production",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+
+    let update = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/keys/key-1"))
+        .and(body_json(serde_json::json!({
+            "ipAccessList": [{"source": "203.0.113.0/24", "description": ""}]
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "11111111-2222-3333-4444-555555555555", "name": "described-key"},
+            "status": 200,
+            "requestId": "stub-key-update"
+        })))
+        .expect(1)
+        .mount(&update)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &update,
+        &[
+            "key",
+            "update",
+            "key-1",
+            "--ip-allow",
+            "203.0.113.0/24=",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn invalid_allowlist_sources_fail_before_service_or_key_requests() {
+    for args in [
+        vec![
+            "service",
+            "create",
+            "--name",
+            "invalid-service",
+            "--ip-allow",
+            "2001:db8::/129=invalid",
+            "--org-id",
+            "org-1",
+        ],
+        vec![
+            "key",
+            "update",
+            "key-1",
+            "--ip-allow",
+            "not-an-ip=invalid",
+            "--org-id",
+            "org-1",
+        ],
+    ] {
+        let server = MockServer::start().await;
+        let output = invoke_cli_with_cloud_credentials(&server, &args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("invalid IP allowlist entry"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(server.received_requests().await.unwrap().is_empty());
+    }
+}
+
 // API key nullable expiry (#698) and explicit list clearing (#597).
 async fn invoke_key_update(server: &MockServer, flags: &[&str]) -> std::process::Output {
     let project = tempfile::tempdir().unwrap();
