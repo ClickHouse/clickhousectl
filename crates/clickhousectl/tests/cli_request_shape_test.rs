@@ -20766,3 +20766,349 @@ async fn service_create_rejects_dynamic_profile_memory_mismatch_before_post() {
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].method, wiremock::http::Method::GET);
 }
+
+fn invoke_service_settings_with_oauth(
+    mock: &MockServer,
+    cli_args: &[&str],
+) -> std::process::Output {
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url, "--json", "service", "settings"];
+    args.extend(cli_args);
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn service_settings_read_routes_support_oauth_and_sparse_responses() {
+    let mock = MockServer::start().await;
+    let collection = "/v1/organizations/org-1/services/svc-1/clickhouseSettings";
+    let item = format!("{collection}/compatibility");
+    let schema = format!("{collection}/schema");
+
+    Mock::given(method("GET"))
+        .and(path(collection))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"settings": [{"name": "compatibility"}, {"value": "1"}, {}]},
+            "status": 200,
+            "requestId": "stub-settings-list"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(&item))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"value": "24.8"},
+            "status": 200,
+            "requestId": "stub-setting-get"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(&schema))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"settings": [
+                {"name": "compatibility", "enum": [0, 1]},
+                {"description": "future setting"},
+                {}
+            ]},
+            "status": 200,
+            "requestId": "stub-settings-schema"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let list = invoke_service_settings_with_oauth(&mock, &["list", "svc-1", "--org-id", "org-1"]);
+    assert_success(&list);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list.stdout).unwrap(),
+        serde_json::json!({"settings": [
+            {"name": "compatibility"}, {"value": "1"}, {}
+        ]})
+    );
+
+    let get = invoke_service_settings_with_oauth(
+        &mock,
+        &["get", "svc-1", "compatibility", "--org-id", "org-1"],
+    );
+    assert_success(&get);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&get.stdout).unwrap(),
+        serde_json::json!({"value": "24.8"})
+    );
+
+    let schema_output =
+        invoke_service_settings_with_oauth(&mock, &["schema", "svc-1", "--org-id", "org-1"]);
+    assert_success(&schema_output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&schema_output.stdout).unwrap(),
+        serde_json::json!({"settings": [
+            {"name": "compatibility", "enum": [0, 1]},
+            {"description": "future setting"},
+            {}
+        ]})
+    );
+}
+
+#[tokio::test]
+async fn service_settings_set_and_unset_send_exact_requests_with_api_key_auth() {
+    let mock = MockServer::start().await;
+    let collection = "/v1/organizations/org-1/services/svc-1/clickhouseSettings";
+    let item = format!("{collection}/compatibility");
+    Mock::given(method("PATCH"))
+        .and(path(collection))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .and(body_json(serde_json::json!({
+            "settings": "{\"compatibility\":\"24.8\",\"enable_analyzer\":1}"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "settings": "{\"compatibility\":\"24.8\",\"enable_analyzer\":1}",
+                "warnings": [{"name": "compatibility"}]
+            },
+            "status": 200,
+            "requestId": "stub-settings-set"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(&item))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {},
+            "status": 200,
+            "requestId": "stub-setting-unset"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let set = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--setting",
+            "compatibility=\"24.8\"",
+            "--setting",
+            "enable_analyzer=1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&set);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&set.stdout).unwrap(),
+        serde_json::json!({
+            "settings": "{\"compatibility\":\"24.8\",\"enable_analyzer\":1}",
+            "warnings": [{"name": "compatibility"}]
+        })
+    );
+
+    let unset = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "settings",
+            "unset",
+            "svc-1",
+            "compatibility",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&unset);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&unset.stdout).unwrap(),
+        serde_json::json!({"status": 200, "requestId": "stub-setting-unset"})
+    );
+}
+
+#[tokio::test]
+async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before_http() {
+    let mock = MockServer::start().await;
+    let collection = "/v1/organizations/org-1/services/svc-1/clickhouseSettings";
+    Mock::given(method("PATCH"))
+        .and(path(collection))
+        .and(body_json(serde_json::json!({
+            "settings": "{\"bool_value\":false,\"future_setting\":{\"nested\":true}}"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"warnings": []},
+            "status": 200,
+            "requestId": "stub-settings-stdin"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let url = mock.uri();
+    let mut child = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "--json",
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--settings-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"future_setting":{"nested":true},"bool_value":false}"#)
+        .unwrap();
+    let valid = child.wait_with_output().unwrap();
+    assert_success(&valid);
+
+    let before_bad = mock.received_requests().await.unwrap().len();
+    let mut bad_child = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .args([
+            "cloud",
+            "--url",
+            &url,
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--settings-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    bad_child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"{not-json")
+        .unwrap();
+    let bad = bad_child.wait_with_output().unwrap();
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("invalid JSON in stdin"));
+    assert_eq!(
+        mock.received_requests().await.unwrap().len(),
+        before_bad,
+        "invalid stdin must fail before HTTP"
+    );
+}
+
+#[tokio::test]
+async fn service_settings_api_errors_keep_auth_classification() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickhouseSettings/compatibility",
+        ))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403,
+            "error": "Forbidden",
+            "requestId": "stub-settings-forbidden"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "settings",
+            "get",
+            "svc-1",
+            "compatibility",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Forbidden\n"
+    );
+}
+
+#[tokio::test]
+async fn service_settings_schema_human_output_renders_nested_sparse_entries() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickhouseSettings/schema",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"settings": [
+                {
+                    "name": "compatibility",
+                    "type": "string",
+                    "description": "Compatibility version",
+                    "enum": [0, 1]
+                },
+                {"warning": "future warning"},
+                {}
+            ]},
+            "status": 200,
+            "requestId": "stub-settings-schema-human"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "service", "settings", "schema", "svc-1", "--org-id", "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("settings:\n  - description: Compatibility version"));
+    assert!(stdout.contains("enum: [0, 1]"));
+    assert!(stdout.contains("warning: future warning"));
+}

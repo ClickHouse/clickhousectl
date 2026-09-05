@@ -831,6 +831,15 @@ clickhousectl cloud service reset-password <service-id> \
   --new-password-hash <base64-sha256-hash> \
   --new-double-sha1-hash <mysql-double-sha1-hash>
 
+# Discover, inspect, and change per-service ClickHouse settings (beta)
+clickhousectl cloud service settings schema <service-id>
+clickhousectl cloud service settings list <service-id>
+clickhousectl cloud service settings get <service-id> compatibility
+clickhousectl cloud service settings set <service-id> \
+  --setting 'compatibility="24.8"' --setting enable_analyzer=1
+clickhousectl cloud service settings set <service-id> --settings-file settings.json
+clickhousectl cloud service settings unset <service-id> compatibility
+
 # Query endpoint management (manual, for sharing keys with other tools)
 clickhousectl cloud service query-endpoint get <service-id>
 clickhousectl cloud service query-endpoint create <service-id> \
@@ -873,6 +882,7 @@ delimiter is safe with IPv6; quote entries whose descriptions contain spaces.
 Pass `--allowed-origins` on first creation or to change browser access (`'*'` explicitly allows every origin). Use `--replace-open-api-keys` with `--open-api-key` to deliberately replace the entire authorized-key list.
 The command reads the existing configuration before updating; a failed or incomplete read prevents changes to unknown fields. Avoid concurrent changes to the same query endpoint.
 
+`service settings schema` discovers the setting names and accepted types for a service. `settings set` changes only the names supplied: repeat `--setting NAME=JSON_VALUE`, or pass a JSON object such as `{"compatibility":"24.8","enable_analyzer":1}` with `--settings-file` (`-` reads stdin). String values in `--setting` must retain their JSON quotes. The CLI handles the API's JSON-encoded string transport, so a settings file contains the map itself, not a `{ "settings": ... }` request wrapper. Unknown setting names are sent to the API for validation. `settings unset` is idempotent and resets one setting to its platform default; it does not assign JSON `null`.
 
 `--backup-start-time` requires the backup period to be 24 or 48 hours. Nothing is defaulted when the period is omitted: the API validates the new start time against the period already stored on the service, so either pass `--backup-period-hours 24` or `--backup-period-hours 48` in the same call, or leave the stored period at one of those. When a start time is given without a period, the CLI reads the current configuration first and fails before sending the update if the stored period is something else.
 
