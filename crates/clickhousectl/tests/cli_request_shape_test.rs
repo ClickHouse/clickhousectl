@@ -12924,3 +12924,431 @@ async fn key_update_expiry_rejects_oauth_before_http() {
     assert_eq!(output.status.code(), Some(4));
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+// PgConfig is a closed schema. Every file-input write path must validate it
+// before organization discovery or any other HTTP request (#591).
+fn pg_config_file_write_commands<'a>(
+    pg_config_file: &'a str,
+    instance_config_file: &'a str,
+) -> Vec<(Vec<&'a str>, &'static str, &'static str)> {
+    vec![
+        (
+            vec![
+                "postgres",
+                "create",
+                "--name",
+                "pg-test",
+                "--region",
+                "us-east-1",
+                "--size",
+                "c6gd.large",
+                "--pg-config-file",
+                pg_config_file,
+            ],
+            "POST",
+            "/v1/organizations/org-1/postgres",
+        ),
+        (
+            vec![
+                "postgres",
+                "read-replica",
+                "create",
+                "pg-1",
+                "--name",
+                "replica-test",
+                "--pg-config-file",
+                pg_config_file,
+            ],
+            "POST",
+            "/v1/organizations/org-1/postgres/pg-1/readReplica",
+        ),
+        (
+            vec![
+                "postgres",
+                "restore",
+                "pg-1",
+                "--name",
+                "restored-test",
+                "--restore-target",
+                "2026-08-01T00:00:00Z",
+                "--pg-config-file",
+                pg_config_file,
+            ],
+            "POST",
+            "/v1/organizations/org-1/postgres/pg-1/restoredService",
+        ),
+        (
+            vec![
+                "postgres",
+                "config",
+                "patch",
+                "pg-1",
+                "--file",
+                instance_config_file,
+            ],
+            "PATCH",
+            "/v1/organizations/org-1/postgres/pg-1/config",
+        ),
+        (
+            vec![
+                "postgres",
+                "config",
+                "replace",
+                "pg-1",
+                "--file",
+                instance_config_file,
+            ],
+            "POST",
+            "/v1/organizations/org-1/postgres/pg-1/config",
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn pg_config_files_preserve_valid_values_in_every_write_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let pg_config_file = directory.path().join("pg.json");
+    let instance_config_file = directory.path().join("config.json");
+    let pg_config = serde_json::json!({
+        "max_connections": 0,
+        "autovacuum_analyze_scale_factor": false,
+        "default_transaction_isolation": "repeatable read",
+        "ssl_min_protocol_version": "TLSv1.3",
+        "wal_compression": "zstd"
+    });
+    let instance_config = serde_json::json!({
+        "pgConfig": pg_config,
+        "pgBouncerConfig": {"future_parameter": "on"}
+    });
+    std::fs::write(&pg_config_file, pg_config.to_string()).unwrap();
+    std::fs::write(&instance_config_file, instance_config.to_string()).unwrap();
+
+    for (mut args, verb, endpoint) in pg_config_file_write_commands(
+        pg_config_file.to_str().unwrap(),
+        instance_config_file.to_str().unwrap(),
+    ) {
+        let mock = MockServer::start().await;
+        Mock::given(method(verb))
+            .and(path(endpoint))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": instance_config,
+                "status": 200
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        args.extend(["--org-id", "org-1"]);
+        let output = invoke_pgbouncer_cli(&mock, &args);
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "{args:?}");
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["pgConfig"], pg_config, "{args:?}");
+        if endpoint.ends_with("/config") {
+            assert_eq!(body["pgBouncerConfig"], instance_config["pgBouncerConfig"]);
+        }
+    }
+}
+
+#[tokio::test]
+async fn pg_config_unknown_file_keys_fail_before_any_api_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let pg_config_file = directory.path().join("pg.json");
+    let instance_config_file = directory.path().join("config.json");
+    let pg_config = serde_json::json!({"max_conections": 500});
+    std::fs::write(&pg_config_file, pg_config.to_string()).unwrap();
+    std::fs::write(
+        &instance_config_file,
+        serde_json::json!({"pgConfig": pg_config, "pgBouncerConfig": {}}).to_string(),
+    )
+    .unwrap();
+
+    for (args, _, _) in pg_config_file_write_commands(
+        pg_config_file.to_str().unwrap(),
+        instance_config_file.to_str().unwrap(),
+    ) {
+        let mock = MockServer::start().await;
+        let output = invoke_pgbouncer_cli(&mock, &args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("unknown pgConfig key 'max_conections'"),
+            "{error}"
+        );
+        assert!(error.contains("max_connections"), "{error}");
+        assert!(
+            mock.received_requests().await.unwrap().is_empty(),
+            "{args:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pg_config_malformed_file_roots_fail_before_any_api_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let pg_config_file = directory.path().join("pg.json");
+    let instance_config_file = directory.path().join("config.json");
+    std::fs::write(&pg_config_file, "[]").unwrap();
+    std::fs::write(&instance_config_file, "[]").unwrap();
+
+    for (args, _, _) in pg_config_file_write_commands(
+        pg_config_file.to_str().unwrap(),
+        instance_config_file.to_str().unwrap(),
+    ) {
+        let mock = MockServer::start().await;
+        let output = invoke_pgbouncer_cli(&mock, &args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("must be a JSON object"), "{args:?}: {error}");
+        assert!(
+            mock.received_requests().await.unwrap().is_empty(),
+            "{args:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pg_config_null_file_values_fail_before_any_api_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let pg_config_file = directory.path().join("pg.json");
+    let instance_config_file = directory.path().join("config.json");
+    let pg_config = serde_json::json!({"work_mem": null});
+    std::fs::write(&pg_config_file, pg_config.to_string()).unwrap();
+    std::fs::write(
+        &instance_config_file,
+        serde_json::json!({"pgConfig": pg_config, "pgBouncerConfig": {}}).to_string(),
+    )
+    .unwrap();
+
+    for (args, _, _) in pg_config_file_write_commands(
+        pg_config_file.to_str().unwrap(),
+        instance_config_file.to_str().unwrap(),
+    ) {
+        let mock = MockServer::start().await;
+        let output = invoke_pgbouncer_cli(&mock, &args);
+        assert_eq!(output.status.code(), Some(1), "{args:?}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(error.contains("null is not supported"), "{args:?}: {error}");
+        assert!(
+            mock.received_requests().await.unwrap().is_empty(),
+            "{args:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn pg_config_invalid_enum_file_values_fail_before_any_api_request() {
+    let directory = tempfile::tempdir().unwrap();
+    let pg_config_file = directory.path().join("pg.json");
+    let instance_config_file = directory.path().join("config.json");
+
+    for pg_config in [
+        serde_json::json!({"default_transaction_isolation": "read uncommitted"}),
+        serde_json::json!({"ssl_min_protocol_version": "SSLv3"}),
+        serde_json::json!({"wal_compression": "gzip"}),
+    ] {
+        std::fs::write(&pg_config_file, pg_config.to_string()).unwrap();
+        std::fs::write(
+            &instance_config_file,
+            serde_json::json!({"pgConfig": pg_config, "pgBouncerConfig": {}}).to_string(),
+        )
+        .unwrap();
+        for (args, _, _) in pg_config_file_write_commands(
+            pg_config_file.to_str().unwrap(),
+            instance_config_file.to_str().unwrap(),
+        ) {
+            let mock = MockServer::start().await;
+            let output = invoke_pgbouncer_cli(&mock, &args);
+            assert_eq!(output.status.code(), Some(1), "{args:?}");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                error.contains("invalid pgConfig value"),
+                "{args:?}: {error}"
+            );
+            assert!(error.contains("expected one of"), "{args:?}: {error}");
+            assert!(
+                mock.received_requests().await.unwrap().is_empty(),
+                "{args:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn pg_config_set_validates_keys_and_enum_values_before_any_api_request() {
+    for setting in [
+        "max_conections=500",
+        "default_transaction_isolation=read uncommitted",
+        "ssl_min_protocol_version=SSLv3",
+        "wal_compression=gzip",
+    ] {
+        let mock = MockServer::start().await;
+        let output = invoke_pgbouncer_cli(
+            &mock,
+            &["postgres", "config", "patch", "pg-1", "--set", setting],
+        );
+        assert_eq!(output.status.code(), Some(1), "{setting}");
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("unknown pgConfig key") || error.contains("invalid pgConfig value"),
+            "{setting}: {error}"
+        );
+        assert!(error.contains("expected one of"), "{setting}: {error}");
+        assert!(
+            mock.received_requests().await.unwrap().is_empty(),
+            "{setting}"
+        );
+    }
+
+    let mock = MockServer::start().await;
+    let output = invoke_pgbouncer_cli(
+        &mock,
+        &[
+            "postgres",
+            "config",
+            "patch",
+            "pg-1",
+            "--set",
+            "work_mem=null",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("null is not supported"), "{error}");
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn pg_config_set_preserves_false_zero_and_valid_enums() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"pgConfig": {}, "pgBouncerConfig": {}},
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_pgbouncer_cli(
+        &mock,
+        &[
+            "postgres",
+            "config",
+            "patch",
+            "pg-1",
+            "--set",
+            "max_connections=0",
+            "--set",
+            "autovacuum_analyze_scale_factor=false",
+            "--set",
+            "wal_compression=zstd",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "pgConfig": {
+                "max_connections": 0,
+                "autovacuum_analyze_scale_factor": false,
+                "wal_compression": "zstd"
+            },
+            "pgBouncerConfig": {}
+        })
+    );
+}
+
+#[tokio::test]
+async fn postgres_config_files_reject_missing_or_malformed_sections_before_http() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("config.json");
+    for (document, expected) in [
+        (serde_json::json!({}), "missing required 'pgConfig'"),
+        (
+            serde_json::json!({"pgConfig": {}}),
+            "missing required 'pgBouncerConfig'",
+        ),
+        (
+            serde_json::json!({"pgBouncerConfig": {}}),
+            "missing required 'pgConfig'",
+        ),
+        (
+            serde_json::json!({"pgConfig": null, "pgBouncerConfig": {}}),
+            "pgConfig must be a JSON object",
+        ),
+        (
+            serde_json::json!({"pgConfig": {}, "pgBouncerConfig": []}),
+            "invalid pgBouncerConfig",
+        ),
+        (
+            serde_json::json!({
+                "pgConfig": {}, "pgBouncerConfig": {}, "pgBouncerConfigs": {}
+            }),
+            "unknown configuration section 'pgBouncerConfigs'",
+        ),
+    ] {
+        std::fs::write(&file, document.to_string()).unwrap();
+        for action in ["patch", "replace"] {
+            let mock = MockServer::start().await;
+            let output = invoke_pgbouncer_cli(
+                &mock,
+                &[
+                    "postgres",
+                    "config",
+                    action,
+                    "pg-1",
+                    "--file",
+                    file.to_str().unwrap(),
+                ],
+            );
+            assert_eq!(output.status.code(), Some(1), "{action}: {document}");
+            let error = String::from_utf8_lossy(&output.stderr);
+            assert!(error.contains(expected), "{action}: {document}: {error}");
+            assert!(
+                mock.received_requests().await.unwrap().is_empty(),
+                "{action}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn postgres_config_files_preserve_explicit_empty_sections() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("config.json");
+    let document = serde_json::json!({"pgConfig": {}, "pgBouncerConfig": {}});
+    std::fs::write(&file, document.to_string()).unwrap();
+
+    for (action, verb) in [("patch", "PATCH"), ("replace", "POST")] {
+        let mock = MockServer::start().await;
+        Mock::given(method(verb))
+            .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
+            .and(body_json(document.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": document,
+                "status": 200
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_pgbouncer_cli(
+            &mock,
+            &[
+                "postgres",
+                "config",
+                action,
+                "pg-1",
+                "--file",
+                file.to_str().unwrap(),
+                "--org-id",
+                "org-1",
+            ],
+        );
+        assert_success(&output);
+    }
+}
