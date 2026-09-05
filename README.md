@@ -1225,6 +1225,24 @@ clickhousectl cloud clickpipe create kafka <service-id> \
   --database default --table events \
   --column "event_id:Int64"
 
+# Protobuf schema from a file, with exactly-once delivery
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-protobuf-pipe \
+  --brokers 'broker:9092' --topics events \
+  --format Protobuf --protobuf-schema-file ./events.proto \
+  --exactly-once true \
+  --database default --table events \
+  --column "event_id:Int64"
+
+# Azure Event Hubs uses its connection-string credential object
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-event-hubs-pipe \
+  --brokers 'namespace.servicebus.windows.net:9093' --topics events \
+  --format JSONEachRow --kafka-type azureeventhub \
+  --event-hubs-connection-string "$EVENT_HUBS_CONNECTION_STRING" \
+  --database default --table events \
+  --column "event_id:Int64"
+
 # From Amazon Kinesis
 clickhousectl cloud clickpipe create kinesis <service-id> \
   --name my-kinesis-pipe \
@@ -1308,7 +1326,12 @@ clickhousectl cloud clickpipe create mysql <service-id> \
   --host mysql.example.com \
   --username "$MYSQL_USERNAME" --password "$MYSQL_PASSWORD" \
   --table-mapping "mydb.users:mydb_users" \
-  --server-id 4242
+  --server-id 4242 \
+  --sync-interval-seconds 30 --pull-batch-size 50000 \
+  --initial-load-parallelism 4 \
+  --snapshot-rows-per-partition 1000000 --snapshot-parallel-tables 3 \
+  --allow-nullable-columns true --delete-on-merge false \
+  --use-compression true
 
 # From an RDS or Aurora MySQL with IAM role authentication (CDC)
 # IAM_ROLE auth takes no --username/--password: the role ARN is the credential
@@ -1333,7 +1356,11 @@ clickhousectl cloud clickpipe create mongodb <service-id> \
   --name my-mongo-pipe \
   --uri 'mongodb+srv://cluster.example.net/mydb' \
   --username "$MONGODB_USERNAME" --password "$MONGODB_PASSWORD" \
-  --table-mapping "mydb.users:mydb_users"
+  --table-mapping "mydb.users:mydb_users" \
+  --sync-interval-seconds 30 --pull-batch-size 50000 \
+  --snapshot-rows-per-partition 1000000 \
+  --snapshot-parallel-collections 3 \
+  --delete-on-merge false --use-json-native-format true
 
 # One-shot MongoDB snapshot, read from the primary, private CA
 clickhousectl cloud clickpipe create mongodb <service-id> \
@@ -1538,7 +1565,18 @@ snapshot and initial-load settings cannot be changed later on a pipe that was
 created without them. `clickpipe settings update` is a different endpoint for
 streaming and object-storage pipes and does not cover these settings.
 
-The same settings are not yet exposed on `clickpipe create mysql`.
+MySQL and MongoDB expose the corresponding settings on their create commands.
+The integer fields enforce the Cloud API minima: sync interval, pull batch,
+initial-load workers and parallel tables/collections are at least `1`, while
+snapshot rows per partition is at least `1000`. Optional booleans take an
+explicit `true` or `false`; omitted values stay out of the request.
+
+Kafka's `--protobuf-schema-file <PATH>` accepts a `.proto` source or serialized
+`FileDescriptorSet`; pass `-` to read it from stdin. The CLI base64-encodes the
+bytes and enforces the API's encoded 1 MiB limit. This input requires
+`--format Protobuf` and conflicts with the schema registry flags. The same
+flag works for Kafka schema discovery. `--exactly-once <true|false>` is
+create-only.
 
 `--service-account-file` (on `create pubsub`, `create object-storage` and
 `create bigquery`) takes a path to the GCP service account JSON key file, or `-`
@@ -1678,6 +1716,11 @@ clickhousectl cloud clickpipe schema-discover <service-id> kafka \
 clickhousectl cloud clickpipe schema-discover <service-id> kafka \
   --brokers 'broker:9092' --topics events \
   --format JSONEachRow
+
+# Discover a Protobuf schema, reading the source from stdin
+clickhousectl cloud clickpipe schema-discover <service-id> kafka \
+  --brokers 'broker:9092' --topics events \
+  --format Protobuf --protobuf-schema-file - < events.proto
 
 # Discover schema from Kinesis
 clickhousectl cloud clickpipe schema-discover <service-id> kinesis \

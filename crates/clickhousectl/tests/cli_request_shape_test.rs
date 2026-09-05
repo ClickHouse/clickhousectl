@@ -141,6 +141,47 @@ async fn invoke_cli_capture_body(mock: &MockServer, cli_args: &[&str]) -> Value 
     serde_json::from_slice(&post.body).expect("POST body wasn't valid JSON")
 }
 
+async fn invoke_cli_capture_body_with_stdin(
+    mock: &MockServer,
+    cli_args: &[&str],
+    stdin: &[u8],
+) -> Value {
+    let mut full_args: Vec<&str> = vec!["cloud", "--url"];
+    let url = mock.uri();
+    full_args.push(&url);
+    full_args.push("--json");
+    full_args.extend(cli_args);
+
+    let mut child = Command::new(clickhousectl_binary())
+        .env("DO_NOT_TRACK", "1")
+        .args(&full_args)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+    child
+        .stdin
+        .take()
+        .expect("stdin pipe")
+        .write_all(stdin)
+        .expect("write clickhousectl stdin");
+    let output = child.wait_with_output().expect("wait for clickhousectl");
+    assert_success(&output);
+
+    let requests = mock
+        .received_requests()
+        .await
+        .expect("mock requests log unavailable");
+    let post = requests
+        .iter()
+        .find(|request| request.method == wiremock::http::Method::POST)
+        .expect("no POST request recorded by mock");
+    serde_json::from_slice(&post.body).expect("POST body wasn't valid JSON")
+}
+
 // ── Organization auto-detection (issue #337) ───────────────────────────────
 
 const AUTO_DETECTED_ORG_ID: &str = "11111111-2222-3333-4444-555555555555";
@@ -4265,6 +4306,75 @@ async fn mysql_optional_fields_absent_when_flags_omitted() {
             "{field} leaked into mysql source body: {mysql}",
         );
     }
+    assert_eq!(
+        mysql["settings"],
+        serde_json::json!({
+            "replicationMode": "cdc",
+            "replicationMechanism": "GTID",
+        })
+    );
+}
+
+#[tokio::test]
+async fn issue_593_mysql_create_sends_every_source_tuning_field() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mysql",
+            "svc-id",
+            "--name",
+            "tuned",
+            "--host",
+            "mysql",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "mydb.t:t",
+            "--sync-interval-seconds",
+            "1",
+            "--pull-batch-size",
+            "2",
+            "--initial-load-parallelism",
+            "3",
+            "--snapshot-rows-per-partition",
+            "1000",
+            "--snapshot-parallel-tables",
+            "4",
+            "--allow-nullable-columns",
+            "false",
+            "--delete-on-merge",
+            "true",
+            "--use-compression",
+            "false",
+            "--skip-cert-verification",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    let mysql = &body["source"]["mysql"];
+    assert_eq!(mysql["skipCertVerification"], true);
+    assert_eq!(
+        mysql["settings"],
+        serde_json::json!({
+            "replicationMode": "cdc",
+            "replicationMechanism": "GTID",
+            "syncIntervalSeconds": 1,
+            "pullBatchSize": 2,
+            "initialLoadParallelism": 3,
+            "snapshotNumRowsPerPartition": 1000,
+            "snapshotNumberOfParallelTables": 4,
+            "allowNullableColumns": false,
+            "deleteOnMerge": true,
+            "useCompression": false,
+        })
+    );
 }
 
 // Mongo: tlsHost should be absent when --tls-host not passed.
@@ -4305,6 +4415,66 @@ async fn mongodb_tls_host_absent_when_not_passed() {
     assert!(
         mongo.get("caCertificate").is_none(),
         "caCertificate leaked into mongodb source body: {mongo}",
+    );
+    assert!(mongo.get("skipCertVerification").is_none());
+    assert_eq!(
+        mongo["settings"],
+        serde_json::json!({ "replicationMode": "cdc" })
+    );
+}
+
+#[tokio::test]
+async fn issue_593_mongodb_create_sends_every_source_tuning_and_tls_field() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mongodb",
+            "svc-id",
+            "--name",
+            "tuned",
+            "--uri",
+            "mongodb://m:27017",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "db.c:t",
+            "--sync-interval-seconds",
+            "1",
+            "--pull-batch-size",
+            "2",
+            "--snapshot-rows-per-partition",
+            "1000",
+            "--snapshot-parallel-collections",
+            "3",
+            "--delete-on-merge",
+            "false",
+            "--use-json-native-format",
+            "true",
+            "--skip-cert-verification",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    let mongo = &body["source"]["mongodb"];
+    assert_eq!(mongo["skipCertVerification"], true);
+    assert_eq!(
+        mongo["settings"],
+        serde_json::json!({
+            "replicationMode": "cdc",
+            "syncIntervalSeconds": 1,
+            "pullBatchSize": 2,
+            "snapshotNumRowsPerPartition": 1000,
+            "snapshotNumberOfParallelTables": 3,
+            "deleteOnMerge": false,
+            "useJsonNativeFormat": true,
+        })
     );
 }
 
@@ -4378,6 +4548,91 @@ async fn kafka_plain_credentials_shape() {
     let creds = &body["source"]["kafka"]["credentials"];
     assert_eq!(creds["username"], "u");
     assert_eq!(creds["password"], "p");
+}
+
+#[tokio::test]
+async fn issue_593_kafka_create_sends_exactly_once_and_base64_protobuf_schema() {
+    let mock = start_mock_clickpipes_api().await;
+    let directory = tempfile::tempdir().unwrap();
+    let schema = directory.path().join("events.proto");
+    std::fs::write(&schema, b"syntax = \"proto3\";").unwrap();
+
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "kafka",
+            "svc-id",
+            "--name",
+            "protobuf",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "Protobuf",
+            "--protobuf-schema-file",
+            schema.to_str().unwrap(),
+            "--exactly-once",
+            "true",
+            "--database",
+            "default",
+            "--table",
+            "events",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    let kafka = &body["source"]["kafka"];
+    assert_eq!(kafka["exactlyOnce"], true);
+    assert_eq!(kafka["protobufSchema"], "c3ludGF4ID0gInByb3RvMyI7");
+    assert!(kafka.get("schemaRegistry").is_none());
+}
+
+#[tokio::test]
+async fn issue_593_kafka_event_hubs_connection_string_uses_its_credential_shape() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "kafka",
+            "svc-id",
+            "--name",
+            "event-hubs",
+            "--brokers",
+            "namespace.servicebus.windows.net:9093",
+            "--topics",
+            "events",
+            "--format",
+            "JSONEachRow",
+            "--kafka-type",
+            "azureeventhub",
+            "--event-hubs-connection-string",
+            "Endpoint=sb://namespace.servicebus.windows.net/;SharedAccessKey=secret",
+            "--database",
+            "default",
+            "--table",
+            "events",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    let kafka = &body["source"]["kafka"];
+    assert_eq!(kafka["type"], "azureeventhub");
+    assert_eq!(kafka["authentication"], "PLAIN");
+    assert_eq!(
+        kafka["credentials"],
+        serde_json::json!({
+            "connectionString": "Endpoint=sb://namespace.servicebus.windows.net/;SharedAccessKey=secret"
+        })
+    );
 }
 
 #[tokio::test]
@@ -11819,6 +12074,47 @@ async fn schema_discover_kafka_posts_source_body() {
         "kinesis leaked into kafka schema-discovery body: {}",
         body["source"],
     );
+}
+
+#[tokio::test]
+async fn issue_593_schema_discover_kafka_sends_base64_protobuf_schema() {
+    let mock = start_mock_schema_discovery_api().await;
+    let body = invoke_cli_capture_body_with_stdin(
+        &mock,
+        &[
+            "clickpipe",
+            "schema-discover",
+            "svc-id",
+            "--org-id",
+            "org",
+            "kafka",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "Protobuf",
+            "--kafka-type",
+            "azureeventhub",
+            "--event-hubs-connection-string",
+            "Endpoint=sb://events.example/;SharedAccessKey=secret",
+            "--protobuf-schema-file",
+            "-",
+        ],
+        &[0_u8, 1, 2, 3],
+    )
+    .await;
+
+    let kafka = &body["source"]["kafka"];
+    assert_eq!(kafka["protobufSchema"], "AAECAw==");
+    assert_eq!(kafka["authentication"], "PLAIN");
+    assert_eq!(
+        kafka["credentials"],
+        serde_json::json!({
+            "connectionString": "Endpoint=sb://events.example/;SharedAccessKey=secret"
+        })
+    );
+    assert!(kafka.get("exactlyOnce").is_none());
 }
 
 #[tokio::test]

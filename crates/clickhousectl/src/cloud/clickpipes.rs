@@ -4,7 +4,12 @@ use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
-    ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipePostgresPipeTableMapping,
+    ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipeKafkaOffsetStrategy,
+    ClickPipeMongoDBPipeSettingsReplicationmode, ClickPipeMutateMongoDBSourceReadpreference,
+    ClickPipeMutateMySQLSourceAuthentication, ClickPipeMutateMySQLSourceType,
+    ClickPipeMySQLPipeSettingsReplicationmechanism, ClickPipeMySQLPipeSettingsReplicationmode,
+    ClickPipePostKafkaSourceAuthentication, ClickPipePostKafkaSourceFormat,
+    ClickPipePostKafkaSourceType, ClickPipePostgresPipeTableMapping,
     ClickPipePostgresPipeTableMappingTableengine,
 };
 use tabled::{Table, Tabled, settings::Style};
@@ -33,26 +38,6 @@ const OBJECT_STORAGE_TYPES: &[&str] = &[
     "cloudflarer2",
     "ovhobjectstorage",
 ];
-const KAFKA_FORMATS: &[&str] = &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"];
-const KAFKA_TYPES: &[&str] = &[
-    "kafka",
-    "redpanda",
-    "msk",
-    "gcmk",
-    "confluent",
-    "warpstream",
-    "azureeventhub",
-    "dokafka",
-];
-const KAFKA_AUTHS: &[&str] = &[
-    "PLAIN",
-    "SCRAM-SHA-256",
-    "SCRAM-SHA-512",
-    "IAM_ROLE",
-    "IAM_USER",
-    "MUTUAL_TLS",
-];
-const KAFKA_OFFSET_STRATEGIES: &[&str] = &["from_beginning", "from_latest", "from_timestamp"];
 const KINESIS_FORMATS: &[&str] = &["JSONEachRow", "Avro", "AvroConfluent"];
 const KINESIS_AUTHS: &[&str] = &["IAM_ROLE", "IAM_USER"];
 const KINESIS_ITERATOR_TYPES: &[&str] = &["TRIM_HORIZON", "LATEST", "AT_TIMESTAMP"];
@@ -71,21 +56,42 @@ const POSTGRES_TYPES: &[&str] = &[
 ];
 const DB_AUTHS: &[&str] = &["basic", "IAM_ROLE"];
 const REPLICATION_MODES: &[&str] = &["cdc", "snapshot", "cdc_only"];
-const MYSQL_TYPES: &[&str] = &["mysql", "rdsmysql", "auroramysql", "mariadb", "rdsmariadb"];
-const MYSQL_REPLICATION_MECHANISMS: &[&str] = &["GTID", "FILE_POS"];
-const MONGODB_READ_PREFERENCES: &[&str] = &[
-    "primary",
-    "primaryPreferred",
-    "secondary",
-    "secondaryPreferred",
-    "nearest",
-];
 const PUBSUB_FORMATS: &[&str] = &["JSONEachRow", "Avro", "Protobuf"];
 const PUBSUB_AUTHS: &[&str] = &["SERVICE_ACCOUNT"];
 const PUBSUB_SEEK_TYPES: &[&str] = &["latest", "earliest", "timestamp"];
 /// `maxLength` of the Pub/Sub subscription filter in the spec, so an over-long
 /// CEL expression is a usage error instead of a rejected request.
 const PUBSUB_FILTER_MAX_LENGTH: usize = 256;
+/// `maxLength` of the base64-encoded Kafka `protobufSchema` field.
+const PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH: usize = 1_048_576;
+
+fn parse_kafka_authentication(value: &str) -> CloudResult<ClickPipePostKafkaSourceAuthentication> {
+    let authentication = parse_serde_enum(
+        value,
+        "Kafka authentication",
+        ClickPipePostKafkaSourceAuthentication::VALUES,
+    )?;
+    match &authentication {
+        ClickPipePostKafkaSourceAuthentication::PLAIN
+        | ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_256
+        | ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_512
+        | ClickPipePostKafkaSourceAuthentication::IAM_ROLE
+        | ClickPipePostKafkaSourceAuthentication::IAM_USER
+        | ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS => Ok(authentication),
+        ClickPipePostKafkaSourceAuthentication::ServiceAccountWorkloadIdentity => Err(
+            CloudError::new("SERVICE_ACCOUNT_WORKLOAD_IDENTITY is not supported by this command"),
+        ),
+        ClickPipePostKafkaSourceAuthentication::Unknown(value) => Err(CloudError::new(format!(
+            "unknown Kafka authentication method '{value}'"
+        ))),
+    }
+}
+
+fn parse_supported_kafka_auth(value: &str) -> Result<String, String> {
+    parse_kafka_authentication(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
+}
 
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
@@ -647,14 +653,17 @@ pub struct KafkaSourceFields {
     pub topics: String,
 
     /// Data format
-    #[arg(long, value_parser = PossibleValuesParser::new(KAFKA_FORMATS))]
+    #[arg(
+        long,
+        value_parser = PossibleValuesParser::new(ClickPipePostKafkaSourceFormat::VALUES)
+    )]
     pub format: String,
 
     /// Kafka type
     #[arg(
         long,
         default_value = "kafka",
-        value_parser = PossibleValuesParser::new(KAFKA_TYPES),
+        value_parser = PossibleValuesParser::new(ClickPipePostKafkaSourceType::VALUES),
     )]
     pub kafka_type: String,
 
@@ -666,8 +675,24 @@ pub struct KafkaSourceFields {
     ///
     /// Inferred from the credential flags when omitted; with no credential flag
     /// at all, no authentication is sent.
-    #[arg(long, value_parser = PossibleValuesParser::new(KAFKA_AUTHS))]
+    #[arg(long, value_parser = parse_supported_kafka_auth)]
     pub auth: Option<String>,
+
+    /// Azure Event Hubs connection string
+    #[arg(
+        long,
+        value_name = "CONNECTION_STRING",
+        conflicts_with_all = [
+            "username",
+            "password",
+            "iam_role",
+            "access_key_id",
+            "secret_key",
+            "client_certificate",
+            "client_key"
+        ]
+    )]
+    pub event_hubs_connection_string: Option<String>,
 
     /// Username for PLAIN/SCRAM authentication
     #[arg(long, requires = "password")]
@@ -693,7 +718,7 @@ pub struct KafkaSourceFields {
     #[arg(
         long,
         default_value = "from_beginning",
-        value_parser = PossibleValuesParser::new(KAFKA_OFFSET_STRATEGIES),
+        value_parser = PossibleValuesParser::new(ClickPipeKafkaOffsetStrategy::VALUES),
     )]
     pub offset: String,
 
@@ -712,6 +737,19 @@ pub struct KafkaSourceFields {
     /// Schema registry password
     #[arg(long)]
     pub schema_registry_password: Option<String>,
+
+    /// Path to a .proto file or FileDescriptorSet, or - to read stdin
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = [
+            "schema_registry_url",
+            "schema_registry_username",
+            "schema_registry_password",
+            "schema_registry_ca_certificate"
+        ]
+    )]
+    pub protobuf_schema_file: Option<String>,
 
     /// Path to a PEM CA bundle for the broker
     #[arg(long, value_name = "PATH")]
@@ -745,6 +783,10 @@ pub struct KafkaCreateArgs {
 
     #[command(flatten)]
     pub source: KafkaSourceFields,
+
+    /// Enable exactly-once delivery
+    #[arg(long, value_name = "true|false")]
+    pub exactly_once: Option<bool>,
 
     /// Destination database
     #[arg(long)]
@@ -1045,7 +1087,7 @@ pub struct MySqlCreateArgs {
     #[arg(
         long,
         default_value = "mysql",
-        value_parser = PossibleValuesParser::new(MYSQL_TYPES),
+        value_parser = PossibleValuesParser::new(ClickPipeMutateMySQLSourceType::VALUES),
     )]
     pub mysql_type: String,
 
@@ -1053,7 +1095,7 @@ pub struct MySqlCreateArgs {
     #[arg(
         long,
         default_value = "cdc",
-        value_parser = PossibleValuesParser::new(REPLICATION_MODES),
+        value_parser = PossibleValuesParser::new(ClickPipeMySQLPipeSettingsReplicationmode::VALUES),
     )]
     pub replication_mode: String,
 
@@ -1061,7 +1103,7 @@ pub struct MySqlCreateArgs {
     #[arg(
         long,
         default_value = "GTID",
-        value_parser = PossibleValuesParser::new(MYSQL_REPLICATION_MECHANISMS),
+        value_parser = PossibleValuesParser::new(ClickPipeMySQLPipeSettingsReplicationmechanism::VALUES),
     )]
     pub replication_mechanism: String,
 
@@ -1069,7 +1111,7 @@ pub struct MySqlCreateArgs {
     #[arg(
         long,
         default_value = "basic",
-        value_parser = PossibleValuesParser::new(DB_AUTHS),
+        value_parser = PossibleValuesParser::new(ClickPipeMutateMySQLSourceAuthentication::VALUES),
     )]
     pub auth: String,
 
@@ -1087,11 +1129,14 @@ pub struct MySqlCreateArgs {
     #[arg(long, value_name = "PATH")]
     pub ca_certificate: Option<String>,
 
-    /// Disable TLS
-    #[arg(long)]
+    /// Disable TLS and send source traffic unencrypted (unsafe)
+    #[arg(
+        long,
+        conflicts_with_all = ["tls_host", "ca_certificate", "skip_cert_verification"]
+    )]
     pub disable_tls: bool,
 
-    /// Skip certificate verification
+    /// Skip certificate verification (unsafe; prefer --ca-certificate)
     #[arg(long)]
     pub skip_cert_verification: bool,
 
@@ -1101,6 +1146,38 @@ pub struct MySqlCreateArgs {
     /// automatically when omitted.
     #[arg(long, value_parser = clap::value_parser!(u64).range(1..=4294967295))]
     pub server_id: Option<u64>,
+
+    /// Interval in seconds to sync data during CDC replication
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub sync_interval_seconds: Option<i64>,
+
+    /// Number of rows to pull in each CDC batch
+    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub pull_batch_size: Option<i64>,
+
+    /// Parallel workers per table in the initial snapshot phase
+    #[arg(long, value_name = "WORKERS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub initial_load_parallelism: Option<i64>,
+
+    /// Number of rows per partition during the snapshot phase
+    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1000..))]
+    pub snapshot_rows_per_partition: Option<i64>,
+
+    /// Tables to snapshot in parallel during the initial load phase
+    #[arg(long, value_name = "TABLES", value_parser = clap::value_parser!(i64).range(1..))]
+    pub snapshot_parallel_tables: Option<i64>,
+
+    /// Preserve MySQL nullability in destination columns
+    #[arg(long, value_name = "true|false")]
+    pub allow_nullable_columns: Option<bool>,
+
+    /// Enable hard deletes in ReplacingMergeTree for MySQL DELETEs
+    #[arg(long, value_name = "true|false")]
+    pub delete_on_merge: Option<bool>,
+
+    /// Enable compression for the MySQL connection
+    #[arg(long, value_name = "true|false")]
+    pub use_compression: Option<bool>,
 
     #[command(flatten)]
     pub destination: DatabaseDestinationArgs,
@@ -1145,7 +1222,7 @@ pub struct MongoDbCreateArgs {
     #[arg(
         long,
         default_value = "cdc",
-        value_parser = PossibleValuesParser::new(REPLICATION_MODES),
+        value_parser = PossibleValuesParser::new(ClickPipeMongoDBPipeSettingsReplicationmode::VALUES),
     )]
     pub replication_mode: String,
 
@@ -1153,7 +1230,7 @@ pub struct MongoDbCreateArgs {
     #[arg(
         long,
         default_value = "secondaryPreferred",
-        value_parser = PossibleValuesParser::new(MONGODB_READ_PREFERENCES),
+        value_parser = PossibleValuesParser::new(ClickPipeMutateMongoDBSourceReadpreference::VALUES),
     )]
     pub read_preference: String,
 
@@ -1165,9 +1242,40 @@ pub struct MongoDbCreateArgs {
     #[arg(long, value_name = "PATH")]
     pub ca_certificate: Option<String>,
 
-    /// Disable TLS
-    #[arg(long)]
+    /// Disable TLS and send source traffic unencrypted (unsafe)
+    #[arg(
+        long,
+        conflicts_with_all = ["tls_host", "ca_certificate", "skip_cert_verification"]
+    )]
     pub disable_tls: bool,
+
+    /// Skip certificate verification (unsafe; prefer --ca-certificate)
+    #[arg(long)]
+    pub skip_cert_verification: bool,
+
+    /// Interval in seconds to sync data during CDC replication
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub sync_interval_seconds: Option<i64>,
+
+    /// Number of rows to pull in each CDC batch
+    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub pull_batch_size: Option<i64>,
+
+    /// Number of rows per partition during the snapshot phase
+    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1000..))]
+    pub snapshot_rows_per_partition: Option<i64>,
+
+    /// Collections to snapshot in parallel during the initial load phase
+    #[arg(long, value_name = "COLLECTIONS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub snapshot_parallel_collections: Option<i64>,
+
+    /// Enable hard deletes in ReplacingMergeTree for MongoDB DELETEs
+    #[arg(long, value_name = "true|false")]
+    pub delete_on_merge: Option<bool>,
+
+    /// Store JSON values in the native ClickHouse JSON format
+    #[arg(long, value_name = "true|false")]
+    pub use_json_native_format: Option<bool>,
 
     #[command(flatten)]
     pub destination: DatabaseDestinationArgs,
@@ -1668,7 +1776,9 @@ fn infer_kafka_authentication(
     args: &KafkaSourceFields,
 ) -> Option<clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication> {
     use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
-    if args.username.is_some() && args.password.is_some() {
+    if args.event_hubs_connection_string.is_some()
+        || (args.username.is_some() && args.password.is_some())
+    {
         Some(Auth::PLAIN)
     } else if args.access_key_id.is_some() && args.secret_key.is_some() {
         Some(Auth::IAM_USER)
@@ -1701,6 +1811,9 @@ fn build_kafka_credentials(
     };
     match authentication {
         Auth::PLAIN | Auth::SCRAM_SHA_256 | Auth::SCRAM_SHA_512 => {
+            if let Some(connection_string) = args.event_hubs_connection_string.as_deref() {
+                return Ok(serde_json::json!({ "connectionString": connection_string }));
+            }
             match (args.username.as_deref(), args.password.as_deref()) {
                 (Some(username), Some(password)) => {
                     Ok(serde_json::json!({ "username": username, "password": password }))
@@ -1739,13 +1852,106 @@ fn build_kafka_credentials(
     }
 }
 
+fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
+    let source_type: ClickPipePostKafkaSourceType = parse_serde_enum(
+        &args.kafka_type,
+        "Kafka source type",
+        ClickPipePostKafkaSourceType::VALUES,
+    )?;
+    let format: ClickPipePostKafkaSourceFormat = parse_serde_enum(
+        &args.format,
+        "Kafka format",
+        ClickPipePostKafkaSourceFormat::VALUES,
+    )?;
+
+    if args.protobuf_schema_file.is_some() && format != ClickPipePostKafkaSourceFormat::Protobuf {
+        return Err(CloudError::new(
+            "--protobuf-schema-file can only be used with --format Protobuf",
+        ));
+    }
+    if args.protobuf_schema_file.is_some()
+        && (args.schema_registry_url.is_some()
+            || args.schema_registry_username.is_some()
+            || args.schema_registry_password.is_some()
+            || args.schema_registry_ca_certificate.is_some())
+    {
+        return Err(CloudError::new(
+            "--protobuf-schema-file cannot be combined with schema registry flags",
+        ));
+    }
+
+    if args.event_hubs_connection_string.is_some()
+        && source_type != ClickPipePostKafkaSourceType::Azureeventhub
+    {
+        return Err(CloudError::new(
+            "--event-hubs-connection-string requires --kafka-type azureeventhub",
+        ));
+    }
+    if args.event_hubs_connection_string.is_some()
+        && args
+            .auth
+            .as_deref()
+            .is_some_and(|authentication| authentication != "PLAIN")
+    {
+        return Err(CloudError::new(
+            "--event-hubs-connection-string supports only --auth PLAIN",
+        ));
+    }
+    if args.event_hubs_connection_string.is_some()
+        && (args.username.is_some()
+            || args.password.is_some()
+            || args.iam_role.is_some()
+            || args.access_key_id.is_some()
+            || args.secret_key.is_some()
+            || args.client_certificate.is_some()
+            || args.client_key.is_some())
+    {
+        return Err(CloudError::new(
+            "--event-hubs-connection-string cannot be combined with other broker credentials",
+        ));
+    }
+
+    if let Some(authentication) = args.auth.as_deref() {
+        parse_kafka_authentication(authentication)?;
+    }
+
+    Ok(())
+}
+
+fn read_protobuf_schema_file(path: &str) -> CloudResult<String> {
+    let contents = if path == "-" {
+        use std::io::Read as _;
+        let mut contents = Vec::new();
+        std::io::stdin().read_to_end(&mut contents)?;
+        contents
+    } else {
+        std::fs::read(path)?
+    };
+    if contents.is_empty() {
+        return Err(CloudError::new(if path == "-" {
+            "no Protobuf schema received on stdin".to_string()
+        } else {
+            format!("Protobuf schema file '{path}' was empty")
+        }));
+    }
+
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, contents);
+    if encoded.len() > PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH {
+        return Err(CloudError::new(format!(
+            "Protobuf schema exceeds the encoded size limit of {PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH} bytes"
+        )));
+    }
+    Ok(encoded)
+}
+
 /// Build a `ClickPipePostKafkaSource` from the CLI args, performing all
 /// authentication/credential/schema-registry/CA validation up front so bad
 /// invocations fail fast before any network call. Shared by the
 /// `clickpipe create kafka` and `clickpipe schema-discover <SERVICE_ID> kafka`
 /// handlers.
-fn build_kafka_source(
+fn build_kafka_source_with_exactly_once(
     args: &KafkaSourceFields,
+    exactly_once: Option<bool>,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKafkaSource> {
     use clickhouse_cloud_api::models::{
         ClickPipeKafkaOffset, ClickPipeKafkaSchemaRegistryCredentials,
@@ -1753,12 +1959,14 @@ fn build_kafka_source(
         ClickPipePostKafkaSourceAuthentication,
     };
 
+    validate_kafka_source_args(args)?;
+
     // An explicit `--auth` wins; otherwise infer the mechanism from the
     // credential flags, and send no authentication at all when none were given
     // so brokers that require none are reachable.
     let authentication: Option<ClickPipePostKafkaSourceAuthentication> = match args.auth.as_deref()
     {
-        Some(authentication) => Some(parse_enum(authentication)?),
+        Some(authentication) => Some(parse_kafka_authentication(authentication)?),
         None => infer_kafka_authentication(args),
     };
 
@@ -1810,26 +2018,49 @@ fn build_kafka_source(
         Some(path) => Some(std::fs::read_to_string(path)?),
         None => None,
     };
+    let protobuf_schema = args
+        .protobuf_schema_file
+        .as_deref()
+        .map(read_protobuf_schema_file)
+        .transpose()?;
 
     Ok(ClickPipePostKafkaSource {
-        r#type: parse_enum(&args.kafka_type)?,
-        format: parse_enum(&args.format)?,
+        r#type: parse_serde_enum(
+            &args.kafka_type,
+            "Kafka source type",
+            ClickPipePostKafkaSourceType::VALUES,
+        )?,
+        format: parse_serde_enum(
+            &args.format,
+            "Kafka format",
+            ClickPipePostKafkaSourceFormat::VALUES,
+        )?,
         brokers: args.brokers.clone(),
         topics: args.topics.clone(),
         consumer_group: args.consumer_group.clone(),
-        exactly_once: None,
+        exactly_once,
         authentication,
         credentials,
         iam_role: args.iam_role.clone(),
         offset: Some(ClickPipeKafkaOffset {
-            strategy: parse_enum(&args.offset)?,
+            strategy: parse_serde_enum(
+                &args.offset,
+                "Kafka offset strategy",
+                ClickPipeKafkaOffsetStrategy::VALUES,
+            )?,
             timestamp: args.offset_timestamp.clone(),
         }),
         schema_registry,
-        protobuf_schema: None,
+        protobuf_schema,
         ca_certificate,
         reverse_private_endpoint_ids: args.reverse_private_endpoint_ids.clone(),
     })
+}
+
+fn build_kafka_source(
+    args: &KafkaSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKafkaSource> {
+    build_kafka_source_with_exactly_once(args, None)
 }
 
 /// Build a `ClickPipePostKinesisSource` from the CLI args. Shared by the
@@ -1882,7 +2113,7 @@ async fn clickpipe_create_kafka(
     // Validate args and build the source before any network call so bad
     // invocations fail fast.
     let parsed_columns = parse_columns(&args.columns)?;
-    let source = build_kafka_source(&args.source)?;
+    let source = build_kafka_source_with_exactly_once(&args.source, args.exactly_once)?;
 
     let request = ClickPipePostRequest {
         name: args.name.clone(),
@@ -3166,6 +3397,38 @@ fn validate_mysql_create_args(args: &MySqlCreateArgs) -> CloudResult<()> {
             "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
         ));
     }
+    if args.disable_tls
+        && (args.tls_host.is_some() || args.ca_certificate.is_some() || args.skip_cert_verification)
+    {
+        return Err(CloudError::new(
+            "--disable-tls cannot be combined with --tls-host, --ca-certificate, or --skip-cert-verification",
+        ));
+    }
+    for (flag, value, minimum) in [
+        ("--sync-interval-seconds", args.sync_interval_seconds, 1),
+        ("--pull-batch-size", args.pull_batch_size, 1),
+        (
+            "--initial-load-parallelism",
+            args.initial_load_parallelism,
+            1,
+        ),
+        (
+            "--snapshot-rows-per-partition",
+            args.snapshot_rows_per_partition,
+            1000,
+        ),
+        (
+            "--snapshot-parallel-tables",
+            args.snapshot_parallel_tables,
+            1,
+        ),
+    ] {
+        if value.is_some_and(|value| value < minimum) {
+            return Err(CloudError::new(format!(
+                "{flag} must be at least {minimum}"
+            )));
+        }
+    }
 
     Ok(())
 }
@@ -3180,6 +3443,26 @@ fn build_mysql_request(
     };
 
     validate_mysql_create_args(args)?;
+    let source_type = parse_serde_enum(
+        &args.mysql_type,
+        "MySQL source type",
+        ClickPipeMutateMySQLSourceType::VALUES,
+    )?;
+    let replication_mode = parse_serde_enum(
+        &args.replication_mode,
+        "MySQL replication mode",
+        ClickPipeMySQLPipeSettingsReplicationmode::VALUES,
+    )?;
+    let replication_mechanism = parse_serde_enum(
+        &args.replication_mechanism,
+        "MySQL replication mechanism",
+        ClickPipeMySQLPipeSettingsReplicationmechanism::VALUES,
+    )?;
+    let authentication: ClickPipeMutateMySQLSourceAuthentication = parse_serde_enum(
+        &args.auth,
+        "MySQL authentication",
+        ClickPipeMutateMySQLSourceAuthentication::VALUES,
+    )?;
     let mappings = parse_db_table_mappings(&args.table_mappings)?;
 
     let ca_certificate = args
@@ -3203,7 +3486,6 @@ fn build_mysql_request(
     // Match the parsed authentication mode, not the raw `--auth` string, so a
     // new mode added to the library enum is a compile error here rather than a
     // silent credential-less create.
-    let authentication: ClickPipeMutateMySQLSourceAuthentication = parse_enum(&args.auth)?;
     let credentials = match &authentication {
         // `validate_mysql_create_args` has already required the pair for basic
         // auth, so `zip` yields `Some` for every invocation that reaches here.
@@ -3224,7 +3506,7 @@ fn build_mysql_request(
     };
 
     let source = ClickPipeMutateMySQLSource {
-        r#type: Some(parse_enum(&args.mysql_type)?),
+        r#type: Some(source_type),
         credentials,
         host: args.host.clone(),
         port: i64::from(args.port),
@@ -3240,9 +3522,16 @@ fn build_mysql_request(
         },
         server_id: args.server_id.map(|value| value as i64),
         settings: ClickPipeMySQLPipeSettings {
-            replication_mode: parse_enum(&args.replication_mode)?,
-            replication_mechanism: Some(parse_enum(&args.replication_mechanism)?),
-            ..Default::default()
+            replication_mode,
+            replication_mechanism: Some(replication_mechanism),
+            allow_nullable_columns: args.allow_nullable_columns,
+            delete_on_merge: args.delete_on_merge,
+            initial_load_parallelism: args.initial_load_parallelism,
+            pull_batch_size: args.pull_batch_size,
+            snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
+            snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
+            sync_interval_seconds: args.sync_interval_seconds,
+            use_compression: args.use_compression,
         },
         table_mappings,
     };
@@ -3278,6 +3567,37 @@ async fn clickpipe_create_mysql(
     Ok(())
 }
 
+fn validate_mongodb_create_args(args: &MongoDbCreateArgs) -> CloudResult<()> {
+    if args.disable_tls
+        && (args.tls_host.is_some() || args.ca_certificate.is_some() || args.skip_cert_verification)
+    {
+        return Err(CloudError::new(
+            "--disable-tls cannot be combined with --tls-host, --ca-certificate, or --skip-cert-verification",
+        ));
+    }
+    for (flag, value, minimum) in [
+        ("--sync-interval-seconds", args.sync_interval_seconds, 1),
+        ("--pull-batch-size", args.pull_batch_size, 1),
+        (
+            "--snapshot-rows-per-partition",
+            args.snapshot_rows_per_partition,
+            1000,
+        ),
+        (
+            "--snapshot-parallel-collections",
+            args.snapshot_parallel_collections,
+            1,
+        ),
+    ] {
+        if value.is_some_and(|value| value < minimum) {
+            return Err(CloudError::new(format!(
+                "{flag} must be at least {minimum}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn build_mongodb_request(
     args: &MongoDbCreateArgs,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
@@ -3285,6 +3605,18 @@ fn build_mongodb_request(
         ClickPipeMongoDBPipeSettings, ClickPipeMongoDBPipeTableMapping,
         ClickPipeMutateMongoDBSource, ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
+
+    validate_mongodb_create_args(args)?;
+    let read_preference = parse_serde_enum(
+        &args.read_preference,
+        "MongoDB read preference",
+        ClickPipeMutateMongoDBSourceReadpreference::VALUES,
+    )?;
+    let replication_mode = parse_serde_enum(
+        &args.replication_mode,
+        "MongoDB replication mode",
+        ClickPipeMongoDBPipeSettingsReplicationmode::VALUES,
+    )?;
 
     // MongoDB uses `database.collection:target_table` format.
     let table_mappings: Vec<ClickPipeMongoDBPipeTableMapping> = args
@@ -3324,14 +3656,23 @@ fn build_mongodb_request(
             password: args.password.clone(),
         }),
         uri: args.uri.clone(),
-        read_preference: parse_enum(&args.read_preference)?,
+        read_preference,
         tls_host: args.tls_host.clone(),
         ca_certificate,
         disable_tls: if args.disable_tls { Some(true) } else { None },
-        skip_cert_verification: None,
+        skip_cert_verification: if args.skip_cert_verification {
+            Some(true)
+        } else {
+            None
+        },
         settings: ClickPipeMongoDBPipeSettings {
-            replication_mode: parse_enum(&args.replication_mode)?,
-            ..Default::default()
+            replication_mode,
+            delete_on_merge: args.delete_on_merge,
+            pull_batch_size: args.pull_batch_size,
+            snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
+            snapshot_number_of_parallel_tables: args.snapshot_parallel_collections,
+            sync_interval_seconds: args.sync_interval_seconds,
+            use_json_native_format: args.use_json_native_format,
         },
         table_mappings,
     };
@@ -4877,6 +5218,8 @@ mod tests {
             "endpoint-1",
             "--reverse-private-endpoint-id",
             "endpoint-2",
+            "--exactly-once",
+            "true",
             "--database",
             "db",
             "--table",
@@ -4899,6 +5242,7 @@ mod tests {
         assert_eq!(args.source.kafka_type, "msk");
         assert_eq!(args.source.consumer_group.as_deref(), Some("group-1"));
         assert_eq!(args.source.auth.as_deref(), Some("PLAIN"));
+        assert_eq!(args.source.event_hubs_connection_string, None);
         assert_eq!(args.source.username.as_deref(), Some("user"));
         assert_eq!(args.source.password.as_deref(), Some("password"));
         assert_eq!(args.source.iam_role.as_deref(), Some("arn:role"));
@@ -4921,6 +5265,7 @@ mod tests {
             args.source.schema_registry_password.as_deref(),
             Some("registry-password")
         );
+        assert_eq!(args.source.protobuf_schema_file, None);
         assert_eq!(
             args.source.ca_certificate.as_deref(),
             Some("/tmp/broker-ca.pem")
@@ -4938,6 +5283,7 @@ mod tests {
             args.source.reverse_private_endpoint_ids,
             ["endpoint-1", "endpoint-2"]
         );
+        assert_eq!(args.exactly_once, Some(true));
         assert_eq!(args.database, "db");
         assert_eq!(args.table, "events");
         assert_eq!(args.columns, ["id:UInt64", "name:String"]);
@@ -4969,6 +5315,7 @@ mod tests {
         assert_eq!(args.source.offset, "from_beginning");
         assert_eq!(args.source.consumer_group, None);
         assert_eq!(args.source.auth, None);
+        assert_eq!(args.source.event_hubs_connection_string, None);
         assert_eq!(args.source.username, None);
         assert_eq!(args.source.password, None);
         assert_eq!(args.source.iam_role, None);
@@ -4978,13 +5325,95 @@ mod tests {
         assert_eq!(args.source.schema_registry_url, None);
         assert_eq!(args.source.schema_registry_username, None);
         assert_eq!(args.source.schema_registry_password, None);
+        assert_eq!(args.source.protobuf_schema_file, None);
         assert_eq!(args.source.ca_certificate, None);
         assert_eq!(args.source.client_certificate, None);
         assert_eq!(args.source.client_key, None);
         assert_eq!(args.source.schema_registry_ca_certificate, None);
         assert!(args.source.reverse_private_endpoint_ids.is_empty());
+        assert_eq!(args.exactly_once, None);
         assert!(args.columns.is_empty());
         assert_eq!(args.org_id, None);
+    }
+
+    #[test]
+    fn parses_kafka_protobuf_and_event_hubs_fields_on_their_surfaces() {
+        for base in [kafka_create_cli_args(), kafka_discover_cli_args()] {
+            let mut args = base;
+            let format = args
+                .iter()
+                .position(|value| *value == "JSONEachRow")
+                .expect("minimal Kafka args contain a format");
+            args[format] = "Protobuf";
+            args.extend(["--protobuf-schema-file", "/tmp/events.proto"]);
+
+            match parse_clickpipe(&args) {
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kafka(parsed),
+                } => assert_eq!(
+                    parsed.source.protobuf_schema_file.as_deref(),
+                    Some("/tmp/events.proto")
+                ),
+                ClickPipeCommands::SchemaDiscover {
+                    command: ClickPipeSchemaDiscoverCommands::Kafka(parsed),
+                    ..
+                } => assert_eq!(
+                    parsed.protobuf_schema_file.as_deref(),
+                    Some("/tmp/events.proto")
+                ),
+                _ => panic!("expected a Kafka command"),
+            }
+        }
+
+        let mut args = kafka_create_cli_args();
+        args.extend([
+            "--kafka-type",
+            "azureeventhub",
+            "--event-hubs-connection-string",
+            "Endpoint=sb://events.example/;SharedAccessKey=secret",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected Kafka create");
+        };
+        assert_eq!(
+            parsed.source.event_hubs_connection_string.as_deref(),
+            Some("Endpoint=sb://events.example/;SharedAccessKey=secret")
+        );
+    }
+
+    #[test]
+    fn kafka_protobuf_and_event_hubs_conflicts_are_usage_errors() {
+        for (flag, value) in [
+            ("--schema-registry-url", "https://registry.example"),
+            ("--schema-registry-username", "registry-user"),
+            ("--schema-registry-password", "registry-password"),
+            ("--schema-registry-ca-certificate", "/tmp/registry-ca.pem"),
+        ] {
+            let mut protobuf = kafka_create_cli_args();
+            protobuf.extend(["--protobuf-schema-file", "/tmp/events.proto", flag, value]);
+            assert_eq!(
+                clickpipe_parse_error(&protobuf).kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{flag}"
+            );
+        }
+
+        let mut event_hubs = kafka_create_cli_args();
+        event_hubs.extend([
+            "--event-hubs-connection-string",
+            "Endpoint=sb://events.example/",
+            "--username",
+            "user",
+            "--password",
+            "password",
+        ]);
+        assert_eq!(
+            clickpipe_parse_error(&event_hubs).kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
     }
 
     #[test]
@@ -5983,10 +6412,25 @@ mod tests {
             "tls.example",
             "--ca-certificate",
             "/tmp/ca.pem",
-            "--disable-tls",
             "--skip-cert-verification",
             "--server-id",
             "4294967295",
+            "--sync-interval-seconds",
+            "1",
+            "--pull-batch-size",
+            "2",
+            "--initial-load-parallelism",
+            "3",
+            "--snapshot-rows-per-partition",
+            "1000",
+            "--snapshot-parallel-tables",
+            "4",
+            "--allow-nullable-columns",
+            "false",
+            "--delete-on-merge",
+            "true",
+            "--use-compression",
+            "false",
             "--destination-database",
             "analytics",
             "--org-id",
@@ -6010,9 +6454,17 @@ mod tests {
         assert_eq!(args.iam_role.as_deref(), Some("arn:role"));
         assert_eq!(args.tls_host.as_deref(), Some("tls.example"));
         assert_eq!(args.ca_certificate.as_deref(), Some("/tmp/ca.pem"));
-        assert!(args.disable_tls);
+        assert!(!args.disable_tls);
         assert!(args.skip_cert_verification);
         assert_eq!(args.server_id, Some(4_294_967_295));
+        assert_eq!(args.sync_interval_seconds, Some(1));
+        assert_eq!(args.pull_batch_size, Some(2));
+        assert_eq!(args.initial_load_parallelism, Some(3));
+        assert_eq!(args.snapshot_rows_per_partition, Some(1000));
+        assert_eq!(args.snapshot_parallel_tables, Some(4));
+        assert_eq!(args.allow_nullable_columns, Some(false));
+        assert_eq!(args.delete_on_merge, Some(true));
+        assert_eq!(args.use_compression, Some(false));
         assert_eq!(args.destination.destination_database, "analytics");
         assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
@@ -6050,6 +6502,14 @@ mod tests {
         assert!(!args.disable_tls);
         assert!(!args.skip_cert_verification);
         assert_eq!(args.server_id, Some(1));
+        assert_eq!(args.sync_interval_seconds, None);
+        assert_eq!(args.pull_batch_size, None);
+        assert_eq!(args.initial_load_parallelism, None);
+        assert_eq!(args.snapshot_rows_per_partition, None);
+        assert_eq!(args.snapshot_parallel_tables, None);
+        assert_eq!(args.allow_nullable_columns, None);
+        assert_eq!(args.delete_on_merge, None);
+        assert_eq!(args.use_compression, None);
         assert_eq!(args.destination.destination_database, "default");
         assert_eq!(args.org_id, None);
 
@@ -6069,6 +6529,18 @@ mod tests {
                 "--server-id",
                 invalid,
             ]);
+        }
+
+        for (flag, invalid) in [
+            ("--sync-interval-seconds", "0"),
+            ("--pull-batch-size", "0"),
+            ("--initial-load-parallelism", "0"),
+            ("--snapshot-rows-per-partition", "999"),
+            ("--snapshot-parallel-tables", "0"),
+        ] {
+            let mut args = mysql_create_cli_args();
+            args.extend([flag, invalid]);
+            assert_rejected(&args);
         }
     }
 
@@ -6239,7 +6711,19 @@ mod tests {
             "tls.example",
             "--ca-certificate",
             "/tmp/ca.pem",
-            "--disable-tls",
+            "--skip-cert-verification",
+            "--sync-interval-seconds",
+            "1",
+            "--pull-batch-size",
+            "2",
+            "--snapshot-rows-per-partition",
+            "1000",
+            "--snapshot-parallel-collections",
+            "3",
+            "--delete-on-merge",
+            "false",
+            "--use-json-native-format",
+            "true",
             "--destination-database",
             "analytics",
             "--org-id",
@@ -6258,7 +6742,14 @@ mod tests {
         assert_eq!(args.read_preference, "nearest");
         assert_eq!(args.tls_host.as_deref(), Some("tls.example"));
         assert_eq!(args.ca_certificate.as_deref(), Some("/tmp/ca.pem"));
-        assert!(args.disable_tls);
+        assert!(!args.disable_tls);
+        assert!(args.skip_cert_verification);
+        assert_eq!(args.sync_interval_seconds, Some(1));
+        assert_eq!(args.pull_batch_size, Some(2));
+        assert_eq!(args.snapshot_rows_per_partition, Some(1000));
+        assert_eq!(args.snapshot_parallel_collections, Some(3));
+        assert_eq!(args.delete_on_merge, Some(false));
+        assert_eq!(args.use_json_native_format, Some(true));
         assert_eq!(args.destination.destination_database, "analytics");
         assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
@@ -6286,8 +6777,38 @@ mod tests {
         assert_eq!(args.tls_host, None);
         assert_eq!(args.ca_certificate, None);
         assert!(!args.disable_tls);
+        assert!(!args.skip_cert_verification);
+        assert_eq!(args.sync_interval_seconds, None);
+        assert_eq!(args.pull_batch_size, None);
+        assert_eq!(args.snapshot_rows_per_partition, None);
+        assert_eq!(args.snapshot_parallel_collections, None);
+        assert_eq!(args.delete_on_merge, None);
+        assert_eq!(args.use_json_native_format, None);
         assert_eq!(args.destination.destination_database, "default");
         assert_eq!(args.org_id, None);
+
+        for (flag, invalid) in [
+            ("--sync-interval-seconds", "0"),
+            ("--pull-batch-size", "0"),
+            ("--snapshot-rows-per-partition", "999"),
+            ("--snapshot-parallel-collections", "0"),
+        ] {
+            assert_rejected(&[
+                "create",
+                "mongodb",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--uri",
+                "mongodb://mongo.example/source",
+                "--username",
+                "user",
+                "--password",
+                "password",
+                flag,
+                invalid,
+            ]);
+        }
     }
 
     #[test]
@@ -6434,38 +6955,6 @@ mod tests {
                 "ovhobjectstorage",
             ]
         );
-        assert_eq!(
-            KAFKA_FORMATS,
-            &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"]
-        );
-        assert_eq!(
-            KAFKA_TYPES,
-            &[
-                "kafka",
-                "redpanda",
-                "msk",
-                "gcmk",
-                "confluent",
-                "warpstream",
-                "azureeventhub",
-                "dokafka",
-            ]
-        );
-        assert_eq!(
-            KAFKA_AUTHS,
-            &[
-                "PLAIN",
-                "SCRAM-SHA-256",
-                "SCRAM-SHA-512",
-                "IAM_ROLE",
-                "IAM_USER",
-                "MUTUAL_TLS",
-            ]
-        );
-        assert_eq!(
-            KAFKA_OFFSET_STRATEGIES,
-            &["from_beginning", "from_latest", "from_timestamp"]
-        );
         assert_eq!(KINESIS_FORMATS, &["JSONEachRow", "Avro", "AvroConfluent"]);
         assert_eq!(KINESIS_AUTHS, &["IAM_ROLE", "IAM_USER"]);
         assert_eq!(
@@ -6490,22 +6979,6 @@ mod tests {
         );
         assert_eq!(DB_AUTHS, &["basic", "IAM_ROLE"]);
         assert_eq!(REPLICATION_MODES, &["cdc", "snapshot", "cdc_only"]);
-        assert_eq!(
-            MYSQL_TYPES,
-            &["mysql", "rdsmysql", "auroramysql", "mariadb", "rdsmariadb"]
-        );
-        assert_eq!(MYSQL_REPLICATION_MECHANISMS, &["GTID", "FILE_POS"]);
-        assert_eq!(
-            MONGODB_READ_PREFERENCES,
-            &[
-                "primary",
-                "primaryPreferred",
-                "secondary",
-                "secondaryPreferred",
-                "nearest",
-            ]
-        );
-
         assert_eq!(PUBSUB_FORMATS, &["JSONEachRow", "Avro", "Protobuf"]);
         assert_eq!(PUBSUB_AUTHS, &["SERVICE_ACCOUNT"]);
         assert_eq!(PUBSUB_SEEK_TYPES, &["latest", "earliest", "timestamp"]);
@@ -6519,16 +6992,22 @@ mod tests {
         for &value in OBJECT_STORAGE_TYPES {
             assert_object_storage_value("--storage-type", value);
         }
-        for &value in KAFKA_FORMATS {
+        for &value in ClickPipePostKafkaSourceFormat::VALUES {
             assert_kafka_value("--format", value);
         }
-        for &value in KAFKA_TYPES {
+        for &value in ClickPipePostKafkaSourceType::VALUES {
             assert_kafka_value("--kafka-type", value);
         }
-        for &value in KAFKA_AUTHS {
-            assert_kafka_value("--auth", value);
+        for &value in ClickPipePostKafkaSourceAuthentication::VALUES {
+            if parse_kafka_authentication(value).is_ok() {
+                assert_kafka_value("--auth", value);
+            } else {
+                let mut args = kafka_create_cli_args();
+                args.extend(["--auth", value]);
+                assert_rejected(&args);
+            }
         }
-        for &value in KAFKA_OFFSET_STRATEGIES {
+        for &value in ClickPipeKafkaOffsetStrategy::VALUES {
             assert_kafka_value("--offset", value);
         }
         for &value in KINESIS_FORMATS {
@@ -6545,23 +7024,29 @@ mod tests {
         }
         for &value in DB_AUTHS {
             assert_postgres_value("--auth", value);
-            assert_mysql_value("--auth", value);
         }
         for &value in REPLICATION_MODES {
             assert_postgres_value("--replication-mode", value);
-            assert_mysql_value("--replication-mode", value);
-            assert_mongodb_value("--replication-mode", value);
         }
         for &value in ClickPipeBigQueryPipeSettingsReplicationmode::VALUES {
             assert_bigquery_value("--replication-mode", value);
         }
-        for &value in MYSQL_TYPES {
+        for &value in ClickPipeMutateMySQLSourceAuthentication::VALUES {
+            assert_mysql_value("--auth", value);
+        }
+        for &value in ClickPipeMySQLPipeSettingsReplicationmode::VALUES {
+            assert_mysql_value("--replication-mode", value);
+        }
+        for &value in ClickPipeMongoDBPipeSettingsReplicationmode::VALUES {
+            assert_mongodb_value("--replication-mode", value);
+        }
+        for &value in ClickPipeMutateMySQLSourceType::VALUES {
             assert_mysql_value("--mysql-type", value);
         }
-        for &value in MYSQL_REPLICATION_MECHANISMS {
+        for &value in ClickPipeMySQLPipeSettingsReplicationmechanism::VALUES {
             assert_mysql_value("--replication-mechanism", value);
         }
-        for &value in MONGODB_READ_PREFERENCES {
+        for &value in ClickPipeMutateMongoDBSourceReadpreference::VALUES {
             assert_mongodb_value("--read-preference", value);
         }
         for &value in PUBSUB_FORMATS {
@@ -8282,6 +8767,14 @@ mod tests {
             disable_tls: false,
             skip_cert_verification: false,
             server_id: None,
+            sync_interval_seconds: None,
+            pull_batch_size: None,
+            initial_load_parallelism: None,
+            snapshot_rows_per_partition: None,
+            snapshot_parallel_tables: None,
+            allow_nullable_columns: None,
+            delete_on_merge: None,
+            use_compression: None,
             destination: DatabaseDestinationArgs {
                 destination_database: "default".into(),
             },
@@ -8325,6 +8818,14 @@ mod tests {
                 .to_string(),
             "GTID"
         );
+        assert_eq!(source.settings.allow_nullable_columns, None);
+        assert_eq!(source.settings.delete_on_merge, None);
+        assert_eq!(source.settings.initial_load_parallelism, None);
+        assert_eq!(source.settings.pull_batch_size, None);
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
+        assert_eq!(source.settings.sync_interval_seconds, None);
+        assert_eq!(source.settings.use_compression, None);
         assert_eq!(source.table_mappings.len(), 1);
         assert_eq!(source.table_mappings[0].source_schema_name, "source");
         assert_eq!(source.table_mappings[0].source_table, "events");
@@ -8352,9 +8853,17 @@ mod tests {
         args.iam_role = Some("arn:aws:iam::123456789012:role/clickpipe".into());
         args.tls_host = Some("database.internal".into());
         args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
-        args.disable_tls = true;
+        args.disable_tls = false;
         args.skip_cert_verification = true;
         args.server_id = Some(4_294_967_295);
+        args.sync_interval_seconds = Some(1);
+        args.pull_batch_size = Some(2);
+        args.initial_load_parallelism = Some(3);
+        args.snapshot_rows_per_partition = Some(1000);
+        args.snapshot_parallel_tables = Some(4);
+        args.allow_nullable_columns = Some(false);
+        args.delete_on_merge = Some(true);
+        args.use_compression = Some(false);
         args.destination.destination_database = "analytics".into();
         args.destination_roles = DestinationRoleArgs {
             roles: vec!["analytics_reader".into()],
@@ -8385,7 +8894,7 @@ mod tests {
         assert_eq!(source.tls_host.as_deref(), Some("database.internal"));
         // The file contents are sent, not the path.
         assert_eq!(source.ca_certificate.as_deref(), Some("MYSQL_CA"));
-        assert_eq!(source.disable_tls, Some(true));
+        assert_eq!(source.disable_tls, None);
         assert_eq!(source.skip_cert_verification, Some(true));
         assert_eq!(source.server_id, Some(4_294_967_295));
         assert_eq!(source.settings.replication_mode.to_string(), "cdc_only");
@@ -8398,6 +8907,14 @@ mod tests {
                 .to_string(),
             "FILE_POS"
         );
+        assert_eq!(source.settings.sync_interval_seconds, Some(1));
+        assert_eq!(source.settings.pull_batch_size, Some(2));
+        assert_eq!(source.settings.initial_load_parallelism, Some(3));
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, Some(1000));
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(4));
+        assert_eq!(source.settings.allow_nullable_columns, Some(false));
+        assert_eq!(source.settings.delete_on_merge, Some(true));
+        assert_eq!(source.settings.use_compression, Some(false));
         assert_eq!(source.table_mappings.len(), 2);
     }
 
@@ -8437,6 +8954,17 @@ mod tests {
                 args.table_mappings = vec!["source.events".into()];
                 (args, "Invalid table mapping")
             },
+            {
+                let mut args = mysql_builder_args();
+                args.sync_interval_seconds = Some(0);
+                (args, "--sync-interval-seconds must be at least 1")
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.disable_tls = true;
+                args.skip_cert_verification = true;
+                (args, "--disable-tls cannot be combined")
+            },
         ];
 
         for (args, diagnostic) in cases {
@@ -8458,6 +8986,13 @@ mod tests {
             tls_host: None,
             ca_certificate: None,
             disable_tls: false,
+            skip_cert_verification: false,
+            sync_interval_seconds: None,
+            pull_batch_size: None,
+            snapshot_rows_per_partition: None,
+            snapshot_parallel_collections: None,
+            delete_on_merge: None,
+            use_json_native_format: None,
             destination: DatabaseDestinationArgs {
                 destination_database: "default".into(),
             },
@@ -8479,6 +9014,13 @@ mod tests {
         assert_eq!(source.table_mappings[0].source_database_name, "source");
         assert_eq!(source.table_mappings[0].source_collection, "events");
         assert_eq!(source.table_mappings[0].target_table, "events");
+        assert_eq!(source.skip_cert_verification, None);
+        assert_eq!(source.settings.sync_interval_seconds, None);
+        assert_eq!(source.settings.pull_batch_size, None);
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
+        assert_eq!(source.settings.delete_on_merge, None);
+        assert_eq!(source.settings.use_json_native_format, None);
     }
 
     #[test]
@@ -8492,7 +9034,14 @@ mod tests {
         args.read_preference = "nearest".into();
         args.tls_host = Some("mongodb.internal".into());
         args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
-        args.disable_tls = true;
+        args.disable_tls = false;
+        args.skip_cert_verification = true;
+        args.sync_interval_seconds = Some(1);
+        args.pull_batch_size = Some(2);
+        args.snapshot_rows_per_partition = Some(1000);
+        args.snapshot_parallel_collections = Some(3);
+        args.delete_on_merge = Some(false);
+        args.use_json_native_format = Some(true);
         args.destination.destination_database = "analytics".into();
         args.destination_roles.roles = vec!["analytics_reader".into()];
 
@@ -8507,8 +9056,33 @@ mod tests {
         assert_eq!(source.read_preference.to_string(), "nearest");
         assert_eq!(source.tls_host.as_deref(), Some("mongodb.internal"));
         assert_eq!(source.ca_certificate.as_deref(), Some("MONGODB_CA"));
-        assert_eq!(source.disable_tls, Some(true));
+        assert_eq!(source.disable_tls, None);
+        assert_eq!(source.skip_cert_verification, Some(true));
         assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
+        assert_eq!(source.settings.sync_interval_seconds, Some(1));
+        assert_eq!(source.settings.pull_batch_size, Some(2));
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, Some(1000));
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(3));
+        assert_eq!(source.settings.delete_on_merge, Some(false));
+        assert_eq!(source.settings.use_json_native_format, Some(true));
+    }
+
+    #[test]
+    fn build_mongodb_request_defensively_validates_ranges_and_tls_flags() {
+        let mut args = mongodb_builder_args();
+        args.snapshot_rows_per_partition = Some(999);
+        let error = build_mongodb_request(&args).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("--snapshot-rows-per-partition must be at least 1000")
+        );
+
+        args.snapshot_rows_per_partition = None;
+        args.disable_tls = true;
+        args.tls_host = Some("mongo.internal".into());
+        let error = build_mongodb_request(&args).unwrap_err();
+        assert!(error.message.contains("--disable-tls cannot be combined"));
     }
 
     fn bigquery_builder_args(service_account_file: String) -> BigQueryCreateArgs {
@@ -9024,6 +9598,7 @@ mod tests {
                 kafka_type: "kafka".into(),
                 consumer_group: None,
                 auth: None,
+                event_hubs_connection_string: None,
                 username: None,
                 password: None,
                 iam_role: None,
@@ -9034,12 +9609,14 @@ mod tests {
                 schema_registry_url: None,
                 schema_registry_username: None,
                 schema_registry_password: None,
+                protobuf_schema_file: None,
                 ca_certificate: None,
                 client_certificate: None,
                 client_key: None,
                 schema_registry_ca_certificate: None,
                 reverse_private_endpoint_ids: vec![],
             },
+            exactly_once: None,
             database: "d".into(),
             table: "t".into(),
             columns: vec![],
@@ -9217,6 +9794,103 @@ mod tests {
         let offset = source.offset.expect("Kafka offset is always populated");
         assert_eq!(offset.strategy.to_string(), "from_beginning");
         assert_eq!(offset.timestamp, None);
+    }
+
+    #[test]
+    fn build_kafka_source_sends_exactly_once_only_for_create() {
+        let args = kafka_args().source;
+        for value in [true, false] {
+            let create = build_kafka_source_with_exactly_once(&args, Some(value)).unwrap();
+            assert_eq!(create.exactly_once, Some(value));
+        }
+
+        let discovery = build_kafka_source(&args).unwrap();
+        assert_eq!(discovery.exactly_once, None);
+    }
+
+    #[test]
+    fn build_kafka_source_encodes_an_inline_protobuf_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let schema = directory.path().join("events.proto");
+        std::fs::write(&schema, b"syntax = \"proto3\";").unwrap();
+        let mut args = kafka_args().source;
+        args.format = "Protobuf".into();
+        args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(
+            source.protobuf_schema.as_deref(),
+            Some("c3ludGF4ID0gInByb3RvMyI7")
+        );
+    }
+
+    #[test]
+    fn build_kafka_source_validates_protobuf_flags_before_reading_files() {
+        let mut args = kafka_args().source;
+        args.protobuf_schema_file = Some("/file/that/does/not/exist".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("--format Protobuf"), "{error:?}");
+
+        args.format = "Protobuf".into();
+        args.schema_registry_url = Some("https://registry.example".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("schema registry flags"), "{error:?}");
+    }
+
+    #[test]
+    fn build_kafka_source_rejects_oversized_protobuf_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let schema = directory.path().join("events.desc");
+        std::fs::write(&schema, vec![0_u8; 786_433]).unwrap();
+        let mut args = kafka_args().source;
+        args.format = "Protobuf".into();
+        args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
+
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("1048576 bytes"), "{error:?}");
+    }
+
+    #[test]
+    fn build_kafka_source_rejects_an_empty_protobuf_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let schema = directory.path().join("events.proto");
+        std::fs::write(&schema, []).unwrap();
+        let mut args = kafka_args().source;
+        args.format = "Protobuf".into();
+        args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
+
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("was empty"), "{error:?}");
+    }
+
+    #[test]
+    fn build_kafka_source_sends_event_hubs_connection_string_credentials() {
+        let mut args = kafka_args().source;
+        args.kafka_type = "azureeventhub".into();
+        args.event_hubs_connection_string =
+            Some("Endpoint=sb://events.example/;SharedAccessKey=secret".into());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(source.r#type.to_string(), "azureeventhub");
+        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
+        assert_eq!(
+            source.credentials["connectionString"],
+            "Endpoint=sb://events.example/;SharedAccessKey=secret"
+        );
+        assert!(source.credentials.get("username").is_none());
+    }
+
+    #[test]
+    fn build_kafka_source_rejects_event_hubs_credentials_on_other_sources() {
+        let mut args = kafka_args().source;
+        args.event_hubs_connection_string = Some("Endpoint=sb://events.example/".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("--kafka-type azureeventhub"));
+
+        args.kafka_type = "azureeventhub".into();
+        args.auth = Some("SCRAM-SHA-256".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("only --auth PLAIN"));
     }
 
     #[test]
