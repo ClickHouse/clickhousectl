@@ -2801,11 +2801,15 @@ pub struct ClickPipePatchKafkaSource {
     pub authentication: Option<ClickPipePatchKafkaSourceAuthentication>,
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    pub credentials: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<serde_json::Value>,
     #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(rename = "reversePrivateEndpointIds")]
-    pub reverse_private_endpoint_ids: Vec<String>,
+    #[serde(
+        rename = "reversePrivateEndpointIds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reverse_private_endpoint_ids: Option<Vec<String>>,
 }
 
 /// `ClickPipePatchKinesisSource` from the ClickHouse Cloud API.
@@ -2997,7 +3001,8 @@ pub struct ClickPipePatchPostgresPipeSettings {
 pub struct ClickPipePatchPostgresSource {
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    pub credentials: PLAIN,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<PLAIN>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
     #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
@@ -3006,16 +3011,20 @@ pub struct ClickPipePatchPostgresSource {
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<i64>,
-    pub settings: ClickPipePatchPostgresPipeSettings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClickPipePatchPostgresPipeSettings>,
     #[serde(
         rename = "skipCertVerification",
         skip_serializing_if = "Option::is_none"
     )]
     pub skip_cert_verification: Option<bool>,
-    #[serde(rename = "tableMappingsToAdd")]
-    pub table_mappings_to_add: Vec<ClickPipePostgresPipeTableMapping>,
-    #[serde(rename = "tableMappingsToRemove")]
-    pub table_mappings_to_remove: Vec<ClickPipePatchPostgresPipeRemoveTableMapping>,
+    #[serde(rename = "tableMappingsToAdd", skip_serializing_if = "Option::is_none")]
+    pub table_mappings_to_add: Option<Vec<ClickPipePostgresPipeTableMapping>>,
+    #[serde(
+        rename = "tableMappingsToRemove",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub table_mappings_to_remove: Option<Vec<ClickPipePatchPostgresPipeRemoveTableMapping>>,
     #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
 }
@@ -3063,8 +3072,8 @@ pub struct ClickPipePatchSource {
     pub postgres: Option<ClickPipePatchPostgresSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubsub: Option<ClickPipePatchPubSubSource>,
-    #[serde(rename = "validateSamples")]
-    pub validate_samples: bool,
+    #[serde(rename = "validateSamples", skip_serializing_if = "Option::is_none")]
+    pub validate_samples: Option<bool>,
 }
 
 /// `ClickPipePostKafkaSource` from the ClickHouse Cloud API.
