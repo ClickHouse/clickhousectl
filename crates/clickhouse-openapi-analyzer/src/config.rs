@@ -97,6 +97,9 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // Empty/default scaling and settings objects fail server-side validation.
     ("ClickPipePostRequest", "scaling"),
     ("ClickPipePostRequest", "settings"),
+    // The control plane accepted an object-storage create with validateSamples
+    // absent on 2026-09-05. Omission must stay distinct from explicit false.
+    ("ClickPipePostSource", "validateSamples"),
     // CDC mode and numeric ranges require absence unless meaningful values exist.
     ("ClickPipePostgresPipeSettings", "publicationName"),
     ("ClickPipePostgresPipeSettings", "replicationSlotName"),
@@ -136,6 +139,10 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // way a non-Kafka settings update can express "does not apply"; keeping this
     // `T` would put the key on every request and break all non-Kafka pipes.
     ("ClickPipeSettingsPutRequest", "kafka_read_committed"),
+    // The same source-conditional contract applies to settings nested in a
+    // create request: on 2026-09-05 an object-storage create with the key set
+    // to false was rejected, while omitting it succeeded.
+    ("ClickPipeSettings", "kafka_read_committed"),
     // Empty TLS/IAM strings fail validation for sources that do not use them.
     ("ClickPipeMutatePostgresSource", "caCertificate"),
     ("ClickPipeMutatePostgresSource", "iamRole"),

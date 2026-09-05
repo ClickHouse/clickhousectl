@@ -3277,8 +3277,10 @@ pub struct ClickPipePostSource {
     pub postgres: Option<ClickPipeMutatePostgresSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubsub: Option<ClickPipePostPubSubSource>,
-    #[serde(rename = "validateSamples")]
-    pub validate_samples: bool,
+    // The control plane accepted an object-storage create with this key
+    // omitted on 2026-09-05. Preserve that absence rather than inventing false.
+    #[serde(rename = "validateSamples", skip_serializing_if = "Option::is_none")]
+    pub validate_samples: Option<bool>,
 }
 
 /// `ClickPipePostgresPipeSettings` from the ClickHouse Cloud API.
@@ -3550,8 +3552,13 @@ pub struct ClickPipeSettings {
     pub clickhouse_parallel_distributed_insert_select: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_view_processing: Option<bool>,
-    #[serde(rename = "kafka_read_committed")]
-    pub kafka_read_committed: bool,
+    // The control plane rejected this key on an object-storage create on
+    // 2026-09-05, even when false. It must be absent outside Kafka creates.
+    #[serde(
+        rename = "kafka_read_committed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kafka_read_committed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_concurrency: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]

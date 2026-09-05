@@ -394,7 +394,7 @@ fn deserialize_clickpipe_settings() {
     assert_eq!(settings.streaming_max_insert_wait_ms, Some(5000));
     assert_eq!(settings.object_storage_concurrency, None);
     assert_eq!(settings.clickhouse_max_threads, Some(4));
-    assert!(settings.kafka_read_committed);
+    assert_eq!(settings.kafka_read_committed, Some(true));
 }
 
 #[test]
@@ -4191,10 +4191,16 @@ fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
         serde_json::from_str::<ClickPipePostgresPipeTableMappingResponse>("{}").unwrap(),
         ClickPipePostgresPipeTableMappingResponse::default()
     );
-    // The new non-nullable Kafka setting is required in the create-position
-    // settings object, while the settings PUT omits it for non-Kafka pipes and
-    // the response variant remains tolerant of a dropped key.
-    assert!(serde_json::from_str::<ClickPipeSettings>("{}").is_err());
+    // Source-conditional create values stay absent unless the caller supplies
+    // them, while explicit false remains distinguishable from omission.
+    assert_eq!(
+        serde_json::from_str::<ClickPipeSettings>("{}").unwrap(),
+        ClickPipeSettings::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipePostSource>("{}").unwrap(),
+        ClickPipePostSource::default()
+    );
     assert_eq!(
         serde_json::from_str::<ClickPipeSettingsPutRequest>("{}").unwrap(),
         ClickPipeSettingsPutRequest::default()
@@ -4202,6 +4208,37 @@ fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
     assert_eq!(
         serde_json::from_str::<ClickPipeSettingsResponse>("{}").unwrap(),
         ClickPipeSettingsResponse::default()
+    );
+}
+
+#[test]
+fn clickpipe_create_optional_controls_omit_absence_and_preserve_false() {
+    let source = ClickPipePostSource::default();
+    let settings = ClickPipeSettings::default();
+    assert_eq!(
+        serde_json::to_value(&source).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        serde_json::to_value(&settings).unwrap(),
+        serde_json::json!({})
+    );
+
+    let source = ClickPipePostSource {
+        validate_samples: Some(false),
+        ..Default::default()
+    };
+    let settings = ClickPipeSettings {
+        kafka_read_committed: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&source).unwrap(),
+        serde_json::json!({ "validateSamples": false })
+    );
+    assert_eq!(
+        serde_json::to_value(&settings).unwrap(),
+        serde_json::json!({ "kafka_read_committed": false })
     );
 }
 

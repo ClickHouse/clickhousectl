@@ -3910,7 +3910,7 @@ fn build_create_request_args(
                     .settings
                     .clickhouse_parallel_distributed_insert_select
                     .map(i64::from),
-                kafka_read_committed: args.settings.kafka_read_committed.unwrap_or(false),
+                kafka_read_committed: Some(args.settings.kafka_read_committed.unwrap_or(false)),
                 object_storage_use_cluster_function: args
                     .settings
                     .object_storage_use_cluster_function,
@@ -3940,7 +3940,7 @@ fn apply_create_request_args(
     request: &mut clickhouse_cloud_api::models::ClickPipePostRequest,
     args: BuiltCreateRequestArgs,
 ) {
-    request.source.validate_samples = args.validate_samples;
+    request.source.validate_samples = Some(args.validate_samples);
     request.scaling = args.scaling;
     request.settings = args.settings;
     request.field_mappings = args.field_mappings;
