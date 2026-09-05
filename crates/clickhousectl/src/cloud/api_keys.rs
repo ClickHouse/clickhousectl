@@ -82,9 +82,13 @@ pub enum KeyCommands {
         #[arg(long)]
         role_id: Vec<String>,
 
-        /// New expiry as RFC 3339 (e.g. 2025-12-31T23:59:59Z)
-        #[arg(long, value_parser = parse_datetime)]
+        /// New expiry as RFC 3339; conflicts with --clear-expiry
+        #[arg(long, value_parser = parse_datetime, conflicts_with = "clear_expiry")]
         expires_at: Option<String>,
+
+        /// Remove the expiry; conflicts with --expires-at
+        #[arg(long, conflicts_with = "expires_at")]
+        clear_expiry: bool,
 
         /// Key state (enabled or disabled)
         #[arg(long)]
@@ -157,6 +161,7 @@ pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> Clou
             name,
             role_id,
             expires_at,
+            clear_expiry,
             state,
             ip_allow,
             org_id,
@@ -165,6 +170,7 @@ pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> Clou
                 name,
                 role_ids: role_id,
                 expires_at,
+                clear_expiry,
                 state,
                 ip_allow,
                 org_id,
@@ -195,6 +201,7 @@ struct KeyUpdateOptions {
     name: Option<String>,
     role_ids: Vec<String>,
     expires_at: Option<String>,
+    clear_expiry: bool,
     state: Option<String>,
     ip_allow: Vec<String>,
     org_id: Option<String>,
@@ -301,6 +308,11 @@ fn build_api_key_create_request(options: &KeyCreateOptions) -> CloudResult<ApiKe
 }
 
 fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKeyPatchRequest> {
+    if options.clear_expiry && options.expires_at.is_some() {
+        return Err(CloudError::new(
+            "--clear-expiry conflicts with --expires-at",
+        ));
+    }
     Ok(ApiKeyPatchRequest {
         name: options.name.clone(),
         assigned_role_ids: if options.role_ids.is_empty() {
@@ -308,12 +320,16 @@ fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKe
         } else {
             Some(parse_uuid_list(&options.role_ids, "role_id")?)
         },
-        expire_at: options
-            .expires_at
-            .as_deref()
-            .map(parse_expire_at)
-            .transpose()?
-            .map(Some),
+        expire_at: if options.clear_expiry {
+            Some(None)
+        } else {
+            options
+                .expires_at
+                .as_deref()
+                .map(parse_expire_at)
+                .transpose()?
+                .map(Some)
+        },
         state: options
             .state
             .as_deref()
@@ -733,6 +749,7 @@ mod tests {
             name,
             role_id,
             expires_at,
+            clear_expiry,
             state,
             ip_allow,
             org_id,
@@ -744,6 +761,7 @@ mod tests {
         assert!(name.is_none());
         assert!(role_id.is_empty());
         assert!(expires_at.is_none());
+        assert!(!clear_expiry);
         assert!(state.is_none());
         assert!(ip_allow.is_empty());
         assert!(org_id.is_none());
@@ -836,6 +854,7 @@ mod tests {
             name,
             role_id,
             expires_at,
+            clear_expiry,
             state,
             ip_allow,
             org_id,
@@ -847,6 +866,7 @@ mod tests {
         assert_eq!(name.as_deref(), Some("renamed"));
         assert_eq!(role_id, vec!["role-1", "role-2"]);
         assert_eq!(expires_at.as_deref(), Some("2025-01-01T00:00:00Z"));
+        assert!(!clear_expiry);
         assert_eq!(state.as_deref(), Some("enabled"));
         assert_eq!(ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
         assert_eq!(org_id.as_deref(), Some("org-1"));
@@ -893,6 +913,121 @@ mod tests {
             Ok(_) => panic!("expected invalid expires-at input to be rejected"),
             Err(error) => assert!(error.to_string().contains("expected ISO 8601 / RFC 3339")),
         }
+    }
+
+    #[test]
+    fn parses_key_update_clear_expiry_as_a_write() {
+        let command = parse_top_level_key(&[
+            "clickhousectl",
+            "cloud",
+            "key",
+            "update",
+            "key-1",
+            "--clear-expiry",
+        ]);
+        assert!(command.is_write());
+        let KeyCommands::Update {
+            clear_expiry,
+            expires_at,
+            ..
+        } = command
+        else {
+            panic!("expected key update");
+        };
+        assert!(clear_expiry);
+        assert!(expires_at.is_none());
+    }
+
+    #[test]
+    fn rejects_conflicting_key_update_expiry_flags() {
+        for flags in [
+            ["--clear-expiry", "--expires-at", "2030-01-01T00:00:00Z"],
+            ["--expires-at", "2030-01-01T00:00:00Z", "--clear-expiry"],
+        ] {
+            let result = Cli::try_parse_from(
+                ["clickhousectl", "cloud", "key", "update", "key-1"]
+                    .into_iter()
+                    .chain(flags),
+            );
+            let Err(error) = result else {
+                panic!("expected conflicting arguments");
+            };
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn key_create_does_not_accept_clear_expiry() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "key",
+            "create",
+            "--name",
+            "key",
+            "--clear-expiry",
+        ]);
+        let Err(error) = result else {
+            panic!("expected unknown argument");
+        };
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn build_api_key_update_request_clears_only_expiry() {
+        let request = build_api_key_update_request(&KeyUpdateOptions {
+            clear_expiry: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(
+            request,
+            ApiKeyPatchRequest {
+                expire_at: Some(None),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({"expireAt": null})
+        );
+    }
+
+    #[test]
+    fn build_api_key_update_request_combines_clear_with_explicit_changes() {
+        let role_id = uuid::Uuid::parse_str("11111111-2222-3333-4444-555555555555").unwrap();
+        let request = build_api_key_update_request(&KeyUpdateOptions {
+            name: Some("renamed".into()),
+            role_ids: vec![role_id.to_string()],
+            clear_expiry: true,
+            state: Some("disabled".into()),
+            ip_allow: vec!["10.0.0.0/8".into()],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(request.expire_at, Some(None));
+        assert_eq!(request.name.as_deref(), Some("renamed"));
+        assert_eq!(request.assigned_role_ids, Some(vec![role_id]));
+        assert_eq!(request.state, Some(ApiKeyPatchRequestState::Disabled));
+        assert_eq!(
+            request.ip_access_list,
+            Some(vec![IpAccessListEntry {
+                source: "10.0.0.0/8".into(),
+                description: None,
+            }])
+        );
+    }
+
+    #[test]
+    fn build_api_key_update_request_rejects_conflicting_expiry_changes() {
+        assert!(
+            build_api_key_update_request(&KeyUpdateOptions {
+                expires_at: Some("2030-01-01T00:00:00Z".into()),
+                clear_expiry: true,
+                ..Default::default()
+            })
+            .is_err()
+        );
     }
 
     #[test]
@@ -970,6 +1105,7 @@ mod tests {
             name: Some("renamed".to_string()),
             role_ids: vec![role_id.to_string()],
             expires_at: Some("2025-01-01T00:00:00Z".to_string()),
+            clear_expiry: false,
             state: Some("disabled".to_string()),
             ip_allow: vec!["0.0.0.0/0".to_string()],
             org_id: None,
