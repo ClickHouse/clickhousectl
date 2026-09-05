@@ -7,9 +7,10 @@ use clickhouse_cloud_api::models::{
     ClickStackCreateRoleRequest, ClickStackLogSource,
     ClickStackLogSourceUsetextindexforimplicitcolumn, ClickStackMaterializedView,
     ClickStackMaterializedViewMingranularity, ClickStackMetricSource, ClickStackPromqlSource,
-    ClickStackRole, ClickStackSessionSource, ClickStackSource, ClickStackSourceResponse,
-    ClickStackTraceSource, ClickStackTraceSourceUsetextindexforimplicitcolumn,
-    ClickStackUpdateRoleRequest,
+    ClickStackRole, ClickStackSavedSearch, ClickStackSavedSearchFilterType,
+    ClickStackSavedSearchInput, ClickStackSavedSearchInputWherelanguage, ClickStackSessionSource,
+    ClickStackSource, ClickStackSourceResponse, ClickStackTraceSource,
+    ClickStackTraceSourceUsetextindexforimplicitcolumn, ClickStackUpdateRoleRequest,
 };
 use serde_json::Value;
 use tabled::{Table, Tabled, settings::Style};
@@ -27,6 +28,12 @@ pub enum ClickStackCommands {
         #[command(subcommand)]
         command: RoleCommands,
     },
+
+    /// Manage ClickStack saved searches
+    SavedSearch {
+        #[command(subcommand)]
+        command: SavedSearchCommands,
+    },
 }
 
 impl ClickStackCommands {
@@ -34,6 +41,75 @@ impl ClickStackCommands {
         match self {
             Self::Source { command } => command.is_write(),
             Self::Role { command } => command.is_write(),
+            Self::SavedSearch { command } => command.is_write(),
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum SavedSearchCommands {
+    /// List ClickStack saved searches
+    List {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Get ClickStack saved search details
+    Get {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Saved search ID (from `cloud clickstack saved-search list`)
+        saved_search_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Create a ClickStack saved search
+    Create {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// JSON request body path, or `-` for stdin
+        #[arg(long, value_name = "PATH|-", required = true)]
+        config_file: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Replace a ClickStack saved search
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  This is a full PUT replacement; include every required and desired field.")]
+    Update {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Saved search ID (from `cloud clickstack saved-search list`)
+        saved_search_id: String,
+        /// Complete JSON request body path, or `-` for stdin
+        #[arg(long, value_name = "PATH|-", required = true)]
+        config_file: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Delete a ClickStack saved search
+    Delete {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Saved search ID (from `cloud clickstack saved-search list`)
+        saved_search_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl SavedSearchCommands {
+    pub fn is_write(&self) -> bool {
+        match self {
+            Self::List { .. } | Self::Get { .. } => false,
+            Self::Create { .. } | Self::Update { .. } | Self::Delete { .. } => true,
         }
     }
 }
@@ -190,6 +266,37 @@ fn build_update_role_request(config_file: &str) -> CloudResult<ClickStackUpdateR
     read_typed_config(config_file)
 }
 
+fn build_saved_search_request(config_file: &str) -> CloudResult<ClickStackSavedSearchInput> {
+    let request: ClickStackSavedSearchInput = read_typed_config(config_file)?;
+    validate_saved_search_closed_enums(&request, config_file)?;
+    Ok(request)
+}
+
+fn validate_saved_search_closed_enums(
+    request: &ClickStackSavedSearchInput,
+    source: &str,
+) -> CloudResult<()> {
+    if let Some(ClickStackSavedSearchInputWherelanguage::Unknown(value)) = &request.where_language {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {source}: unknown whereLanguage value `{value}`"
+        )));
+    }
+    if let Some((index, value)) = request.filters.as_ref().and_then(|filters| {
+        filters.iter().enumerate().find_map(|(index, filter)| {
+            if let Some(ClickStackSavedSearchFilterType::Unknown(value)) = &filter.r#type {
+                Some((index, value))
+            } else {
+                None
+            }
+        })
+    }) {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {source}: unknown filters[{index}].type value `{value}`"
+        )));
+    }
+    Ok(())
+}
+
 fn parse_source_request(value: Value, source: &str) -> CloudResult<ClickStackSource> {
     let kind = field(&value, "kind").and_then(Value::as_str);
     let request = match kind {
@@ -277,6 +384,73 @@ pub async fn run(client: &CloudClient, command: ClickStackCommands, json: bool) 
     match command {
         ClickStackCommands::Source { command } => run_source(client, command, json).await,
         ClickStackCommands::Role { command } => run_role(client, command, json).await,
+        ClickStackCommands::SavedSearch { command } => {
+            run_saved_search(client, command, json).await
+        }
+    }
+}
+
+async fn run_saved_search(
+    client: &CloudClient,
+    command: SavedSearchCommands,
+    json: bool,
+) -> CloudResult<()> {
+    match command {
+        SavedSearchCommands::List { service_id, org_id } => {
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let searches = client
+                .click_stack_list_saved_searches(&org_id, &service_id)
+                .await?;
+            print_saved_search_list(&searches, json)
+        }
+        SavedSearchCommands::Get {
+            service_id,
+            saved_search_id,
+            org_id,
+        } => {
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let search = client
+                .click_stack_get_saved_search(&org_id, &service_id, &saved_search_id)
+                .await?;
+            print_detail(&search, json)
+        }
+        SavedSearchCommands::Create {
+            service_id,
+            config_file,
+            org_id,
+        } => {
+            let request = build_saved_search_request(&config_file)?;
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let search = client
+                .click_stack_create_saved_search(&org_id, &service_id, &request)
+                .await?;
+            print_detail(&search, json)
+        }
+        SavedSearchCommands::Update {
+            service_id,
+            saved_search_id,
+            config_file,
+            org_id,
+        } => {
+            let request = build_saved_search_request(&config_file)?;
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let search = client
+                .click_stack_update_saved_search(&org_id, &service_id, &saved_search_id, &request)
+                .await?;
+            print_detail(&search, json)
+        }
+        SavedSearchCommands::Delete {
+            service_id,
+            saved_search_id,
+            org_id,
+        } => {
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            client
+                .click_stack_delete_saved_search(&org_id, &service_id, &saved_search_id)
+                .await?;
+            print_deleted("ClickStack saved search", &saved_search_id, json);
+            Ok(())
+        }
     }
 }
 
@@ -497,7 +671,109 @@ fn print_role_list(roles: &[ClickStackRole], json: bool) -> CloudResult<()> {
     Ok(())
 }
 
+fn print_saved_search_list(searches: &[ClickStackSavedSearch], json: bool) -> CloudResult<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(searches)?);
+        return Ok(());
+    }
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Name")]
+        name: String,
+        #[tabled(rename = "ID")]
+        id: String,
+        #[tabled(rename = "Source ID")]
+        source_id: String,
+        #[tabled(rename = "Language")]
+        language: String,
+    }
+    let rows = searches
+        .iter()
+        .map(|search| Row {
+            name: or_absent(search.name.as_deref()),
+            id: or_absent(search.id.as_deref()),
+            source_id: or_absent(search.source_id.as_deref()),
+            language: or_absent(search.where_language.as_ref()),
+        })
+        .collect::<Vec<_>>();
+    println!("{}", Table::new(rows).with(Style::rounded()));
+    Ok(())
+}
+
 impl CloudClient {
+    async fn click_stack_list_saved_searches(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudResult<Vec<ClickStackSavedSearch>> {
+        let response = self
+            .api()
+            .click_stack_list_saved_searches(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_create_saved_search(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ClickStackSavedSearchInput,
+    ) -> CloudResult<ClickStackSavedSearch> {
+        let response = self
+            .api()
+            .click_stack_create_saved_search(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_get_saved_search(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        saved_search_id: &str,
+    ) -> CloudResult<ClickStackSavedSearch> {
+        let response = self
+            .api()
+            .click_stack_get_saved_search(org_id, service_id, saved_search_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_update_saved_search(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        saved_search_id: &str,
+        request: &ClickStackSavedSearchInput,
+    ) -> CloudResult<ClickStackSavedSearch> {
+        let response = self
+            .api()
+            .click_stack_update_saved_search(org_id, service_id, saved_search_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_delete_saved_search(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        saved_search_id: &str,
+    ) -> CloudResult<crate::cloud::types::DeleteResponse> {
+        let response = self
+            .api()
+            .click_stack_delete_saved_search(org_id, service_id, saved_search_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(crate::cloud::types::DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
+    }
+
     async fn click_stack_list_sources(
         &self,
         org_id: &str,
@@ -663,7 +939,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_source_and_role_config_commands() {
+    fn parses_clickstack_config_commands() {
         let command = parse_clickstack(&[
             "clickhousectl",
             "cloud",
@@ -716,10 +992,39 @@ mod tests {
         };
         assert_eq!(config_file, "role.json");
         assert_eq!(role_id, "role-1");
+
+        let command = parse_clickstack(&[
+            "clickhousectl",
+            "cloud",
+            "clickstack",
+            "saved-search",
+            "update",
+            "svc-1",
+            "search-1",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ]);
+        let ClickStackCommands::SavedSearch {
+            command:
+                SavedSearchCommands::Update {
+                    saved_search_id,
+                    config_file,
+                    org_id,
+                    ..
+                },
+        } = command
+        else {
+            panic!("expected saved search update")
+        };
+        assert_eq!(saved_search_id, "search-1");
+        assert_eq!(config_file, "-");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
-    fn classifies_every_source_and_role_operation() {
+    fn classifies_every_clickstack_operation() {
         for (resource, operation, expected) in [
             ("source", "list", false),
             ("source", "get", false),
@@ -731,6 +1036,11 @@ mod tests {
             ("role", "create", true),
             ("role", "update", true),
             ("role", "delete", true),
+            ("saved-search", "list", false),
+            ("saved-search", "get", false),
+            ("saved-search", "create", true),
+            ("saved-search", "update", true),
+            ("saved-search", "delete", true),
         ] {
             let mut args = vec![
                 "clickhousectl",
@@ -838,6 +1148,70 @@ mod tests {
     }
 
     #[test]
+    fn saved_search_builder_preserves_minimal_maximal_and_empty_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_file = directory.path().join("saved-search.json");
+        std::fs::write(&config_file, r#"{"name":"errors","sourceId":"source-1"}"#).unwrap();
+        let minimal = build_saved_search_request(config_file.to_str().unwrap()).unwrap();
+        assert_eq!(minimal.name, "errors");
+        assert_eq!(minimal.source_id, "source-1");
+        assert_eq!(minimal.select, None);
+        assert_eq!(minimal.r#where, None);
+        assert_eq!(minimal.where_language, None);
+        assert_eq!(minimal.order_by, None);
+        assert_eq!(minimal.tags, None);
+        assert_eq!(minimal.filters, None);
+
+        std::fs::write(
+            &config_file,
+            serde_json::json!({
+                "name": "production errors",
+                "sourceId": "source-2",
+                "select": "Timestamp, Body",
+                "where": "SeverityText = 'ERROR'",
+                "whereLanguage": "sql",
+                "orderBy": "Timestamp DESC",
+                "tags": ["production", "errors"],
+                "filters": [{"type": "sql", "condition": "ServiceName = 'api'"}]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let maximal = build_saved_search_request(config_file.to_str().unwrap()).unwrap();
+        assert_eq!(maximal.select.as_deref(), Some("Timestamp, Body"));
+        assert_eq!(maximal.r#where.as_deref(), Some("SeverityText = 'ERROR'"));
+        assert_eq!(
+            maximal.where_language,
+            Some(ClickStackSavedSearchInputWherelanguage::Sql)
+        );
+        assert_eq!(maximal.order_by.as_deref(), Some("Timestamp DESC"));
+        assert_eq!(
+            maximal.tags.as_deref(),
+            Some(&["production".into(), "errors".into()][..])
+        );
+        let filter = &maximal.filters.as_ref().unwrap()[0];
+        assert_eq!(filter.condition, "ServiceName = 'api'");
+        assert_eq!(filter.r#type, Some(ClickStackSavedSearchFilterType::Sql));
+
+        std::fs::write(
+            &config_file,
+            r#"{"name":"","sourceId":"source-3","select":"","where":"","whereLanguage":"lucene","orderBy":"","tags":[],"filters":[]}"#,
+        )
+        .unwrap();
+        let empty = build_saved_search_request(config_file.to_str().unwrap()).unwrap();
+        assert_eq!(empty.name, "");
+        assert_eq!(empty.select.as_deref(), Some(""));
+        assert_eq!(empty.r#where.as_deref(), Some(""));
+        assert_eq!(
+            empty.where_language,
+            Some(ClickStackSavedSearchInputWherelanguage::Lucene)
+        );
+        assert_eq!(empty.order_by.as_deref(), Some(""));
+        assert_eq!(empty.tags, Some(vec![]));
+        assert_eq!(empty.filters, Some(vec![]));
+    }
+
+    #[test]
     fn input_validation_rejects_unknown_discriminator_and_nested_fields() {
         let error = parse_source_request(serde_json::json!({"kind":"logs","naem":"bad"}), "test")
             .unwrap_err();
@@ -853,5 +1227,28 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.message.contains("conditons"), "{error}");
+
+        for (body, expected) in [
+            (
+                serde_json::json!({"name":"bad","sourceId":"s","whereLanguage":"sqlish"}),
+                "unknown whereLanguage",
+            ),
+            (
+                serde_json::json!({"name":"bad","sourceId":"s","filters":[{"type":"lucene","condition":"x"}]}),
+                "unknown filters[0].type",
+            ),
+        ] {
+            let request: ClickStackSavedSearchInput =
+                deserialize_strict_config(body, "test").unwrap();
+            let error = validate_saved_search_closed_enums(&request, "test").unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+        }
+
+        let error = deserialize_strict_config::<ClickStackSavedSearchInput>(
+            serde_json::json!({"name":"bad","sourceId":"s","orderByy":null}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("orderByy"), "{error}");
     }
 }

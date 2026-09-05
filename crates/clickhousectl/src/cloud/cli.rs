@@ -159,7 +159,7 @@ CONTEXT FOR AGENTS:
         after_help = "\
 CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`.
-  Source and role IDs come from their respective `list` commands.
+  Resource IDs come from their respective `list` commands.
   Everything except list/get is a write and needs API key auth.
   Create/update read complete JSON bodies from --config-file; `-` reads stdin."
     )]

@@ -156,11 +156,19 @@ clickhousectl cloud clickstack source create <service-id> \
   --config-file source.json --org-id <org-id>
 clickhousectl cloud clickstack role create <service-id> \
   --config-file role.json --org-id <org-id>
+clickhousectl cloud clickstack saved-search create <service-id> \
+  --config-file saved-search.json --org-id <org-id>
+clickhousectl cloud clickstack saved-search get <service-id> <saved-search-id> \
+  --org-id <org-id>
+clickhousectl cloud clickstack saved-search update <service-id> <saved-search-id> \
+  --config-file saved-search.json --org-id <org-id>
 ```
 
-Pass `--config-file -` to read the JSON body from stdin. Source IDs and role IDs come from their
-respective `list` commands. `source update` and `role update` use PUT replacement semantics, so the
-configuration must contain the complete desired resource rather than only changed fields.
+Pass `--config-file -` to read the JSON body from stdin. Resource IDs come from the respective
+`list` command. A saved search configuration contains `name` and `sourceId`, plus optional `select`,
+`where`, `whereLanguage`, `orderBy`, `tags`, and structured `filters`; obtain `sourceId` with
+`cloud clickstack source list`. All ClickStack `update` commands use PUT replacement semantics, so
+the configuration must contain the complete desired resource rather than only changed fields.
 
 ## Local
 
