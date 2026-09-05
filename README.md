@@ -933,6 +933,12 @@ clickhousectl cloud postgres list --filter state=running
 clickhousectl cloud postgres list --filter region=us-east-1 --filter isPrimary=true
 clickhousectl cloud postgres get <pg-id>
 
+# Time-bucketed metrics (omit --bucket-size-seconds to let the API choose)
+clickhousectl cloud postgres metrics <pg-id> \
+  --from-date 2026-04-16T12:00:00Z \
+  --to-date 2026-04-16T13:00:00Z \
+  --bucket-size-seconds 60
+
 # Create
 clickhousectl cloud postgres create \
   --name my-pg \
@@ -1017,6 +1023,8 @@ PgBouncer parameter names are open-ended; values must be quoted strings, includi
 `pgConfig` uses the closed set of GUC names supported by the Cloud API. Unknown names and `null` values are rejected locally on `--set` and every PgConfig file path, and the enum-valued settings accept only `default_transaction_isolation` (`read committed`, `repeatable read`, `serializable`), `ssl_min_protocol_version` (`TLSv1` through `TLSv1.3`), and `wal_compression` (`off`, `on`, `lz4`, `zstd`). Files for `config patch` and `config replace` must contain both `pgConfig` and `pgBouncerConfig`; use an explicit `{}` when a section is intentionally empty rather than omitting it.
 
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
+
+`postgres metrics` requires an RFC 3339 start and end time, with the start no later than the end. Its JSON output preserves metric metadata, series labels, and data points; the default output renders the same nested response as a readable tree. `--bucket-size-seconds` must be positive and is omitted from the API request when not supplied.
 
 `postgres list --filter KEY=VALUE` is applied client-side to the listing and is repeatable; every filter must match. Supported keys are `state`, `region`, `name`, `provider` and `isPrimary` (the `Primary` column; `true`/`false`, or the `yes`/`no` the column shows). Keys are case-insensitive, `state` and `provider` match the wire value case-insensitively, and `region`/`name` match exactly. An unknown key, a missing `=` or an empty value is a usage error (exit 2) listing the valid keys — it never returns an unfiltered list. A field the API omitted matches no filter value, so filtering on it excludes that service. This is unrelated to `cloud service list --filter`, which sends server-side resource-tag filters (`tag:env=production`) to the API.
 
