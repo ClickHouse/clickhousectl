@@ -138,8 +138,9 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
             min_replica_memory_gb: Some(8.0),
             max_replica_memory_gb: Some(8.0),
             num_replicas: Some(1),
-            idle_scaling: Some(true),
-            idle_timeout_minutes: Some(5.0),
+            // ClickPipe creation requires a running destination. Keep this
+            // short-lived owned fixture awake through source configuration.
+            idle_scaling: Some(false),
             // Test runner needs to query the service to verify CDC results;
             // the provisioned IPs are unknown ahead of time and the resource
             // is short-lived + tagged for this run only.
@@ -233,7 +234,7 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
             },
         );
         let ch_ready_fut = poll_until(
-            "clickhouse steady state",
+            "clickhouse running state",
             ctx.steady_state_timeout,
             ctx.poll_interval,
             || {
@@ -244,7 +245,7 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
                     let resp = client.instance_get(&org_id, &clickhouse_id).await?;
                     let svc = resp.result.ok_or("service get returned no result")?;
                     let state = service_state(&svc);
-                    if matches!(state.as_str(), "running" | "idle") {
+                    if state == "running" {
                         Ok(Some(svc))
                     } else {
                         Ok(None)
@@ -567,8 +568,7 @@ impl PostgresCliCreate<'_> {
             self.database.into(),
             "--username".into(),
             self.username.into(),
-            "--password".into(),
-            self.password.into(),
+            format!("--password={}", self.password).into(),
             "--auth".into(),
             "basic".into(),
             "--replication-mode".into(),
@@ -648,8 +648,7 @@ fn postgres_cli_args_only_pass_the_ca_path_when_requested() {
             "postgres",
             "--username",
             "clickpipe",
-            "--password",
-            "secret",
+            "--password=secret",
             "--auth",
             "basic",
             "--replication-mode",
@@ -672,6 +671,28 @@ fn postgres_cli_args_only_pass_the_ca_path_when_requested() {
         &with_ca[with_ca.len() - 2..],
         [OsString::from("--ca-certificate"), ca_path.into()]
     );
+}
+
+#[test]
+fn postgres_cli_args_keep_a_leading_hyphen_password_attached_to_its_flag() {
+    let create = PostgresCliCreate {
+        api_url: "https://api.example.test",
+        org_id: "org-id",
+        service_id: "service-id",
+        host: "postgres.example.test",
+        port: 5432,
+        database: "postgres",
+        username: "clickpipe",
+        password: "-generated-secret",
+    };
+
+    let args = create.args("cdc", None);
+    assert!(
+        args.iter()
+            .any(|arg| arg == &OsString::from("--password=-generated-secret"))
+    );
+    assert!(!args.iter().any(|arg| arg == "--password"));
+    assert!(!args.iter().any(|arg| arg == "-generated-secret"));
 }
 
 fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1Response]) -> bool {
