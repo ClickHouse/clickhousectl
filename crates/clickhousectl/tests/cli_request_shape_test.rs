@@ -1904,6 +1904,137 @@ async fn postgres_logs_reports_empty_results_and_structured_api_errors() {
     }
 }
 
+// ── Postgres Prometheus metrics (issue #584) ──────────────────────────────
+
+#[tokio::test]
+async fn postgres_prometheus_service_uses_oauth_and_returns_a_json_string() {
+    let mock = MockServer::start().await;
+    let metrics = "# HELP pg_up Whether Postgres is available.\n# TYPE pg_up gauge\npg_up 1\n";
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/prometheus"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/plain; charset=UTF-8")
+                .set_body_string(metrics),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "postgres",
+            "prometheus",
+            "service",
+            "pg-1",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<String>(&output.stdout).unwrap(),
+        metrics
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.query(), None);
+}
+
+#[tokio::test]
+async fn postgres_prometheus_org_preserves_raw_text_and_agent_mode_is_json() {
+    let mock = MockServer::start().await;
+    let metrics = "# TYPE pg_connections gauge\npg_connections{service=\"pg-1\"} 4\n";
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/prometheus"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/plain; charset=UTF-8")
+                .set_body_string(metrics),
+        )
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let args = ["postgres", "prometheus", "org", "--org-id", "org-1"];
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    assert_eq!(human.stdout, metrics.as_bytes());
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let agent = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("AI_AGENT", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args(["cloud", "--url", &mock.uri()])
+        .args(args)
+        .output()
+        .unwrap();
+    assert_success(&agent);
+    assert_eq!(
+        serde_json::from_slice::<String>(&agent.stdout).unwrap(),
+        metrics
+    );
+
+    for request in mock.received_requests().await.unwrap() {
+        assert_eq!(request.url.query(), None);
+    }
+}
+
+#[tokio::test]
+async fn postgres_prometheus_converts_api_errors() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/prometheus"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403,
+            "error": "Forbidden",
+            "requestId": "stub-postgres-prometheus-error"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "prometheus",
+            "service",
+            "pg-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Forbidden\n"
+    );
+}
+
 // ── Postgres deletion JSON output (issue #614) ────────────────────────────
 
 /// `postgres delete --json` must emit the Postgres resource object, not the

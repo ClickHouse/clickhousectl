@@ -214,6 +214,16 @@ CONTEXT FOR AGENTS:
         org_id: Option<String>,
     },
 
+    /// Get raw Postgres Prometheus metrics
+    #[command(
+        subcommand,
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Human output is raw Prometheus exposition text.
+  --json, including automatic coding-agent mode, returns that text as a JSON string."
+    )]
+    Prometheus(PrometheusCommands),
+
     /// Restore a Postgres service to a point in time
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -385,13 +395,32 @@ CONTEXT FOR AGENTS:
     },
 }
 
+#[derive(Subcommand)]
+pub enum PrometheusCommands {
+    /// Get metrics for one Postgres service
+    Service {
+        /// Postgres service ID (from `cloud postgres list`)
+        postgres_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Get metrics for all Postgres services in an organization
+    Org {
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
 impl PostgresCommands {
     pub fn is_write(&self) -> bool {
         match self {
             PostgresCommands::List { .. }
             | PostgresCommands::Get { .. }
             | PostgresCommands::Metrics { .. }
-            | PostgresCommands::Logs { .. } => false,
+            | PostgresCommands::Logs { .. }
+            | PostgresCommands::Prometheus(_) => false,
             PostgresCommands::Certs(CertsCommands::Get { .. }) => false,
             PostgresCommands::Config(ConfigCommands::Get { .. }) => false,
 
@@ -581,6 +610,13 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 json,
             )
             .await
+        }
+        PostgresCommands::Prometheus(PrometheusCommands::Service {
+            postgres_id,
+            org_id,
+        }) => postgres_prometheus_service(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Prometheus(PrometheusCommands::Org { org_id }) => {
+            postgres_prometheus_org(client, org_id.as_deref(), json).await
         }
         PostgresCommands::Restore {
             postgres_id,
@@ -1856,11 +1892,62 @@ pub async fn postgres_metrics(
     Ok(())
 }
 
+fn print_prometheus(metrics: &str, json: bool) -> CloudResult<()> {
+    if json {
+        print_line(serde_json::to_string_pretty(metrics)?);
+    } else {
+        use std::io::Write;
+        std::io::stdout().lock().write_all(metrics.as_bytes())?;
+    }
+    Ok(())
+}
+
+async fn postgres_prometheus_service(
+    client: &CloudClient,
+    postgres_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let metrics = client.get_postgres_prometheus(&org_id, postgres_id).await?;
+    print_prometheus(&metrics, json)
+}
+
+async fn postgres_prometheus_org(
+    client: &CloudClient,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let metrics = client.get_postgres_org_prometheus(&org_id).await?;
+    print_prometheus(&metrics, json)
+}
+
 // ---------------------------------------------------------------------------
 // Role changes: promote / switchover (issue #604)
 // ---------------------------------------------------------------------------
 
 impl CloudClient {
+    /// Fetch raw Prometheus exposition text for a Postgres service.
+    pub async fn get_postgres_prometheus(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<String> {
+        self.api()
+            .postgres_instance_prometheus_get(org_id, postgres_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))
+    }
+
+    /// Fetch raw Prometheus exposition text for all Postgres services in an organization.
+    pub async fn get_postgres_org_prometheus(&self, org_id: &str) -> CloudResult<String> {
+        self.api()
+            .postgres_org_prometheus_get(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))
+    }
+
     /// Fetch time-bucketed metrics for a Postgres service.
     pub async fn get_postgres_metrics(
         &self,
@@ -3185,6 +3272,62 @@ mod tests {
             error.to_string(),
             "invalid date range: --from-date must not be after --to-date"
         );
+    }
+
+    #[test]
+    fn parses_postgres_prometheus_service_and_org_scopes_as_reads() {
+        let service = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "prometheus",
+            "service",
+            "pg-1",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!service.is_write());
+        let PostgresCommands::Prometheus(PrometheusCommands::Service {
+            postgres_id,
+            org_id,
+        }) = service
+        else {
+            panic!("expected service prometheus");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let org = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "prometheus",
+            "org",
+            "--org-id",
+            "org-2",
+        ]);
+        assert!(!org.is_write());
+        let PostgresCommands::Prometheus(PrometheusCommands::Org { org_id }) = org else {
+            panic!("expected organization prometheus");
+        };
+        assert_eq!(org_id.as_deref(), Some("org-2"));
+    }
+
+    #[test]
+    fn postgres_prometheus_does_not_advertise_unsupported_filters() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "prometheus",
+            "service",
+            "pg-1",
+            "--filtered-metrics",
+            "false",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
