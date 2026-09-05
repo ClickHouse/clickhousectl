@@ -57,7 +57,6 @@ const POSTGRES_TYPES: &[&str] = &[
 const DB_AUTHS: &[&str] = &["basic", "IAM_ROLE"];
 const REPLICATION_MODES: &[&str] = &["cdc", "snapshot", "cdc_only"];
 const PUBSUB_FORMATS: &[&str] = &["JSONEachRow", "Avro", "Protobuf"];
-const PUBSUB_AUTHS: &[&str] = &["SERVICE_ACCOUNT"];
 const PUBSUB_SEEK_TYPES: &[&str] = &["latest", "earliest", "timestamp"];
 /// `maxLength` of the Pub/Sub subscription filter in the spec, so an over-long
 /// CEL expression is a usage error instead of a rejected request.
@@ -77,14 +76,99 @@ fn parse_kafka_authentication(value: &str) -> CloudResult<ClickPipePostKafkaSour
         | ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_512
         | ClickPipePostKafkaSourceAuthentication::IAM_ROLE
         | ClickPipePostKafkaSourceAuthentication::IAM_USER
-        | ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS => Ok(authentication),
-        ClickPipePostKafkaSourceAuthentication::ServiceAccountWorkloadIdentity => Err(
-            CloudError::new("SERVICE_ACCOUNT_WORKLOAD_IDENTITY is not supported by this command"),
-        ),
+        | ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS
+        | ClickPipePostKafkaSourceAuthentication::ServiceAccountWorkloadIdentity => {
+            Ok(authentication)
+        }
         ClickPipePostKafkaSourceAuthentication::Unknown(value) => Err(CloudError::new(format!(
             "unknown Kafka authentication method '{value}'"
         ))),
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GcpAuthentication {
+    ServiceAccount,
+    WorkloadIdentity,
+}
+
+fn parse_pubsub_authentication(value: &str) -> CloudResult<GcpAuthentication> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostPubSubSourceAuthentication as ServiceAccountAuth,
+        ClickPipePostPubSubWorkloadIdentitySourceAuthentication as WorkloadIdentityAuth,
+    };
+
+    let json = serde_json::Value::String(value.to_string());
+    match serde_json::from_value::<ServiceAccountAuth>(json.clone())? {
+        ServiceAccountAuth::ServiceAccount => Ok(GcpAuthentication::ServiceAccount),
+        ServiceAccountAuth::Unknown(_) => {
+            match serde_json::from_value::<WorkloadIdentityAuth>(json)? {
+                WorkloadIdentityAuth::ServiceAccountWorkloadIdentity => {
+                    Ok(GcpAuthentication::WorkloadIdentity)
+                }
+                WorkloadIdentityAuth::Unknown(value) => Err(CloudError::new(format!(
+                    "unknown Pub/Sub authentication method '{value}'"
+                ))),
+            }
+        }
+    }
+}
+
+fn parse_supported_pubsub_auth(value: &str) -> Result<String, String> {
+    parse_pubsub_authentication(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
+}
+
+fn parse_bigquery_authentication(value: &str) -> CloudResult<GcpAuthentication> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostBigQueryServiceAccountSourceAuthentication as ServiceAccountAuth,
+        ClickPipePostBigQueryWorkloadIdentitySourceAuthentication as WorkloadIdentityAuth,
+    };
+
+    let json = serde_json::Value::String(value.to_string());
+    match serde_json::from_value::<ServiceAccountAuth>(json.clone())? {
+        ServiceAccountAuth::ServiceAccount => Ok(GcpAuthentication::ServiceAccount),
+        ServiceAccountAuth::Unknown(_) => {
+            match serde_json::from_value::<WorkloadIdentityAuth>(json)? {
+                WorkloadIdentityAuth::ServiceAccountWorkloadIdentity => {
+                    Ok(GcpAuthentication::WorkloadIdentity)
+                }
+                WorkloadIdentityAuth::Unknown(value) => Err(CloudError::new(format!(
+                    "unknown BigQuery authentication method '{value}'"
+                ))),
+            }
+        }
+    }
+}
+
+fn parse_supported_bigquery_auth(value: &str) -> Result<String, String> {
+    parse_bigquery_authentication(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
+}
+
+fn parse_object_storage_authentication(
+    value: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostObjectStorageSourceAuthentication> {
+    use clickhouse_cloud_api::models::ClickPipePostObjectStorageSourceAuthentication as Auth;
+
+    match serde_json::from_value::<Auth>(serde_json::Value::String(value.to_string()))? {
+        authentication @ (Auth::IAM_ROLE
+        | Auth::IAM_USER
+        | Auth::CONNECTION_STRING
+        | Auth::SERVICE_ACCOUNT
+        | Auth::ServiceAccountWorkloadIdentity) => Ok(authentication),
+        Auth::Unknown(value) => Err(CloudError::new(format!(
+            "unknown object-storage authentication method '{value}'"
+        ))),
+    }
+}
+
+fn parse_supported_object_storage_auth(value: &str) -> Result<String, String> {
+    parse_object_storage_authentication(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
 }
 
 fn parse_supported_kafka_auth(value: &str) -> Result<String, String> {
@@ -209,12 +293,19 @@ CONTEXT FOR AGENTS:
         command: ClickPipeSettingsCommands,
     },
 
+    /// Get service capabilities and workload identity
+    Context {
+        #[command(subcommand)]
+        command: ClickPipeContextCommands,
+    },
+
     /// Discover a source schema without creating a pipe (beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Needs API key auth even though it only reads; OAuth is rejected here.
   Output is one inferred name/type per field — pass them to `--column name:type` on
   `clickhousectl cloud clickpipe create <source>`, which takes the same source flags.
+  GCP workload identity uses the principal from `clickpipe context get`.
   object-storage discovery runs on the destination service, which must be running.")]
     SchemaDiscover {
         /// Service ID
@@ -249,6 +340,8 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   For kafka, kinesis, object-storage and pubsub, get --column from
   `clickhousectl cloud clickpipe schema-discover <service-id> <source>`.
+  GCP workload identity is private preview: run `clickpipe context get`, grant
+  its principal source access, then pass --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY.
   The source must be reachable from ClickPipes; allow the static egress IPs:
   https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips
   Prints the pipe's name, ID and state; it is not ready to query yet.
@@ -275,6 +368,7 @@ impl ClickPipeCommands {
             // write to fail fast with the API-key guidance.
             ClickPipeCommands::SchemaDiscover { .. } => true,
             ClickPipeCommands::Create { .. } => true,
+            ClickPipeCommands::Context { .. } => false,
             ClickPipeCommands::Settings { command } => command.is_write(),
             ClickPipeCommands::ReversePrivateEndpoint { command } => command.is_write(),
         }
@@ -316,6 +410,19 @@ impl ClickPipeCommands {
 
         command.create_validation_error()
     }
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeContextCommands {
+    /// Get ClickPipes service context
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -457,6 +564,8 @@ pub enum ClickPipeCreateCommands {
 CONTEXT FOR AGENTS:
   Auth is inferred from the credential flags, in order: --iam-role,
   --access-key-id/--secret-key, --connection-string, --service-account-file.
+  GCS workload identity uses --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY without
+  credential flags.
   With no credential flag nothing is sent, so the source must be public."
     )]
     ObjectStorage(ObjectStorageCreateArgs),
@@ -553,6 +662,13 @@ pub struct ObjectStorageSourceFields {
         value_parser = PossibleValuesParser::new(OBJECT_STORAGE_COMPRESSIONS),
     )]
     pub compression: String,
+
+    /// Authentication method
+    ///
+    /// Inferred from credential flags when omitted; with no credentials, no
+    /// authentication is sent. Workload identity is only valid for GCS.
+    #[arg(long, value_parser = parse_supported_object_storage_auth)]
+    pub auth: Option<String>,
 
     /// Enable continuous ingestion
     #[arg(long)]
@@ -1297,9 +1413,25 @@ pub struct BigQueryCreateArgs {
     #[arg(long)]
     pub name: String,
 
+    /// Authentication method
+    #[arg(
+        long,
+        default_value = "SERVICE_ACCOUNT",
+        value_parser = parse_supported_bigquery_auth,
+    )]
+    pub auth: String,
+
     /// Path to a GCP service account JSON key file, or - to read it from stdin
+    ///
+    /// Required with --auth SERVICE_ACCOUNT and invalid with workload identity.
     #[arg(long, value_name = "PATH")]
-    pub service_account_file: String,
+    pub service_account_file: Option<String>,
+
+    /// GCP project ID that owns the BigQuery resources
+    ///
+    /// Required with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY.
+    #[arg(long)]
+    pub project_id: Option<String>,
 
     /// GCS staging path for snapshot data
     #[arg(long)]
@@ -1364,10 +1496,7 @@ pub struct BigQueryCreateArgs {
 /// schema-discover pubsub subcommand so the source field set has a single
 /// definition, the way `KafkaSourceFields` does for Kafka.
 ///
-/// Requiredness follows `ClickPipePostPubSubSource`: the fields the library
-/// types as `T` are required flags. `--auth` is the exception the spec allows
-/// for: it is required on the wire but has exactly one accepted value, so it
-/// defaults instead of making every invocation repeat it.
+/// Requiredness follows the selected `ClickPipePostPubSubSource` union arm.
 #[derive(Args, Debug)]
 pub struct PubSubSourceFields {
     /// Pub/Sub topic name (not the fully-qualified path)
@@ -1383,8 +1512,10 @@ pub struct PubSubSourceFields {
     pub format: String,
 
     /// Path to the GCP service account JSON key file, or - to read it from stdin
+    ///
+    /// Required with --auth SERVICE_ACCOUNT and invalid with workload identity.
     #[arg(long, value_name = "PATH")]
-    pub service_account_file: String,
+    pub service_account_file: Option<String>,
 
     /// Starting position for consuming the subscription
     #[arg(long, value_parser = PossibleValuesParser::new(PUBSUB_SEEK_TYPES))]
@@ -1405,7 +1536,7 @@ pub struct PubSubSourceFields {
     #[arg(
         long,
         default_value = "SERVICE_ACCOUNT",
-        value_parser = PossibleValuesParser::new(PUBSUB_AUTHS),
+        value_parser = parse_supported_pubsub_auth,
     )]
     pub auth: String,
 
@@ -1591,6 +1722,11 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                 .await
             }
         },
+        ClickPipeCommands::Context { command } => match command {
+            ClickPipeContextCommands::Get { service_id, org_id } => {
+                clickpipe_context_get(client, &service_id, org_id.as_deref(), json).await
+            }
+        },
         ClickPipeCommands::SchemaDiscover {
             service_id,
             command,
@@ -1630,6 +1766,25 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
     }
 }
 
+async fn clickpipe_context_get(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let context = client
+        .get_clickpipe_service_context(&org_id, service_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&context)?);
+    } else {
+        print_human(&context)?;
+    }
+    Ok(())
+}
+
 async fn clickpipe_list(
     client: &CloudClient,
     service_id: &str,
@@ -1667,48 +1822,164 @@ fn build_object_storage_source(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostObjectStorageSource> {
     use clickhouse_cloud_api::models::{
         ClickPipePostObjectStorageSource, ClickPipePostObjectStorageSourceAuthentication,
-        MskIamUser,
+        ClickPipePostObjectStorageSourceType, MskIamUser,
     };
 
-    let (authentication, iam_role_val, access_key) = match (
-        args.iam_role.as_deref(),
-        args.access_key_id.as_deref(),
-        args.secret_key.as_deref(),
-    ) {
-        (Some(role), _, _) => (
-            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE),
-            Some(role.to_string()),
-            None,
-        ),
-        (_, Some(key_id), Some(secret)) => (
-            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER),
-            None,
-            Some(MskIamUser {
-                access_key_id: key_id.to_string(),
-                secret_key: secret.to_string(),
-            }),
-        ),
-        _ => (None, None, None),
-    };
-    let authentication = authentication
-        .or_else(|| {
-            args.connection_string
-                .as_ref()
-                .map(|_| ClickPipePostObjectStorageSourceAuthentication::CONNECTION_STRING)
-        })
-        .or_else(|| {
-            args.service_account_file
-                .as_ref()
-                .map(|_| ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT)
-        });
+    let source_type: ClickPipePostObjectStorageSourceType = parse_enum(&args.storage_type)?;
+    if let ClickPipePostObjectStorageSourceType::Unknown(value) = &source_type {
+        return Err(CloudError::new(format!(
+            "unknown object-storage source type '{value}'"
+        )));
+    }
 
-    let service_account_key = match args.service_account_file.as_deref() {
-        Some(path) => Some(read_gcp_service_account_file(path)?),
+    let credential_groups = [
+        args.iam_role.is_some(),
+        args.access_key_id.is_some() || args.secret_key.is_some(),
+        args.connection_string.is_some(),
+        args.service_account_file.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if credential_groups > 1 {
+        return Err(CloudError::new(
+            "object-storage credential flags select more than one authentication method",
+        ));
+    }
+
+    let authentication = match args.auth.as_deref() {
+        Some(value) => Some(parse_object_storage_authentication(value)?),
+        None if args.iam_role.is_some() => {
+            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE)
+        }
+        None if args.access_key_id.is_some() || args.secret_key.is_some() => {
+            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER)
+        }
+        None if args.connection_string.is_some() => {
+            Some(ClickPipePostObjectStorageSourceAuthentication::CONNECTION_STRING)
+        }
+        None if args.service_account_file.is_some() => {
+            Some(ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT)
+        }
         None => None,
     };
 
+    let has_iam_role = args.iam_role.is_some();
+    let has_access_key = args.access_key_id.is_some() && args.secret_key.is_some();
+    let has_connection_string = args.connection_string.is_some();
+    let has_service_account = args.service_account_file.is_some();
+    match authentication.as_ref() {
+        Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE) => {
+            if source_type != ClickPipePostObjectStorageSourceType::S3 {
+                return Err(CloudError::new(
+                    "IAM_ROLE authentication requires --storage-type s3",
+                ));
+            }
+            if !has_iam_role {
+                return Err(CloudError::new("--auth IAM_ROLE requires --iam-role"));
+            }
+            if credential_groups != 1 {
+                return Err(CloudError::new(
+                    "--auth IAM_ROLE accepts only --iam-role credentials",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER) => {
+            if !matches!(
+                source_type,
+                ClickPipePostObjectStorageSourceType::S3
+                    | ClickPipePostObjectStorageSourceType::Gcs
+                    | ClickPipePostObjectStorageSourceType::Dospaces
+            ) {
+                return Err(CloudError::new(
+                    "IAM_USER authentication requires --storage-type s3, gcs, or dospaces",
+                ));
+            }
+            if !has_access_key {
+                return Err(CloudError::new(
+                    "--auth IAM_USER requires --access-key-id and --secret-key",
+                ));
+            }
+            if credential_groups != 1 {
+                return Err(CloudError::new(
+                    "--auth IAM_USER accepts only access-key credentials",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::CONNECTION_STRING) => {
+            if source_type != ClickPipePostObjectStorageSourceType::Azureblobstorage {
+                return Err(CloudError::new(
+                    "CONNECTION_STRING authentication requires --storage-type azureblobstorage",
+                ));
+            }
+            if !has_connection_string {
+                return Err(CloudError::new(
+                    "--auth CONNECTION_STRING requires --connection-string",
+                ));
+            }
+            if credential_groups != 1 {
+                return Err(CloudError::new(
+                    "--auth CONNECTION_STRING accepts only --connection-string credentials",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT) => {
+            if source_type != ClickPipePostObjectStorageSourceType::Gcs {
+                return Err(CloudError::new(
+                    "SERVICE_ACCOUNT authentication requires --storage-type gcs",
+                ));
+            }
+            if !has_service_account {
+                return Err(CloudError::new(
+                    "--auth SERVICE_ACCOUNT requires --service-account-file",
+                ));
+            }
+            if credential_groups != 1 {
+                return Err(CloudError::new(
+                    "--auth SERVICE_ACCOUNT accepts only --service-account-file credentials",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::ServiceAccountWorkloadIdentity) => {
+            if source_type != ClickPipePostObjectStorageSourceType::Gcs {
+                return Err(CloudError::new(
+                    "SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication requires --storage-type gcs",
+                ));
+            }
+            if credential_groups != 0 {
+                return Err(CloudError::new(
+                    "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY cannot be combined with credential flags",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::Unknown(value)) => {
+            return Err(CloudError::new(format!(
+                "unknown object-storage authentication method '{value}'"
+            )));
+        }
+        None => {}
+    }
+
+    let access_key = if has_access_key {
+        Some(MskIamUser {
+            access_key_id: args.access_key_id.clone().unwrap_or_default(),
+            secret_key: args.secret_key.clone().unwrap_or_default(),
+        })
+    } else {
+        None
+    };
+    let service_account_key = match (
+        authentication.as_ref(),
+        args.service_account_file.as_deref(),
+    ) {
+        (Some(ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT), Some(path)) => {
+            Some(read_gcp_service_account_file(path)?)
+        }
+        _ => None,
+    };
+
     Ok(ClickPipePostObjectStorageSource {
-        r#type: parse_enum(&args.storage_type)?,
+        r#type: source_type,
         format: parse_enum(&args.format)?,
         url: args.source_url.clone(),
         compression: Some(parse_enum(&args.compression)?),
@@ -1716,7 +1987,7 @@ fn build_object_storage_source(
         queue_url: args.queue_url.clone(),
         delimiter: args.delimiter.clone(),
         authentication,
-        iam_role: iam_role_val,
+        iam_role: args.iam_role.clone(),
         access_key,
         connection_string: args.connection_string.clone(),
         azure_container_name: args.azure_container_name.clone(),
@@ -1848,11 +2119,16 @@ fn build_kafka_credentials(
                 "MUTUAL_TLS requires --client-certificate and --client-key",
             )),
         },
-        Auth::ServiceAccountWorkloadIdentity | Auth::Unknown(_) => Ok(serde_json::Value::Null),
+        Auth::ServiceAccountWorkloadIdentity => Ok(serde_json::Value::Null),
+        Auth::Unknown(value) => Err(CloudError::new(format!(
+            "unknown Kafka authentication method '{value}'"
+        ))),
     }
 }
 
 fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+
     let source_type: ClickPipePostKafkaSourceType = parse_serde_enum(
         &args.kafka_type,
         "Kafka source type",
@@ -1911,8 +2187,81 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
         ));
     }
 
-    if let Some(authentication) = args.auth.as_deref() {
-        parse_kafka_authentication(authentication)?;
+    let credential_groups = [
+        args.event_hubs_connection_string.is_some(),
+        args.username.is_some() || args.password.is_some(),
+        args.iam_role.is_some(),
+        args.access_key_id.is_some() || args.secret_key.is_some(),
+        args.client_certificate.is_some() || args.client_key.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+
+    let authentication = args
+        .auth
+        .as_deref()
+        .map(parse_kafka_authentication)
+        .transpose()?;
+    match authentication.as_ref() {
+        Some(Auth::ServiceAccountWorkloadIdentity) => {
+            if source_type != ClickPipePostKafkaSourceType::Gcmk {
+                return Err(CloudError::new(
+                    "SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication requires --kafka-type gcmk",
+                ));
+            }
+            if credential_groups != 0 {
+                return Err(CloudError::new(
+                    "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY cannot be combined with broker credential flags",
+                ));
+            }
+        }
+        Some(Auth::PLAIN | Auth::SCRAM_SHA_256 | Auth::SCRAM_SHA_512) => {
+            let expected_groups = usize::from(args.event_hubs_connection_string.is_some())
+                + usize::from(args.username.is_some() || args.password.is_some());
+            if credential_groups != expected_groups {
+                return Err(CloudError::new(format!(
+                    "--auth {} cannot be combined with IAM or mutual-TLS credential flags",
+                    args.auth.as_deref().unwrap_or_default()
+                )));
+            }
+        }
+        Some(Auth::IAM_ROLE) => {
+            if credential_groups != usize::from(args.iam_role.is_some()) {
+                return Err(CloudError::new(
+                    "--auth IAM_ROLE accepts only --iam-role credentials",
+                ));
+            }
+        }
+        Some(Auth::IAM_USER) => {
+            if credential_groups
+                != usize::from(args.access_key_id.is_some() || args.secret_key.is_some())
+            {
+                return Err(CloudError::new(
+                    "--auth IAM_USER accepts only access-key credentials",
+                ));
+            }
+        }
+        Some(Auth::MUTUAL_TLS) => {
+            if credential_groups
+                != usize::from(args.client_certificate.is_some() || args.client_key.is_some())
+            {
+                return Err(CloudError::new(
+                    "--auth MUTUAL_TLS accepts only client-certificate credentials",
+                ));
+            }
+        }
+        Some(Auth::Unknown(value)) => {
+            return Err(CloudError::new(format!(
+                "unknown Kafka authentication method '{value}'"
+            )));
+        }
+        None if credential_groups > 1 => {
+            return Err(CloudError::new(
+                "Kafka broker credential flags select more than one authentication method",
+            ));
+        }
+        None => {}
     }
 
     Ok(())
@@ -2216,9 +2565,11 @@ fn parse_pubsub_seek_timestamp(value: &str) -> CloudResult<chrono::DateTime<chro
 /// creation send an identical `pubsub` source.
 fn build_pubsub_source(
     args: &PubSubSourceFields,
-) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostPubSubServiceAccountSource> {
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostPubSubSource> {
     use clickhouse_cloud_api::models::{
-        ClickPipePostPubSubServiceAccountSource, ClickPipePostPubSubSourceSeektype, ServiceAccount,
+        ClickPipePostPubSubServiceAccountSource, ClickPipePostPubSubSourceAuthentication,
+        ClickPipePostPubSubSourceSeektype, ClickPipePostPubSubWorkloadIdentitySource,
+        ClickPipePostPubSubWorkloadIdentitySourceAuthentication, ServiceAccount,
     };
 
     let seek_type: ClickPipePostPubSubSourceSeektype = parse_enum(&args.seek_type)?;
@@ -2232,28 +2583,55 @@ fn build_pubsub_source(
         )));
     }
 
-    Ok(ClickPipePostPubSubServiceAccountSource {
-        topic: args.topic.clone(),
-        project_id: args.project_id.clone(),
-        format: parse_enum(&args.format)?,
-        authentication: parse_enum(&args.auth)?,
-        seek_type,
-        seek_timestamp: args
-            .seek_timestamp
-            .as_deref()
-            .map(parse_pubsub_seek_timestamp)
-            .transpose()?,
-        service_account_key: ServiceAccount {
-            service_account_file: read_gcp_service_account_file(&args.service_account_file)?,
-        },
-        filter: args.filter.clone(),
-        enable_ordering: if args.enable_ordering {
-            Some(true)
-        } else {
-            None
-        },
-        ack_deadline: args.ack_deadline,
-    })
+    let authentication = parse_pubsub_authentication(&args.auth)?;
+    match (authentication, args.service_account_file.as_deref()) {
+        (GcpAuthentication::ServiceAccount, None) => Err(CloudError::new(
+            "--auth SERVICE_ACCOUNT requires --service-account-file",
+        )),
+        (GcpAuthentication::WorkloadIdentity, Some(_)) => Err(CloudError::new(
+            "--service-account-file cannot be used with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+        )),
+        (GcpAuthentication::ServiceAccount, Some(path)) => {
+            Ok(ClickPipePostPubSubServiceAccountSource {
+                topic: args.topic.clone(),
+                project_id: args.project_id.clone(),
+                format: parse_enum(&args.format)?,
+                authentication: ClickPipePostPubSubSourceAuthentication::ServiceAccount,
+                seek_type,
+                seek_timestamp: args
+                    .seek_timestamp
+                    .as_deref()
+                    .map(parse_pubsub_seek_timestamp)
+                    .transpose()?,
+                service_account_key: ServiceAccount {
+                    service_account_file: read_gcp_service_account_file(path)?,
+                },
+                filter: args.filter.clone(),
+                enable_ordering: args.enable_ordering.then_some(true),
+                ack_deadline: args.ack_deadline,
+            }
+            .into())
+        }
+        (GcpAuthentication::WorkloadIdentity, None) => {
+            Ok(ClickPipePostPubSubWorkloadIdentitySource {
+                topic: args.topic.clone(),
+                project_id: args.project_id.clone(),
+                format: parse_enum(&args.format)?,
+                authentication:
+                    ClickPipePostPubSubWorkloadIdentitySourceAuthentication::ServiceAccountWorkloadIdentity,
+                seek_type,
+                seek_timestamp: args
+                    .seek_timestamp
+                    .as_deref()
+                    .map(parse_pubsub_seek_timestamp)
+                    .transpose()?,
+                filter: args.filter.clone(),
+                enable_ordering: args.enable_ordering.then_some(true),
+                ack_deadline: args.ack_deadline,
+            }
+            .into())
+        }
+    }
 }
 
 /// Build the schema-discovery request body for a Pub/Sub source, from the same
@@ -2270,7 +2648,7 @@ fn build_pubsub_schema_discovery_request(
             kafka: None,
             kinesis: None,
             object_storage: None,
-            pubsub: Some(build_pubsub_source(args)?.into()),
+            pubsub: Some(build_pubsub_source(args)?),
         },
     })
 }
@@ -2290,7 +2668,7 @@ async fn clickpipe_create_pubsub(
     let request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
-            pubsub: Some(source.into()),
+            pubsub: Some(source),
             ..Default::default()
         },
         destination: build_destination(
@@ -3715,8 +4093,9 @@ fn build_bigquery_request(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
         ClickPipeBigQueryPipeSettings, ClickPipeBigQueryPipeTableMapping,
-        ClickPipePostBigQueryServiceAccountSource, ClickPipePostRequest, ClickPipePostSource,
-        ServiceAccount,
+        ClickPipePostBigQueryServiceAccountSource, ClickPipePostBigQueryWorkloadIdentitySource,
+        ClickPipePostBigQueryWorkloadIdentitySourceAuthentication, ClickPipePostRequest,
+        ClickPipePostSource, ServiceAccount,
     };
 
     for (flag, value) in [
@@ -3734,7 +4113,29 @@ fn build_bigquery_request(
         }
     }
 
-    let service_account_file = read_gcp_service_account_file(&args.service_account_file)?;
+    let authentication = parse_bigquery_authentication(&args.auth)?;
+    match (
+        authentication,
+        args.service_account_file.as_deref(),
+        args.project_id.as_deref(),
+    ) {
+        (GcpAuthentication::ServiceAccount, None, _) => {
+            return Err(CloudError::new(
+                "--auth SERVICE_ACCOUNT requires --service-account-file",
+            ));
+        }
+        (GcpAuthentication::WorkloadIdentity, Some(_), _) => {
+            return Err(CloudError::new(
+                "--service-account-file cannot be used with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            ));
+        }
+        (GcpAuthentication::WorkloadIdentity, None, None) => {
+            return Err(CloudError::new(
+                "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY requires --project-id",
+            ));
+        }
+        _ => {}
+    }
 
     // BigQuery uses `dataset.table:target_table` format.
     let table_mappings: Vec<ClickPipeBigQueryPipeTableMapping> = args
@@ -3762,27 +4163,49 @@ fn build_bigquery_request(
         })
         .collect::<CloudResult<Vec<_>>>()?;
 
-    let source = ClickPipePostBigQueryServiceAccountSource {
-        authentication: None,
-        project_id: None,
-        credentials: ServiceAccount {
-            service_account_file,
-        },
-        snapshot_staging_path: args.staging_path.clone(),
-        settings: ClickPipeBigQueryPipeSettings {
-            replication_mode: parse_enum(&args.replication_mode)?,
-            allow_nullable_columns: args.allow_nullable_columns,
-            initial_load_parallelism: args.initial_load_parallelism,
-            snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
-            snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
-        },
-        table_mappings,
+    let settings = ClickPipeBigQueryPipeSettings {
+        replication_mode: parse_enum(&args.replication_mode)?,
+        allow_nullable_columns: args.allow_nullable_columns,
+        initial_load_parallelism: args.initial_load_parallelism,
+        snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
+        snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
+    };
+    let source = match authentication {
+        GcpAuthentication::ServiceAccount => {
+            let path = args.service_account_file.as_deref().ok_or_else(|| {
+                CloudError::new("--auth SERVICE_ACCOUNT requires --service-account-file")
+            })?;
+            ClickPipePostBigQueryServiceAccountSource {
+                authentication: None,
+                project_id: args.project_id.clone(),
+                credentials: ServiceAccount {
+                    service_account_file: read_gcp_service_account_file(path)?,
+                },
+                snapshot_staging_path: args.staging_path.clone(),
+                settings,
+                table_mappings,
+            }
+            .into()
+        }
+        GcpAuthentication::WorkloadIdentity => ClickPipePostBigQueryWorkloadIdentitySource {
+            authentication:
+                ClickPipePostBigQueryWorkloadIdentitySourceAuthentication::ServiceAccountWorkloadIdentity,
+            project_id: args.project_id.clone().ok_or_else(|| {
+                CloudError::new(
+                    "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY requires --project-id",
+                )
+            })?,
+            snapshot_staging_path: args.staging_path.clone(),
+            settings,
+            table_mappings,
+        }
+        .into(),
     };
 
     let request = ClickPipePostRequest {
         name: args.name.clone(),
         source: ClickPipePostSource {
-            bigquery: Some(source.into()),
+            bigquery: Some(source),
             ..Default::default()
         },
         destination: build_destination(
@@ -3813,6 +4236,19 @@ async fn clickpipe_create_bigquery(
 }
 
 impl CloudClient {
+    pub async fn get_clickpipe_service_context(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipesServiceContext> {
+        let response = self
+            .api()
+            .click_pipes_service_context_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     pub async fn list_clickpipes(
         &self,
         org_id: &str,
@@ -5046,6 +5482,7 @@ mod tests {
         assert_eq!(args.columns, ["id:UInt64", "name:String"]);
         assert_eq!(args.source.storage_type, "gcs");
         assert_eq!(args.source.compression, "gzip");
+        assert_eq!(args.source.auth, None);
         assert!(args.source.continuous);
         assert_eq!(
             args.source.queue_url.as_deref(),
@@ -5092,6 +5529,7 @@ mod tests {
         assert!(args.columns.is_empty());
         assert_eq!(args.source.storage_type, "s3");
         assert_eq!(args.source.compression, "auto");
+        assert_eq!(args.source.auth, None);
         assert!(!args.source.continuous);
         assert_eq!(args.source.queue_url, None);
         assert!(!args.source.skip_initial_load);
@@ -6849,7 +7287,12 @@ mod tests {
         };
         assert_eq!(args.service_id, "svc-1");
         assert_eq!(args.name, "pipe-1");
-        assert_eq!(args.service_account_file, "/tmp/account.json");
+        assert_eq!(args.auth, "SERVICE_ACCOUNT");
+        assert_eq!(
+            args.service_account_file.as_deref(),
+            Some("/tmp/account.json")
+        );
+        assert_eq!(args.project_id, None);
         assert_eq!(args.staging_path, "gs://bucket/staging");
         assert_eq!(args.table_mappings, ["dataset.one:one", "dataset.two:two"]);
         assert_eq!(args.replication_mode, "snapshot");
@@ -6980,7 +7423,6 @@ mod tests {
         assert_eq!(DB_AUTHS, &["basic", "IAM_ROLE"]);
         assert_eq!(REPLICATION_MODES, &["cdc", "snapshot", "cdc_only"]);
         assert_eq!(PUBSUB_FORMATS, &["JSONEachRow", "Avro", "Protobuf"]);
-        assert_eq!(PUBSUB_AUTHS, &["SERVICE_ACCOUNT"]);
         assert_eq!(PUBSUB_SEEK_TYPES, &["latest", "earliest", "timestamp"]);
 
         for &value in OBJECT_STORAGE_FORMATS {
@@ -7052,7 +7494,7 @@ mod tests {
         for &value in PUBSUB_FORMATS {
             assert_pubsub_value("--format", value);
         }
-        for &value in PUBSUB_AUTHS {
+        for value in ["SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] {
             assert_pubsub_value("--auth", value);
         }
         for &value in PUBSUB_SEEK_TYPES {
@@ -7098,7 +7540,7 @@ mod tests {
             "--table",
             "events",
         ]);
-        for flag in ["--compression", "--storage-type"] {
+        for flag in ["--compression", "--storage-type", "--auth"] {
             let mut args = object_base.to_vec();
             args.extend([flag, invalid]);
             assert_rejected(&args);
@@ -7259,6 +7701,19 @@ mod tests {
             "--staging-path",
             "gs://bucket/staging",
             "--replication-mode",
+            invalid,
+        ]);
+        assert_rejected(&[
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--auth",
             invalid,
         ]);
 
@@ -7551,14 +8006,6 @@ mod tests {
             "key-1",
             "--delimiter",
             ",",
-            "--iam-role",
-            "arn:role",
-            "--access-key-id",
-            "access",
-            "--secret-key",
-            "secret",
-            "--connection-string",
-            "connection",
             "--azure-container-name",
             "container",
             "--path",
@@ -7583,15 +8030,13 @@ mod tests {
             source.compression,
             Some(ClickPipePostObjectStorageSourceCompression::Gzip)
         );
-        // --iam-role wins over the other credential flags, exactly as it does
-        // on `create object-storage`.
         assert_eq!(
             source.authentication,
-            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE)
+            Some(ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT)
         );
-        assert_eq!(source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(source.iam_role, None);
         assert_eq!(source.access_key, None);
-        assert_eq!(source.connection_string.as_deref(), Some("connection"));
+        assert_eq!(source.connection_string, None);
         assert_eq!(source.azure_container_name.as_deref(), Some("container"));
         assert_eq!(source.path.as_deref(), Some("path/*.csv"));
         // The GCP key file is read and base64-encoded, not passed by path.
@@ -7682,7 +8127,10 @@ mod tests {
             args.source.seek_timestamp.as_deref(),
             Some("2026-04-10T12:00:00Z")
         );
-        assert_eq!(args.source.service_account_file, "/tmp/sa-key.json");
+        assert_eq!(
+            args.source.service_account_file.as_deref(),
+            Some("/tmp/sa-key.json")
+        );
         assert_eq!(args.source.auth, "SERVICE_ACCOUNT");
         assert_eq!(
             args.source.filter.as_deref(),
@@ -7712,13 +8160,7 @@ mod tests {
     fn pubsub_create_requires_every_strict_source_field() {
         // Each field the library types as `T` is a required flag, so dropping
         // one is a usage error rather than a request the API rejects.
-        for omitted in [
-            "--topic",
-            "--project-id",
-            "--format",
-            "--seek-type",
-            "--service-account-file",
-        ] {
+        for omitted in ["--topic", "--project-id", "--format", "--seek-type"] {
             let flags = pubsub_source_flags("./sa-key.json");
             let index = flags
                 .iter()
@@ -7780,6 +8222,9 @@ mod tests {
         with_timestamp.extend(["--seek-timestamp", "2026-04-10T12:00:00Z"]);
         let built = build_pubsub_source(&parse_pubsub_create(&with_timestamp).source)
             .expect("timestamp seek builds");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(built) = built else {
+            panic!("expected service-account source");
+        };
         assert_eq!(
             built.seek_timestamp,
             Some(
@@ -7915,7 +8360,10 @@ mod tests {
         assert_eq!(args.project_id, "my-gcp-project");
         assert_eq!(args.format, "Protobuf");
         assert_eq!(args.seek_type, "latest");
-        assert_eq!(args.service_account_file, "/tmp/sa-key.json");
+        assert_eq!(
+            args.service_account_file.as_deref(),
+            Some("/tmp/sa-key.json")
+        );
         assert_eq!(args.auth, "SERVICE_ACCOUNT");
         assert_eq!(args.filter.as_deref(), Some("attributes.tenant = \"acme\""));
         assert!(args.enable_ordering);
@@ -7932,6 +8380,9 @@ mod tests {
         let (_dir, key_path) = service_account_key_file();
         let args = parse_pubsub_create(&pubsub_source_flags(&key_path));
         let source = build_pubsub_source(&args.source).expect("minimal pubsub source builds");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(source) = source else {
+            panic!("expected service-account source");
+        };
 
         assert_eq!(source.topic, "events");
         assert_eq!(source.project_id, "my-gcp-project");
@@ -7984,6 +8435,9 @@ mod tests {
         ]);
         let args = parse_pubsub_create(&flags);
         let source = build_pubsub_source(&args.source).expect("maximal pubsub source builds");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(source) = source else {
+            panic!("expected service-account source");
+        };
 
         assert_eq!(source.format, ClickPipePostPubSubSourceFormat::Protobuf);
         assert_eq!(
@@ -9089,7 +9543,9 @@ mod tests {
         BigQueryCreateArgs {
             service_id: "svc-1".into(),
             name: "pipe-1".into(),
-            service_account_file,
+            auth: "SERVICE_ACCOUNT".into(),
+            service_account_file: Some(service_account_file),
+            project_id: None,
             staging_path: "gs://bucket/staging".into(),
             table_mappings: vec!["source.events:events".into()],
             replication_mode: "snapshot".into(),
@@ -9141,6 +9597,7 @@ mod tests {
         let mut args = bigquery_builder_args(service_account.to_string_lossy().into_owned());
         args.name = "maximal-pipe".into();
         args.staging_path = "gs://other-bucket/snapshots".into();
+        args.project_id = Some("source-project".into());
         args.table_mappings = vec![
             "sales.orders:orders_raw".into(),
             "audit.events:audit_events".into(),
@@ -9165,6 +9622,7 @@ mod tests {
             panic!("expected service-account source");
         };
         assert_eq!(source.snapshot_staging_path, "gs://other-bucket/snapshots");
+        assert_eq!(source.project_id.as_deref(), Some("source-project"));
         assert_eq!(
             source.credentials.service_account_file,
             "eyJwcm9qZWN0X2lkIjoic291cmNlLXByb2plY3QifQ=="
@@ -9912,11 +10370,6 @@ mod tests {
         args.kafka_type = "msk".into();
         args.consumer_group = Some("group".into());
         args.auth = Some("MUTUAL_TLS".into());
-        args.username = Some("user".into());
-        args.password = Some("password".into());
-        args.iam_role = Some("arn:role".into());
-        args.access_key_id = Some("access".into());
-        args.secret_key = Some("secret".into());
         args.offset = "from_timestamp".into();
         args.offset_timestamp = Some("2021-01-01T00:00".into());
         args.schema_registry_url = Some("https://registry.example".into());
@@ -9937,7 +10390,7 @@ mod tests {
         assert_eq!(kafka_auth(&source).as_deref(), Some("MUTUAL_TLS"));
         assert_eq!(source.credentials["certificate"], "CLIENT_CERT");
         assert_eq!(source.credentials["privateKey"], "CLIENT_KEY");
-        assert_eq!(source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(source.iam_role, None);
         assert_eq!(source.ca_certificate.as_deref(), Some("BROKER_CA"));
         assert_eq!(
             source.reverse_private_endpoint_ids,
@@ -10077,5 +10530,232 @@ mod tests {
         args.source.auth = Some("IAM_ROLE".into());
         let error = build_kafka_credentials(Some(&Auth::IAM_ROLE), &args.source, None).unwrap_err();
         assert!(error.message.contains("--iam-role"));
+    }
+
+    #[test]
+    fn context_get_parses_and_is_read_only() {
+        let command = parse_clickpipe(&["context", "get", "svc-1", "--org-id", "org-1"]);
+        assert!(!command.is_write());
+        let ClickPipeCommands::Context {
+            command: ClickPipeContextCommands::Get { service_id, org_id },
+        } = command
+        else {
+            panic!("expected context get");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn object_storage_workload_identity_builds_for_gcs_without_credentials() {
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "gs://bucket/events/*.json",
+            "--format",
+            "JSONEachRow",
+            "--storage-type",
+            "gcs",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+        ]);
+        let source = build_object_storage_source(&args).expect("GCS workload identity builds");
+        let json = serde_json::to_value(source).expect("source serializes");
+        assert_eq!(json["authentication"], "SERVICE_ACCOUNT_WORKLOAD_IDENTITY");
+        for field in [
+            "iamRole",
+            "accessKey",
+            "connectionString",
+            "serviceAccountKey",
+        ] {
+            assert!(json.get(field).is_none(), "{field} leaked into {json}");
+        }
+    }
+
+    #[test]
+    fn object_storage_workload_identity_rejects_provider_and_credentials() {
+        let wrong_provider = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.s3.amazonaws.com/events.json",
+            "--format",
+            "JSONEachRow",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+        ]);
+        assert!(
+            build_object_storage_source(&wrong_provider)
+                .unwrap_err()
+                .message
+                .contains("--storage-type gcs")
+        );
+
+        let with_key = parse_object_storage_discovery(&[
+            "--source-url",
+            "gs://bucket/events.json",
+            "--format",
+            "JSONEachRow",
+            "--storage-type",
+            "gcs",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            "--service-account-file",
+            "/missing/must-not-be-read.json",
+        ]);
+        assert!(
+            build_object_storage_source(&with_key)
+                .unwrap_err()
+                .message
+                .contains("cannot be combined")
+        );
+    }
+
+    #[test]
+    fn kafka_workload_identity_builds_for_gcmk_without_credentials() {
+        let mut args = kafka_args().source;
+        args.kafka_type = "gcmk".into();
+        args.auth = Some("SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into());
+        let source = build_kafka_source(&args).expect("GCMK workload identity builds");
+        assert_eq!(
+            source.authentication,
+            Some(ClickPipePostKafkaSourceAuthentication::ServiceAccountWorkloadIdentity)
+        );
+        assert!(source.credentials.is_null());
+        assert!(source.iam_role.is_none());
+    }
+
+    #[test]
+    fn kafka_workload_identity_rejects_provider_and_credentials() {
+        let mut args = kafka_args().source;
+        args.auth = Some("SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into());
+        assert!(
+            build_kafka_source(&args)
+                .unwrap_err()
+                .message
+                .contains("--kafka-type gcmk")
+        );
+
+        args.kafka_type = "gcmk".into();
+        args.username = Some("user".into());
+        args.password = Some("password".into());
+        assert!(
+            build_kafka_source(&args)
+                .unwrap_err()
+                .message
+                .contains("cannot be combined")
+        );
+    }
+
+    #[test]
+    fn pubsub_workload_identity_selects_the_typed_union_without_a_key() {
+        let args = parse_pubsub_create(&[
+            "--topic",
+            "events",
+            "--project-id",
+            "project-1",
+            "--format",
+            "JSONEachRow",
+            "--seek-type",
+            "earliest",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+        ]);
+        let source = build_pubsub_source(&args.source).expect("Pub/Sub workload identity builds");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubWorkloadIdentitySource(source) = source else {
+            panic!("expected workload-identity source");
+        };
+        assert_eq!(source.project_id, "project-1");
+        assert_eq!(
+            source.authentication,
+            clickhouse_cloud_api::models::ClickPipePostPubSubWorkloadIdentitySourceAuthentication::ServiceAccountWorkloadIdentity
+        );
+        let json = serde_json::to_value(source).expect("source serializes");
+        assert!(json.get("serviceAccountKey").is_none());
+    }
+
+    #[test]
+    fn pubsub_authentication_rejects_mismatched_key_presence() {
+        let workload_with_key = parse_pubsub_create(&[
+            "--topic",
+            "events",
+            "--project-id",
+            "project-1",
+            "--format",
+            "JSONEachRow",
+            "--seek-type",
+            "earliest",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            "--service-account-file",
+            "/missing/must-not-be-read.json",
+        ]);
+        assert!(
+            build_pubsub_source(&workload_with_key.source)
+                .unwrap_err()
+                .message
+                .contains("cannot be used")
+        );
+
+        let service_account_without_key = parse_pubsub_create(&[
+            "--topic",
+            "events",
+            "--project-id",
+            "project-1",
+            "--format",
+            "JSONEachRow",
+            "--seek-type",
+            "earliest",
+        ]);
+        assert!(
+            build_pubsub_source(&service_account_without_key.source)
+                .unwrap_err()
+                .message
+                .contains("requires --service-account-file")
+        );
+    }
+
+    #[test]
+    fn bigquery_workload_identity_selects_the_typed_union_without_a_key() {
+        let mut args = bigquery_builder_args("/missing/must-not-be-read.json".into());
+        args.auth = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into();
+        args.service_account_file = None;
+        args.project_id = Some("project-1".into());
+        let request = build_bigquery_request(&args).expect("BigQuery workload identity builds");
+        let source = request.source.bigquery.expect("bigquery source");
+        let clickhouse_cloud_api::models::ClickPipeMutateBigQuerySource::ClickPipePostBigQueryWorkloadIdentitySource(source) = source else {
+            panic!("expected workload-identity source");
+        };
+        assert_eq!(source.project_id, "project-1");
+        assert_eq!(source.table_mappings.len(), 1);
+        let json = serde_json::to_value(source).expect("source serializes");
+        assert!(json.get("credentials").is_none());
+    }
+
+    #[test]
+    fn bigquery_authentication_validates_project_and_key_before_file_io() {
+        let mut workload = bigquery_builder_args("/missing/must-not-be-read.json".into());
+        workload.auth = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into();
+        assert!(
+            build_bigquery_request(&workload)
+                .unwrap_err()
+                .message
+                .contains("cannot be used")
+        );
+
+        workload.service_account_file = None;
+        assert!(
+            build_bigquery_request(&workload)
+                .unwrap_err()
+                .message
+                .contains("requires --project-id")
+        );
+
+        let service_account = bigquery_builder_args("/missing/key.json".into());
+        let mut service_account_without_key = service_account;
+        service_account_without_key.service_account_file = None;
+        assert!(
+            build_bigquery_request(&service_account_without_key)
+                .unwrap_err()
+                .message
+                .contains("requires --service-account-file")
+        );
     }
 }
