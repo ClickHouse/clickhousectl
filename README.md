@@ -213,9 +213,25 @@ broadcast selections, expose variables to tile queries, or do both:
 }
 ```
 
-Run `dashboard validate` before create or update to check the same dashboard body without saving it.
-`dashboard update <service-id> <dashboard-id> --config-file dashboard.json` is a full PUT replacement:
-include every tile, filter, container, tag, and saved query value that should remain.
+`dashboard validate` checks a create body without saving it; it does not accept or validate an update body.
+Dashboard updates use a separate full PUT body. Start from the complete current dashboard, preserve the
+`id` of every existing filter, and include every tile, filter, container, tag, and saved query value that
+should remain. For example, an existing filter entry in `dashboard-update.json` must retain its identity:
+
+```json
+{
+  "id": "<existing-filter-id>",
+  "name": "Service",
+  "expression": "ServiceName",
+  "sourceId": "<source-id>",
+  "type": "QUERY_EXPRESSION"
+}
+```
+
+```bash
+clickhousectl cloud clickstack dashboard update <service-id> <dashboard-id> \
+  --config-file dashboard-update.json --org-id <org-id>
+```
 
 Create a notification destination first, then reference its ID from an alert. For example,
 `webhook.json` can contain a complete generic webhook body:
