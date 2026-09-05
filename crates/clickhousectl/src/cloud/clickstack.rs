@@ -236,13 +236,14 @@ pub enum DashboardCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   This is a full PUT replacement; include every required and desired field.
+  Every existing filter must retain its `id` in the request body.
   Serialize edits to one dashboard; concurrent updates can overwrite each other.")]
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
         /// Dashboard ID (from `cloud clickstack dashboard list`)
         dashboard_id: String,
-        /// Complete JSON request body path, or `-` for stdin
+        /// Complete update JSON body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
         /// Organization ID (auto-detected only if you have one org)
@@ -259,15 +260,16 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         org_id: Option<String>,
     },
-    /// Validate a ClickStack dashboard without saving it
+    /// Validate a dashboard create body without saving it
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
+  Accepts the create schema only; it does not validate update bodies.
   Validation never persists the dashboard.
   Uses API key authentication under the CLI's write-command policy.")]
     Validate {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// JSON request body path, or `-` for stdin
+        /// Dashboard create JSON body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
         /// Organization ID (auto-detected only if you have one org)
