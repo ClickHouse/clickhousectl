@@ -906,6 +906,160 @@ async fn service_get_preserves_a_detailed_not_found_error() {
     );
 }
 
+fn invoke_service_wake(mock: &MockServer, json: bool, agent: bool) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let url = mock.uri();
+    let mut args = vec![
+        "cloud", "--url", &url, "service", "wake", "svc-1", "--org-id", "org-1",
+    ];
+    if json {
+        args.push("--json");
+    }
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    if agent {
+        command.env("AGENT", "opencode");
+    }
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "wake-test-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "wake-test-secret")
+        .current_dir(dir.path())
+        .args(args)
+        .output()
+        .expect("failed to run service wake")
+}
+
+#[tokio::test]
+async fn service_wake_sends_awake_with_basic_auth_and_prints_json() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1/state"))
+        .and(wiremock::matchers::basic_auth(
+            "wake-test-key",
+            "wake-test-secret",
+        ))
+        .and(body_json(serde_json::json!({"command": "awake"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "11111111-2222-3333-4444-555555555555", "name": "demo", "state": "awaking"},
+            "status": 200,
+            "requestId": "stub-service-wake",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_service_wake(&mock, true, false);
+    assert_success(&output);
+    assert!(output.stderr.is_empty());
+    let service: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(service["name"], "demo");
+    assert_eq!(service["state"], "awaking");
+    assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn service_wake_handles_a_sparse_response_in_human_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1/state"))
+        .and(body_json(serde_json::json!({"command": "awake"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {}, "status": 200, "requestId": "stub-service-wake",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_service_wake(&mock, false, false);
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Service - waking (state: -)\n"
+    );
+}
+
+#[tokio::test]
+async fn service_wake_uses_json_output_for_a_detected_agent() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1/state"))
+        .and(body_json(serde_json::json!({"command": "awake"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"name": "demo", "state": "awaking"},
+            "status": 200,
+            "requestId": "stub-service-wake",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_service_wake(&mock, false, true);
+    assert_success(&output);
+    let service: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(service["name"], "demo");
+    assert_eq!(service["state"], "awaking");
+}
+
+#[tokio::test]
+async fn service_wake_preserves_api_errors() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1/state"))
+        .and(body_json(serde_json::json!({"command": "awake"})))
+        .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+            "status": 503, "error": "wake temporarily unavailable",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_service_wake(&mock, true, false);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: wake temporarily unavailable\n"
+    );
+}
+
+#[tokio::test]
+async fn service_wake_rejects_oauth_before_http() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "service",
+            "wake",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .expect("failed to run OAuth service wake");
+
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 // ── Credential precedence visibility (issue #336) ─────────────────────────
 
 #[tokio::test]
