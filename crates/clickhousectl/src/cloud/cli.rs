@@ -175,7 +175,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   User IDs come from `cloud member list`; role IDs from `cloud member list --json`
-  (the table shows role names). `update` replaces the member's whole role set.
+  or `cloud org role list`. `update` replaces the member's whole role set.
   `remove` takes effect immediately with no confirmation.
   Next: `cloud invitation create --email ...` to add someone who is not yet a member.")]
     Member {
@@ -186,7 +186,7 @@ CONTEXT FOR AGENTS:
     /// Manage organization invitations
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Role IDs come from `cloud member list --json` (roleId), not from the human table.
+  Role IDs come from `cloud org role list`.
   The invitee must accept from the email.
   Next: `cloud member list` once the invitation is accepted.")]
     Invitation {
@@ -198,7 +198,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   `create` prints a generated key secret exactly once — capture stdout or create a new key.
-  Role IDs come from `cloud member list --json` (roleId) and must be UUIDs here.
+  Role IDs come from `cloud org role list` and must be UUIDs here.
   `update` replaces --role-id and --ip-allow wholesale; omitted flags are left as-is.
   Next: `cloud auth login --api-key <id> --api-secret <secret>` to use a new key.")]
     Key {

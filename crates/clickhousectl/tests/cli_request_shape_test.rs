@@ -241,6 +241,39 @@ fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> st
         .expect("failed to spawn clickhousectl")
 }
 
+fn invoke_cli_with_cloud_credentials_and_stdin(
+    mock: &MockServer,
+    cli_args: &[&str],
+    stdin: &str,
+) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url, "--json"];
+    args.extend(cli_args);
+    let mut child = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+    child
+        .stdin
+        .take()
+        .expect("stdin pipe")
+        .write_all(stdin.as_bytes())
+        .expect("write clickhousectl stdin");
+    child.wait_with_output().expect("wait for clickhousectl")
+}
+
 fn invoke_cli_with_cloud_credentials_human(
     mock: &MockServer,
     cli_args: &[&str],
@@ -391,6 +424,280 @@ async fn org_balance_human_output_handles_empty_balances() {
         String::from_utf8_lossy(&output.stdout),
         "Total remaining credits: 0 CHC\nNo active credit balances found\n"
     );
+}
+
+const ORG_ROLES_PATH: &str = "/v1/organizations/org-1/roles";
+const BASIC_TEST_AUTH: &str = "Basic ZmFrZS1rZXktZm9yLXRlc3RzOmZha2Utc2VjcmV0LWZvci10ZXN0cw==";
+
+fn organization_role_envelope(result: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": "stub-org-role"
+    }))
+}
+
+#[tokio::test]
+async fn organization_role_writes_use_expected_routes_auth_and_bodies() {
+    let mock = MockServer::start().await;
+    let create_body = serde_json::json!({
+        "name": "auditor",
+        "actors": ["user/user-1", "apiKey/key-1"],
+        "policies": [{
+            "allowDeny": "ALLOW",
+            "permissions": ["control-plane:organization:view"],
+            "resources": ["organization/org-1"],
+            "tags": {
+                "grants": ["SELECT"],
+                "roleV2": "sql-console-readonly"
+            }
+        }]
+    });
+    Mock::given(method("POST"))
+        .and(path(ORG_ROLES_PATH))
+        .and(header("authorization", BASIC_TEST_AUTH))
+        .and(body_json(create_body.clone()))
+        .respond_with(organization_role_envelope(serde_json::json!({
+            "id": "role-1",
+            "name": "auditor",
+            "type": "custom"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let directory = tempfile::tempdir().unwrap();
+    let config_file = directory.path().join("role.json");
+    std::fs::write(&config_file, create_body.to_string()).unwrap();
+    let create = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "role",
+            "create",
+            "--config-file",
+            config_file.to_str().unwrap(),
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&create);
+
+    let update_body = serde_json::json!({"name": "renamed"});
+    Mock::given(method("PATCH"))
+        .and(path(format!("{ORG_ROLES_PATH}/role-1")))
+        .and(header("authorization", BASIC_TEST_AUTH))
+        .and(body_json(update_body.clone()))
+        .respond_with(organization_role_envelope(serde_json::json!({
+            "id": "role-1",
+            "name": "renamed",
+            "type": "custom"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let update = invoke_cli_with_cloud_credentials_and_stdin(
+        &mock,
+        &[
+            "org",
+            "role",
+            "update",
+            "role-1",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        &update_body.to_string(),
+    );
+    assert_success(&update);
+
+    Mock::given(method("DELETE"))
+        .and(path(format!("{ORG_ROLES_PATH}/role-1")))
+        .and(header("authorization", BASIC_TEST_AUTH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-role-delete"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let delete = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "role", "delete", "role-1", "--org-id", "org-1"],
+    );
+    assert_success(&delete);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&delete.stdout).unwrap(),
+        serde_json::json!({"status": 200, "requestId": "stub-role-delete"})
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests.iter().all(|request| request.url.query().is_none()));
+}
+
+#[tokio::test]
+async fn organization_role_reads_support_oauth_and_writes_fail_before_http() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(ORG_ROLES_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(organization_role_envelope(serde_json::json!([
+            {"id": "role-1", "name": "reader", "type": "custom"}
+        ])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{ORG_ROLES_PATH}/role-1")))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(organization_role_envelope(serde_json::json!({
+            "id": "role-1", "name": "reader", "type": "custom"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let invoke = |args: &[&str], stdin: Option<&str>| {
+        let mut command = Command::new(clickhousectl_binary());
+        clear_inherited_env(&mut command);
+        command
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", &home)
+            .current_dir(project.path())
+            .args(["cloud", "--url", &mock.uri(), "--json"])
+            .args(args);
+        if let Some(input) = stdin {
+            let mut child = command
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(input.as_bytes())
+                .unwrap();
+            child.wait_with_output().unwrap()
+        } else {
+            command.output().unwrap()
+        }
+    };
+    assert_success(&invoke(&["org", "role", "list", "--org-id", "org-1"], None));
+    assert_success(&invoke(
+        &["org", "role", "get", "role-1", "--org-id", "org-1"],
+        None,
+    ));
+    let write = invoke(
+        &[
+            "org",
+            "role",
+            "create",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        Some(r#"{"name":"x","actors":[],"policies":[]}"#),
+    );
+    assert_eq!(write.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&write.stderr).contains("API key"));
+    assert_eq!(mock.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn organization_role_human_output_handles_sparse_fields() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(ORG_ROLES_PATH))
+        .respond_with(organization_role_envelope(serde_json::json!([
+            {},
+            {"id": "system-1", "name": "admin", "type": "system"},
+            {"id": "role-1", "name": "reader", "type": "custom"}
+        ])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{ORG_ROLES_PATH}/role-sparse")))
+        .respond_with(organization_role_envelope(serde_json::json!({})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let list = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "role", "list", "--org-id", "org-1"],
+    );
+    assert_success(&list);
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    for heading in ["Name", "ID", "Type", "Actors", "Policies"] {
+        assert!(
+            stdout.contains(heading),
+            "missing {heading} column:\n{stdout}"
+        );
+    }
+    assert!(stdout.contains("| -"), "{stdout}");
+    assert!(stdout.contains("| admin  | system-1 | system"), "{stdout}");
+    assert!(stdout.contains("| reader | role-1   | custom"), "{stdout}");
+
+    let get = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "role", "get", "role-sparse", "--org-id", "org-1"],
+    );
+    assert_success(&get);
+}
+
+#[tokio::test]
+async fn organization_role_get_preserves_404_detail() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("{ORG_ROLES_PATH}/missing")))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "role not found",
+            "requestId": "stub-role-not-found"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "role", "get", "missing", "--org-id", "org-1"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("role not found"), "{stderr}");
+}
+
+#[tokio::test]
+async fn organization_role_create_rejects_invalid_nested_config_before_http() {
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials_and_stdin(
+        &mock,
+        &[
+            "org",
+            "role",
+            "create",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        r#"{"name":"bad","actors":[],"policies":[{"allowDeny":"AUDIT","permissions":[],"resources":[],"tagz":{}}]}"#,
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("tagz"), "{stderr}");
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
