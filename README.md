@@ -582,8 +582,9 @@ clickhousectl cloud service create --name my-service \
   --profile v1-highmem-xs --compliance-type hipaa \
   --encryption-key <kms-key-arn> --encryption-role <kms-role-arn> --enable-tde
 
-# Start/stop a service
+# Start, wake, or stop a service
 clickhousectl cloud service start <service-id>
+clickhousectl cloud service wake <service-id>   # Explicitly wake an idled service
 clickhousectl cloud service stop <service-id>
 
 # Run SQL over HTTP via the Query API (no local clickhouse binary needed)

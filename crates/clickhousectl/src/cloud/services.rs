@@ -244,6 +244,20 @@ CONTEXT FOR AGENTS:
         org_id: Option<String>,
     },
 
+    /// Wake an idled service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Wakes an idle service; use `cloud service start <id>` for a stopped service.
+  Returns as soon as the wake is accepted: poll `cloud service get <id>` until state is `running`.")]
+    Wake {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
     /// Stop a service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -621,6 +635,7 @@ impl ServiceCommands {
             ServiceCommands::Create { .. } => true,
             ServiceCommands::Delete { .. } => true,
             ServiceCommands::Start { .. } => true,
+            ServiceCommands::Wake { .. } => true,
             ServiceCommands::Stop { .. } => true,
             ServiceCommands::Update { .. } => true,
             ServiceCommands::Scale { .. } => true,
@@ -714,6 +729,9 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
         } => service_delete(client, &service_id, force, org_id.as_deref(), json).await,
         ServiceCommands::Start { service_id, org_id } => {
             service_start(client, &service_id, org_id.as_deref(), json).await
+        }
+        ServiceCommands::Wake { service_id, org_id } => {
+            service_wake(client, &service_id, org_id.as_deref(), json).await
         }
         ServiceCommands::Stop { service_id, org_id } => {
             service_stop(client, &service_id, org_id.as_deref(), json).await
@@ -1738,6 +1756,29 @@ async fn service_stop(
     } else {
         println!(
             "Service {} stopping (state: {})",
+            or_absent(service.name.as_deref()),
+            or_absent(service.state.as_ref())
+        );
+    }
+    Ok(())
+}
+
+async fn service_wake(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let service = client
+        .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Awake)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&service)?);
+    } else {
+        println!(
+            "Service {} waking (state: {})",
             or_absent(service.name.as_deref()),
             or_absent(service.state.as_ref())
         );
@@ -4744,7 +4785,7 @@ mod tests {
         assert_eq!(service_id, "svc-1");
         assert_eq!(org_id.as_deref(), Some("org-1"));
 
-        for action in ["start", "stop"] {
+        for action in ["start", "wake", "stop"] {
             let command = parse_service(&[
                 "clickhousectl",
                 "cloud",
@@ -4756,6 +4797,7 @@ mod tests {
             ]);
             match command {
                 crate::cloud::cli::ServiceCommands::Start { service_id, org_id }
+                | crate::cloud::cli::ServiceCommands::Wake { service_id, org_id }
                 | crate::cloud::cli::ServiceCommands::Stop { service_id, org_id } => {
                     assert_eq!(service_id, "svc-1");
                     assert_eq!(org_id.as_deref(), Some("org-1"));
@@ -4841,6 +4883,7 @@ mod tests {
         for action in [
             "delete",
             "start",
+            "wake",
             "stop",
             "update",
             "scale",
@@ -6491,12 +6534,14 @@ mod tests {
     }
 
     #[test]
-    fn build_service_state_patch_request_preserves_start_and_stop() {
+    fn build_service_state_patch_request_preserves_every_command() {
         let start = build_service_state_patch_request(ServiceStatePatchRequestCommand::Start);
         let stop = build_service_state_patch_request(ServiceStatePatchRequestCommand::Stop);
+        let awake = build_service_state_patch_request(ServiceStatePatchRequestCommand::Awake);
 
         assert_eq!(start.command, Some(ServiceStatePatchRequestCommand::Start));
         assert_eq!(stop.command, Some(ServiceStatePatchRequestCommand::Stop));
+        assert_eq!(awake.command, Some(ServiceStatePatchRequestCommand::Awake));
     }
 
     #[test]
