@@ -509,6 +509,14 @@ pub struct DestinationRoleArgs {
     pub roles: Vec<String>,
 }
 
+/// Destination database shared by database-source ClickPipe creates.
+#[derive(Args, Debug)]
+pub struct DatabaseDestinationArgs {
+    /// Destination ClickHouse database
+    #[arg(long, default_value = "default", value_name = "DATABASE")]
+    pub destination_database: String,
+}
+
 /// Source-connection fields for an object-storage ClickPipe source.
 /// Flattened into both `ObjectStorageCreateArgs` (pipe creation) and the
 /// schema-discover object-storage subcommand so the source field set has a
@@ -993,6 +1001,9 @@ pub struct PostgresCreateArgs {
     pub delete_on_merge: Option<bool>,
 
     #[command(flatten)]
+    pub destination: DatabaseDestinationArgs,
+
+    #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
     /// Organization ID (auto-detected only if you have one org)
@@ -1091,6 +1102,9 @@ pub struct MySqlCreateArgs {
     pub server_id: Option<u64>,
 
     #[command(flatten)]
+    pub destination: DatabaseDestinationArgs,
+
+    #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
     /// Organization ID (auto-detected only if you have one org)
@@ -1155,6 +1169,9 @@ pub struct MongoDbCreateArgs {
     pub disable_tls: bool,
 
     #[command(flatten)]
+    pub destination: DatabaseDestinationArgs,
+
+    #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
 
     /// Organization ID (auto-detected only if you have one org)
@@ -1182,6 +1199,9 @@ pub struct BigQueryCreateArgs {
     /// Table mappings as dataset.table:target_table (repeatable)
     #[arg(long = "table-mapping", value_name = "DATASET.TABLE:TARGET_TABLE")]
     pub table_mappings: Vec<String>,
+
+    #[command(flatten)]
+    pub destination: DatabaseDestinationArgs,
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
@@ -3007,7 +3027,7 @@ fn build_postgres_request(
             ..Default::default()
         },
         destination: build_destination(
-            "default",
+            &args.destination.destination_database,
             "",
             vec![],
             build_destination_roles(&args.destination_roles.roles),
@@ -3183,7 +3203,7 @@ fn build_mysql_request(
             ..Default::default()
         },
         destination: build_destination(
-            "default",
+            &args.destination.destination_database,
             "",
             vec![],
             build_destination_roles(&args.destination_roles.roles),
@@ -3207,17 +3227,13 @@ async fn clickpipe_create_mysql(
     Ok(())
 }
 
-async fn clickpipe_create_mongodb(
-    client: &CloudClient,
+fn build_mongodb_request(
     args: &MongoDbCreateArgs,
-    json: bool,
-) -> CloudResult<()> {
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
         ClickPipeMongoDBPipeSettings, ClickPipeMongoDBPipeTableMapping,
         ClickPipeMutateMongoDBSource, ClickPipePostRequest, ClickPipePostSource, PLAIN,
     };
-
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
 
     // MongoDB uses `database.collection:target_table` format.
     let table_mappings: Vec<ClickPipeMongoDBPipeTableMapping> = args
@@ -3276,13 +3292,24 @@ async fn clickpipe_create_mongodb(
             ..Default::default()
         },
         destination: build_destination(
-            "default",
+            &args.destination.destination_database,
             "",
             vec![],
             build_destination_roles(&args.destination_roles.roles),
         ),
         ..Default::default()
     };
+
+    Ok(request)
+}
+
+async fn clickpipe_create_mongodb(
+    client: &CloudClient,
+    args: &MongoDbCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_mongodb_request(args)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
 
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
@@ -3291,18 +3318,15 @@ async fn clickpipe_create_mongodb(
     Ok(())
 }
 
-async fn clickpipe_create_bigquery(
-    client: &CloudClient,
+fn build_bigquery_request(
     args: &BigQueryCreateArgs,
-    json: bool,
-) -> CloudResult<()> {
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
     use clickhouse_cloud_api::models::{
         ClickPipeBigQueryPipeSettings, ClickPipeBigQueryPipeTableMapping,
         ClickPipePostBigQueryServiceAccountSource, ClickPipePostRequest, ClickPipePostSource,
         ServiceAccount,
     };
 
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
     let service_account_file = read_gcp_service_account_file(&args.service_account_file)?;
 
     // BigQuery uses `dataset.table:target_table` format.
@@ -3352,13 +3376,24 @@ async fn clickpipe_create_bigquery(
             ..Default::default()
         },
         destination: build_destination(
-            "default",
+            &args.destination.destination_database,
             "",
             vec![],
             build_destination_roles(&args.destination_roles.roles),
         ),
         ..Default::default()
     };
+
+    Ok(request)
+}
+
+async fn clickpipe_create_bigquery(
+    client: &CloudClient,
+    args: &BigQueryCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_bigquery_request(args)?;
+    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
 
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
@@ -5240,6 +5275,8 @@ mod tests {
             "publication",
             "--replication-slot-name",
             "slot",
+            "--destination-database",
+            "analytics",
             "--org-id",
             "org-1",
         ])
@@ -5264,6 +5301,7 @@ mod tests {
         assert!(args.skip_cert_verification);
         assert_eq!(args.publication_name.as_deref(), Some("publication"));
         assert_eq!(args.replication_slot_name.as_deref(), Some("slot"));
+        assert_eq!(args.destination.destination_database, "analytics");
         assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
@@ -5308,6 +5346,7 @@ mod tests {
         assert_eq!(args.allow_nullable_columns, None);
         assert_eq!(args.enable_failover_slots, None);
         assert_eq!(args.delete_on_merge, None);
+        assert_eq!(args.destination.destination_database, "default");
         assert_eq!(args.org_id, None);
     }
 
@@ -5863,6 +5902,8 @@ mod tests {
             "--skip-cert-verification",
             "--server-id",
             "4294967295",
+            "--destination-database",
+            "analytics",
             "--org-id",
             "org-1",
         ])
@@ -5887,6 +5928,7 @@ mod tests {
         assert!(args.disable_tls);
         assert!(args.skip_cert_verification);
         assert_eq!(args.server_id, Some(4_294_967_295));
+        assert_eq!(args.destination.destination_database, "analytics");
         assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
@@ -5923,6 +5965,7 @@ mod tests {
         assert!(!args.disable_tls);
         assert!(!args.skip_cert_verification);
         assert_eq!(args.server_id, Some(1));
+        assert_eq!(args.destination.destination_database, "default");
         assert_eq!(args.org_id, None);
 
         for invalid in ["0", "4294967296"] {
@@ -6112,6 +6155,8 @@ mod tests {
             "--ca-certificate",
             "/tmp/ca.pem",
             "--disable-tls",
+            "--destination-database",
+            "analytics",
             "--org-id",
             "org-1",
         ])
@@ -6129,6 +6174,7 @@ mod tests {
         assert_eq!(args.tls_host.as_deref(), Some("tls.example"));
         assert_eq!(args.ca_certificate.as_deref(), Some("/tmp/ca.pem"));
         assert!(args.disable_tls);
+        assert_eq!(args.destination.destination_database, "analytics");
         assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
@@ -6155,6 +6201,7 @@ mod tests {
         assert_eq!(args.tls_host, None);
         assert_eq!(args.ca_certificate, None);
         assert!(!args.disable_tls);
+        assert_eq!(args.destination.destination_database, "default");
         assert_eq!(args.org_id, None);
     }
 
@@ -6176,6 +6223,8 @@ mod tests {
             "dataset.one:one",
             "--table-mapping",
             "dataset.two:two",
+            "--destination-database",
+            "analytics",
             "--org-id",
             "org-1",
         ])
@@ -6187,6 +6236,7 @@ mod tests {
         assert_eq!(args.service_account_file, "/tmp/account.json");
         assert_eq!(args.staging_path, "gs://bucket/staging");
         assert_eq!(args.table_mappings, ["dataset.one:one", "dataset.two:two"]);
+        assert_eq!(args.destination.destination_database, "analytics");
         assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
@@ -6206,6 +6256,7 @@ mod tests {
             panic!("expected bigquery create");
         };
         assert!(args.table_mappings.is_empty());
+        assert_eq!(args.destination.destination_database, "default");
         assert_eq!(args.org_id, None);
     }
 
@@ -7487,6 +7538,9 @@ mod tests {
             allow_nullable_columns: None,
             enable_failover_slots: None,
             delete_on_merge: None,
+            destination: DatabaseDestinationArgs {
+                destination_database: "default".into(),
+            },
             destination_roles: DestinationRoleArgs::default(),
             org_id: None,
         }
@@ -7587,6 +7641,7 @@ mod tests {
         args.allow_nullable_columns = Some(true);
         args.enable_failover_slots = Some(true);
         args.delete_on_merge = Some(true);
+        args.destination.destination_database = "analytics".into();
         args.destination_roles = DestinationRoleArgs {
             roles: vec!["analytics_reader".into(), "analytics_writer".into()],
         };
@@ -7594,7 +7649,7 @@ mod tests {
 
         let request = build_postgres_request(&args).unwrap();
         assert_eq!(request.name, "maximal-pipe");
-        assert_eq!(request.destination.database, "default");
+        assert_eq!(request.destination.database, "analytics");
         assert_eq!(request.destination.table, None);
         assert_eq!(
             request.destination.roles,
@@ -8068,6 +8123,9 @@ mod tests {
             disable_tls: false,
             skip_cert_verification: false,
             server_id: None,
+            destination: DatabaseDestinationArgs {
+                destination_database: "default".into(),
+            },
             destination_roles: DestinationRoleArgs::default(),
             org_id: None,
         }
@@ -8138,6 +8196,7 @@ mod tests {
         args.disable_tls = true;
         args.skip_cert_verification = true;
         args.server_id = Some(4_294_967_295);
+        args.destination.destination_database = "analytics".into();
         args.destination_roles = DestinationRoleArgs {
             roles: vec!["analytics_reader".into()],
         };
@@ -8145,6 +8204,7 @@ mod tests {
 
         let request = build_mysql_request(&args).unwrap();
         assert_eq!(request.name, "maximal-pipe");
+        assert_eq!(request.destination.database, "analytics");
         assert_eq!(
             request.destination.roles,
             Some(vec!["analytics_reader".to_string()])
@@ -8224,6 +8284,145 @@ mod tests {
             let error = build_mysql_request(&args).unwrap_err();
             assert!(error.message.contains(diagnostic), "{}", error.message);
         }
+    }
+
+    fn mongodb_builder_args() -> MongoDbCreateArgs {
+        MongoDbCreateArgs {
+            service_id: "svc-1".into(),
+            name: "pipe-1".into(),
+            uri: "mongodb://mongo.example/source".into(),
+            username: "user".into(),
+            password: "password".into(),
+            table_mappings: vec!["source.events:events".into()],
+            replication_mode: "cdc".into(),
+            read_preference: "secondaryPreferred".into(),
+            tls_host: None,
+            ca_certificate: None,
+            disable_tls: false,
+            destination: DatabaseDestinationArgs {
+                destination_database: "default".into(),
+            },
+            destination_roles: DestinationRoleArgs::default(),
+            org_id: None,
+        }
+    }
+
+    #[test]
+    fn build_mongodb_request_supports_minimal_fields() {
+        let request = build_mongodb_request(&mongodb_builder_args()).unwrap();
+
+        assert_eq!(request.destination.database, "default");
+        assert_eq!(request.destination.table, None);
+        assert_eq!(request.destination.roles, None);
+        let source = request.source.mongodb.as_ref().expect("mongodb source");
+        assert_eq!(source.uri, "mongodb://mongo.example/source");
+        assert_eq!(source.table_mappings.len(), 1);
+        assert_eq!(source.table_mappings[0].source_database_name, "source");
+        assert_eq!(source.table_mappings[0].source_collection, "events");
+        assert_eq!(source.table_mappings[0].target_table, "events");
+    }
+
+    #[test]
+    fn build_mongodb_request_supports_maximal_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca_certificate = directory.path().join("mongodb-ca.pem");
+        std::fs::write(&ca_certificate, "MONGODB_CA").unwrap();
+        let mut args = mongodb_builder_args();
+        args.table_mappings = vec!["sales.orders:orders_raw".into()];
+        args.replication_mode = "snapshot".into();
+        args.read_preference = "nearest".into();
+        args.tls_host = Some("mongodb.internal".into());
+        args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
+        args.disable_tls = true;
+        args.destination.destination_database = "analytics".into();
+        args.destination_roles.roles = vec!["analytics_reader".into()];
+
+        let request = build_mongodb_request(&args).unwrap();
+
+        assert_eq!(request.destination.database, "analytics");
+        assert_eq!(
+            request.destination.roles,
+            Some(vec!["analytics_reader".into()])
+        );
+        let source = request.source.mongodb.as_ref().expect("mongodb source");
+        assert_eq!(source.read_preference.to_string(), "nearest");
+        assert_eq!(source.tls_host.as_deref(), Some("mongodb.internal"));
+        assert_eq!(source.ca_certificate.as_deref(), Some("MONGODB_CA"));
+        assert_eq!(source.disable_tls, Some(true));
+        assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
+    }
+
+    fn bigquery_builder_args(service_account_file: String) -> BigQueryCreateArgs {
+        BigQueryCreateArgs {
+            service_id: "svc-1".into(),
+            name: "pipe-1".into(),
+            service_account_file,
+            staging_path: "gs://bucket/staging".into(),
+            table_mappings: vec!["source.events:events".into()],
+            destination: DatabaseDestinationArgs {
+                destination_database: "default".into(),
+            },
+            destination_roles: DestinationRoleArgs::default(),
+            org_id: None,
+        }
+    }
+
+    #[test]
+    fn build_bigquery_request_supports_minimal_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let service_account = directory.path().join("service-account.json");
+        std::fs::write(&service_account, "{}").unwrap();
+        let args = bigquery_builder_args(service_account.to_string_lossy().into_owned());
+
+        let request = build_bigquery_request(&args).unwrap();
+
+        assert_eq!(request.destination.database, "default");
+        assert_eq!(request.destination.table, None);
+        assert_eq!(request.destination.roles, None);
+        let source = request.source.bigquery.as_ref().expect("bigquery source");
+        let clickhouse_cloud_api::models::ClickPipeMutateBigQuerySource::ClickPipePostBigQueryServiceAccountSource(source) = source else {
+            panic!("expected service-account source");
+        };
+        assert_eq!(source.snapshot_staging_path, "gs://bucket/staging");
+        assert_eq!(source.table_mappings.len(), 1);
+        assert_eq!(source.table_mappings[0].source_dataset_name, "source");
+        assert_eq!(source.table_mappings[0].source_table, "events");
+        assert_eq!(source.table_mappings[0].target_table, "events");
+    }
+
+    #[test]
+    fn build_bigquery_request_supports_maximal_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let service_account = directory.path().join("service-account.json");
+        std::fs::write(&service_account, "{\"project_id\":\"source-project\"}").unwrap();
+        let mut args = bigquery_builder_args(service_account.to_string_lossy().into_owned());
+        args.name = "maximal-pipe".into();
+        args.staging_path = "gs://other-bucket/snapshots".into();
+        args.table_mappings = vec![
+            "sales.orders:orders_raw".into(),
+            "audit.events:audit_events".into(),
+        ];
+        args.destination.destination_database = "analytics".into();
+        args.destination_roles.roles = vec!["analytics_reader".into()];
+
+        let request = build_bigquery_request(&args).unwrap();
+
+        assert_eq!(request.name, "maximal-pipe");
+        assert_eq!(request.destination.database, "analytics");
+        assert_eq!(
+            request.destination.roles,
+            Some(vec!["analytics_reader".into()])
+        );
+        let source = request.source.bigquery.as_ref().expect("bigquery source");
+        let clickhouse_cloud_api::models::ClickPipeMutateBigQuerySource::ClickPipePostBigQueryServiceAccountSource(source) = source else {
+            panic!("expected service-account source");
+        };
+        assert_eq!(source.snapshot_staging_path, "gs://other-bucket/snapshots");
+        assert_eq!(
+            source.credentials.service_account_file,
+            "eyJwcm9qZWN0X2lkIjoic291cmNlLXByb2plY3QifQ=="
+        );
+        assert_eq!(source.table_mappings.len(), 2);
     }
 
     #[test]

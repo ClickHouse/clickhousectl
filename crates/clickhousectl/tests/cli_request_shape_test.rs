@@ -2867,16 +2867,45 @@ async fn postgres_destination_omits_table_columns_managed_table_definition() {
     .await;
 
     let dest = &body["destination"];
+    assert_eq!(dest, &serde_json::json!({ "database": "default" }));
+    assert_eq!(body["source"]["postgres"]["database"], "test");
+}
+
+#[tokio::test]
+async fn postgres_destination_database_is_distinct_from_source_database() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "postgres",
+            "svc-id",
+            "--name",
+            "test-pipe",
+            "--host",
+            "pg.example.com",
+            "--pg-database",
+            "source_db",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "public.t:t",
+            "--destination-database",
+            "analytics",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
     assert_eq!(
-        dest["database"], "default",
-        "database should default to 'default' for postgres CDC, got {dest}"
+        body["destination"],
+        serde_json::json!({ "database": "analytics" })
     );
-    for field in ["table", "columns", "managedTable", "tableDefinition"] {
-        assert!(
-            dest.get(field).is_none(),
-            "{field} leaked into destination body — Al's Bug 2 regression: {dest}",
-        );
-    }
+    assert_eq!(body["source"]["postgres"]["database"], "source_db");
 }
 
 #[tokio::test]
@@ -2911,13 +2940,49 @@ async fn mysql_destination_omits_table_columns_managed_table_definition() {
     .await;
 
     let dest = &body["destination"];
-    assert_eq!(dest["database"], "default");
-    for field in ["table", "columns", "managedTable", "tableDefinition"] {
-        assert!(
-            dest.get(field).is_none(),
-            "{field} leaked into MySQL destination body: {dest}",
-        );
-    }
+    assert_eq!(dest, &serde_json::json!({ "database": "default" }));
+    assert_eq!(
+        body["source"]["mysql"]["tableMappings"][0]["sourceSchemaName"],
+        "mydb"
+    );
+}
+
+#[tokio::test]
+async fn mysql_destination_database_keeps_source_schema_mapping_separate() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mysql",
+            "svc-id",
+            "--name",
+            "test-pipe",
+            "--host",
+            "mysql.example.com",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "source_db.t:t",
+            "--destination-database",
+            "analytics",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body["destination"],
+        serde_json::json!({ "database": "analytics" })
+    );
+    assert_eq!(
+        body["source"]["mysql"]["tableMappings"][0]["sourceSchemaName"],
+        "source_db"
+    );
 }
 
 #[tokio::test]
@@ -2950,13 +3015,49 @@ async fn mongodb_destination_omits_table_columns_managed_table_definition() {
     .await;
 
     let dest = &body["destination"];
-    assert_eq!(dest["database"], "default");
-    for field in ["table", "columns", "managedTable", "tableDefinition"] {
-        assert!(
-            dest.get(field).is_none(),
-            "{field} leaked into Mongo destination body: {dest}",
-        );
-    }
+    assert_eq!(dest, &serde_json::json!({ "database": "default" }));
+    assert_eq!(
+        body["source"]["mongodb"]["tableMappings"][0]["sourceDatabaseName"],
+        "mydb"
+    );
+}
+
+#[tokio::test]
+async fn mongodb_destination_database_keeps_source_database_mapping_separate() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mongodb",
+            "svc-id",
+            "--name",
+            "test-pipe",
+            "--uri",
+            "mongodb://mongo.example.com:27017",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping",
+            "source_db.t:t",
+            "--destination-database",
+            "analytics",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body["destination"],
+        serde_json::json!({ "database": "analytics" })
+    );
+    assert_eq!(
+        body["source"]["mongodb"]["tableMappings"][0]["sourceDatabaseName"],
+        "source_db"
+    );
 }
 
 // ── Spot-check: optional flags omitted from non-database (S3) pipe too ──────
@@ -3675,13 +3776,50 @@ async fn bigquery_destination_omits_table_columns_managed_table_definition() {
     .await;
 
     let dest = &body["destination"];
-    assert_eq!(dest["database"], "default");
-    for field in ["table", "columns", "managedTable", "tableDefinition"] {
-        assert!(
-            dest.get(field).is_none(),
-            "{field} leaked into BigQuery destination body: {dest}",
-        );
-    }
+    assert_eq!(dest, &serde_json::json!({ "database": "default" }));
+    assert_eq!(
+        body["source"]["bigquery"]["tableMappings"][0]["sourceDatasetName"],
+        "dataset"
+    );
+}
+
+#[tokio::test]
+async fn bigquery_destination_database_keeps_source_dataset_mapping_separate() {
+    let mock = start_mock_clickpipes_api().await;
+    let dir = tempfile::tempdir().unwrap();
+    let sa_path = dir.path().join("service-account.json");
+    std::fs::write(&sa_path, "{}").unwrap();
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "bigquery",
+            "svc-id",
+            "--name",
+            "test-pipe",
+            "--service-account-file",
+            sa_path.to_str().unwrap(),
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping",
+            "source_dataset.t:t",
+            "--destination-database",
+            "analytics",
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body["destination"],
+        serde_json::json!({ "database": "analytics" })
+    );
+    assert_eq!(
+        body["source"]["bigquery"]["tableMappings"][0]["sourceDatasetName"],
+        "source_dataset"
+    );
 }
 
 // ── Postgres expansion ─────────────────────────────────────────────────────
