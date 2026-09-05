@@ -6661,7 +6661,7 @@ mod tests {
         assert_eq!(scaling.replica_memory_gb, 0.5);
         let settings = maximal.settings.unwrap();
         assert_eq!(settings.clickhouse_max_threads, Some(0));
-        assert!(!settings.kafka_read_committed);
+        assert_eq!(settings.kafka_read_committed, Some(false));
         assert_eq!(maximal.field_mappings.len(), 1);
         assert_eq!(maximal.field_mappings[0].source_field, "source:a=b");
         assert_eq!(
@@ -6687,7 +6687,7 @@ mod tests {
         let settings = object_storage.settings.unwrap();
         assert_eq!(settings.object_storage_concurrency, Some(1));
         assert_eq!(settings.object_storage_use_cluster_function, Some(false));
-        assert!(!settings.kafka_read_committed);
+        assert_eq!(settings.kafka_read_committed, Some(false));
     }
 
     #[test]
@@ -10533,7 +10533,7 @@ mod tests {
         assert!(request.source.mysql.is_none());
         assert!(request.source.object_storage.is_none());
         assert!(request.source.pubsub.is_none());
-        assert!(!request.source.validate_samples);
+        assert_eq!(request.source.validate_samples, Some(false));
 
         let source = request.source.postgres.as_ref().expect("postgres source");
         assert_eq!(source.r#type.as_ref().unwrap().to_string(), "postgres");
