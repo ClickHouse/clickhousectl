@@ -139,6 +139,24 @@ impl std::fmt::Display for SlowQueryPatternsGetListSortby {
     }
 }
 
+impl SlowQueryPatternsGetListSortby {
+    pub const VALUES: &'static [&'static str] = &[
+        "total_duration",
+        "avg_duration",
+        "call_count",
+        "total_blks_read",
+        "total_cpu_time",
+        "error_count",
+        "max_duration",
+        "p50_duration",
+        "p95_duration",
+        "p99_duration",
+        "total_rows",
+        "total_shared_blks_hit",
+        "total_wal_bytes",
+    ];
+}
+
 /// Inline enum for `slowQueryPatternsGetList.sort_order`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum SlowQueryPatternsGetListSortorder {
@@ -160,6 +178,10 @@ impl std::fmt::Display for SlowQueryPatternsGetListSortorder {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl SlowQueryPatternsGetListSortorder {
+    pub const VALUES: &'static [&'static str] = &["asc", "desc"];
 }
 
 /// `pgSize` enum from the ClickHouse Cloud API.

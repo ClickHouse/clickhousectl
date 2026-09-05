@@ -713,6 +713,28 @@ fn postgres_config_enum_values_roundtrip_and_match_values() {
 }
 
 #[test]
+fn postgres_slow_query_sort_values_roundtrip_as_known_variants() {
+    for value in SlowQueryPatternsGetListSortby::VALUES {
+        let parsed: SlowQueryPatternsGetListSortby =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, SlowQueryPatternsGetListSortby::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in SlowQueryPatternsGetListSortorder::VALUES {
+        let parsed: SlowQueryPatternsGetListSortorder =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, SlowQueryPatternsGetListSortorder::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+}
+
+#[test]
 fn postgres_gcp_sizes_roundtrip_as_known_variants() {
     let sizes = [
         "c4a-highmem-4",
