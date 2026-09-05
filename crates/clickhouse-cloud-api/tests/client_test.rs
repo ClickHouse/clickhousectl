@@ -4446,3 +4446,40 @@ async fn new_discovery_operations_preserve_api_errors() {
         );
     }
 }
+
+#[tokio::test]
+async fn update_api_key_sends_omitted_timestamp_and_null_expiry() {
+    let timestamp = chrono::DateTime::parse_from_rfc3339("2030-01-02T03:04:05Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    for (expire_at, wire) in [
+        (None, serde_json::json!({"name": "retained"})),
+        (
+            Some(Some(timestamp)),
+            serde_json::json!({"name": "retained", "expireAt": "2030-01-02T03:04:05Z"}),
+        ),
+        (
+            Some(None),
+            serde_json::json!({"name": "retained", "expireAt": null}),
+        ),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(method("PATCH"))
+            .and(path("/v1/organizations/org-1/keys/key-1"))
+            .and(body_json(wire))
+            .respond_with(ok_json(serde_json::json!({"name": "retained"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let request = ApiKeyPatchRequest {
+            name: Some("retained".into()),
+            expire_at,
+            ..Default::default()
+        };
+        let response = client
+            .openapi_key_update("org-1", "key-1", &request)
+            .await
+            .unwrap();
+        assert_eq!(response.result.unwrap().name.as_deref(), Some("retained"));
+    }
+}

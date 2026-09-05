@@ -312,7 +312,8 @@ fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKe
             .expires_at
             .as_deref()
             .map(parse_expire_at)
-            .transpose()?,
+            .transpose()?
+            .map(Some),
         state: options
             .state
             .as_deref()
@@ -980,7 +981,7 @@ mod tests {
                 .with_timezone(&chrono::Utc);
         assert_eq!(update.name.as_deref(), Some("renamed"));
         assert_eq!(update.assigned_role_ids, Some(vec![expected_role_id]));
-        assert_eq!(update.expire_at, Some(expected_update_expiration));
+        assert_eq!(update.expire_at, Some(Some(expected_update_expiration)));
         assert_eq!(update.state, Some(ApiKeyPatchRequestState::Disabled));
         let ip_access_list = update.ip_access_list.as_ref().unwrap();
         assert_eq!(ip_access_list.len(), 1);
