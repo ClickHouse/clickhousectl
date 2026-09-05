@@ -4,14 +4,17 @@ use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
 use clap::Subcommand;
 use clickhouse_cloud_api::models::{
-    ClickStackCreateDashboardRequest, ClickStackCreateRoleRequest, ClickStackDashboardResponse,
-    ClickStackLogSource, ClickStackLogSourceUsetextindexforimplicitcolumn,
-    ClickStackMaterializedView, ClickStackMaterializedViewMingranularity, ClickStackMetricSource,
-    ClickStackPromqlSource, ClickStackRole, ClickStackSavedSearch, ClickStackSavedSearchFilterType,
+    ClickStackAlertChannelEmail, ClickStackAlertChannelWebhook, ClickStackAlertResponse,
+    ClickStackCreateAlertRequest, ClickStackCreateDashboardRequest, ClickStackCreateRoleRequest,
+    ClickStackDashboardResponse, ClickStackLogSource,
+    ClickStackLogSourceUsetextindexforimplicitcolumn, ClickStackMaterializedView,
+    ClickStackMaterializedViewMingranularity, ClickStackMetricSource, ClickStackPromqlSource,
+    ClickStackRole, ClickStackSavedSearch, ClickStackSavedSearchFilterType,
     ClickStackSavedSearchInput, ClickStackSavedSearchInputWherelanguage, ClickStackSessionSource,
     ClickStackSource, ClickStackSourceResponse, ClickStackTraceSource,
-    ClickStackTraceSourceUsetextindexforimplicitcolumn, ClickStackUpdateDashboardRequest,
-    ClickStackUpdateRoleRequest, ClickStackValidateDashboardResponse,
+    ClickStackTraceSourceUsetextindexforimplicitcolumn, ClickStackUpdateAlertRequest,
+    ClickStackUpdateDashboardRequest, ClickStackUpdateRoleRequest,
+    ClickStackValidateDashboardResponse, ClickStackWebhook, ClickStackWebhookInput,
 };
 use serde_json::Value;
 use tabled::{Table, Tabled, settings::Style};
@@ -35,6 +38,17 @@ pub enum ClickStackCommands {
         #[command(subcommand)]
         command: DashboardCommands,
     },
+    /// Manage ClickStack alerts
+    Alert {
+        #[command(subcommand)]
+        command: AlertCommands,
+    },
+
+    /// Manage ClickStack webhooks
+    Webhook {
+        #[command(subcommand)]
+        command: WebhookCommands,
+    },
     /// Manage ClickStack saved searches
     SavedSearch {
         #[command(subcommand)]
@@ -48,7 +62,141 @@ impl ClickStackCommands {
             Self::Source { command } => command.is_write(),
             Self::Role { command } => command.is_write(),
             Self::Dashboard { command } => command.is_write(),
+            Self::Alert { command } => command.is_write(),
+            Self::Webhook { command } => command.is_write(),
             Self::SavedSearch { command } => command.is_write(),
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum AlertCommands {
+    /// List ClickStack alerts
+    List {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Get ClickStack alert details
+    Get {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Alert ID (from `cloud clickstack alert list`)
+        alert_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Create a ClickStack alert
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Both channel and channels are required by the current API contract.
+  The 30s interval requires that feature to be enabled for your ClickStack team.")]
+    Create {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// JSON request body path, or `-` for stdin
+        #[arg(long, value_name = "PATH|-", required = true)]
+        config_file: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Replace a ClickStack alert
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  This is a full PUT replacement; include every required and desired field.
+  Both channel and channels are required by the current API contract.
+  The 30s interval requires that feature to be enabled for your ClickStack team.")]
+    Update {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Alert ID (from `cloud clickstack alert list`)
+        alert_id: String,
+        /// Complete JSON request body path, or `-` for stdin
+        #[arg(long, value_name = "PATH|-", required = true)]
+        config_file: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Delete a ClickStack alert
+    Delete {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Alert ID (from `cloud clickstack alert list`)
+        alert_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl AlertCommands {
+    pub fn is_write(&self) -> bool {
+        match self {
+            Self::List { .. } | Self::Get { .. } => false,
+            Self::Create { .. } | Self::Update { .. } | Self::Delete { .. } => true,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum WebhookCommands {
+    /// List ClickStack webhooks
+    List {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Create a ClickStack webhook
+    Create {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// JSON request body path, or `-` for stdin
+        #[arg(long, value_name = "PATH|-", required = true)]
+        config_file: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Replace a ClickStack webhook
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  This is a full PUT replacement; include every required and desired field.")]
+    Update {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Webhook ID (from `cloud clickstack webhook list`)
+        webhook_id: String,
+        /// Complete JSON request body path, or `-` for stdin
+        #[arg(long, value_name = "PATH|-", required = true)]
+        config_file: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+    /// Delete a ClickStack webhook
+    Delete {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+        /// Webhook ID (from `cloud clickstack webhook list`)
+        webhook_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl WebhookCommands {
+    pub fn is_write(&self) -> bool {
+        match self {
+            Self::List { .. } => false,
+            Self::Create { .. } | Self::Update { .. } | Self::Delete { .. } => true,
         }
     }
 }
@@ -380,6 +528,335 @@ fn build_update_dashboard_request(
     let request = deserialize_strict_config(value, config_file)?;
     validate_update_dashboard_enums(&request, config_file)?;
     Ok(request)
+}
+
+fn build_create_alert_request(config_file: &str) -> CloudResult<ClickStackCreateAlertRequest> {
+    let value = read_config_value(config_file)?;
+    validate_alert_channels(&value, config_file)?;
+    let request = deserialize_strict_config(value, config_file)?;
+    validate_create_alert_request(&request, config_file)?;
+    Ok(request)
+}
+
+fn build_update_alert_request(config_file: &str) -> CloudResult<ClickStackUpdateAlertRequest> {
+    let value = read_config_value(config_file)?;
+    validate_alert_channels(&value, config_file)?;
+    let request = deserialize_strict_config(value, config_file)?;
+    validate_update_alert_request(&request, config_file)?;
+    Ok(request)
+}
+
+fn build_webhook_request(config_file: &str) -> CloudResult<ClickStackWebhookInput> {
+    let value = read_config_value(config_file)?;
+    let request: ClickStackWebhookInput = deserialize_strict_config(value, config_file)?;
+    match &request.service {
+        clickhouse_cloud_api::models::ClickStackWebhookInputService::Slack => {
+            if request.body.is_some() {
+                return Err(invalid_clickstack_request(
+                    config_file,
+                    "body is not supported for slack webhooks",
+                ));
+            }
+        }
+        clickhouse_cloud_api::models::ClickStackWebhookInputService::Incidentio
+        | clickhouse_cloud_api::models::ClickStackWebhookInputService::Generic => {}
+        clickhouse_cloud_api::models::ClickStackWebhookInputService::Unknown(other) => {
+            return Err(invalid_clickstack_request(
+                config_file,
+                format!(
+                    "unknown webhook service `{other}`; expected slack, incidentio, or generic"
+                ),
+            ));
+        }
+    }
+    Ok(request)
+}
+
+fn invalid_clickstack_request(source: &str, message: impl std::fmt::Display) -> CloudError {
+    CloudError::new(format!(
+        "invalid request body in config {source}: {message}"
+    ))
+}
+
+fn validate_alert_channel(value: &Value, path: &str, source: &str) -> CloudResult<()> {
+    match field(value, "type").and_then(Value::as_str) {
+        Some("email") => {
+            let channel =
+                deserialize_strict_config::<ClickStackAlertChannelEmail>(value.clone(), source)
+                    .map_err(|error| {
+                        invalid_clickstack_request(
+                            source,
+                            format!("invalid {path}: {}", error.message),
+                        )
+                    })?;
+            if channel.r#type.to_string() != "email" {
+                return Err(invalid_clickstack_request(
+                    source,
+                    format!("{path}.type must be email"),
+                ));
+            }
+        }
+        Some("webhook") => {
+            let channel =
+                deserialize_strict_config::<ClickStackAlertChannelWebhook>(value.clone(), source)
+                    .map_err(|error| {
+                    invalid_clickstack_request(source, format!("invalid {path}: {}", error.message))
+                })?;
+            if channel.r#type.to_string() != "webhook" {
+                return Err(invalid_clickstack_request(
+                    source,
+                    format!("{path}.type must be webhook"),
+                ));
+            }
+            if channel.severity.as_ref().is_some_and(|severity| {
+                matches!(
+                    severity,
+                    clickhouse_cloud_api::models::ClickStackAlertChannelWebhookSeverity::Unknown(_)
+                )
+            }) {
+                return Err(invalid_clickstack_request(
+                    source,
+                    format!("unknown {path}.severity; expected critical, error, warning, or info"),
+                ));
+            }
+        }
+        Some(other) => {
+            return Err(invalid_clickstack_request(
+                source,
+                format!("unknown {path}.type `{other}`; expected email or webhook"),
+            ));
+        }
+        None => {
+            return Err(invalid_clickstack_request(
+                source,
+                format!("{path}.type must be email or webhook"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_alert_source_ids(
+    alert_source: &str,
+    dashboard_id: Option<&str>,
+    tile_id: Option<&str>,
+    saved_search_id: Option<&str>,
+    source: &str,
+) -> CloudResult<()> {
+    match alert_source {
+        "tile" if dashboard_id.is_none() || tile_id.is_none() => {
+            return Err(invalid_clickstack_request(
+                source,
+                "source tile requires dashboardId and tileId",
+            ));
+        }
+        "tile" if saved_search_id.is_some() => {
+            return Err(invalid_clickstack_request(
+                source,
+                "source tile cannot include savedSearchId",
+            ));
+        }
+        "saved_search" if saved_search_id.is_none() => {
+            return Err(invalid_clickstack_request(
+                source,
+                "source saved_search requires savedSearchId",
+            ));
+        }
+        "saved_search" if dashboard_id.is_some() || tile_id.is_some() => {
+            return Err(invalid_clickstack_request(
+                source,
+                "source saved_search cannot include dashboardId or tileId",
+            ));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_alert_numeric_values(
+    threshold: f64,
+    threshold_max: Option<f64>,
+    threshold_type: &str,
+    num_consecutive_windows: Option<i64>,
+    schedule_offset_minutes: Option<i64>,
+    source: &str,
+) -> CloudResult<()> {
+    if !threshold.is_finite() || threshold_max.is_some_and(|number| !number.is_finite()) {
+        return Err(invalid_clickstack_request(
+            source,
+            "threshold values must be finite numbers",
+        ));
+    }
+    if matches!(threshold_type, "between" | "not_between") {
+        let Some(maximum) = threshold_max else {
+            return Err(invalid_clickstack_request(
+                source,
+                "thresholdMax is required for between and not_between",
+            ));
+        };
+        if maximum < threshold {
+            return Err(invalid_clickstack_request(
+                source,
+                "thresholdMax must be greater than or equal to threshold",
+            ));
+        }
+    }
+    if num_consecutive_windows.is_some_and(|windows| windows < 1) {
+        return Err(invalid_clickstack_request(
+            source,
+            "numConsecutiveWindows must be at least 1",
+        ));
+    }
+    if schedule_offset_minutes.is_some_and(|offset| offset < 0) {
+        return Err(invalid_clickstack_request(
+            source,
+            "scheduleOffsetMinutes cannot be negative",
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_alert_channels(value: &Value, source: &str) -> CloudResult<()> {
+    let channel = field(value, "channel").ok_or_else(|| {
+        invalid_clickstack_request(source, "channel is required by the current API contract")
+    })?;
+    validate_alert_channel(channel, "channel", source)?;
+    let channels = field(value, "channels")
+        .and_then(Value::as_array)
+        .ok_or_else(|| invalid_clickstack_request(source, "channels must be an array"))?;
+    if !(1..=10).contains(&channels.len()) {
+        return Err(invalid_clickstack_request(
+            source,
+            "channels must contain between 1 and 10 entries",
+        ));
+    }
+    for (index, channel) in channels.iter().enumerate() {
+        validate_alert_channel(channel, &format!("channels[{index}]"), source)?;
+        if channels[..index].contains(channel) {
+            return Err(invalid_clickstack_request(
+                source,
+                format!("channels[{index}] duplicates an earlier channel"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_create_alert_request(
+    request: &ClickStackCreateAlertRequest,
+    source: &str,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{
+        ClickStackCreateAlertRequestInterval as Interval,
+        ClickStackCreateAlertRequestSource as AlertSource,
+        ClickStackCreateAlertRequestThresholdtype as ThresholdType,
+    };
+    let alert_source = match &request.source {
+        AlertSource::Saved_search => "saved_search",
+        AlertSource::Tile => "tile",
+        AlertSource::Unknown(value) => {
+            return Err(invalid_clickstack_request(
+                source,
+                format!("unknown source `{value}`"),
+            ));
+        }
+    };
+    if let Interval::Unknown(value) = &request.interval {
+        return Err(invalid_clickstack_request(
+            source,
+            format!("unknown interval `{value}`"),
+        ));
+    }
+    let threshold_type = match &request.threshold_type {
+        ThresholdType::Above => "above",
+        ThresholdType::Below => "below",
+        ThresholdType::Above_exclusive => "above_exclusive",
+        ThresholdType::Below_or_equal => "below_or_equal",
+        ThresholdType::Equal => "equal",
+        ThresholdType::Not_equal => "not_equal",
+        ThresholdType::Between => "between",
+        ThresholdType::Not_between => "not_between",
+        ThresholdType::Unknown(value) => {
+            return Err(invalid_clickstack_request(
+                source,
+                format!("unknown thresholdType `{value}`"),
+            ));
+        }
+    };
+    validate_alert_source_ids(
+        alert_source,
+        request.dashboard_id.as_deref(),
+        request.tile_id.as_deref(),
+        request.saved_search_id.as_deref(),
+        source,
+    )?;
+    validate_alert_numeric_values(
+        request.threshold,
+        request.threshold_max,
+        threshold_type,
+        request.num_consecutive_windows,
+        request.schedule_offset_minutes,
+        source,
+    )
+}
+
+fn validate_update_alert_request(
+    request: &ClickStackUpdateAlertRequest,
+    source: &str,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{
+        ClickStackUpdateAlertRequestInterval as Interval,
+        ClickStackUpdateAlertRequestSource as AlertSource,
+        ClickStackUpdateAlertRequestThresholdtype as ThresholdType,
+    };
+    let alert_source = match &request.source {
+        AlertSource::Saved_search => "saved_search",
+        AlertSource::Tile => "tile",
+        AlertSource::Unknown(value) => {
+            return Err(invalid_clickstack_request(
+                source,
+                format!("unknown source `{value}`"),
+            ));
+        }
+    };
+    if let Interval::Unknown(value) = &request.interval {
+        return Err(invalid_clickstack_request(
+            source,
+            format!("unknown interval `{value}`"),
+        ));
+    }
+    let threshold_type = match &request.threshold_type {
+        ThresholdType::Above => "above",
+        ThresholdType::Below => "below",
+        ThresholdType::Above_exclusive => "above_exclusive",
+        ThresholdType::Below_or_equal => "below_or_equal",
+        ThresholdType::Equal => "equal",
+        ThresholdType::Not_equal => "not_equal",
+        ThresholdType::Between => "between",
+        ThresholdType::Not_between => "not_between",
+        ThresholdType::Unknown(value) => {
+            return Err(invalid_clickstack_request(
+                source,
+                format!("unknown thresholdType `{value}`"),
+            ));
+        }
+    };
+    validate_alert_source_ids(
+        alert_source,
+        request.dashboard_id.as_deref(),
+        request.tile_id.as_deref(),
+        request.saved_search_id.as_deref(),
+        source,
+    )?;
+    validate_alert_numeric_values(
+        request.threshold,
+        request.threshold_max,
+        threshold_type,
+        request.num_consecutive_windows,
+        request.schedule_offset_minutes,
+        source,
+    )
 }
 
 fn invalid_dashboard(source: &str, message: impl std::fmt::Display) -> CloudError {
@@ -1480,8 +1957,121 @@ pub async fn run(client: &CloudClient, command: ClickStackCommands, json: bool) 
         ClickStackCommands::Source { command } => run_source(client, command, json).await,
         ClickStackCommands::Role { command } => run_role(client, command, json).await,
         ClickStackCommands::Dashboard { command } => run_dashboard(client, command, json).await,
+        ClickStackCommands::Alert { command } => run_alert(client, command, json).await,
+        ClickStackCommands::Webhook { command } => run_webhook(client, command, json).await,
         ClickStackCommands::SavedSearch { command } => {
             run_saved_search(client, command, json).await
+        }
+    }
+}
+
+async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> CloudResult<()> {
+    match command {
+        AlertCommands::List { service_id, org_id } => {
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let alerts = client.click_stack_list_alerts(&org_id, &service_id).await?;
+            print_alert_list(&alerts, json)
+        }
+        AlertCommands::Get {
+            service_id,
+            alert_id,
+            org_id,
+        } => {
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let alert = client
+                .click_stack_get_alert(&org_id, &service_id, &alert_id)
+                .await?;
+            print_detail(&alert, json)
+        }
+        AlertCommands::Create {
+            service_id,
+            config_file,
+            org_id,
+        } => {
+            let request = build_create_alert_request(&config_file)?;
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let alert = client
+                .click_stack_create_alert(&org_id, &service_id, &request)
+                .await?;
+            print_detail(&alert, json)
+        }
+        AlertCommands::Update {
+            service_id,
+            alert_id,
+            config_file,
+            org_id,
+        } => {
+            let request = build_update_alert_request(&config_file)?;
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let alert = client
+                .click_stack_update_alert(&org_id, &service_id, &alert_id, &request)
+                .await?;
+            print_detail(&alert, json)
+        }
+        AlertCommands::Delete {
+            service_id,
+            alert_id,
+            org_id,
+        } => {
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            client
+                .click_stack_delete_alert(&org_id, &service_id, &alert_id)
+                .await?;
+            print_deleted("ClickStack alert", &alert_id, json);
+            Ok(())
+        }
+    }
+}
+
+async fn run_webhook(
+    client: &CloudClient,
+    command: WebhookCommands,
+    json: bool,
+) -> CloudResult<()> {
+    match command {
+        WebhookCommands::List { service_id, org_id } => {
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let webhooks = client
+                .click_stack_list_webhooks(&org_id, &service_id)
+                .await?;
+            print_webhook_list(&webhooks, json)
+        }
+        WebhookCommands::Create {
+            service_id,
+            config_file,
+            org_id,
+        } => {
+            let request = build_webhook_request(&config_file)?;
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let webhook = client
+                .click_stack_create_webhook(&org_id, &service_id, &request)
+                .await?;
+            print_detail(&webhook, json)
+        }
+        WebhookCommands::Update {
+            service_id,
+            webhook_id,
+            config_file,
+            org_id,
+        } => {
+            let request = build_webhook_request(&config_file)?;
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let webhook = client
+                .click_stack_update_webhook(&org_id, &service_id, &webhook_id, &request)
+                .await?;
+            print_detail(&webhook, json)
+        }
+        WebhookCommands::Delete {
+            service_id,
+            webhook_id,
+            org_id,
+        } => {
+            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            client
+                .click_stack_delete_webhook(&org_id, &service_id, &webhook_id)
+                .await?;
+            print_deleted("ClickStack webhook", &webhook_id, json);
+            Ok(())
         }
     }
 }
@@ -1881,6 +2471,98 @@ fn print_dashboard_list(dashboards: &[ClickStackDashboardResponse], json: bool) 
     Ok(())
 }
 
+fn print_alert_list(alerts: &[ClickStackAlertResponse], json: bool) -> CloudResult<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(alerts)?);
+        return Ok(());
+    }
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Name")]
+        name: String,
+        #[tabled(rename = "ID")]
+        id: String,
+        #[tabled(rename = "Source")]
+        source: String,
+        #[tabled(rename = "State")]
+        state: String,
+        #[tabled(rename = "Interval")]
+        interval: String,
+    }
+    let rows = alerts
+        .iter()
+        .map(|alert| Row {
+            name: or_absent(alert.name.as_deref()),
+            id: or_absent(alert.id.as_deref()),
+            source: or_absent(alert.source.as_ref()),
+            state: or_absent(alert.state.as_ref()),
+            interval: or_absent(alert.interval.as_ref()),
+        })
+        .collect::<Vec<_>>();
+    println!("{}", Table::new(rows).with(Style::rounded()));
+    Ok(())
+}
+
+fn webhook_summary(
+    webhook: &ClickStackWebhook,
+) -> (Option<&str>, Option<&str>, String, Option<&str>) {
+    macro_rules! known {
+        ($webhook:expr) => {{
+            (
+                $webhook.name.as_deref(),
+                $webhook.id.as_deref(),
+                or_absent($webhook.service.as_ref()),
+                $webhook.url.as_deref(),
+            )
+        }};
+    }
+    match webhook {
+        ClickStackWebhook::ClickStackSlackWebhook(webhook) => known!(webhook),
+        ClickStackWebhook::ClickStackIncidentIOWebhook(webhook) => known!(webhook),
+        ClickStackWebhook::ClickStackGenericWebhook(webhook) => known!(webhook),
+        ClickStackWebhook::ClickStackSlackAPIWebhook(webhook) => known!(webhook),
+        ClickStackWebhook::ClickStackPagerDutyAPIWebhook(webhook) => known!(webhook),
+        ClickStackWebhook::Unknown(value) => (
+            field(value, "name").and_then(Value::as_str),
+            field(value, "id").and_then(Value::as_str),
+            or_absent(field(value, "service").and_then(Value::as_str)),
+            field(value, "url").and_then(Value::as_str),
+        ),
+    }
+}
+
+fn print_webhook_list(webhooks: &[ClickStackWebhook], json: bool) -> CloudResult<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(webhooks)?);
+        return Ok(());
+    }
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Name")]
+        name: String,
+        #[tabled(rename = "ID")]
+        id: String,
+        #[tabled(rename = "Service")]
+        service: String,
+        #[tabled(rename = "URL")]
+        url: String,
+    }
+    let rows = webhooks
+        .iter()
+        .map(|webhook| {
+            let (name, id, service, url) = webhook_summary(webhook);
+            Row {
+                name: or_absent(name),
+                id: or_absent(id),
+                service,
+                url: or_absent(url),
+            }
+        })
+        .collect::<Vec<_>>();
+    println!("{}", Table::new(rows).with(Style::rounded()));
+    Ok(())
+}
+
 fn print_saved_search_list(searches: &[ClickStackSavedSearch], json: bool) -> CloudResult<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(searches)?);
@@ -1911,6 +2593,138 @@ fn print_saved_search_list(searches: &[ClickStackSavedSearch], json: bool) -> Cl
 }
 
 impl CloudClient {
+    async fn click_stack_list_alerts(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudResult<Vec<ClickStackAlertResponse>> {
+        let response = self
+            .api()
+            .click_stack_list_alerts(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_create_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ClickStackCreateAlertRequest,
+    ) -> CloudResult<ClickStackAlertResponse> {
+        let response = self
+            .api()
+            .click_stack_create_alert(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_get_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        alert_id: &str,
+    ) -> CloudResult<ClickStackAlertResponse> {
+        let response = self
+            .api()
+            .click_stack_get_alert(org_id, service_id, alert_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_update_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        alert_id: &str,
+        request: &ClickStackUpdateAlertRequest,
+    ) -> CloudResult<ClickStackAlertResponse> {
+        let response = self
+            .api()
+            .click_stack_update_alert(org_id, service_id, alert_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_delete_alert(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        alert_id: &str,
+    ) -> CloudResult<crate::cloud::types::DeleteResponse> {
+        let response = self
+            .api()
+            .click_stack_delete_alert(org_id, service_id, alert_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(crate::cloud::types::DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
+    }
+
+    async fn click_stack_list_webhooks(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudResult<Vec<ClickStackWebhook>> {
+        let response = self
+            .api()
+            .click_stack_list_webhooks(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_create_webhook(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ClickStackWebhookInput,
+    ) -> CloudResult<ClickStackWebhook> {
+        let response = self
+            .api()
+            .click_stack_create_webhook(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_update_webhook(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        webhook_id: &str,
+        request: &ClickStackWebhookInput,
+    ) -> CloudResult<ClickStackWebhook> {
+        let response = self
+            .api()
+            .click_stack_update_webhook(org_id, service_id, webhook_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    async fn click_stack_delete_webhook(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        webhook_id: &str,
+    ) -> CloudResult<crate::cloud::types::DeleteResponse> {
+        let response = self
+            .api()
+            .click_stack_delete_webhook(org_id, service_id, webhook_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(crate::cloud::types::DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
+    }
+
     async fn click_stack_list_dashboards(
         &self,
         org_id: &str,
@@ -2372,6 +3186,268 @@ mod tests {
         };
         assert_eq!(dashboard_id, "dash-1");
         assert_eq!(config_file, "dashboard.json");
+    }
+
+    #[test]
+    fn parses_alert_and_webhook_config_commands() {
+        let command = parse_clickstack(&[
+            "clickhousectl",
+            "cloud",
+            "clickstack",
+            "alert",
+            "create",
+            "svc-1",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ]);
+        let ClickStackCommands::Alert {
+            command:
+                AlertCommands::Create {
+                    config_file,
+                    org_id,
+                    ..
+                },
+        } = command
+        else {
+            panic!("expected alert create")
+        };
+        assert_eq!(config_file, "-");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let command = parse_clickstack(&[
+            "clickhousectl",
+            "cloud",
+            "clickstack",
+            "webhook",
+            "update",
+            "svc-1",
+            "webhook-1",
+            "--config-file",
+            "webhook.json",
+        ]);
+        let ClickStackCommands::Webhook {
+            command:
+                WebhookCommands::Update {
+                    webhook_id,
+                    config_file,
+                    ..
+                },
+        } = command
+        else {
+            panic!("expected webhook update")
+        };
+        assert_eq!(webhook_id, "webhook-1");
+        assert_eq!(config_file, "webhook.json");
+
+        assert!(
+            Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                "webhook",
+                "get",
+                "svc-1",
+                "webhook-1",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn classifies_every_alert_and_webhook_operation() {
+        for (resource, operation, expected) in [
+            ("alert", "list", false),
+            ("alert", "get", false),
+            ("alert", "create", true),
+            ("alert", "update", true),
+            ("alert", "delete", true),
+            ("webhook", "list", false),
+            ("webhook", "create", true),
+            ("webhook", "update", true),
+            ("webhook", "delete", true),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "clickstack",
+                resource,
+                operation,
+                "svc-1",
+            ];
+            if matches!(
+                (resource, operation),
+                ("alert", "get" | "update" | "delete") | ("webhook", "update" | "delete")
+            ) {
+                args.push("resource-1");
+            }
+            if matches!(operation, "create" | "update") {
+                args.extend(["--config-file", "body.json"]);
+            }
+            assert_eq!(
+                parse_clickstack(&args).is_write(),
+                expected,
+                "{resource} {operation}"
+            );
+        }
+    }
+
+    #[test]
+    fn alert_builders_cover_minimal_maximal_and_both_channel_variants() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_file = directory.path().join("alert.json");
+        let minimal = serde_json::json!({
+            "source":"saved_search", "savedSearchId":"search-1", "threshold":10.0,
+            "interval":"1m", "thresholdType":"above",
+            "channel":{"type":"email","emailRecipients":["ops@example.com"]},
+            "channels":[{"type":"email","emailRecipients":["ops@example.com"]}]
+        });
+        std::fs::write(&config_file, minimal.to_string()).unwrap();
+        let create = build_create_alert_request(config_file.to_str().unwrap()).unwrap();
+        assert_eq!(create.saved_search_id.as_deref(), Some("search-1"));
+        assert_eq!(serde_json::to_value(&create).unwrap(), minimal);
+        let update = build_update_alert_request(config_file.to_str().unwrap()).unwrap();
+        assert_eq!(update.saved_search_id.as_deref(), Some("search-1"));
+        assert_eq!(serde_json::to_value(&update).unwrap(), minimal);
+
+        let maximal = serde_json::json!({
+            "source":"tile", "dashboardId":"dash-1", "tileId":"tile-1", "groupBy":"service",
+            "threshold":10.0, "thresholdMax":20.0, "interval":"30s", "thresholdType":"between",
+            "scheduleOffsetMinutes":0, "scheduleStartAt":"2026-09-05T10:00:00Z",
+            "channel":{"type":"webhook","webhookId":"hook-1","webhookService":"pagerduty_api",
+                "slackChannelId":"C123","severity":"critical"},
+            "channels":[
+                {"type":"webhook","webhookId":"hook-1","webhookService":"pagerduty_api","severity":"warning"},
+                {"type":"email","emailRecipients":["ops@example.com","dev@example.com"]}
+            ],
+            "name":"Latency", "message":"Too slow", "note":"See runbook", "numConsecutiveWindows":3
+        });
+        std::fs::write(&config_file, maximal.to_string()).unwrap();
+        let create = build_create_alert_request(config_file.to_str().unwrap()).unwrap();
+        assert_eq!(create.channels.len(), 2);
+        assert_eq!(serde_json::to_value(&create).unwrap(), maximal);
+        let update = build_update_alert_request(config_file.to_str().unwrap()).unwrap();
+        assert_eq!(update.dashboard_id.as_deref(), Some("dash-1"));
+        assert_eq!(update.channels.len(), 2);
+        assert_eq!(serde_json::to_value(&update).unwrap(), maximal);
+    }
+
+    #[test]
+    fn webhook_builder_covers_every_input_service_and_all_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_file = directory.path().join("webhook.json");
+        for service in ["slack", "incidentio", "generic"] {
+            let mut body = serde_json::json!({
+                "name":format!("{service} hook"), "service":service,
+                "url":"https://example.com/hook", "description":"Alerts",
+                "headers":{"Authorization":"Bearer secret"}, "queryParams":{"team":"ops"}
+            });
+            if service != "slack" {
+                body["body"] = Value::String("{\"alert\":\"{{title}}\"}".into());
+            }
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            let request = build_webhook_request(config_file.to_str().unwrap()).unwrap();
+            assert_eq!(
+                request.headers.as_ref().unwrap()["Authorization"],
+                "Bearer secret"
+            );
+            assert_eq!(serde_json::to_value(request).unwrap(), body);
+        }
+    }
+
+    #[test]
+    fn alert_and_webhook_builders_reject_invalid_nested_and_cross_field_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_file = directory.path().join("body.json");
+        let base = serde_json::json!({
+            "source":"saved_search", "savedSearchId":"search-1", "threshold":10,
+            "interval":"1m", "thresholdType":"above",
+            "channel":{"type":"email","emailRecipients":["ops@example.com"]},
+            "channels":[{"type":"email","emailRecipients":["ops@example.com"]}]
+        });
+        let invalid = [
+            (
+                serde_json::json!({"source":"future","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
+                "unknown source",
+            ),
+            (
+                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"2m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
+                "interval",
+            ),
+            (
+                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"around","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
+                "thresholdType",
+            ),
+            (
+                serde_json::json!({"source":"tile","dashboardId":"d","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
+                "tileId",
+            ),
+            (
+                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":2,"thresholdMax":1,"interval":"1m","thresholdType":"between","channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
+                "thresholdMax",
+            ),
+            (
+                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"webhook","webhookId":"h","severty":"warning"},"channels":[{"type":"email","emailRecipients":[]}]}),
+                "severty",
+            ),
+            (
+                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"webhook","webhookId":"h","severity":"urgent"},"channels":[{"type":"email","emailRecipients":[]}]}),
+                "severity",
+            ),
+            (
+                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channel":{"type":"email","emailRecipients":[]},"channels":[]}),
+                "between 1 and 10",
+            ),
+            (
+                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","channels":[{"type":"email","emailRecipients":[]}]}),
+                "channel is required",
+            ),
+            (
+                serde_json::json!({"source":"saved_search","savedSearchId":"s","threshold":1,"interval":"1m","thresholdType":"above","numConsecutiveWindows":0,"channel":{"type":"email","emailRecipients":[]},"channels":[{"type":"email","emailRecipients":[]}]}),
+                "numConsecutiveWindows",
+            ),
+        ];
+        for (body, expected) in invalid {
+            std::fs::write(&config_file, body.to_string()).unwrap();
+            let error = build_create_alert_request(config_file.to_str().unwrap()).unwrap_err();
+            assert!(error.message.contains(expected), "{error}");
+        }
+        let mut duplicate = base.clone();
+        duplicate["channels"] = serde_json::json!([
+            {"type":"email","emailRecipients":["same@example.com"]},
+            {"type":"email","emailRecipients":["same@example.com"]}
+        ]);
+        std::fs::write(&config_file, duplicate.to_string()).unwrap();
+        assert!(
+            build_create_alert_request(config_file.to_str().unwrap())
+                .unwrap_err()
+                .message
+                .contains("duplicates")
+        );
+
+        std::fs::write(
+            &config_file,
+            r#"{"name":"bad","service":"slack_api","url":"https://example.com"}"#,
+        )
+        .unwrap();
+        assert!(
+            build_webhook_request(config_file.to_str().unwrap())
+                .unwrap_err()
+                .message
+                .contains("webhook service")
+        );
+        std::fs::write(
+            &config_file,
+            r#"{"name":"bad","service":"slack","url":"https://example.com","body":"secret"}"#,
+        )
+        .unwrap();
+        assert!(
+            build_webhook_request(config_file.to_str().unwrap())
+                .unwrap_err()
+                .message
+                .contains("not supported")
+        );
     }
 
     #[test]

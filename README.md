@@ -148,7 +148,7 @@ psql "$POSTGRES_CONNECTION_STRING" --command "SELECT version()"
 
 `postgres create` returns an initial password, which the CLI prints once; store it securely.
 
-Manage ClickStack data sources, roles, and dashboards for an existing service with JSON configuration files:
+Manage ClickStack data sources, roles, dashboards, alerts, and webhooks for an existing service with JSON configuration files:
 
 ```bash
 clickhousectl cloud clickstack source list <service-id> --org-id <org-id>
@@ -216,6 +216,75 @@ broadcast selections, expose variables to tile queries, or do both:
 Run `dashboard validate` before create or update to check the same dashboard body without saving it.
 `dashboard update <service-id> <dashboard-id> --config-file dashboard.json` is a full PUT replacement:
 include every tile, filter, container, tag, and saved query value that should remain.
+
+Create a notification destination first, then reference its ID from an alert. For example,
+`webhook.json` can contain a complete generic webhook body:
+
+```json
+{
+  "name": "Production incidents",
+  "service": "generic",
+  "url": "https://alerts.example.com/clickstack",
+  "description": "Production alert receiver",
+  "body": "{\"title\":\"{{title}}\",\"level\":\"{{level}}\"}",
+  "headers": { "Authorization": "Bearer <token>" },
+  "queryParams": { "team": "platform" }
+}
+```
+
+```bash
+clickhousectl cloud clickstack webhook create <service-id> \
+  --config-file webhook.json --org-id <org-id>
+clickhousectl cloud clickstack webhook list <service-id> --org-id <org-id>
+```
+
+The current Cloud API request contract requires both the legacy `channel` field and the `channels`
+array. An alert sourced from a dashboard tile can use this complete `alert.json` body:
+
+```json
+{
+  "source": "tile",
+  "dashboardId": "<dashboard-id>",
+  "tileId": "<tile-id>",
+  "threshold": 100,
+  "thresholdMax": 500,
+  "thresholdType": "between",
+  "interval": "5m",
+  "scheduleOffsetMinutes": 2,
+  "scheduleStartAt": "2026-09-05T10:00:00Z",
+  "channel": {
+    "type": "webhook",
+    "webhookId": "<webhook-id>",
+    "webhookService": "generic"
+  },
+  "channels": [
+    {
+      "type": "webhook",
+      "webhookId": "<webhook-id>",
+      "webhookService": "generic",
+      "severity": "warning"
+    },
+    { "type": "email", "emailRecipients": ["on-call@example.com"] }
+  ],
+  "name": "Sustained request failures",
+  "message": "Failure count stayed within the configured range",
+  "note": "See the production runbook",
+  "numConsecutiveWindows": 3
+}
+```
+
+```bash
+clickhousectl cloud clickstack alert create <service-id> \
+  --config-file alert.json --org-id <org-id>
+clickhousectl cloud clickstack alert get <service-id> <alert-id> --org-id <org-id>
+# The detail output includes state, executionErrors, and all notification channels.
+clickhousectl cloud clickstack alert update <service-id> <alert-id> \
+  --config-file alert.json --org-id <org-id>
+```
+
+Alert and webhook updates are full PUT replacements. A `saved_search` alert uses `savedSearchId`
+instead of `dashboardId` and `tileId`. The `30s` alert interval is accepted when the 30-second alert
+interval feature is enabled for the ClickStack team.
 
 ## Local
 
