@@ -135,6 +135,11 @@ pub enum ClickPipeKafkaOffsetStrategy {
     Unknown(String),
 }
 
+impl ClickPipeKafkaOffsetStrategy {
+    pub const VALUES: &'static [&'static str] =
+        &["from_beginning", "from_latest", "from_timestamp"];
+}
+
 impl std::fmt::Display for ClickPipeKafkaOffsetStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -347,6 +352,10 @@ pub enum ClickPipeMongoDBPipeSettingsReplicationmode {
     Unknown(String),
 }
 
+impl ClickPipeMongoDBPipeSettingsReplicationmode {
+    pub const VALUES: &'static [&'static str] = &["cdc", "snapshot", "cdc_only"];
+}
+
 impl std::fmt::Display for ClickPipeMongoDBPipeSettingsReplicationmode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -451,6 +460,16 @@ pub enum ClickPipeMutateMongoDBSourceReadpreference {
     Unknown(String),
 }
 
+impl ClickPipeMutateMongoDBSourceReadpreference {
+    pub const VALUES: &'static [&'static str] = &[
+        "primary",
+        "primaryPreferred",
+        "secondary",
+        "secondaryPreferred",
+        "nearest",
+    ];
+}
+
 impl std::fmt::Display for ClickPipeMutateMongoDBSourceReadpreference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -474,6 +493,10 @@ pub enum ClickPipeMutateMySQLSourceAuthentication {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeMutateMySQLSourceAuthentication {
+    pub const VALUES: &'static [&'static str] = &["basic", "IAM_ROLE"];
 }
 
 impl std::fmt::Display for ClickPipeMutateMySQLSourceAuthentication {
@@ -503,6 +526,11 @@ pub enum ClickPipeMutateMySQLSourceType {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeMutateMySQLSourceType {
+    pub const VALUES: &'static [&'static str] =
+        &["mysql", "rdsmysql", "auroramysql", "mariadb", "rdsmariadb"];
 }
 
 impl std::fmt::Display for ClickPipeMutateMySQLSourceType {
@@ -601,6 +629,10 @@ pub enum ClickPipeMySQLPipeSettingsReplicationmechanism {
     Unknown(String),
 }
 
+impl ClickPipeMySQLPipeSettingsReplicationmechanism {
+    pub const VALUES: &'static [&'static str] = &["GTID", "FILE_POS"];
+}
+
 impl std::fmt::Display for ClickPipeMySQLPipeSettingsReplicationmechanism {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -624,6 +656,10 @@ pub enum ClickPipeMySQLPipeSettingsReplicationmode {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeMySQLPipeSettingsReplicationmode {
+    pub const VALUES: &'static [&'static str] = &["cdc", "snapshot", "cdc_only"];
 }
 
 impl std::fmt::Display for ClickPipeMySQLPipeSettingsReplicationmode {
@@ -1101,6 +1137,18 @@ pub enum ClickPipePostKafkaSourceAuthentication {
     Unknown(String),
 }
 
+impl ClickPipePostKafkaSourceAuthentication {
+    pub const VALUES: &'static [&'static str] = &[
+        "PLAIN",
+        "SCRAM-SHA-256",
+        "SCRAM-SHA-512",
+        "IAM_ROLE",
+        "IAM_USER",
+        "MUTUAL_TLS",
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+    ];
+}
+
 impl std::fmt::Display for ClickPipePostKafkaSourceAuthentication {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -1127,6 +1175,11 @@ pub enum ClickPipePostKafkaSourceFormat {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipePostKafkaSourceFormat {
+    pub const VALUES: &'static [&'static str] =
+        &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"];
 }
 
 impl std::fmt::Display for ClickPipePostKafkaSourceFormat {
@@ -1164,6 +1217,19 @@ pub enum ClickPipePostKafkaSourceType {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipePostKafkaSourceType {
+    pub const VALUES: &'static [&'static str] = &[
+        "kafka",
+        "redpanda",
+        "msk",
+        "gcmk",
+        "confluent",
+        "warpstream",
+        "azureeventhub",
+        "dokafka",
+    ];
 }
 
 impl std::fmt::Display for ClickPipePostKafkaSourceType {
