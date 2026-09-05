@@ -612,51 +612,251 @@ async fn dispatched_cloud_500_remains_a_generic_error() {
 
 // ── Organization-scoped error context (issue #334) ─────────────────────────
 
-#[tokio::test]
-async fn query_endpoint_create_sends_typed_roles() {
+const MANUAL_QUERY_ENDPOINT_PATH: &str =
+    "/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint";
+
+async fn manual_query_endpoint_mock(get_response: ResponseTemplate) -> MockServer {
     let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(MANUAL_QUERY_ENDPOINT_PATH))
+        .respond_with(get_response)
+        .expect(1)
+        .mount(&mock)
+        .await;
     Mock::given(method("POST"))
-        .and(path(
-            "/v1/organizations/org-1/services/svc-1/serviceQueryEndpoint",
-        ))
+        .and(path(MANUAL_QUERY_ENDPOINT_PATH))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {
-                "id": "endpoint-1",
-                "roles": ["sql_console_read_only", "sql_console_admin"]
-            },
+            "result": { "id": "endpoint-1" },
             "status": 200,
             "requestId": "stub-query-endpoint-create"
         })))
         .mount(&mock)
         .await;
+    mock
+}
 
+fn manual_query_endpoint_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "service",
+        "query-endpoint",
+        "create",
+        "svc-1",
+        "--org-id",
+        "org-1",
+        "--role",
+        "sql_console_read_only",
+    ];
+    args.extend_from_slice(extra);
+    args
+}
+
+fn manual_query_endpoint_response(result: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": result, "status": 200, "requestId": "stub-query-endpoint-get"
+    }))
+}
+
+#[tokio::test]
+async fn query_endpoint_create_sends_typed_roles_and_explicit_first_origins() {
+    for origins in ["https://app.example.com", "*"] {
+        let mock = manual_query_endpoint_mock(ResponseTemplate::new(404)).await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &manual_query_endpoint_args(&[
+                "--role",
+                "sql_console_admin",
+                "--open-api-key",
+                "key-1",
+                "--allowed-origins",
+                origins,
+            ]),
+        );
+        assert_success(&output);
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result, serde_json::json!({"id": "endpoint-1"}));
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].method, wiremock::http::Method::GET);
+        assert_eq!(requests[1].method, wiremock::http::Method::POST);
+        assert_eq!(
+            requests[1].body_json::<Value>().unwrap(),
+            serde_json::json!({
+                "roles": ["sql_console_read_only", "sql_console_admin"],
+                "openApiKeys": ["key-1"], "allowedOrigins": origins,
+            })
+        );
+        for request in &requests {
+            assert!(
+                request
+                    .headers
+                    .get("authorization")
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .starts_with("Basic ")
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn query_endpoint_create_preserves_existing_keys_and_default_origins() {
+    let mock = manual_query_endpoint_mock(manual_query_endpoint_response(serde_json::json!({
+        "id": "endpoint-1", "roles": ["sql_console_admin"],
+        "openApiKeys": ["existing-1", "existing-2", "existing-1"],
+        "allowedOrigins": "https://before.example.com",
+    })))
+    .await;
     let body = invoke_cli_capture_body(
+        &mock,
+        &manual_query_endpoint_args(&[
+            "--open-api-key",
+            "existing-2",
+            "--open-api-key",
+            "new-key",
+            "--open-api-key",
+            "new-key",
+        ]),
+    )
+    .await;
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "roles": ["sql_console_read_only"],
+            "openApiKeys": ["existing-1", "existing-2", "new-key"],
+            "allowedOrigins": "https://before.example.com",
+        })
+    );
+}
+
+#[tokio::test]
+async fn query_endpoint_create_explicit_origins_replace_without_dropping_keys() {
+    for origins in ["https://after.example.com", "*"] {
+        let mock = manual_query_endpoint_mock(manual_query_endpoint_response(serde_json::json!({
+            "openApiKeys": ["existing-1", "existing-2"],
+            "allowedOrigins": "https://before.example.com",
+        })))
+        .await;
+        let body = invoke_cli_capture_body(
+            &mock,
+            &manual_query_endpoint_args(&["--allowed-origins", origins]),
+        )
+        .await;
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "roles": ["sql_console_read_only"],
+                "openApiKeys": ["existing-1", "existing-2"], "allowedOrigins": origins,
+            })
+        );
+    }
+}
+
+#[tokio::test]
+async fn query_endpoint_create_key_replacement_is_explicit() {
+    let mock = manual_query_endpoint_mock(manual_query_endpoint_response(serde_json::json!({
+        "openApiKeys": ["existing-1", "existing-2"],
+        "allowedOrigins": "https://before.example.com",
+    })))
+    .await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &manual_query_endpoint_args(&[
+            "--open-api-key",
+            "new-key",
+            "--open-api-key",
+            "new-key",
+            "--replace-open-api-keys",
+        ]),
+    )
+    .await;
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "roles": ["sql_console_read_only"], "openApiKeys": ["new-key"],
+            "allowedOrigins": "https://before.example.com",
+        })
+    );
+}
+
+#[tokio::test]
+async fn query_endpoint_create_refuses_failed_or_incomplete_get_without_writing() {
+    let cases = [
+        (
+            ResponseTemplate::new(403),
+            vec!["--allowed-origins", "*"],
+            4,
+        ),
+        (
+            ResponseTemplate::new(503),
+            vec![
+                "--allowed-origins",
+                "*",
+                "--replace-open-api-keys",
+                "--open-api-key",
+                "new-key",
+            ],
+            1,
+        ),
+        (
+            ResponseTemplate::new(200).set_body_string("invalid JSON"),
+            vec![],
+            1,
+        ),
+        (ResponseTemplate::new(404), vec![], 1),
+        (
+            manual_query_endpoint_response(
+                serde_json::json!({"allowedOrigins": "https://before.example.com"}),
+            ),
+            vec!["--open-api-key", "new-key"],
+            1,
+        ),
+        (
+            manual_query_endpoint_response(serde_json::json!({"openApiKeys": ["existing-1"]})),
+            vec![],
+            1,
+        ),
+        (
+            manual_query_endpoint_response(serde_json::json!(null)),
+            vec!["--allowed-origins", "*"],
+            1,
+        ),
+    ];
+    for (response, flags, exit_code) in cases {
+        let mock = manual_query_endpoint_mock(response).await;
+        let output = invoke_cli_with_cloud_credentials(&mock, &manual_query_endpoint_args(&flags));
+        assert_eq!(
+            output.status.code(),
+            Some(exit_code),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, wiremock::http::Method::GET);
+    }
+}
+
+#[tokio::test]
+async fn query_endpoint_create_omitted_role_fails_before_contacting_api() {
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
             "service",
             "query-endpoint",
             "create",
             "svc-1",
-            "--role",
-            "sql_console_read_only",
-            "--role",
-            "sql_console_admin",
-            "--open-api-key",
-            "key-1",
             "--org-id",
             "org-1",
+            "--open-api-key",
+            "new-key",
+            "--allowed-origins",
+            "*",
         ],
-    )
-    .await;
-
-    assert_eq!(
-        body,
-        serde_json::json!({
-            "roles": ["sql_console_read_only", "sql_console_admin"],
-            "openApiKeys": ["key-1"],
-            "allowedOrigins": "*"
-        })
     );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -678,6 +678,11 @@ clickhousectl cloud service delete <service-id>
 clickhousectl cloud service delete <service-id> --force
 ```
 
+`query-endpoint create` adds and deduplicates API keys while preserving existing browser origins. `--role` is required and replaces the endpoint-wide roles for **all** authorized keys; roles are not assigned per key.
+Pass `--allowed-origins` on first creation or to change browser access (`'*'` explicitly allows every origin). Use `--replace-open-api-keys` with `--open-api-key` to deliberately replace the entire authorized-key list.
+The command reads the existing configuration before updating; a failed or incomplete read prevents changes to unknown fields. Avoid concurrent changes to the same query endpoint.
+
+
 `--backup-start-time` requires the backup period to be 24 or 48 hours. Nothing is defaulted when the period is omitted: the API validates the new start time against the period already stored on the service, so either pass `--backup-period-hours 24` or `--backup-period-hours 48` in the same call, or leave the stored period at one of those. When a start time is given without a period, the CLI reads the current configuration first and fails before sending the update if the stored period is something else.
 
 `--clear-backup-start-time` removes a stored start time and lifts that restriction, so a service that has one can go back to any backup period. It sends an explicit `"backupStartTime": null`, which the API accepts even though the OpenAPI spec does not mark the field nullable, and it can be combined with `--backup-period-hours` to clear the start time and set an otherwise incompatible period in a single call. The two start-time flags conflict: pass one or the other.

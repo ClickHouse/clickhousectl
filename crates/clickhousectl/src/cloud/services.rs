@@ -7,7 +7,7 @@ use crate::cloud::credentials;
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
-use crate::cloud::service_query::RepairVerification;
+use crate::cloud::service_query::{RepairVerification, existing_open_api_keys};
 use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
@@ -20,8 +20,9 @@ use clickhouse_cloud_api::models::{
     ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
     ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
     ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
-    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
-    ServiceState, ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
+    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceQueryAPIEndpoint,
+    ServiceReplicaScalingPatchRequest, ServiceState, ServiceStatePatchRequest,
+    ServiceStatePatchRequestCommand,
 };
 #[cfg(test)]
 use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Response};
@@ -535,21 +536,30 @@ pub enum QueryEndpointCommands {
         org_id: Option<String>,
     },
 
-    /// Create the Query API endpoint
+    /// Create or update the Query API endpoint
+    #[command(after_help = "CONTEXT FOR AGENTS:\n\
+        Existing API keys are preserved unless --replace-open-api-keys is set.\n\
+        Roles replace the endpoint-wide role list for every authorized key.\n\
+        First creation requires --allowed-origins; use '*' explicitly for all.\n\
+        Avoid concurrent changes to the same endpoint.")]
     Create {
         /// Service ID
         service_id: String,
 
-        /// Role to grant access (repeatable)
-        #[arg(long, value_parser = PossibleValuesParser::new(QueryEndpointRole::VALUES))]
+        /// Endpoint-wide role to grant (required, repeatable)
+        #[arg(long, required = true, value_parser = PossibleValuesParser::new(QueryEndpointRole::VALUES))]
         role: Vec<String>,
 
         /// API key ID to authorize (repeatable)
-        #[arg(long = "open-api-key")]
+        #[arg(long = "open-api-key", value_parser = clap::builder::NonEmptyStringValueParser::new())]
         open_api_key: Vec<String>,
 
-        /// Allowed origins for browser access; "*" when omitted
-        #[arg(long)]
+        /// Replace existing API keys (requires --open-api-key)
+        #[arg(long, requires = "open_api_key")]
+        replace_open_api_keys: bool,
+
+        /// Browser origins; preserve when omitted on an existing endpoint
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         allowed_origins: Option<String>,
 
         /// Organization ID (auto-detected only if you have one org)
@@ -792,12 +802,14 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 service_id,
                 role,
                 open_api_key,
+                replace_open_api_keys,
                 allowed_origins,
                 org_id,
             } => {
                 let options = QueryEndpointCreateOptions {
                     roles: role,
                     open_api_keys: open_api_key,
+                    replace_open_api_keys,
                     allowed_origins,
                     org_id,
                 };
@@ -1198,6 +1210,7 @@ struct ServiceResetPasswordOptions {
 struct QueryEndpointCreateOptions {
     roles: Vec<String>,
     open_api_keys: Vec<String>,
+    replace_open_api_keys: bool,
     allowed_origins: Option<String>,
     org_id: Option<String>,
 }
@@ -1450,18 +1463,46 @@ fn build_service_password_patch_request(
 
 fn build_query_endpoint_create_request(
     options: &QueryEndpointCreateOptions,
+    existing: Option<&ServiceQueryAPIEndpoint>,
 ) -> CloudResult<InstanceServiceQueryApiEndpointsPostRequest> {
+    if options.roles.is_empty() {
+        return Err(CloudError::new("at least one --role is required"));
+    }
+    let mut open_api_keys = match existing {
+        Some(endpoint) if !options.replace_open_api_keys => {
+            existing_open_api_keys(endpoint.clone())
+                .map_err(|error| error.at_stage(FailureStage::EndpointGet))?
+        }
+        _ => Vec::new(),
+    };
+    open_api_keys.extend(options.open_api_keys.iter().cloned());
+    let mut seen = HashSet::new();
+    open_api_keys.retain(|key| seen.insert(key.clone()));
+
+    let allowed_origins = match (&options.allowed_origins, existing) {
+        (Some(origins), _) => origins.clone(),
+        (None, Some(endpoint)) => endpoint.allowed_origins.clone().ok_or_else(|| {
+            CloudError::new(
+                "the query endpoint response is missing field 'allowedOrigins'; \
+                 pass --allowed-origins to explicitly replace it",
+            )
+            .at_stage(FailureStage::EndpointGet)
+        })?,
+        (None, None) => {
+            return Err(CloudError::new(
+                "--allowed-origins is required when creating a new query endpoint; \
+                 pass browser origins or '*' explicitly to allow all origins",
+            ));
+        }
+    };
     Ok(InstanceServiceQueryApiEndpointsPostRequest {
         roles: options
             .roles
             .iter()
             .map(|role| parse_serde_enum(role, "role", QueryEndpointRole::VALUES))
             .collect::<Result<_, _>>()?,
-        open_api_keys: options.open_api_keys.clone(),
-        allowed_origins: options
-            .allowed_origins
-            .clone()
-            .unwrap_or_else(|| "*".to_string()),
+        open_api_keys,
+        allowed_origins,
     })
 }
 
@@ -1896,26 +1937,20 @@ async fn query_endpoint_create(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
-    let request = build_query_endpoint_create_request(&options)?;
+    let existing = client
+        .get_query_endpoint_for_binding(&org_id, service_id)
+        .await
+        .map_err(|error| error.at_stage(FailureStage::EndpointGet))?;
+    let request = build_query_endpoint_create_request(&options, existing.as_ref())?;
     let endpoint = client
         .create_query_endpoint(&org_id, service_id, &request)
-        .await?;
+        .await
+        .map_err(|error| error.at_stage(FailureStage::EndpointUpsert))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&endpoint)?);
     } else {
-        println!("Query endpoint created for service {}", service_id);
-        println!("  ID: {}", or_absent(endpoint.id.as_deref()));
-        println!(
-            "  Roles: {}",
-            or_absent(endpoint.roles.as_ref().map(|roles| {
-                roles
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }))
-        );
+        print_human(&endpoint)?;
     }
     Ok(())
 }
@@ -3657,6 +3692,8 @@ mod tests {
             "query-endpoint",
             "create",
             "svc-1",
+            "--role",
+            "sql_console_read_only",
         ]);
         let crate::cloud::cli::ServiceCommands::QueryEndpoint { command } = query_endpoint else {
             panic!("expected query-endpoint command");
@@ -3665,13 +3702,15 @@ mod tests {
             role,
             open_api_key,
             allowed_origins,
+            replace_open_api_keys,
             org_id,
             ..
         } = command
         else {
             panic!("expected query-endpoint create");
         };
-        assert!(role.is_empty());
+        assert_eq!(role, ["sql_console_read_only"]);
+        assert!(!replace_open_api_keys);
         assert!(open_api_key.is_empty());
         assert!(allowed_origins.is_none());
         assert!(org_id.is_none());
@@ -4392,6 +4431,7 @@ mod tests {
             "key-1",
             "--open-api-key",
             "key-2",
+            "--replace-open-api-keys",
             "--allowed-origins",
             "https://example.com",
             "--org-id",
@@ -4405,12 +4445,14 @@ mod tests {
             role,
             open_api_key,
             allowed_origins,
+            replace_open_api_keys,
             org_id,
         } = command
         else {
             panic!("expected query-endpoint create");
         };
         assert_eq!(service_id, "svc-1");
+        assert!(replace_open_api_keys);
         assert_eq!(role, vec!["sql_console_read_only", "sql_console_admin"]);
         assert_eq!(open_api_key, vec!["key-1", "key-2"]);
         assert_eq!(allowed_origins.as_deref(), Some("https://example.com"));
@@ -4440,6 +4482,42 @@ mod tests {
                     panic!("expected query-endpoint {action}")
                 }
             }
+        }
+    }
+
+    #[test]
+    fn query_endpoint_create_requires_roles_and_nonempty_explicit_values() {
+        let prefix = [
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query-endpoint",
+            "create",
+            "svc-1",
+        ];
+        let missing_role = Cli::try_parse_from(prefix).err().unwrap();
+        assert_eq!(
+            missing_role.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        for (flags, expected) in [
+            (
+                vec!["--role", "sql_console_read_only", "--replace-open-api-keys"],
+                clap::error::ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                vec!["--role", "sql_console_read_only", "--open-api-key", ""],
+                clap::error::ErrorKind::InvalidValue,
+            ),
+            (
+                vec!["--role", "sql_console_read_only", "--allowed-origins", ""],
+                clap::error::ErrorKind::InvalidValue,
+            ),
+        ] {
+            let error = Cli::try_parse_from(prefix.into_iter().chain(flags))
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), expected);
         }
     }
 
@@ -4785,17 +4863,18 @@ mod tests {
             false,
         );
         for action in ["create", "delete"] {
-            assert_write(
-                &[
-                    "clickhousectl",
-                    "cloud",
-                    "service",
-                    "query-endpoint",
-                    action,
-                    "svc-1",
-                ],
-                true,
-            );
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                action,
+                "svc-1",
+            ];
+            if action == "create" {
+                args.extend(["--role", "sql_console_read_only"]);
+            }
+            assert_write(&args, true);
         }
         assert_write(
             &[
@@ -6275,35 +6354,122 @@ mod tests {
 
     #[test]
     fn build_query_endpoint_create_request_supports_minimal_fields() {
-        let request =
-            build_query_endpoint_create_request(&QueryEndpointCreateOptions::default()).unwrap();
+        let request = build_query_endpoint_create_request(
+            &QueryEndpointCreateOptions {
+                roles: vec!["sql_console_read_only".into()],
+                allowed_origins: Some("https://example.com".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
 
-        assert!(request.roles.is_empty());
+        assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleReadOnly]);
         assert!(request.open_api_keys.is_empty());
-        assert_eq!(request.allowed_origins, "*");
+        assert_eq!(request.allowed_origins, "https://example.com");
     }
 
     #[test]
     fn build_query_endpoint_create_request_supports_maximal_fields() {
-        let request = build_query_endpoint_create_request(&QueryEndpointCreateOptions {
-            roles: vec![
-                "sql_console_read_only".to_string(),
-                "sql_console_admin".to_string(),
-            ],
-            open_api_keys: vec!["key-1".to_string(), "key-2".to_string()],
-            allowed_origins: Some("https://example.com".to_string()),
-            org_id: None,
-        })
+        let request = build_query_endpoint_create_request(
+            &QueryEndpointCreateOptions {
+                roles: vec!["sql_console_read_only".into(), "sql_console_admin".into()],
+                open_api_keys: vec!["key-1".into(), "key-2".into(), "key-1".into()],
+                replace_open_api_keys: true,
+                allowed_origins: Some("*".into()),
+                org_id: Some("org-1".into()),
+            },
+            Some(&ServiceQueryAPIEndpoint {
+                open_api_keys: Some(vec!["old-key".into()]),
+                allowed_origins: Some("https://before.example.com".into()),
+                ..Default::default()
+            }),
+        )
         .unwrap();
 
         assert_eq!(
             request.roles,
-            vec![
+            [
                 QueryEndpointRole::SqlConsoleReadOnly,
-                QueryEndpointRole::SqlConsoleAdmin,
+                QueryEndpointRole::SqlConsoleAdmin
             ]
         );
-        assert_eq!(request.open_api_keys, vec!["key-1", "key-2"]);
+        assert_eq!(request.open_api_keys, ["key-1", "key-2"]);
+        assert_eq!(request.allowed_origins, "*");
+    }
+
+    #[test]
+    fn build_query_endpoint_create_request_merges_keys_and_preserves_origins() {
+        let request = build_query_endpoint_create_request(
+            &QueryEndpointCreateOptions {
+                roles: vec!["sql_console_read_only".into()],
+                open_api_keys: vec!["key-2".into(), "key-3".into(), "key-3".into()],
+                ..Default::default()
+            },
+            Some(&ServiceQueryAPIEndpoint {
+                roles: Some(vec![QueryEndpointRole::SqlConsoleAdmin]),
+                open_api_keys: Some(vec!["key-1".into(), "key-2".into(), "key-1".into()]),
+                allowed_origins: Some("https://before.example.com".into()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleReadOnly]);
+        assert_eq!(request.open_api_keys, ["key-1", "key-2", "key-3"]);
+        assert_eq!(request.allowed_origins, "https://before.example.com");
+    }
+
+    #[test]
+    fn build_query_endpoint_create_request_requires_roles_and_first_origins() {
+        assert!(
+            build_query_endpoint_create_request(&QueryEndpointCreateOptions::default(), None)
+                .is_err()
+        );
+        assert!(
+            build_query_endpoint_create_request(
+                &QueryEndpointCreateOptions {
+                    roles: vec!["sql_console_read_only".into()],
+                    ..Default::default()
+                },
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn build_query_endpoint_create_request_preserves_explicitly_empty_state() {
+        let request = build_query_endpoint_create_request(
+            &QueryEndpointCreateOptions {
+                roles: vec!["sql_console_read_only".into()],
+                ..Default::default()
+            },
+            Some(&ServiceQueryAPIEndpoint {
+                open_api_keys: Some(vec![]),
+                allowed_origins: Some(String::new()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(request.open_api_keys.is_empty());
+        assert!(request.allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn build_query_endpoint_create_request_rejects_unknown_fields_unless_replaced() {
+        let existing = ServiceQueryAPIEndpoint::default();
+        let mut options = QueryEndpointCreateOptions {
+            roles: vec!["sql_console_read_only".into()],
+            open_api_keys: vec!["key-1".into()],
+            ..Default::default()
+        };
+        assert!(build_query_endpoint_create_request(&options, Some(&existing)).is_err());
+        options.replace_open_api_keys = true;
+        assert!(build_query_endpoint_create_request(&options, Some(&existing)).is_err());
+        options.allowed_origins = Some("https://example.com".into());
+        let request = build_query_endpoint_create_request(&options, Some(&existing)).unwrap();
+        assert_eq!(request.open_api_keys, ["key-1"]);
         assert_eq!(request.allowed_origins, "https://example.com");
     }
 

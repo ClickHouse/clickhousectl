@@ -1279,7 +1279,9 @@ pub(crate) async fn rejected_stored_query_key_error(
 /// `openApiKeys` cannot be read as "no keys bound": merging into an empty list
 /// would revoke every binding the response failed to report. An explicitly
 /// empty list is a real answer and merges normally.
-fn existing_open_api_keys(endpoint: ServiceQueryAPIEndpoint) -> CloudResult<Vec<String>> {
+pub(crate) fn existing_open_api_keys(
+    endpoint: ServiceQueryAPIEndpoint,
+) -> CloudResult<Vec<String>> {
     endpoint.open_api_keys.ok_or_else(|| {
         CloudError::new(
             "the query endpoint response is missing field 'openApiKeys', so the keys currently \
@@ -1400,7 +1402,7 @@ impl CloudClient {
         }
     }
 
-    async fn get_query_endpoint_for_binding(
+    pub(crate) async fn get_query_endpoint_for_binding(
         &self,
         org_id: &str,
         service_id: &str,
