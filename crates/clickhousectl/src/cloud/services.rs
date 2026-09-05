@@ -3,6 +3,7 @@ use crate::cloud::backups::BackupConfigCommands;
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
+use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::credentials;
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
@@ -15,15 +16,16 @@ use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
-    InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole,
-    ServicPrivateEndpointePostRequest, Service, ServiceClickhouseSetting,
-    ServiceClickhouseSettingsList, ServiceClickhouseSettingsPatchRequest,
-    ServiceClickhouseSettingsPatchResponse, ServiceClickhouseSettingsSchema, ServiceEndpoint,
-    ServiceEndpointChange, ServiceEndpointChangeProtocol, ServiceEndpointProtocol,
-    ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
-    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
-    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
-    ServiceProfile, ServiceQueryAPIEndpoint, ServiceReplicaScalingPatchRequest, ServiceState,
+    InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole, ScalingSchedule,
+    ScalingScheduleEntryRequest, ScalingSchedulePostRequest, ServicPrivateEndpointePostRequest,
+    Service, ServiceClickhouseSetting, ServiceClickhouseSettingsList,
+    ServiceClickhouseSettingsPatchRequest, ServiceClickhouseSettingsPatchResponse,
+    ServiceClickhouseSettingsSchema, ServiceEndpoint, ServiceEndpointChange,
+    ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
+    ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
+    ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
+    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceProfile,
+    ServiceQueryAPIEndpoint, ServiceReplicaScalingPatchRequest, ServiceState,
     ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
 };
 #[cfg(test)]
@@ -87,6 +89,13 @@ pub enum ServiceCommands {
     Settings {
         #[command(subcommand)]
         command: ServiceSettingsCommands,
+    },
+
+    /// Manage the service scaling schedule
+    #[command(name = "scaling-schedule")]
+    ScalingSchedule {
+        #[command(subcommand)]
+        command: ScalingScheduleCommands,
     },
 
     /// Create a service
@@ -738,6 +747,51 @@ pub enum ServiceSettingsCommands {
     },
 }
 
+#[derive(Subcommand)]
+pub enum ScalingScheduleCommands {
+    /// Get the scaling schedule
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create or replace the scaling schedule
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  --file is a JSON ScalingSchedulePostRequest; '-' reads it from stdin.
+  Set replaces every existing entry. Get, edit only entries, then set to preserve other entries.
+  Hours and weekdays are UTC. baseConfig is response-only and must not be sent.")]
+    Set {
+        /// Service ID
+        service_id: String,
+
+        /// JSON request file (use "-" for stdin)
+        #[arg(long)]
+        file: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete the scaling schedule
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Deletes every scheduled entry. An active entry returns to the service's base scaling config.")]
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
 impl ServiceProfileCommands {
     fn is_write(&self) -> bool {
         match self {
@@ -757,6 +811,15 @@ impl ServiceSettingsCommands {
     }
 }
 
+impl ScalingScheduleCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            ScalingScheduleCommands::Get { .. } => false,
+            ScalingScheduleCommands::Set { .. } | ScalingScheduleCommands::Delete { .. } => true,
+        }
+    }
+}
+
 impl ServiceCommands {
     pub fn is_write(&self) -> bool {
         match self {
@@ -764,6 +827,7 @@ impl ServiceCommands {
             ServiceCommands::Get { .. } => false,
             ServiceCommands::Profile { command } => command.is_write(),
             ServiceCommands::Settings { command } => command.is_write(),
+            ServiceCommands::ScalingSchedule { command } => command.is_write(),
             ServiceCommands::Prometheus { .. } => false,
             ServiceCommands::Query { .. } => false,
             ServiceCommands::RepairQueryKey { .. } => true,
@@ -845,6 +909,19 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             } => {
                 service_setting_unset(client, &service_id, &setting_name, org_id.as_deref(), json)
                     .await
+            }
+        },
+        ServiceCommands::ScalingSchedule { command } => match command {
+            ScalingScheduleCommands::Get { service_id, org_id } => {
+                scaling_schedule_get(client, &service_id, org_id.as_deref(), json).await
+            }
+            ScalingScheduleCommands::Set {
+                service_id,
+                file,
+                org_id,
+            } => scaling_schedule_set(client, &service_id, &file, org_id.as_deref(), json).await,
+            ScalingScheduleCommands::Delete { service_id, org_id } => {
+                scaling_schedule_delete(client, &service_id, org_id.as_deref(), json).await
             }
         },
         ServiceCommands::Create {
@@ -2029,6 +2106,160 @@ fn build_service_state_patch_request(
     ServiceStatePatchRequest {
         command: Some(command),
     }
+}
+
+fn build_scaling_schedule_request(
+    value: serde_json::Value,
+    source: &str,
+) -> CloudResult<ScalingSchedulePostRequest> {
+    let request: ScalingSchedulePostRequest = deserialize_strict_config(value, source)?;
+    for (index, entry) in request.entries.iter().enumerate() {
+        validate_scaling_schedule_entry(entry, index, source)?;
+    }
+    Ok(request)
+}
+
+fn validate_scaling_schedule_entry(
+    entry: &ScalingScheduleEntryRequest,
+    index: usize,
+    source: &str,
+) -> CloudResult<()> {
+    let invalid = |message: String| {
+        CloudError::new(format!(
+            "invalid request body in config {source}: entries[{index}] {message}"
+        ))
+    };
+
+    if entry.weekdays.is_empty() {
+        return Err(invalid("weekdays must contain at least one day".into()));
+    }
+    if let Some(day) = entry.weekdays.iter().find(|&&day| !(0..=6).contains(&day)) {
+        return Err(invalid(format!(
+            "weekdays contains {day}; each day must be between 0 (Sunday) and 6 (Saturday)"
+        )));
+    }
+    if !(0..=23).contains(&entry.start_hour_utc) {
+        return Err(invalid(format!(
+            "startHourUtc must be between 0 and 23, got {}",
+            entry.start_hour_utc
+        )));
+    }
+    if !(1..=24).contains(&entry.end_hour_utc) {
+        return Err(invalid(format!(
+            "endHourUtc must be between 1 and 24, got {}",
+            entry.end_hour_utc
+        )));
+    }
+    if entry.start_hour_utc == entry.end_hour_utc {
+        return Err(invalid(
+            "startHourUtc and endHourUtc must be different".into(),
+        ));
+    }
+
+    let memory = match (entry.min_replica_memory_gb, entry.max_replica_memory_gb) {
+        (None, None) => None,
+        (Some(min), Some(max)) => {
+            for (field, value) in [("minReplicaMemoryGb", min), ("maxReplicaMemoryGb", max)] {
+                if !(8.0..=356.0).contains(&value) || value % 4.0 != 0.0 {
+                    return Err(invalid(format!(
+                        "{field} must be a multiple of 4 between 8 and 356, got {value}"
+                    )));
+                }
+            }
+            if min > max {
+                return Err(invalid(format!(
+                    "minReplicaMemoryGb ({min}) must not exceed maxReplicaMemoryGb ({max})"
+                )));
+            }
+            Some((min, max))
+        }
+        _ => {
+            return Err(invalid(
+                "minReplicaMemoryGb and maxReplicaMemoryGb must be provided together or both omitted"
+                    .into(),
+            ));
+        }
+    };
+
+    let replicas = match (entry.min_replicas, entry.max_replicas) {
+        (None, None) => None,
+        (Some(min), Some(max)) => {
+            if min < 1 || max < 1 {
+                return Err(invalid(format!(
+                    "minReplicas and maxReplicas must each be at least 1, got {min} and {max}"
+                )));
+            }
+            if min > max {
+                return Err(invalid(format!(
+                    "minReplicas ({min}) must not exceed maxReplicas ({max})"
+                )));
+            }
+            Some((min, max))
+        }
+        _ => {
+            return Err(invalid(
+                "minReplicas and maxReplicas must be provided together or both omitted".into(),
+            ));
+        }
+    };
+
+    if entry.num_replicas.is_some() && replicas.is_some() {
+        return Err(invalid(
+            "numReplicas is mutually exclusive with minReplicas and maxReplicas".into(),
+        ));
+    }
+    if let Some(count) = entry.num_replicas
+        && count < 1
+    {
+        return Err(invalid(format!(
+            "numReplicas must be at least 1, got {count}"
+        )));
+    }
+
+    match entry.autoscaling_mode.as_ref() {
+        Some(AutoscalingMode::Unknown(value)) => {
+            return Err(invalid(format!(
+                "autoscalingMode must be one of {}, got {value}",
+                AutoscalingMode::VALUES.join(", ")
+            )));
+        }
+        Some(AutoscalingMode::Horizontal) => {
+            let Some((min_memory, max_memory)) = memory else {
+                return Err(invalid(
+                    "horizontal autoscaling requires minReplicaMemoryGb and maxReplicaMemoryGb"
+                        .into(),
+                ));
+            };
+            if min_memory != max_memory {
+                return Err(invalid(
+                    "horizontal autoscaling requires equal minReplicaMemoryGb and maxReplicaMemoryGb"
+                        .into(),
+                ));
+            }
+            if replicas.is_none() {
+                return Err(invalid(
+                    "horizontal autoscaling requires minReplicas and maxReplicas".into(),
+                ));
+            }
+            if entry.num_replicas.is_some() {
+                return Err(invalid(
+                    "horizontal autoscaling does not accept numReplicas".into(),
+                ));
+            }
+        }
+        Some(AutoscalingMode::Vertical) | None => {
+            if let Some((min, max)) = replicas
+                && min != max
+            {
+                return Err(invalid(
+                    "vertical autoscaling accepts minReplicas and maxReplicas only as an equal fixed count"
+                        .into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn service_query_hint(service_id: Option<uuid::Uuid>) -> Option<String> {
@@ -3603,6 +3834,63 @@ async fn private_endpoint_get_config(
     Ok(())
 }
 
+async fn scaling_schedule_get(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let schedule = client.get_scaling_schedule(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&schedule)?);
+    } else {
+        print_human(&schedule)?;
+    }
+    Ok(())
+}
+
+async fn scaling_schedule_set(
+    client: &CloudClient,
+    service_id: &str,
+    file: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_scaling_schedule_request(read_config_value(file)?, file)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let schedule = client
+        .set_scaling_schedule(&org_id, service_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&schedule)?);
+    } else {
+        print_human(&schedule)?;
+    }
+    Ok(())
+}
+
+async fn scaling_schedule_delete(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client.delete_scaling_schedule(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        print_line(format!(
+            "Scaling schedule deleted from service {service_id}"
+        ));
+    }
+    Ok(())
+}
+
 async fn service_prometheus(
     client: &CloudClient,
     service_id: &str,
@@ -3618,6 +3906,49 @@ async fn service_prometheus(
 }
 
 impl CloudClient {
+    pub async fn get_scaling_schedule(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<ScalingSchedule> {
+        let response = self
+            .api()
+            .scaling_schedule_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn set_scaling_schedule(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ScalingSchedulePostRequest,
+    ) -> crate::cloud::client::Result<ScalingSchedule> {
+        let response = self
+            .api()
+            .scaling_schedule_upsert(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn delete_scaling_schedule(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .scaling_schedule_delete(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
+    }
+
     pub async fn list_service_profiles(
         &self,
         org_id: &str,
@@ -4307,6 +4638,97 @@ mod tests {
         let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "profile", "list"])
             .err()
             .expect("missing --region should fail");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn parses_scaling_schedule_commands_and_classifies_writes() {
+        let get = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "scaling-schedule",
+            "get",
+            "svc-1",
+        ]);
+        let ServiceCommands::ScalingSchedule {
+            command: ScalingScheduleCommands::Get { service_id, org_id },
+        } = get
+        else {
+            panic!("expected scaling schedule get");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert!(org_id.is_none());
+
+        let set = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "scaling-schedule",
+            "set",
+            "svc-1",
+            "--file",
+            "-",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::ScalingSchedule {
+            command:
+                ScalingScheduleCommands::Set {
+                    service_id,
+                    file,
+                    org_id,
+                },
+        } = set
+        else {
+            panic!("expected scaling schedule set");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(file, "-");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "scaling-schedule",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
+        for leaf in ["set", "delete"] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "scaling-schedule",
+                leaf,
+                "svc-1",
+            ];
+            if leaf == "set" {
+                args.extend(["--file", "schedule.json"]);
+            }
+            assert_write(&args, true);
+        }
+    }
+
+    #[test]
+    fn scaling_schedule_set_requires_file() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "scaling-schedule",
+            "set",
+            "svc-1",
+        ])
+        .err()
+        .expect("missing --file should fail");
         assert_eq!(
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
@@ -7158,6 +7580,157 @@ mod tests {
         assert_eq!(resolved.autoscaling_mode, Some(AutoscalingMode::Vertical));
         assert!(resolved.min_replicas.is_none());
         assert!(resolved.max_replicas.is_none());
+    }
+
+    #[test]
+    fn build_scaling_schedule_request_supports_minimal_and_empty_schedules() {
+        let request = build_scaling_schedule_request(
+            serde_json::json!({
+                "entries": [{
+                    "name": "Business hours",
+                    "weekdays": [1],
+                    "startHourUtc": 9,
+                    "endHourUtc": 17
+                }]
+            }),
+            "test.json",
+        )
+        .unwrap();
+        assert_eq!(request.entries.len(), 1);
+        let entry = &request.entries[0];
+        assert_eq!(entry.name, "Business hours");
+        assert_eq!(entry.weekdays, vec![1]);
+        assert_eq!(entry.start_hour_utc, 9);
+        assert_eq!(entry.end_hour_utc, 17);
+        assert!(entry.autoscaling_mode.is_none());
+        assert!(entry.idle_scaling.is_none());
+        assert!(entry.idle_timeout_minutes.is_none());
+        assert!(entry.min_replica_memory_gb.is_none());
+        assert!(entry.max_replica_memory_gb.is_none());
+        assert!(entry.num_replicas.is_none());
+        assert!(entry.min_replicas.is_none());
+        assert!(entry.max_replicas.is_none());
+
+        let clear = build_scaling_schedule_request(serde_json::json!({"entries": []}), "test.json")
+            .unwrap();
+        assert!(clear.entries.is_empty());
+    }
+
+    #[test]
+    fn build_scaling_schedule_request_preserves_all_entry_fields() {
+        let request = build_scaling_schedule_request(
+            serde_json::json!({
+                "entries": [
+                    {
+                        "name": "Vertical nights",
+                        "weekdays": [0, 6],
+                        "startHourUtc": 22,
+                        "endHourUtc": 6,
+                        "autoscalingMode": "vertical",
+                        "idleScaling": true,
+                        "idleTimeoutMinutes": 5,
+                        "minReplicaMemoryGb": 8,
+                        "maxReplicaMemoryGb": 32,
+                        "numReplicas": 2
+                    },
+                    {
+                        "name": "Horizontal weekdays",
+                        "weekdays": [1, 2, 3, 4, 5],
+                        "startHourUtc": 8,
+                        "endHourUtc": 24,
+                        "autoscalingMode": "horizontal",
+                        "idleScaling": false,
+                        "idleTimeoutMinutes": 0,
+                        "minReplicaMemoryGb": 16,
+                        "maxReplicaMemoryGb": 16,
+                        "minReplicas": 2,
+                        "maxReplicas": 7
+                    }
+                ]
+            }),
+            "schedule.json",
+        )
+        .unwrap();
+
+        assert_eq!(request.entries.len(), 2);
+        let vertical = &request.entries[0];
+        assert_eq!(vertical.autoscaling_mode, Some(AutoscalingMode::Vertical));
+        assert_eq!(vertical.idle_scaling, Some(true));
+        assert_eq!(vertical.idle_timeout_minutes, Some(5));
+        assert_eq!(vertical.min_replica_memory_gb, Some(8.0));
+        assert_eq!(vertical.max_replica_memory_gb, Some(32.0));
+        assert_eq!(vertical.num_replicas, Some(2));
+        assert!(vertical.min_replicas.is_none());
+        assert!(vertical.max_replicas.is_none());
+
+        let horizontal = &request.entries[1];
+        assert_eq!(
+            horizontal.autoscaling_mode,
+            Some(AutoscalingMode::Horizontal)
+        );
+        assert_eq!(horizontal.weekdays, vec![1, 2, 3, 4, 5]);
+        assert_eq!(horizontal.end_hour_utc, 24);
+        assert_eq!(horizontal.idle_scaling, Some(false));
+        assert_eq!(horizontal.idle_timeout_minutes, Some(0));
+        assert_eq!(horizontal.min_replica_memory_gb, Some(16.0));
+        assert_eq!(horizontal.max_replica_memory_gb, Some(16.0));
+        assert_eq!(horizontal.min_replicas, Some(2));
+        assert_eq!(horizontal.max_replicas, Some(7));
+        assert!(horizontal.num_replicas.is_none());
+    }
+
+    #[test]
+    fn build_scaling_schedule_request_rejects_unknown_fields_and_modes() {
+        for value in [
+            serde_json::json!({
+                "entries": [{
+                    "name": "typo",
+                    "weekdays": [1],
+                    "startHourUtc": 9,
+                    "endHourUtc": 17,
+                    "minReplicaMemoryGB": 16
+                }]
+            }),
+            serde_json::json!({
+                "entries": [{
+                    "name": "future mode",
+                    "weekdays": [1],
+                    "startHourUtc": 9,
+                    "endHourUtc": 17,
+                    "autoscalingMode": "diagonal"
+                }]
+            }),
+            serde_json::json!({"entries": [], "baseConfig": {}}),
+        ] {
+            assert!(build_scaling_schedule_request(value, "bad.json").is_err());
+        }
+    }
+
+    #[test]
+    fn build_scaling_schedule_request_validates_documented_bounds_and_relationships() {
+        let invalid_entries = [
+            serde_json::json!({"name":"x","weekdays":[],"startHourUtc":0,"endHourUtc":24}),
+            serde_json::json!({"name":"x","weekdays":[7],"startHourUtc":0,"endHourUtc":24}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":-1,"endHourUtc":24}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":0,"endHourUtc":25}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":8}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicaMemoryGb":8}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicaMemoryGb":12,"maxReplicaMemoryGb":8}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicaMemoryGb":10,"maxReplicaMemoryGb":12}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"numReplicas":0}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicas":1}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicas":3,"maxReplicas":2}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"numReplicas":2,"minReplicas":2,"maxReplicas":2}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"autoscalingMode":"vertical","minReplicas":1,"maxReplicas":2}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"autoscalingMode":"horizontal","minReplicaMemoryGb":16,"maxReplicaMemoryGb":16}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"autoscalingMode":"horizontal","minReplicaMemoryGb":16,"maxReplicaMemoryGb":20,"minReplicas":1,"maxReplicas":2}),
+        ];
+        for entry in invalid_entries {
+            let error =
+                build_scaling_schedule_request(serde_json::json!({"entries": [entry]}), "bad.json")
+                    .unwrap_err();
+            assert!(error.message.contains("entries[0]"), "{error}");
+        }
     }
 
     #[test]
