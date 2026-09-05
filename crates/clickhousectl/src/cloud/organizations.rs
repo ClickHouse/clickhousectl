@@ -27,6 +27,13 @@ pub enum OrgCommands {
         command: QuotaCommands,
     },
 
+    /// View active credit balances (Beta)
+    Balance {
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
     /// Update organization settings
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -106,6 +113,7 @@ impl OrgCommands {
             OrgCommands::List => false,
             OrgCommands::Get { .. } => false,
             OrgCommands::Quota { .. } => false,
+            OrgCommands::Balance { .. } => false,
             OrgCommands::Prometheus { .. } => false,
             OrgCommands::Usage { .. } => false,
             OrgCommands::Update { .. } => true,
@@ -253,6 +261,7 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         OrgCommands::List => org_list(client, json).await,
         OrgCommands::Get { org_id } => org_get(client, &org_id, json).await,
         OrgCommands::Quota { command } => run_quota(client, command, json).await,
+        OrgCommands::Balance { org_id } => org_balance(client, org_id.as_deref(), json).await,
         OrgCommands::Update {
             org_id,
             name,
@@ -577,6 +586,57 @@ async fn quota_get(
     Ok(())
 }
 
+async fn org_balance(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let credit_balances = client.get_credit_balances(&org_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&credit_balances)?);
+    } else {
+        println!(
+            "Total remaining credits: {} CHC",
+            or_absent(credit_balances.total_remaining_credits)
+        );
+        let balances = credit_balances.balances.unwrap_or_default();
+        if balances.is_empty() {
+            println!("No active credit balances found");
+            return Ok(());
+        }
+
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "Type")]
+            balance_type: String,
+            #[tabled(rename = "Remaining (CHC)")]
+            remaining: String,
+            #[tabled(rename = "Total (CHC)")]
+            total: String,
+            #[tabled(rename = "Spent (CHC)")]
+            spent: String,
+            #[tabled(rename = "Start")]
+            start: String,
+            #[tabled(rename = "Expires")]
+            expires: String,
+        }
+        let rows: Vec<Row> = balances
+            .into_iter()
+            .map(|balance| Row {
+                id: or_absent(balance.id),
+                balance_type: or_absent(balance.r#type.as_ref()),
+                remaining: or_absent(balance.remaining_credits),
+                total: or_absent(balance.total_amount),
+                spent: or_absent(balance.amount_spent),
+                start: or_absent(balance.start_date),
+                expires: or_absent(balance.expiration_date),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::markdown()));
+    }
+    Ok(())
+}
+
 async fn org_update(
     client: &CloudClient,
     org_id: &str,
@@ -886,6 +946,18 @@ impl CloudClient {
         let response = self
             .api()
             .organization_quotas_get_list(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_credit_balances(
+        &self,
+        org_id: &str,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::CreditBalances> {
+        let response = self
+            .api()
+            .credit_balances_get(org_id)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
@@ -1428,6 +1500,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_org_balance_command() {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "balance",
+            "--org-id",
+            "org-1",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Balance { org_id } = command else {
+            panic!("expected org balance command");
+        };
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
     fn parses_legacy_org_id_positionals() {
         let prometheus =
             Cli::try_parse_from(["clickhousectl", "cloud", "org", "prometheus", "org-1"]).unwrap();
@@ -1567,6 +1657,7 @@ mod tests {
             ],
             false,
         );
+        assert_write(&["clickhousectl", "cloud", "org", "balance"], false);
         assert_write(&["clickhousectl", "cloud", "org", "prometheus"], false);
         assert_write(
             &[

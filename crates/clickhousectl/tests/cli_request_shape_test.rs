@@ -198,6 +198,158 @@ fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> st
         .expect("failed to spawn clickhousectl")
 }
 
+fn invoke_cli_with_cloud_credentials_human(
+    mock: &MockServer,
+    cli_args: &[&str],
+) -> std::process::Output {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url];
+    args.extend(cli_args);
+    Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
+        .args(args)
+        .output()
+        .expect("failed to spawn clickhousectl")
+}
+
+#[tokio::test]
+async fn org_balance_preserves_json_and_supports_oauth() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{ "id": AUTO_DETECTED_ORG_ID, "name": "Only org" }],
+            "status": 200,
+            "requestId": "stub-org-list"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let result = serde_json::json!({
+        "totalRemainingCredits": 12.5,
+        "balances": [
+            {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "type": "trial",
+                "remainingCredits": 2.5,
+                "totalAmount": 5.0,
+                "amountSpent": 2.5,
+                "startDate": "2026-01-01T00:00:00Z",
+                "expirationDate": "2026-02-01T00:00:00Z"
+            },
+            {
+                "id": "22222222-2222-2222-2222-222222222222",
+                "type": "prepaid",
+                "remainingCredits": 10.0,
+                "totalAmount": 20.0,
+                "amountSpent": 10.0,
+                "startDate": "2026-02-01T00:00:00Z",
+                "expirationDate": "2027-02-01T00:00:00Z"
+            }
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/{AUTO_DETECTED_ORG_ID}/creditBalances"
+        )))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-credit-balances"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args(["cloud", "--url", &mock.uri(), "--json", "org", "balance"])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    let balance_request = requests
+        .iter()
+        .find(|request| request.url.path().ends_with("/creditBalances"))
+        .unwrap();
+    assert!(balance_request.url.query().is_none());
+}
+
+#[tokio::test]
+async fn org_balance_human_output_handles_sparse_and_future_balances() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/creditBalances"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "balances": [{ "type": "promotional", "remainingCredits": 3.25 }]
+            },
+            "status": 200,
+            "requestId": "stub-sparse-credit-balances"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output =
+        invoke_cli_with_cloud_credentials_human(&mock, &["org", "balance", "--org-id", "org-1"]);
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Total remaining credits: - CHC"));
+    assert!(stdout.contains(
+        "| ID | Type        | Remaining (CHC) | Total (CHC) | Spent (CHC) | Start | Expires |"
+    ));
+    assert!(stdout.contains("| -  | promotional | 3.25"));
+}
+
+#[tokio::test]
+async fn org_balance_human_output_handles_empty_balances() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/creditBalances"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "totalRemainingCredits": 0.0, "balances": [] },
+            "status": 200,
+            "requestId": "stub-empty-credit-balances"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output =
+        invoke_cli_with_cloud_credentials_human(&mock, &["org", "balance", "--org-id", "org-1"]);
+
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Total remaining credits: 0 CHC\nNo active credit balances found\n"
+    );
+}
+
 #[tokio::test]
 async fn org_quota_list_preserves_sparse_json_and_supports_oauth() {
     let mock = MockServer::start().await;
