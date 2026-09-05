@@ -18028,3 +18028,306 @@ async fn service_profile_list_routes_auth_errors() {
         "Error: Unauthorized\n"
     );
 }
+
+// BYOC infrastructure and service placement (#578).
+
+#[tokio::test]
+async fn byoc_infrastructure_commands_send_exact_paths_and_bodies() {
+    let mock = MockServer::start().await;
+    let collection = "/v1/organizations/org-1/byocInfrastructure";
+    let item = "/v1/organizations/org-1/byocInfrastructure/byoc-1";
+
+    Mock::given(method("POST"))
+        .and(path(collection))
+        .and(body_json(serde_json::json!({
+            "regionId": "us-east-1",
+            "accountId": "123456789012",
+            "availabilityZoneSuffixes": ["a", "b"],
+            "vpcCidrRange": "10.0.0.0/16",
+            "displayName": "production"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "byoc-1", "displayName": "production"},
+            "status": 200,
+            "requestId": "stub-byoc-create"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path(item))
+        .and(body_json(serde_json::json!({"displayName": "renamed"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"id": "byoc-1", "displayName": "renamed"},
+            "status": 200,
+            "requestId": "stub-byoc-update"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(item))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-byoc-delete"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let create = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "create",
+            "--region",
+            "us-east-1",
+            "--account-id",
+            "123456789012",
+            "--availability-zone-suffix",
+            "a",
+            "--availability-zone-suffix",
+            "b",
+            "--vpc-cidr-range",
+            "10.0.0.0/16",
+            "--display-name",
+            "production",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&create);
+    let printed: Value = serde_json::from_slice(&create.stdout).unwrap();
+    assert_eq!(
+        printed,
+        serde_json::json!({"id": "byoc-1", "displayName": "production"})
+    );
+
+    let update = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "update",
+            "byoc-1",
+            "--display-name",
+            "renamed",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&update);
+
+    let delete = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "byoc", "delete", "byoc-1", "--org-id", "org-1"],
+    );
+    assert_success(&delete);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&delete.stdout).unwrap(),
+        serde_json::json!({"status": 200, "requestId": "stub-byoc-delete"})
+    );
+}
+
+#[tokio::test]
+async fn byoc_create_rejects_unknown_zone_before_any_request() {
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "create",
+            "--region",
+            "us-east-1",
+            "--account-id",
+            "123456789012",
+            "--availability-zone-suffix",
+            "z",
+            "--vpc-cidr-range",
+            "10.0.0.0/16",
+            "--display-name",
+            "production",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid availability zone suffix"));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn byoc_api_errors_keep_auth_classification() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-forbidden",
+        ))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403,
+            "error": "Forbidden",
+            "requestId": "stub-byoc-forbidden"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "delete",
+            "byoc-forbidden",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Forbidden\n"
+    );
+}
+
+#[tokio::test]
+async fn byoc_update_human_output_tolerates_sparse_fields() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"state": "infra-provisioning"},
+            "status": 200,
+            "requestId": "stub-sparse-byoc-update"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "update",
+            "byoc-1",
+            "--display-name",
+            "renamed",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("infra-provisioning"));
+}
+
+#[tokio::test]
+async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .and(query_param("region_id", "us-east-1"))
+        .and(query_param("byoc_id", "byoc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{
+                "profile": "v1-standard-byoc-4",
+                "cpuCores": 4.0,
+                "memoryGi": 48.0
+            }],
+            "status": 200,
+            "requestId": "stub-byoc-profiles"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services"))
+        .and(body_json(serde_json::json!({
+            "name": "byoc-service",
+            "provider": "aws",
+            "region": "us-east-1",
+            "ipAccessList": [{
+                "source": "0.0.0.0/0",
+                "description": "Allow all (created by clickhousectl)"
+            }],
+            "minReplicaMemoryGb": 48.0,
+            "maxReplicaMemoryGb": 48.0,
+            "profile": "v1-standard-byoc-4",
+            "byocId": "byoc-1"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "service": {"id": "22222222-3333-4444-5555-666666666666", "name": "byoc-service"},
+                "password": "generated-password"
+            },
+            "status": 200,
+            "requestId": "stub-byoc-service-create"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "create",
+            "--name",
+            "byoc-service",
+            "--profile",
+            "v1-standard-byoc-4",
+            "--byoc-id",
+            "byoc-1",
+            "--min-replica-memory-gb",
+            "48",
+            "--max-replica-memory-gb",
+            "48",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn service_create_rejects_dynamic_profile_memory_mismatch_before_post() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [{"profile": "v1-standard-byoc-4", "memoryGi": 48.0}],
+            "status": 200,
+            "requestId": "stub-byoc-profiles"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "create",
+            "--name",
+            "byoc-service",
+            "--profile",
+            "v1-standard-byoc-4",
+            "--byoc-id",
+            "byoc-1",
+            "--min-replica-memory-gb",
+            "16",
+            "--max-replica-memory-gb",
+            "16",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("requires both replica memory bounds to equal 48 GiB")
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, wiremock::http::Method::GET);
+}
