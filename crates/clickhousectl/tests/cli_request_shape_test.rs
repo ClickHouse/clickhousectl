@@ -15487,3 +15487,326 @@ async fn clickstack_saved_search_oauth_reads_and_rejects_writes_before_http() {
     assert_eq!(output.status.code(), Some(4));
     assert_eq!(mock.received_requests().await.unwrap().len(), 1);
 }
+
+// ── ClickStack dashboard commands (issue #693) ─────────────────────────────
+
+#[tokio::test]
+async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth() {
+    let mock = MockServer::start().await;
+    let dashboards = "/v1/organizations/org-1/services/svc-1/clickstack/dashboards";
+    Mock::given(method("GET"))
+        .and(path(dashboards))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":[{}]})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{dashboards}/dash-get")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{}})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(dashboards))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result":{"id":"dash-created"}})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(format!("{dashboards}/dash-update")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result":{"id":"dash-update"}})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!("{dashboards}/dash-delete")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"status":200})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("{dashboards}/validate")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result":{"valid":true,"errors":[],"normalized":{"name":"minimal"}}
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let create = serde_json::json!({
+        "name":"minimal", "tiles":[], "savedQuery":null, "savedQueryLanguage":null
+    });
+    let update = serde_json::json!({
+        "name":"replacement", "tiles":[], "tags":[], "filters":[],
+        "savedFilterValues":[], "containers":[]
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let create_file = directory.path().join("create.json");
+    std::fs::write(&create_file, create.to_string()).unwrap();
+    let create_path = create_file.to_str().unwrap();
+    let update_stdin = update.to_string();
+    let commands: Vec<(Vec<&str>, Option<&str>)> = vec![
+        (
+            vec![
+                "clickstack",
+                "dashboard",
+                "list",
+                "svc-1",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "dashboard",
+                "get",
+                "svc-1",
+                "dash-get",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "dashboard",
+                "create",
+                "svc-1",
+                "--config-file",
+                create_path,
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "dashboard",
+                "update",
+                "svc-1",
+                "dash-update",
+                "--config-file",
+                "-",
+                "--org-id",
+                "org-1",
+            ],
+            Some(update_stdin.as_str()),
+        ),
+        (
+            vec![
+                "clickstack",
+                "dashboard",
+                "delete",
+                "svc-1",
+                "dash-delete",
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+        (
+            vec![
+                "clickstack",
+                "dashboard",
+                "validate",
+                "svc-1",
+                "--config-file",
+                create_path,
+                "--org-id",
+                "org-1",
+            ],
+            None,
+        ),
+    ];
+    for (args, stdin) in commands {
+        let output = invoke_clickstack_cli(&mock, &args, stdin, true);
+        assert_success(&output);
+        serde_json::from_slice::<Value>(&output.stdout).unwrap();
+    }
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 6);
+    for request in &requests {
+        assert!(
+            request
+                .headers
+                .get("authorization")
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("Basic ")
+        );
+    }
+    let writes = requests
+        .iter()
+        .filter(|request| {
+            matches!(
+                request.method,
+                wiremock::http::Method::POST | wiremock::http::Method::PUT
+            )
+        })
+        .map(|request| {
+            (
+                request.url.path().to_owned(),
+                request.body_json::<Value>().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(writes.len(), 3);
+    assert_eq!(
+        writes[0].1,
+        serde_json::json!({"name":"minimal","tiles":[]})
+    );
+    assert_eq!(writes[1].1, update);
+    assert_eq!(
+        writes[2].1,
+        serde_json::json!({"name":"minimal","tiles":[]})
+    );
+}
+
+#[tokio::test]
+async fn clickstack_dashboard_validation_surfaces_invalid_and_sparse_results() {
+    for (result, expected) in [
+        (
+            serde_json::json!({"valid":false,"errors":[{"path":"tiles.0.config","message":"Required"}],"normalized":null}),
+            Some(false),
+        ),
+        (serde_json::json!({}), None),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/clickstack/dashboards/validate",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":result})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_clickstack_cli(
+            &mock,
+            &[
+                "clickstack",
+                "dashboard",
+                "validate",
+                "svc-1",
+                "--config-file",
+                "-",
+                "--org-id",
+                "org-1",
+            ],
+            Some(r#"{"name":"dashboard","tiles":[]}"#),
+            true,
+        );
+        assert_success(&output);
+        let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(output.get("valid").and_then(Value::as_bool), expected);
+        if expected == Some(false) {
+            assert_eq!(output["errors"][0]["path"], "tiles.0.config");
+        }
+    }
+}
+
+#[tokio::test]
+async fn clickstack_dashboard_sparse_human_list_and_errors_are_safe() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickstack/dashboards",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":[{}]})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "dashboard",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+        None,
+        false,
+    );
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains('-'));
+
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-sensitive/services/svc-1/clickstack/dashboards/missing",
+        ))
+        .respond_with(
+            ResponseTemplate::new(404)
+                .set_body_json(serde_json::json!({"error":"DASHBOARD_NOT_FOUND"})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "dashboard",
+            "get",
+            "svc-1",
+            "missing",
+            "--org-id",
+            "org-sensitive",
+        ],
+        None,
+        false,
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let error = String::from_utf8_lossy(&output.stderr);
+    assert!(error.contains("DASHBOARD_NOT_FOUND"), "{error}");
+}
+
+#[tokio::test]
+async fn clickstack_dashboard_validate_fails_fast_for_oauth() {
+    let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let home = directory.path().join("home");
+    let ch_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    write_oauth_tokens(&ch_dir, &mock.uri());
+    let config = directory.path().join("dashboard.json");
+    std::fs::write(&config, r#"{"name":"dashboard","tiles":[]}"#).unwrap();
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let output = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "clickstack",
+            "dashboard",
+            "validate",
+            "svc-1",
+            "--config-file",
+            config.to_str().unwrap(),
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("read-only"));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}

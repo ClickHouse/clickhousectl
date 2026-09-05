@@ -148,7 +148,7 @@ psql "$POSTGRES_CONNECTION_STRING" --command "SELECT version()"
 
 `postgres create` returns an initial password, which the CLI prints once; store it securely.
 
-Manage ClickStack data sources and roles for an existing service with JSON configuration files:
+Manage ClickStack data sources, roles, and dashboards for an existing service with JSON configuration files:
 
 ```bash
 clickhousectl cloud clickstack source list <service-id> --org-id <org-id>
@@ -162,6 +162,10 @@ clickhousectl cloud clickstack saved-search get <service-id> <saved-search-id> \
   --org-id <org-id>
 clickhousectl cloud clickstack saved-search update <service-id> <saved-search-id> \
   --config-file saved-search.json --org-id <org-id>
+clickhousectl cloud clickstack dashboard validate <service-id> \
+  --config-file dashboard.json --org-id <org-id>
+clickhousectl cloud clickstack dashboard create <service-id> \
+  --config-file dashboard.json --org-id <org-id>
 ```
 
 Pass `--config-file -` to read the JSON body from stdin. Resource IDs come from the respective
@@ -169,6 +173,49 @@ Pass `--config-file -` to read the JSON body from stdin. Resource IDs come from 
 `where`, `whereLanguage`, `orderBy`, `tags`, and structured `filters`; obtain `sourceId` with
 `cloud clickstack source list`. All ClickStack `update` commands use PUT replacement semantics, so
 the configuration must contain the complete desired resource rather than only changed fields.
+
+A dashboard configuration contains the complete tile layout and typed chart configuration. Filters may
+broadcast selections, expose variables to tile queries, or do both:
+
+```json
+{
+  "name": "Service health",
+  "tiles": [
+    {
+      "name": "Request rate",
+      "x": 0,
+      "y": 0,
+      "w": 6,
+      "h": 3,
+      "config": {
+        "displayType": "line",
+        "sourceId": "<source-id>",
+        "select": [{ "aggFn": "count" }],
+        "formulas": [{ "expression": "A * 60", "alias": "Requests/min" }],
+        "showOperandSeries": false
+      }
+    }
+  ],
+  "filters": [
+    {
+      "name": "Service",
+      "expression": "ServiceName",
+      "sourceId": "<source-id>",
+      "type": "QUERY_EXPRESSION",
+      "isBroadcastEnabled": true,
+      "isVariableEnabled": true,
+      "variableName": "service"
+    }
+  ],
+  "savedFilterValues": [
+    { "type": "variable", "name": "service", "values": ["api"] }
+  ]
+}
+```
+
+Run `dashboard validate` before create or update to check the same dashboard body without saving it.
+`dashboard update <service-id> <dashboard-id> --config-file dashboard.json` is a full PUT replacement:
+include every tile, filter, container, tag, and saved query value that should remain.
 
 ## Local
 
