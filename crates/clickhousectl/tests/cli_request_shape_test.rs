@@ -22,6 +22,8 @@ use serde_json::Value;
 use wiremock::matchers::{body_json, header, method, path, path_regex, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+const SERVICE_PROFILES_PATH: &str = "/v1/organizations/org-1/serviceProfiles";
+
 /// Locate the `clickhousectl` binary. cargo populates `CARGO_BIN_EXE_<name>`
 /// for integration tests in the same package — so this is just the absolute
 /// path to the build output, no `cargo build` shellout needed.
@@ -17405,4 +17407,197 @@ async fn clickstack_alert_and_webhook_writes_fail_fast_for_oauth() {
         assert!(String::from_utf8_lossy(&output.stderr).contains("read-only"));
     }
     assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_profile_list_sends_exact_queries_and_preserves_json() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([
+        { "profile": "v1-standard-byoc-4", "cpuCores": 4.0, "memoryGi": 16.0 },
+        { "profile": "future-profile", "cpuCores": 12.5, "memoryGi": 48.5 }
+    ]);
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .and(query_param("region_id", "us-east-1"))
+        .and(query_param("byoc_id", "byoc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-service-profiles"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "profile",
+            "list",
+            "--region",
+            "us-east-1",
+            "--byoc-id",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let query: Vec<_> = requests[0].url.query_pairs().collect();
+    assert_eq!(query.len(), 2);
+    assert!(
+        query
+            .iter()
+            .any(|(key, value)| key == "region_id" && value == "us-east-1")
+    );
+    assert!(
+        query
+            .iter()
+            .any(|(key, value)| key == "byoc_id" && value == "byoc-1")
+    );
+    assert!(
+        requests[0]
+            .headers
+            .get("authorization")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("Basic ")
+    );
+}
+
+#[tokio::test]
+async fn service_profile_list_omits_byoc_and_accepts_empty_oauth_result() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .and(query_param("region_id", "eu-west-1"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [],
+            "status": 200,
+            "requestId": "stub-empty-service-profiles"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "service",
+            "profile",
+            "list",
+            "--region",
+            "eu-west-1",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!([])
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let query: Vec<_> = requests[0].url.query_pairs().collect();
+    assert_eq!(query, vec![("region_id".into(), "eu-west-1".into())]);
+}
+
+#[tokio::test]
+async fn service_profile_list_renders_sparse_unknown_profiles() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [
+                { "profile": "future-profile", "memoryGi": 48.5 },
+                { "cpuCores": 8.0, "memoryGi": null }
+            ],
+            "status": 200,
+            "requestId": "stub-sparse-service-profiles"
+        })))
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "service",
+            "profile",
+            "list",
+            "--region",
+            "us-east-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("| Profile        | CPU cores | Memory GiB |"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("| future-profile | -         | 48.5       |"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("| -              | 8         | -          |"),
+        "{stdout}"
+    );
+}
+
+#[tokio::test]
+async fn service_profile_list_routes_auth_errors() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "status": 401,
+            "error": "Unauthorized",
+            "requestId": "stub-profile-auth"
+        })))
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "profile",
+            "list",
+            "--region",
+            "us-east-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(4));
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        "Error: Unauthorized\n"
+    );
 }

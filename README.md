@@ -671,6 +671,10 @@ clickhousectl cloud service list
 # Get service details
 clickhousectl cloud service get <service-id>
 
+# Discover profiles available in a region before choosing --profile
+clickhousectl cloud service profile list --region us-east-1
+clickhousectl cloud service profile list --region us-east-1 --byoc-id <infrastructure-id> --json
+
 # Create a service with explicit placement and network access
 # Omitting --ip-allow creates the service with an "Allow all" 0.0.0.0/0 access list
 clickhousectl cloud service create --name my-service \
