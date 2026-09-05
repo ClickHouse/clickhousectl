@@ -26,7 +26,8 @@ use clickhouse_cloud_api::models::{
     ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
     ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceProfile,
     ServiceQueryAPIEndpoint, ServiceReplicaScalingPatchRequest, ServiceState,
-    ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
+    ServiceStatePatchRequest, ServiceStatePatchRequestCommand, UpgradeWindow,
+    UpgradeWindowPutRequest, UpgradeWindowStartHourUtc,
 };
 #[cfg(test)]
 use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Response};
@@ -483,6 +484,13 @@ CONTEXT FOR AGENTS:
         command: BackupConfigCommands,
     },
 
+    /// Manage the service upgrade window
+    #[command(name = "upgrade-window")]
+    UpgradeWindow {
+        #[command(subcommand)]
+        command: UpgradeWindowCommands,
+    },
+
     /// Get Prometheus metrics
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -792,6 +800,63 @@ CONTEXT FOR AGENTS:
     },
 }
 
+#[derive(Subcommand)]
+pub enum UpgradeWindowCommands {
+    /// Get the service upgrade window
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Set the service upgrade window
+    Set {
+        /// Service ID
+        service_id: String,
+
+        /// Start day: 0=Sunday through 6=Saturday
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(i64).range(0..=6)
+        )]
+        weekday: i64,
+
+        /// UTC start hour
+        #[arg(long, value_parser = PossibleValuesParser::new(["0", "6", "12", "18"]))]
+        start_hour: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete the service upgrade window
+    #[command(
+        after_help = "CONTEXT FOR AGENTS:\n  Restores the default upgrade scheduling behaviour."
+    )]
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl UpgradeWindowCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            UpgradeWindowCommands::Get { .. } => false,
+            UpgradeWindowCommands::Set { .. } | UpgradeWindowCommands::Delete { .. } => true,
+        }
+    }
+}
+
 impl ServiceProfileCommands {
     fn is_write(&self) -> bool {
         match self {
@@ -849,6 +914,7 @@ impl ServiceCommands {
                 PrivateEndpointCommands::GetConfig { .. } => false,
             },
             ServiceCommands::BackupConfig { command } => command.is_write(),
+            ServiceCommands::UpgradeWindow { command } => command.is_write(),
         }
     }
 }
@@ -1125,6 +1191,30 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
         ServiceCommands::BackupConfig { command } => {
             crate::cloud::backups::run_config(client, command, json).await
         }
+        ServiceCommands::UpgradeWindow { command } => match command {
+            UpgradeWindowCommands::Get { service_id, org_id } => {
+                upgrade_window_get(client, &service_id, org_id.as_deref(), json).await
+            }
+            UpgradeWindowCommands::Set {
+                service_id,
+                weekday,
+                start_hour,
+                org_id,
+            } => {
+                upgrade_window_set(
+                    client,
+                    &service_id,
+                    weekday,
+                    &start_hour,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            UpgradeWindowCommands::Delete { service_id, org_id } => {
+                upgrade_window_delete(client, &service_id, org_id.as_deref(), json).await
+            }
+        },
         ServiceCommands::Prometheus {
             service_id,
             org_id,
@@ -1355,6 +1445,32 @@ fn parse_instance_tags_patch(
     Ok((!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch))
 }
 
+fn build_upgrade_window_request(
+    weekday: i64,
+    start_hour: &str,
+) -> CloudResult<UpgradeWindowPutRequest> {
+    let start_hour_utc = match start_hour {
+        "0" => UpgradeWindowStartHourUtc::Hour0,
+        "6" => UpgradeWindowStartHourUtc::Hour6,
+        "12" => UpgradeWindowStartHourUtc::Hour12,
+        "18" => UpgradeWindowStartHourUtc::Hour18,
+        value => {
+            return Err(CloudError::new(format!(
+                "invalid start_hour '{value}': expected one of 0, 6, 12, 18"
+            )));
+        }
+    };
+    if !(0..=6).contains(&weekday) {
+        return Err(CloudError::new(format!(
+            "invalid weekday '{weekday}': expected a number from 0 through 6"
+        )));
+    }
+    Ok(UpgradeWindowPutRequest {
+        start_hour_utc,
+        weekday,
+    })
+}
+
 async fn service_list(
     client: &CloudClient,
     org_id: Option<&str>,
@@ -1420,6 +1536,59 @@ async fn service_get(
         println!("{}", serde_json::to_string_pretty(&service)?);
     } else {
         print_human(&service)?;
+    }
+    Ok(())
+}
+
+async fn upgrade_window_get(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let window = client.get_upgrade_window(&org_id, service_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&window)?);
+    } else {
+        print_human(&window)?;
+    }
+    Ok(())
+}
+
+async fn upgrade_window_set(
+    client: &CloudClient,
+    service_id: &str,
+    weekday: i64,
+    start_hour: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_upgrade_window_request(weekday, start_hour)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let window = client
+        .set_upgrade_window(&org_id, service_id, &request)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&window)?);
+    } else {
+        print_human(&window)?;
+    }
+    Ok(())
+}
+
+async fn upgrade_window_delete(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client.delete_upgrade_window(&org_id, service_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Upgrade window deleted for service {service_id}");
     }
     Ok(())
 }
@@ -4077,6 +4246,49 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    pub async fn get_upgrade_window(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<UpgradeWindow> {
+        let response = self
+            .api()
+            .upgrade_window_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn set_upgrade_window(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &UpgradeWindowPutRequest,
+    ) -> crate::cloud::client::Result<UpgradeWindow> {
+        let response = self
+            .api()
+            .upgrade_window_update(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn delete_upgrade_window(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .upgrade_window_delete(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
+    }
+
     pub async fn get_service_if_exists(
         &self,
         org_id: &str,
@@ -4733,6 +4945,147 @@ mod tests {
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+    }
+
+    #[test]
+    fn parses_upgrade_window_commands_and_classifies_writes() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "upgrade-window",
+            "set",
+            "svc-1",
+            "--weekday",
+            "3",
+            "--start-hour",
+            "12",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::UpgradeWindow {
+            command:
+                UpgradeWindowCommands::Set {
+                    service_id,
+                    weekday,
+                    start_hour,
+                    org_id,
+                },
+        } = command
+        else {
+            panic!("expected upgrade-window set");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(weekday, 3);
+        assert_eq!(start_hour, "12");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "set",
+                "svc-1",
+                "--weekday",
+                "0",
+                "--start-hour",
+                "0",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "delete",
+                "svc-1",
+            ],
+            true,
+        );
+    }
+
+    #[test]
+    fn upgrade_window_set_rejects_missing_and_out_of_range_values() {
+        for args in [
+            vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "set",
+                "svc-1",
+                "--start-hour",
+                "6",
+            ],
+            vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "set",
+                "svc-1",
+                "--weekday",
+                "2",
+            ],
+        ] {
+            let error = Cli::try_parse_from(args).err().expect("should fail");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+
+        for (flag, value) in [
+            ("--weekday", "7"),
+            ("--weekday", "-1"),
+            ("--start-hour", "3"),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "set",
+                "svc-1",
+                "--weekday",
+                "2",
+                "--start-hour",
+                "6",
+            ];
+            let index = args.iter().position(|arg| *arg == flag).unwrap() + 1;
+            args[index] = value;
+            let error = Cli::try_parse_from(args).err().expect("should fail");
+            assert!(matches!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation | clap::error::ErrorKind::InvalidValue
+            ));
+        }
+    }
+
+    #[test]
+    fn build_upgrade_window_request_supports_minimal_and_maximal_values() {
+        let earliest = build_upgrade_window_request(0, "0").unwrap();
+        assert_eq!(earliest.weekday, 0);
+        assert_eq!(earliest.start_hour_utc, UpgradeWindowStartHourUtc::Hour0);
+
+        let latest = build_upgrade_window_request(6, "18").unwrap();
+        assert_eq!(latest.weekday, 6);
+        assert_eq!(latest.start_hour_utc, UpgradeWindowStartHourUtc::Hour18);
     }
 
     #[test]
