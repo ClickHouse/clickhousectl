@@ -18,7 +18,7 @@ pub(crate) use crate::cloud::clickstack::ClickStackCommands;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::services::{
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands,
+    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, UpgradeWindowCommands,
 };
 use crate::cloud::udfs::UdfArgs;
 use clap::{Args, Subcommand};
@@ -121,8 +121,9 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`.
-  Reads: list, get, settings list/get/schema, prometheus, query, query-endpoint get,
-    private-endpoint get-config, backup-config get. Other commands need API key auth.
+  Reads: list, get, profile list, settings list/get/schema, prometheus, query,
+    query-endpoint get, private-endpoint get-config, backup-config get,
+    scaling-schedule get, upgrade-window get. Other commands need API key auth.
   Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query --id <id> -q 'SELECT 1'`.")]
     Service {
         #[command(subcommand)]

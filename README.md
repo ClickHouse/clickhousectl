@@ -774,6 +774,11 @@ clickhousectl cloud service start <service-id>
 clickhousectl cloud service wake <service-id>   # Explicitly wake an idled service
 clickhousectl cloud service stop <service-id>
 
+# Read, set, or remove the six-hour upgrade window
+clickhousectl cloud service upgrade-window get <service-id>
+clickhousectl cloud service upgrade-window set <service-id> --weekday 1 --start-hour 12
+clickhousectl cloud service upgrade-window delete <service-id>
+
 # Run SQL over HTTP via the Query API (no local clickhouse binary needed)
 clickhousectl cloud service query --name my-service --query "SELECT 1"
 clickhousectl cloud service query --id <service-id> --query "SELECT count() FROM system.tables" --format JSONEachRow
@@ -916,6 +921,8 @@ Scaling schedule hours are always UTC, with weekdays numbered Sunday `0` through
 ```
 
 `scaling-schedule set` replaces the complete entry list, including when `--file -` reads the request from stdin; `{"entries":[]}` clears it. A safe edit flow is to run `get --json`, copy only the entry request fields into a request file, edit that full list, then run `set`. The GET response also contains response-only `id`, `isActiveNow`, `activeEntryId`, and `baseConfig` fields, so it cannot be sent back unchanged. The base config applies outside scheduled windows and is managed separately with `cloud service scale`. `scaling-schedule delete` removes all entries and restores that base config when an entry is active.
+
+Upgrade-window days are numeric: `0` is Sunday, `1` Monday, through `6` Saturday. `--start-hour` is UTC and must be `0`, `6`, `12`, or `18`; the window lasts six hours. `set` replaces the whole window, so both flags are required. `delete` removes the configured window and restores the platform's default upgrade scheduling behaviour. Upgrade windows can only be changed on primary services; secondary services inherit their primary service's window.
 
 `query-endpoint create` adds and deduplicates API keys while preserving existing browser origins. `--role` is required and replaces the endpoint-wide roles for **all** authorized keys; roles are not assigned per key.
 Pass `--allowed-origins` on first creation or to change browser access (`'*'` explicitly allows every origin). Use `--replace-open-api-keys` with `--open-api-key` to deliberately replace the entire authorized-key list.

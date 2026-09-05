@@ -21461,3 +21461,168 @@ async fn service_settings_schema_human_output_renders_nested_sparse_entries() {
     assert!(stdout.contains("enum: [0, 1]"));
     assert!(stdout.contains("warning: future warning"));
 }
+
+const UPGRADE_WINDOW_PATH: &str = "/v1/organizations/org-1/services/svc-1/upgradeWindow";
+
+#[tokio::test]
+async fn upgrade_window_get_supports_oauth_and_preserves_sparse_json() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(UPGRADE_WINDOW_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "startHourUtc": 3,
+                "duration": 8,
+                "futureField": "ignored safely"
+            },
+            "status": 200,
+            "requestId": "stub-upgrade-window-get"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "service",
+            "upgrade-window",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({"startHourUtc": 3, "duration": 8})
+    );
+}
+
+#[tokio::test]
+async fn upgrade_window_set_sends_exact_body_with_basic_auth() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(UPGRADE_WINDOW_PATH))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .and(body_json(serde_json::json!({
+            "weekday": 1,
+            "startHourUtc": 18
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"weekday": 1, "startHourUtc": 18, "duration": 6},
+            "status": 200,
+            "requestId": "stub-upgrade-window-set"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "upgrade-window",
+            "set",
+            "svc-1",
+            "--weekday",
+            "1",
+            "--start-hour",
+            "18",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({"weekday": 1, "startHourUtc": 18, "duration": 6})
+    );
+}
+
+#[tokio::test]
+async fn upgrade_window_delete_uses_basic_auth_and_prints_delete_envelope() {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(UPGRADE_WINDOW_PATH))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "stub-upgrade-window-delete"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "upgrade-window",
+            "delete",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({
+            "status": 200,
+            "requestId": "stub-upgrade-window-delete"
+        })
+    );
+}
+
+#[tokio::test]
+async fn upgrade_window_errors_preserve_the_api_message() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(UPGRADE_WINDOW_PATH))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "no upgrade window is configured",
+            "requestId": "stub-upgrade-window-missing"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "upgrade-window",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("no upgrade window is configured"));
+}
