@@ -87,6 +87,8 @@ impl CloudArgs {
     }
 }
 
+// Resource command groups naturally differ in size; clap owns their concrete layout.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum CloudCommands {
     /// Manage user-defined functions (Beta)
@@ -108,6 +110,7 @@ pub enum CloudCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   `org list` is the source of the org IDs that other cloud commands take as --org-id.
+  BYOC infrastructure IDs and state are shown by `cloud org get <org-id>`.
   Next: `cloud service list`, `cloud member list`.")]
     Org {
         #[command(subcommand)]

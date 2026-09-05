@@ -191,6 +191,10 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         profile: Option<String>,
 
+        /// BYOC infrastructure ID
+        #[arg(long)]
+        byoc_id: Option<String>,
+
         /// Tag to attach to the service. Format: key or key=value (repeatable)
         #[arg(long = "tag", value_name = "KEY[=VALUE]")]
         tag: Vec<String>,
@@ -727,6 +731,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             enable_tde,
             compliance_type,
             profile,
+            byoc_id,
             tag,
             enable_endpoint,
             disable_endpoint,
@@ -756,6 +761,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 enable_tde,
                 compliance_type,
                 profile,
+                byoc_id,
                 tags: tag,
                 enable_endpoints: enable_endpoint,
                 disable_endpoints: disable_endpoint,
@@ -1267,6 +1273,7 @@ struct CreateServiceOptions {
     enable_tde: bool,
     compliance_type: Option<String>,
     profile: Option<String>,
+    byoc_id: Option<String>,
     tags: Vec<String>,
     enable_endpoints: Vec<String>,
     disable_endpoints: Vec<String>,
@@ -1352,6 +1359,30 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         options.max_replicas,
     )?;
 
+    if options.byoc_id.as_deref().is_some_and(str::is_empty) {
+        return Err(CloudError::new("--byoc-id cannot be empty"));
+    }
+    if options.byoc_id.is_some()
+        && (options.min_replica_memory_gb.is_none() || options.max_replica_memory_gb.is_none())
+    {
+        return Err(CloudError::new(
+            "--byoc-id requires --min-replica-memory-gb and --max-replica-memory-gb",
+        ));
+    }
+
+    let profile = options
+        .profile
+        .as_deref()
+        .map(|value| parse_create_service_profile(value, options.byoc_id.as_deref()))
+        .transpose()?;
+    if matches!(profile, Some(ServicePostRequestProfile::Unknown(_)))
+        && options.min_replica_memory_gb != options.max_replica_memory_gb
+    {
+        return Err(CloudError::new(
+            "a dynamic BYOC --profile requires equal --min-replica-memory-gb and --max-replica-memory-gb",
+        ));
+    }
+
     Ok(ServicePostRequest {
         name: options.name.clone(),
         provider: parse_serde_enum::<ServicePostRequestProvider>(
@@ -1402,14 +1433,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
             )?),
             None => None,
         },
-        profile: match options.profile.as_deref() {
-            Some(value) => Some(parse_serde_enum::<ServicePostRequestProfile>(
-                value,
-                "profile",
-                ServicePostRequestProfile::VALUES,
-            )?),
-            None => None,
-        },
+        profile,
         private_preview_terms_checked: if options.private_preview_terms_checked {
             Some(true)
         } else {
@@ -1421,7 +1445,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         )?,
         enable_core_dumps: options.enable_core_dumps,
         autoscaling_mode: horizontal.autoscaling_mode,
-        byoc_id: None,
+        byoc_id: options.byoc_id.clone(),
         min_replicas: horizontal.min_replicas,
         max_replicas: horizontal.max_replicas,
         #[cfg(feature = "deprecated-fields")]
@@ -1433,6 +1457,29 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         #[cfg(feature = "deprecated-fields")]
         tier: None,
     })
+}
+
+fn parse_create_service_profile(
+    value: &str,
+    byoc_id: Option<&str>,
+) -> CloudResult<ServicePostRequestProfile> {
+    if ServicePostRequestProfile::VALUES.contains(&value) {
+        return parse_serde_enum::<ServicePostRequestProfile>(
+            value,
+            "profile",
+            ServicePostRequestProfile::VALUES,
+        );
+    }
+    if byoc_id.is_none() {
+        return Err(CloudError::new(format!(
+            "invalid profile: unknown standard profile '{value}'; dynamic profiles require --byoc-id"
+        )));
+    }
+    if value.is_empty() {
+        return Err(CloudError::new("--profile cannot be empty"));
+    }
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|error| CloudError::new(format!("invalid profile: {error}")))
 }
 
 fn build_update_service_request(
@@ -1658,6 +1705,7 @@ async fn service_create(
 ) -> CloudResult<()> {
     let request = build_create_service_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    validate_dynamic_byoc_profile(client, &org_id, &request).await?;
     let response = client.create_service(&org_id, &request).await?;
 
     if json {
@@ -1678,6 +1726,50 @@ async fn service_create(
             println!();
             println!("{}", hint);
         }
+    }
+    Ok(())
+}
+
+async fn validate_dynamic_byoc_profile(
+    client: &CloudClient,
+    org_id: &str,
+    request: &ServicePostRequest,
+) -> CloudResult<()> {
+    let Some(ServicePostRequestProfile::Unknown(profile_name)) = request.profile.as_ref() else {
+        return Ok(());
+    };
+    let byoc_id = request
+        .byoc_id
+        .as_deref()
+        .ok_or_else(|| CloudError::new("dynamic profiles require --byoc-id"))?;
+    let region = request.region.to_string();
+    let profiles = client
+        .list_service_profiles(org_id, &region, Some(byoc_id))
+        .await?;
+    let profile = profiles
+        .iter()
+        .find(|candidate| candidate.profile.as_deref() == Some(profile_name.as_str()))
+        .ok_or_else(|| {
+            CloudError::new(format!(
+                "profile '{profile_name}' is not available for BYOC infrastructure '{byoc_id}' in region '{region}'"
+            ))
+        })?;
+    let memory_gi = profile.memory_gi.ok_or_else(|| {
+        CloudError::new(format!(
+            "profile '{profile_name}' did not include its memory size; cannot validate service memory bounds"
+        ))
+    })?;
+    let (Some(min_memory), Some(max_memory)) =
+        (request.min_replica_memory_gb, request.max_replica_memory_gb)
+    else {
+        return Err(CloudError::new(
+            "dynamic BYOC profiles require both replica memory bounds",
+        ));
+    };
+    if min_memory != memory_gi || max_memory != memory_gi {
+        return Err(CloudError::new(format!(
+            "profile '{profile_name}' requires both replica memory bounds to equal {memory_gi} GiB"
+        )));
     }
     Ok(())
 }
@@ -3518,6 +3610,7 @@ mod tests {
             enable_tde,
             compliance_type,
             profile,
+            byoc_id,
             tag,
             enable_endpoint,
             disable_endpoint,
@@ -3550,6 +3643,7 @@ mod tests {
         assert!(!enable_tde);
         assert!(compliance_type.is_none());
         assert!(profile.is_none());
+        assert!(byoc_id.is_none());
         assert!(tag.is_empty());
         assert!(enable_endpoint.is_empty());
         assert!(disable_endpoint.is_empty());
@@ -3603,6 +3697,8 @@ mod tests {
             "pci",
             "--profile",
             "v1-highmem-xs",
+            "--byoc-id",
+            "byoc-1",
             "--tag",
             "env=prod",
             "--tag",
@@ -3637,6 +3733,7 @@ mod tests {
             enable_tde,
             compliance_type,
             profile,
+            byoc_id,
             tag,
             enable_endpoint,
             disable_endpoint,
@@ -3671,12 +3768,47 @@ mod tests {
         assert!(enable_tde);
         assert_eq!(compliance_type.as_deref(), Some("pci"));
         assert_eq!(profile.as_deref(), Some("v1-highmem-xs"));
+        assert_eq!(byoc_id.as_deref(), Some("byoc-1"));
         assert_eq!(tag, vec!["env=prod", "team=analytics"]);
         assert_eq!(enable_endpoint, vec!["mysql"]);
         assert_eq!(disable_endpoint, vec!["mysql"]);
         assert!(private_preview_terms_checked);
         assert_eq!(enable_core_dumps, Some(false));
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn parses_service_create_dynamic_byoc_profile_flags() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "byoc-service",
+            "--profile",
+            "v1-standard-byoc-4",
+            "--byoc-id",
+            "byoc-1",
+            "--min-replica-memory-gb",
+            "48",
+            "--max-replica-memory-gb",
+            "48",
+        ]);
+        let ServiceCommands::Create {
+            profile,
+            byoc_id,
+            min_replica_memory_gb,
+            max_replica_memory_gb,
+            ..
+        } = command
+        else {
+            panic!("expected service create");
+        };
+        assert_eq!(profile.as_deref(), Some("v1-standard-byoc-4"));
+        assert_eq!(byoc_id.as_deref(), Some("byoc-1"));
+        assert_eq!(min_replica_memory_gb, Some(48));
+        assert_eq!(max_replica_memory_gb, Some(48));
     }
 
     #[test]
@@ -6095,6 +6227,76 @@ mod tests {
         assert_eq!(request.private_preview_terms_checked, Some(true));
         assert_eq!(request.enable_core_dumps, Some(true));
         assert!(request.byoc_id.is_none());
+    }
+
+    #[test]
+    fn build_create_service_request_accepts_a_dynamic_byoc_profile() {
+        let request = build_create_service_request(&CreateServiceOptions {
+            min_replica_memory_gb: Some(48),
+            max_replica_memory_gb: Some(48),
+            profile: Some("v1-standard-byoc-4".to_string()),
+            byoc_id: Some("byoc-1".to_string()),
+            ..minimal_create_options()
+        })
+        .unwrap();
+
+        assert_eq!(request.byoc_id.as_deref(), Some("byoc-1"));
+        assert_eq!(
+            request.profile,
+            Some(ServicePostRequestProfile::Unknown(
+                "v1-standard-byoc-4".to_string()
+            ))
+        );
+        assert_eq!(request.min_replica_memory_gb, Some(48.0));
+        assert_eq!(request.max_replica_memory_gb, Some(48.0));
+    }
+
+    #[test]
+    fn build_create_service_request_preserves_standard_profile_validation() {
+        let standard = build_create_service_request(&CreateServiceOptions {
+            profile: Some("v1-highmem-xs".to_string()),
+            ..minimal_create_options()
+        })
+        .unwrap();
+        assert_eq!(
+            standard.profile,
+            Some(ServicePostRequestProfile::V1_highmem_xs)
+        );
+
+        let error = build_create_service_request(&CreateServiceOptions {
+            profile: Some("future-standard-profile".to_string()),
+            ..minimal_create_options()
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("dynamic profiles require --byoc-id")
+        );
+    }
+
+    #[test]
+    fn build_create_service_request_enforces_byoc_memory_constraints() {
+        for options in [
+            CreateServiceOptions {
+                byoc_id: Some("byoc-1".to_string()),
+                ..minimal_create_options()
+            },
+            CreateServiceOptions {
+                byoc_id: Some("byoc-1".to_string()),
+                min_replica_memory_gb: Some(48),
+                ..minimal_create_options()
+            },
+            CreateServiceOptions {
+                byoc_id: Some("byoc-1".to_string()),
+                min_replica_memory_gb: Some(48),
+                max_replica_memory_gb: Some(116),
+                profile: Some("v1-standard-byoc-4".to_string()),
+                ..minimal_create_options()
+            },
+        ] {
+            assert!(build_create_service_request(&options).is_err());
+        }
     }
 
     #[test]

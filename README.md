@@ -648,6 +648,16 @@ clickhousectl cloud org update <org-id> --name "Renamed Org"
 clickhousectl cloud org update <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
   --enable-core-dumps false
+# Create BYOC infrastructure (repeat --availability-zone-suffix as needed)
+clickhousectl cloud org byoc create --org-id <org-id> \
+  --region us-east-1 --account-id <aws-account-id> \
+  --availability-zone-suffix a --availability-zone-suffix b \
+  --vpc-cidr-range 10.0.0.0/16 --display-name production
+# Find the infrastructure ID and state in the organization's byocConfig
+clickhousectl cloud org get <org-id>
+clickhousectl cloud org byoc update <infrastructure-id> \
+  --display-name renamed --org-id <org-id>
+clickhousectl cloud org byoc delete <infrastructure-id> --org-id <org-id>
 clickhousectl cloud org prometheus --filtered-metrics true
 clickhousectl cloud org prometheus discovery --filtered-metrics false
 clickhousectl cloud org usage \
@@ -659,6 +669,10 @@ clickhousectl cloud org usage \
 # It is auto-detected only when your credentials reach exactly one organization.
 # Organization quota and balance commands are beta and read-only, so they support OAuth.
 ```
+
+BYOC create, update, and delete require API key authentication. Update requires
+`--display-name`, so it cannot send an empty/no-op patch. The API has no separate
+BYOC list command; `cloud org get` returns the organization's `byocConfig` entries.
 
 `cloud org prometheus discovery` returns the beta HTTP service-discovery target groups used by Prometheus `http_sd_configs`; `--json` preserves the complete target and label array. The command defaults discovered scrape targets to filtered metrics. The command without `discovery` still calls the deprecated organization metrics endpoint and emits raw Prometheus exposition text for compatibility.
 
@@ -674,6 +688,13 @@ clickhousectl cloud service get <service-id>
 # Discover profiles available in a region before choosing --profile
 clickhousectl cloud service profile list --region us-east-1
 clickhousectl cloud service profile list --region us-east-1 --byoc-id <infrastructure-id> --json
+
+# Create a BYOC service using the discovered profile and its exact memory size
+clickhousectl cloud service create --name my-byoc-service \
+  --provider aws --region us-east-1 --byoc-id <infrastructure-id> \
+  --profile v1-standard-byoc-4 \
+  --min-replica-memory-gb <profile-memory-gib> \
+  --max-replica-memory-gb <profile-memory-gib>
 
 # Create a service with explicit placement and network access
 # Omitting --ip-allow creates the service with an "Allow all" 0.0.0.0/0 access list

@@ -4,9 +4,11 @@ use crate::cloud::shared::{parse_date_only, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use clap::Subcommand;
 use clickhouse_cloud_api::models::{
-    InvitationPostRequest, MemberPatchRequest, OrganizationPatchPrivateEndpoint,
-    OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
-    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch,
+    ByocAvailabilityZoneSuffix, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
+    ByocInfrastructurePostRequestRegionid, InvitationPostRequest, MemberPatchRequest,
+    OrganizationPatchPrivateEndpoint, OrganizationPatchPrivateEndpointCloudprovider,
+    OrganizationPatchPrivateEndpointRegion, OrganizationPatchRequest,
+    OrganizationPrivateEndpointsPatch,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -32,6 +34,12 @@ pub enum OrgCommands {
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
+    },
+
+    /// Manage BYOC infrastructure
+    Byoc {
+        #[command(subcommand)]
+        command: ByocCommands,
     },
 
     /// Update organization settings
@@ -117,9 +125,78 @@ impl OrgCommands {
             OrgCommands::Get { .. } => false,
             OrgCommands::Quota { .. } => false,
             OrgCommands::Balance { .. } => false,
+            OrgCommands::Byoc { command } => command.is_write(),
             OrgCommands::Prometheus { .. } => false,
             OrgCommands::Usage { .. } => false,
             OrgCommands::Update { .. } => true,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum ByocCommands {
+    /// Create BYOC infrastructure
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Wait for `cloud org get <org-id>` to show state `infra-ready` before creating a service.
+  Discover profiles with `cloud service profile list --region <region> --byoc-id <id>`.")]
+    Create {
+        /// Cloud region ID
+        #[arg(long)]
+        region: String,
+
+        /// Cloud account ID
+        #[arg(long)]
+        account_id: String,
+
+        /// Availability-zone suffix (repeatable)
+        #[arg(long, required = true)]
+        availability_zone_suffix: Vec<String>,
+
+        /// VPC CIDR range
+        #[arg(long)]
+        vpc_cidr_range: String,
+
+        /// Human-readable infrastructure name
+        #[arg(long)]
+        display_name: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update BYOC infrastructure
+    Update {
+        /// BYOC infrastructure ID
+        byoc_id: String,
+
+        /// New human-readable infrastructure name
+        #[arg(long)]
+        display_name: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete BYOC infrastructure
+    Delete {
+        /// BYOC infrastructure ID
+        byoc_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl ByocCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            ByocCommands::Create { .. } => true,
+            ByocCommands::Update { .. } => true,
+            ByocCommands::Delete { .. } => true,
         }
     }
 }
@@ -271,6 +348,7 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         OrgCommands::Get { org_id } => org_get(client, &org_id, json).await,
         OrgCommands::Quota { command } => run_quota(client, command, json).await,
         OrgCommands::Balance { org_id } => org_balance(client, org_id.as_deref(), json).await,
+        OrgCommands::Byoc { command } => run_byoc(client, command, json).await,
         OrgCommands::Update {
             org_id,
             name,
@@ -307,6 +385,39 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         } => {
             let org_id = org_id.as_deref().or(legacy_org_id.as_deref());
             org_usage(client, org_id, &from_date, &to_date, &filter, json).await
+        }
+    }
+}
+
+async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> CloudResult<()> {
+    match command {
+        ByocCommands::Create {
+            region,
+            account_id,
+            availability_zone_suffix,
+            vpc_cidr_range,
+            display_name,
+            org_id,
+        } => {
+            let request = build_byoc_create_request(
+                &region,
+                &account_id,
+                &availability_zone_suffix,
+                &vpc_cidr_range,
+                &display_name,
+            )?;
+            byoc_create(client, request, org_id.as_deref(), json).await
+        }
+        ByocCommands::Update {
+            byoc_id,
+            display_name,
+            org_id,
+        } => {
+            let request = build_byoc_update_request(&display_name);
+            byoc_update(client, &byoc_id, request, org_id.as_deref(), json).await
+        }
+        ByocCommands::Delete { byoc_id, org_id } => {
+            byoc_delete(client, &byoc_id, org_id.as_deref(), json).await
         }
     }
 }
@@ -470,6 +581,64 @@ fn build_org_update_request(options: &OrgUpdateOptions) -> CloudResult<Organizat
         private_endpoints: parse_org_private_endpoints_patch(&options.remove_private_endpoints)?,
         enable_core_dumps: options.enable_core_dumps,
     })
+}
+
+fn parse_byoc_region(value: &str) -> CloudResult<ByocInfrastructurePostRequestRegionid> {
+    let region = serde_json::from_value::<ByocInfrastructurePostRequestRegionid>(
+        serde_json::Value::String(value.to_string()),
+    )
+    .map_err(|error| CloudError::new(format!("invalid region: {error}")))?;
+    if matches!(region, ByocInfrastructurePostRequestRegionid::Unknown(_)) {
+        return Err(CloudError::new(format!(
+            "invalid region: unsupported BYOC region '{value}'"
+        )));
+    }
+    Ok(region)
+}
+
+fn parse_byoc_availability_zone_suffix(value: &str) -> CloudResult<ByocAvailabilityZoneSuffix> {
+    let suffix = serde_json::from_value::<ByocAvailabilityZoneSuffix>(serde_json::Value::String(
+        value.to_string(),
+    ))
+    .map_err(|error| CloudError::new(format!("invalid availability zone suffix: {error}")))?;
+    if matches!(suffix, ByocAvailabilityZoneSuffix::Unknown(_)) {
+        return Err(CloudError::new(format!(
+            "invalid availability zone suffix '{value}'"
+        )));
+    }
+    Ok(suffix)
+}
+
+fn build_byoc_create_request(
+    region: &str,
+    account_id: &str,
+    availability_zone_suffixes: &[String],
+    vpc_cidr_range: &str,
+    display_name: &str,
+) -> CloudResult<ByocInfrastructurePostRequest> {
+    let availability_zone_suffixes = availability_zone_suffixes
+        .iter()
+        .map(|suffix| parse_byoc_availability_zone_suffix(suffix))
+        .collect::<CloudResult<Vec<_>>>()?;
+    if availability_zone_suffixes.is_empty() {
+        return Err(CloudError::new(
+            "at least one --availability-zone-suffix is required",
+        ));
+    }
+
+    Ok(ByocInfrastructurePostRequest {
+        account_id: account_id.to_string(),
+        availability_zone_suffixes,
+        display_name: display_name.to_string(),
+        region_id: parse_byoc_region(region)?,
+        vpc_cidr_range: vpc_cidr_range.to_string(),
+    })
+}
+
+fn build_byoc_update_request(display_name: &str) -> ByocInfrastructurePatchRequest {
+    ByocInfrastructurePatchRequest {
+        display_name: Some(display_name.to_string()),
+    }
 }
 
 fn build_member_update_request(role_ids: &[String], clear_roles: bool) -> MemberPatchRequest {
@@ -669,6 +838,59 @@ async fn org_update(
             or_absent(organization.name.as_deref()),
             or_absent(organization.id)
         );
+    }
+    Ok(())
+}
+
+async fn byoc_create(
+    client: &CloudClient,
+    request: ByocInfrastructurePostRequest,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let infrastructure = client.create_byoc_infrastructure(&org_id, &request).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&infrastructure)?);
+    } else {
+        print_human(&infrastructure)?;
+    }
+    Ok(())
+}
+
+async fn byoc_update(
+    client: &CloudClient,
+    byoc_id: &str,
+    request: ByocInfrastructurePatchRequest,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let infrastructure = client
+        .update_byoc_infrastructure(&org_id, byoc_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&infrastructure)?);
+    } else {
+        print_human(&infrastructure)?;
+    }
+    Ok(())
+}
+
+async fn byoc_delete(
+    client: &CloudClient,
+    byoc_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client.delete_byoc_infrastructure(&org_id, byoc_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("BYOC infrastructure {byoc_id} deleted");
     }
     Ok(())
 }
@@ -1020,6 +1242,49 @@ impl CloudClient {
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
+    }
+
+    pub async fn create_byoc_infrastructure(
+        &self,
+        org_id: &str,
+        request: &ByocInfrastructurePostRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ByocConfig> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_create(org_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_byoc_infrastructure(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+        request: &ByocInfrastructurePatchRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ByocConfig> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_update(org_id, byoc_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn delete_byoc_infrastructure(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_delete(org_id, byoc_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
     }
 
     pub async fn get_org_prometheus(
@@ -1945,5 +2210,194 @@ mod tests {
                 "unexpected error for {value:?}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn parses_byoc_create_update_and_delete_commands() {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "create",
+            "--region",
+            "us-east-1",
+            "--account-id",
+            "123456789012",
+            "--availability-zone-suffix",
+            "a",
+            "--availability-zone-suffix",
+            "b",
+            "--vpc-cidr-range",
+            "10.0.0.0/16",
+            "--display-name",
+            "production",
+            "--org-id",
+            "org-1",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Byoc {
+            command:
+                ByocCommands::Create {
+                    region,
+                    account_id,
+                    availability_zone_suffix,
+                    vpc_cidr_range,
+                    display_name,
+                    org_id,
+                },
+        } = command
+        else {
+            panic!("expected BYOC create");
+        };
+        assert_eq!(region, "us-east-1");
+        assert_eq!(account_id, "123456789012");
+        assert_eq!(availability_zone_suffix, vec!["a", "b"]);
+        assert_eq!(vpc_cidr_range, "10.0.0.0/16");
+        assert_eq!(display_name, "production");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "update",
+            "byoc-1",
+            "--display-name",
+            "renamed",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Byoc {
+            command:
+                ByocCommands::Update {
+                    byoc_id,
+                    display_name,
+                    org_id,
+                },
+        } = command
+        else {
+            panic!("expected BYOC update");
+        };
+        assert_eq!(byoc_id, "byoc-1");
+        assert_eq!(display_name, "renamed");
+        assert!(org_id.is_none());
+
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "byoc",
+                "delete",
+                "byoc-1",
+                "--org-id",
+                "org-1",
+            ],
+            true,
+        );
+    }
+
+    #[test]
+    fn byoc_create_requires_an_availability_zone_suffix() {
+        let result = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "create",
+            "--region",
+            "us-east-1",
+            "--account-id",
+            "123456789012",
+            "--vpc-cidr-range",
+            "10.0.0.0/16",
+            "--display-name",
+            "production",
+        ]);
+        let Err(error) = result else {
+            panic!("missing availability zone suffix must fail");
+        };
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn build_byoc_create_request_supports_minimal_and_maximal_zones() {
+        let minimal = build_byoc_create_request(
+            "us-east-1",
+            "123456789012",
+            &["a".to_string()],
+            "10.0.0.0/16",
+            "production",
+        )
+        .unwrap();
+        assert_eq!(
+            minimal.region_id,
+            ByocInfrastructurePostRequestRegionid::Us_east_1
+        );
+        assert_eq!(minimal.account_id, "123456789012");
+        assert_eq!(
+            minimal.availability_zone_suffixes,
+            vec![ByocAvailabilityZoneSuffix::A]
+        );
+        assert_eq!(minimal.vpc_cidr_range, "10.0.0.0/16");
+        assert_eq!(minimal.display_name, "production");
+
+        let maximal = build_byoc_create_request(
+            "eastus",
+            "azure-account",
+            &[
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string(),
+                "e".to_string(),
+                "f".to_string(),
+            ],
+            "10.20.0.0/16",
+            "all-zones",
+        )
+        .unwrap();
+        assert_eq!(
+            maximal.region_id,
+            ByocInfrastructurePostRequestRegionid::Eastus
+        );
+        assert_eq!(maximal.availability_zone_suffixes.len(), 6);
+    }
+
+    #[test]
+    fn build_byoc_requests_validate_enums_and_update_only_the_name() {
+        assert!(
+            build_byoc_create_request(
+                "future-region",
+                "account",
+                &["a".to_string()],
+                "10.0.0.0/16",
+                "name",
+            )
+            .is_err()
+        );
+        assert!(
+            build_byoc_create_request(
+                "us-east-1",
+                "account",
+                &["z".to_string()],
+                "10.0.0.0/16",
+                "name",
+            )
+            .is_err()
+        );
+
+        let update = build_byoc_update_request("renamed");
+        assert_eq!(update.display_name.as_deref(), Some("renamed"));
+        assert_eq!(
+            serde_json::to_value(update).unwrap(),
+            serde_json::json!({"displayName": "renamed"})
+        );
     }
 }
