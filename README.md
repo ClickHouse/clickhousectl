@@ -1,20 +1,34 @@
-# clickhousectl
+<div align="center">
+<p>
+<a href="https://clickhouse.com">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://clickhouse.design/images/brand/logos/full-logo-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://clickhouse.design/images/brand/logos/full-logo-black.svg">
+    <img alt="ClickHouse" src="https://clickhouse.design/images/brand/logos/full-logo-black.svg" width="300">
+  </picture>
+</a>
+</p>
+<h1>clickhousectl</h1>
+</div>
 
-`clickhousectl` (`chctl`) is the official CLI for ClickHouse and Postgres, locally and in ClickHouse Cloud.
+[![Slack community](https://img.shields.io/badge/Slack-Join_the_community-4A154B)](https://clickhouse.com/slack)
+[![Follow on X](https://img.shields.io/badge/X-Follow_ClickHouseDB-000000)](https://x.com/ClickHouseDB)
+[![YouTube videos](https://img.shields.io/badge/YouTube-Watch_ClickHouseDB-FF0000)](https://www.youtube.com/@ClickHouseDB)
 
-With `clickhousectl` you can:
-- Install, run, and query ClickHouse locally
-- Run Docker-backed Postgres instances for local development
-- Create a ClickHouse Cloud account and authenticate from the terminal
-- Create and manage ClickHouse and Postgres services in ClickHouse Cloud
-- Run SQL against local and cloud ClickHouse services
-- Create and manage ClickPipes for data ingestion (object storage incl. S3, Kafka, Kinesis, Pub/Sub, Postgres, MySQL, MongoDB, BigQuery)
-- Install the official ClickHouse agent skills into supported coding agents
-- Move local ClickHouse development to ClickHouse Cloud
+`clickhousectl` (`chctl`) is the official CLI for ClickHouse, from local development to ClickHouse Cloud.
 
-`clickhousectl` helps humans and coding agents develop with ClickHouse and Postgres.
+## Start with ClickHouse Cloud
 
-The workspace also publishes the [typed Rust Cloud API client](crates/clickhouse-cloud-api/README.md). PgBouncer configuration uses an open string map, preserving arbitrary parameters when reading and writing configurations. API key PATCH requests distinguish an omitted expiry (preserve), a timestamp (set), and explicit null (clear). Its latest OpenAPI snapshot adds credit balances, service profile discovery, ClickPipes workload identity context, and expanded ClickPipes and ClickStack models; [CLI exposure is tracked separately](https://github.com/ClickHouse/clickhousectl/issues/699).
+[ClickHouse Cloud](https://clickhouse.com/cloud) runs ClickHouse as a fully managed service on AWS, GCP, and Azure, handling infrastructure, scaling, and upgrades. The same platform includes ClickHouse Managed Postgres and Managed ClickStack. Start a free 30-day trial with $300 in credits at [clickhouse.com/cloud](https://clickhouse.com/cloud), then create and manage your services from the terminal.
+
+## What can the CLI do?
+
+- **[ClickHouse](https://clickhouse.com/clickhouse)** is the open-source, column-oriented SQL database for fast analytics on large datasets. Install and switch local versions, run isolated servers, execute SQL, and create, configure, scale, and query ClickHouse Cloud services.
+- **[ClickHouse Managed Postgres](https://clickhouse.com/cloud/postgres)** is managed PostgreSQL in ClickHouse Cloud for transactional applications, with native ClickHouse integration for analytics. Run Docker-backed Postgres locally, then create, configure, scale, monitor, restore, and fail over managed Postgres services in ClickHouse Cloud.
+- **[ClickStack](https://clickhouse.com/clickstack)** combines ClickHouse, OpenTelemetry, and the HyperDX UI for logs, metrics, traces, and session replays. Manage sources, roles, saved searches, dashboards, alerts, and webhooks for an existing [Managed ClickStack](https://clickhouse.com/cloud/clickstack) service.
+- **[ClickPipes](https://clickhouse.com/cloud/clickpipes)** provides managed ingestion into ClickHouse Cloud from streaming sources, object storage, and databases through change data capture. Create, inspect, scale, resync, and delete pipelines from the terminal.
+
+`clickhousectl` also installs official ClickHouse skills into supported coding agents and helps move local ClickHouse development to ClickHouse Cloud.
 
 ## Installation
 
