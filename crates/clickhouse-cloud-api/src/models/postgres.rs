@@ -139,6 +139,24 @@ impl std::fmt::Display for SlowQueryPatternsGetListSortby {
     }
 }
 
+impl SlowQueryPatternsGetListSortby {
+    pub const VALUES: &'static [&'static str] = &[
+        "total_duration",
+        "avg_duration",
+        "call_count",
+        "total_blks_read",
+        "total_cpu_time",
+        "error_count",
+        "max_duration",
+        "p50_duration",
+        "p95_duration",
+        "p99_duration",
+        "total_rows",
+        "total_shared_blks_hit",
+        "total_wal_bytes",
+    ];
+}
+
 /// Inline enum for `slowQueryPatternsGetList.sort_order`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum SlowQueryPatternsGetListSortorder {
@@ -160,6 +178,10 @@ impl std::fmt::Display for SlowQueryPatternsGetListSortorder {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl SlowQueryPatternsGetListSortorder {
+    pub const VALUES: &'static [&'static str] = &["asc", "desc"];
 }
 
 /// `pgSize` enum from the ClickHouse Cloud API.
@@ -732,6 +754,12 @@ impl std::fmt::Display for PgConfigDefaultTransactionIsolation {
     }
 }
 
+impl PgConfigDefaultTransactionIsolation {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] =
+        &["read committed", "repeatable read", "serializable"];
+}
+
 /// Inline enum for `pgConfig.ssl_min_protocol_version`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgConfigSslMinProtocolVersion {
@@ -761,6 +789,11 @@ impl std::fmt::Display for PgConfigSslMinProtocolVersion {
     }
 }
 
+impl PgConfigSslMinProtocolVersion {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"];
+}
+
 /// Inline enum for `pgConfig.wal_compression`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgConfigWalCompression {
@@ -788,6 +821,11 @@ impl std::fmt::Display for PgConfigWalCompression {
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
+}
+
+impl PgConfigWalCompression {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["off", "on", "lz4", "zstd"];
 }
 
 /// Type alias for `pgCreatedAtProperty`.
@@ -1191,17 +1229,16 @@ pub struct PostgresSlowQueryPatternDetail {
     pub recent_executions: Option<Vec<PostgresQueryExecution>>,
 }
 
-/// `pgBouncerConfig` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct PgBouncerConfig {}
-
-/// `pgBouncerConfig` from the ClickHouse Cloud API, in response position.
+/// PgBouncer configuration parameters, with string values as required by the API.
 ///
-/// Response variant of [`PgBouncerConfig`]: every field is `Option<T>`, so a
-/// field the API drops or sends as `null` deserializes to `None` instead of
-/// failing. The schema currently declares no properties.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct PgBouncerConfigResponse {}
+/// Keys are open-ended: newly supported PgBouncer parameters are preserved.
+pub type PgBouncerConfig = std::collections::BTreeMap<String, String>;
+
+/// PgBouncer configuration returned by the API.
+///
+/// Parent response fields are optional, preserving missing and null sections.
+/// Present map entries retain their wire string values for lossless write-back.
+pub type PgBouncerConfigResponse = PgBouncerConfig;
 
 /// `pgConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

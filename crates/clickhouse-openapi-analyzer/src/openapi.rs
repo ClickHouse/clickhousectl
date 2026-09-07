@@ -24,6 +24,13 @@ pub(crate) struct PropertyInfo {
     pub(crate) schema_type: Option<String>,
 }
 
+/// A named schema whose dynamic keys have a declared value schema.
+#[derive(Debug, Clone)]
+pub(crate) struct AdditionalPropertiesInfo {
+    pub(crate) pointer: String,
+    pub(crate) value_schema: Value,
+}
+
 /// One hop in a property chain from a named schema down to an enum position.
 ///
 /// `property` is the spec property name entered at this step. `array_item` is
@@ -70,12 +77,15 @@ pub(crate) struct EnumConstraint {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OpenApiInventory {
     pub(crate) operations: BTreeMap<String, OperationInfo>,
+    /// Inline object branches retain their parent direction and exact spec pointer.
+    pub(crate) inline_union_objects: Vec<(String, String, Value)>,
     pub(crate) schemas: BTreeMap<String, String>,
     /// Pascalized Rust type names of every named spec schema. Used to
     /// distinguish a split `{Name}Response` Rust variant from a Rust type that
     /// models a spec schema literally named `{Name}Response`.
     pub(crate) rust_schema_names: BTreeSet<String>,
     pub(crate) properties: BTreeMap<(String, String), PropertyInfo>,
+    pub(crate) additional_properties: BTreeMap<String, AdditionalPropertiesInfo>,
     pub(crate) referenced_schemas: BTreeMap<String, String>,
     /// Schemas transitively reachable from a request body or an operation
     /// parameter. Requiredness/optionality drift is checked only here.
@@ -181,6 +191,35 @@ impl OpenApiInventory {
             ]);
             self.schemas
                 .insert(schema_name.clone(), schema_pointer.clone());
+            for composition in ["oneOf", "anyOf"] {
+                if let Some(branches) = schema.get(composition).and_then(Value::as_array) {
+                    for (index, branch) in branches.iter().enumerate() {
+                        if branch
+                            .get("properties")
+                            .and_then(Value::as_object)
+                            .is_some()
+                        {
+                            self.inline_union_objects.push((
+                                schema_name.clone(),
+                                format!("{schema_pointer}/{composition}/{index}"),
+                                branch.clone(),
+                            ));
+                        }
+                    }
+                }
+            }
+            if let Some(additional) = schema
+                .get("additionalProperties")
+                .filter(|value| value.as_object().is_some_and(|object| !object.is_empty()))
+            {
+                self.additional_properties.insert(
+                    schema_name.clone(),
+                    AdditionalPropertiesInfo {
+                        pointer: format!("{schema_pointer}/additionalProperties"),
+                        value_schema: additional.clone(),
+                    },
+                );
+            }
             let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
                 continue;
             };
@@ -338,7 +377,11 @@ fn transitive_schema_closure(
     seen
 }
 
-fn required_fields(schema_name: &str, schema: &Value, config: &AnalyzerConfig) -> BTreeSet<String> {
+pub(crate) fn required_fields(
+    schema_name: &str,
+    schema: &Value,
+    config: &AnalyzerConfig,
+) -> BTreeSet<String> {
     let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
         return BTreeSet::new();
     };

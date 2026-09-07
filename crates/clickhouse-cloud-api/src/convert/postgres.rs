@@ -1,13 +1,6 @@
 use super::MissingRequiredFields;
 use crate::models::*;
 
-impl From<PgBouncerConfigResponse> for PgBouncerConfig {
-    fn from(_value: PgBouncerConfigResponse) -> Self {
-        // The schema declares no properties, so the conversion is total.
-        Self {}
-    }
-}
-
 impl From<PgConfigResponse> for PgConfig {
     fn from(value: PgConfigResponse) -> Self {
         // Every `pgConfig` GUC is optional in both directions (omitting one
@@ -66,7 +59,7 @@ impl TryFrom<PostgresInstanceConfigResponse> for PostgresInstanceConfig {
         }
         match (value.pg_bouncer_config, value.pg_config) {
             (Some(pg_bouncer_config), Some(pg_config)) => Ok(Self {
-                pg_bouncer_config: pg_bouncer_config.into(),
+                pg_bouncer_config,
                 pg_config: pg_config.into(),
             }),
             _ => Err(MissingRequiredFields::new(missing)),

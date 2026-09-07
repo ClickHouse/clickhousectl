@@ -3,29 +3,39 @@ use crate::cloud::backups::BackupConfigCommands;
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
+use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::credentials;
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
-use crate::cloud::service_query::RepairVerification;
-use crate::cloud::shared::{parse_serde_enum, parse_tags, resolve_org_id};
+use crate::cloud::service_query::{RepairVerification, existing_open_api_keys};
+use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
-    InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole,
-    ServicPrivateEndpointePostRequest, Service, ServiceEndpoint, ServiceEndpointChange,
+    InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole, ScalingSchedule,
+    ScalingScheduleEntryRequest, ScalingSchedulePostRequest, ServicPrivateEndpointePostRequest,
+    Service, ServiceClickhouseSetting, ServiceClickhouseSettingsList,
+    ServiceClickhouseSettingsPatchRequest, ServiceClickhouseSettingsPatchResponse,
+    ServiceClickhouseSettingsSchema, ServiceEndpoint, ServiceEndpointChange,
     ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
     ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
     ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
-    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceReplicaScalingPatchRequest,
-    ServiceState, ServiceStatePatchRequest, ServiceStatePatchRequestCommand,
+    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceProfile,
+    ServiceQueryAPIEndpoint, ServiceReplicaScalingPatchRequest, ServiceState,
+    ServiceStatePatchRequest, ServiceStatePatchRequestCommand, UpgradeWindow,
+    UpgradeWindowPutRequest, UpgradeWindowStartHourUtc,
 };
 #[cfg(test)]
 use clickhouse_cloud_api::models::{IpAccessListEntryResponse, ResourceTagsV1Response};
-use std::{collections::HashSet, io::IsTerminal, time::Duration};
+use std::{
+    collections::{BTreeMap, HashSet},
+    io::IsTerminal,
+    time::Duration,
+};
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Clone, Copy)]
@@ -68,6 +78,25 @@ pub enum ServiceCommands {
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
         org_id: Option<String>,
+    },
+
+    /// Discover available service profiles
+    Profile {
+        #[command(subcommand)]
+        command: ServiceProfileCommands,
+    },
+
+    /// Manage ClickHouse settings
+    Settings {
+        #[command(subcommand)]
+        command: ServiceSettingsCommands,
+    },
+
+    /// Manage the service scaling schedule
+    #[command(name = "scaling-schedule")]
+    ScalingSchedule {
+        #[command(subcommand)]
+        command: ScalingScheduleCommands,
     },
 
     /// Create a service
@@ -144,8 +173,8 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         idle_timeout_minutes: Option<u32>,
 
-        /// IP/CIDR entry to allow, e.g. "10.0.0.0/8" (repeatable)
-        #[arg(long = "ip-allow")]
+        /// Allowed IP/CIDR, optionally IP_OR_CIDR=DESCRIPTION (repeatable)
+        #[arg(long = "ip-allow", value_name = "IP_OR_CIDR[=DESCRIPTION]")]
         ip_allow: Vec<String>,
 
         /// Backup ID to restore from
@@ -183,6 +212,10 @@ CONTEXT FOR AGENTS:
         /// Instance profile (enterprise only): v1-default, v1-highmem-xs, etc.
         #[arg(long)]
         profile: Option<String>,
+
+        /// BYOC infrastructure ID
+        #[arg(long)]
+        byoc_id: Option<String>,
 
         /// Tag to attach to the service. Format: key or key=value (repeatable)
         #[arg(long = "tag", value_name = "KEY[=VALUE]")]
@@ -243,6 +276,20 @@ CONTEXT FOR AGENTS:
         org_id: Option<String>,
     },
 
+    /// Wake an idled service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Wakes an idle service; use `cloud service start <id>` for a stopped service.
+  Returns as soon as the wake is accepted: poll `cloud service get <id>` until state is `running`.")]
+    Wake {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
     /// Stop a service
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -272,12 +319,12 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         name: Option<String>,
 
-        /// IP/CIDR entry to add to the service allow list (repeatable)
-        #[arg(long = "add-ip-allow")]
+        /// IP/CIDR to add, optionally IP_OR_CIDR=DESCRIPTION (repeatable)
+        #[arg(long = "add-ip-allow", value_name = "IP_OR_CIDR[=DESCRIPTION]")]
         add_ip_allow: Vec<String>,
 
-        /// IP/CIDR entry to remove from the service allow list (repeatable)
-        #[arg(long = "remove-ip-allow")]
+        /// IP or CIDR to remove from the service allow list (repeatable)
+        #[arg(long = "remove-ip-allow", value_name = "IP_OR_CIDR")]
         remove_ip_allow: Vec<String>,
 
         /// Private endpoint ID to add; format-checked before the request (repeatable)
@@ -437,6 +484,13 @@ CONTEXT FOR AGENTS:
         command: BackupConfigCommands,
     },
 
+    /// Manage the service upgrade window
+    #[command(name = "upgrade-window")]
+    UpgradeWindow {
+        #[command(subcommand)]
+        command: UpgradeWindowCommands,
+    },
+
     /// Get Prometheus metrics
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -535,21 +589,30 @@ pub enum QueryEndpointCommands {
         org_id: Option<String>,
     },
 
-    /// Create the Query API endpoint
+    /// Create or update the Query API endpoint
+    #[command(after_help = "CONTEXT FOR AGENTS:\n\
+        Existing API keys are preserved unless --replace-open-api-keys is set.\n\
+        Roles replace the endpoint-wide role list for every authorized key.\n\
+        First creation requires --allowed-origins; use '*' explicitly for all.\n\
+        Avoid concurrent changes to the same endpoint.")]
     Create {
         /// Service ID
         service_id: String,
 
-        /// Role to grant access (repeatable)
-        #[arg(long, value_parser = PossibleValuesParser::new(QueryEndpointRole::VALUES))]
+        /// Endpoint-wide role to grant (required, repeatable)
+        #[arg(long, required = true, value_parser = PossibleValuesParser::new(QueryEndpointRole::VALUES))]
         role: Vec<String>,
 
         /// API key ID to authorize (repeatable)
-        #[arg(long = "open-api-key")]
+        #[arg(long = "open-api-key", value_parser = clap::builder::NonEmptyStringValueParser::new())]
         open_api_key: Vec<String>,
 
-        /// Allowed origins for browser access; "*" when omitted
-        #[arg(long)]
+        /// Replace existing API keys (requires --open-api-key)
+        #[arg(long, requires = "open_api_key")]
+        replace_open_api_keys: bool,
+
+        /// Browser origins; preserve when omitted on an existing endpoint
+        #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         allowed_origins: Option<String>,
 
         /// Organization ID (auto-detected only if you have one org)
@@ -600,17 +663,243 @@ pub enum PrivateEndpointCommands {
     },
 }
 
+#[derive(Subcommand)]
+pub enum ServiceProfileCommands {
+    /// List available service profiles
+    List {
+        /// Region ID, e.g. us-east-1, eu-west-1, us-central1
+        #[arg(long)]
+        region: String,
+
+        /// BYOC infrastructure ID
+        #[arg(long)]
+        byoc_id: Option<String>,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ServiceSettingsCommands {
+    /// List configured ClickHouse settings
+    List {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get a ClickHouse setting
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Setting name
+        setting_name: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Get the configurable ClickHouse settings schema
+    Schema {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Set one or more ClickHouse settings
+    #[command(
+        group(ArgGroup::new("settings_input").required(true).args(["setting", "settings_file"])),
+        after_help = "CONTEXT FOR AGENTS:\n\
+  Discover supported names and types with `settings schema <service-id>`.\n\
+  --setting values are JSON literals; quote string values inside the argument.\n\
+  --settings-file reads a JSON settings map; `-` reads stdin. Only named settings change."
+    )]
+    Set {
+        /// Service ID
+        service_id: String,
+
+        /// Setting as NAME=JSON_VALUE (repeatable)
+        #[arg(long, value_name = "NAME=JSON_VALUE")]
+        setting: Vec<String>,
+
+        /// JSON settings map file (`-` reads stdin)
+        #[arg(long, value_name = "PATH")]
+        settings_file: Option<String>,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Reset a ClickHouse setting to its platform default
+    Unset {
+        /// Service ID
+        service_id: String,
+
+        /// Setting name
+        setting_name: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ScalingScheduleCommands {
+    /// Get the scaling schedule
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create or replace the scaling schedule
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  --file is a JSON ScalingSchedulePostRequest; '-' reads it from stdin.
+  Set replaces every existing entry. Get, edit only entries, then set to preserve other entries.
+  Hours and weekdays are UTC. baseConfig is response-only and must not be sent.")]
+    Set {
+        /// Service ID
+        service_id: String,
+
+        /// JSON request file (use "-" for stdin)
+        #[arg(long)]
+        file: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete the scaling schedule
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Deletes every scheduled entry. An active entry returns to the service's base scaling config.")]
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum UpgradeWindowCommands {
+    /// Get the service upgrade window
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Set the service upgrade window
+    Set {
+        /// Service ID
+        service_id: String,
+
+        /// Start day: 0=Sunday through 6=Saturday
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(i64).range(0..=6)
+        )]
+        weekday: i64,
+
+        /// UTC start hour
+        #[arg(long, value_parser = PossibleValuesParser::new(["0", "6", "12", "18"]))]
+        start_hour: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete the service upgrade window
+    #[command(
+        after_help = "CONTEXT FOR AGENTS:\n  Restores the default upgrade scheduling behaviour."
+    )]
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl UpgradeWindowCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            UpgradeWindowCommands::Get { .. } => false,
+            UpgradeWindowCommands::Set { .. } | UpgradeWindowCommands::Delete { .. } => true,
+        }
+    }
+}
+
+impl ServiceProfileCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            ServiceProfileCommands::List { .. } => false,
+        }
+    }
+}
+
+impl ServiceSettingsCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            ServiceSettingsCommands::List { .. }
+            | ServiceSettingsCommands::Get { .. }
+            | ServiceSettingsCommands::Schema { .. } => false,
+            ServiceSettingsCommands::Set { .. } | ServiceSettingsCommands::Unset { .. } => true,
+        }
+    }
+}
+
+impl ScalingScheduleCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            ScalingScheduleCommands::Get { .. } => false,
+            ScalingScheduleCommands::Set { .. } | ScalingScheduleCommands::Delete { .. } => true,
+        }
+    }
+}
+
 impl ServiceCommands {
     pub fn is_write(&self) -> bool {
         match self {
             ServiceCommands::List { .. } => false,
             ServiceCommands::Get { .. } => false,
+            ServiceCommands::Profile { command } => command.is_write(),
+            ServiceCommands::Settings { command } => command.is_write(),
+            ServiceCommands::ScalingSchedule { command } => command.is_write(),
             ServiceCommands::Prometheus { .. } => false,
             ServiceCommands::Query { .. } => false,
             ServiceCommands::RepairQueryKey { .. } => true,
             ServiceCommands::Create { .. } => true,
             ServiceCommands::Delete { .. } => true,
             ServiceCommands::Start { .. } => true,
+            ServiceCommands::Wake { .. } => true,
             ServiceCommands::Stop { .. } => true,
             ServiceCommands::Update { .. } => true,
             ServiceCommands::Scale { .. } => true,
@@ -625,6 +914,7 @@ impl ServiceCommands {
                 PrivateEndpointCommands::GetConfig { .. } => false,
             },
             ServiceCommands::BackupConfig { command } => command.is_write(),
+            ServiceCommands::UpgradeWindow { command } => command.is_write(),
         }
     }
 }
@@ -637,6 +927,69 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
         ServiceCommands::Get { service_id, org_id } => {
             service_get(client, &service_id, org_id.as_deref(), json).await
         }
+        ServiceCommands::Profile { command } => match command {
+            ServiceProfileCommands::List {
+                region,
+                byoc_id,
+                org_id,
+            } => {
+                service_profile_list(client, &region, byoc_id.as_deref(), org_id.as_deref(), json)
+                    .await
+            }
+        },
+        ServiceCommands::Settings { command } => match command {
+            ServiceSettingsCommands::List { service_id, org_id } => {
+                service_settings_list(client, &service_id, org_id.as_deref(), json).await
+            }
+            ServiceSettingsCommands::Get {
+                service_id,
+                setting_name,
+                org_id,
+            } => {
+                service_setting_get(client, &service_id, &setting_name, org_id.as_deref(), json)
+                    .await
+            }
+            ServiceSettingsCommands::Schema { service_id, org_id } => {
+                service_settings_schema(client, &service_id, org_id.as_deref(), json).await
+            }
+            ServiceSettingsCommands::Set {
+                service_id,
+                setting,
+                settings_file,
+                org_id,
+            } => {
+                service_settings_set(
+                    client,
+                    &service_id,
+                    &setting,
+                    settings_file.as_deref(),
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            ServiceSettingsCommands::Unset {
+                service_id,
+                setting_name,
+                org_id,
+            } => {
+                service_setting_unset(client, &service_id, &setting_name, org_id.as_deref(), json)
+                    .await
+            }
+        },
+        ServiceCommands::ScalingSchedule { command } => match command {
+            ScalingScheduleCommands::Get { service_id, org_id } => {
+                scaling_schedule_get(client, &service_id, org_id.as_deref(), json).await
+            }
+            ScalingScheduleCommands::Set {
+                service_id,
+                file,
+                org_id,
+            } => scaling_schedule_set(client, &service_id, &file, org_id.as_deref(), json).await,
+            ScalingScheduleCommands::Delete { service_id, org_id } => {
+                scaling_schedule_delete(client, &service_id, org_id.as_deref(), json).await
+            }
+        },
         ServiceCommands::Create {
             name,
             provider,
@@ -659,6 +1012,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             enable_tde,
             compliance_type,
             profile,
+            byoc_id,
             tag,
             enable_endpoint,
             disable_endpoint,
@@ -688,6 +1042,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 enable_tde,
                 compliance_type,
                 profile,
+                byoc_id,
                 tags: tag,
                 enable_endpoints: enable_endpoint,
                 disable_endpoints: disable_endpoint,
@@ -704,6 +1059,9 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
         } => service_delete(client, &service_id, force, org_id.as_deref(), json).await,
         ServiceCommands::Start { service_id, org_id } => {
             service_start(client, &service_id, org_id.as_deref(), json).await
+        }
+        ServiceCommands::Wake { service_id, org_id } => {
+            service_wake(client, &service_id, org_id.as_deref(), json).await
         }
         ServiceCommands::Stop { service_id, org_id } => {
             service_stop(client, &service_id, org_id.as_deref(), json).await
@@ -792,12 +1150,14 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 service_id,
                 role,
                 open_api_key,
+                replace_open_api_keys,
                 allowed_origins,
                 org_id,
             } => {
                 let options = QueryEndpointCreateOptions {
                     roles: role,
                     open_api_keys: open_api_key,
+                    replace_open_api_keys,
                     allowed_origins,
                     org_id,
                 };
@@ -831,6 +1191,30 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
         ServiceCommands::BackupConfig { command } => {
             crate::cloud::backups::run_config(client, command, json).await
         }
+        ServiceCommands::UpgradeWindow { command } => match command {
+            UpgradeWindowCommands::Get { service_id, org_id } => {
+                upgrade_window_get(client, &service_id, org_id.as_deref(), json).await
+            }
+            UpgradeWindowCommands::Set {
+                service_id,
+                weekday,
+                start_hour,
+                org_id,
+            } => {
+                upgrade_window_set(
+                    client,
+                    &service_id,
+                    weekday,
+                    &start_hour,
+                    org_id.as_deref(),
+                    json,
+                )
+                .await
+            }
+            UpgradeWindowCommands::Delete { service_id, org_id } => {
+                upgrade_window_delete(client, &service_id, org_id.as_deref(), json).await
+            }
+        },
         ServiceCommands::Prometheus {
             service_id,
             org_id,
@@ -917,25 +1301,16 @@ async fn resolve_service(
     }
 }
 
-fn parse_ip_access_entries(values: &[String]) -> Option<Vec<IpAccessListEntry>> {
-    (!values.is_empty()).then(|| {
-        values
-            .iter()
-            .map(|value| IpAccessListEntry {
-                source: value.clone(),
-                description: None,
-            })
-            .collect()
-    })
-}
-
-fn parse_ip_access_list_patch(add: &[String], remove: &[String]) -> Option<IpAccessListPatch> {
+fn parse_ip_access_list_patch(
+    add: &[String],
+    remove: &[String],
+) -> CloudResult<Option<IpAccessListPatch>> {
     let patch = IpAccessListPatch {
-        add: parse_ip_access_entries(add).unwrap_or_default(),
-        remove: parse_ip_access_entries(remove).unwrap_or_default(),
+        add: parse_ip_access_entries(add)?.unwrap_or_default(),
+        remove: parse_ip_access_entries(remove)?.unwrap_or_default(),
     };
 
-    (!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch)
+    Ok((!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch))
 }
 
 /// Prefix of an AWS PrivateLink VPC endpoint ID.
@@ -1070,6 +1445,32 @@ fn parse_instance_tags_patch(
     Ok((!patch.add.is_empty() || !patch.remove.is_empty()).then_some(patch))
 }
 
+fn build_upgrade_window_request(
+    weekday: i64,
+    start_hour: &str,
+) -> CloudResult<UpgradeWindowPutRequest> {
+    let start_hour_utc = match start_hour {
+        "0" => UpgradeWindowStartHourUtc::Hour0,
+        "6" => UpgradeWindowStartHourUtc::Hour6,
+        "12" => UpgradeWindowStartHourUtc::Hour12,
+        "18" => UpgradeWindowStartHourUtc::Hour18,
+        value => {
+            return Err(CloudError::new(format!(
+                "invalid start_hour '{value}': expected one of 0, 6, 12, 18"
+            )));
+        }
+    };
+    if !(0..=6).contains(&weekday) {
+        return Err(CloudError::new(format!(
+            "invalid weekday '{weekday}': expected a number from 0 through 6"
+        )));
+    }
+    Ok(UpgradeWindowPutRequest {
+        start_hour_utc,
+        weekday,
+    })
+}
+
 async fn service_list(
     client: &CloudClient,
     org_id: Option<&str>,
@@ -1139,6 +1540,312 @@ async fn service_get(
     Ok(())
 }
 
+async fn upgrade_window_get(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let window = client.get_upgrade_window(&org_id, service_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&window)?);
+    } else {
+        print_human(&window)?;
+    }
+    Ok(())
+}
+
+async fn upgrade_window_set(
+    client: &CloudClient,
+    service_id: &str,
+    weekday: i64,
+    start_hour: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_upgrade_window_request(weekday, start_hour)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let window = client
+        .set_upgrade_window(&org_id, service_id, &request)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&window)?);
+    } else {
+        print_human(&window)?;
+    }
+    Ok(())
+}
+
+async fn upgrade_window_delete(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client.delete_upgrade_window(&org_id, service_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Upgrade window deleted for service {service_id}");
+    }
+    Ok(())
+}
+
+async fn service_profile_list(
+    client: &CloudClient,
+    region_id: &str,
+    byoc_id: Option<&str>,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let profiles = client
+        .list_service_profiles(&org_id, region_id, byoc_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&profiles)?);
+    } else {
+        if profiles.is_empty() {
+            println!("No service profiles found");
+            return Ok(());
+        }
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Profile")]
+            profile: String,
+            #[tabled(rename = "CPU cores")]
+            cpu_cores: String,
+            #[tabled(rename = "Memory GiB")]
+            memory_gi: String,
+        }
+        let rows: Vec<Row> = profiles
+            .into_iter()
+            .map(|profile| Row {
+                profile: or_absent(profile.profile),
+                cpu_cores: or_absent(profile.cpu_cores),
+                memory_gi: or_absent(profile.memory_gi),
+            })
+            .collect();
+        println!("{}", Table::new(rows).with(Style::markdown()));
+    }
+    Ok(())
+}
+
+fn parse_settings_map_document(
+    raw: &str,
+    source: &str,
+) -> CloudResult<BTreeMap<String, serde_json::Value>> {
+    let value: serde_json::Value = serde_json::from_str(raw)
+        .map_err(|error| CloudError::new(format!("invalid JSON in {source}: {error}")))?;
+    let object = value.as_object().ok_or_else(|| {
+        CloudError::new(format!(
+            "{source} must contain a JSON object mapping setting names to values"
+        ))
+    })?;
+    if object.is_empty() {
+        return Err(CloudError::new(format!(
+            "{source} must contain at least one setting"
+        )));
+    }
+    if object.len() == 1
+        && object
+            .get("settings")
+            .is_some_and(|value| value.is_string() || value.is_object())
+    {
+        return Err(CloudError::new(format!(
+            "{source} looks like the API request wrapper; provide the decoded settings map, for example {{\"compatibility\":\"24.8\"}}"
+        )));
+    }
+    Ok(object
+        .iter()
+        .map(|(name, value)| (name.clone(), value.clone()))
+        .collect())
+}
+
+fn parse_setting_assignments(
+    assignments: &[String],
+) -> CloudResult<BTreeMap<String, serde_json::Value>> {
+    let mut settings = BTreeMap::new();
+    for (index, assignment) in assignments.iter().enumerate() {
+        let position = index + 1;
+        let (name, raw_value) = assignment.split_once('=').ok_or_else(|| {
+            CloudError::new(format!("--setting #{position} must use NAME=JSON_VALUE"))
+        })?;
+        if name.trim().is_empty() {
+            return Err(CloudError::new(format!(
+                "--setting #{position} has an empty setting name"
+            )));
+        }
+        let value = serde_json::from_str(raw_value).map_err(|error| {
+            CloudError::new(format!(
+                "--setting #{position} value is not valid JSON: {error}; quote string values, for example compatibility=\"24.8\""
+            ))
+        })?;
+        if settings.insert(name.to_string(), value).is_some() {
+            return Err(CloudError::new(format!(
+                "setting '{name}' was provided more than once"
+            )));
+        }
+    }
+    Ok(settings)
+}
+
+fn read_service_settings(
+    assignments: &[String],
+    settings_file: Option<&str>,
+) -> CloudResult<BTreeMap<String, serde_json::Value>> {
+    if let Some(path) = settings_file {
+        use std::io::Read as _;
+
+        let (raw, source) = if path == "-" {
+            let mut raw = String::new();
+            std::io::stdin().read_to_string(&mut raw)?;
+            (raw, "stdin".to_string())
+        } else {
+            (
+                std::fs::read_to_string(path)?,
+                format!("settings file '{path}'"),
+            )
+        };
+        return parse_settings_map_document(&raw, &source);
+    }
+
+    parse_setting_assignments(assignments)
+}
+
+fn build_service_settings_patch_request(
+    settings: &BTreeMap<String, serde_json::Value>,
+) -> CloudResult<ServiceClickhouseSettingsPatchRequest> {
+    if settings.is_empty() {
+        return Err(CloudError::new("provide at least one ClickHouse setting"));
+    }
+    Ok(ServiceClickhouseSettingsPatchRequest {
+        settings: Some(serde_json::to_string(settings)?),
+    })
+}
+
+async fn service_settings_list(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client.list_clickhouse_settings(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        let Some(settings) = response.settings else {
+            println!("No ClickHouse settings returned");
+            return Ok(());
+        };
+        if settings.is_empty() {
+            println!("No ClickHouse settings configured");
+            return Ok(());
+        }
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "Value")]
+            value: String,
+        }
+        let rows = settings
+            .into_iter()
+            .map(|setting| Row {
+                name: or_absent(setting.name),
+                value: or_absent(setting.value),
+            })
+            .collect::<Vec<_>>();
+        println!("{}", Table::new(rows).with(Style::markdown()));
+    }
+    Ok(())
+}
+
+async fn service_setting_get(
+    client: &CloudClient,
+    service_id: &str,
+    setting_name: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let setting = client
+        .get_clickhouse_setting(&org_id, service_id, setting_name)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&setting)?);
+    } else {
+        print_human(&setting)?;
+    }
+    Ok(())
+}
+
+async fn service_settings_schema(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let schema = client
+        .get_clickhouse_settings_schema(&org_id, service_id)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&schema)?);
+    } else {
+        print_human(&schema)?;
+    }
+    Ok(())
+}
+
+async fn service_settings_set(
+    client: &CloudClient,
+    service_id: &str,
+    assignments: &[String],
+    settings_file: Option<&str>,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    // Parse before organization discovery so malformed local input never
+    // causes an HTTP request, even when --org-id was omitted.
+    let settings = read_service_settings(assignments, settings_file)?;
+    let request = build_service_settings_patch_request(&settings)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client
+        .update_clickhouse_settings(&org_id, service_id, &request)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        print_human(&response)?;
+    }
+    Ok(())
+}
+
+async fn service_setting_unset(
+    client: &CloudClient,
+    service_id: &str,
+    setting_name: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client
+        .reset_clickhouse_setting(&org_id, service_id, setting_name)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Reset ClickHouse setting '{setting_name}' to its platform default");
+    }
+    Ok(())
+}
+
 #[derive(Default)]
 struct CreateServiceOptions {
     name: String,
@@ -1162,6 +1869,7 @@ struct CreateServiceOptions {
     enable_tde: bool,
     compliance_type: Option<String>,
     profile: Option<String>,
+    byoc_id: Option<String>,
     tags: Vec<String>,
     enable_endpoints: Vec<String>,
     disable_endpoints: Vec<String>,
@@ -1198,6 +1906,7 @@ struct ServiceResetPasswordOptions {
 struct QueryEndpointCreateOptions {
     roles: Vec<String>,
     open_api_keys: Vec<String>,
+    replace_open_api_keys: bool,
     allowed_origins: Option<String>,
     org_id: Option<String>,
 }
@@ -1237,7 +1946,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
             description: Some("Allow all (created by clickhousectl)".to_string()),
         }]
     } else {
-        parse_ip_access_entries(&options.ip_allow).unwrap_or_default()
+        parse_ip_access_entries(&options.ip_allow)?.unwrap_or_default()
     };
 
     let horizontal = resolve_horizontal_autoscaling(
@@ -1245,6 +1954,30 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         options.min_replicas,
         options.max_replicas,
     )?;
+
+    if options.byoc_id.as_deref().is_some_and(str::is_empty) {
+        return Err(CloudError::new("--byoc-id cannot be empty"));
+    }
+    if options.byoc_id.is_some()
+        && (options.min_replica_memory_gb.is_none() || options.max_replica_memory_gb.is_none())
+    {
+        return Err(CloudError::new(
+            "--byoc-id requires --min-replica-memory-gb and --max-replica-memory-gb",
+        ));
+    }
+
+    let profile = options
+        .profile
+        .as_deref()
+        .map(|value| parse_create_service_profile(value, options.byoc_id.as_deref()))
+        .transpose()?;
+    if matches!(profile, Some(ServicePostRequestProfile::Unknown(_)))
+        && options.min_replica_memory_gb != options.max_replica_memory_gb
+    {
+        return Err(CloudError::new(
+            "a dynamic BYOC --profile requires equal --min-replica-memory-gb and --max-replica-memory-gb",
+        ));
+    }
 
     Ok(ServicePostRequest {
         name: options.name.clone(),
@@ -1296,14 +2029,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
             )?),
             None => None,
         },
-        profile: match options.profile.as_deref() {
-            Some(value) => Some(parse_serde_enum::<ServicePostRequestProfile>(
-                value,
-                "profile",
-                ServicePostRequestProfile::VALUES,
-            )?),
-            None => None,
-        },
+        profile,
         private_preview_terms_checked: if options.private_preview_terms_checked {
             Some(true)
         } else {
@@ -1315,7 +2041,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         )?,
         enable_core_dumps: options.enable_core_dumps,
         autoscaling_mode: horizontal.autoscaling_mode,
-        byoc_id: None,
+        byoc_id: options.byoc_id.clone(),
         min_replicas: horizontal.min_replicas,
         max_replicas: horizontal.max_replicas,
         #[cfg(feature = "deprecated-fields")]
@@ -1329,12 +2055,38 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
     })
 }
 
+fn parse_create_service_profile(
+    value: &str,
+    byoc_id: Option<&str>,
+) -> CloudResult<ServicePostRequestProfile> {
+    if ServicePostRequestProfile::VALUES.contains(&value) {
+        return parse_serde_enum::<ServicePostRequestProfile>(
+            value,
+            "profile",
+            ServicePostRequestProfile::VALUES,
+        );
+    }
+    if byoc_id.is_none() {
+        return Err(CloudError::new(format!(
+            "invalid profile: unknown standard profile '{value}'; dynamic profiles require --byoc-id"
+        )));
+    }
+    if value.is_empty() {
+        return Err(CloudError::new("--profile cannot be empty"));
+    }
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|error| CloudError::new(format!("invalid profile: {error}")))
+}
+
 fn build_update_service_request(
     options: &ServiceUpdateOptions,
 ) -> CloudResult<ServicePatchRequest> {
     Ok(ServicePatchRequest {
         name: options.name.clone(),
-        ip_access_list: parse_ip_access_list_patch(&options.add_ip_allow, &options.remove_ip_allow),
+        ip_access_list: parse_ip_access_list_patch(
+            &options.add_ip_allow,
+            &options.remove_ip_allow,
+        )?,
         private_endpoint_ids: parse_private_endpoint_ids_patch(
             &options.add_private_endpoint_ids,
             &options.remove_private_endpoint_ids,
@@ -1381,9 +2133,14 @@ fn unmatched<'a>(requested: &'a [String], current: &HashSet<&str>) -> Vec<&'a st
         .collect()
 }
 
-/// Human-readable warnings for every `--remove-*` value on `options` that
-/// does not match anything in `current`.
-fn unmatched_removal_warnings(options: &ServiceUpdateOptions, current: &Service) -> Vec<String> {
+/// Human-readable warnings for every `--remove-*` value that does not match
+/// anything in `current`. IP entries come from the validated request so the
+/// comparison uses the same parsed source that the API receives.
+fn unmatched_removal_warnings(
+    options: &ServiceUpdateOptions,
+    validated_request: &ServicePatchRequest,
+    current: &Service,
+) -> Vec<String> {
     let mut warnings = Vec::new();
 
     let current_ip_allow: HashSet<&str> = current
@@ -1392,7 +2149,16 @@ fn unmatched_removal_warnings(options: &ServiceUpdateOptions, current: &Service)
         .flatten()
         .filter_map(|entry| entry.source.as_deref())
         .collect();
-    for value in unmatched(&options.remove_ip_allow, &current_ip_allow) {
+    let remove_ip_allow = validated_request
+        .ip_access_list
+        .as_ref()
+        .map(|patch| patch.remove.as_slice())
+        .unwrap_or_default();
+    for entry in remove_ip_allow {
+        if current_ip_allow.contains(entry.source.as_str()) {
+            continue;
+        }
+        let value = &entry.source;
         warnings.push(format!(
             "--remove-ip-allow {value} did not match any entry in the service's current IP allow list; no entry was removed"
         ));
@@ -1450,18 +2216,46 @@ fn build_service_password_patch_request(
 
 fn build_query_endpoint_create_request(
     options: &QueryEndpointCreateOptions,
+    existing: Option<&ServiceQueryAPIEndpoint>,
 ) -> CloudResult<InstanceServiceQueryApiEndpointsPostRequest> {
+    if options.roles.is_empty() {
+        return Err(CloudError::new("at least one --role is required"));
+    }
+    let mut open_api_keys = match existing {
+        Some(endpoint) if !options.replace_open_api_keys => {
+            existing_open_api_keys(endpoint.clone())
+                .map_err(|error| error.at_stage(FailureStage::EndpointGet))?
+        }
+        _ => Vec::new(),
+    };
+    open_api_keys.extend(options.open_api_keys.iter().cloned());
+    let mut seen = HashSet::new();
+    open_api_keys.retain(|key| seen.insert(key.clone()));
+
+    let allowed_origins = match (&options.allowed_origins, existing) {
+        (Some(origins), _) => origins.clone(),
+        (None, Some(endpoint)) => endpoint.allowed_origins.clone().ok_or_else(|| {
+            CloudError::new(
+                "the query endpoint response is missing field 'allowedOrigins'; \
+                 pass --allowed-origins to explicitly replace it",
+            )
+            .at_stage(FailureStage::EndpointGet)
+        })?,
+        (None, None) => {
+            return Err(CloudError::new(
+                "--allowed-origins is required when creating a new query endpoint; \
+                 pass browser origins or '*' explicitly to allow all origins",
+            ));
+        }
+    };
     Ok(InstanceServiceQueryApiEndpointsPostRequest {
         roles: options
             .roles
             .iter()
             .map(|role| parse_serde_enum(role, "role", QueryEndpointRole::VALUES))
             .collect::<Result<_, _>>()?,
-        open_api_keys: options.open_api_keys.clone(),
-        allowed_origins: options
-            .allowed_origins
-            .clone()
-            .unwrap_or_else(|| "*".to_string()),
+        open_api_keys,
+        allowed_origins,
     })
 }
 
@@ -1481,6 +2275,160 @@ fn build_service_state_patch_request(
     ServiceStatePatchRequest {
         command: Some(command),
     }
+}
+
+fn build_scaling_schedule_request(
+    value: serde_json::Value,
+    source: &str,
+) -> CloudResult<ScalingSchedulePostRequest> {
+    let request: ScalingSchedulePostRequest = deserialize_strict_config(value, source)?;
+    for (index, entry) in request.entries.iter().enumerate() {
+        validate_scaling_schedule_entry(entry, index, source)?;
+    }
+    Ok(request)
+}
+
+fn validate_scaling_schedule_entry(
+    entry: &ScalingScheduleEntryRequest,
+    index: usize,
+    source: &str,
+) -> CloudResult<()> {
+    let invalid = |message: String| {
+        CloudError::new(format!(
+            "invalid request body in config {source}: entries[{index}] {message}"
+        ))
+    };
+
+    if entry.weekdays.is_empty() {
+        return Err(invalid("weekdays must contain at least one day".into()));
+    }
+    if let Some(day) = entry.weekdays.iter().find(|&&day| !(0..=6).contains(&day)) {
+        return Err(invalid(format!(
+            "weekdays contains {day}; each day must be between 0 (Sunday) and 6 (Saturday)"
+        )));
+    }
+    if !(0..=23).contains(&entry.start_hour_utc) {
+        return Err(invalid(format!(
+            "startHourUtc must be between 0 and 23, got {}",
+            entry.start_hour_utc
+        )));
+    }
+    if !(1..=24).contains(&entry.end_hour_utc) {
+        return Err(invalid(format!(
+            "endHourUtc must be between 1 and 24, got {}",
+            entry.end_hour_utc
+        )));
+    }
+    if entry.start_hour_utc == entry.end_hour_utc {
+        return Err(invalid(
+            "startHourUtc and endHourUtc must be different".into(),
+        ));
+    }
+
+    let memory = match (entry.min_replica_memory_gb, entry.max_replica_memory_gb) {
+        (None, None) => None,
+        (Some(min), Some(max)) => {
+            for (field, value) in [("minReplicaMemoryGb", min), ("maxReplicaMemoryGb", max)] {
+                if !(8.0..=356.0).contains(&value) || value % 4.0 != 0.0 {
+                    return Err(invalid(format!(
+                        "{field} must be a multiple of 4 between 8 and 356, got {value}"
+                    )));
+                }
+            }
+            if min > max {
+                return Err(invalid(format!(
+                    "minReplicaMemoryGb ({min}) must not exceed maxReplicaMemoryGb ({max})"
+                )));
+            }
+            Some((min, max))
+        }
+        _ => {
+            return Err(invalid(
+                "minReplicaMemoryGb and maxReplicaMemoryGb must be provided together or both omitted"
+                    .into(),
+            ));
+        }
+    };
+
+    let replicas = match (entry.min_replicas, entry.max_replicas) {
+        (None, None) => None,
+        (Some(min), Some(max)) => {
+            if min < 1 || max < 1 {
+                return Err(invalid(format!(
+                    "minReplicas and maxReplicas must each be at least 1, got {min} and {max}"
+                )));
+            }
+            if min > max {
+                return Err(invalid(format!(
+                    "minReplicas ({min}) must not exceed maxReplicas ({max})"
+                )));
+            }
+            Some((min, max))
+        }
+        _ => {
+            return Err(invalid(
+                "minReplicas and maxReplicas must be provided together or both omitted".into(),
+            ));
+        }
+    };
+
+    if entry.num_replicas.is_some() && replicas.is_some() {
+        return Err(invalid(
+            "numReplicas is mutually exclusive with minReplicas and maxReplicas".into(),
+        ));
+    }
+    if let Some(count) = entry.num_replicas
+        && count < 1
+    {
+        return Err(invalid(format!(
+            "numReplicas must be at least 1, got {count}"
+        )));
+    }
+
+    match entry.autoscaling_mode.as_ref() {
+        Some(AutoscalingMode::Unknown(value)) => {
+            return Err(invalid(format!(
+                "autoscalingMode must be one of {}, got {value}",
+                AutoscalingMode::VALUES.join(", ")
+            )));
+        }
+        Some(AutoscalingMode::Horizontal) => {
+            let Some((min_memory, max_memory)) = memory else {
+                return Err(invalid(
+                    "horizontal autoscaling requires minReplicaMemoryGb and maxReplicaMemoryGb"
+                        .into(),
+                ));
+            };
+            if min_memory != max_memory {
+                return Err(invalid(
+                    "horizontal autoscaling requires equal minReplicaMemoryGb and maxReplicaMemoryGb"
+                        .into(),
+                ));
+            }
+            if replicas.is_none() {
+                return Err(invalid(
+                    "horizontal autoscaling requires minReplicas and maxReplicas".into(),
+                ));
+            }
+            if entry.num_replicas.is_some() {
+                return Err(invalid(
+                    "horizontal autoscaling does not accept numReplicas".into(),
+                ));
+            }
+        }
+        Some(AutoscalingMode::Vertical) | None => {
+            if let Some((min, max)) = replicas
+                && min != max
+            {
+                return Err(invalid(
+                    "vertical autoscaling accepts minReplicas and maxReplicas only as an equal fixed count"
+                        .into(),
+                ));
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn service_query_hint(service_id: Option<uuid::Uuid>) -> Option<String> {
@@ -1521,6 +2469,7 @@ async fn service_create(
 ) -> CloudResult<()> {
     let request = build_create_service_request(&options)?;
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    validate_dynamic_byoc_profile(client, &org_id, &request).await?;
     let response = client.create_service(&org_id, &request).await?;
 
     if json {
@@ -1541,6 +2490,50 @@ async fn service_create(
             println!();
             println!("{}", hint);
         }
+    }
+    Ok(())
+}
+
+async fn validate_dynamic_byoc_profile(
+    client: &CloudClient,
+    org_id: &str,
+    request: &ServicePostRequest,
+) -> CloudResult<()> {
+    let Some(ServicePostRequestProfile::Unknown(profile_name)) = request.profile.as_ref() else {
+        return Ok(());
+    };
+    let byoc_id = request
+        .byoc_id
+        .as_deref()
+        .ok_or_else(|| CloudError::new("dynamic profiles require --byoc-id"))?;
+    let region = request.region.to_string();
+    let profiles = client
+        .list_service_profiles(org_id, &region, Some(byoc_id))
+        .await?;
+    let profile = profiles
+        .iter()
+        .find(|candidate| candidate.profile.as_deref() == Some(profile_name.as_str()))
+        .ok_or_else(|| {
+            CloudError::new(format!(
+                "profile '{profile_name}' is not available for BYOC infrastructure '{byoc_id}' in region '{region}'"
+            ))
+        })?;
+    let memory_gi = profile.memory_gi.ok_or_else(|| {
+        CloudError::new(format!(
+            "profile '{profile_name}' did not include its memory size; cannot validate service memory bounds"
+        ))
+    })?;
+    let (Some(min_memory), Some(max_memory)) =
+        (request.min_replica_memory_gb, request.max_replica_memory_gb)
+    else {
+        return Err(CloudError::new(
+            "dynamic BYOC profiles require both replica memory bounds",
+        ));
+    };
+    if min_memory != memory_gi || max_memory != memory_gi {
+        return Err(CloudError::new(format!(
+            "profile '{profile_name}' requires both replica memory bounds to equal {memory_gi} GiB"
+        )));
     }
     Ok(())
 }
@@ -1704,6 +2697,29 @@ async fn service_stop(
     Ok(())
 }
 
+async fn service_wake(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let service = client
+        .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Awake)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&service)?);
+    } else {
+        println!(
+            "Service {} waking (state: {})",
+            or_absent(service.name.as_deref()),
+            or_absent(service.state.as_ref())
+        );
+    }
+    Ok(())
+}
+
 async fn service_update(
     client: &CloudClient,
     service_id: &str,
@@ -1715,7 +2731,7 @@ async fn service_update(
 
     if has_removals(&options) {
         let current = client.get_service(&org_id, service_id).await?;
-        for warning in unmatched_removal_warnings(&options, &current) {
+        for warning in unmatched_removal_warnings(&options, &request, &current) {
             eprint_line(format!("Warning: {warning}"));
         }
     }
@@ -1896,26 +2912,20 @@ async fn query_endpoint_create(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
-    let request = build_query_endpoint_create_request(&options)?;
+    let existing = client
+        .get_query_endpoint_for_binding(&org_id, service_id)
+        .await
+        .map_err(|error| error.at_stage(FailureStage::EndpointGet))?;
+    let request = build_query_endpoint_create_request(&options, existing.as_ref())?;
     let endpoint = client
         .create_query_endpoint(&org_id, service_id, &request)
-        .await?;
+        .await
+        .map_err(|error| error.at_stage(FailureStage::EndpointUpsert))?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&endpoint)?);
     } else {
-        println!("Query endpoint created for service {}", service_id);
-        println!("  ID: {}", or_absent(endpoint.id.as_deref()));
-        println!(
-            "  Roles: {}",
-            or_absent(endpoint.roles.as_ref().map(|roles| {
-                roles
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }))
-        );
+        print_human(&endpoint)?;
     }
     Ok(())
 }
@@ -2993,6 +4003,63 @@ async fn private_endpoint_get_config(
     Ok(())
 }
 
+async fn scaling_schedule_get(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let schedule = client.get_scaling_schedule(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&schedule)?);
+    } else {
+        print_human(&schedule)?;
+    }
+    Ok(())
+}
+
+async fn scaling_schedule_set(
+    client: &CloudClient,
+    service_id: &str,
+    file: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_scaling_schedule_request(read_config_value(file)?, file)?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let schedule = client
+        .set_scaling_schedule(&org_id, service_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&schedule)?);
+    } else {
+        print_human(&schedule)?;
+    }
+    Ok(())
+}
+
+async fn scaling_schedule_delete(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client.delete_scaling_schedule(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        print_line(format!(
+            "Scaling schedule deleted from service {service_id}"
+        ));
+    }
+    Ok(())
+}
+
 async fn service_prometheus(
     client: &CloudClient,
     service_id: &str,
@@ -3008,6 +4075,63 @@ async fn service_prometheus(
 }
 
 impl CloudClient {
+    pub async fn get_scaling_schedule(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<ScalingSchedule> {
+        let response = self
+            .api()
+            .scaling_schedule_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn set_scaling_schedule(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ScalingSchedulePostRequest,
+    ) -> crate::cloud::client::Result<ScalingSchedule> {
+        let response = self
+            .api()
+            .scaling_schedule_upsert(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn delete_scaling_schedule(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .scaling_schedule_delete(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
+    }
+
+    pub async fn list_service_profiles(
+        &self,
+        org_id: &str,
+        region_id: &str,
+        byoc_id: Option<&str>,
+    ) -> crate::cloud::client::Result<Vec<ServiceProfile>> {
+        let response = self
+            .api()
+            .service_profiles_list(org_id, region_id, byoc_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     pub async fn list_services(&self, org_id: &str) -> crate::cloud::client::Result<Vec<Service>> {
         let response = self
             .api()
@@ -3015,6 +4139,77 @@ impl CloudClient {
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
+    }
+
+    pub async fn list_clickhouse_settings(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<ServiceClickhouseSettingsList> {
+        let response = self
+            .api()
+            .service_clickhouse_settings_list_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_clickhouse_setting(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        setting_name: &str,
+    ) -> crate::cloud::client::Result<ServiceClickhouseSetting> {
+        let response = self
+            .api()
+            .service_clickhouse_setting_get(org_id, service_id, setting_name)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_clickhouse_settings_schema(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<ServiceClickhouseSettingsSchema> {
+        let response = self
+            .api()
+            .service_clickhouse_settings_schema_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_clickhouse_settings(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ServiceClickhouseSettingsPatchRequest,
+    ) -> crate::cloud::client::Result<ServiceClickhouseSettingsPatchResponse> {
+        let response = self
+            .api()
+            .service_clickhouse_settings_update(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn reset_clickhouse_setting(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        setting_name: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .service_clickhouse_setting_delete(org_id, service_id, setting_name)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
     }
 
     pub async fn list_services_filtered(
@@ -3049,6 +4244,49 @@ impl CloudClient {
                 )
             })?;
         Self::unwrap_response(response)
+    }
+
+    pub async fn get_upgrade_window(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<UpgradeWindow> {
+        let response = self
+            .api()
+            .upgrade_window_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn set_upgrade_window(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &UpgradeWindowPutRequest,
+    ) -> crate::cloud::client::Result<UpgradeWindow> {
+        let response = self
+            .api()
+            .upgrade_window_update(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn delete_upgrade_window(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .upgrade_window_delete(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
     }
 
     pub async fn get_service_if_exists(
@@ -3350,6 +4588,7 @@ mod tests {
             enable_tde,
             compliance_type,
             profile,
+            byoc_id,
             tag,
             enable_endpoint,
             disable_endpoint,
@@ -3382,6 +4621,7 @@ mod tests {
         assert!(!enable_tde);
         assert!(compliance_type.is_none());
         assert!(profile.is_none());
+        assert!(byoc_id.is_none());
         assert!(tag.is_empty());
         assert!(enable_endpoint.is_empty());
         assert!(disable_endpoint.is_empty());
@@ -3416,9 +4656,9 @@ mod tests {
             "--idle-timeout-minutes",
             "10",
             "--ip-allow",
-            "10.0.0.0/8",
+            "10.0.0.0/8=office",
             "--ip-allow",
-            "192.0.2.0/24",
+            "2001:db8::/32=\u{6771}\u{4eac}",
             "--backup-id",
             "backup-1",
             "--release-channel",
@@ -3435,6 +4675,8 @@ mod tests {
             "pci",
             "--profile",
             "v1-highmem-xs",
+            "--byoc-id",
+            "byoc-1",
             "--tag",
             "env=prod",
             "--tag",
@@ -3469,6 +4711,7 @@ mod tests {
             enable_tde,
             compliance_type,
             profile,
+            byoc_id,
             tag,
             enable_endpoint,
             disable_endpoint,
@@ -3490,7 +4733,10 @@ mod tests {
         assert_eq!(autoscaling_mode.as_deref(), Some("vertical"));
         assert_eq!(idle_scaling, Some(false));
         assert_eq!(idle_timeout_minutes, Some(10));
-        assert_eq!(ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
+        assert_eq!(
+            ip_allow,
+            vec!["10.0.0.0/8=office", "2001:db8::/32=\u{6771}\u{4eac}"]
+        );
         assert_eq!(backup_id.as_deref(), Some("backup-1"));
         assert_eq!(release_channel.as_deref(), Some("fast"));
         assert_eq!(data_warehouse_id.as_deref(), Some("dw-1"));
@@ -3500,12 +4746,47 @@ mod tests {
         assert!(enable_tde);
         assert_eq!(compliance_type.as_deref(), Some("pci"));
         assert_eq!(profile.as_deref(), Some("v1-highmem-xs"));
+        assert_eq!(byoc_id.as_deref(), Some("byoc-1"));
         assert_eq!(tag, vec!["env=prod", "team=analytics"]);
         assert_eq!(enable_endpoint, vec!["mysql"]);
         assert_eq!(disable_endpoint, vec!["mysql"]);
         assert!(private_preview_terms_checked);
         assert_eq!(enable_core_dumps, Some(false));
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn parses_service_create_dynamic_byoc_profile_flags() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "byoc-service",
+            "--profile",
+            "v1-standard-byoc-4",
+            "--byoc-id",
+            "byoc-1",
+            "--min-replica-memory-gb",
+            "48",
+            "--max-replica-memory-gb",
+            "48",
+        ]);
+        let ServiceCommands::Create {
+            profile,
+            byoc_id,
+            min_replica_memory_gb,
+            max_replica_memory_gb,
+            ..
+        } = command
+        else {
+            panic!("expected service create");
+        };
+        assert_eq!(profile.as_deref(), Some("v1-standard-byoc-4"));
+        assert_eq!(byoc_id.as_deref(), Some("byoc-1"));
+        assert_eq!(min_replica_memory_gb, Some(48));
+        assert_eq!(max_replica_memory_gb, Some(48));
     }
 
     #[test]
@@ -3534,6 +4815,277 @@ mod tests {
         };
         assert_eq!(org_id.as_deref(), Some("org-1"));
         assert_eq!(filter, vec!["tag:env=prod", "tag:team=analytics"]);
+    }
+
+    #[test]
+    fn parses_service_profile_list_flags_and_requires_region() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "profile",
+            "list",
+            "--region",
+            "eu-west-1",
+            "--byoc-id",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::Profile {
+            command:
+                ServiceProfileCommands::List {
+                    region,
+                    byoc_id,
+                    org_id,
+                },
+        } = command
+        else {
+            panic!("expected service profile list");
+        };
+        assert_eq!(region, "eu-west-1");
+        assert_eq!(byoc_id.as_deref(), Some("byoc-1"));
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "profile", "list"])
+            .err()
+            .expect("missing --region should fail");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn parses_scaling_schedule_commands_and_classifies_writes() {
+        let get = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "scaling-schedule",
+            "get",
+            "svc-1",
+        ]);
+        let ServiceCommands::ScalingSchedule {
+            command: ScalingScheduleCommands::Get { service_id, org_id },
+        } = get
+        else {
+            panic!("expected scaling schedule get");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert!(org_id.is_none());
+
+        let set = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "scaling-schedule",
+            "set",
+            "svc-1",
+            "--file",
+            "-",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::ScalingSchedule {
+            command:
+                ScalingScheduleCommands::Set {
+                    service_id,
+                    file,
+                    org_id,
+                },
+        } = set
+        else {
+            panic!("expected scaling schedule set");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(file, "-");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "scaling-schedule",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
+        for leaf in ["set", "delete"] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "scaling-schedule",
+                leaf,
+                "svc-1",
+            ];
+            if leaf == "set" {
+                args.extend(["--file", "schedule.json"]);
+            }
+            assert_write(&args, true);
+        }
+    }
+
+    #[test]
+    fn scaling_schedule_set_requires_file() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "scaling-schedule",
+            "set",
+            "svc-1",
+        ])
+        .err()
+        .expect("missing --file should fail");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn parses_upgrade_window_commands_and_classifies_writes() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "upgrade-window",
+            "set",
+            "svc-1",
+            "--weekday",
+            "3",
+            "--start-hour",
+            "12",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::UpgradeWindow {
+            command:
+                UpgradeWindowCommands::Set {
+                    service_id,
+                    weekday,
+                    start_hour,
+                    org_id,
+                },
+        } = command
+        else {
+            panic!("expected upgrade-window set");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(weekday, 3);
+        assert_eq!(start_hour, "12");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "get",
+                "svc-1",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "set",
+                "svc-1",
+                "--weekday",
+                "0",
+                "--start-hour",
+                "0",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "delete",
+                "svc-1",
+            ],
+            true,
+        );
+    }
+
+    #[test]
+    fn upgrade_window_set_rejects_missing_and_out_of_range_values() {
+        for args in [
+            vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "set",
+                "svc-1",
+                "--start-hour",
+                "6",
+            ],
+            vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "set",
+                "svc-1",
+                "--weekday",
+                "2",
+            ],
+        ] {
+            let error = Cli::try_parse_from(args).err().expect("should fail");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+
+        for (flag, value) in [
+            ("--weekday", "7"),
+            ("--weekday", "-1"),
+            ("--start-hour", "3"),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "upgrade-window",
+                "set",
+                "svc-1",
+                "--weekday",
+                "2",
+                "--start-hour",
+                "6",
+            ];
+            let index = args.iter().position(|arg| *arg == flag).unwrap() + 1;
+            args[index] = value;
+            let error = Cli::try_parse_from(args).err().expect("should fail");
+            assert!(matches!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation | clap::error::ErrorKind::InvalidValue
+            ));
+        }
+    }
+
+    #[test]
+    fn build_upgrade_window_request_supports_minimal_and_maximal_values() {
+        let earliest = build_upgrade_window_request(0, "0").unwrap();
+        assert_eq!(earliest.weekday, 0);
+        assert_eq!(earliest.start_hour_utc, UpgradeWindowStartHourUtc::Hour0);
+
+        let latest = build_upgrade_window_request(6, "18").unwrap();
+        assert_eq!(latest.weekday, 6);
+        assert_eq!(latest.start_hour_utc, UpgradeWindowStartHourUtc::Hour18);
     }
 
     #[test]
@@ -3657,6 +5209,8 @@ mod tests {
             "query-endpoint",
             "create",
             "svc-1",
+            "--role",
+            "sql_console_read_only",
         ]);
         let crate::cloud::cli::ServiceCommands::QueryEndpoint { command } = query_endpoint else {
             panic!("expected query-endpoint command");
@@ -3665,13 +5219,15 @@ mod tests {
             role,
             open_api_key,
             allowed_origins,
+            replace_open_api_keys,
             org_id,
             ..
         } = command
         else {
             panic!("expected query-endpoint create");
         };
-        assert!(role.is_empty());
+        assert_eq!(role, ["sql_console_read_only"]);
+        assert!(!replace_open_api_keys);
         assert!(open_api_key.is_empty());
         assert!(allowed_origins.is_none());
         assert!(org_id.is_none());
@@ -3780,7 +5336,7 @@ mod tests {
             "update",
             "svc-1",
             "--add-ip-allow",
-            "10.0.0.0/8",
+            "2001:db8::/32=office",
             "--remove-ip-allow",
             "0.0.0.0/0",
             "--add-private-endpoint-id",
@@ -3812,7 +5368,7 @@ mod tests {
             panic!("expected service update");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(add_ip_allow, vec!["10.0.0.0/8"]);
+        assert_eq!(add_ip_allow, vec!["2001:db8::/32=office"]);
         assert_eq!(remove_ip_allow, vec!["0.0.0.0/0"]);
         assert_eq!(add_private_endpoint_id, vec!["pe-1"]);
         assert_eq!(remove_private_endpoint_id, vec!["pe-2"]);
@@ -3833,9 +5389,9 @@ mod tests {
             "--name",
             "renamed",
             "--add-ip-allow",
-            "10.0.0.0/8",
+            "10.0.0.0/8=office",
             "--add-ip-allow",
-            "192.0.2.0/24",
+            "2001:db8::/32=\u{6771}\u{4eac}",
             "--remove-ip-allow",
             "0.0.0.0/0",
             "--add-private-endpoint-id",
@@ -3885,7 +5441,10 @@ mod tests {
 
         assert_eq!(service_id, "svc-1");
         assert_eq!(name.as_deref(), Some("renamed"));
-        assert_eq!(add_ip_allow, vec!["10.0.0.0/8", "192.0.2.0/24"]);
+        assert_eq!(
+            add_ip_allow,
+            vec!["10.0.0.0/8=office", "2001:db8::/32=\u{6771}\u{4eac}"]
+        );
         assert_eq!(remove_ip_allow, vec!["0.0.0.0/0"]);
         assert_eq!(add_private_endpoint_id, vec!["pe-1", "pe-2"]);
         assert_eq!(remove_private_endpoint_id, vec!["pe-3"]);
@@ -4392,6 +5951,7 @@ mod tests {
             "key-1",
             "--open-api-key",
             "key-2",
+            "--replace-open-api-keys",
             "--allowed-origins",
             "https://example.com",
             "--org-id",
@@ -4405,12 +5965,14 @@ mod tests {
             role,
             open_api_key,
             allowed_origins,
+            replace_open_api_keys,
             org_id,
         } = command
         else {
             panic!("expected query-endpoint create");
         };
         assert_eq!(service_id, "svc-1");
+        assert!(replace_open_api_keys);
         assert_eq!(role, vec!["sql_console_read_only", "sql_console_admin"]);
         assert_eq!(open_api_key, vec!["key-1", "key-2"]);
         assert_eq!(allowed_origins.as_deref(), Some("https://example.com"));
@@ -4440,6 +6002,42 @@ mod tests {
                     panic!("expected query-endpoint {action}")
                 }
             }
+        }
+    }
+
+    #[test]
+    fn query_endpoint_create_requires_roles_and_nonempty_explicit_values() {
+        let prefix = [
+            "clickhousectl",
+            "cloud",
+            "service",
+            "query-endpoint",
+            "create",
+            "svc-1",
+        ];
+        let missing_role = Cli::try_parse_from(prefix).err().unwrap();
+        assert_eq!(
+            missing_role.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        for (flags, expected) in [
+            (
+                vec!["--role", "sql_console_read_only", "--replace-open-api-keys"],
+                clap::error::ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                vec!["--role", "sql_console_read_only", "--open-api-key", ""],
+                clap::error::ErrorKind::InvalidValue,
+            ),
+            (
+                vec!["--role", "sql_console_read_only", "--allowed-origins", ""],
+                clap::error::ErrorKind::InvalidValue,
+            ),
+        ] {
+            let error = Cli::try_parse_from(prefix.into_iter().chain(flags))
+                .err()
+                .unwrap();
+            assert_eq!(error.kind(), expected);
         }
     }
 
@@ -4666,7 +6264,7 @@ mod tests {
         assert_eq!(service_id, "svc-1");
         assert_eq!(org_id.as_deref(), Some("org-1"));
 
-        for action in ["start", "stop"] {
+        for action in ["start", "wake", "stop"] {
             let command = parse_service(&[
                 "clickhousectl",
                 "cloud",
@@ -4678,6 +6276,7 @@ mod tests {
             ]);
             match command {
                 crate::cloud::cli::ServiceCommands::Start { service_id, org_id }
+                | crate::cloud::cli::ServiceCommands::Wake { service_id, org_id }
                 | crate::cloud::cli::ServiceCommands::Stop { service_id, org_id } => {
                     assert_eq!(service_id, "svc-1");
                     assert_eq!(org_id.as_deref(), Some("org-1"));
@@ -4734,6 +6333,68 @@ mod tests {
                 "clickhousectl",
                 "cloud",
                 "service",
+                "profile",
+                "list",
+                "--region",
+                "us-east-1",
+            ],
+            false,
+        );
+        for action in ["list", "schema"] {
+            assert_write(
+                &[
+                    "clickhousectl",
+                    "cloud",
+                    "service",
+                    "settings",
+                    action,
+                    "svc-1",
+                ],
+                false,
+            );
+        }
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "settings",
+                "get",
+                "svc-1",
+                "compatibility",
+            ],
+            false,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "settings",
+                "set",
+                "svc-1",
+                "--setting",
+                "compatibility=\"24.8\"",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "settings",
+                "unset",
+                "svc-1",
+                "compatibility",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "service",
                 "repair-query-key",
                 "svc-1",
             ],
@@ -4763,6 +6424,7 @@ mod tests {
         for action in [
             "delete",
             "start",
+            "wake",
             "stop",
             "update",
             "scale",
@@ -4785,17 +6447,18 @@ mod tests {
             false,
         );
         for action in ["create", "delete"] {
-            assert_write(
-                &[
-                    "clickhousectl",
-                    "cloud",
-                    "service",
-                    "query-endpoint",
-                    action,
-                    "svc-1",
-                ],
-                true,
-            );
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "service",
+                "query-endpoint",
+                action,
+                "svc-1",
+            ];
+            if action == "create" {
+                args.extend(["--role", "sql_console_read_only"]);
+            }
+            assert_write(&args, true);
         }
         assert_write(
             &[
@@ -5754,7 +7417,7 @@ mod tests {
             autoscaling_mode: Some("vertical".to_string()),
             idle_scaling: Some(true),
             idle_timeout_minutes: Some(10),
-            ip_allow: vec!["10.0.0.0/8".to_string()],
+            ip_allow: vec!["2001:db8::/32=office".to_string()],
             backup_id: Some("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6".to_string()),
             release_channel: Some("fast".to_string()),
             data_warehouse_id: Some("dw-1".to_string()),
@@ -5785,8 +7448,11 @@ mod tests {
         assert_eq!(request.idle_scaling, Some(true));
         assert_eq!(request.idle_timeout_minutes, Some(10.0));
         assert_eq!(request.ip_access_list.len(), 1);
-        assert_eq!(request.ip_access_list[0].source, "10.0.0.0/8");
-        assert!(request.ip_access_list[0].description.is_none());
+        assert_eq!(request.ip_access_list[0].source, "2001:db8::/32");
+        assert_eq!(
+            request.ip_access_list[0].description.as_deref(),
+            Some("office")
+        );
         assert_eq!(
             request.backup_id,
             Some(uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap())
@@ -5821,6 +7487,76 @@ mod tests {
         assert_eq!(request.private_preview_terms_checked, Some(true));
         assert_eq!(request.enable_core_dumps, Some(true));
         assert!(request.byoc_id.is_none());
+    }
+
+    #[test]
+    fn build_create_service_request_accepts_a_dynamic_byoc_profile() {
+        let request = build_create_service_request(&CreateServiceOptions {
+            min_replica_memory_gb: Some(48),
+            max_replica_memory_gb: Some(48),
+            profile: Some("v1-standard-byoc-4".to_string()),
+            byoc_id: Some("byoc-1".to_string()),
+            ..minimal_create_options()
+        })
+        .unwrap();
+
+        assert_eq!(request.byoc_id.as_deref(), Some("byoc-1"));
+        assert_eq!(
+            request.profile,
+            Some(ServicePostRequestProfile::Unknown(
+                "v1-standard-byoc-4".to_string()
+            ))
+        );
+        assert_eq!(request.min_replica_memory_gb, Some(48.0));
+        assert_eq!(request.max_replica_memory_gb, Some(48.0));
+    }
+
+    #[test]
+    fn build_create_service_request_preserves_standard_profile_validation() {
+        let standard = build_create_service_request(&CreateServiceOptions {
+            profile: Some("v1-highmem-xs".to_string()),
+            ..minimal_create_options()
+        })
+        .unwrap();
+        assert_eq!(
+            standard.profile,
+            Some(ServicePostRequestProfile::V1_highmem_xs)
+        );
+
+        let error = build_create_service_request(&CreateServiceOptions {
+            profile: Some("future-standard-profile".to_string()),
+            ..minimal_create_options()
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("dynamic profiles require --byoc-id")
+        );
+    }
+
+    #[test]
+    fn build_create_service_request_enforces_byoc_memory_constraints() {
+        for options in [
+            CreateServiceOptions {
+                byoc_id: Some("byoc-1".to_string()),
+                ..minimal_create_options()
+            },
+            CreateServiceOptions {
+                byoc_id: Some("byoc-1".to_string()),
+                min_replica_memory_gb: Some(48),
+                ..minimal_create_options()
+            },
+            CreateServiceOptions {
+                byoc_id: Some("byoc-1".to_string()),
+                min_replica_memory_gb: Some(48),
+                max_replica_memory_gb: Some(116),
+                profile: Some("v1-standard-byoc-4".to_string()),
+                ..minimal_create_options()
+            },
+        ] {
+            assert!(build_create_service_request(&options).is_err());
+        }
     }
 
     #[test]
@@ -5866,7 +7602,7 @@ mod tests {
     fn build_update_service_request_supports_maximal_fields() {
         let options = ServiceUpdateOptions {
             name: Some("updated".to_string()),
-            add_ip_allow: vec!["10.0.0.0/8".to_string()],
+            add_ip_allow: vec!["10.0.0.0/8=office".to_string()],
             remove_ip_allow: vec!["0.0.0.0/0".to_string()],
             add_private_endpoint_ids: vec!["pe-1".to_string()],
             remove_private_endpoint_ids: vec!["pe-2".to_string()],
@@ -5885,7 +7621,7 @@ mod tests {
         let ip_access_list = request.ip_access_list.as_ref().unwrap();
         assert_eq!(ip_access_list.add.len(), 1);
         assert_eq!(ip_access_list.add[0].source, "10.0.0.0/8");
-        assert!(ip_access_list.add[0].description.is_none());
+        assert_eq!(ip_access_list.add[0].description.as_deref(), Some("office"));
         assert_eq!(ip_access_list.remove.len(), 1);
         assert_eq!(ip_access_list.remove[0].source, "0.0.0.0/0");
         assert!(ip_access_list.remove[0].description.is_none());
@@ -6000,24 +7736,53 @@ mod tests {
     fn unmatched_removal_warnings_is_empty_when_everything_matches() {
         let current = service_with_ip_allow_endpoints_and_tags();
         let options = ServiceUpdateOptions {
-            remove_ip_allow: vec!["10.0.0.0/8".to_string()],
+            remove_ip_allow: vec![" 10.0.0.0/8 =retired office".to_string()],
             remove_private_endpoint_ids: vec!["pe-1".to_string()],
             remove_tags: vec!["env".to_string()],
             ..Default::default()
         };
-        assert!(unmatched_removal_warnings(&options, &current).is_empty());
+        let request = build_update_service_request(&options).unwrap();
+        assert!(unmatched_removal_warnings(&options, &request, &current).is_empty());
+    }
+
+    #[test]
+    fn unmatched_removal_warnings_match_parsed_ipv4_and_ipv6_sources() {
+        let current = Service {
+            ip_access_list: Some(vec![
+                IpAccessListEntryResponse {
+                    source: Some("192.0.2.0/24".to_string()),
+                    description: None,
+                },
+                IpAccessListEntryResponse {
+                    source: Some("2001:db8::/32".to_string()),
+                    description: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        let options = ServiceUpdateOptions {
+            remove_ip_allow: vec![
+                " 192.0.2.0/24 =old office".to_string(),
+                " 2001:db8::/32 =old ipv6 range".to_string(),
+            ],
+            ..Default::default()
+        };
+        let request = build_update_service_request(&options).unwrap();
+
+        assert!(unmatched_removal_warnings(&options, &request, &current).is_empty());
     }
 
     #[test]
     fn unmatched_removal_warnings_names_every_unmatched_entry() {
         let current = service_with_ip_allow_endpoints_and_tags();
         let options = ServiceUpdateOptions {
-            remove_ip_allow: vec!["10.99.99.99/32".to_string()],
+            remove_ip_allow: vec![" 10.99.99.99/32 =old office".to_string()],
             remove_private_endpoint_ids: vec!["pe-missing".to_string()],
             remove_tags: vec!["missing=value".to_string()],
             ..Default::default()
         };
-        let warnings = unmatched_removal_warnings(&options, &current);
+        let request = build_update_service_request(&options).unwrap();
+        let warnings = unmatched_removal_warnings(&options, &request, &current);
         assert_eq!(warnings.len(), 3);
         assert!(
             warnings[0].contains("--remove-ip-allow 10.99.99.99/32")
@@ -6040,7 +7805,8 @@ mod tests {
             remove_tags: vec!["env=staging".to_string()],
             ..Default::default()
         };
-        assert!(unmatched_removal_warnings(&options, &current).is_empty());
+        let request = build_update_service_request(&options).unwrap();
+        assert!(unmatched_removal_warnings(&options, &request, &current).is_empty());
     }
 
     #[test]
@@ -6049,7 +7815,8 @@ mod tests {
             remove_ip_allow: vec!["10.0.0.0/8".to_string()],
             ..Default::default()
         };
-        let warnings = unmatched_removal_warnings(&options, &Service::default());
+        let request = build_update_service_request(&options).unwrap();
+        let warnings = unmatched_removal_warnings(&options, &request, &Service::default());
         assert_eq!(warnings.len(), 1);
         assert!(warnings[0].contains("--remove-ip-allow 10.0.0.0/8"));
     }
@@ -6169,6 +7936,157 @@ mod tests {
     }
 
     #[test]
+    fn build_scaling_schedule_request_supports_minimal_and_empty_schedules() {
+        let request = build_scaling_schedule_request(
+            serde_json::json!({
+                "entries": [{
+                    "name": "Business hours",
+                    "weekdays": [1],
+                    "startHourUtc": 9,
+                    "endHourUtc": 17
+                }]
+            }),
+            "test.json",
+        )
+        .unwrap();
+        assert_eq!(request.entries.len(), 1);
+        let entry = &request.entries[0];
+        assert_eq!(entry.name, "Business hours");
+        assert_eq!(entry.weekdays, vec![1]);
+        assert_eq!(entry.start_hour_utc, 9);
+        assert_eq!(entry.end_hour_utc, 17);
+        assert!(entry.autoscaling_mode.is_none());
+        assert!(entry.idle_scaling.is_none());
+        assert!(entry.idle_timeout_minutes.is_none());
+        assert!(entry.min_replica_memory_gb.is_none());
+        assert!(entry.max_replica_memory_gb.is_none());
+        assert!(entry.num_replicas.is_none());
+        assert!(entry.min_replicas.is_none());
+        assert!(entry.max_replicas.is_none());
+
+        let clear = build_scaling_schedule_request(serde_json::json!({"entries": []}), "test.json")
+            .unwrap();
+        assert!(clear.entries.is_empty());
+    }
+
+    #[test]
+    fn build_scaling_schedule_request_preserves_all_entry_fields() {
+        let request = build_scaling_schedule_request(
+            serde_json::json!({
+                "entries": [
+                    {
+                        "name": "Vertical nights",
+                        "weekdays": [0, 6],
+                        "startHourUtc": 22,
+                        "endHourUtc": 6,
+                        "autoscalingMode": "vertical",
+                        "idleScaling": true,
+                        "idleTimeoutMinutes": 5,
+                        "minReplicaMemoryGb": 8,
+                        "maxReplicaMemoryGb": 32,
+                        "numReplicas": 2
+                    },
+                    {
+                        "name": "Horizontal weekdays",
+                        "weekdays": [1, 2, 3, 4, 5],
+                        "startHourUtc": 8,
+                        "endHourUtc": 24,
+                        "autoscalingMode": "horizontal",
+                        "idleScaling": false,
+                        "idleTimeoutMinutes": 0,
+                        "minReplicaMemoryGb": 16,
+                        "maxReplicaMemoryGb": 16,
+                        "minReplicas": 2,
+                        "maxReplicas": 7
+                    }
+                ]
+            }),
+            "schedule.json",
+        )
+        .unwrap();
+
+        assert_eq!(request.entries.len(), 2);
+        let vertical = &request.entries[0];
+        assert_eq!(vertical.autoscaling_mode, Some(AutoscalingMode::Vertical));
+        assert_eq!(vertical.idle_scaling, Some(true));
+        assert_eq!(vertical.idle_timeout_minutes, Some(5));
+        assert_eq!(vertical.min_replica_memory_gb, Some(8.0));
+        assert_eq!(vertical.max_replica_memory_gb, Some(32.0));
+        assert_eq!(vertical.num_replicas, Some(2));
+        assert!(vertical.min_replicas.is_none());
+        assert!(vertical.max_replicas.is_none());
+
+        let horizontal = &request.entries[1];
+        assert_eq!(
+            horizontal.autoscaling_mode,
+            Some(AutoscalingMode::Horizontal)
+        );
+        assert_eq!(horizontal.weekdays, vec![1, 2, 3, 4, 5]);
+        assert_eq!(horizontal.end_hour_utc, 24);
+        assert_eq!(horizontal.idle_scaling, Some(false));
+        assert_eq!(horizontal.idle_timeout_minutes, Some(0));
+        assert_eq!(horizontal.min_replica_memory_gb, Some(16.0));
+        assert_eq!(horizontal.max_replica_memory_gb, Some(16.0));
+        assert_eq!(horizontal.min_replicas, Some(2));
+        assert_eq!(horizontal.max_replicas, Some(7));
+        assert!(horizontal.num_replicas.is_none());
+    }
+
+    #[test]
+    fn build_scaling_schedule_request_rejects_unknown_fields_and_modes() {
+        for value in [
+            serde_json::json!({
+                "entries": [{
+                    "name": "typo",
+                    "weekdays": [1],
+                    "startHourUtc": 9,
+                    "endHourUtc": 17,
+                    "minReplicaMemoryGB": 16
+                }]
+            }),
+            serde_json::json!({
+                "entries": [{
+                    "name": "future mode",
+                    "weekdays": [1],
+                    "startHourUtc": 9,
+                    "endHourUtc": 17,
+                    "autoscalingMode": "diagonal"
+                }]
+            }),
+            serde_json::json!({"entries": [], "baseConfig": {}}),
+        ] {
+            assert!(build_scaling_schedule_request(value, "bad.json").is_err());
+        }
+    }
+
+    #[test]
+    fn build_scaling_schedule_request_validates_documented_bounds_and_relationships() {
+        let invalid_entries = [
+            serde_json::json!({"name":"x","weekdays":[],"startHourUtc":0,"endHourUtc":24}),
+            serde_json::json!({"name":"x","weekdays":[7],"startHourUtc":0,"endHourUtc":24}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":-1,"endHourUtc":24}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":0,"endHourUtc":25}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":8}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicaMemoryGb":8}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicaMemoryGb":12,"maxReplicaMemoryGb":8}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicaMemoryGb":10,"maxReplicaMemoryGb":12}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"numReplicas":0}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicas":1}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"minReplicas":3,"maxReplicas":2}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"numReplicas":2,"minReplicas":2,"maxReplicas":2}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"autoscalingMode":"vertical","minReplicas":1,"maxReplicas":2}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"autoscalingMode":"horizontal","minReplicaMemoryGb":16,"maxReplicaMemoryGb":16}),
+            serde_json::json!({"name":"x","weekdays":[1],"startHourUtc":8,"endHourUtc":9,"autoscalingMode":"horizontal","minReplicaMemoryGb":16,"maxReplicaMemoryGb":20,"minReplicas":1,"maxReplicas":2}),
+        ];
+        for entry in invalid_entries {
+            let error =
+                build_scaling_schedule_request(serde_json::json!({"entries": [entry]}), "bad.json")
+                    .unwrap_err();
+            assert!(error.message.contains("entries[0]"), "{error}");
+        }
+    }
+
+    #[test]
     fn build_service_scale_request_supports_minimal_fields() {
         let request = build_service_scale_request(&ServiceScaleOptions::default()).unwrap();
 
@@ -6275,35 +8193,122 @@ mod tests {
 
     #[test]
     fn build_query_endpoint_create_request_supports_minimal_fields() {
-        let request =
-            build_query_endpoint_create_request(&QueryEndpointCreateOptions::default()).unwrap();
+        let request = build_query_endpoint_create_request(
+            &QueryEndpointCreateOptions {
+                roles: vec!["sql_console_read_only".into()],
+                allowed_origins: Some("https://example.com".into()),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
 
-        assert!(request.roles.is_empty());
+        assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleReadOnly]);
         assert!(request.open_api_keys.is_empty());
-        assert_eq!(request.allowed_origins, "*");
+        assert_eq!(request.allowed_origins, "https://example.com");
     }
 
     #[test]
     fn build_query_endpoint_create_request_supports_maximal_fields() {
-        let request = build_query_endpoint_create_request(&QueryEndpointCreateOptions {
-            roles: vec![
-                "sql_console_read_only".to_string(),
-                "sql_console_admin".to_string(),
-            ],
-            open_api_keys: vec!["key-1".to_string(), "key-2".to_string()],
-            allowed_origins: Some("https://example.com".to_string()),
-            org_id: None,
-        })
+        let request = build_query_endpoint_create_request(
+            &QueryEndpointCreateOptions {
+                roles: vec!["sql_console_read_only".into(), "sql_console_admin".into()],
+                open_api_keys: vec!["key-1".into(), "key-2".into(), "key-1".into()],
+                replace_open_api_keys: true,
+                allowed_origins: Some("*".into()),
+                org_id: Some("org-1".into()),
+            },
+            Some(&ServiceQueryAPIEndpoint {
+                open_api_keys: Some(vec!["old-key".into()]),
+                allowed_origins: Some("https://before.example.com".into()),
+                ..Default::default()
+            }),
+        )
         .unwrap();
 
         assert_eq!(
             request.roles,
-            vec![
+            [
                 QueryEndpointRole::SqlConsoleReadOnly,
-                QueryEndpointRole::SqlConsoleAdmin,
+                QueryEndpointRole::SqlConsoleAdmin
             ]
         );
-        assert_eq!(request.open_api_keys, vec!["key-1", "key-2"]);
+        assert_eq!(request.open_api_keys, ["key-1", "key-2"]);
+        assert_eq!(request.allowed_origins, "*");
+    }
+
+    #[test]
+    fn build_query_endpoint_create_request_merges_keys_and_preserves_origins() {
+        let request = build_query_endpoint_create_request(
+            &QueryEndpointCreateOptions {
+                roles: vec!["sql_console_read_only".into()],
+                open_api_keys: vec!["key-2".into(), "key-3".into(), "key-3".into()],
+                ..Default::default()
+            },
+            Some(&ServiceQueryAPIEndpoint {
+                roles: Some(vec![QueryEndpointRole::SqlConsoleAdmin]),
+                open_api_keys: Some(vec!["key-1".into(), "key-2".into(), "key-1".into()]),
+                allowed_origins: Some("https://before.example.com".into()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleReadOnly]);
+        assert_eq!(request.open_api_keys, ["key-1", "key-2", "key-3"]);
+        assert_eq!(request.allowed_origins, "https://before.example.com");
+    }
+
+    #[test]
+    fn build_query_endpoint_create_request_requires_roles_and_first_origins() {
+        assert!(
+            build_query_endpoint_create_request(&QueryEndpointCreateOptions::default(), None)
+                .is_err()
+        );
+        assert!(
+            build_query_endpoint_create_request(
+                &QueryEndpointCreateOptions {
+                    roles: vec!["sql_console_read_only".into()],
+                    ..Default::default()
+                },
+                None
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn build_query_endpoint_create_request_preserves_explicitly_empty_state() {
+        let request = build_query_endpoint_create_request(
+            &QueryEndpointCreateOptions {
+                roles: vec!["sql_console_read_only".into()],
+                ..Default::default()
+            },
+            Some(&ServiceQueryAPIEndpoint {
+                open_api_keys: Some(vec![]),
+                allowed_origins: Some(String::new()),
+                ..Default::default()
+            }),
+        )
+        .unwrap();
+        assert!(request.open_api_keys.is_empty());
+        assert!(request.allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn build_query_endpoint_create_request_rejects_unknown_fields_unless_replaced() {
+        let existing = ServiceQueryAPIEndpoint::default();
+        let mut options = QueryEndpointCreateOptions {
+            roles: vec!["sql_console_read_only".into()],
+            open_api_keys: vec!["key-1".into()],
+            ..Default::default()
+        };
+        assert!(build_query_endpoint_create_request(&options, Some(&existing)).is_err());
+        options.replace_open_api_keys = true;
+        assert!(build_query_endpoint_create_request(&options, Some(&existing)).is_err());
+        options.allowed_origins = Some("https://example.com".into());
+        let request = build_query_endpoint_create_request(&options, Some(&existing)).unwrap();
+        assert_eq!(request.open_api_keys, ["key-1"]);
         assert_eq!(request.allowed_origins, "https://example.com");
     }
 
@@ -6325,12 +8330,14 @@ mod tests {
     }
 
     #[test]
-    fn build_service_state_patch_request_preserves_start_and_stop() {
+    fn build_service_state_patch_request_preserves_every_command() {
         let start = build_service_state_patch_request(ServiceStatePatchRequestCommand::Start);
         let stop = build_service_state_patch_request(ServiceStatePatchRequestCommand::Stop);
+        let awake = build_service_state_patch_request(ServiceStatePatchRequestCommand::Awake);
 
         assert_eq!(start.command, Some(ServiceStatePatchRequestCommand::Start));
         assert_eq!(stop.command, Some(ServiceStatePatchRequestCommand::Stop));
+        assert_eq!(awake.command, Some(ServiceStatePatchRequestCommand::Awake));
     }
 
     #[test]
@@ -6452,5 +8459,158 @@ mod tests {
         );
         assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("cat - data.csv"));
         assert!(INLINE_QUERY_WITH_STDIN_ERROR.contains("--queries-file -"));
+    }
+
+    #[test]
+    fn parses_service_settings_set_inputs() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--setting",
+            "compatibility=\"24.8\"",
+            "--setting",
+            "enable_analyzer=1",
+            "--org-id",
+            "org-1",
+        ]);
+        let ServiceCommands::Settings {
+            command:
+                ServiceSettingsCommands::Set {
+                    service_id,
+                    setting,
+                    settings_file,
+                    org_id,
+                },
+        } = command
+        else {
+            panic!("expected settings set");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(setting, ["compatibility=\"24.8\"", "enable_analyzer=1"]);
+        assert!(settings_file.is_none());
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--settings-file",
+            "-",
+        ]);
+        let ServiceCommands::Settings {
+            command: ServiceSettingsCommands::Set { settings_file, .. },
+        } = command
+        else {
+            panic!("expected settings set");
+        };
+        assert_eq!(settings_file.as_deref(), Some("-"));
+    }
+
+    #[test]
+    fn service_settings_set_requires_exactly_one_input_kind() {
+        let missing = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+        ])
+        .err()
+        .expect("missing settings input should fail");
+        assert_eq!(
+            missing.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+
+        let conflict = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--setting",
+            "compatibility=\"24.8\"",
+            "--settings-file",
+            "settings.json",
+        ])
+        .err()
+        .expect("conflicting settings inputs should fail");
+        assert_eq!(conflict.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn builds_settings_patch_with_json_encoded_string_and_preserved_types() {
+        let minimal = BTreeMap::from([("compatibility".to_string(), serde_json::json!("24.8"))]);
+        let request = build_service_settings_patch_request(&minimal).unwrap();
+        assert_eq!(
+            request.settings.as_deref(),
+            Some(r#"{"compatibility":"24.8"}"#)
+        );
+
+        let maximal = BTreeMap::from([
+            ("bool_setting".to_string(), serde_json::json!(false)),
+            ("null_setting".to_string(), serde_json::Value::Null),
+            ("number_setting".to_string(), serde_json::json!(42)),
+            ("string_setting".to_string(), serde_json::json!("literal")),
+            (
+                "unknown_future_setting".to_string(),
+                serde_json::json!([1, 2]),
+            ),
+        ]);
+        let request = build_service_settings_patch_request(&maximal).unwrap();
+        let encoded = request.settings.as_deref().unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(encoded).unwrap(),
+            serde_json::json!({
+                "bool_setting": false,
+                "null_setting": null,
+                "number_setting": 42,
+                "string_setting": "literal",
+                "unknown_future_setting": [1, 2]
+            })
+        );
+    }
+
+    #[test]
+    fn parses_dynamic_setting_assignments_without_a_name_allowlist() {
+        let settings = parse_setting_assignments(&[
+            "future_setting={\"nested\":true}".to_string(),
+            "compatibility=\"24.8\"".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(
+            settings["future_setting"],
+            serde_json::json!({"nested": true})
+        );
+        assert_eq!(settings["compatibility"], serde_json::json!("24.8"));
+    }
+
+    #[test]
+    fn settings_file_rejects_api_wrapper_shape() {
+        let error = parse_settings_map_document(
+            r#"{"settings":"{\"compatibility\":\"24.8\"}"}"#,
+            "settings file",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("API request wrapper"));
+    }
+
+    #[test]
+    fn settings_file_reads_a_plain_dynamic_map() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("settings.json");
+        std::fs::write(&path, r#"{"compatibility":"24.8","future_setting":false}"#).unwrap();
+        let settings = read_service_settings(&[], Some(path.to_str().unwrap())).unwrap();
+        assert_eq!(settings["compatibility"], serde_json::json!("24.8"));
+        assert_eq!(settings["future_setting"], serde_json::json!(false));
     }
 }

@@ -182,8 +182,8 @@ pub use organization_private_endpoints::{
     OrganizationPrivateEndpointRegion, OrganizationPrivateEndpointsPatch,
 };
 pub use organizations::{
-    ActiveBalance, ActiveBalances, Organization, OrganizationPatchRequest,
-    PrometheusDiscoveryLabels, PrometheusDiscoveryTargetGroup,
+    ActiveBalance, ActiveBalances, CreditBalance, CreditBalanceType, CreditBalances, Organization,
+    OrganizationPatchRequest, PrometheusDiscoveryLabels, PrometheusDiscoveryTargetGroup,
 };
 pub use postgres::{
     BasePostgresService, PgBouncerConfig, PgBouncerConfigResponse, PgConfig,
@@ -233,15 +233,15 @@ pub use services::{
     ServicePatchRequestReleasechannel, ServicePostRequest, ServicePostRequestCompliancetype,
     ServicePostRequestProfile, ServicePostRequestProvider, ServicePostRequestRegion,
     ServicePostRequestReleasechannel, ServicePostRequestTier, ServicePostResponse, ServiceProfile,
-    ServiceProvider, ServiceQueryAPIEndpoint, ServiceRegion, ServiceReleasechannel,
-    ServiceReplicaScalingPatchRequest, ServiceScalingPatchRequest, ServiceScalingPatchResponse,
-    ServiceScalingPatchResponseCompliancetype, ServiceScalingPatchResponseProfile,
-    ServiceScalingPatchResponseProvider, ServiceScalingPatchResponseRegion,
-    ServiceScalingPatchResponseReleasechannel, ServiceScalingPatchResponseState,
-    ServiceScalingPatchResponseTier, ServiceState, ServiceStatePatchRequest,
-    ServiceStatePatchRequestCommand, ServiceTier, UpgradeWindow, UpgradeWindowDuration,
-    UpgradeWindowPutRequest, UpgradeWindowStartHourUtc, UsageCost, UsageCostMetrics,
-    UsageCostRecord, UsageCostRecordEntitytype,
+    ServiceProfileName, ServiceProvider, ServiceQueryAPIEndpoint, ServiceRegion,
+    ServiceReleasechannel, ServiceReplicaScalingPatchRequest, ServiceScalingPatchRequest,
+    ServiceScalingPatchResponse, ServiceScalingPatchResponseCompliancetype,
+    ServiceScalingPatchResponseProfile, ServiceScalingPatchResponseProvider,
+    ServiceScalingPatchResponseRegion, ServiceScalingPatchResponseReleasechannel,
+    ServiceScalingPatchResponseState, ServiceScalingPatchResponseTier, ServiceState,
+    ServiceStatePatchRequest, ServiceStatePatchRequestCommand, ServiceTier, UpgradeWindow,
+    UpgradeWindowDuration, UpgradeWindowPutRequest, UpgradeWindowStartHourUtc, UsageCost,
+    UsageCostMetrics, UsageCostRecord, UsageCostRecordEntitytype,
 };
 pub use shared::{
     ApiResponse, AssignedRole, AssignedRoleRoletype, IpAccessListEntry, IpAccessListEntryResponse,

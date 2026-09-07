@@ -1,18 +1,34 @@
-# clickhousectl
+<div align="center">
+<p>
+<a href="https://clickhouse.com">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://clickhouse.design/images/brand/logos/full-logo-white.svg">
+    <source media="(prefers-color-scheme: light)" srcset="https://clickhouse.design/images/brand/logos/full-logo-black.svg">
+    <img alt="ClickHouse" src="https://clickhouse.design/images/brand/logos/full-logo-black.svg" width="300">
+  </picture>
+</a>
+</p>
+<h1>clickhousectl</h1>
+</div>
 
-`clickhousectl` (`chctl`) is the official CLI for ClickHouse and Postgres, locally and in ClickHouse Cloud.
+[![Slack community](https://img.shields.io/badge/Slack-Join_the_community-4A154B)](https://clickhouse.com/slack)
+[![Follow on X](https://img.shields.io/badge/X-Follow_ClickHouseDB-000000)](https://x.com/ClickHouseDB)
+[![YouTube videos](https://img.shields.io/badge/YouTube-Watch_ClickHouseDB-FF0000)](https://www.youtube.com/@ClickHouseDB)
 
-With `clickhousectl` you can:
-- Install, run, and query ClickHouse locally
-- Run Docker-backed Postgres instances for local development
-- Create a ClickHouse Cloud account and authenticate from the terminal
-- Create and manage ClickHouse and Postgres services in ClickHouse Cloud
-- Run SQL against local and cloud ClickHouse services
-- Create and manage ClickPipes for data ingestion (object storage incl. S3, Kafka, Kinesis, Pub/Sub, Postgres, MySQL, MongoDB, BigQuery)
-- Install the official ClickHouse agent skills into supported coding agents
-- Move local ClickHouse development to ClickHouse Cloud
+`clickhousectl` (`chctl`) is the official CLI for ClickHouse, from local development to ClickHouse Cloud.
 
-`clickhousectl` helps humans and coding agents develop with ClickHouse and Postgres.
+## Start with ClickHouse Cloud
+
+[ClickHouse Cloud](https://clickhouse.com/cloud) runs ClickHouse as a fully managed service on AWS, GCP, and Azure, handling infrastructure, scaling, and upgrades. The same platform includes ClickHouse Managed Postgres and Managed ClickStack. Start a free 30-day trial with $300 in credits at [clickhouse.com/cloud](https://clickhouse.com/cloud), then create and manage your services from the terminal.
+
+## What can the CLI do?
+
+- **[ClickHouse](https://clickhouse.com/clickhouse)** is the open-source, column-oriented SQL database for fast analytics on large datasets. Install and switch local versions, run isolated servers, execute SQL, and create, configure, scale, and query ClickHouse Cloud services.
+- **[ClickHouse Managed Postgres](https://clickhouse.com/cloud/postgres)** is managed PostgreSQL in ClickHouse Cloud for transactional applications, with native ClickHouse integration for analytics. Run Docker-backed Postgres locally, then create, configure, scale, monitor, restore, and fail over managed Postgres services in ClickHouse Cloud.
+- **[ClickStack](https://clickhouse.com/clickstack)** combines ClickHouse, OpenTelemetry, and the HyperDX UI for logs, metrics, traces, and session replays. Manage sources, roles, saved searches, dashboards, alerts, and webhooks for an existing [Managed ClickStack](https://clickhouse.com/cloud/clickstack) service.
+- **[ClickPipes](https://clickhouse.com/cloud/clickpipes)** provides managed ingestion into ClickHouse Cloud from streaming sources, object storage, and databases through change data capture. Create, inspect, scale, resync, and delete pipelines from the terminal.
+
+`clickhousectl` also installs official ClickHouse skills into supported coding agents and helps move local ClickHouse development to ClickHouse Cloud.
 
 ## Installation
 
@@ -145,6 +161,160 @@ psql "$POSTGRES_CONNECTION_STRING" --command "SELECT version()"
 ```
 
 `postgres create` returns an initial password, which the CLI prints once; store it securely.
+
+Manage ClickStack data sources, roles, dashboards, alerts, and webhooks for an existing service with JSON configuration files:
+
+```bash
+clickhousectl cloud clickstack source list <service-id> --org-id <org-id>
+clickhousectl cloud clickstack source create <service-id> \
+  --config-file source.json --org-id <org-id>
+clickhousectl cloud clickstack role create <service-id> \
+  --config-file role.json --org-id <org-id>
+clickhousectl cloud clickstack saved-search create <service-id> \
+  --config-file saved-search.json --org-id <org-id>
+clickhousectl cloud clickstack saved-search get <service-id> <saved-search-id> \
+  --org-id <org-id>
+clickhousectl cloud clickstack saved-search update <service-id> <saved-search-id> \
+  --config-file saved-search.json --org-id <org-id>
+clickhousectl cloud clickstack dashboard validate <service-id> \
+  --config-file dashboard.json --org-id <org-id>
+clickhousectl cloud clickstack dashboard create <service-id> \
+  --config-file dashboard.json --org-id <org-id>
+```
+
+Pass `--config-file -` to read the JSON body from stdin. Resource IDs come from the respective
+`list` command. A saved search configuration contains `name` and `sourceId`, plus optional `select`,
+`where`, `whereLanguage`, `orderBy`, `tags`, and structured `filters`; obtain `sourceId` with
+`cloud clickstack source list`. All ClickStack `update` commands use PUT replacement semantics, so
+the configuration must contain the complete desired resource rather than only changed fields.
+
+A dashboard configuration contains the complete tile layout and typed chart configuration. Filters may
+broadcast selections, expose variables to tile queries, or do both:
+
+```json
+{
+  "name": "Service health",
+  "tiles": [
+    {
+      "name": "Request rate",
+      "x": 0,
+      "y": 0,
+      "w": 6,
+      "h": 3,
+      "config": {
+        "displayType": "line",
+        "sourceId": "<source-id>",
+        "select": [{ "aggFn": "count" }],
+        "formulas": [{ "expression": "A * 60", "alias": "Requests/min" }],
+        "showOperandSeries": false
+      }
+    }
+  ],
+  "filters": [
+    {
+      "name": "Service",
+      "expression": "ServiceName",
+      "sourceId": "<source-id>",
+      "type": "QUERY_EXPRESSION",
+      "isBroadcastEnabled": true,
+      "isVariableEnabled": true,
+      "variableName": "service"
+    }
+  ],
+  "savedFilterValues": [
+    { "type": "variable", "name": "service", "values": ["api"] }
+  ]
+}
+```
+
+`dashboard validate` checks a create body without saving it; it does not accept or validate an update body.
+Dashboard updates use a separate full PUT body. Start from the complete current dashboard, preserve the
+`id` of every existing filter, and include every tile, filter, container, tag, and saved query value that
+should remain. For example, an existing filter entry in `dashboard-update.json` must retain its identity:
+
+```json
+{
+  "id": "<existing-filter-id>",
+  "name": "Service",
+  "expression": "ServiceName",
+  "sourceId": "<source-id>",
+  "type": "QUERY_EXPRESSION"
+}
+```
+
+```bash
+clickhousectl cloud clickstack dashboard update <service-id> <dashboard-id> \
+  --config-file dashboard-update.json --org-id <org-id>
+```
+
+Create a notification destination first, then reference its ID from an alert. For example,
+`webhook.json` can contain a complete generic webhook body:
+
+```json
+{
+  "name": "Production incidents",
+  "service": "generic",
+  "url": "https://alerts.example.com/clickstack",
+  "description": "Production alert receiver",
+  "body": "{\"title\":\"{{title}}\",\"level\":\"{{level}}\"}",
+  "headers": { "Authorization": "Bearer <token>" },
+  "queryParams": { "team": "platform" }
+}
+```
+
+```bash
+clickhousectl cloud clickstack webhook create <service-id> \
+  --config-file webhook.json --org-id <org-id>
+clickhousectl cloud clickstack webhook list <service-id> --org-id <org-id>
+```
+
+The current Cloud API request contract requires both the legacy `channel` field and the `channels`
+array. An alert sourced from a dashboard tile can use this complete `alert.json` body:
+
+```json
+{
+  "source": "tile",
+  "dashboardId": "<dashboard-id>",
+  "tileId": "<tile-id>",
+  "threshold": 100,
+  "thresholdMax": 500,
+  "thresholdType": "between",
+  "interval": "5m",
+  "scheduleOffsetMinutes": 2,
+  "scheduleStartAt": "2026-09-05T10:00:00Z",
+  "channel": {
+    "type": "webhook",
+    "webhookId": "<webhook-id>",
+    "webhookService": "generic"
+  },
+  "channels": [
+    {
+      "type": "webhook",
+      "webhookId": "<webhook-id>",
+      "webhookService": "generic",
+      "severity": "warning"
+    },
+    { "type": "email", "emailRecipients": ["on-call@example.com"] }
+  ],
+  "name": "Sustained request failures",
+  "message": "Failure count stayed within the configured range",
+  "note": "See the production runbook",
+  "numConsecutiveWindows": 3
+}
+```
+
+```bash
+clickhousectl cloud clickstack alert create <service-id> \
+  --config-file alert.json --org-id <org-id>
+clickhousectl cloud clickstack alert get <service-id> <alert-id> --org-id <org-id>
+# The detail output includes state, executionErrors, and all notification channels.
+clickhousectl cloud clickstack alert update <service-id> <alert-id> \
+  --config-file alert.json --org-id <org-id>
+```
+
+Alert and webhook updates are full PUT replacements. A `saved_search` alert uses `savedSearchId`
+instead of `dashboardId` and `tileId`. The `30s` alert interval is accepted when the 30-second alert
+interval feature is enabled for the ClickStack team.
 
 ## Local
 
@@ -319,7 +489,9 @@ Version removal and server-data removal are separate operations:
 
 #### Custom config files
 
-Drop ClickHouse config files into `~/.clickhouse/configs/` and apply one by name when starting a server:
+`clickhousectl local server start` uses ClickHouse's embedded defaults without creating an editable main config file or loading `/etc/clickhouse-server/config.xml`. To customize the server, supply a **partial config** containing only the settings you want to change; everything else inherits the defaults.
+
+Create a file in the global `~/.clickhouse/configs/` directory and select it by name. This example enables the query log and sets the default user's `max_threads` query setting:
 
 ```bash
 mkdir -p ~/.clickhouse/configs
@@ -329,15 +501,35 @@ cat > ~/.clickhouse/configs/analytics.xml <<'EOF'
         <database>system</database>
         <table>query_log</table>
     </query_log>
+    <profiles>
+        <default>
+            <max_threads>4</max_threads>
+        </default>
+    </profiles>
 </clickhouse>
 EOF
-clickhousectl local server configs                          # List available config files
-clickhousectl local server start --config analytics         # Start a server with it
+clickhousectl local server configs                          # Show the directory and available files
+clickhousectl local server start dev --config analytics     # Apply the partial config to server "dev"
 ```
 
-The named file is **overlaid on top of ClickHouse's built-in defaults** (it is staged into the server's `config.d/` directory), so it only needs to contain the settings you want to change — you don't have to reproduce a full config. Files may be `.xml`, `.yaml`, or `.yml`; reference them by name with or without the extension (e.g. `--config analytics` or `--config analytics.xml`). `--config` takes a name within `~/.clickhouse/configs/` **not a path**. (`--config-file` remains supported as a legacy alias.)
+**Using an existing fragment:** A file intended for ClickHouse's `config.d/`, such as `tokenizers.xml`, can go directly into `~/.clickhouse/configs/`; select it with `--config tokenizers`. Each XML file needs a `<clickhouse>` root. You do not need to scaffold the default config first.
 
-The managed data directory (`.clickhouse/servers/<name>/data/`) and the HTTP/TCP ports are always forced as command-line overrides, which take precedence over the config file. This means a custom config can never break the managed server lifecycle (`list`, `stop`, `remove`, `dotenv`) regardless of its contents. Starting a server again without `--config` reverts it to plain defaults.
+**Users and query settings:** A packaged ClickHouse installation usually puts users, profiles and quotas in `users.xml`. The embedded defaults keep them in the main configuration, so your partial config can contain `<users>`, `<profiles>` and `<quotas>` alongside server settings. Put query settings under a profile, as above. A separate `users.xml` or `users.d/` is not required or automatically loaded.
+
+**Selecting a file:** Files may be `.xml`, `.yaml`, or `.yml`; use the name with or without its extension (e.g. `--config analytics.xml`). If two files share a stem, include the extension. `--config` selects one file directly inside `~/.clickhouse/configs/`, not a path or directory. Sibling files and directories are not copied. `--config-file` remains a legacy alias.
+
+**Applying edits:** The selected file is copied into the project's `.clickhouse/servers/<name>/data/config.d/chctl-config.<ext>` at each start. Edit the source in `~/.clickhouse/configs/`, then stop and start the same server with `--config` again:
+
+```bash
+clickhousectl local server stop dev
+clickhousectl local server start dev --config analytics
+```
+
+The selection is not remembered: starting without `--config` removes chctl's previously copied overlay. Other manually added runtime fragments are left in place. Referenced files, such as tokenizer dictionaries, must be accessible to the server; its working directory is `.clickhouse/servers/<name>/data/`, not the source config directory.
+
+**Inspecting configuration:** ClickHouse writes the merged configuration to `.clickhouse/servers/<name>/data/preprocessed_configs/config.xml`. This is generated output and is overwritten; edit the source overlay instead. chctl passes the managed data path and HTTP/TCP ports as command-line overrides, which take precedence over values in config files.
+
+ClickHouse merges partial configurations recursively; XML `replace` and `remove` attributes explicitly replace or delete settings. See [ClickHouse configuration files](https://clickhouse.com/docs/operations/configuration-files) for merge rules and XML/YAML syntax.
 
 #### Local Postgres (Docker-backed)
 
@@ -501,18 +693,40 @@ Reading a service, Postgres service or organization — or deleting a service �
 ```bash
 clickhousectl cloud org list              # List organizations
 clickhousectl cloud org get <org-id>      # Get organization details
+clickhousectl cloud org quota list --org-id <org-id>
+clickhousectl cloud org quota get services-per-organization --org-id <org-id>
+clickhousectl cloud org balance --org-id <org-id>  # Active trial and prepaid credits
 clickhousectl cloud org update <org-id> --name "Renamed Org"
 clickhousectl cloud org update <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
   --enable-core-dumps false
+# Create BYOC infrastructure (repeat --availability-zone-suffix as needed)
+clickhousectl cloud org byoc create --org-id <org-id> \
+  --region us-east-1 --account-id <aws-account-id> \
+  --availability-zone-suffix a --availability-zone-suffix b \
+  --vpc-cidr-range 10.0.0.0/16 --display-name production
+# Find the infrastructure ID and state in the organization's byocConfig
+clickhousectl cloud org get <org-id>
+clickhousectl cloud org byoc update <infrastructure-id> \
+  --display-name renamed --org-id <org-id>
+clickhousectl cloud org byoc delete <infrastructure-id> --org-id <org-id>
 clickhousectl cloud org prometheus --filtered-metrics true
+clickhousectl cloud org prometheus discovery --filtered-metrics false
 clickhousectl cloud org usage \
   --from-date 2024-01-01 \
   --to-date 2024-01-31 \
   --filter tag:Environment=Production   # max 31-day window (to-date inclusive), costs in CHC
-# Of the org commands, --org-id applies to prometheus/usage only; list takes none and get/update take a positional <org-id>.
+# Org quota, balance, prometheus, and usage commands auto-detect the org when --org-id is omitted.
+# Org list takes no ID; org get/update take a positional <org-id>.
 # It is auto-detected only when your credentials reach exactly one organization.
+# Organization quota and balance commands are beta and read-only, so they support OAuth.
 ```
+
+BYOC create, update, and delete require API key authentication. Update requires
+`--display-name`, so it cannot send an empty/no-op patch. The API has no separate
+BYOC list command; `cloud org get` returns the organization's `byocConfig` entries.
+
+`cloud org prometheus discovery` returns the beta HTTP service-discovery target groups used by Prometheus `http_sd_configs`; `--json` preserves the complete target and label array. The command defaults discovered scrape targets to filtered metrics. The command without `discovery` still calls the deprecated organization metrics endpoint and emits raw Prometheus exposition text for compatibility.
 
 ### Services
 
@@ -522,6 +736,17 @@ clickhousectl cloud service list
 
 # Get service details
 clickhousectl cloud service get <service-id>
+
+# Discover profiles available in a region before choosing --profile
+clickhousectl cloud service profile list --region us-east-1
+clickhousectl cloud service profile list --region us-east-1 --byoc-id <infrastructure-id> --json
+
+# Create a BYOC service using the discovered profile and its exact memory size
+clickhousectl cloud service create --name my-byoc-service \
+  --provider aws --region us-east-1 --byoc-id <infrastructure-id> \
+  --profile v1-standard-byoc-4 \
+  --min-replica-memory-gb <profile-memory-gib> \
+  --max-replica-memory-gb <profile-memory-gib>
 
 # Create a service with explicit placement and network access
 # Omitting --ip-allow creates the service with an "Allow all" 0.0.0.0/0 access list
@@ -544,8 +769,8 @@ clickhousectl cloud service create --name my-service \
 clickhousectl cloud service create --name my-service \
   --provider aws \
   --region us-east-1 \
-  --ip-allow <trusted-egress-cidr> \
-  --ip-allow <another-trusted-egress-cidr>
+  --ip-allow '<trusted-egress-cidr>=office' \
+  --ip-allow '<another-trusted-egress-cidr>=CI runners'
 
 # Create from backup
 clickhousectl cloud service create --name restored-service \
@@ -580,9 +805,15 @@ clickhousectl cloud service create --name my-service \
   --profile v1-highmem-xs --compliance-type hipaa \
   --encryption-key <kms-key-arn> --encryption-role <kms-role-arn> --enable-tde
 
-# Start/stop a service
+# Start, wake, or stop a service
 clickhousectl cloud service start <service-id>
+clickhousectl cloud service wake <service-id>   # Explicitly wake an idled service
 clickhousectl cloud service stop <service-id>
+
+# Read, set, or remove the six-hour upgrade window
+clickhousectl cloud service upgrade-window get <service-id>
+clickhousectl cloud service upgrade-window set <service-id> --weekday 1 --start-hour 12
+clickhousectl cloud service upgrade-window delete <service-id>
 
 # Run SQL over HTTP via the Query API (no local clickhouse binary needed)
 clickhousectl cloud service query --name my-service --query "SELECT 1"
@@ -600,7 +831,7 @@ clickhousectl cloud service repair-query-key <service-id> --org-id <org-id>
 # Update service metadata and patches
 clickhousectl cloud service update <service-id> \
   --name my-renamed-service \
-  --add-ip-allow <trusted-egress-cidr> \
+  --add-ip-allow '<trusted-egress-cidr>=office' \
   --remove-ip-allow 0.0.0.0/0 \
   --add-private-endpoint-id pe-1 \
   --release-channel fast \
@@ -633,6 +864,11 @@ clickhousectl cloud service scale <service-id> \
   --min-replica-memory-gb 24 --max-replica-memory-gb 24 \
   --min-replicas 2 --max-replicas 8 --autoscaling-mode horizontal
 
+# Inspect, replace, or delete a service scaling schedule
+clickhousectl cloud service scaling-schedule get <service-id> --json
+clickhousectl cloud service scaling-schedule set <service-id> --file schedule.json
+clickhousectl cloud service scaling-schedule delete <service-id>
+
 # Reset password with generated credentials
 clickhousectl cloud service reset-password <service-id>
 
@@ -640,6 +876,15 @@ clickhousectl cloud service reset-password <service-id>
 clickhousectl cloud service reset-password <service-id> \
   --new-password-hash <base64-sha256-hash> \
   --new-double-sha1-hash <mysql-double-sha1-hash>
+
+# Discover, inspect, and change per-service ClickHouse settings (beta)
+clickhousectl cloud service settings schema <service-id>
+clickhousectl cloud service settings list <service-id>
+clickhousectl cloud service settings get <service-id> compatibility
+clickhousectl cloud service settings set <service-id> \
+  --setting 'compatibility="24.8"' --setting enable_analyzer=1
+clickhousectl cloud service settings set <service-id> --settings-file settings.json
+clickhousectl cloud service settings unset <service-id> compatibility
 
 # Query endpoint management (manual, for sharing keys with other tools)
 clickhousectl cloud service query-endpoint get <service-id>
@@ -675,6 +920,51 @@ clickhousectl cloud service delete <service-id>
 # Force delete: stops a running service then deletes
 clickhousectl cloud service delete <service-id> --force
 ```
+
+IP allowlist flags accept `IP_OR_CIDR` or `IP_OR_CIDR=DESCRIPTION`. The `=`
+delimiter is safe with IPv6; quote entries whose descriptions contain spaces.
+
+Scaling schedule hours are always UTC, with weekdays numbered Sunday `0` through Saturday `6`. `startHourUtc` is inclusive; `endHourUtc` is exclusive, may be `24` for midnight, and a smaller end than start creates an overnight window. For example, `schedule.json` can mix vertical memory scaling and horizontal replica scaling:
+
+```json
+{
+  "entries": [
+    {
+      "name": "Weekday traffic",
+      "weekdays": [1, 2, 3, 4, 5],
+      "startHourUtc": 8,
+      "endHourUtc": 20,
+      "autoscalingMode": "horizontal",
+      "minReplicaMemoryGb": 16,
+      "maxReplicaMemoryGb": 16,
+      "minReplicas": 2,
+      "maxReplicas": 8,
+      "idleScaling": false
+    },
+    {
+      "name": "Overnight",
+      "weekdays": [0, 1, 2, 3, 4, 5, 6],
+      "startHourUtc": 20,
+      "endHourUtc": 8,
+      "minReplicaMemoryGb": 8,
+      "maxReplicaMemoryGb": 32,
+      "numReplicas": 1,
+      "idleScaling": true,
+      "idleTimeoutMinutes": 10
+    }
+  ]
+}
+```
+
+`scaling-schedule set` replaces the complete entry list, including when `--file -` reads the request from stdin; `{"entries":[]}` clears it. A safe edit flow is to run `get --json`, copy only the entry request fields into a request file, edit that full list, then run `set`. The GET response also contains response-only `id`, `isActiveNow`, `activeEntryId`, and `baseConfig` fields, so it cannot be sent back unchanged. The base config applies outside scheduled windows and is managed separately with `cloud service scale`. `scaling-schedule delete` removes all entries and restores that base config when an entry is active.
+
+Upgrade-window days are numeric: `0` is Sunday, `1` Monday, through `6` Saturday. `--start-hour` is UTC and must be `0`, `6`, `12`, or `18`; the window lasts six hours. `set` replaces the whole window, so both flags are required. `delete` removes the configured window and restores the platform's default upgrade scheduling behaviour. Upgrade windows can only be changed on primary services; secondary services inherit their primary service's window.
+
+`query-endpoint create` adds and deduplicates API keys while preserving existing browser origins. `--role` is required and replaces the endpoint-wide roles for **all** authorized keys; roles are not assigned per key.
+Pass `--allowed-origins` on first creation or to change browser access (`'*'` explicitly allows every origin). Use `--replace-open-api-keys` with `--open-api-key` to deliberately replace the entire authorized-key list.
+The command reads the existing configuration before updating; a failed or incomplete read prevents changes to unknown fields. Avoid concurrent changes to the same query endpoint.
+
+`service settings schema` discovers the setting names and accepted types for a service. `settings set` changes only the names supplied: repeat `--setting NAME=JSON_VALUE`, or pass a JSON object such as `{"compatibility":"24.8","enable_analyzer":1}` with `--settings-file` (`-` reads stdin). String values in `--setting` must retain their JSON quotes. The CLI handles the API's JSON-encoded string transport, so a settings file contains the map itself, not a `{ "settings": ... }` request wrapper. Unknown setting names are sent to the API for validation. `settings unset` is idempotent and resets one setting to its platform default; it does not assign JSON `null`.
 
 `--backup-start-time` requires the backup period to be 24 or 48 hours. Nothing is defaulted when the period is omitted: the API validates the new start time against the period already stored on the service, so either pass `--backup-period-hours 24` or `--backup-period-hours 48` in the same call, or leave the stored period at one of those. When a start time is given without a period, the CLI reads the current configuration first and fails before sending the update if the stored period is something else.
 
@@ -776,6 +1066,34 @@ clickhousectl cloud postgres list --filter state=running
 clickhousectl cloud postgres list --filter region=us-east-1 --filter isPrimary=true
 clickhousectl cloud postgres get <pg-id>
 
+# Time-bucketed metrics (omit --bucket-size-seconds to let the API choose)
+clickhousectl cloud postgres metrics <pg-id> \
+  --from-date 2026-04-16T12:00:00Z \
+  --to-date 2026-04-16T13:00:00Z \
+  --bucket-size-seconds 60
+
+# Server logs (RFC 3339 range, at most 30 days)
+clickhousectl cloud postgres logs <pg-id> \
+  --from-date 2026-08-01T00:00:00Z \
+  --to-date 2026-08-02T00:00:00Z
+clickhousectl cloud postgres logs <pg-id> \
+  --from-date 2026-08-01T00:00:00Z \
+  --to-date 2026-08-02T00:00:00Z \
+  --severity ERROR --body-contains "connection refused" \
+  --sort-order asc --limit 200 --offset 0
+
+# Find costly normalized queries, then inspect one pattern and recent executions
+clickhousectl cloud postgres slow-queries list <pg-id> \
+  --from-date 2026-04-16T12:00:00Z \
+  --to-date 2026-04-16T13:00:00Z \
+  --sort-by total_cpu_time --limit 20
+clickhousectl cloud postgres slow-queries get <pg-id> <query-id> \
+  --db-name app --db-user reporter --db-operation SELECT
+
+# Raw Prometheus scrape text for one service or the whole organization
+clickhousectl cloud postgres prometheus service <pg-id>
+clickhousectl cloud postgres prometheus org
+
 # Create
 clickhousectl cloud postgres create \
   --name my-pg \
@@ -802,6 +1120,10 @@ clickhousectl cloud postgres update <pg-id> \
   --size c6gd.4xlarge \
   --ha-type sync \
   --add-tag env=prod --remove-tag legacy
+clickhousectl cloud postgres update <pg-id> --clear-tags
+
+# --clear-tags replaces the tag list with an empty list and conflicts with
+# --add-tag and --remove-tag; omitting all three leaves tags unchanged.
 
 # Delete (works from any state, including running; no stop needed first)
 clickhousectl cloud postgres delete <pg-id>
@@ -839,7 +1161,31 @@ clickhousectl cloud postgres switchover <primary-id>
 clickhousectl cloud postgres switchover <primary-id> --wait --wait-timeout 600
 ```
 
+PgBouncer files passed to `--pg-bouncer-config-file` on create, read-replica create, and restore are JSON objects with string values, for example:
+
+```json
+{"default_pool_size":"16","pool_mode":"transaction"}
+```
+
+For `postgres config patch --file`, put that map under `pgBouncerConfig` alongside `pgConfig`:
+
+```json
+{"pgConfig":{},"pgBouncerConfig":{"default_pool_size":"16"}}
+```
+
+PgBouncer parameter names are open-ended; values must be quoted strings, including numbers. Invalid value types fail locally before any API request. `config replace` replaces the complete Postgres and PgBouncer configuration: obtain the current document with `config get`, edit it, and retain both sections and every setting you want to keep.
+
+`pgConfig` uses the closed set of GUC names supported by the Cloud API. Unknown names and `null` values are rejected locally on `--set` and every PgConfig file path, and the enum-valued settings accept only `default_transaction_isolation` (`read committed`, `repeatable read`, `serializable`), `ssl_min_protocol_version` (`TLSv1` through `TLSv1.3`), and `wal_compression` (`off`, `on`, `lz4`, `zstd`). Files for `config patch` and `config replace` must contain both `pgConfig` and `pgBouncerConfig`; use an explicit `{}` when a section is intentionally empty rather than omitting it.
+
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
+
+`postgres metrics` requires an RFC 3339 start and end time, with the start no later than the end. Its JSON output preserves metric metadata, series labels, and data points; the default output renders the same nested response as a readable tree. `--bucket-size-seconds` must be positive and is omitted from the API request when not supplied.
+
+`postgres logs` reads an inclusive RFC 3339 time window of at most 30 days. Results default to the API's newest-first order and page size; use `--sort-order`, `--limit` and `--offset` to control pagination.
+
+`postgres slow-queries list` requires an RFC 3339 start and end time and supports database, user, operation and application filters, sorting, limits and offsets. Copy `queryId`, `dbName`, `dbUser` and `dbOperation` from a list result into `slow-queries get`; add `--app` when the list result has one, and optionally select a recent execution with `--timestamp`. JSON and human output preserve every aggregate and execution field the API returns, including sparse beta responses.
+
+`postgres prometheus service` and `postgres prometheus org` return the beta API's raw Prometheus exposition text for scraping. In `--json` mode, including automatic coding-agent mode, the complete text is emitted as one JSON string; it is not parsed into metric series. These endpoints have no filtered-metrics query parameter. Use `postgres metrics` when you need time-bucketed metric objects over a chosen date range.
 
 `postgres list --filter KEY=VALUE` is applied client-side to the listing and is repeatable; every filter must match. Supported keys are `state`, `region`, `name`, `provider` and `isPrimary` (the `Primary` column; `true`/`false`, or the `yes`/`no` the column shows). Keys are case-insensitive, `state` and `provider` match the wire value case-insensitively, and `region`/`name` match exactly. An unknown key, a missing `=` or an empty value is a usage error (exit 2) listing the valid keys — it never returns an unfiltered list. A field the API omitted matches no filter value, so filtering on it excludes that service. This is unrelated to `cloud service list --filter`, which sends server-side resource-tag filters (`tag:env=production`) to the API.
 
@@ -853,7 +1199,52 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 ```bash
 clickhousectl cloud backup list <service-id>
 clickhousectl cloud backup get <service-id> <backup-id>
+
+# Inspect or remove the service's bring-your-own backup bucket
+clickhousectl cloud backup bucket get <service-id>
+clickhousectl cloud backup bucket delete <service-id>
 ```
+
+The backup-bucket commands use the beta Cloud API. Create and update a bucket from a strict provider-specific JSON document. Pass a file path to `--config-file`, or `-` to read JSON from stdin so credentials do not appear in the process arguments. The provider must be exactly `AWS`, `GCP`, or `AZURE`; unknown and cross-provider fields are rejected before the request is sent.
+
+```json
+{
+  "bucketProvider": "AWS",
+  "bucketPath": "s3://company-backups/clickhouse",
+  "iamRoleArn": "arn:aws:iam::123456789012:role/clickhouse-backups",
+  "iamRoleSessionName": "clickhouse-cloud"
+}
+```
+
+```json
+{
+  "bucketProvider": "GCP",
+  "bucketPath": "gs://company-backups/clickhouse",
+  "accessKeyId": "<access-key-id>",
+  "secretAccessKey": "<secret-access-key>"
+}
+```
+
+```json
+{
+  "bucketProvider": "AZURE",
+  "containerName": "clickhouse-backups",
+  "connectionString": "<azure-storage-connection-string>"
+}
+```
+
+Save one object as a permissions-restricted file, then use it for the matching operation:
+
+```bash
+chmod 600 backup-bucket.json
+clickhousectl cloud backup bucket create <service-id> --config-file backup-bucket.json
+clickhousectl cloud backup bucket update <service-id> --config-file backup-bucket.json
+
+# Or keep the document out of a named file
+generate-backup-bucket-json | clickhousectl cloud backup bucket create <service-id> --config-file -
+```
+
+`update` calls the API's PATCH operation, but its provider schema still requires every field shown above except AWS `iamRoleSessionName`, which is optional on update. AWS create requires that session name. GCP and Azure credentials must be supplied again on every update; no bucket ID argument is used because each service has one backup-bucket resource.
 
 ### ClickPipes
 
@@ -866,6 +1257,9 @@ clickhousectl cloud clickpipe list <service-id>
 # Get ClickPipe details
 clickhousectl cloud clickpipe get <service-id> <clickpipe-id>
 
+# Get service capabilities and the GCP workload-identity principal
+clickhousectl cloud clickpipe context get <service-id>
+
 # Start/stop/resync a ClickPipe
 clickhousectl cloud clickpipe start <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe stop <service-id> <clickpipe-id>
@@ -877,6 +1271,11 @@ clickhousectl cloud clickpipe delete <service-id> <clickpipe-id>
 # Update scaling (at least one of --replicas/--cpu-millicores/--memory-gb is required)
 clickhousectl cloud clickpipe scale <service-id> <clickpipe-id> \
   --replicas 2 --cpu-millicores 250 --memory-gb 1
+
+# Inspect and update service-wide scaling for database CDC ClickPipes
+clickhousectl cloud clickpipe cdc-scaling get <service-id>
+clickhousectl cloud clickpipe cdc-scaling update <service-id> \
+  --cpu-millicores 2000 --memory-gb 8
 
 # Get/update settings
 clickhousectl cloud clickpipe settings get <service-id> <clickpipe-id>
@@ -891,11 +1290,23 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
   --object-storage-max-insert-bytes 268435456 \
   --object-storage-use-cluster-function true \
   --clickhouse-max-threads 16 --clickhouse-max-insert-threads 4 \
+  --clickhouse-max-download-threads 8 \
+  --clickhouse-min-insert-block-size-bytes 20971520 \
+  --clickhouse-parallel-distributed-insert-select 1 \
   --clickhouse-parallel-view-processing false
+
+# Change Kafka consumer isolation explicitly
+clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
+  --kafka-read-committed true
 
 # Manage reverse private endpoints for private source connectivity
 clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
 ```
+
+CDC scaling CPU accepts 1000-32000 millicores in increments of 1000, and
+memory accepts 4-128 GiB in increments of 4. Memory must be four times the CPU
+core count when both are changed together; omitted update flags preserve their
+current values.
 
 `settings get` and `settings update` apply to streaming (Kafka, Kinesis) and
 object-storage pipes only; Pub/Sub counts as streaming and is accepted too,
@@ -905,17 +1316,327 @@ an explanation instead of the API's `NOT_FOUND`: their settings, such as the
 sync interval and pull batch size, live on the pipe itself, so read them with
 `clickhousectl cloud clickpipe get <service-id> <clickpipe-id>`.
 
-`settings update` only sends the settings you name on the command line, and it
-first reads the pipe to find its source type: settings that the API supports for
-one source only — currently the Kafka `kafka_read_committed` setting, which the
-CLI preserves rather than exposing as a flag — are sent for Kafka pipes and
-omitted for every other source. Object-storage-, streaming- and
-ClickHouse-specific settings are validated by the API, so passing (for example)
+Pass at least one setting. Omitted object-storage settings retain their current
+values; an update does not replace the whole configuration. Explicit `0` and
+`false` remain explicit values.
+The three additional ClickHouse controls accept download threads 0–32, minimum
+insert block size 0–10737418240 bytes, and distributed INSERT SELECT mode 0–2.
+
+For Kafka, `--kafka-read-committed true|false` changes consumer isolation. When
+omitted, the CLI preserves the current value; if the API omits that value, pass
+the flag explicitly. The flag is refused unless the pipe is confirmed as Kafka.
+Other settings are validated by the API for source compatibility, so passing
 `--object-storage-max-file-count` to a Kafka pipe is rejected server-side.
+
+#### Updating ClickPipes
+
+`clickpipe update` accepts a typed JSON PATCH body from a file or stdin. Omitted
+and `null` top-level fields are not sent. Explicit `false`, `0`, empty strings,
+and empty arrays are preserved; an empty `{}` is refused. Unknown fields and
+enum values are rejected before a request is made.
+
+The file surface matches the current PATCH request models:
+
+| Object | Writable fields |
+|---|---|
+| Root | `name`, `source`, `destination`, `fieldMappings`, `settings` |
+| `destination` | `columns` |
+| `source.kafka` | `authentication`, `iamRole`, `caCertificate`, `reversePrivateEndpointIds`, `credentials` |
+| `source.kinesis` | `authentication`, `iamRole`, `accessKey` |
+| `source.objectStorage` | `skipInitialLoad`, `startAfter`, `authentication`, `iamRole`, `connectionString`, `path`, `azureContainerName`, `accessKey`, `serviceAccountKey` |
+| `source.pubsub` | `authentication`, `ackDeadline`, `serviceAccountKey` |
+| `source.postgres` | `credentials`, `host`, `port`, `database`, TLS fields, `settings`, `tableMappingsToAdd`, `tableMappingsToRemove` |
+| `source.mysql` | `credentials`, `host`, `port`, `authentication`, `iamRole`, TLS fields, `serverId`, `settings`, `tableMappingsToAdd`, `tableMappingsToRemove` |
+| `source.mongodb` | `credentials`, `uri`, `readPreference`, TLS fields, `settings`, `tableMappingsToAdd`, `tableMappingsToRemove` |
+
+TLS fields are `tlsHost`, `caCertificate`, `disableTls`, and
+`skipCertVerification`. The source object can also carry `validateSamples`.
+
+```bash
+clickhousectl cloud clickpipe update <service-id> <clickpipe-id> \
+  --config-file patch.json
+
+# Read a generated JSON PATCH body from stdin.
+jq '.source.postgres.credentials.password = env.CLICKPIPE_PASSWORD' patch-template.json |
+  clickhousectl cloud clickpipe update <service-id> <clickpipe-id> --config-file -
+```
+
+Root fields can rename a pipe, replace destination columns or field mappings,
+and update the root settings object. Nested objects use Cloud API wire names.
+The `kafka_read_committed` setting applies only to Kafka pipes.
+
+```json
+{
+  "name": "events-v2",
+  "destination": {
+    "columns": [{ "name": "id", "type": "UInt64" }]
+  },
+  "fieldMappings": [
+    { "sourceField": "event_id", "destinationField": "id" }
+  ],
+  "settings": {
+    "kafka_read_committed": false,
+    "streaming_max_insert_wait_ms": 0
+  }
+}
+```
+
+A source patch selects at most one of the seven supported arms.
+`validateSamples` is optional. Kafka credentials must match the selected
+authentication: username and password for PLAIN/SCRAM, access key and secret
+for IAM user, or certificate and private key for mutual TLS. Event Hubs
+connection-string credentials use PLAIN. IAM role uses `iamRole` without a
+credentials object, and workload identity uses neither field. Authentication,
+credentials, CA certificate, and reverse private endpoints can each be omitted
+when changing an unrelated Kafka field.
+
+```json
+{
+  "source": {
+    "kafka": {
+      "authentication": "SCRAM-SHA-512",
+      "credentials": { "username": "rotated", "password": "secret" },
+      "reversePrivateEndpointIds": []
+    },
+    "validateSamples": false
+  }
+}
+```
+
+For example, rotate only Kafka's CA certificate without resending credentials:
+
+```json
+{
+  "source": {
+    "kafka": { "caCertificate": "-----BEGIN CERTIFICATE-----..." }
+  }
+}
+```
+
+An IAM-role update carries the role separately:
+
+```json
+{
+  "source": {
+    "kafka": {
+      "authentication": "IAM_ROLE",
+      "iamRole": "arn:aws:iam::123456789012:role/clickpipe"
+    }
+  }
+}
+```
+
+Kinesis credentials use the access-key object:
+
+```json
+{
+  "source": {
+    "kinesis": {
+      "authentication": "IAM_USER",
+      "accessKey": { "accessKeyId": "key-id", "secretKey": "secret" }
+    },
+    "validateSamples": true
+  }
+}
+```
+
+Object-storage updates include credential changes and the post-create resume
+controls. `skipInitialLoad` and `startAfter` have the same mutual-exclusion
+semantics as create.
+
+```json
+{
+  "source": {
+    "objectStorage": {
+      "authentication": "SERVICE_ACCOUNT",
+      "serviceAccountKey": "base64-key",
+      "skipInitialLoad": false,
+      "startAfter": "events/2026-06-01/",
+      "path": "events/*.json"
+    },
+    "validateSamples": false
+  }
+}
+```
+
+Pub/Sub supports service-account key rotation and workload identity:
+
+```json
+{
+  "source": {
+    "pubsub": {
+      "authentication": "SERVICE_ACCOUNT",
+      "ackDeadline": 30,
+      "serviceAccountKey": { "serviceAccountFile": "base64-key" }
+    },
+    "validateSamples": true
+  }
+}
+```
+
+Postgres source fields are independent PATCH values, so a credential rotation,
+host change, settings change, or mapping change can omit the others. Empty
+mapping arrays remain explicit values. Add mappings use the full table shape;
+remove mappings can identify only the source and target tables.
+The API revalidates source connectivity when connection fields change. Include
+the matching credentials in the same patch when changing a host, URI, database,
+or TLS connection field; a failed validation rejects the whole update.
+
+```json
+{
+  "source": {
+    "postgres": {
+      "credentials": { "username": "rotated", "password": "secret" },
+      "host": "postgres.example.com",
+      "port": 5432,
+      "database": "source_db",
+      "settings": { "syncIntervalSeconds": 5, "pullBatchSize": 100000 },
+      "tableMappingsToAdd": [{
+        "sourceSchemaName": "public",
+        "sourceTable": "events",
+        "targetTable": "events",
+        "excludedColumns": [],
+        "useCustomSortingKey": false,
+        "sortingKeys": [],
+        "tableEngine": "ReplacingMergeTree",
+        "partitionKey": "id",
+        "partitionByExpr": "toYYYYMM(ts)"
+      }],
+      "tableMappingsToRemove": [{
+        "sourceSchemaName": "public",
+        "sourceTable": "old_events",
+        "targetTable": "old_events"
+      }]
+    },
+    "validateSamples": false
+  }
+}
+```
+
+MySQL supports connection and credential rotation, its three patchable
+settings, and add/remove mappings. `partitionByExpr` is accepted on both add
+and remove mappings.
+
+```json
+{
+  "source": {
+    "mysql": {
+      "authentication": "basic",
+      "credentials": { "username": "rotated", "password": "secret" },
+      "host": "mysql.example.com",
+      "port": 3306,
+      "serverId": 4242,
+      "settings": {
+        "syncIntervalSeconds": 5,
+        "pullBatchSize": 100000,
+        "useCompression": false
+      },
+      "tableMappingsToAdd": [],
+      "tableMappingsToRemove": [{
+        "sourceSchemaName": "sales",
+        "sourceTable": "old_orders",
+        "targetTable": "old_orders",
+        "partitionByExpr": "toYYYYMM(created_at)"
+      }]
+    },
+    "validateSamples": false
+  }
+}
+```
+
+MongoDB supports URI or username/password rotation, TLS and read-preference
+changes, its two patchable settings, and collection mapping changes:
+
+```json
+{
+  "source": {
+    "mongodb": {
+      "credentials": { "username": "rotated", "password": "secret" },
+      "uri": "mongodb+srv://mongo.example/source",
+      "readPreference": "secondaryPreferred",
+      "disableTls": false,
+      "skipCertVerification": false,
+      "settings": { "syncIntervalSeconds": 5, "pullBatchSize": 100000 },
+      "tableMappingsToAdd": [],
+      "tableMappingsToRemove": [{
+        "sourceDatabaseName": "source",
+        "sourceCollection": "old_events",
+        "targetTable": "old_events"
+      }]
+    },
+    "validateSamples": false
+  }
+}
+```
+
+BigQuery has no PATCH source arm in the Cloud API and is rejected by this
+command. Use a root-only patch for fields the API allows on an existing
+BigQuery pipe.
 
 #### Creating ClickPipes
 
 Each source type has its own subcommand under `clickpipe create`:
+
+Every create subcommand accepts source sample validation through
+`--validate-samples true|false`. The value is written under `source`; omission
+leaves `validateSamples` out of the request, while explicit `false` remains an
+explicit value. The API documents sample validation as having no effect for
+PostgreSQL and MySQL.
+
+Kafka, Kinesis, object-storage, and Pub/Sub creates also accept repeatable
+`--field-mapping '{"sourceField":"...","destinationField":"..."}'` values and
+initial scaling. Scaling is one complete allocation, so pass `--replicas`,
+`--cpu-millicores`, and `--memory-gb` together; omitting all three leaves the
+whole `scaling` block out of the request. Database CDC scaling is service-wide
+and configured through `clickpipe cdc-scaling update` instead.
+
+Those four source types also accept the ingestion-setting flags shown under
+`clickpipe settings update`. The JSON pair form preserves field names containing
+punctuation and rejects missing or unknown keys before a request. Object-storage
+settings only apply to object-storage creates, and `--kafka-read-committed` only
+applies to Kafka. Other source types omit that Kafka-only setting even when their
+request contains other settings. Database-source creates use their source-specific
+CDC setting and table-mapping flags instead. With no common setting flag, the
+request omits the whole `settings` block; explicit `0` and `false` remain present.
+
+```bash
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name mapped-events \
+  --brokers 'broker:9092' --topics events --format JSONEachRow \
+  --database default --table events --column 'event_id:Int64' \
+  --replicas 2 --cpu-millicores 500 --memory-gb 2 \
+  --validate-samples true \
+  --field-mapping '{"sourceField":"payload:event=id","destinationField":"event_id"}' \
+  --clickhouse-max-threads 0 \
+  --kafka-read-committed false
+```
+
+GCP workload identity is in private preview and must be enabled for the
+organization. Once enabled, get the service's ClickPipes principal, grant that
+GCP service account access to the source resources, then create the pipe
+without a customer key:
+
+```bash
+clickhousectl cloud clickpipe context get <service-id>
+
+# After granting gcpWorkloadIdentity.principal access in GCP:
+clickhousectl cloud clickpipe create object-storage <service-id> \
+  --name my-gcs-pipe \
+  --storage-type gcs \
+  --source-url 'gs://my-bucket/data/**' \
+  --format JSONEachRow \
+  --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY \
+  --database default --table events \
+  --column "event_id:Int64"
+```
+
+The same authentication mode is available for `--kafka-type gcmk`, Pub/Sub,
+and BigQuery. BigQuery workload identity requires `--project-id`; its staging
+path and table mappings remain required. Kafka, object-storage, and Pub/Sub
+schema discovery accepts the same workload-identity source flags. Context
+lookup is read-only and supports OAuth; create and schema discovery follow the
+existing API-key requirements. The CLI only configures the ClickPipe request:
+it does not grant GCP IAM permissions.
 
 The current source commands accept credentials as command-line options. Load values from your secret manager into environment variables, run them only in a trusted environment, and do not commit source credentials to scripts; expanded values may still be visible in process listings while a command runs.
 
@@ -1007,6 +1728,24 @@ clickhousectl cloud clickpipe create kafka <service-id> \
   --database default --table events \
   --column "event_id:Int64"
 
+# Protobuf schema from a file, with exactly-once delivery
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-protobuf-pipe \
+  --brokers 'broker:9092' --topics events \
+  --format Protobuf --protobuf-schema-file ./events.proto \
+  --exactly-once true \
+  --database default --table events \
+  --column "event_id:Int64"
+
+# Azure Event Hubs uses its connection-string credential object
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-event-hubs-pipe \
+  --brokers 'namespace.servicebus.windows.net:9093' --topics events \
+  --format JSONEachRow --kafka-type azureeventhub \
+  --event-hubs-connection-string "$EVENT_HUBS_CONNECTION_STRING" \
+  --database default --table events \
+  --column "event_id:Int64"
+
 # From Amazon Kinesis
 clickhousectl cloud clickpipe create kinesis <service-id> \
   --name my-kinesis-pipe \
@@ -1025,12 +1764,35 @@ clickhousectl cloud clickpipe create kinesis <service-id> \
   --database default --table events \
   --column "event_id:Int64"
 
+# Use a complete destination table definition for any Kafka, Kinesis,
+# object-storage, or Pub/Sub create. This example selects SummingMergeTree.
+cat > table-definition.json <<'JSON'
+{
+  "engine": {
+    "type": "SummingMergeTree",
+    "versionColumnId": null,
+    "columnIds": ["amount", "tax"]
+  },
+  "partitionBy": "toYYYYMM(created_at)",
+  "primaryKey": "event_id",
+  "sortingKey": ["event_id", "created_at"]
+}
+JSON
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-summing-pipe \
+  --brokers 'broker:9092' --topics events --format JSONEachRow \
+  --database analytics --table events \
+  --column "event_id:UInt64" --column "created_at:DateTime" \
+  --column "amount:Decimal(18,2)" --column "tax:Decimal(18,2)" \
+  --managed-table true --table-definition-file table-definition.json
+
 # From PostgreSQL with a publicly trusted certificate (CDC)
 clickhousectl cloud clickpipe create postgres <service-id> \
   --name my-pg-pipe \
   --host db.example.com --pg-database mydb \
   --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
   --publication-name clickpipes \
+  --destination-database analytics \
   --table-mapping "public.users:public_users" \
   --table-mapping "public.orders:public_orders"
 
@@ -1089,7 +1851,12 @@ clickhousectl cloud clickpipe create mysql <service-id> \
   --host mysql.example.com \
   --username "$MYSQL_USERNAME" --password "$MYSQL_PASSWORD" \
   --table-mapping "mydb.users:mydb_users" \
-  --server-id 4242
+  --server-id 4242 \
+  --sync-interval-seconds 30 --pull-batch-size 50000 \
+  --initial-load-parallelism 4 \
+  --snapshot-rows-per-partition 1000000 --snapshot-parallel-tables 3 \
+  --allow-nullable-columns true --delete-on-merge false \
+  --use-compression true
 
 # From an RDS or Aurora MySQL with IAM role authentication (CDC)
 # IAM_ROLE auth takes no --username/--password: the role ARN is the credential
@@ -1114,7 +1881,11 @@ clickhousectl cloud clickpipe create mongodb <service-id> \
   --name my-mongo-pipe \
   --uri 'mongodb+srv://cluster.example.net/mydb' \
   --username "$MONGODB_USERNAME" --password "$MONGODB_PASSWORD" \
-  --table-mapping "mydb.users:mydb_users"
+  --table-mapping "mydb.users:mydb_users" \
+  --sync-interval-seconds 30 --pull-batch-size 50000 \
+  --snapshot-rows-per-partition 1000000 \
+  --snapshot-parallel-collections 3 \
+  --delete-on-merge false --use-json-native-format true
 
 # One-shot MongoDB snapshot, read from the primary, private CA
 clickhousectl cloud clickpipe create mongodb <service-id> \
@@ -1130,6 +1901,11 @@ clickhousectl cloud clickpipe create bigquery <service-id> \
   --name my-bq-pipe \
   --service-account-file ./sa-key.json \
   --staging-path gs://bucket/staging \
+  --replication-mode snapshot \
+  --allow-nullable-columns true \
+  --initial-load-parallelism 4 \
+  --snapshot-rows-per-partition 1000000 \
+  --snapshot-parallel-tables 3 \
   --table-mapping "dataset.table:target_table"
 
 # From Google Cloud Pub/Sub (limited preview: contact support to enable it)
@@ -1166,6 +1942,24 @@ clickhousectl cloud clickpipe create kafka <service-id> \
   --role analytics_reader --role analytics_writer
 ```
 
+PostgreSQL, MySQL, MongoDB, and BigQuery creates accept
+`--destination-database <DATABASE>` for the ClickHouse database that receives
+their mapped tables. It defaults to `default`; source database, schema, and
+dataset names remain part of the source flags and table mappings shown above.
+
+BigQuery supports snapshot replication. Its nullability and snapshot tuning
+flags are optional; when omitted, the request leaves those settings to the
+ClickPipes service defaults.
+
+Kafka, Kinesis, object-storage, and Pub/Sub creates accept
+`--table-definition-file <PATH|->`. The JSON is deserialized into the typed
+ClickPipes table definition and must include the complete required shape shown
+above. Engine types are `MergeTree`, `ReplacingMergeTree`, `SummingMergeTree`,
+and `Null`; `versionColumnId` may be `null`, while `columnIds` selects columns
+for `SummingMergeTree`. Unknown fields at any level and unknown engine types are
+rejected before an API request. `--managed-table <true|false>` defaults to
+`true`; omitting both flags preserves the managed `MergeTree` destination.
+
 `--role` is available on every `clickpipe create` subcommand and is repeatable.
 ClickPipes creates a ClickHouse user for the pipe; when `--role` is omitted that
 user is granted the default role only, and the request omits the field
@@ -1177,11 +1971,17 @@ any request.
 
 #### PostgreSQL ClickPipe prerequisites
 
-TLS and certificate verification are enabled by default and stay on. Pass the CA
-certificate or bundle as PEM with `--ca-certificate <PATH>` for a private or
-self-signed CA, and `--tls-host <HOSTNAME>` only when the certificate names a
-different hostname than `--host` (for example when `--host` is an IP address).
-The CLI reads the file and sends its contents, not the path.
+TLS and certificate verification are enabled by default. The private-CA example
+above is the preferred secure setup: pass the CA certificate or bundle as PEM
+with `--ca-certificate <PATH>`, and `--tls-host <HOSTNAME>` only when the
+certificate names a different hostname than `--host` (for example when `--host`
+is an IP address). The CLI reads the file and sends its contents, not the path.
+
+For controlled diagnosis, add `--skip-cert-verification` to keep the connection
+encrypted while accepting an untrusted or mismatched source certificate. Use
+`--disable-tls` only for a source intentionally configured for plaintext; source
+traffic is then unencrypted. `--disable-tls` cannot be combined with
+`--ca-certificate`, `--tls-host`, or `--skip-cert-verification`.
 
 Before creating a PostgreSQL CDC ClickPipe:
 
@@ -1269,9 +2069,78 @@ error (exit code 2):
   `--table-mapping-json #2: targetTable is required and must not be empty`.
 
 The mappings are sent in flag order: the `--table-mapping` values first, then
-the `--table-mapping-json` ones. The JSON form is not yet available on
-`clickpipe create mysql`, `mongodb` or `bigquery`, whose table mappings have
-analogous fields.
+the `--table-mapping-json` ones.
+
+#### MySQL, MongoDB, and BigQuery table mappings
+
+The MySQL, MongoDB, and BigQuery create commands accept the same two mapping
+forms. At least one mapping is required; both flags are repeatable and may be
+combined. Simple mappings leave every optional per-table field to the service
+default, while JSON mappings preserve optional fields exactly when present.
+
+MySQL supports excluded columns, custom sorting keys, the destination table
+engine, and two distinct partition controls. `partitionKey` selects an indexed
+source column for parallel snapshotting. `partitionByExpr` sets the ClickHouse
+`PARTITION BY` expression on the destination table.
+
+```bash
+clickhousectl cloud clickpipe create mysql <service-id> \
+  --name my-mysql-pipe \
+  --host mysql.example.com \
+  --username "$MYSQL_USERNAME" --password "$MYSQL_PASSWORD" \
+  --table-mapping-json '{
+    "sourceSchemaName": "sales",
+    "sourceTable": "orders",
+    "targetTable": "orders_raw",
+    "excludedColumns": ["private_note"],
+    "sortingKeys": ["created_at", "id"],
+    "partitionKey": "id",
+    "partitionByExpr": "toYYYYMM(created_at)",
+    "tableEngine": "ReplacingMergeTree"
+  }'
+```
+
+MongoDB JSON mappings add a destination table engine to the source database,
+collection, and target table names:
+
+```bash
+clickhousectl cloud clickpipe create mongodb <service-id> \
+  --name my-mongodb-pipe \
+  --uri mongodb://mongo.example.com:27017 \
+  --username "$MONGODB_USERNAME" --password "$MONGODB_PASSWORD" \
+  --table-mapping-json '{
+    "sourceDatabaseName": "sales",
+    "sourceCollection": "orders",
+    "targetTable": "orders_raw",
+    "tableEngine": "ReplacingMergeTree"
+  }'
+```
+
+BigQuery supports excluded columns, custom sorting keys, and the destination
+table engine with either service-account or workload-identity authentication:
+
+```bash
+clickhousectl cloud clickpipe create bigquery <service-id> \
+  --name my-bigquery-pipe \
+  --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY \
+  --project-id my-gcp-project \
+  --staging-path gs://my-bucket/clickpipes-staging \
+  --table-mapping-json '{
+    "sourceDatasetName": "sales",
+    "sourceTable": "orders",
+    "targetTable": "orders_raw",
+    "excludedColumns": ["private_note"],
+    "sortingKeys": ["created_at", "id"],
+    "tableEngine": "MergeTree"
+  }'
+```
+
+For MySQL and BigQuery, non-empty `sortingKeys` enable
+`useCustomSortingKey`; explicitly setting it to `false` is rejected. Setting
+`useCustomSortingKey` to `true` requires at least one sorting key. Supported
+table engines are `MergeTree`, `ReplacingMergeTree`, and `Null`. Unknown
+fields and engines, missing required names, blank list entries, and duplicate
+MySQL excluded columns or sorting keys are rejected before the create request.
 
 #### PostgreSQL CDC pipe settings
 
@@ -1299,7 +2168,18 @@ snapshot and initial-load settings cannot be changed later on a pipe that was
 created without them. `clickpipe settings update` is a different endpoint for
 streaming and object-storage pipes and does not cover these settings.
 
-The same settings are not yet exposed on `clickpipe create mysql`.
+MySQL and MongoDB expose the corresponding settings on their create commands.
+The integer fields enforce the Cloud API minima: sync interval, pull batch,
+initial-load workers and parallel tables/collections are at least `1`, while
+snapshot rows per partition is at least `1000`. Optional booleans take an
+explicit `true` or `false`; omitted values stay out of the request.
+
+Kafka's `--protobuf-schema-file <PATH>` accepts a `.proto` source or serialized
+`FileDescriptorSet`; pass `-` to read it from stdin. The CLI base64-encodes the
+bytes and enforces the API's encoded 1 MiB limit. This input requires
+`--format Protobuf` and conflicts with the schema registry flags. The same
+flag works for Kafka schema discovery. `--exactly-once <true|false>` is
+create-only.
 
 `--service-account-file` (on `create pubsub`, `create object-storage` and
 `create bigquery`) takes a path to the GCP service account JSON key file, or `-`
@@ -1309,6 +2189,14 @@ path itself is never sent, the key is never accepted as an inline flag value, so
 it stays out of process listings and shell history, and it is never echoed back
 in output or errors. An empty key file (or empty stdin) is refused before any
 request is made.
+
+For those GCP sources, `--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY` rejects
+`--service-account-file` and every other source credential flag. It is valid
+only with GCS object storage and GCMK Kafka; Pub/Sub and BigQuery select their
+typed workload-identity request variants. Existing service-account-key
+authentication remains the default for Pub/Sub and BigQuery, while object
+storage continues to infer it from `--service-account-file` when `--auth` is
+omitted.
 
 `--seek-type` has no default: `earliest` reads the backlog, `latest` only new
 messages, and `timestamp` starts from `--seek-timestamp` (required for that seek
@@ -1369,9 +2257,11 @@ clickhousectl cloud clickpipe reverse-private-endpoint create <service-id> \
   --custom-private-dns-mapping db.example.com \
   --custom-private-dns-mapping '*.example.com'
 
-# Replace the custom private DNS mappings, or delete the endpoint
+# Replace or clear the custom private DNS mappings, or delete the endpoint
 clickhousectl cloud clickpipe reverse-private-endpoint update <service-id> <endpoint-id> \
   --custom-private-dns-mapping db.example.com
+clickhousectl cloud clickpipe reverse-private-endpoint update <service-id> <endpoint-id> \
+  --clear-custom-private-dns-mappings
 clickhousectl cloud clickpipe reverse-private-endpoint delete <service-id> <endpoint-id>
 
 # Reference a Ready endpoint from a Kafka pipe
@@ -1412,7 +2302,8 @@ leading-wildcard name (`*.example.com`). The API does not support it for
 PrivateLink types it has to be enabled for the service by ClickHouse support.
 The custom private DNS mappings are the only field the API's PATCH accepts, so
 `update` sends the complete list given on the command line: repeat every mapping
-the endpoint should keep.
+the endpoint should keep, or pass `--clear-custom-private-dns-mappings` to remove
+all mappings. The replace and clear flags conflict.
 
 #### Discovering a source schema (beta)
 
@@ -1437,6 +2328,11 @@ clickhousectl cloud clickpipe schema-discover <service-id> kafka \
   --brokers 'broker:9092' --topics events \
   --format JSONEachRow
 
+# Discover a Protobuf schema, reading the source from stdin
+clickhousectl cloud clickpipe schema-discover <service-id> kafka \
+  --brokers 'broker:9092' --topics events \
+  --format Protobuf --protobuf-schema-file - < events.proto
+
 # Discover schema from Kinesis
 clickhousectl cloud clickpipe schema-discover <service-id> kinesis \
   --stream-name events --region us-east-1 \
@@ -1459,16 +2355,56 @@ clickhousectl cloud clickpipe schema-discover <service-id> pubsub \
 
 Add `--json` (or run as a coding agent) for machine-readable output.
 
-### Members
+### Organization roles
 
-Role IDs used by member, invitation, and API-key commands currently come from the ClickHouse Cloud Console or API.
+List system and custom roles to discover the role IDs used by member, invitation,
+and API-key commands. Custom roles are created and updated from strict JSON files;
+pass `--config-file -` to read the body from stdin.
+
+```bash
+clickhousectl cloud org role list
+clickhousectl cloud org role get <role-id>
+
+cat > role.json <<'JSON'
+{
+  "name": "service-auditor",
+  "actors": ["user/<user-id>", "apiKey/<api-key-id>"],
+  "policies": [
+    {
+      "allowDeny": "ALLOW",
+      "permissions": ["control-plane:organization:view"],
+      "resources": ["organization/<org-id>"],
+      "tags": {
+        "grants": ["SELECT"],
+        "roleV2": "sql-console-readonly"
+      }
+    }
+  ]
+}
+JSON
+clickhousectl cloud org role create --config-file role.json
+
+# Updates are partial; actors and policies replace their complete lists when present.
+printf '%s\n' '{"name":"renamed-auditor"}' | \
+  clickhousectl cloud org role update <role-id> --config-file -
+clickhousectl cloud org role delete <role-id>
+```
+
+Only custom roles can be updated or deleted. `allowDeny` accepts `ALLOW` or
+`DENY`; `roleV2` accepts `sql-console-readonly` or `sql-console-admin`.
+
+### Members
 
 ```bash
 clickhousectl cloud member list
 clickhousectl cloud member get <user-id>
 clickhousectl cloud member update <user-id> --role-id <role-id>
+clickhousectl cloud member update <user-id> --clear-roles
 clickhousectl cloud member remove <user-id>
 ```
+
+Omitting both member role flags leaves assigned roles unchanged.
+`--clear-roles` removes them all and conflicts with `--role-id`.
 
 ### Invitations
 
@@ -1488,14 +2424,21 @@ clickhousectl cloud key get <key-id>
 clickhousectl cloud key create --name ci-key \
   --role-id <role-id> \
   --expires-at <future-RFC3339-time> \
-  --ip-allow <trusted-egress-ip>/32 \
+  --ip-allow '<trusted-egress-ip>/32=CI runners' \
   --state disabled   # create the key already disabled
 # --hash-key-id/--hash-key-id-suffix/--hash-key-secret submit a pre-hashed key; no secret is returned
 clickhousectl cloud key update <key-id> \
   --name renamed-key \
   --state disabled
+clickhousectl cloud key update <key-id> --expires-at 2030-12-31T23:59:59Z
+clickhousectl cloud key update <key-id> --clear-expiry
+clickhousectl cloud key update <key-id> --clear-roles --clear-ip-allow
 clickhousectl cloud key delete <key-id>
 ```
+
+On update, omitting expiry, role, or IP allowlist flags keeps that setting.
+`--clear-expiry`, `--clear-roles`, and `--clear-ip-allow` remove the respective
+setting and conflict with the corresponding set flag.
 
 ### Activity
 
@@ -1513,7 +2456,7 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
-`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `cloud org prometheus` and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: the legacy `cloud org prometheus` command and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
 
 Human-readable detail views (`cloud clickpipe get` and every other `get`-style command) never print PEM-framed material. Each well-formed PEM block in a value is replaced, where it stands, by a one-line summary of that block: `<PEM CERTIFICATE, SHA-256 fingerprint AB:CD:...>` for a certificate, certificate request or CRL, using the fingerprint `openssl x509 -fingerprint -sha256` prints for that block, and `<PEM EC PRIVATE KEY, 121 bytes>` for any other label, because a private key is reported by size and never fingerprinted. Text around the blocks, such as a bundle's header comments, is kept as it was. This affects human output only: `--json` still returns the value verbatim, and `cloud postgres certs get` deliberately still prints the raw PEM, since emitting the certificate is that command's purpose.
 
@@ -1747,6 +2690,55 @@ On a machine that has never seen the notice, `telemetry status` reports "not yet
 To see exactly what would be sent without sending it, set `CHCTL_TELEMETRY_DEBUG=1` — the payload is printed to stderr and nothing leaves the machine.
 
 Distribution packagers can compile telemetry out entirely (including the `telemetry` subcommand) with `cargo build --no-default-features`.
+
+## User-defined functions (Beta)
+
+`cloud udf` manages organization-scoped executable UDFs, versions, and service attachments. All UDF operations are beta. Reads support OAuth; writes require API key authentication.
+
+Create a JSON definition and a [source ZIP archive](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions#manage-udfs-with-the-cloud-api). `--config-file` accepts a file or `-` for stdin. The definition uses the API's field names and excludes `uploadId`, which the CLI obtains from a fresh upload session:
+
+```json
+{
+  "functionName": "my_udf",
+  "type": "executable",
+  "runtime": "native",
+  "arguments": [{"name": "x", "type": "UInt64"}],
+  "returnType": "UInt64",
+  "memoryLimitMib": 128,
+  "deterministic": false
+}
+```
+
+```bash
+clickhousectl cloud udf create --config-file udf.json --artifact source.zip
+clickhousectl cloud udf get my_udf
+# Wait for status ready, then attach the latest ready version (or --version 2)
+clickhousectl cloud udf attach my_udf <service-id>
+clickhousectl cloud udf attachment list my_udf
+clickhousectl cloud udf attachment get my_udf <service-id>
+clickhousectl cloud udf list --limit 20
+# Continue with the returned pagination.nextCursor
+clickhousectl cloud udf list --limit 20 --cursor '<nextCursor>'
+clickhousectl cloud udf version list my_udf
+
+# version.json contains the complete definition without functionName or uploadId
+clickhousectl cloud udf version create my_udf --config-file version.json --artifact source-v2.zip
+clickhousectl cloud udf attach my_udf <service-id> --version 2
+clickhousectl cloud udf detach my_udf <service-id>
+# Detach from every service before deleting an individual version
+clickhousectl cloud udf version delete my_udf 1
+clickhousectl cloud udf delete my_udf
+```
+
+Required definition fields are `type`, `runtime`, `arguments`, and `returnType`; initial creation also requires `functionName`. Supported types are `executable` and `executable_pool`, with runtimes `native` and `python3.11`. Optional fields are `returnName`, `format`, `commandReadTimeout`, `commandWriteTimeout`, `maxCommandExecutionTime`, `memoryLimitMib`, `sendChunkHeader`, `deterministic`, `sandboxType`, `sandboxVersion`, and `poolSize`. Read/write timeouts are milliseconds; maximum execution time is seconds. Memory is 1–1,048,576 MiB or null. `poolSize` accepts a positive integer for `executable_pool` and only null for `executable`. Sandbox type is `basic` or `netenable`; sandbox version is `v1`, `v2`, or `v3`. Set `deterministic` to true only when identical arguments always produce identical results.
+
+Version creation uses defaults for omitted options, without inheriting the previous version's configuration. Supply a complete request definition; GET output includes response-only fields and cannot be used directly as a request. Unknown fields, unsupported enum values, missing required fields and invalid limits fail before upload. Nullable options may be omitted or set to null; both use the API's default behavior.
+
+Creation and version creation each request a new upload URL, stream the ZIP archive, and submit its upload ID once. Failed uploads never submit a create request. Uploads time out after five minutes; rerun the command to obtain a fresh session after any failure. The target service must be running; wake an idle service before attaching. Attachment replaces the service's existing version; omitted `--version` selects the latest ready version. A dependency failure (HTTP 424) exits with an error; inspect the UDF and service before retrying. The latest version and versions still building cannot be deleted individually. Deleting a UDF deletes all its versions and detaches it from every service; service removal finishes asynchronously.
+
+All three list commands expose `--cursor` and `--limit` (1–100) and retain pagination in JSON output. Detail and list output tolerate missing fields and new response status values.
+
+The UDF API request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation. The OpenAPI analyzer checks inline union payload fields and request requiredness; its report format is version 5.
 
 ## Cloud integration testing
 

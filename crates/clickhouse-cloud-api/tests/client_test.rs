@@ -2635,13 +2635,15 @@ async fn create_udf_encodes_request_body() {
             "returnType": "String",
             "runtime": "python3.11",
             "type": "executable",
-            "uploadId": "upload-1"
+            "uploadId": "upload-1", "deterministic": false, "memoryLimitMib": 256
         })))
         .respond_with(created_json(serde_json::json!({"functionName": "my_udf"})))
         .mount(&s)
         .await;
 
     let body = UdfCreateRequest::UdfCreateRequestV1(UdfCreateRequestV1 {
+        deterministic: Some(false),
+        memory_limit_mib: Some(256),
         arguments: vec![],
         function_name: "my_udf".to_string(),
         return_type: "String".to_string(),
@@ -2672,13 +2674,15 @@ async fn create_udf_version_encodes_request_body() {
             "returnType": "String",
             "runtime": "python3.11",
             "type": "executable",
-            "uploadId": "upload-1"
+            "uploadId": "upload-1", "deterministic": false, "memoryLimitMib": 256
         })))
         .respond_with(created_json(serde_json::json!({"functionName": "my_udf"})))
         .mount(&s)
         .await;
 
     let body = UdfVersionCreateRequest::UdfVersionCreateRequestV1(UdfVersionCreateRequestV1 {
+        deterministic: Some(false),
+        memory_limit_mib: Some(256),
         arguments: vec![],
         return_type: "String".to_string(),
         runtime: UdfRuntime::Python3_11,
@@ -3274,7 +3278,7 @@ async fn create_postgres_service() {
 
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres"))
-        .and(body_partial_json(serde_json::json!({"name": "pg-svc", "provider": "aws", "region": "us-east-1", "size": "c6gd.large"})))
+        .and(body_partial_json(serde_json::json!({"name": "pg-svc", "provider": "aws", "region": "us-east-1", "size": "c6gd.large", "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}})))
         .respond_with(ok_json(serde_json::json!({
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
             "name": "pg-svc",
@@ -3291,6 +3295,10 @@ async fn create_postgres_service() {
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
         size: PgSize::C6gd_large,
+        pg_bouncer_config: Some(PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ])),
         ..Default::default()
     };
     let resp = c.postgres_service_create("org-1", &body).await.unwrap();
@@ -3465,7 +3473,7 @@ async fn get_postgres_config() {
             "pgConfig": {
                 "max_connections": 100
             },
-            "pgBouncerConfig": {}
+            "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}
         })))
         .mount(&s)
         .await;
@@ -3475,6 +3483,14 @@ async fn get_postgres_config() {
         .await
         .unwrap();
     let config = resp.result.unwrap();
+    assert_eq!(
+        config.pg_bouncer_config.as_ref().unwrap()["default_pool_size"],
+        "16"
+    );
+    assert_eq!(
+        config.pg_bouncer_config.as_ref().unwrap()["future_parameter"],
+        "on"
+    );
     assert_eq!(
         config
             .pg_config
@@ -3491,12 +3507,12 @@ async fn replace_postgres_config() {
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
         .and(body_partial_json(
-            serde_json::json!({"pgConfig": {"max_connections": 200}, "pgBouncerConfig": {}}),
+            serde_json::json!({"pgConfig": {"max_connections": 200}, "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "message": "Configuration updated",
             "pgConfig": { "max_connections": 200 },
-            "pgBouncerConfig": {}
+            "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}
         })))
         .mount(&s)
         .await;
@@ -3506,13 +3522,24 @@ async fn replace_postgres_config() {
             max_connections: Some(serde_json::json!(200)),
             ..Default::default()
         },
-        pg_bouncer_config: PgBouncerConfig::default(),
+        pg_bouncer_config: PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ]),
     };
     let resp = c
         .postgres_instance_config_post("org-1", "pg-1", &body)
         .await
         .unwrap();
     let result = resp.result.unwrap();
+    assert_eq!(
+        result.pg_bouncer_config.as_ref().unwrap()["default_pool_size"],
+        "16"
+    );
+    assert_eq!(
+        result.pg_bouncer_config.as_ref().unwrap()["future_parameter"],
+        "on"
+    );
     assert_eq!(result.message, Some("Configuration updated".to_string()));
     assert_eq!(
         result
@@ -3530,12 +3557,12 @@ async fn patch_postgres_config() {
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
         .and(body_partial_json(
-            serde_json::json!({"pgConfig": {"max_connections": 150}, "pgBouncerConfig": {}}),
+            serde_json::json!({"pgConfig": {"max_connections": 150}, "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "message": "OK",
             "pgConfig": { "max_connections": 150 },
-            "pgBouncerConfig": {}
+            "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}
         })))
         .mount(&s)
         .await;
@@ -3545,13 +3572,24 @@ async fn patch_postgres_config() {
             max_connections: Some(serde_json::json!(150)),
             ..Default::default()
         },
-        pg_bouncer_config: PgBouncerConfig::default(),
+        pg_bouncer_config: PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ]),
     };
     let resp = c
         .postgres_instance_config_patch("org-1", "pg-1", &body)
         .await
         .unwrap();
     let result = resp.result.unwrap();
+    assert_eq!(
+        result.pg_bouncer_config.as_ref().unwrap()["default_pool_size"],
+        "16"
+    );
+    assert_eq!(
+        result.pg_bouncer_config.as_ref().unwrap()["future_parameter"],
+        "on"
+    );
     assert_eq!(
         result
             .pg_config
@@ -3568,7 +3606,7 @@ async fn create_postgres_read_replica() {
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/readReplica"))
         .and(body_partial_json(
-            serde_json::json!({"name": "pg-1-replica"}),
+            serde_json::json!({"name": "pg-1-replica", "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "id": "bbbbbbbb-cccc-dddd-eeee-ffffffffffff",
@@ -3580,6 +3618,10 @@ async fn create_postgres_read_replica() {
 
     let body = PostgresServiceReadReplicaRequest {
         name: "pg-1-replica".to_string(),
+        pg_bouncer_config: Some(PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ])),
         ..Default::default()
     };
     let resp = c
@@ -3599,7 +3641,7 @@ async fn restore_postgres_service() {
             "/v1/organizations/org-1/postgres/pg-1/restoredService",
         ))
         .and(body_partial_json(
-            serde_json::json!({"name": "pg-1-restored"}),
+            serde_json::json!({"name": "pg-1-restored", "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "id": "cccccccc-dddd-eeee-ffff-000000000000",
@@ -3611,6 +3653,10 @@ async fn restore_postgres_service() {
 
     let body = PostgresServiceRestoreRequest {
         name: "pg-1-restored".to_string(),
+        pg_bouncer_config: Some(PgBouncerConfig::from([
+            ("default_pool_size".into(), "16".into()),
+            ("future_parameter".into(), "on".into()),
+        ])),
         restore_target: Utc::now(),
         ..Default::default()
     };
@@ -4288,4 +4334,156 @@ async fn default_base_url_is_production() {
     // Client::new() uses https://api.clickhouse.cloud -- we can't hit it,
     // but we can verify the client is constructable without panicking.
     let _client = Client::new("key", "secret");
+}
+
+#[tokio::test]
+async fn credit_balances_get_includes_trial_and_prepaid_balances() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/creditBalances"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "totalRemainingCredits": 12.5,
+            "balances": [{"type": "trial", "remainingCredits": 2.5}, {"type": "prepaid", "remainingCredits": 10.0}]
+        })))
+        .expect(1).mount(&server).await;
+    let result = client
+        .credit_balances_get("org")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(result.total_remaining_credits, Some(12.5));
+    let balances = result.balances.unwrap();
+    assert_eq!(balances[0].r#type, Some(CreditBalanceType::Trial));
+    assert_eq!(balances[1].r#type, Some(CreditBalanceType::Prepaid));
+}
+
+#[tokio::test]
+async fn service_profiles_list_encodes_region_and_optional_byoc() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/serviceProfiles"))
+        .and(basic_auth("key", "secret"))
+        .and(query_param("region_id", "us-east-1"))
+        .respond_with(ok_json(
+            serde_json::json!([{"profile": "v1-standard-byoc-4", "cpuCores": 4, "memoryGi": 16}]),
+        ))
+        .expect(2)
+        .mount(&server)
+        .await;
+    for byoc in [None, Some("byoc +/id")] {
+        let result = client
+            .service_profiles_list("org", "us-east-1", byoc)
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(result[0].profile.as_deref(), Some("v1-standard-byoc-4"));
+        assert_eq!(result[0].cpu_cores, Some(4.0));
+        assert_eq!(result[0].memory_gi, Some(16.0));
+    }
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        !requests[0]
+            .url
+            .query_pairs()
+            .any(|(key, _)| key == "byoc_id")
+    );
+    assert!(
+        requests[1]
+            .url
+            .query_pairs()
+            .any(|(key, value)| key == "byoc_id" && value == "byoc +/id")
+    );
+}
+
+#[tokio::test]
+async fn clickpipes_context_returns_workload_identity_and_tolerates_omissions() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/services/service/clickpipes/context"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({"gcpWorkloadIdentity": {
+            "supported": true, "ready": null, "principal": "clickpipes@example.iam.gserviceaccount.com"
+        }})))
+        .expect(1).mount(&server).await;
+    let result = client
+        .click_pipes_service_context_get("org", "service")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    let identity = result.gcp_workload_identity.unwrap();
+    assert_eq!(identity.supported, Some(true));
+    assert_eq!(identity.ready, None);
+    assert_eq!(
+        identity.principal.as_deref(),
+        Some("clickpipes@example.iam.gserviceaccount.com")
+    );
+}
+
+#[tokio::test]
+async fn new_discovery_operations_preserve_api_errors() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_json(serde_json::json!({"error": "forbidden"})),
+        )
+        .expect(3)
+        .mount(&server)
+        .await;
+    let errors = [
+        client.credit_balances_get("org").await.unwrap_err(),
+        client
+            .service_profiles_list("org", "region", None)
+            .await
+            .unwrap_err(),
+        client
+            .click_pipes_service_context_get("org", "service")
+            .await
+            .unwrap_err(),
+    ];
+    for error in errors {
+        assert!(
+            matches!(error, clickhouse_cloud_api::Error::Api { status: 403, message } if message == "forbidden")
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_api_key_sends_omitted_timestamp_and_null_expiry() {
+    let timestamp = chrono::DateTime::parse_from_rfc3339("2030-01-02T03:04:05Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    for (expire_at, wire) in [
+        (None, serde_json::json!({"name": "retained"})),
+        (
+            Some(Some(timestamp)),
+            serde_json::json!({"name": "retained", "expireAt": "2030-01-02T03:04:05Z"}),
+        ),
+        (
+            Some(None),
+            serde_json::json!({"name": "retained", "expireAt": null}),
+        ),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(method("PATCH"))
+            .and(path("/v1/organizations/org-1/keys/key-1"))
+            .and(body_json(wire))
+            .respond_with(ok_json(serde_json::json!({"name": "retained"})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let request = ApiKeyPatchRequest {
+            name: Some("retained".into()),
+            expire_at,
+            ..Default::default()
+        };
+        let response = client
+            .openapi_key_update("org-1", "key-1", &request)
+            .await
+            .unwrap();
+        assert_eq!(response.result.unwrap().name.as_deref(), Some("retained"));
+    }
 }

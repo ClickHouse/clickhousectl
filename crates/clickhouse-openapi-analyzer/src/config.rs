@@ -50,6 +50,9 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
 }
 
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
+    // The spec allows protobufSchema only for Protobuf without schemaRegistry;
+    // requiring it would reject JSON/Avro and schema-registry Kafka requests.
+    ("ClickPipePostKafkaSource", "protobufSchema"),
     // The legacy service-create schema marks almost every property required,
     // but the API requires only name/provider/region and rejects many defaults.
     ("ServicePostRequest", "autoscalingMode"),
@@ -78,9 +81,25 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // Non-Postgres pipe requests must be able to omit the Postgres union arm.
     ("ClickPipePostSource", "postgres"),
     ("ClickPipePatchSource", "postgres"),
+    // A live object-storage PATCH on 2026-09-05 omitted validateSamples and
+    // succeeded without changing source or destination state. The nested
+    // schema has no required[], but the description fallback marks the field
+    // required because it cannot inherit the parent PATCH method.
+    ("ClickPipePatchSource", "validateSamples"),
+    // The official Terraform provider's merged #618 sends Postgres mapping-only
+    // PATCHes with credentials/settings omitted and with only the non-empty
+    // add/remove delta. Its maintainers verified this shape against the API:
+    // https://github.com/ClickHouse/terraform-provider-clickhouse/pull/618
+    ("ClickPipePatchPostgresSource", "credentials"),
+    ("ClickPipePatchPostgresSource", "settings"),
+    ("ClickPipePatchPostgresSource", "tableMappingsToAdd"),
+    ("ClickPipePatchPostgresSource", "tableMappingsToRemove"),
     // Empty/default scaling and settings objects fail server-side validation.
     ("ClickPipePostRequest", "scaling"),
     ("ClickPipePostRequest", "settings"),
+    // The control plane accepted an object-storage create with validateSamples
+    // absent on 2026-09-05. Omission must stay distinct from explicit false.
+    ("ClickPipePostSource", "validateSamples"),
     // CDC mode and numeric ranges require absence unless meaningful values exist.
     ("ClickPipePostgresPipeSettings", "publicationName"),
     ("ClickPipePostgresPipeSettings", "replicationSlotName"),
@@ -106,6 +125,13 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // field is `omitempty` and the equivalent PATCH property is nullable.
     // Keeping this `T` would force every request to claim an auth mechanism.
     ("ClickPipePostKafkaSource", "authentication"),
+    // The official Terraform provider's released Kafka update path omits
+    // unchanged credentials and reversePrivateEndpointIds, including for a
+    // CA-only update. The API schema also has authentication modes IAM_ROLE
+    // (using iamRole) and workload identity with no credentials-union arm:
+    // https://github.com/ClickHouse/terraform-provider-clickhouse/blob/7c1d20d485f260f410698a17936cf7793bb5d9e1/internal/service/clickhouse/resource/clickpipe_kafka_update_payload_test.go
+    ("ClickPipePatchKafkaSource", "credentials"),
+    ("ClickPipePatchKafkaSource", "reversePrivateEndpointIds"),
     // `kafka_read_committed` is Kafka-only: the settings PUT is rejected with
     // "Setting 'kafka_read_committed' is only supported for Kafka ClickPipes"
     // for every other source, and the schema carries no `required[]`, so
@@ -113,6 +139,10 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // way a non-Kafka settings update can express "does not apply"; keeping this
     // `T` would put the key on every request and break all non-Kafka pipes.
     ("ClickPipeSettingsPutRequest", "kafka_read_committed"),
+    // The same source-conditional contract applies to settings nested in a
+    // create request: on 2026-09-05 an object-storage create with the key set
+    // to false was rejected, while omitting it succeeded.
+    ("ClickPipeSettings", "kafka_read_committed"),
     // Empty TLS/IAM strings fail validation for sources that do not use them.
     ("ClickPipeMutatePostgresSource", "caCertificate"),
     ("ClickPipeMutatePostgresSource", "iamRole"),
@@ -131,6 +161,12 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // Deprecated request fields are feature-gated out in favour of replacements.
     ("InvitationPostRequest", "role"),
     ("OrganizationPrivateEndpointsPatch", "add"),
+    // Despite its non-Patch name and descriptions that omit the "Optional"
+    // prefix, RoleUpdateRequest is used only by PATCH and the operation states
+    // that all three fields are optional and only supplied fields are changed.
+    ("RoleUpdateRequest", "actors"),
+    ("RoleUpdateRequest", "name"),
+    ("RoleUpdateRequest", "policies"),
     // PgConfig is partial: zero-value defaults fail, omission selects server defaults.
     ("PgConfig", "autovacuum_analyze_scale_factor"),
     ("PgConfig", "autovacuum_max_workers"),

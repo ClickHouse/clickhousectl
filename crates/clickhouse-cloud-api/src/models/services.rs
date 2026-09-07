@@ -308,7 +308,7 @@ impl std::fmt::Display for ServiceCompliancetype {
 
 /// Inline enum for `Service.profile`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ServiceProfile {
+pub enum ServiceProfileName {
     #[serde(rename = "v1-default")]
     #[default]
     V1_default,
@@ -327,7 +327,7 @@ pub enum ServiceProfile {
     Unknown(String),
 }
 
-impl std::fmt::Display for ServiceProfile {
+impl std::fmt::Display for ServiceProfileName {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::V1_default => write!(f, "v1-default"),
@@ -1634,7 +1634,7 @@ pub struct Service {
     #[serde(rename = "privateEndpointIds", skip_serializing_if = "Option::is_none")]
     pub private_endpoint_ids: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub profile: Option<ServiceProfile>,
+    pub profile: Option<ServiceProfileName>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider: Option<ServiceProvider>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2121,4 +2121,15 @@ pub struct UsageCostRecord {
     pub service_id: Option<uuid::Uuid>,
     #[serde(rename = "totalCHC", skip_serializing_if = "Option::is_none")]
     pub total_chc: Option<f64>,
+}
+
+/// `ServiceProfile` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ServiceProfile {
+    #[serde(rename = "profile", skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    #[serde(rename = "cpuCores", skip_serializing_if = "Option::is_none")]
+    pub cpu_cores: Option<f64>,
+    #[serde(rename = "memoryGi", skip_serializing_if = "Option::is_none")]
+    pub memory_gi: Option<f64>,
 }

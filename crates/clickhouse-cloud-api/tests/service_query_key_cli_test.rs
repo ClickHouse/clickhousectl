@@ -1306,7 +1306,7 @@ fn key_patch(
 ) -> ApiKeyPatchRequest {
     ApiKeyPatchRequest {
         assigned_role_ids: None,
-        expire_at,
+        expire_at: expire_at.map(Some),
         ip_access_list: None,
         name: None,
         #[cfg(feature = "deprecated-fields")]

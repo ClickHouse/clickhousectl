@@ -20,12 +20,12 @@
 /// Snake-case operation IDs (matching [`crate::client::Client`] method names)
 /// that the OpenAPI spec marks Beta via `x-badges`.
 pub const BETA_OPERATIONS: &[&str] = &[
-    "active_balances_get",
     "backup_bucket_create",
     "backup_bucket_delete",
     "backup_bucket_get",
     "backup_bucket_update",
     "click_pipe_schema_discovery",
+    "click_pipes_service_context_get",
     "click_stack_create_alert",
     "click_stack_create_dashboard",
     "click_stack_create_role",
@@ -56,6 +56,7 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "click_stack_update_source",
     "click_stack_update_webhook",
     "click_stack_validate_dashboard",
+    "credit_balances_get",
     "organization_prometheus_discovery_get",
     "organization_quota_get",
     "organization_quotas_get_list",

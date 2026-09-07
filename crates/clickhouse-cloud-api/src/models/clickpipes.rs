@@ -67,6 +67,11 @@ impl std::fmt::Display for ClickPipeBigQueryPipeSettingsReplicationmode {
     }
 }
 
+impl ClickPipeBigQueryPipeSettingsReplicationmode {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["snapshot"];
+}
+
 /// Inline enum for `ClickPipeBigQueryPipeTableMapping.tableEngine`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum ClickPipeBigQueryPipeTableMappingTableengine {
@@ -77,6 +82,11 @@ pub enum ClickPipeBigQueryPipeTableMappingTableengine {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeBigQueryPipeTableMappingTableengine {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["MergeTree", "ReplacingMergeTree", "Null"];
 }
 
 impl std::fmt::Display for ClickPipeBigQueryPipeTableMappingTableengine {
@@ -130,6 +140,11 @@ pub enum ClickPipeKafkaOffsetStrategy {
     Unknown(String),
 }
 
+impl ClickPipeKafkaOffsetStrategy {
+    pub const VALUES: &'static [&'static str] =
+        &["from_beginning", "from_latest", "from_timestamp"];
+}
+
 impl std::fmt::Display for ClickPipeKafkaOffsetStrategy {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -172,6 +187,8 @@ pub enum ClickPipeKafkaSourceAuthentication {
     IAM_ROLE,
     IAM_USER,
     MUTUAL_TLS,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -186,6 +203,7 @@ impl std::fmt::Display for ClickPipeKafkaSourceAuthentication {
             Self::IAM_ROLE => write!(f, "IAM_ROLE"),
             Self::IAM_USER => write!(f, "IAM_USER"),
             Self::MUTUAL_TLS => write!(f, "MUTUAL_TLS"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -339,6 +357,10 @@ pub enum ClickPipeMongoDBPipeSettingsReplicationmode {
     Unknown(String),
 }
 
+impl ClickPipeMongoDBPipeSettingsReplicationmode {
+    pub const VALUES: &'static [&'static str] = &["cdc", "snapshot", "cdc_only"];
+}
+
 impl std::fmt::Display for ClickPipeMongoDBPipeSettingsReplicationmode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -360,6 +382,11 @@ pub enum ClickPipeMongoDBPipeTableMappingTableengine {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeMongoDBPipeTableMappingTableengine {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["MergeTree", "ReplacingMergeTree", "Null"];
 }
 
 impl std::fmt::Display for ClickPipeMongoDBPipeTableMappingTableengine {
@@ -443,6 +470,16 @@ pub enum ClickPipeMutateMongoDBSourceReadpreference {
     Unknown(String),
 }
 
+impl ClickPipeMutateMongoDBSourceReadpreference {
+    pub const VALUES: &'static [&'static str] = &[
+        "primary",
+        "primaryPreferred",
+        "secondary",
+        "secondaryPreferred",
+        "nearest",
+    ];
+}
+
 impl std::fmt::Display for ClickPipeMutateMongoDBSourceReadpreference {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -466,6 +503,10 @@ pub enum ClickPipeMutateMySQLSourceAuthentication {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeMutateMySQLSourceAuthentication {
+    pub const VALUES: &'static [&'static str] = &["basic", "IAM_ROLE"];
 }
 
 impl std::fmt::Display for ClickPipeMutateMySQLSourceAuthentication {
@@ -495,6 +536,11 @@ pub enum ClickPipeMutateMySQLSourceType {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeMutateMySQLSourceType {
+    pub const VALUES: &'static [&'static str] =
+        &["mysql", "rdsmysql", "auroramysql", "mariadb", "rdsmariadb"];
 }
 
 impl std::fmt::Display for ClickPipeMutateMySQLSourceType {
@@ -593,6 +639,10 @@ pub enum ClickPipeMySQLPipeSettingsReplicationmechanism {
     Unknown(String),
 }
 
+impl ClickPipeMySQLPipeSettingsReplicationmechanism {
+    pub const VALUES: &'static [&'static str] = &["GTID", "FILE_POS"];
+}
+
 impl std::fmt::Display for ClickPipeMySQLPipeSettingsReplicationmechanism {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -618,6 +668,10 @@ pub enum ClickPipeMySQLPipeSettingsReplicationmode {
     Unknown(String),
 }
 
+impl ClickPipeMySQLPipeSettingsReplicationmode {
+    pub const VALUES: &'static [&'static str] = &["cdc", "snapshot", "cdc_only"];
+}
+
 impl std::fmt::Display for ClickPipeMySQLPipeSettingsReplicationmode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -639,6 +693,11 @@ pub enum ClickPipeMySQLPipeTableMappingTableengine {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipeMySQLPipeTableMappingTableengine {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["MergeTree", "ReplacingMergeTree", "Null"];
 }
 
 impl std::fmt::Display for ClickPipeMySQLPipeTableMappingTableengine {
@@ -714,6 +773,8 @@ pub enum ClickPipeObjectStorageSourceAuthentication {
     IAM_USER,
     CONNECTION_STRING,
     SERVICE_ACCOUNT,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -726,6 +787,7 @@ impl std::fmt::Display for ClickPipeObjectStorageSourceAuthentication {
             Self::IAM_USER => write!(f, "IAM_USER"),
             Self::CONNECTION_STRING => write!(f, "CONNECTION_STRING"),
             Self::SERVICE_ACCOUNT => write!(f, "SERVICE_ACCOUNT"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -854,6 +916,8 @@ pub enum ClickPipePatchKafkaSourceAuthentication {
     IAM_ROLE,
     IAM_USER,
     MUTUAL_TLS,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -868,6 +932,7 @@ impl std::fmt::Display for ClickPipePatchKafkaSourceAuthentication {
             Self::IAM_ROLE => write!(f, "IAM_ROLE"),
             Self::IAM_USER => write!(f, "IAM_USER"),
             Self::MUTUAL_TLS => write!(f, "MUTUAL_TLS"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1002,6 +1067,8 @@ pub enum ClickPipePatchObjectStorageSourceAuthentication {
     IAM_USER,
     CONNECTION_STRING,
     SERVICE_ACCOUNT,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -1014,6 +1081,7 @@ impl std::fmt::Display for ClickPipePatchObjectStorageSourceAuthentication {
             Self::IAM_USER => write!(f, "IAM_USER"),
             Self::CONNECTION_STRING => write!(f, "CONNECTION_STRING"),
             Self::SERVICE_ACCOUNT => write!(f, "SERVICE_ACCOUNT"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1048,6 +1116,8 @@ pub enum ClickPipePatchPubSubSourceAuthentication {
     #[serde(rename = "SERVICE_ACCOUNT")]
     #[default]
     ServiceAccount,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -1057,6 +1127,7 @@ impl std::fmt::Display for ClickPipePatchPubSubSourceAuthentication {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ServiceAccount => write!(f, "SERVICE_ACCOUNT"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1074,9 +1145,23 @@ pub enum ClickPipePostKafkaSourceAuthentication {
     IAM_ROLE,
     IAM_USER,
     MUTUAL_TLS,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipePostKafkaSourceAuthentication {
+    pub const VALUES: &'static [&'static str] = &[
+        "PLAIN",
+        "SCRAM-SHA-256",
+        "SCRAM-SHA-512",
+        "IAM_ROLE",
+        "IAM_USER",
+        "MUTUAL_TLS",
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+    ];
 }
 
 impl std::fmt::Display for ClickPipePostKafkaSourceAuthentication {
@@ -1088,6 +1173,7 @@ impl std::fmt::Display for ClickPipePostKafkaSourceAuthentication {
             Self::IAM_ROLE => write!(f, "IAM_ROLE"),
             Self::IAM_USER => write!(f, "IAM_USER"),
             Self::MUTUAL_TLS => write!(f, "MUTUAL_TLS"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1104,6 +1190,11 @@ pub enum ClickPipePostKafkaSourceFormat {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipePostKafkaSourceFormat {
+    pub const VALUES: &'static [&'static str] =
+        &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"];
 }
 
 impl std::fmt::Display for ClickPipePostKafkaSourceFormat {
@@ -1141,6 +1232,19 @@ pub enum ClickPipePostKafkaSourceType {
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
+}
+
+impl ClickPipePostKafkaSourceType {
+    pub const VALUES: &'static [&'static str] = &[
+        "kafka",
+        "redpanda",
+        "msk",
+        "gcmk",
+        "confluent",
+        "warpstream",
+        "azureeventhub",
+        "dokafka",
+    ];
 }
 
 impl std::fmt::Display for ClickPipePostKafkaSourceType {
@@ -1234,6 +1338,8 @@ pub enum ClickPipePostObjectStorageSourceAuthentication {
     IAM_USER,
     CONNECTION_STRING,
     SERVICE_ACCOUNT,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -1246,6 +1352,7 @@ impl std::fmt::Display for ClickPipePostObjectStorageSourceAuthentication {
             Self::IAM_USER => write!(f, "IAM_USER"),
             Self::CONNECTION_STRING => write!(f, "CONNECTION_STRING"),
             Self::SERVICE_ACCOUNT => write!(f, "SERVICE_ACCOUNT"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1563,6 +1670,8 @@ pub enum ClickPipePubSubSourceAuthentication {
     #[serde(rename = "SERVICE_ACCOUNT")]
     #[default]
     ServiceAccount,
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    ServiceAccountWorkloadIdentity,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -1572,6 +1681,7 @@ impl std::fmt::Display for ClickPipePubSubSourceAuthentication {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ServiceAccount => write!(f, "SERVICE_ACCOUNT"),
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1829,16 +1939,28 @@ pub struct ClickPipe {
 /// `ClickPipeBigQueryPipeSettings` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeBigQueryPipeSettings {
-    #[serde(rename = "allowNullableColumns")]
-    pub allow_nullable_columns: bool,
-    #[serde(rename = "initialLoadParallelism")]
-    pub initial_load_parallelism: f64,
+    #[serde(
+        rename = "allowNullableColumns",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub allow_nullable_columns: Option<bool>,
+    #[serde(
+        rename = "initialLoadParallelism",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub initial_load_parallelism: Option<f64>,
     #[serde(rename = "replicationMode")]
     pub replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode,
-    #[serde(rename = "snapshotNumRowsPerPartition")]
-    pub snapshot_num_rows_per_partition: f64,
-    #[serde(rename = "snapshotNumberOfParallelTables")]
-    pub snapshot_number_of_parallel_tables: f64,
+    #[serde(
+        rename = "snapshotNumRowsPerPartition",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_num_rows_per_partition: Option<f64>,
+    #[serde(
+        rename = "snapshotNumberOfParallelTables",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_number_of_parallel_tables: Option<f64>,
 }
 
 /// `ClickPipeBigQueryPipeSettings` from the ClickHouse Cloud API, in response
@@ -1876,20 +1998,23 @@ pub struct ClickPipeBigQueryPipeSettingsResponse {
 /// `ClickPipeBigQueryPipeTableMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeBigQueryPipeTableMapping {
-    #[serde(rename = "excludedColumns")]
-    pub excluded_columns: Vec<String>,
-    #[serde(rename = "sortingKeys")]
-    pub sorting_keys: Vec<String>,
+    #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
+    pub excluded_columns: Option<Vec<String>>,
+    #[serde(rename = "sortingKeys", skip_serializing_if = "Option::is_none")]
+    pub sorting_keys: Option<Vec<String>>,
     #[serde(rename = "sourceDatasetName")]
     pub source_dataset_name: String,
     #[serde(rename = "sourceTable")]
     pub source_table: String,
-    #[serde(rename = "tableEngine")]
-    pub table_engine: ClickPipeBigQueryPipeTableMappingTableengine,
+    #[serde(rename = "tableEngine", skip_serializing_if = "Option::is_none")]
+    pub table_engine: Option<ClickPipeBigQueryPipeTableMappingTableengine>,
     #[serde(rename = "targetTable")]
     pub target_table: String,
-    #[serde(rename = "useCustomSortingKey")]
-    pub use_custom_sorting_key: bool,
+    #[serde(
+        rename = "useCustomSortingKey",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub use_custom_sorting_key: Option<bool>,
 }
 
 /// `ClickPipeBigQueryPipeTableMapping` from the ClickHouse Cloud API, in
@@ -1919,18 +2044,38 @@ pub struct ClickPipeBigQueryPipeTableMappingResponse {
     pub use_custom_sorting_key: Option<bool>,
 }
 
-/// `ClickPipeBigQuerySource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickPipeBigQuerySource {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<ClickPipeBigQueryPipeSettingsResponse>,
-    #[serde(
-        rename = "snapshotStagingPath",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub snapshot_staging_path: Option<String>,
-    #[serde(rename = "tableMappings", skip_serializing_if = "Option::is_none")]
-    pub table_mappings: Option<Vec<ClickPipeBigQueryPipeTableMappingResponse>>,
+/// `ClickPipeBigQuerySource` from the ClickHouse Cloud API, selected by `authentication`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickPipeBigQuerySource {
+    ClickPipeBigQueryServiceAccountSource(ClickPipeBigQueryServiceAccountSource),
+    ClickPipeBigQueryWorkloadIdentitySource(ClickPipeBigQueryWorkloadIdentitySource),
+    Unknown(serde_json::Value),
+}
+discriminated_union! {
+    ClickPipeBigQuerySource, "authentication" {
+        "SERVICE_ACCOUNT" => ClickPipeBigQueryServiceAccountSource,
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY" => ClickPipeBigQueryWorkloadIdentitySource,
+    }
+}
+impl Default for ClickPipeBigQuerySource {
+    fn default() -> Self {
+        // An empty response has no authentication discriminator to select an arm.
+        Self::Unknown(serde_json::json!({}))
+    }
+}
+impl std::fmt::Display for ClickPipeBigQuerySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickPipeBigQueryServiceAccountSource(_) => {
+                write!(f, "ClickPipeBigQueryServiceAccountSource")
+            }
+            Self::ClickPipeBigQueryWorkloadIdentitySource(_) => {
+                write!(f, "ClickPipeBigQueryWorkloadIdentitySource")
+            }
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
 }
 
 /// `ClickPipeDestination` from the ClickHouse Cloud API.
@@ -2268,15 +2413,40 @@ pub struct ClickPipeMongoDBSource {
     pub uri: Option<String>,
 }
 
-/// `ClickPipeMutateBigQuerySource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickPipeMutateBigQuerySource {
-    pub credentials: ServiceAccount,
-    pub settings: ClickPipeBigQueryPipeSettings,
-    #[serde(rename = "snapshotStagingPath")]
-    pub snapshot_staging_path: String,
-    #[serde(rename = "tableMappings")]
-    pub table_mappings: Vec<ClickPipeBigQueryPipeTableMapping>,
+/// `ClickPipeMutateBigQuerySource` from the ClickHouse Cloud API, selected by `authentication`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickPipeMutateBigQuerySource {
+    ClickPipePostBigQueryServiceAccountSource(ClickPipePostBigQueryServiceAccountSource),
+    ClickPipePostBigQueryWorkloadIdentitySource(ClickPipePostBigQueryWorkloadIdentitySource),
+    Unknown(serde_json::Value),
+}
+discriminated_union! {
+    ClickPipeMutateBigQuerySource, "authentication" {
+        "SERVICE_ACCOUNT" => ClickPipePostBigQueryServiceAccountSource,
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY" => ClickPipePostBigQueryWorkloadIdentitySource,
+        none unless "authentication" => ClickPipePostBigQueryServiceAccountSource,
+    }
+}
+impl Default for ClickPipeMutateBigQuerySource {
+    fn default() -> Self {
+        Self::ClickPipePostBigQueryServiceAccountSource(
+            ClickPipePostBigQueryServiceAccountSource::default(),
+        )
+    }
+}
+impl std::fmt::Display for ClickPipeMutateBigQuerySource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickPipePostBigQueryServiceAccountSource(_) => {
+                write!(f, "ClickPipePostBigQueryServiceAccountSource")
+            }
+            Self::ClickPipePostBigQueryWorkloadIdentitySource(_) => {
+                write!(f, "ClickPipePostBigQueryWorkloadIdentitySource")
+            }
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
 }
 
 /// `ClickPipeMutateDestination` from the ClickHouse Cloud API.
@@ -2499,6 +2669,8 @@ pub struct ClickPipeMySQLPipeSettingsResponse {
 /// `ClickPipeMySQLPipeTableMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMySQLPipeTableMapping {
+    #[serde(rename = "partitionByExpr", skip_serializing_if = "Option::is_none")]
+    pub partition_by_expr: Option<String>,
     #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
     pub excluded_columns: Option<Vec<String>>,
     #[serde(rename = "partitionKey", skip_serializing_if = "Option::is_none")]
@@ -2528,6 +2700,8 @@ pub struct ClickPipeMySQLPipeTableMapping {
 /// `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMySQLPipeTableMappingResponse {
+    #[serde(rename = "partitionByExpr", skip_serializing_if = "Option::is_none")]
+    pub partition_by_expr: Option<String>,
     #[serde(rename = "excludedColumns", skip_serializing_if = "Option::is_none")]
     pub excluded_columns: Option<Vec<String>>,
     #[serde(rename = "partitionKey", skip_serializing_if = "Option::is_none")]
@@ -2627,11 +2801,15 @@ pub struct ClickPipePatchKafkaSource {
     pub authentication: Option<ClickPipePatchKafkaSourceAuthentication>,
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    pub credentials: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<serde_json::Value>,
     #[serde(rename = "iamRole", skip_serializing_if = "Option::is_none")]
     pub iam_role: Option<String>,
-    #[serde(rename = "reversePrivateEndpointIds")]
-    pub reverse_private_endpoint_ids: Vec<String>,
+    #[serde(
+        rename = "reversePrivateEndpointIds",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reverse_private_endpoint_ids: Option<Vec<String>>,
 }
 
 /// `ClickPipePatchKinesisSource` from the ClickHouse Cloud API.
@@ -2703,6 +2881,8 @@ pub struct ClickPipePatchMongoDBSource {
 /// `ClickPipePatchMySQLPipeRemoveTableMapping` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePatchMySQLPipeRemoveTableMapping {
+    #[serde(rename = "partitionByExpr", skip_serializing_if = "Option::is_none")]
+    pub partition_by_expr: Option<String>,
     #[serde(rename = "partitionKey", skip_serializing_if = "Option::is_none")]
     pub partition_key: Option<String>,
     #[serde(rename = "sourceSchemaName")]
@@ -2821,7 +3001,8 @@ pub struct ClickPipePatchPostgresPipeSettings {
 pub struct ClickPipePatchPostgresSource {
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
-    pub credentials: PLAIN,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub credentials: Option<PLAIN>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
     #[serde(rename = "disableTls", skip_serializing_if = "Option::is_none")]
@@ -2830,16 +3011,20 @@ pub struct ClickPipePatchPostgresSource {
     pub host: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<i64>,
-    pub settings: ClickPipePatchPostgresPipeSettings,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClickPipePatchPostgresPipeSettings>,
     #[serde(
         rename = "skipCertVerification",
         skip_serializing_if = "Option::is_none"
     )]
     pub skip_cert_verification: Option<bool>,
-    #[serde(rename = "tableMappingsToAdd")]
-    pub table_mappings_to_add: Vec<ClickPipePostgresPipeTableMapping>,
-    #[serde(rename = "tableMappingsToRemove")]
-    pub table_mappings_to_remove: Vec<ClickPipePatchPostgresPipeRemoveTableMapping>,
+    #[serde(rename = "tableMappingsToAdd", skip_serializing_if = "Option::is_none")]
+    pub table_mappings_to_add: Option<Vec<ClickPipePostgresPipeTableMapping>>,
+    #[serde(
+        rename = "tableMappingsToRemove",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub table_mappings_to_remove: Option<Vec<ClickPipePatchPostgresPipeRemoveTableMapping>>,
     #[serde(rename = "tlsHost", skip_serializing_if = "Option::is_none")]
     pub tls_host: Option<String>,
 }
@@ -2887,13 +3072,15 @@ pub struct ClickPipePatchSource {
     pub postgres: Option<ClickPipePatchPostgresSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubsub: Option<ClickPipePatchPubSubSource>,
-    #[serde(rename = "validateSamples")]
-    pub validate_samples: bool,
+    #[serde(rename = "validateSamples", skip_serializing_if = "Option::is_none")]
+    pub validate_samples: Option<bool>,
 }
 
 /// `ClickPipePostKafkaSource` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostKafkaSource {
+    #[serde(rename = "protobufSchema", skip_serializing_if = "Option::is_none")]
+    pub protobuf_schema: Option<String>,
     /// Omitted for a broker that requires no authentication: the spec enum has
     /// no "none" value, and the control plane's own field is `omitempty`, so
     /// absence — not a sentinel value — is how "no auth" is expressed.
@@ -3016,26 +3203,39 @@ pub struct ClickPipePostObjectStorageSource {
     pub url: String,
 }
 
-/// `ClickPipePostPubSubSource` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickPipePostPubSubSource {
-    #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none")]
-    pub ack_deadline: Option<i64>,
-    pub authentication: ClickPipePostPubSubSourceAuthentication,
-    #[serde(rename = "enableOrdering", skip_serializing_if = "Option::is_none")]
-    pub enable_ordering: Option<bool>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filter: Option<String>,
-    pub format: ClickPipePostPubSubSourceFormat,
-    #[serde(rename = "projectId")]
-    pub project_id: String,
-    #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none")]
-    pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
-    #[serde(rename = "seekType")]
-    pub seek_type: ClickPipePostPubSubSourceSeektype,
-    #[serde(rename = "serviceAccountKey")]
-    pub service_account_key: ServiceAccount,
-    pub topic: String,
+/// `ClickPipePostPubSubSource` from the ClickHouse Cloud API, selected by `authentication`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickPipePostPubSubSource {
+    ClickPipePostPubSubServiceAccountSource(ClickPipePostPubSubServiceAccountSource),
+    ClickPipePostPubSubWorkloadIdentitySource(ClickPipePostPubSubWorkloadIdentitySource),
+    Unknown(serde_json::Value),
+}
+discriminated_union! {
+    ClickPipePostPubSubSource, "authentication" {
+        "SERVICE_ACCOUNT" => ClickPipePostPubSubServiceAccountSource,
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY" => ClickPipePostPubSubWorkloadIdentitySource,
+    }
+}
+impl Default for ClickPipePostPubSubSource {
+    fn default() -> Self {
+        Self::ClickPipePostPubSubServiceAccountSource(
+            ClickPipePostPubSubServiceAccountSource::default(),
+        )
+    }
+}
+impl std::fmt::Display for ClickPipePostPubSubSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickPipePostPubSubServiceAccountSource(_) => {
+                write!(f, "ClickPipePostPubSubServiceAccountSource")
+            }
+            Self::ClickPipePostPubSubWorkloadIdentitySource(_) => {
+                write!(f, "ClickPipePostPubSubWorkloadIdentitySource")
+            }
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
 }
 
 /// `ClickPipePostRequest` from the ClickHouse Cloud API.
@@ -3077,8 +3277,10 @@ pub struct ClickPipePostSource {
     pub postgres: Option<ClickPipeMutatePostgresSource>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pubsub: Option<ClickPipePostPubSubSource>,
-    #[serde(rename = "validateSamples")]
-    pub validate_samples: bool,
+    // The control plane accepted an object-storage create with this key
+    // omitted on 2026-09-05. Preserve that absence rather than inventing false.
+    #[serde(rename = "validateSamples", skip_serializing_if = "Option::is_none")]
+    pub validate_samples: Option<bool>,
 }
 
 /// `ClickPipePostgresPipeSettings` from the ClickHouse Cloud API.
@@ -3350,8 +3552,13 @@ pub struct ClickPipeSettings {
     pub clickhouse_parallel_distributed_insert_select: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clickhouse_parallel_view_processing: Option<bool>,
-    #[serde(rename = "kafka_read_committed")]
-    pub kafka_read_committed: bool,
+    // The control plane rejected this key on an object-storage create on
+    // 2026-09-05, even when false. It must be absent outside Kafka creates.
+    #[serde(
+        rename = "kafka_read_committed",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub kafka_read_committed: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub object_storage_concurrency: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3638,4 +3845,255 @@ pub struct UpdateReversePrivateEndpoint {
         skip_serializing_if = "Option::is_none"
     )]
     pub custom_private_dns_mappings: Option<Vec<CustomPrivateDnsMapping>>,
+}
+
+/// Values of `ClickPipeBigQueryServiceAccountSourceAuthentication` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipeBigQueryServiceAccountSourceAuthentication {
+    #[serde(rename = "SERVICE_ACCOUNT")]
+    #[default]
+    ServiceAccount,
+    #[serde(untagged)]
+    Unknown(String),
+}
+impl std::fmt::Display for ClickPipeBigQueryServiceAccountSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceAccount => write!(f, "SERVICE_ACCOUNT"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `ClickPipeBigQueryServiceAccountSource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeBigQueryServiceAccountSource {
+    #[serde(
+        rename = "snapshotStagingPath",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_staging_path: Option<String>,
+    #[serde(rename = "settings", skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClickPipeBigQueryPipeSettingsResponse>,
+    #[serde(rename = "tableMappings", skip_serializing_if = "Option::is_none")]
+    pub table_mappings: Option<Vec<ClickPipeBigQueryPipeTableMappingResponse>>,
+    #[serde(rename = "authentication", skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipeBigQueryServiceAccountSourceAuthentication>,
+    #[serde(rename = "projectId", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+}
+
+/// Values of `ClickPipeBigQueryWorkloadIdentitySourceAuthentication` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipeBigQueryWorkloadIdentitySourceAuthentication {
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    #[default]
+    ServiceAccountWorkloadIdentity,
+    #[serde(untagged)]
+    Unknown(String),
+}
+impl std::fmt::Display for ClickPipeBigQueryWorkloadIdentitySourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `ClickPipeBigQueryWorkloadIdentitySource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeBigQueryWorkloadIdentitySource {
+    #[serde(
+        rename = "snapshotStagingPath",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub snapshot_staging_path: Option<String>,
+    #[serde(rename = "settings", skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ClickPipeBigQueryPipeSettingsResponse>,
+    #[serde(rename = "tableMappings", skip_serializing_if = "Option::is_none")]
+    pub table_mappings: Option<Vec<ClickPipeBigQueryPipeTableMappingResponse>>,
+    #[serde(rename = "authentication", skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipeBigQueryWorkloadIdentitySourceAuthentication>,
+    #[serde(rename = "projectId", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+}
+
+/// Values of `ClickPipePostBigQueryServiceAccountSourceAuthentication` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePostBigQueryServiceAccountSourceAuthentication {
+    #[serde(rename = "SERVICE_ACCOUNT")]
+    #[default]
+    ServiceAccount,
+    #[serde(untagged)]
+    Unknown(String),
+}
+impl std::fmt::Display for ClickPipePostBigQueryServiceAccountSourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceAccount => write!(f, "SERVICE_ACCOUNT"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `ClickPipePostBigQueryServiceAccountSource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipePostBigQueryServiceAccountSource {
+    #[serde(rename = "snapshotStagingPath")]
+    pub snapshot_staging_path: String,
+    #[serde(rename = "settings")]
+    pub settings: ClickPipeBigQueryPipeSettings,
+    #[serde(rename = "tableMappings")]
+    pub table_mappings: Vec<ClickPipeBigQueryPipeTableMapping>,
+    #[serde(rename = "authentication", skip_serializing_if = "Option::is_none")]
+    pub authentication: Option<ClickPipePostBigQueryServiceAccountSourceAuthentication>,
+    #[serde(rename = "projectId", skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(rename = "credentials")]
+    pub credentials: ServiceAccount,
+}
+
+/// Values of `ClickPipePostBigQueryWorkloadIdentitySourceAuthentication` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePostBigQueryWorkloadIdentitySourceAuthentication {
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    #[default]
+    ServiceAccountWorkloadIdentity,
+    #[serde(untagged)]
+    Unknown(String),
+}
+impl std::fmt::Display for ClickPipePostBigQueryWorkloadIdentitySourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `ClickPipePostBigQueryWorkloadIdentitySource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipePostBigQueryWorkloadIdentitySource {
+    #[serde(rename = "snapshotStagingPath")]
+    pub snapshot_staging_path: String,
+    #[serde(rename = "settings")]
+    pub settings: ClickPipeBigQueryPipeSettings,
+    #[serde(rename = "tableMappings")]
+    pub table_mappings: Vec<ClickPipeBigQueryPipeTableMapping>,
+    #[serde(rename = "authentication")]
+    pub authentication: ClickPipePostBigQueryWorkloadIdentitySourceAuthentication,
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+}
+
+/// `ClickPipePostPubSubServiceAccountSource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipePostPubSubServiceAccountSource {
+    #[serde(rename = "format")]
+    pub format: ClickPipePostPubSubSourceFormat,
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    #[serde(rename = "topic")]
+    pub topic: String,
+    #[serde(rename = "authentication")]
+    pub authentication: ClickPipePostPubSubSourceAuthentication,
+    #[serde(rename = "seekType")]
+    pub seek_type: ClickPipePostPubSubSourceSeektype,
+    #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none")]
+    pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "filter", skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    #[serde(rename = "enableOrdering", skip_serializing_if = "Option::is_none")]
+    pub enable_ordering: Option<bool>,
+    #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none")]
+    pub ack_deadline: Option<i64>,
+    #[serde(rename = "serviceAccountKey")]
+    pub service_account_key: ServiceAccount,
+}
+
+/// Values of `ClickPipePostPubSubWorkloadIdentitySourceAuthentication` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePostPubSubWorkloadIdentitySourceAuthentication {
+    #[serde(rename = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY")]
+    #[default]
+    ServiceAccountWorkloadIdentity,
+    #[serde(untagged)]
+    Unknown(String),
+}
+impl std::fmt::Display for ClickPipePostPubSubWorkloadIdentitySourceAuthentication {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ServiceAccountWorkloadIdentity => write!(f, "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `ClickPipePostPubSubWorkloadIdentitySource` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipePostPubSubWorkloadIdentitySource {
+    #[serde(rename = "format")]
+    pub format: ClickPipePostPubSubSourceFormat,
+    #[serde(rename = "projectId")]
+    pub project_id: String,
+    #[serde(rename = "topic")]
+    pub topic: String,
+    #[serde(rename = "authentication")]
+    pub authentication: ClickPipePostPubSubWorkloadIdentitySourceAuthentication,
+    #[serde(rename = "seekType")]
+    pub seek_type: ClickPipePostPubSubSourceSeektype,
+    #[serde(rename = "seekTimestamp", skip_serializing_if = "Option::is_none")]
+    pub seek_timestamp: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(rename = "filter", skip_serializing_if = "Option::is_none")]
+    pub filter: Option<String>,
+    #[serde(rename = "enableOrdering", skip_serializing_if = "Option::is_none")]
+    pub enable_ordering: Option<bool>,
+    #[serde(rename = "ackDeadline", skip_serializing_if = "Option::is_none")]
+    pub ack_deadline: Option<i64>,
+}
+
+/// `ClickPipesGcpWorkloadIdentityContext` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipesGcpWorkloadIdentityContext {
+    #[serde(rename = "supported", skip_serializing_if = "Option::is_none")]
+    pub supported: Option<bool>,
+    #[serde(rename = "ready", skip_serializing_if = "Option::is_none")]
+    pub ready: Option<bool>,
+    #[serde(rename = "principal", skip_serializing_if = "Option::is_none")]
+    pub principal: Option<String>,
+}
+
+/// `ClickPipesServiceContext` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipesServiceContext {
+    #[serde(
+        rename = "gcpWorkloadIdentity",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub gcp_workload_identity: Option<ClickPipesGcpWorkloadIdentityContext>,
+}
+
+impl From<ClickPipePostBigQueryServiceAccountSource> for ClickPipeMutateBigQuerySource {
+    fn from(value: ClickPipePostBigQueryServiceAccountSource) -> Self {
+        Self::ClickPipePostBigQueryServiceAccountSource(value)
+    }
+}
+
+impl From<ClickPipePostBigQueryWorkloadIdentitySource> for ClickPipeMutateBigQuerySource {
+    fn from(value: ClickPipePostBigQueryWorkloadIdentitySource) -> Self {
+        Self::ClickPipePostBigQueryWorkloadIdentitySource(value)
+    }
+}
+
+impl From<ClickPipePostPubSubServiceAccountSource> for ClickPipePostPubSubSource {
+    fn from(value: ClickPipePostPubSubServiceAccountSource) -> Self {
+        Self::ClickPipePostPubSubServiceAccountSource(value)
+    }
+}
+
+impl From<ClickPipePostPubSubWorkloadIdentitySource> for ClickPipePostPubSubSource {
+    fn from(value: ClickPipePostPubSubWorkloadIdentitySource) -> Self {
+        Self::ClickPipePostPubSubWorkloadIdentitySource(value)
+    }
 }

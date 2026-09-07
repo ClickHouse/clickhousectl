@@ -56,6 +56,11 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
         BackupBucketPatchRequest,
         BackupBucketPostRequest,
         BackupBucketProperties,
+        ClickPipeBigQuerySource,
+        ClickPipeMutateBigQuerySource,
+        ClickPipePostPubSubSource,
+        ClickStackSavedFilterValue,
+        ClickStackSavedFilterValueResponse,
         ClickStackAlertChannel,
         ClickStackBarChartConfig,
         ClickStackCategoricalBarChartConfig,
@@ -389,7 +394,7 @@ fn deserialize_clickpipe_settings() {
     assert_eq!(settings.streaming_max_insert_wait_ms, Some(5000));
     assert_eq!(settings.object_storage_concurrency, None);
     assert_eq!(settings.clickhouse_max_threads, Some(4));
-    assert!(settings.kafka_read_committed);
+    assert_eq!(settings.kafka_read_committed, Some(true));
 }
 
 #[test]
@@ -633,6 +638,30 @@ fn postgres_table_mapping_table_engines_round_trip_and_match_values() {
 }
 
 #[test]
+fn database_table_mapping_table_engines_round_trip_and_match_values() {
+    macro_rules! assert_values {
+        ($engine:ty) => {{
+            assert_eq!(
+                <$engine>::VALUES,
+                &["MergeTree", "ReplacingMergeTree", "Null"]
+            );
+            for value in <$engine>::VALUES {
+                let parsed: $engine = serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+                assert_eq!(parsed.to_string(), *value);
+                assert_eq!(
+                    serde_json::to_string(&parsed).unwrap(),
+                    format!(r#""{value}""#)
+                );
+            }
+        }};
+    }
+
+    assert_values!(ClickPipeMySQLPipeTableMappingTableengine);
+    assert_values!(ClickPipeMongoDBPipeTableMappingTableengine);
+    assert_values!(ClickPipeBigQueryPipeTableMappingTableengine);
+}
+
+#[test]
 fn deserialize_activity() {
     let json = r#"{
         "actorType": "api",
@@ -674,6 +703,59 @@ fn postgres_gcp_provider_roundtrips() {
     assert_eq!(provider.to_string(), "gcp");
     assert_eq!(serde_json::to_string(&provider).unwrap(), r#""gcp""#);
     assert_eq!(PgProvider::VALUES, &["aws", "gcp"]);
+}
+
+#[test]
+fn postgres_config_enum_values_roundtrip_and_match_values() {
+    for value in PgConfigDefaultTransactionIsolation::VALUES {
+        let parsed: PgConfigDefaultTransactionIsolation =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigDefaultTransactionIsolation::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in PgConfigSslMinProtocolVersion::VALUES {
+        let parsed: PgConfigSslMinProtocolVersion =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigSslMinProtocolVersion::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in PgConfigWalCompression::VALUES {
+        let parsed: PgConfigWalCompression =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigWalCompression::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+}
+
+#[test]
+fn postgres_slow_query_sort_values_roundtrip_as_known_variants() {
+    for value in SlowQueryPatternsGetListSortby::VALUES {
+        let parsed: SlowQueryPatternsGetListSortby =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, SlowQueryPatternsGetListSortby::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in SlowQueryPatternsGetListSortorder::VALUES {
+        let parsed: SlowQueryPatternsGetListSortorder =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, SlowQueryPatternsGetListSortorder::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
 }
 
 #[test]
@@ -1708,7 +1790,10 @@ fn postgres_instance_config_response_converts_back_into_a_request_body() {
             max_connections: Some(serde_json::json!(200)),
             ..Default::default()
         }),
-        pg_bouncer_config: Some(PgBouncerConfigResponse {}),
+        pg_bouncer_config: Some(PgBouncerConfigResponse::from([
+            ("default_pool_size".to_string(), "16".to_string()),
+            ("future_parameter".to_string(), "on".to_string()),
+        ])),
     };
     let request = PostgresInstanceConfig::try_from(response).unwrap();
     assert_eq!(
@@ -1717,7 +1802,7 @@ fn postgres_instance_config_response_converts_back_into_a_request_body() {
     );
     assert_eq!(
         serde_json::to_value(&request).unwrap(),
-        serde_json::json!({ "pgConfig": { "max_connections": 200 }, "pgBouncerConfig": {} })
+        serde_json::json!({ "pgConfig": { "max_connections": 200 }, "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"} })
     );
 }
 
@@ -2386,6 +2471,9 @@ fn deserialize_clickpipe_post_pubsub_source_required_fields() {
         }
     }"#;
     let src: ClickPipePostPubSubSource = serde_json::from_str(json).unwrap();
+    let ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(src) = src else {
+        panic!("expected service-account source")
+    };
     assert_eq!(src.topic, "projects/p/topics/t");
     assert_eq!(src.seek_type, ClickPipePostPubSubSourceSeektype::Earliest);
     assert_eq!(
@@ -3358,7 +3446,9 @@ fn shared_clickstack_source_types_stay_strict_on_the_request_side() {
         ClickStackMetricTables => ClickStackMetricTablesResponse,
         ClickStackPromqlSource => ClickStackPromqlSourceResponse,
         ClickStackQuerySetting => ClickStackQuerySettingResponse,
-        ClickStackSavedFilterValue => ClickStackSavedFilterValueResponse,
+        ClickStackSqlSavedFilterValue => ClickStackSqlSavedFilterValueResponse,
+        ClickStackVariableSavedFilterValue => ClickStackVariableSavedFilterValueResponse,
+        ClickStackFormula => ClickStackFormulaResponse,
         ClickStackSavedSearchFilter => ClickStackSavedSearchFilterResponse,
         ClickStackSessionSource => ClickStackSessionSourceResponse,
         ClickStackSourceFilterSettings => ClickStackSourceFilterSettingsResponse,
@@ -4101,10 +4191,16 @@ fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
         serde_json::from_str::<ClickPipePostgresPipeTableMappingResponse>("{}").unwrap(),
         ClickPipePostgresPipeTableMappingResponse::default()
     );
-    // The new non-nullable Kafka setting is required in the create-position
-    // settings object, while the settings PUT omits it for non-Kafka pipes and
-    // the response variant remains tolerant of a dropped key.
-    assert!(serde_json::from_str::<ClickPipeSettings>("{}").is_err());
+    // Source-conditional create values stay absent unless the caller supplies
+    // them, while explicit false remains distinguishable from omission.
+    assert_eq!(
+        serde_json::from_str::<ClickPipeSettings>("{}").unwrap(),
+        ClickPipeSettings::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipePostSource>("{}").unwrap(),
+        ClickPipePostSource::default()
+    );
     assert_eq!(
         serde_json::from_str::<ClickPipeSettingsPutRequest>("{}").unwrap(),
         ClickPipeSettingsPutRequest::default()
@@ -4112,6 +4208,37 @@ fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
     assert_eq!(
         serde_json::from_str::<ClickPipeSettingsResponse>("{}").unwrap(),
         ClickPipeSettingsResponse::default()
+    );
+}
+
+#[test]
+fn clickpipe_create_optional_controls_omit_absence_and_preserve_false() {
+    let source = ClickPipePostSource::default();
+    let settings = ClickPipeSettings::default();
+    assert_eq!(
+        serde_json::to_value(&source).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        serde_json::to_value(&settings).unwrap(),
+        serde_json::json!({})
+    );
+
+    let source = ClickPipePostSource {
+        validate_samples: Some(false),
+        ..Default::default()
+    };
+    let settings = ClickPipeSettings {
+        kafka_read_committed: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&source).unwrap(),
+        serde_json::json!({ "validateSamples": false })
+    );
+    assert_eq!(
+        serde_json::to_value(&settings).unwrap(),
+        serde_json::json!({ "kafka_read_committed": false })
     );
 }
 
@@ -5936,4 +6063,551 @@ fn reverse_private_endpoint_tolerates_missing_and_null_fields() {
         "{}",
         "absent fields must be omitted, never serialized as null"
     );
+}
+
+#[test]
+fn new_response_models_preserve_missing_and_null_fields() {
+    macro_rules! tolerant {
+        ($model:ty, [$($field:literal),+]) => {{
+            let empty: $model = serde_json::from_value(serde_json::json!({})).unwrap();
+            let nulls: $model = serde_json::from_value(serde_json::json!({$($field: null),+})).unwrap();
+            assert_eq!(empty, nulls);
+            assert_eq!(serde_json::to_value(empty).unwrap(), serde_json::json!({}));
+        }};
+    }
+    tolerant!(
+        CreditBalance,
+        [
+            "id",
+            "type",
+            "remainingCredits",
+            "totalAmount",
+            "amountSpent",
+            "startDate",
+            "expirationDate"
+        ]
+    );
+    tolerant!(CreditBalances, ["totalRemainingCredits", "balances"]);
+    tolerant!(ServiceProfile, ["profile", "cpuCores", "memoryGi"]);
+    tolerant!(
+        ClickPipeBigQueryServiceAccountSource,
+        [
+            "snapshotStagingPath",
+            "settings",
+            "tableMappings",
+            "authentication",
+            "projectId"
+        ]
+    );
+    tolerant!(
+        ClickPipeBigQueryWorkloadIdentitySource,
+        [
+            "snapshotStagingPath",
+            "settings",
+            "tableMappings",
+            "authentication",
+            "projectId"
+        ]
+    );
+    tolerant!(
+        ClickPipesGcpWorkloadIdentityContext,
+        ["supported", "ready", "principal"]
+    );
+    tolerant!(ClickPipesServiceContext, ["gcpWorkloadIdentity"]);
+    tolerant!(
+        ClickStackFormulaResponse,
+        ["expression", "alias", "numberFormat"]
+    );
+    tolerant!(ClickStackSqlSavedFilterValueResponse, ["type", "condition"]);
+    tolerant!(
+        ClickStackVariableSavedFilterValueResponse,
+        ["type", "name", "values"]
+    );
+}
+
+#[test]
+fn clickpipes_workload_identity_sources_round_trip_without_credentials() {
+    let bigquery = serde_json::json!({
+        "authentication": "SERVICE_ACCOUNT_WORKLOAD_IDENTITY", "projectId": "project",
+        "snapshotStagingPath": "gs://bucket/staging", "settings": {"replicationMode": "snapshot"},
+        "tableMappings": [{"sourceDatasetName": "dataset", "sourceTable": "source", "targetTable": "target"}]
+    });
+    let parsed: ClickPipeMutateBigQuerySource = serde_json::from_value(bigquery.clone()).unwrap();
+    assert!(matches!(
+        parsed,
+        ClickPipeMutateBigQuerySource::ClickPipePostBigQueryWorkloadIdentitySource(_)
+    ));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), bigquery);
+    let pubsub = serde_json::json!({
+        "authentication": "SERVICE_ACCOUNT_WORKLOAD_IDENTITY", "projectId": "project",
+        "topic": "topic", "format": "JSONEachRow", "seekType": "earliest"
+    });
+    let parsed: ClickPipePostPubSubSource = serde_json::from_value(pubsub.clone()).unwrap();
+    assert!(matches!(
+        parsed,
+        ClickPipePostPubSubSource::ClickPipePostPubSubWorkloadIdentitySource(_)
+    ));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), pubsub);
+    assert!(
+        serde_json::from_value::<ClickPipePostBigQueryWorkloadIdentitySource>(
+            serde_json::json!({})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ClickPipePostPubSubWorkloadIdentitySource>(serde_json::json!({}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ClickPipePostBigQueryServiceAccountSource>(serde_json::json!({}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ClickPipePostPubSubServiceAccountSource>(serde_json::json!({}))
+            .is_err()
+    );
+}
+
+#[test]
+fn bigquery_service_account_allows_omitted_authentication() {
+    let json = serde_json::json!({
+        "snapshotStagingPath": "gs://bucket/staging", "settings": {"replicationMode": "snapshot"},
+        "tableMappings": [], "credentials": {"serviceAccountFile": "encoded-key"}
+    });
+    let parsed: ClickPipeMutateBigQuerySource = serde_json::from_value(json.clone()).unwrap();
+    assert!(matches!(
+        parsed,
+        ClickPipeMutateBigQuerySource::ClickPipePostBigQueryServiceAccountSource(_)
+    ));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+}
+
+#[test]
+fn new_source_and_saved_filter_unions_preserve_unknown_payloads() {
+    assert_unknown_variant_round_trips::<ClickPipeMutateBigQuerySource>(
+        r#"{"authentication":"FUTURE","newField":1}"#,
+        |v| matches!(v, ClickPipeMutateBigQuerySource::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickPipeBigQuerySource>(
+        r#"{"authentication":"FUTURE","newField":1}"#,
+        |v| matches!(v, ClickPipeBigQuerySource::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickPipePostPubSubSource>(
+        r#"{"authentication":"FUTURE","newField":1}"#,
+        |v| matches!(v, ClickPipePostPubSubSource::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickStackSavedFilterValueResponse>(
+        r#"{"type":"future","values":["keep"]}"#,
+        |v| matches!(v, ClickStackSavedFilterValueResponse::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickStackSavedFilterValueResponse>(
+        r#"{"name":"service","values":["keep"]}"#,
+        |v| matches!(v, ClickStackSavedFilterValueResponse::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickPipeBigQuerySource>(
+        r#"{"authentication":"SERVICE_ACCOUNT","settings":"new-shape"}"#,
+        |v| matches!(v, ClickPipeBigQuerySource::Unknown(_)),
+    );
+}
+
+#[test]
+fn saved_filter_and_formula_writeback_reports_required_wire_fields() {
+    let sql: ClickStackSavedFilterValueResponse =
+        serde_json::from_value(serde_json::json!({"condition": "x = 1"})).unwrap();
+    let request = ClickStackSavedFilterValue::try_from(sql).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"condition": "x = 1"})
+    );
+    let variable = serde_json::json!({"type": "variable", "name": "service", "values": ["api"]});
+    let response: ClickStackSavedFilterValueResponse =
+        serde_json::from_value(variable.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(ClickStackSavedFilterValue::try_from(response).unwrap()).unwrap(),
+        variable
+    );
+    assert_eq!(
+        ClickStackSqlSavedFilterValue::try_from(ClickStackSqlSavedFilterValueResponse::default())
+            .unwrap_err()
+            .fields(),
+        &["condition"]
+    );
+    assert_eq!(
+        ClickStackVariableSavedFilterValue::try_from(
+            ClickStackVariableSavedFilterValueResponse::default()
+        )
+        .unwrap_err()
+        .fields(),
+        &["type", "name", "values"]
+    );
+    assert_eq!(
+        ClickStackFormula::try_from(ClickStackFormulaResponse::default())
+            .unwrap_err()
+            .fields(),
+        &["expression"]
+    );
+    let formula = ClickStackFormula::try_from(ClickStackFormulaResponse {
+        expression: Some("A / B".into()),
+        alias: Some("Rate".into()),
+        number_format: None,
+    })
+    .unwrap();
+    assert_eq!(formula.expression, "A / B");
+    assert_eq!(formula.alias.as_deref(), Some("Rate"));
+    let invalid = ClickStackFormulaResponse {
+        expression: Some("A".into()),
+        number_format: Some(ClickStackNumberFormatResponse::default()),
+        ..Default::default()
+    };
+    assert!(
+        ClickStackFormula::try_from(invalid)
+            .unwrap_err()
+            .fields()
+            .contains(&"currencySymbol")
+    );
+}
+
+#[test]
+fn kafka_inline_protobuf_schema_and_schema_registry_are_independent_options() {
+    let json_source = ClickPipePostKafkaSource {
+        format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+        ..Default::default()
+    };
+    assert!(
+        serde_json::to_value(json_source)
+            .unwrap()
+            .get("protobufSchema")
+            .is_none()
+    );
+    let inline = ClickPipePostKafkaSource {
+        format: ClickPipePostKafkaSourceFormat::Protobuf,
+        protobuf_schema: Some("c3ludGF4".into()),
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(inline).unwrap();
+    assert_eq!(wire["protobufSchema"], "c3ludGF4");
+    assert!(wire.get("schemaRegistry").is_none());
+    let registry = ClickPipePostKafkaSource {
+        format: ClickPipePostKafkaSourceFormat::Protobuf,
+        schema_registry: Some(ClickPipeMutateKafkaSchemaRegistry::default()),
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(registry).unwrap();
+    assert!(wire.get("protobufSchema").is_none());
+    assert!(wire.get("schemaRegistry").is_some());
+}
+
+#[test]
+fn new_clickstack_channels_and_chart_fields_round_trip() {
+    let request = ClickStackCreateAlertRequest {
+        interval: ClickStackCreateAlertRequestInterval::Value30s,
+        channels: vec![ClickStackAlertChannel::default()],
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(&request).unwrap();
+    assert_eq!(wire["channels"].as_array().unwrap().len(), 1);
+    assert_eq!(wire["interval"], "30s");
+    assert!(wire.get("channel").is_some());
+    assert_eq!(
+        serde_json::from_value::<ClickStackCreateAlertRequest>(wire).unwrap(),
+        request
+    );
+    let chart: ClickStackLineBuilderChartConfigResponse =
+        serde_json::from_value(serde_json::json!({
+            "formulas": [{"expression": "A / B", "alias": "Rate"}], "seriesLimit": 15,
+            "showOperandSeries": false
+        }))
+        .unwrap();
+    assert_eq!(chart.series_limit, Some(15));
+    assert_eq!(chart.show_operand_series, Some(false));
+    assert_eq!(
+        chart.formulas.unwrap()[0].expression.as_deref(),
+        Some("A / B")
+    );
+}
+
+#[test]
+fn clickstack_nested_writeback_preserves_number_format_and_source_expressions() {
+    let formula = serde_json::json!({
+        "expression": "A / B", "alias": "Success rate", "numberFormat": {
+            "average": false, "currencySymbol": "$", "decimalBytes": true,
+            "factor": 100.0, "mantissa": 2, "numericUnit": "bytes_si",
+            "output": "percent", "thousandSeparated": true, "unit": "%"
+        }
+    });
+    let response: ClickStackFormulaResponse = serde_json::from_value(formula.clone()).unwrap();
+    let request = ClickStackFormula::try_from(response).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), formula);
+
+    let log = serde_json::json!({
+        "kind": "log", "connection": "connection-1", "name": "Application logs",
+        "defaultTableSelectExpression": "*", "timestampValueExpression": "Timestamp",
+        "from": {"databaseName": "default", "tableName": "otel_logs"},
+        "serviceVersionExpression": "ResourceAttributes['service.version']",
+        "filterSettings": {
+            "databaseName": "default", "tableName": "service_names",
+            "columns": [{"name": "ServiceName", "label": "Service", "allowAll": true,
+                "valueExpression": "lower(service_name)"}]
+        }
+    });
+    let response: ClickStackSourceResponse = serde_json::from_value(log.clone()).unwrap();
+    let request = ClickStackSource::try_from(response).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), log);
+
+    let mut trace = log;
+    trace["kind"] = "trace".into();
+    trace["name"] = "Application traces".into();
+    trace["from"]["tableName"] = "otel_traces".into();
+    trace["durationExpression"] = "Duration".into();
+    trace["durationPrecision"] = 9.into();
+    trace["parentSpanIdExpression"] = "ParentSpanId".into();
+    trace["spanIdExpression"] = "SpanId".into();
+    trace["spanKindExpression"] = "SpanKind".into();
+    trace["spanNameExpression"] = "SpanName".into();
+    trace["traceIdExpression"] = "TraceId".into();
+    let response: ClickStackSourceResponse = serde_json::from_value(trace.clone()).unwrap();
+    let request = ClickStackSource::try_from(response).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), trace);
+}
+
+#[test]
+fn pgbouncer_map_round_trips_arbitrary_string_parameters() {
+    let document = serde_json::json!({
+        "default_pool_size": "16", "future_parameter": "on", "empty": ""
+    });
+    let request: PgBouncerConfig = serde_json::from_value(document.clone()).unwrap();
+    let response: PgBouncerConfigResponse = serde_json::from_value(document.clone()).unwrap();
+    assert_eq!(request, response);
+    assert_eq!(serde_json::to_value(request).unwrap(), document);
+    assert_eq!(serde_json::to_value(response).unwrap(), document);
+}
+
+#[test]
+fn pgbouncer_requests_reject_non_string_values() {
+    for value in [
+        serde_json::json!(16),
+        serde_json::json!(true),
+        serde_json::json!(null),
+        serde_json::json!([]),
+        serde_json::json!({}),
+    ] {
+        assert!(
+            serde_json::from_value::<PgBouncerConfig>(
+                serde_json::json!({"default_pool_size": value})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn pgbouncer_parent_responses_preserve_missing_null_and_empty_sections() {
+    for document in [
+        serde_json::json!({}),
+        serde_json::json!({"pgBouncerConfig": null}),
+    ] {
+        let config: PostgresInstanceConfigResponse =
+            serde_json::from_value(document.clone()).unwrap();
+        assert!(config.pg_bouncer_config.is_none());
+        assert_eq!(serde_json::to_value(config).unwrap(), serde_json::json!({}));
+        let update: PostgresInstanceUpdateConfigResponse =
+            serde_json::from_value(document).unwrap();
+        assert!(update.pg_bouncer_config.is_none());
+        assert_eq!(serde_json::to_value(update).unwrap(), serde_json::json!({}));
+    }
+    let config: PostgresInstanceConfigResponse = serde_json::from_value(
+        serde_json::json!({"pgBouncerConfig": {}, "futureField": "ignored"}),
+    )
+    .unwrap();
+    assert_eq!(config.pg_bouncer_config, Some(PgBouncerConfig::new()));
+    assert_eq!(
+        serde_json::to_value(config).unwrap(),
+        serde_json::json!({"pgBouncerConfig": {}})
+    );
+}
+
+#[test]
+fn api_key_patch_expiry_preserves_omit_set_and_clear() {
+    let timestamp = chrono::DateTime::parse_from_rfc3339("2030-01-02T03:04:05Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    for (expire_at, wire) in [
+        (None, serde_json::json!({})),
+        (
+            Some(Some(timestamp)),
+            serde_json::json!({"expireAt": "2030-01-02T03:04:05Z"}),
+        ),
+        (Some(None), serde_json::json!({"expireAt": null})),
+    ] {
+        let request = ApiKeyPatchRequest {
+            expire_at,
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ApiKeyPatchRequest>(wire).unwrap(),
+            request
+        );
+    }
+}
+
+#[test]
+fn api_key_patch_deserialization_preserves_other_fields_and_ignores_unknowns() {
+    let wire = serde_json::json!({
+        "expireAt": null,
+        "assignedRoleIds": ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"],
+        "ipAccessList": [{"source": "10.0.0.0/8", "description": "private"}],
+        "name": "renamed",
+        "state": "disabled"
+    });
+    let mut extended = wire.clone();
+    extended["newServerField"] = serde_json::json!({"nested": true});
+    let request: ApiKeyPatchRequest = serde_json::from_value(extended).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    let nulls: ApiKeyPatchRequest = serde_json::from_value(serde_json::json!({
+        "assignedRoleIds": null, "ipAccessList": null, "name": null, "state": null
+    }))
+    .unwrap();
+    assert_eq!(nulls, ApiKeyPatchRequest::default());
+}
+
+#[test]
+fn api_key_patch_deserialization_rejects_invalid_recognized_fields() {
+    for wire in [
+        serde_json::json!({"expireAt": "tomorrow"}),
+        serde_json::json!({"expireAt": 42}),
+        serde_json::json!({"assignedRoleIds": ["invalid"]}),
+        serde_json::json!({"ipAccessList": [{}]}),
+        serde_json::json!({"name": false}),
+        serde_json::json!({"state": {}}),
+        serde_json::json!(null),
+        serde_json::json!([]),
+    ] {
+        assert!(
+            serde_json::from_value::<ApiKeyPatchRequest>(wire.clone()).is_err(),
+            "accepted {wire}"
+        );
+    }
+}
+
+#[test]
+fn kafka_patch_source_preserves_partial_and_explicit_list_updates() {
+    let partial: ClickPipePatchKafkaSource = serde_json::from_value(serde_json::json!({
+        "caCertificate": "new-ca"
+    }))
+    .unwrap();
+    assert!(partial.credentials.is_none());
+    assert!(partial.reverse_private_endpoint_ids.is_none());
+    assert_eq!(
+        serde_json::to_value(partial).unwrap(),
+        serde_json::json!({"caCertificate": "new-ca"})
+    );
+
+    let cleared: ClickPipePatchKafkaSource = serde_json::from_value(serde_json::json!({
+        "reversePrivateEndpointIds": []
+    }))
+    .unwrap();
+    assert_eq!(cleared.reverse_private_endpoint_ids, Some(vec![]));
+    assert_eq!(
+        serde_json::to_value(cleared).unwrap(),
+        serde_json::json!({"reversePrivateEndpointIds": []})
+    );
+
+    let nulls: ClickPipePatchKafkaSource = serde_json::from_value(serde_json::json!({
+        "credentials": null,
+        "reversePrivateEndpointIds": null
+    }))
+    .unwrap();
+    assert_eq!(nulls, ClickPipePatchKafkaSource::default());
+    assert_eq!(serde_json::to_value(nulls).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn clickpipe_patch_nested_objects_preserve_omission_and_explicit_empty_values() {
+    let partial = serde_json::json!({
+        "source": {
+            "postgres": {"host": "postgres.example.com"}
+        }
+    });
+    let request: ClickPipePatchRequest = serde_json::from_value(partial.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), partial);
+
+    let explicit = serde_json::json!({
+        "destination": {"columns": []},
+        "source": {
+            "postgres": {
+                "tableMappingsToAdd": [],
+                "tableMappingsToRemove": []
+            },
+            "validateSamples": false
+        }
+    });
+    let request: ClickPipePatchRequest = serde_json::from_value(explicit.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), explicit);
+
+    let nulls: ClickPipePatchRequest = serde_json::from_value(serde_json::json!({
+        "source": {
+            "postgres": {
+                "credentials": null,
+                "settings": null,
+                "tableMappingsToAdd": null,
+                "tableMappingsToRemove": null
+            },
+            "validateSamples": null
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(nulls).unwrap(),
+        serde_json::json!({"source": {"postgres": {}}})
+    );
+}
+
+#[cfg(feature = "deprecated-fields")]
+#[test]
+fn api_key_patch_deserialization_preserves_deprecated_roles() {
+    let wire = serde_json::json!({"expireAt": null, "roles": ["admin"]});
+    let request: ApiKeyPatchRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+}
+
+#[test]
+fn role_update_request_omits_fields_that_are_not_being_changed() {
+    let request = RoleUpdateRequest {
+        name: Some("auditor".to_string()),
+        actors: None,
+        policies: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"name": "auditor"})
+    );
+}
+
+#[test]
+fn udf_request_inline_variants_preserve_determinism_and_memory() {
+    fn check<T: serde::de::DeserializeOwned + serde::Serialize>(kind: &str, create: bool) {
+        let mut input = serde_json::json!({"uploadId": "upload-1", "runtime": "native",
+            "arguments": [], "returnType": "UInt64", "type": kind});
+        if create {
+            input["functionName"] = serde_json::json!("my_udf");
+        }
+        let minimal: T = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(minimal).unwrap(), input);
+        input["deterministic"] = serde_json::json!(false);
+        input["memoryLimitMib"] = serde_json::json!(128);
+        let full: T = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(full).unwrap(), input);
+        input["memoryLimitMib"] = serde_json::Value::Null;
+        let nullable: T = serde_json::from_value(input.clone()).unwrap();
+        input.as_object_mut().unwrap().remove("memoryLimitMib");
+        assert_eq!(serde_json::to_value(nullable).unwrap(), input);
+        input.as_object_mut().unwrap().remove("runtime");
+        assert!(serde_json::from_value::<T>(input).is_err());
+    }
+    check::<UdfCreateRequestV1>("executable", true);
+    check::<UdfCreateRequestV2>("executable_pool", true);
+    check::<UdfVersionCreateRequestV1>("executable", false);
+    check::<UdfVersionCreateRequestV2>("executable_pool", false);
 }

@@ -381,22 +381,27 @@ async fn cloud_clickpipe_create_bigquery_snapshot_smoke() -> TestResult<()> {
     let request = ClickPipePostRequest {
         name: ctx.pipe_name("bq"),
         source: ClickPipePostSource {
-            bigquery: Some(ClickPipeMutateBigQuerySource {
-                credentials: ServiceAccount {
-                    service_account_file: sa_b64,
-                },
-                snapshot_staging_path: "gs://smoke-fake-bucket/staging".to_string(),
-                settings: ClickPipeBigQueryPipeSettings {
-                    replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
-                    ..Default::default()
-                },
-                table_mappings: vec![ClickPipeBigQueryPipeTableMapping {
-                    source_dataset_name: "smoke_dataset".to_string(),
-                    source_table: "smoke_source".to_string(),
-                    target_table: "smoke_target".to_string(),
-                    ..Default::default()
-                }],
-            }),
+            bigquery: Some(
+                ClickPipePostBigQueryServiceAccountSource {
+                    authentication: None,
+                    project_id: None,
+                    credentials: ServiceAccount {
+                        service_account_file: sa_b64,
+                    },
+                    snapshot_staging_path: "gs://smoke-fake-bucket/staging".to_string(),
+                    settings: ClickPipeBigQueryPipeSettings {
+                        replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
+                        ..Default::default()
+                    },
+                    table_mappings: vec![ClickPipeBigQueryPipeTableMapping {
+                        source_dataset_name: "smoke_dataset".to_string(),
+                        source_table: "smoke_source".to_string(),
+                        target_table: "smoke_target".to_string(),
+                        ..Default::default()
+                    }],
+                }
+                .into(),
+            ),
             ..Default::default()
         },
         destination: database_destination(),

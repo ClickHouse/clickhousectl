@@ -1,8 +1,16 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
+use crate::cloud::types::DeleteResponse;
 use clap::Subcommand;
-use clickhouse_cloud_api::models::BackupConfigurationPatchRequest;
+use clickhouse_cloud_api::models::{
+    AwsBackupBucketPatchRequestV1, AwsBackupBucketPostRequestV1, AzureBackupBucketPatchRequestV1,
+    AzureBackupBucketPostRequestV1, BackupBucket, BackupBucketPatchRequest,
+    BackupBucketPostRequest, BackupConfigurationPatchRequest, GcpBackupBucketPatchRequestV1,
+    GcpBackupBucketPostRequestV1,
+};
+use serde_json::Value;
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Subcommand)]
@@ -29,6 +37,10 @@ pub enum BackupCommands {
         #[arg(long)]
         org_id: Option<String>,
     },
+
+    /// Manage a service backup bucket
+    #[command(subcommand)]
+    Bucket(BackupBucketCommands),
 }
 
 impl BackupCommands {
@@ -36,6 +48,69 @@ impl BackupCommands {
         match self {
             BackupCommands::List { .. } => false,
             BackupCommands::Get { .. } => false,
+            BackupCommands::Bucket(command) => command.is_write(),
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum BackupBucketCommands {
+    /// Get backup bucket details
+    Get {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Create a backup bucket
+    Create {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+
+        /// Provider-specific JSON file, or - to read from stdin
+        #[arg(long, value_name = "PATH", alias = "config")]
+        config_file: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Update a backup bucket
+    Update {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+
+        /// Provider-specific update JSON file, or - to read from stdin
+        #[arg(long, value_name = "PATH", alias = "config")]
+        config_file: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+
+    /// Delete a backup bucket
+    Delete {
+        /// Service ID (from `cloud service list`)
+        service_id: String,
+
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+    },
+}
+
+impl BackupBucketCommands {
+    pub fn is_write(&self) -> bool {
+        match self {
+            BackupBucketCommands::Get { .. } => false,
+            BackupBucketCommands::Create { .. }
+            | BackupBucketCommands::Update { .. }
+            | BackupBucketCommands::Delete { .. } => true,
         }
     }
 }
@@ -106,6 +181,40 @@ pub async fn run(client: &CloudClient, command: BackupCommands, json: bool) -> C
             backup_id,
             org_id,
         } => backup_get(client, &service_id, &backup_id, org_id.as_deref(), json).await,
+        BackupCommands::Bucket(command) => run_bucket(client, command, json).await,
+    }
+}
+
+async fn run_bucket(
+    client: &CloudClient,
+    command: BackupBucketCommands,
+    json: bool,
+) -> CloudResult<()> {
+    match command {
+        BackupBucketCommands::Get { service_id, org_id } => {
+            backup_bucket_get(client, &service_id, org_id.as_deref(), json).await
+        }
+        BackupBucketCommands::Create {
+            service_id,
+            config_file,
+            org_id,
+        } => {
+            let request =
+                build_backup_bucket_create_request(read_config_value(&config_file)?, &config_file)?;
+            backup_bucket_create(client, &service_id, request, org_id.as_deref(), json).await
+        }
+        BackupBucketCommands::Update {
+            service_id,
+            config_file,
+            org_id,
+        } => {
+            let request =
+                build_backup_bucket_update_request(read_config_value(&config_file)?, &config_file)?;
+            backup_bucket_update(client, &service_id, request, org_id.as_deref(), json).await
+        }
+        BackupBucketCommands::Delete { service_id, org_id } => {
+            backup_bucket_delete(client, &service_id, org_id.as_deref(), json).await
+        }
     }
 }
 
@@ -215,6 +324,64 @@ fn check_stored_period_allows_start_time(stored_period_hours: Option<f64>) -> Cl
     }
 }
 
+fn bucket_provider<'a>(value: &'a Value, source: &str) -> CloudResult<&'a str> {
+    value
+        .as_object()
+        .ok_or_else(|| {
+            CloudError::new(format!(
+                "invalid request body in config {source}: expected a JSON object"
+            ))
+        })?
+        .get("bucketProvider")
+        .ok_or_else(|| {
+            CloudError::new(format!(
+                "invalid request body in config {source}: missing field `bucketProvider`"
+            ))
+        })?
+        .as_str()
+        .ok_or_else(|| {
+            CloudError::new(format!(
+                "invalid request body in config {source}: `bucketProvider` must be a string"
+            ))
+        })
+}
+
+fn unsupported_bucket_provider(source: &str, provider: &str) -> CloudError {
+    CloudError::new(format!(
+        "invalid request body in config {source}: unsupported `bucketProvider` {provider:?}; expected AWS, GCP, or AZURE"
+    ))
+}
+
+fn build_backup_bucket_create_request(
+    value: Value,
+    source: &str,
+) -> CloudResult<BackupBucketPostRequest> {
+    match bucket_provider(&value, source)? {
+        "AWS" => deserialize_strict_config::<AwsBackupBucketPostRequestV1>(value, source)
+            .map(BackupBucketPostRequest::AwsBackupBucketPostRequestV1),
+        "GCP" => deserialize_strict_config::<GcpBackupBucketPostRequestV1>(value, source)
+            .map(BackupBucketPostRequest::GcpBackupBucketPostRequestV1),
+        "AZURE" => deserialize_strict_config::<AzureBackupBucketPostRequestV1>(value, source)
+            .map(BackupBucketPostRequest::AzureBackupBucketPostRequestV1),
+        provider => Err(unsupported_bucket_provider(source, provider)),
+    }
+}
+
+fn build_backup_bucket_update_request(
+    value: Value,
+    source: &str,
+) -> CloudResult<BackupBucketPatchRequest> {
+    match bucket_provider(&value, source)? {
+        "AWS" => deserialize_strict_config::<AwsBackupBucketPatchRequestV1>(value, source)
+            .map(BackupBucketPatchRequest::AwsBackupBucketPatchRequestV1),
+        "GCP" => deserialize_strict_config::<GcpBackupBucketPatchRequestV1>(value, source)
+            .map(BackupBucketPatchRequest::GcpBackupBucketPatchRequestV1),
+        "AZURE" => deserialize_strict_config::<AzureBackupBucketPatchRequestV1>(value, source)
+            .map(BackupBucketPatchRequest::AzureBackupBucketPatchRequestV1),
+        provider => Err(unsupported_bucket_provider(source, provider)),
+    }
+}
+
 async fn backup_list(
     client: &CloudClient,
     service_id: &str,
@@ -270,6 +437,80 @@ async fn backup_get(
         println!("{}", serde_json::to_string_pretty(&backup)?);
     } else {
         print_human(&backup)?;
+    }
+    Ok(())
+}
+
+async fn backup_bucket_get(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let bucket = client.get_backup_bucket(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&bucket)?);
+    } else {
+        print_human(&bucket)?;
+    }
+    Ok(())
+}
+
+async fn backup_bucket_create(
+    client: &CloudClient,
+    service_id: &str,
+    request: BackupBucketPostRequest,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let bucket = client
+        .create_backup_bucket(&org_id, service_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&bucket)?);
+    } else {
+        print_human(&bucket)?;
+    }
+    Ok(())
+}
+
+async fn backup_bucket_update(
+    client: &CloudClient,
+    service_id: &str,
+    request: BackupBucketPatchRequest,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let bucket = client
+        .update_backup_bucket(&org_id, service_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&bucket)?);
+    } else {
+        print_human(&bucket)?;
+    }
+    Ok(())
+}
+
+async fn backup_bucket_delete(
+    client: &CloudClient,
+    service_id: &str,
+    org_id: Option<&str>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client, org_id).await?;
+    let response = client.delete_backup_bucket(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        println!("Backup bucket deleted for service {service_id}");
     }
     Ok(())
 }
@@ -376,6 +617,63 @@ impl CloudClient {
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
+    }
+
+    pub async fn get_backup_bucket(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<BackupBucket> {
+        let response = self
+            .api()
+            .backup_bucket_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn create_backup_bucket(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &BackupBucketPostRequest,
+    ) -> crate::cloud::client::Result<BackupBucket> {
+        let response = self
+            .api()
+            .backup_bucket_create(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_backup_bucket(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &BackupBucketPatchRequest,
+    ) -> crate::cloud::client::Result<BackupBucket> {
+        let response = self
+            .api()
+            .backup_bucket_update(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn delete_backup_bucket(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<DeleteResponse> {
+        let response = self
+            .api()
+            .backup_bucket_delete(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(DeleteResponse {
+            status: response.status,
+            request_id: response.request_id,
+        })
     }
 
     pub async fn get_backup_config(
@@ -611,6 +909,183 @@ mod tests {
             ])
             .is_write()
         );
+        assert!(
+            !parse_backup(&["clickhousectl", "cloud", "backup", "bucket", "get", "svc-1",])
+                .is_write()
+        );
+        for action in ["create", "update"] {
+            assert!(
+                parse_backup(&[
+                    "clickhousectl",
+                    "cloud",
+                    "backup",
+                    "bucket",
+                    action,
+                    "svc-1",
+                    "--config-file",
+                    "bucket.json",
+                ])
+                .is_write()
+            );
+        }
+        assert!(
+            parse_backup(&[
+                "clickhousectl",
+                "cloud",
+                "backup",
+                "bucket",
+                "delete",
+                "svc-1",
+            ])
+            .is_write()
+        );
+    }
+
+    #[test]
+    fn parses_backup_bucket_config_input() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "backup",
+            "bucket",
+            "create",
+            "svc-1",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let crate::cloud::cli::CloudCommands::Backup { command } = args.command else {
+            panic!("expected backup command");
+        };
+        let BackupCommands::Bucket(BackupBucketCommands::Create {
+            service_id,
+            config_file,
+            org_id,
+        }) = command
+        else {
+            panic!("expected backup bucket create");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(config_file, "-");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn builds_all_backup_bucket_create_variants() {
+        let cases = [
+            serde_json::json!({
+                "bucketProvider": "AWS",
+                "bucketPath": "s3://backups/prefix",
+                "iamRoleArn": "arn:aws:iam::123456789012:role/backups",
+                "iamRoleSessionName": "clickhouse-cloud",
+            }),
+            serde_json::json!({
+                "bucketProvider": "GCP",
+                "bucketPath": "gs://backups/prefix",
+                "accessKeyId": "gcp-access-key",
+                "secretAccessKey": "gcp-secret-key",
+            }),
+            serde_json::json!({
+                "bucketProvider": "AZURE",
+                "containerName": "backups",
+                "connectionString": "DefaultEndpointsProtocol=https;AccountName=account",
+            }),
+        ];
+
+        for expected in cases {
+            let request =
+                build_backup_bucket_create_request(expected.clone(), "test input").unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn builds_all_backup_bucket_update_variants() {
+        let cases = [
+            serde_json::json!({
+                "bucketProvider": "AWS",
+                "bucketPath": "s3://backups/new-prefix",
+                "iamRoleArn": "arn:aws:iam::123456789012:role/backups",
+            }),
+            serde_json::json!({
+                "bucketProvider": "AWS",
+                "bucketPath": "s3://backups/new-prefix",
+                "iamRoleArn": "arn:aws:iam::123456789012:role/backups",
+                "iamRoleSessionName": "rotated-session",
+            }),
+            serde_json::json!({
+                "bucketProvider": "GCP",
+                "bucketPath": "gs://backups/new-prefix",
+                "accessKeyId": "new-gcp-access-key",
+                "secretAccessKey": "new-gcp-secret-key",
+            }),
+            serde_json::json!({
+                "bucketProvider": "AZURE",
+                "containerName": "new-backups",
+                "connectionString": "DefaultEndpointsProtocol=https;AccountName=new-account",
+            }),
+        ];
+
+        for expected in cases {
+            let request =
+                build_backup_bucket_update_request(expected.clone(), "test input").unwrap();
+            assert_eq!(serde_json::to_value(request).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn backup_bucket_create_requires_every_provider_field() {
+        let cases = [
+            serde_json::json!({
+                "bucketProvider": "AWS",
+                "bucketPath": "s3://backups",
+                "iamRoleArn": "arn:aws:iam::123456789012:role/backups",
+            }),
+            serde_json::json!({
+                "bucketProvider": "GCP",
+                "bucketPath": "gs://backups",
+                "accessKeyId": "key",
+            }),
+            serde_json::json!({
+                "bucketProvider": "AZURE",
+                "containerName": "backups",
+            }),
+        ];
+
+        for value in cases {
+            assert!(build_backup_bucket_create_request(value, "test input").is_err());
+        }
+    }
+
+    #[test]
+    fn backup_bucket_input_rejects_unknown_providers_and_fields() {
+        let unknown_provider = build_backup_bucket_create_request(
+            serde_json::json!({"bucketProvider": "S3"}),
+            "test input",
+        )
+        .unwrap_err();
+        assert!(
+            unknown_provider
+                .message
+                .contains("expected AWS, GCP, or AZURE")
+        );
+
+        let contradictory_field = build_backup_bucket_update_request(
+            serde_json::json!({
+                "bucketProvider": "AZURE",
+                "containerName": "backups",
+                "connectionString": "secret",
+                "bucketPath": "s3://wrong-provider",
+            }),
+            "test input",
+        )
+        .unwrap_err();
+        assert!(contradictory_field.message.contains("bucketPath"));
     }
 
     #[test]

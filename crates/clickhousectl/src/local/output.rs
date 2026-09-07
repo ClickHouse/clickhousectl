@@ -849,7 +849,9 @@ impl fmt::Display for ServerConfigsOutput {
             writeln!(f, "No config files in {}", self.dir)?;
             write!(
                 f,
-                "Drop a ClickHouse config file there, then start with: \
+                "Create an XML or YAML file there with only the settings you want to change.\n\
+                 Other settings inherit ClickHouse's built-in defaults.\n\
+                 Start with: \
                  clickhousectl local server start --config <NAME>"
             )?;
             return Ok(());

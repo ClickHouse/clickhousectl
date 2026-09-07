@@ -274,6 +274,7 @@ CONTEXT FOR AGENTS:
   Data persists across stop/start; only `remove` deletes it.
   Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
   `local remove <version>` deletes an installed binary, not server data.
+  Custom configs inherit built-in defaults; find available names with `server configs`.
   Typical flow: `server start dev` -> `local client --name dev` -> `server stop dev`")]
     Server {
         #[command(subcommand)]
@@ -301,7 +302,9 @@ CONTEXT FOR AGENTS:
   Starting a name that is already running is an error; a bare start with \"default\" already
   running picks a new generated name instead.
   With no --version and no default set, start installs \"latest\" first (~150 MB) without making
-  it the default.")]
+  it the default.
+  After editing a custom config, stop the server and start again with the same --config.
+  Omitting --config on a later start removes the previously selected override.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
         #[arg(value_name = "NAME", conflicts_with = "name_flag")]
@@ -339,7 +342,9 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "foreground")]
         no_wait: bool,
 
-        /// Named config file from ~/.clickhouse/configs/ (see `server configs`)
+        /// Overlay defaults with a named partial config (see `server configs`)
+        ///
+        /// Select one file from ~/.clickhouse/configs/; paths are not accepted.
         #[arg(long = "config", alias = "config-file", value_name = "NAME")]
         config_file: Option<String>,
 
@@ -353,10 +358,10 @@ CONTEXT FOR AGENTS:
     /// List custom config files available to `server start --config`
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Lists ~/.clickhouse/configs/ (.xml, .yaml, .yml) and prints that path.
-  Drop a file there, then `clickhousectl local server start --config <name>`; the extension is
-  optional in <name>, but an ambiguous stem is an error.
-  Merged as a config.d overlay on ClickHouse's defaults, so it needs only the settings you change.")]
+  Run this command to find the config directory, then add an XML or YAML file.
+  Include only the server, user, profile or quota settings you want to change.
+  Select one file with `server start --config <name>`; its extension is optional.
+  If names share a stem, specify the extension.")]
     Configs,
 
     /// List all server instances (running and stopped)

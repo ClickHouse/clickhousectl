@@ -796,9 +796,9 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         async move {
                             let org_resource = format!("organization/{org_id}");
                             let body = RoleUpdateRequest {
-                                name,
-                                actors: vec![],
-                                policies: vec![
+                                name: Some(name),
+                                actors: Some(vec![]),
+                                policies: Some(vec![
                                     RBACPolicyCreateRequest {
                                         allow_deny: RBACPolicyCreateRequestAllowdeny::ALLOW,
                                         permissions: org_perms,
@@ -811,7 +811,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                         resources: vec!["instance/*".to_string()],
                                         tags: None,
                                     },
-                                ],
+                                ]),
                             };
                             client
                                 .organization_role_patch(&org_id, &role_id, &body)
@@ -856,6 +856,67 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                                     )
                                     .into());
                                 }
+                            }
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+
+            // The API contract says every RoleUpdateRequest field is
+            // optional. Exercise a name-only PATCH and prove omitted actors
+            // and policies are preserved rather than replaced with defaults.
+            let role_id_clone = role_id.clone();
+            let renamed_role_name = format!("{role_name}-renamed");
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "rename custom role without replacing actors or policies",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let role_id = role_id_clone;
+                        let expected_name = renamed_role_name.clone();
+                        async move {
+                            let before = client
+                                .organization_role_get(&org_id, &role_id)
+                                .await?
+                                .result
+                                .ok_or("role get before rename returned no result")?;
+                            let body = RoleUpdateRequest {
+                                name: Some(expected_name.clone()),
+                                actors: None,
+                                policies: None,
+                            };
+                            client
+                                .organization_role_patch(&org_id, &role_id, &body)
+                                .await?;
+                            let after = client
+                                .organization_role_get(&org_id, &role_id)
+                                .await?
+                                .result
+                                .ok_or("role get after rename returned no result")?;
+                            if after.name.as_deref() != Some(expected_name.as_str()) {
+                                return Err(format!(
+                                    "renamed role name mismatch: expected {expected_name}, got {:?}",
+                                    after.name
+                                )
+                                .into());
+                            }
+                            if after.actors != before.actors {
+                                return Err(format!(
+                                    "name-only role patch changed actors: before {:?}, after {:?}",
+                                    before.actors, after.actors
+                                )
+                                .into());
+                            }
+                            if after.policies != before.policies {
+                                return Err(format!(
+                                    "name-only role patch changed policies: before {:?}, after {:?}",
+                                    before.policies, after.policies
+                                )
+                                .into());
                             }
                             Ok(())
                         }
@@ -1229,6 +1290,42 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                         }
                     },
                 )
+                .await?;
+
+            // Expiry PATCH must distinguish a timestamp from explicit null.
+            let api_key_uuid_for_expiry = api_key_uuid.clone();
+            failures
+                .run(&ctx, StepKind::NonBlocking, "openapi_key_update expiry round-trip", || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let api_key_uuid = api_key_uuid_for_expiry.clone();
+                    async move {
+                        let before = client.openapi_key_get(&org_id, &api_key_uuid).await?
+                            .result.ok_or("key missing before expiry update")?;
+                        let expires = chrono::Utc::now() + chrono::Duration::days(7);
+                        // Use whole seconds because the API may normalize timestamp precision.
+                        let expires = chrono::DateTime::from_timestamp(expires.timestamp(), 0)
+                            .ok_or("invalid expiry timestamp")?;
+                        for expire_at in [Some(expires), None] {
+                            let request = ApiKeyPatchRequest {
+                                expire_at: Some(expire_at),
+                                ..Default::default()
+                            };
+                            client.openapi_key_update(&org_id, &api_key_uuid, &request).await?;
+                            let after = client.openapi_key_get(&org_id, &api_key_uuid).await?
+                                .result.ok_or("key missing after expiry update")?;
+                            if after.expire_at != expire_at {
+                                return Err(format!("key expiry {:?}, expected {:?}", after.expire_at, expire_at).into());
+                            }
+                            if after.name != before.name || after.state != before.state
+                                || after.assigned_roles != before.assigned_roles
+                                || after.ip_access_list != before.ip_access_list {
+                                return Err("expiry update changed other key settings".into());
+                            }
+                        }
+                        Ok(())
+                    }
+                })
                 .await?;
 
             // openapi_key_delete — end of phase. On success, drop it from

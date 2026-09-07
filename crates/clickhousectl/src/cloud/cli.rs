@@ -14,11 +14,13 @@ pub(crate) use crate::cloud::clickpipes::{
     KinesisCreateArgs, KinesisSourceFields, MongoDbCreateArgs, MySqlCreateArgs,
     ObjectStorageCreateArgs, PostgresCreateArgs,
 };
+pub(crate) use crate::cloud::clickstack::ClickStackCommands;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::services::{
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands,
+    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, UpgradeWindowCommands,
 };
+use crate::cloud::udfs::UdfArgs;
 use clap::{Args, Subcommand};
 
 #[derive(Args)]
@@ -85,8 +87,19 @@ impl CloudArgs {
     }
 }
 
+// Resource command groups naturally differ in size; clap owns their concrete layout.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum CloudCommands {
+    /// Manage user-defined functions (Beta)
+    #[command(after_help = "CONTEXT FOR AGENTS:
+  UDF operations are beta and may change.
+  Writes require API key authentication; list/get support OAuth.
+  Function names: `cloud udf list`; service IDs: `cloud service list`.
+  Create uploads a ZIP archive and starts an asynchronous build.
+  Typical flow: create -> get until ready -> attach -> attachment get.")]
+    Udf(UdfArgs),
+
     /// Manage authentication (OAuth login, API keys)
     Auth {
         #[command(subcommand)]
@@ -97,6 +110,7 @@ pub enum CloudCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   `org list` is the source of the org IDs that other cloud commands take as --org-id.
+  BYOC infrastructure IDs and state are shown by `cloud org get <org-id>`.
   Next: `cloud service list`, `cloud member list`.")]
     Org {
         #[command(subcommand)]
@@ -107,18 +121,21 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`.
-  Reads: list, get, prometheus, query, query-endpoint get, private-endpoint get-config,
-    backup-config get. Every other subcommand is a write and needs API key auth.
+  Reads: list, get, profile list, settings list/get/schema, prometheus, query,
+    query-endpoint get, private-endpoint get-config, backup-config get,
+    scaling-schedule get, upgrade-window get. Other commands need API key auth.
   Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query --id <id> -q 'SELECT 1'`.")]
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
     },
 
-    /// View service backups
+    /// Manage service backups and backup buckets
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Service IDs come from `cloud service list`; backup IDs from `cloud backup list <service-id>`.
+  Backup list/get and bucket get support OAuth; bucket writes require API key auth.
+  Bucket create/update read strict provider JSON from `--config-file`, with `-` for stdin.
   Restore a backup into a new service: `cloud service create --backup-id <backup-id>`.
   Change schedule or retention with `cloud service backup-config update`, not here.")]
     Backup {
@@ -142,11 +159,26 @@ CONTEXT FOR AGENTS:
         command: Box<ClickPipeCommands>,
     },
 
+    /// Manage ClickStack observability resources
+    #[command(
+        name = "clickstack",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Service ID: `clickhousectl cloud service list`.
+  Resource IDs come from their respective `list` commands.
+  Everything except list/get is a write and needs API key auth.
+  Create/update read complete JSON bodies from --config-file; `-` reads stdin."
+    )]
+    ClickStack {
+        #[command(subcommand)]
+        command: ClickStackCommands,
+    },
+
     /// Manage organization members
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   User IDs come from `cloud member list`; role IDs from `cloud member list --json`
-  (the table shows role names). `update` replaces the member's whole role set.
+  or `cloud org role list`. `update` replaces the member's whole role set.
   `remove` takes effect immediately with no confirmation.
   Next: `cloud invitation create --email ...` to add someone who is not yet a member.")]
     Member {
@@ -157,7 +189,7 @@ CONTEXT FOR AGENTS:
     /// Manage organization invitations
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Role IDs come from `cloud member list --json` (roleId), not from the human table.
+  Role IDs come from `cloud org role list`.
   The invitee must accept from the email.
   Next: `cloud member list` once the invitation is accepted.")]
     Invitation {
@@ -169,7 +201,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   `create` prints a generated key secret exactly once — capture stdout or create a new key.
-  Role IDs come from `cloud member list --json` (roleId) and must be UUIDs here.
+  Role IDs come from `cloud org role list` and must be UUIDs here.
   `update` replaces --role-id and --ip-allow wholesale; omitted flags are left as-is.
   Next: `cloud auth login --api-key <id> --api-secret <secret>` to use a new key.")]
     Key {
@@ -217,9 +249,11 @@ impl CloudCommands {
             CloudCommands::Member { command } => command.is_write(),
             CloudCommands::Invitation { command } => command.is_write(),
             CloudCommands::Key { command } => command.is_write(),
+            CloudCommands::Udf(args) => args.is_write(),
             CloudCommands::Activity { command } => command.is_write(),
             CloudCommands::Postgres { command } => command.is_write(),
             CloudCommands::ClickPipe { command } => command.is_write(),
+            CloudCommands::ClickStack { command } => command.is_write(),
         }
     }
 }

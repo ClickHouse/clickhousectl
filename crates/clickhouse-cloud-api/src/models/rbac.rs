@@ -173,7 +173,10 @@ pub struct RoleCreateRequest {
 /// `RoleUpdateRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct RoleUpdateRequest {
-    pub actors: Vec<String>,
-    pub name: String,
-    pub policies: Vec<RBACPolicyCreateRequest>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actors: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policies: Option<Vec<RBACPolicyCreateRequest>>,
 }
