@@ -489,7 +489,9 @@ Version removal and server-data removal are separate operations:
 
 #### Custom config files
 
-Drop ClickHouse config files into `~/.clickhouse/configs/` and apply one by name when starting a server:
+`clickhousectl local server start` uses ClickHouse's embedded defaults without creating an editable main config file or loading `/etc/clickhouse-server/config.xml`. To customize the server, supply a **partial config** containing only the settings you want to change; everything else inherits the defaults.
+
+Create a file in the global `~/.clickhouse/configs/` directory and select it by name. This example enables the query log and sets the default user's `max_threads` query setting:
 
 ```bash
 mkdir -p ~/.clickhouse/configs
@@ -499,15 +501,35 @@ cat > ~/.clickhouse/configs/analytics.xml <<'EOF'
         <database>system</database>
         <table>query_log</table>
     </query_log>
+    <profiles>
+        <default>
+            <max_threads>4</max_threads>
+        </default>
+    </profiles>
 </clickhouse>
 EOF
-clickhousectl local server configs                          # List available config files
-clickhousectl local server start --config analytics         # Start a server with it
+clickhousectl local server configs                          # Show the directory and available files
+clickhousectl local server start dev --config analytics     # Apply the partial config to server "dev"
 ```
 
-The named file is **overlaid on top of ClickHouse's built-in defaults** (it is staged into the server's `config.d/` directory), so it only needs to contain the settings you want to change — you don't have to reproduce a full config. Files may be `.xml`, `.yaml`, or `.yml`; reference them by name with or without the extension (e.g. `--config analytics` or `--config analytics.xml`). `--config` takes a name within `~/.clickhouse/configs/` **not a path**. (`--config-file` remains supported as a legacy alias.)
+**Using an existing fragment:** A file intended for ClickHouse's `config.d/`, such as `tokenizers.xml`, can go directly into `~/.clickhouse/configs/`; select it with `--config tokenizers`. Each XML file needs a `<clickhouse>` root. You do not need to scaffold the default config first.
 
-The managed data directory (`.clickhouse/servers/<name>/data/`) and the HTTP/TCP ports are always forced as command-line overrides, which take precedence over the config file. This means a custom config can never break the managed server lifecycle (`list`, `stop`, `remove`, `dotenv`) regardless of its contents. Starting a server again without `--config` reverts it to plain defaults.
+**Users and query settings:** A packaged ClickHouse installation usually puts users, profiles and quotas in `users.xml`. The embedded defaults keep them in the main configuration, so your partial config can contain `<users>`, `<profiles>` and `<quotas>` alongside server settings. Put query settings under a profile, as above. A separate `users.xml` or `users.d/` is not required or automatically loaded.
+
+**Selecting a file:** Files may be `.xml`, `.yaml`, or `.yml`; use the name with or without its extension (e.g. `--config analytics.xml`). If two files share a stem, include the extension. `--config` selects one file directly inside `~/.clickhouse/configs/`, not a path or directory. Sibling files and directories are not copied. `--config-file` remains a legacy alias.
+
+**Applying edits:** The selected file is copied into the project's `.clickhouse/servers/<name>/data/config.d/chctl-config.<ext>` at each start. Edit the source in `~/.clickhouse/configs/`, then stop and start the same server with `--config` again:
+
+```bash
+clickhousectl local server stop dev
+clickhousectl local server start dev --config analytics
+```
+
+The selection is not remembered: starting without `--config` removes chctl's previously copied overlay. Other manually added runtime fragments are left in place. Referenced files, such as tokenizer dictionaries, must be accessible to the server; its working directory is `.clickhouse/servers/<name>/data/`, not the source config directory.
+
+**Inspecting configuration:** ClickHouse writes the merged configuration to `.clickhouse/servers/<name>/data/preprocessed_configs/config.xml`. This is generated output and is overwritten; edit the source overlay instead. chctl passes the managed data path and HTTP/TCP ports as command-line overrides, which take precedence over values in config files.
+
+ClickHouse merges partial configurations recursively; XML `replace` and `remove` attributes explicitly replace or delete settings. See [ClickHouse configuration files](https://clickhouse.com/docs/operations/configuration-files) for merge rules and XML/YAML syntax.
 
 #### Local Postgres (Docker-backed)
 
