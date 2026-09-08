@@ -384,7 +384,17 @@ fn real_docker_file_and_stdin_apply_sql_and_propagate_errors() {
     let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         if Command::new("docker")
-            .args(["exec", &container.0, "pg_isready", "-U", "postgres"])
+            // The image's temporary initdb server only listens on a Unix
+            // socket. Wait for TCP so we cannot race its shutdown/restart.
+            .args([
+                "exec",
+                &container.0,
+                "pg_isready",
+                "-h",
+                "127.0.0.1",
+                "-U",
+                "postgres",
+            ])
             .output()
             .unwrap()
             .status
