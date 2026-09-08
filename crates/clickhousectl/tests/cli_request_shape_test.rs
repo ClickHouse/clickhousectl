@@ -2971,12 +2971,12 @@ async fn postgres_slow_query_list_sends_exact_query_supports_oauth_and_preserves
         "app": "reporting/api",
         "callCount": 42,
         "errorCount": 1,
-        "totalDurationUs": 950000,
-        "avgDurationUs": 22619,
-        "maxDurationUs": 81000,
-        "p50DurationUs": 18000,
-        "p95DurationUs": 70000,
-        "p99DurationUs": 80000,
+        "totalDurationUs": 950000.25,
+        "avgDurationUs": 1190.8419405320817,
+        "maxDurationUs": 81000.75,
+        "p50DurationUs": 18000.25,
+        "p95DurationUs": 70000.5,
+        "p99DurationUs": 80000.125,
         "totalRows": 420,
         "totalSharedBlksRead": 12,
         "totalSharedBlksHit": 900,
@@ -3085,7 +3085,7 @@ async fn postgres_slow_query_list_omits_filters_and_renders_sparse_human_output(
             "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [{ "queryId": "query-1", "callCount": 2 }],
+            "result": [{ "queryId": "query-1", "callCount": 2, "avgDurationUs": 1190.8419405320817, "p95DurationUs": 2000.25 }],
             "status": 200
         })))
         .expect(1)
@@ -3110,6 +3110,11 @@ async fn postgres_slow_query_list_omits_filters_and_renders_sparse_human_output(
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("queryId: query-1"), "{stdout}");
     assert!(stdout.contains("callCount: 2"), "{stdout}");
+    assert!(
+        stdout.contains("avgDurationUs: 1190.8419405320817"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("p95DurationUs: 2000.25"), "{stdout}");
     let requests = mock.received_requests().await.unwrap();
     let query: Vec<_> = requests[0].url.query_pairs().collect();
     assert_eq!(query.len(), 2, "unexpected query parameters: {query:?}");
@@ -3177,13 +3182,17 @@ async fn postgres_slow_query_get_has_distinct_query_and_preserves_recent_executi
             "dbUser": "reader+worker",
             "dbOperation": "SELECT & EXPLAIN",
             "app": "reporting/api",
-            "callCount": 2
+            "callCount": 2,
+            "avgDurationUs": 1190.8419405320817,
+            "p50DurationUs": 1100.25,
+            "p95DurationUs": 1800.5,
+            "p99DurationUs": 1950.125
         },
         "recentExecutions": [{
             "queryId": "query-1",
             "queryText": "SELECT 42",
             "timestamp": "2026-04-16T12:30:00Z",
-            "durationUs": 1234,
+            "durationUs": 1234.56789,
             "rows": 1,
             "errMessage": "optional detail"
         }]
@@ -3272,8 +3281,8 @@ async fn postgres_slow_query_get_omits_optional_query_and_renders_sparse_detail(
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {
-                "aggregate": { "queryId": "query-1" },
-                "recentExecutions": [{ "timestamp": "2026-04-16T12:30:00Z" }]
+                "aggregate": { "queryId": "query-1", "avgDurationUs": 1190.8419405320817, "p99DurationUs": 2000.25 },
+                "recentExecutions": [{ "timestamp": "2026-04-16T12:30:00Z", "durationUs": 1234.56789, "rows": 1 }]
             },
             "status": 200
         })))
@@ -3300,6 +3309,13 @@ async fn postgres_slow_query_get_omits_optional_query_and_renders_sparse_detail(
     );
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("avgDurationUs: 1190.8419405320817"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("p99DurationUs: 2000.25"), "{stdout}");
+    assert!(stdout.contains("durationUs: 1234.56789"), "{stdout}");
+    assert!(stdout.contains("rows: 1"), "{stdout}");
     for text in [
         "aggregate:",
         "queryId: query-1",
