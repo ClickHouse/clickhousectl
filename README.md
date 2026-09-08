@@ -160,7 +160,7 @@ clickhousectl cloud postgres get <postgres-id>
 psql "$POSTGRES_CONNECTION_STRING" --command "SELECT version()"
 ```
 
-`postgres create` returns an initial password, which the CLI prints once; store it securely. Managed Postgres also runs on GCP: pass `--provider gcp` with a GCP region and instance size (see [Postgres (beta)](#postgres-beta) below).
+`postgres create` returns an initial password, which the CLI prints once; store it securely. Managed Postgres also runs on GCP in [private preview](https://clickhouse.com/cloud/postgres#gcp-waitlist): pass `--provider gcp` with a GCP region and instance size (see [Postgres (beta)](#postgres-beta) below).
 
 Manage ClickStack data sources, roles, dashboards, alerts, and webhooks for an existing service with JSON configuration files:
 
@@ -1140,7 +1140,7 @@ clickhousectl cloud postgres create \
   --name my-pg \
   --provider gcp \
   --region us-central1 \
-  --size c4a-standard-4 \
+  --size c4-standard-4 \
   --pg-version 18
 
 # Create with HA + tags + advanced config
