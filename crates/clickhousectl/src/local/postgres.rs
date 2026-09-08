@@ -1007,7 +1007,15 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     let target = resolve_pg_target_locked(name, version, &metadata_lock)?;
     let key = target.name.clone();
     if server::is_server_running_locked(&key, &metadata_lock)? {
-        return Err(Error::ServerAlreadyRunning(name.to_string()));
+        let tag = target
+            .version
+            .strip_prefix("postgres:")
+            .unwrap_or(&target.version);
+        let major = pg_major_from_tag(tag);
+        return Err(Error::ServerRunningCannotRemove {
+            name: name.to_string(),
+            command: format!("clickhousectl local postgres stop {name} --version {major}"),
+        });
     }
 
     if let Some(cid) = target.container_id.as_deref() {

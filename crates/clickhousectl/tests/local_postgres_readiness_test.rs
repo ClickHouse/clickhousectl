@@ -1271,3 +1271,96 @@ fn cleanup_failure_preserves_rollback_behavior_but_redacts_json_diagnostics() {
     assert!(fresh_instance_dir(project.path()).exists());
     assert!(metadata_path(project.path()).is_file());
 }
+
+#[test]
+fn removing_running_postgres_preserves_instance_and_supplies_stop_recovery() {
+    for name in ["default", "dev"] {
+        let home = tempfile::tempdir().expect("create home");
+        let project = tempfile::tempdir().expect("create project");
+        let socket_path = home.path().join("docker.sock");
+        let docker = FakeDocker::start(
+            &socket_path,
+            project.path(),
+            DockerScenario {
+                existing: false,
+                outcome: ContainerOutcome::Running,
+                start_statuses: vec![204],
+                remove_statuses: vec![],
+                readiness_exit_codes: vec![0],
+                readiness_create_errors: 0,
+                logs: vec![],
+                write_partial_data: false,
+                create_metadata_directory_on_start: false,
+            },
+        );
+        let started = run_start_command(home.path(), project.path(), &socket_path, false, false, 2);
+        assert!(started.status.success(), "{:?}", started);
+        let servers = project.path().join(".clickhouse/servers");
+        let metadata_path = servers.join(format!("{name}-pg18.json"));
+        if name != "default" {
+            let original = servers.join("default-pg18.json");
+            let mut metadata: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&original).unwrap()).unwrap();
+            metadata["name"] = format!("{name}-pg18").into();
+            std::fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+            std::fs::remove_file(original).unwrap();
+            std::fs::rename(
+                servers.join("default-pg18"),
+                servers.join(format!("{name}-pg18")),
+            )
+            .unwrap();
+        }
+        let original_metadata = std::fs::read(&metadata_path).unwrap();
+        let data_path = servers.join(format!("{name}-pg18/data/PG_VERSION"));
+        let original_data = std::fs::read(&data_path).unwrap();
+        let request_count = docker.requests().len();
+        let recovery = format!("clickhousectl local postgres stop {name} --version 18");
+        let message = format!("Server '{name}' is running; stop it first with `{recovery}`");
+        for mode in ["human", "json", "agent"] {
+            let mut command = Command::new(clickhousectl_binary());
+            command
+                .env_clear()
+                .env("HOME", home.path())
+                .env("DO_NOT_TRACK", "1")
+                .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
+                .current_dir(project.path())
+                .args(["local", "postgres", "remove"]);
+            if name != "default" {
+                command.args([name, "--version", "18"]);
+            }
+            if mode == "json" {
+                command.arg("--json");
+            } else if mode == "agent" {
+                command.env("AGENT", "opencode");
+            }
+            let output = command.output().expect("run remove");
+            assert_eq!(output.status.code(), Some(1), "{:?}", output);
+            assert!(output.stdout.is_empty());
+            if mode == "human" {
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stderr),
+                    format!("Error: {message}\n")
+                );
+            } else {
+                let error: serde_json::Value =
+                    serde_json::from_slice(&output.stderr).expect("one JSON error");
+                assert_eq!(
+                    error,
+                    serde_json::json!({"error": {
+                        "code": "server_running", "message": message, "command": recovery
+                    }})
+                );
+            }
+            assert_eq!(std::fs::read(&metadata_path).unwrap(), original_metadata);
+            assert_eq!(std::fs::read(&data_path).unwrap(), original_data);
+        }
+        let requests = docker.requests();
+        assert!(
+            requests[request_count..]
+                .iter()
+                .all(|request| request.method == "GET"),
+            "refused removal must not mutate Docker: {:?}",
+            &requests[request_count..]
+        );
+    }
+}

@@ -292,9 +292,8 @@ impl LocalErrorOutput {
                 .command("clickhousectl local server list"),
             // Stopping *this* server is the recovery; `server list` only
             // restates what the error already says.
-            Error::ServerRunningCannotRemove(name) => {
-                Mapping::parity(LocalErrorCode::ServerRunning)
-                    .command(format!("clickhousectl local server stop {name}"))
+            Error::ServerRunningCannotRemove { command, .. } => {
+                Mapping::parity(LocalErrorCode::ServerRunning).command(command.clone())
             }
             Error::InvalidServerName(_) => Mapping::parity(LocalErrorCode::InvalidServerName)
                 .command("clickhousectl local server list"),
@@ -1504,7 +1503,10 @@ mod tests {
                 "postgres_error",
             ),
             (
-                Error::ServerRunningCannotRemove("dev".into()),
+                Error::ServerRunningCannotRemove {
+                    name: "dev".into(),
+                    command: "clickhousectl local server stop dev".into(),
+                },
                 "server_running",
             ),
             (
@@ -1653,7 +1655,10 @@ mod tests {
     fn running_server_remove_json_error_points_at_stopping_that_server() {
         assert_eq!(
             serde_json::to_string(&LocalErrorOutput::from_error(
-                &Error::ServerRunningCannotRemove("dev".into())
+                &Error::ServerRunningCannotRemove {
+                    name: "dev".into(),
+                    command: "clickhousectl local server stop dev".into()
+                }
             ))
             .unwrap(),
             r#"{"error":{"code":"server_running","message":"Server 'dev' is running; stop it first with `clickhousectl local server stop dev`","command":"clickhousectl local server stop dev"}}"#
@@ -1713,7 +1718,10 @@ mod tests {
             Error::ServerNotFound("dev".into()),
             Error::ServerNotRunning("dev".into()),
             Error::ServerAlreadyRunning("dev".into()),
-            Error::ServerRunningCannotRemove("dev".into()),
+            Error::ServerRunningCannotRemove {
+                name: "dev".into(),
+                command: "clickhousectl local server stop dev".into(),
+            },
             Error::ServerStopSelectionRequired { available: 2 },
             Error::ServerRemoveSelectionRequired { available: 1 },
             Error::ServerInMultipleProjects {

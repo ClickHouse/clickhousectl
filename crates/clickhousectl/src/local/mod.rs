@@ -1104,7 +1104,10 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     };
 
     if server::is_server_running_locked(&name, &metadata_lock)? {
-        return Err(Error::ServerRunningCannotRemove(name));
+        return Err(Error::ServerRunningCannotRemove {
+            command: format!("clickhousectl local server stop {name}"),
+            name,
+        });
     }
     let data_dir = server::server_data_dir(&name);
     if !data_dir.exists() {
