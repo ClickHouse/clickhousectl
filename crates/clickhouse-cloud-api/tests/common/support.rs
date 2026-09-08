@@ -105,12 +105,35 @@ impl TestContext {
         })
     }
 
+    /// Keep generated resource names within the Cloud service name limit. Hash
+    /// the full run ID before shortening, so a shared label prefix does not
+    /// collapse distinct runs. Reserve the suffix before trimming the label.
+    fn resource_name(&self, prefix: &str, suffix: &str) -> String {
+        const MAX_NAME_CHARS: usize = 50;
+        let name = format!("{prefix}{}{suffix}", self.run_id);
+        if name.chars().count() <= MAX_NAME_CHARS {
+            return name;
+        }
+        // Fixed FNV-1a keeps names reproducible across processes and Rust
+        // versions; this fingerprint is for collision avoidance, not security.
+        let hash = self
+            .run_id
+            .bytes()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+            });
+        let fingerprint = format!("{hash:016x}");
+        let label_budget = MAX_NAME_CHARS - prefix.len() - suffix.len() - fingerprint.len() - 1;
+        let label: String = self.run_id.chars().take(label_budget).collect();
+        format!("{prefix}{label}-{fingerprint}{suffix}")
+    }
+
     pub fn service_name(&self) -> String {
-        format!("clickhousectl-it-{}", self.run_id)
+        self.resource_name("clickhousectl-it-", "")
     }
 
     pub fn updated_service_name(&self) -> String {
-        format!("{}-updated", self.service_name())
+        self.resource_name("clickhousectl-it-", "-updated")
     }
 
     pub fn run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -139,11 +162,11 @@ impl TestContext {
     }
 
     pub fn postgres_service_name(&self) -> String {
-        format!("clickhousectl-it-pg-{}", self.run_id)
+        self.resource_name("clickhousectl-it-pg-", "")
     }
 
     pub fn postgres_replica_name(&self) -> String {
-        format!("clickhousectl-it-pgrr-{}", self.run_id)
+        self.resource_name("clickhousectl-it-pgrr-", "")
     }
 
     pub fn postgres_run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -209,11 +232,11 @@ impl TestContext {
     }
 
     pub fn clickpipe_service_name(&self) -> String {
-        format!("clickhousectl-it-cp-{}", self.run_id)
+        self.resource_name("clickhousectl-it-cp-", "")
     }
 
     pub fn clickpipe_postgres_service_name(&self) -> String {
-        format!("clickhousectl-it-cp-pg-{}", self.run_id)
+        self.resource_name("clickhousectl-it-cp-pg-", "")
     }
 
     pub fn clickpipe_run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -244,7 +267,7 @@ impl TestContext {
     /// Shared service name for the multi-source E2E driver — one ClickHouse
     /// service hosts all per-source stages in a run.
     pub fn clickpipe_e2e_service_name(&self) -> String {
-        format!("clickhousectl-it-cp-e2e-{}", self.run_id)
+        self.resource_name("clickhousectl-it-cp-e2e-", "")
     }
 
     pub fn clickpipe_e2e_run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -275,25 +298,25 @@ impl TestContext {
     /// S3 bucket names must be globally unique, 3–63 chars, lowercase letters,
     /// digits, hyphens. `run_id` is already constrained to safe chars.
     pub fn aws_s3_bucket_name(&self) -> String {
-        let raw = format!("clickhousectl-e2e-s3-{}", self.run_id);
+        let raw = self.resource_name("clickhousectl-e2e-s3-", "");
         // S3 forbids underscores; substitute for safety even if run_id is clean today.
         raw.replace('_', "-").to_ascii_lowercase()
     }
 
     pub fn aws_iam_role_name(&self) -> String {
-        format!("clickhousectl-e2e-s3-{}", self.run_id)
+        self.resource_name("clickhousectl-e2e-s3-", "")
     }
 
     /// Kinesis stream names: 1–128 chars, `[A-Za-z0-9_.-]`. `run_id` is already
     /// safe but keep this distinct from the S3 role/bucket names for clarity.
     pub fn aws_kinesis_stream_name(&self) -> String {
-        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+        self.resource_name("clickhousectl-e2e-kinesis-", "")
     }
 
     /// IAM role name dedicated to the Kinesis stage (trust scoped to the
     /// per-test CHC service principal).
     pub fn aws_kinesis_iam_role_name(&self) -> String {
-        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+        self.resource_name("clickhousectl-e2e-kinesis-", "")
     }
 }
 
@@ -1560,5 +1583,95 @@ fn optional_env(name: &str) -> Option<String> {
     match env::var(name) {
         Ok(value) if !value.is_empty() => Some(value),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn context(run_id: &str) -> TestContext {
+        TestContext {
+            org_id: String::new(),
+            provider: String::new(),
+            region: String::new(),
+            run_id: run_id.to_owned(),
+            secondary_user_id: None,
+            create_timeout: Duration::ZERO,
+            delete_timeout: Duration::ZERO,
+            steady_state_timeout: Duration::ZERO,
+            poll_interval: Duration::ZERO,
+            continue_on_non_blocking_failures: false,
+        }
+    }
+
+    fn names(ctx: &TestContext) -> [String; 11] {
+        [
+            ctx.service_name(),
+            ctx.updated_service_name(),
+            ctx.postgres_service_name(),
+            ctx.postgres_replica_name(),
+            ctx.clickpipe_service_name(),
+            ctx.clickpipe_postgres_service_name(),
+            ctx.clickpipe_e2e_service_name(),
+            ctx.aws_s3_bucket_name(),
+            ctx.aws_iam_role_name(),
+            ctx.aws_kinesis_stream_name(),
+            ctx.aws_kinesis_iam_role_name(),
+        ]
+    }
+
+    #[test]
+    fn all_name_builders_respect_limit_for_arbitrary_run_labels() {
+        for run_id in [
+            String::new(),
+            "nightly-1c577b3".to_owned(),
+            "manual-33677928044-1c577b3".to_owned(),
+            "long-label-".repeat(1000),
+            "é🦀".repeat(1000),
+        ] {
+            let ctx = context(&run_id);
+            for name in names(&ctx) {
+                assert!(name.chars().count() <= 50, "{name}");
+            }
+            assert!(ctx.updated_service_name().ends_with("-updated"));
+            // Each Cloud resource keeps its distinct purpose, even when the
+            // run ID consumes the entire available label budget.
+            assert_eq!(names(&ctx)[..7].iter().collect::<HashSet<_>>().len(), 7);
+            assert_eq!(names(&ctx), names(&ctx));
+        }
+    }
+
+    #[test]
+    fn shortening_preserves_distinct_run_tails() {
+        let shared_prefix = "same-prefix-".repeat(100);
+        let first = context(&format!("{shared_prefix}a-1c577b3"));
+        let second = context(&format!("{shared_prefix}b-1c577b3"));
+        let other_commit = context(&format!("{shared_prefix}a-7654321"));
+        for ((first, second), other_commit) in names(&first)
+            .into_iter()
+            .zip(names(&second))
+            .zip(names(&other_commit))
+        {
+            assert_ne!(first, second);
+            assert_ne!(first, other_commit);
+        }
+    }
+
+    #[test]
+    fn short_names_and_exact_limit_are_preserved() {
+        let ctx = context("pr-676-1c577b3");
+        assert_eq!(ctx.service_name(), "clickhousectl-it-pr-676-1c577b3");
+        assert_eq!(
+            ctx.updated_service_name(),
+            "clickhousectl-it-pr-676-1c577b3-updated"
+        );
+        let ctx = context(&"a".repeat(50 - "clickhousectl-it-".len() - "-updated".len()));
+        assert_eq!(
+            ctx.updated_service_name(),
+            format!("clickhousectl-it-{}-updated", ctx.run_id)
+        );
+        assert_eq!(ctx.updated_service_name().len(), 50);
     }
 }

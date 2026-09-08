@@ -2785,6 +2785,9 @@ Cloud API integration is tested against a real ClickHouse Cloud workspace via th
 - [`tests/integration_org_test.rs`](crates/clickhouse-cloud-api/tests/integration_org_test.rs) — org-scoped endpoints (members, invitations, roles, activity, prometheus, private endpoint config)
 - [`tests/clickpipes/`](crates/clickhouse-cloud-api/tests/clickpipes/) — ClickPipes E2E; only Postgres CDC runs in CI
 
+Generated service and replica names stay within 50 characters, including rename suffixes.
+Long run labels are shortened with a hash of the full run ID; resource tags retain the full ID.
+
 Required environment variables:
 
 ```bash
