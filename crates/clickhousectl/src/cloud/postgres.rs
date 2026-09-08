@@ -204,11 +204,11 @@ CONTEXT FOR AGENTS:
     Metrics {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// Start time (ISO 8601 / RFC 3339)
-        #[arg(long, value_parser = parse_datetime)]
+        /// Start time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_metrics_datetime)]
         from_date: String,
-        /// End time (ISO 8601 / RFC 3339)
-        #[arg(long, value_parser = parse_datetime)]
+        /// End time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_metrics_datetime)]
         to_date: String,
         /// Time bucket size in seconds
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
@@ -1994,6 +1994,27 @@ pub async fn postgres_state_change(
     Ok(())
 }
 
+// The metrics endpoint accepts UTC timestamps with exactly three fractional digits.
+// Check the original fraction: chrono discards digits beyond nanosecond precision.
+fn parse_metrics_datetime(value: &str) -> Result<String, String> {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(value)
+        .map_err(|_| format!("invalid datetime '{value}': expected ISO 8601 / RFC 3339"))?;
+    if value.split_once('.').is_some_and(|(_, fraction)| {
+        fraction
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .skip(3)
+            .any(|digit| digit != b'0')
+    }) {
+        return Err(format!(
+            "invalid datetime '{value}': Postgres metrics supports at most millisecond precision"
+        ));
+    }
+    Ok(timestamp
+        .with_timezone(&chrono::Utc)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
 fn validate_datetime_range(from_date: &str, to_date: &str) -> CloudResult<()> {
     let from = chrono::DateTime::parse_from_rfc3339(from_date)
         .map_err(|_| CloudError::new("invalid --from-date: expected ISO 8601 / RFC 3339"))?;
@@ -3578,8 +3599,8 @@ mod tests {
             panic!("expected metrics");
         };
         assert_eq!(postgres_id, "pg-1");
-        assert_eq!(from_date, "2026-04-16T12:00:00+01:00");
-        assert_eq!(to_date, "2026-04-16T13:00:00+01:00");
+        assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
+        assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
         assert_eq!(bucket_size_seconds, Some(60));
         assert_eq!(org_id.as_deref(), Some("org-1"));
     }
@@ -3628,6 +3649,9 @@ mod tests {
         for (flag, value) in [
             ("--from-date", "yesterday"),
             ("--to-date", "tomorrow"),
+            ("--from-date", "2026-04-16T12:00:00.123456Z"),
+            ("--to-date", "2026-04-16T13:00:00.123456789Z"),
+            ("--from-date", "2026-04-16T12:00:00.0000000001Z"),
             ("--bucket-size-seconds", "0"),
         ] {
             let mut args = vec![
@@ -3651,6 +3675,31 @@ mod tests {
                 .err()
                 .expect("expected parse error");
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn postgres_metrics_normalizes_without_changing_the_instant() {
+        for (input, expected) in [
+            ("2026-04-16T12:00:00Z", "2026-04-16T12:00:00.000Z"),
+            ("2026-04-16T12:00:00.000Z", "2026-04-16T12:00:00.000Z"),
+            ("2026-04-16T12:00:00+00:00", "2026-04-16T12:00:00.000Z"),
+            ("2026-04-16T12:00:00.1Z", "2026-04-16T12:00:00.100Z"),
+            ("2026-04-16T12:00:00.12Z", "2026-04-16T12:00:00.120Z"),
+            ("2026-04-16T00:00:00.123+05:30", "2026-04-15T18:30:00.123Z"),
+            ("2026-04-16T23:00:00.999-02:30", "2026-04-17T01:30:00.999Z"),
+            (
+                "2026-04-16T12:00:00.1230000000Z",
+                "2026-04-16T12:00:00.123Z",
+            ),
+        ] {
+            let normalized = parse_metrics_datetime(input).unwrap();
+            assert_eq!(normalized, expected, "{input}");
+            assert_eq!(
+                chrono::DateTime::parse_from_rfc3339(input).unwrap(),
+                chrono::DateTime::parse_from_rfc3339(&normalized).unwrap(),
+                "normalization changed {input}"
+            );
         }
     }
 

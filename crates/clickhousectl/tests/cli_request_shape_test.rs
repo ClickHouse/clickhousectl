@@ -2608,8 +2608,8 @@ async fn postgres_metrics_sends_exact_query_supports_oauth_and_preserves_json() 
         .and(path(format!(
             "/v1/organizations/org-1/postgres/{postgres_id}/metrics"
         )))
-        .and(query_param("from_date", "2026-04-16T12:00:00+01:00"))
-        .and(query_param("to_date", "2026-04-16T13:00:00+01:00"))
+        .and(query_param("from_date", "2026-04-16T11:00:00.000Z"))
+        .and(query_param("to_date", "2026-04-16T12:00:00.000Z"))
         .and(query_param("bucket_size_seconds", "60"))
         .and(header("authorization", "Bearer test-bearer-token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -2668,11 +2668,11 @@ async fn postgres_metrics_sends_exact_query_supports_oauth_and_preserves_json() 
         [
             (
                 "from_date".to_string(),
-                "2026-04-16T12:00:00+01:00".to_string()
+                "2026-04-16T11:00:00.000Z".to_string()
             ),
             (
                 "to_date".to_string(),
-                "2026-04-16T13:00:00+01:00".to_string()
+                "2026-04-16T12:00:00.000Z".to_string()
             ),
             ("bucket_size_seconds".to_string(), "60".to_string()),
         ]
@@ -2680,12 +2680,92 @@ async fn postgres_metrics_sends_exact_query_supports_oauth_and_preserves_json() 
 }
 
 #[tokio::test]
+async fn postgres_metrics_normalizes_exact_milliseconds_on_the_wire() {
+    let mock = MockServer::start().await;
+    for (from, to, expected_from, expected_to) in [
+        (
+            "2026-04-16T12:00:00Z",
+            "2026-04-16T13:00:00.000Z",
+            "2026-04-16T12:00:00.000Z",
+            "2026-04-16T13:00:00.000Z",
+        ),
+        (
+            "2026-04-16T00:00:00.1+05:30",
+            "2026-04-16T23:00:00.1230000000-02:30",
+            "2026-04-15T18:30:00.100Z",
+            "2026-04-17T01:30:00.123Z",
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/postgres/pg-1/metrics"))
+            .and(query_param("from_date", expected_from))
+            .and(query_param("to_date", expected_to))
+            .and(query_param("bucket_size_seconds", "300"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {"metrics": []},
+                "status": 200
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "postgres",
+                "metrics",
+                "pg-1",
+                "--from-date",
+                from,
+                "--to-date",
+                to,
+                "--bucket-size-seconds",
+                "300",
+                "--org-id",
+                "org-1",
+            ],
+        );
+        assert_success(&output);
+    }
+}
+
+#[tokio::test]
+async fn postgres_metrics_rejects_malformed_and_submillisecond_dates_before_requests() {
+    let mock = MockServer::start().await;
+    for invalid in [
+        "yesterday",
+        "2026-04-16T12:00:00",
+        "2026-04-16T12:00:00.123456Z",
+        "2026-04-16T12:00:00.123456789Z",
+        "2026-04-16T12:00:00.0000000001Z",
+    ] {
+        for flag in ["--from-date", "--to-date"] {
+            let mut args = [
+                "postgres",
+                "metrics",
+                "pg-1",
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+                "--org-id",
+                "org-1",
+            ];
+            let position = args.iter().position(|arg| *arg == flag).unwrap();
+            args[position + 1] = invalid;
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert_eq!(output.status.code(), Some(2), "{flag} {invalid}");
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn postgres_metrics_omits_bucket_and_renders_sparse_human_output() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/metrics"))
-        .and(query_param("from_date", "2026-04-16T12:00:00Z"))
-        .and(query_param("to_date", "2026-04-16T13:00:00Z"))
+        .and(query_param("from_date", "2026-04-16T12:00:00.000Z"))
+        .and(query_param("to_date", "2026-04-16T13:00:00.000Z"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {
                 "metrics": [{
