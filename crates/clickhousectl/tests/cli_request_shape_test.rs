@@ -22288,3 +22288,98 @@ async fn clickpipe_update_propagates_api_errors_and_rejects_oauth_before_http() 
     assert!(output.stdout.is_empty());
     assert!(oauth_mock.received_requests().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn service_settings_set_file_preserves_json_types_in_object_body() {
+    let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let settings_file = directory.path().join("settings.json");
+    let settings = serde_json::json!({
+        "compatibility": "26.2", "max_query_size": 262144, "boolean": false,
+        "null": null, "array": [1, "two"], "future": {"nested": true}
+    });
+    std::fs::write(&settings_file, settings.to_string()).unwrap();
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickhouseSettings",
+        ))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .and(body_json(serde_json::json!({"settings": settings})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"settings": settings}, "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "settings",
+            "set",
+            "svc-1",
+            "--settings-file",
+            settings_file.to_str().unwrap(),
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+}
+
+#[tokio::test]
+async fn service_settings_set_rejects_malformed_inputs_before_organization_discovery() {
+    let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let settings_file = directory.path().join("settings.json");
+    for invalid in [
+        "{broken",
+        "[]",
+        "null",
+        "42",
+        "{}",
+        r#"{"settings":{"compatibility":"26.2"}}"#,
+    ] {
+        std::fs::write(&settings_file, invalid).unwrap();
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "service",
+                "settings",
+                "set",
+                "svc-1",
+                "--settings-file",
+                settings_file.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1), "invalid file: {invalid}");
+    }
+    for assignments in [
+        vec!["compatibility"],
+        vec!["=1"],
+        vec!["compatibility=unquoted"],
+        vec!["max_query_size=1", "max_query_size=2"],
+    ] {
+        let mut arguments = vec!["service", "settings", "set", "svc-1"];
+        for assignment in &assignments {
+            arguments.extend(["--setting", assignment]);
+        }
+        let output = invoke_cli_with_cloud_credentials(&mock, &arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "invalid assignments: {assignments:?}"
+        );
+    }
+    assert!(
+        mock.received_requests().await.unwrap().is_empty(),
+        "invalid local inputs must fail before even organization discovery"
+    );
+}

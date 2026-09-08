@@ -1718,12 +1718,12 @@ fn read_service_settings(
 
 fn build_service_settings_patch_request(
     settings: &BTreeMap<String, serde_json::Value>,
-) -> CloudResult<ServiceClickhouseSettingsPatchRequest<String>> {
+) -> CloudResult<ServiceClickhouseSettingsPatchRequest> {
     if settings.is_empty() {
         return Err(CloudError::new("provide at least one ClickHouse setting"));
     }
     Ok(ServiceClickhouseSettingsPatchRequest {
-        settings: Some(serde_json::to_string(settings)?),
+        settings: Some(settings.clone()),
     })
 }
 
@@ -4199,7 +4199,7 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
-        request: &ServiceClickhouseSettingsPatchRequest<String>,
+        request: &ServiceClickhouseSettingsPatchRequest,
     ) -> crate::cloud::client::Result<ServiceClickhouseSettingsPatchResponse> {
         let response = self
             .api()
@@ -8623,13 +8623,10 @@ mod tests {
     }
 
     #[test]
-    fn builds_settings_patch_with_json_encoded_string_and_preserved_types() {
+    fn builds_settings_patch_with_object_and_preserved_types() {
         let minimal = BTreeMap::from([("compatibility".to_string(), serde_json::json!("24.8"))]);
         let request = build_service_settings_patch_request(&minimal).unwrap();
-        assert_eq!(
-            request.settings.as_deref(),
-            Some(r#"{"compatibility":"24.8"}"#)
-        );
+        assert_eq!(request.settings, Some(minimal));
 
         let maximal = BTreeMap::from([
             ("bool_setting".to_string(), serde_json::json!(false)),
@@ -8642,9 +8639,9 @@ mod tests {
             ),
         ]);
         let request = build_service_settings_patch_request(&maximal).unwrap();
-        let encoded = request.settings.as_deref().unwrap();
+        assert_eq!(request.settings, Some(maximal.clone()));
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(encoded).unwrap(),
+            serde_json::to_value(&request).unwrap()["settings"],
             serde_json::json!({
                 "bool_setting": false,
                 "null_setting": null,
