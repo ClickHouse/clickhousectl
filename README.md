@@ -929,6 +929,9 @@ clickhousectl cloud service delete <service-id>
 clickhousectl cloud service delete <service-id> --force
 ```
 
+If deletion returns a conflict, the CLI includes the API response and suggests `--force` only
+conditionally: use it when the service is running; resolve other reported conflicts before retrying.
+
 IP allowlist flags accept `IP_OR_CIDR` or `IP_OR_CIDR=DESCRIPTION`. The `=`
 delimiter is safe with IPv6; quote entries whose descriptions contain spaces.
 

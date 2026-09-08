@@ -2518,15 +2518,13 @@ fn auth_status_marks_outranked_environment_credentials_inactive() {
 // ── Service deletion errors (issue #335) ──────────────────────────────────
 
 #[tokio::test]
-async fn service_delete_running_conflict_suggests_force() {
+async fn service_delete_conflict_suggests_force_without_inspecting_prose() {
     let mock = MockServer::start().await;
     Mock::given(method("DELETE"))
         .and(path("/v1/organizations/org-1/services/svc-1"))
         .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
             "status": 409,
-            "error": "CONFLICT: Only instance in one of the following states: \
-                      'provisioning','starting','awaking','idle','stopped','degraded','failed' \
-                      can be terminated. Current state: 'running'"
+            "error": "opaque conflict response"
         })))
         .expect(1)
         .mount(&mock)
@@ -2540,8 +2538,9 @@ async fn service_delete_running_conflict_suggests_force() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
-        "Error: service is running and cannot be deleted. Use --force to stop it first, or \
-         `clickhousectl cloud service stop svc-1`.\n"
+        "Error: service could not be deleted because of a conflict. If it is running, use \
+         --force to stop it first, or `clickhousectl cloud service stop svc-1`. API response: \
+         opaque conflict response\n"
     );
 }
 

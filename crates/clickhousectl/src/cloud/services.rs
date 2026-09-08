@@ -2572,15 +2572,30 @@ impl StopPollProgress {
     }
 }
 
-fn service_delete_error(error: CloudError, force: bool, service_id: &str) -> CloudError {
-    if !force
-        && error.message.starts_with("CONFLICT:")
-        && error.message.contains("Current state: 'running'")
-    {
-        CloudError::new(format!(
-            "service is running and cannot be deleted. Use --force to stop it first, or \
-             `clickhousectl cloud service stop {service_id}`."
-        ))
+fn service_delete_conflict(error: CloudError, service_id: &str) -> CloudError {
+    let api_message = error.message.clone();
+    let message = format!(
+        "service could not be deleted because of a conflict. If it is running, use --force to \
+         stop it first, or `clickhousectl cloud service stop {service_id}`. API response: \
+         {api_message}"
+    );
+    CloudError { message, ..error }
+}
+
+fn service_delete_error(
+    client: &CloudClient,
+    error: clickhouse_cloud_api::Error,
+    force: bool,
+    service_id: &str,
+    org_id: &str,
+) -> CloudError {
+    let is_conflict = matches!(&error, clickhouse_cloud_api::Error::Api { status: 409, .. });
+    let error = client.convert_error_for_lookup(
+        error,
+        ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+    );
+    if is_conflict && !force {
+        service_delete_conflict(error, service_id)
     } else {
         error
     }
@@ -2633,10 +2648,7 @@ async fn service_delete(
         }
     }
 
-    let response = client
-        .delete_service(&org_id, service_id)
-        .await
-        .map_err(|error| service_delete_error(error, force, service_id))?;
+    let response = client.delete_service(&org_id, service_id, force).await?;
     cleanup_service_query_key(client, &org_id, service_id, &query_key_ids).await?;
     if !retain_query_key {
         credentials::remove_service_query_key(service_id)?;
@@ -4327,20 +4339,13 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
+        force: bool,
     ) -> crate::cloud::client::Result<DeleteResponse> {
         let response = self
             .api()
             .instance_delete(org_id, service_id)
             .await
-            .map_err(|error| {
-                // A delete by identifier carries the same single class of
-                // user input as the read, so the same 400 means the same
-                // thing (#666).
-                self.convert_error_for_lookup(
-                    error,
-                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
-                )
-            })?;
+            .map_err(|error| service_delete_error(self, error, force, service_id, org_id))?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -7291,30 +7296,98 @@ mod tests {
     }
 
     #[test]
-    fn service_delete_error_suggests_force_for_a_running_service() {
-        let error = CloudError::new(
-            "CONFLICT: Only instance in one of the following states can be terminated. \
-             Current state: 'running'",
+    fn service_delete_error_uses_the_api_status_and_preserves_classification() {
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let error = clickhouse_cloud_api::Error::Api {
+            status: 409,
+            message: "opaque conflict response".into(),
+        };
+        let rewritten = service_delete_error(&client, error, false, "svc-1", "org-1");
+
+        assert_eq!(
+            rewritten.message,
+            "service could not be deleted because of a conflict. If it is running, use --force \
+             to stop it first, or `clickhousectl cloud service stop svc-1`. API response: opaque \
+             conflict response"
         );
         assert_eq!(
-            service_delete_error(error, false, "svc-1").message,
-            "service is running and cannot be deleted. Use --force to stop it first, or \
-             `clickhousectl cloud service stop svc-1`."
+            rewritten.kind,
+            crate::cloud::client::CloudErrorKind::Generic
+        );
+        assert_eq!(
+            rewritten.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 409))
         );
     }
 
     #[test]
-    fn service_delete_error_preserves_unrelated_and_forced_failures() {
-        let unrelated = CloudError::new("CONFLICT: service has dependent resources");
+    fn service_delete_error_does_not_classify_from_message_text() {
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let running_prose = || clickhouse_cloud_api::Error::Api {
+            status: 400,
+            message: "CONFLICT: Current state: 'running'".into(),
+        };
+
+        let ordinary = service_delete_error(&client, running_prose(), false, "svc-1", "org-1");
+        assert_eq!(ordinary.message, "CONFLICT: Current state: 'running'");
         assert_eq!(
-            service_delete_error(unrelated, false, "svc-1").message,
-            "CONFLICT: service has dependent resources"
+            ordinary.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 400))
         );
-        let forced = CloudError::new("CONFLICT: Current state: 'running'");
+
+        let forced = service_delete_error(
+            &client,
+            clickhouse_cloud_api::Error::Api {
+                status: 409,
+                message: "opaque conflict response".into(),
+            },
+            true,
+            "svc-1",
+            "org-1",
+        );
+        assert_eq!(forced.message, "opaque conflict response");
         assert_eq!(
-            service_delete_error(forced, true, "svc-1").message,
-            "CONFLICT: Current state: 'running'"
+            forced.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 409))
         );
+    }
+
+    #[test]
+    fn service_delete_conflict_preserves_converted_error_metadata() {
+        let detail = CloudErrorDetail {
+            code: CloudErrorCode::ResourceNotFound,
+            message: "structured error".into(),
+            host: None,
+            port: None,
+            command: Some("cloud service list".into()),
+            api_key_id: None,
+            ip_access_list: None,
+        };
+        let error = CloudError::auth("opaque conflict response")
+            .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 409))
+            .with_details(detail);
+
+        let rewritten = service_delete_conflict(error, "svc-1");
+
+        assert_eq!(rewritten.kind, crate::cloud::client::CloudErrorKind::Auth);
+        assert_eq!(
+            rewritten.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 409))
+        );
+        let detail = rewritten.details.as_deref().expect("structured details");
+        assert_eq!(detail.code, CloudErrorCode::ResourceNotFound);
+        assert_eq!(detail.message, "structured error");
+        assert_eq!(detail.command.as_deref(), Some("cloud service list"));
     }
 
     #[test]
