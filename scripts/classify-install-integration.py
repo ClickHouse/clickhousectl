@@ -56,6 +56,7 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/tests/cli_request_shape_test.rs",
         "crates/clickhousectl/tests/local_client_project_scope_errors_test.rs",
         "crates/clickhousectl/tests/local_client_selectors_test.rs",
+        "crates/clickhousectl/tests/local_client_output_contract_test.rs",
         "crates/clickhousectl/tests/local_docker_diagnostics_test.rs",
         "crates/clickhousectl/tests/local_docker_pull_progress_test.rs",
         "crates/clickhousectl/tests/local_init_json_test.rs",

@@ -227,7 +227,8 @@ CONTEXT FOR AGENTS:
   Default mode looks up a server started by `clickhousectl local server start`; the name defaults
   to \"default\".
   Put wrapper options before `--`; all arguments after it go to clickhouse-client.
-  Next: `clickhousectl local server list` to see running servers."
+  Interactive, --query and --queries-file output stays native, even with --json or a coding agent.
+  Choose SQL output explicitly, e.g. `-- --format JSONEachRow`."
     )]
     Client {
         /// Server name to connect to (default: "default")
@@ -557,7 +558,8 @@ CONTEXT FOR AGENTS:
   psql inside the container via `docker exec`.
   Direct mode (--host/--port) requires `psql` on PATH and connects as user/database \"postgres\"
   with no password; it does not read managed credentials.
-  Put wrapper options before `--`; all arguments after it go to psql.")]
+  Put wrapper options before `--`; all arguments after it go to psql.
+  Interactive, --query and --queries-file output stays native, even with --json or a coding agent.")]
     Client {
         /// Managed instance to connect to (default: "default")
         #[arg(long, short, conflicts_with_all = ["host", "port"])]
