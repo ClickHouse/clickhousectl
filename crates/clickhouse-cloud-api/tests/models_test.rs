@@ -6714,3 +6714,40 @@ fn postgres_slow_query_durations_allow_missing_and_null() {
         assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::json!({}));
     }
 }
+
+#[test]
+fn service_clickhouse_settings_preserves_dynamic_json_values() {
+    let settings = serde_json::json!({
+        "string": "26.2", "integer": 262144, "boolean": false, "null": null,
+        "array": [1, "two"], "future": {"nested": true}
+    });
+    let request: ServiceClickhouseSettingsPatchRequest =
+        serde_json::from_value(serde_json::json!({"settings": settings})).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+    let response: ServiceClickhouseSettingsPatchResponse =
+        serde_json::from_value(serde_json::json!({"settings": settings})).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+    for sparse in [
+        serde_json::json!({}),
+        serde_json::json!({"settings": null, "warnings": null}),
+    ] {
+        let response: ServiceClickhouseSettingsPatchResponse =
+            serde_json::from_value(sparse).unwrap();
+        assert!(response.settings.is_none());
+        assert!(response.warnings.is_none());
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    let empty = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(std::collections::BTreeMap::<String, serde_json::Value>::new()),
+    };
+    assert!(serde_json::to_value(empty).is_err());
+}

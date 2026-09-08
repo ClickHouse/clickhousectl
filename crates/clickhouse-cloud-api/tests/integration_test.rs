@@ -1212,13 +1212,10 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         original.clone(),
                     );
 
-                    // The `settings` field on the API is a JSON-encoded string
-                    // (the spec example is "{\"compatibility\":\"24.8\"}"). Build
-                    // it with serde_json so the inner JSON escapes correctly
-                    // regardless of what the setting name/value look like.
-                    let patch_body_settings = serde_json::to_string(
-                        &serde_json::json!({ setting_name.clone(): new_value.clone() }),
-                    )?;
+                    let patch_body_settings = std::collections::BTreeMap::from([(
+                        setting_name.clone(),
+                        serde_json::json!(new_value),
+                    )]);
                     let update_ok = failures
                         .run(
                             &ctx,

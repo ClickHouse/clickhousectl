@@ -4487,3 +4487,55 @@ async fn update_api_key_sends_omitted_timestamp_and_null_expiry() {
         assert_eq!(response.result.unwrap().name.as_deref(), Some("retained"));
     }
 }
+
+#[tokio::test]
+async fn service_clickhouse_settings_update_sends_and_receives_objects() {
+    let (server, client) = setup().await;
+    let settings = serde_json::json!({"compatibility": "26.2", "max_query_size": 262144});
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickhouseSettings",
+        ))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({"settings": settings})))
+        .respond_with(ok_json(
+            serde_json::json!({"settings": settings, "warnings": []}),
+        ))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let body: ServiceClickhouseSettingsPatchRequest =
+        serde_json::from_value(serde_json::json!({"settings": settings})).unwrap();
+    let response = client
+        .service_clickhouse_settings_update("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(response.result.unwrap().settings.unwrap()).unwrap(),
+        settings
+    );
+    let legacy = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(settings.to_string()),
+    };
+    client
+        .service_clickhouse_settings_update("org-1", "svc-1", &legacy)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn service_clickhouse_settings_update_rejects_invalid_legacy_input_before_http() {
+    let (server, client) = setup().await;
+    for invalid in ["{broken", "{}", "[]", "null", "42", r#""string""#] {
+        let body = ServiceClickhouseSettingsPatchRequest {
+            settings: Some(invalid.to_string()),
+        };
+        assert!(
+            client
+                .service_clickhouse_settings_update("org-1", "svc-1", &body)
+                .await
+                .is_err()
+        );
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}

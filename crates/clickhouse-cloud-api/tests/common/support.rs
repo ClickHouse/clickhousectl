@@ -696,23 +696,11 @@ impl CleanupRegistry {
         // them. If the service is already gone (e.g. test deleted it as part of
         // its body) the restore call will 404 and is skipped.
         while let Some(restore) = self.clickhouse_setting_restores.pop() {
-            // The `settings` field on the API is a JSON-encoded string; build
-            // it with serde_json so quotes / backslashes in the original value
-            // round-trip correctly.
-            let inner = match serde_json::to_string(&serde_json::json!({
-                restore.setting_name.clone(): restore.original_value.clone(),
-            })) {
-                Ok(s) => s,
-                Err(e) => {
-                    failures.push(format!(
-                        "serialize clickhouse setting restore body for {} on {}: {}",
-                        restore.setting_name, restore.service_id, e
-                    ));
-                    continue;
-                }
-            };
             let body = ServiceClickhouseSettingsPatchRequest {
-                settings: Some(inner),
+                settings: Some(std::collections::BTreeMap::from([(
+                    restore.setting_name.clone(),
+                    serde_json::json!(restore.original_value),
+                )])),
             };
             match client
                 .service_clickhouse_settings_update(org_id, &restore.service_id, &body)

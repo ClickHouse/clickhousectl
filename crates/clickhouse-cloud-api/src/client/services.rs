@@ -584,11 +584,11 @@ impl Client {
     }
 
     /// Update ClickHouse settings
-    pub async fn service_clickhouse_settings_update(
+    pub async fn service_clickhouse_settings_update<T: serde::Serialize>(
         &self,
         organization_id: &str,
         service_id: &str,
-        body: &ServiceClickhouseSettingsPatchRequest,
+        body: &ServiceClickhouseSettingsPatchRequest<T>,
     ) -> Result<ApiResponse<ServiceClickhouseSettingsPatchResponse>, Error> {
         let path =
             format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");

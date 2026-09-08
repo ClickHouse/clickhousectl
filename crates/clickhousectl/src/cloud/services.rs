@@ -1718,7 +1718,7 @@ fn read_service_settings(
 
 fn build_service_settings_patch_request(
     settings: &BTreeMap<String, serde_json::Value>,
-) -> CloudResult<ServiceClickhouseSettingsPatchRequest> {
+) -> CloudResult<ServiceClickhouseSettingsPatchRequest<String>> {
     if settings.is_empty() {
         return Err(CloudError::new("provide at least one ClickHouse setting"));
     }
@@ -4199,7 +4199,7 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
-        request: &ServiceClickhouseSettingsPatchRequest,
+        request: &ServiceClickhouseSettingsPatchRequest<String>,
     ) -> crate::cloud::client::Result<ServiceClickhouseSettingsPatchResponse> {
         let response = self
             .api()

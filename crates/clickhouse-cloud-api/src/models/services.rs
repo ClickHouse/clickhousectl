@@ -1703,18 +1703,48 @@ pub struct ServiceClickhouseSettingsList {
     pub settings: Option<Vec<ServiceClickhouseSetting>>,
 }
 
-/// `ServiceClickhouseSettingsPatchRequest` from the ClickHouse Cloud API.
+/// Settings to update as a JSON object of setting names to values.
+///
+/// The live API requires an object despite the OpenAPI schema declaring a
+/// string (ClickHouse/clickhousectl#759). The default type models that contract.
+/// Legacy callers may explicitly use `String` containing an encoded object;
+/// serialization validates and converts it to the same object wire format.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ServiceClickhouseSettingsPatchRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<String>,
+pub struct ServiceClickhouseSettingsPatchRequest<
+    T: Serialize = std::collections::BTreeMap<String, serde_json::Value>,
+> {
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_clickhouse_settings"
+    )]
+    pub settings: Option<T>,
+}
+
+fn serialize_clickhouse_settings<T: Serialize, S: serde::Serializer>(
+    settings: &Option<T>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::Error as _;
+
+    let value = serde_json::to_value(settings).map_err(S::Error::custom)?;
+    let value = match value {
+        serde_json::Value::String(encoded) => {
+            serde_json::from_str(&encoded).map_err(S::Error::custom)?
+        }
+        value => value,
+    };
+    if value.as_object().is_none_or(|object| object.is_empty()) {
+        return Err(S::Error::custom("settings must be a non-empty object"));
+    }
+    value.serialize(serializer)
 }
 
 /// `ServiceClickhouseSettingsPatchResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsPatchResponse {
+    // The live API returns an object, not the string declared by OpenAPI (#759).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<String>,
+    pub settings: Option<std::collections::BTreeMap<String, serde_json::Value>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<ServiceClickhouseSettingWarning>>,
 }

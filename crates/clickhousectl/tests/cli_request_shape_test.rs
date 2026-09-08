@@ -21550,11 +21550,11 @@ async fn service_settings_set_and_unset_send_exact_requests_with_api_key_auth() 
             "fake-secret-for-tests",
         ))
         .and(body_json(serde_json::json!({
-            "settings": "{\"compatibility\":\"24.8\",\"enable_analyzer\":1}"
+            "settings": {"compatibility": "24.8", "enable_analyzer": 1}
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {
-                "settings": "{\"compatibility\":\"24.8\",\"enable_analyzer\":1}",
+                "settings": {"compatibility": "24.8", "enable_analyzer": 1},
                 "warnings": [{"name": "compatibility"}]
             },
             "status": 200,
@@ -21597,7 +21597,7 @@ async fn service_settings_set_and_unset_send_exact_requests_with_api_key_auth() 
     assert_eq!(
         serde_json::from_slice::<Value>(&set.stdout).unwrap(),
         serde_json::json!({
-            "settings": "{\"compatibility\":\"24.8\",\"enable_analyzer\":1}",
+            "settings": {"compatibility": "24.8", "enable_analyzer": 1},
             "warnings": [{"name": "compatibility"}]
         })
     );
@@ -21628,7 +21628,7 @@ async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before
     Mock::given(method("PATCH"))
         .and(path(collection))
         .and(body_json(serde_json::json!({
-            "settings": "{\"bool_value\":false,\"future_setting\":{\"nested\":true}}"
+            "settings": {"bool_value": false, "future_setting": {"nested": true}}
         })))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
             "result": {"warnings": []},
