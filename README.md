@@ -1417,6 +1417,46 @@ The `kafka_read_committed` setting applies only to Kafka pipes.
 }
 ```
 
+For object-storage pipes, sending root `fieldMappings` also requires
+`destination.columns` in the same patch. Send the complete column and mapping
+arrays: every destination column must have a mapping. This changes the ClickPipe
+configuration, not the destination table schema.
+
+For example, replace mappings on an existing object-storage pipe whose destination
+has `station String` and `avg Float64` columns. Inspect your pipe with
+`clickhousectl cloud clickpipe get "$SERVICE_ID" "$PIPE_ID" --json` first and use
+its complete destination column list; only `columns` belongs in the destination
+patch, so leave out `database`, `table`, `managedTable`, and `tableDefinition`.
+
+```bash
+clickhousectl cloud clickpipe update "$SERVICE_ID" "$PIPE_ID" --config-file - <<'JSON'
+{
+  "destination": {
+    "columns": [
+      { "name": "station", "type": "String" },
+      { "name": "avg", "type": "Float64" }
+    ]
+  },
+  "fieldMappings": [
+    { "sourceField": "station", "destinationField": "station" },
+    { "sourceField": "avg", "destinationField": "avg" }
+  ]
+}
+JSON
+
+# Rename while preserving the existing mappings, source, destination and settings.
+printf '%s\n' '{"name":"stations-v2"}' |
+  clickhousectl cloud clickpipe update "$SERVICE_ID" "$PIPE_ID" --config-file -
+```
+
+Omitting `fieldMappings` preserves saved mappings, including when resending
+`destination.columns`. An explicit `"fieldMappings": []` is different: live
+object-storage verification rejected it without columns (columns required) and
+with columns (every column requires a mapping); the saved mappings remained
+unchanged. No clearing workflow that retains the configured columns was verified.
+These observations concern root object-storage field mappings, not CDC
+`tableMappingsToAdd` or `tableMappingsToRemove` arrays.
+
 A source patch selects at most one of the seven supported arms.
 `validateSamples` is optional. Kafka credentials must match the selected
 authentication: username and password for PLAIN/SCRAM, access key and secret
