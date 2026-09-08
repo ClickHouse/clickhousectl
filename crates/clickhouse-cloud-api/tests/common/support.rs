@@ -443,7 +443,7 @@ impl FailureRecorder {
 pub struct ClickhouseSettingRestore {
     pub service_id: String,
     pub setting_name: String,
-    pub original_value: String,
+    pub original_value: serde_json::Value,
 }
 
 #[derive(Default)]
@@ -604,7 +604,7 @@ impl CleanupRegistry {
         &mut self,
         service_id: impl Into<String>,
         setting_name: impl Into<String>,
-        original_value: impl Into<String>,
+        original_value: impl Into<serde_json::Value>,
     ) {
         self.clickhouse_setting_restores
             .push(ClickhouseSettingRestore {

@@ -4539,3 +4539,47 @@ async fn service_clickhouse_settings_update_rejects_invalid_legacy_input_before_
     }
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn service_clickhouse_setting_reads_preserve_numeric_and_string_values() {
+    let (server, client) = setup().await;
+    let collection = "/v1/organizations/org-1/services/svc-1/clickhouseSettings";
+    let settings = serde_json::json!([
+        {"name": "max_query_size", "value": 262146},
+        {"name": "compatibility", "value": "26.2"},
+        {"name": "future_bool", "value": false}
+    ]);
+    for setting in settings.as_array().unwrap() {
+        let name = setting["name"].as_str().unwrap();
+        Mock::given(method("GET"))
+            .and(path(format!("{collection}/{name}")))
+            .and(basic_auth("key", "secret"))
+            .respond_with(ok_json(setting.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client
+            .service_clickhouse_setting_get("org-1", "svc-1", name)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(response.result.unwrap()).unwrap(),
+            *setting
+        );
+    }
+    Mock::given(method("GET"))
+        .and(path(collection))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({"settings": settings})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client
+        .service_clickhouse_settings_list_get("org-1", "svc-1")
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(response.result.unwrap()).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+}

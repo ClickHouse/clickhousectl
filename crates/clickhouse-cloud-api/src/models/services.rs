@@ -1664,8 +1664,10 @@ pub struct Service {
 pub struct ServiceClickhouseSetting {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Preserve the API's JSON value without coercion. The live API returns numbers
+    /// as well as strings, despite the OpenAPI string schema (#779).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<serde_json::Value>,
 }
 
 /// `ServiceClickhouseSettingSchemaEntry` from the ClickHouse Cloud API.

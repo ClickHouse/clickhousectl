@@ -1194,15 +1194,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 if let Some(original) = original_value {
                     eprintln!("  current value: {original}");
 
-                    // Pick a new numeric value that differs from the current
-                    // one. The candidates are all integer-typed settings, so
-                    // we parse the current value as an integer; if parsing
-                    // fails we bail to the next pre-set safe value below.
-                    let new_value = match original.parse::<u64>() {
-                        Ok(0) => "1".to_string(),
-                        Ok(n) => (n.saturating_add(1)).to_string(),
-                        Err(_) => "1".to_string(),
-                    };
+                    // Integer settings may arrive as a JSON number or string.
+                    // Send a numeric update and preserve the original JSON type
+                    // separately for cleanup.
+                    let current = original.as_u64().or_else(|| {
+                        original.as_str().and_then(|value| value.parse::<u64>().ok())
+                    });
+                    let new_value = serde_json::json!(current.unwrap_or(0).saturating_add(1));
 
                     // Register the restore BEFORE attempting the mutation so
                     // a failed mid-mutation still triggers a cleanup attempt.
@@ -1288,8 +1286,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                                     let got = resp.result.ok_or(
                                                         "clickhouse setting get returned no result",
                                                     )?;
-                                                    if got.value.as_deref()
-                                                        == Some(expected.as_str())
+                                                    if got.value.as_ref()
+                                                        == Some(&expected)
                                                     {
                                                         Ok(Some(()))
                                                     } else {

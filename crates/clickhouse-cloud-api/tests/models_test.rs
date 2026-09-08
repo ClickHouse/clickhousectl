@@ -6751,3 +6751,42 @@ fn service_clickhouse_settings_preserves_dynamic_json_values() {
     };
     assert!(serde_json::to_value(empty).is_err());
 }
+
+#[test]
+fn service_clickhouse_setting_preserves_json_value_types() {
+    for value in [
+        serde_json::json!(262146),
+        serde_json::json!(18446744073709551615_u64),
+        serde_json::json!(-42),
+        serde_json::json!(1.25),
+        serde_json::json!("26.2"),
+        serde_json::json!("262146"),
+        serde_json::json!(false),
+        serde_json::json!({"future": [1, true]}),
+    ] {
+        let wire = serde_json::json!({"name": "setting", "value": value});
+        let setting: ServiceClickhouseSetting = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(setting.value.as_ref(), Some(&value));
+        assert_eq!(serde_json::to_value(&setting).unwrap(), wire);
+        let list_wire = serde_json::json!({"settings": [wire]});
+        let list: ServiceClickhouseSettingsList =
+            serde_json::from_value(list_wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(list).unwrap(), list_wire);
+    }
+}
+
+#[test]
+fn service_clickhouse_setting_missing_and_null_values_remain_absent() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"name": null, "value": null}),
+    ] {
+        let setting: ServiceClickhouseSetting = serde_json::from_value(wire).unwrap();
+        assert_eq!(setting.name, None);
+        assert_eq!(setting.value, None);
+        assert_eq!(
+            serde_json::to_value(setting).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
