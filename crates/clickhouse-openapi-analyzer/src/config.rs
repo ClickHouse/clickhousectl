@@ -72,6 +72,9 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // The spec allows protobufSchema only for Protobuf without schemaRegistry;
     // requiring it would reject JSON/Avro and schema-registry Kafka requests.
     ("ClickPipePostKafkaSource", "protobufSchema"),
+    // Kinesis likewise requires protobufSchema only for Protobuf and forbids it
+    // for other formats; the legacy requiredness heuristic misses that condition.
+    ("ClickPipePostKinesisSource", "protobufSchema"),
     // The legacy service-create schema marks almost every property required,
     // but the API requires only name/provider/region and rejects many defaults.
     ("ServicePostRequest", "autoscalingMode"),

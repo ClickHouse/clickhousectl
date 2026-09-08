@@ -6790,3 +6790,39 @@ fn service_clickhouse_setting_missing_and_null_values_remain_absent() {
         );
     }
 }
+
+#[test]
+fn kinesis_protobuf_schema_round_trips_and_other_formats_omit_it() {
+    let json_source = ClickPipePostKinesisSource::default();
+    let wire = serde_json::to_value(&json_source).unwrap();
+    assert!(wire.get("protobufSchema").is_none());
+    assert_eq!(
+        serde_json::from_value::<ClickPipePostKinesisSource>(wire).unwrap(),
+        json_source
+    );
+
+    let protobuf = ClickPipePostKinesisSource {
+        format: ClickPipePostKinesisSourceFormat::Protobuf,
+        protobuf_schema: Some("c3ludGF4".into()),
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(&protobuf).unwrap();
+    assert_eq!(wire["format"], "Protobuf");
+    assert_eq!(wire["protobufSchema"], "c3ludGF4");
+    assert_eq!(
+        serde_json::from_value::<ClickPipePostKinesisSource>(wire).unwrap(),
+        protobuf
+    );
+    assert_eq!(protobuf.format.to_string(), "Protobuf");
+
+    let response: ClickPipeKinesisSource =
+        serde_json::from_value(serde_json::json!({"format": "Protobuf"})).unwrap();
+    assert_eq!(
+        response.format,
+        Some(ClickPipeKinesisSourceFormat::Protobuf)
+    );
+    assert_eq!(response.format.unwrap().to_string(), "Protobuf");
+    assert!(
+        matches!(serde_json::from_str::<ClickPipeKinesisSourceFormat>("\"FutureFormat\"").unwrap(), ClickPipeKinesisSourceFormat::Unknown(value) if value == "FutureFormat")
+    );
+}

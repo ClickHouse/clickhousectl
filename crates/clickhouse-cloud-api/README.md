@@ -16,6 +16,8 @@ The current alert request schemas have no `required` array or optional marker on
 
 Postgres slow-query aggregate durations (`*DurationUs`) and execution `durationUs` use `Option<f64>` to preserve fractional microseconds returned by the API. Counts remain integral. The analyzer tracks the upstream integer-schema discrepancy with response-only, stale-checked exceptions ([#758](https://github.com/ClickHouse/clickhousectl/issues/758)).
 
+Kinesis source format enums now include `Protobuf`. Set `ClickPipePostKinesisSource.protobuf_schema` to the base64-encoded `.proto` source or serialized `FileDescriptorSet` for that format; omit it for other formats. Organization Prometheus discovery has graduated from beta and is no longer listed in `BETA_OPERATIONS`.
+
 ## Development
 
 ### Structure

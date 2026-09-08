@@ -57,7 +57,6 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "click_stack_update_webhook",
     "click_stack_validate_dashboard",
     "credit_balances_get",
-    "organization_prometheus_discovery_get",
     "organization_quota_get",
     "organization_quotas_get_list",
     "postgres_instance_config_get",
@@ -202,6 +201,7 @@ mod tests {
         assert!(is_beta_operation("scaling_schedule_get"));
         assert!(is_beta_operation("postgres_service_get_list"));
         assert!(!is_beta_operation("services_list"));
+        assert!(!is_beta_operation("organization_prometheus_discovery_get"));
         assert!(!is_beta_operation("not_a_real_op"));
     }
 

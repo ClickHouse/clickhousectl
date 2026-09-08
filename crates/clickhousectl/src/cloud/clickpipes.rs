@@ -2761,6 +2761,7 @@ fn build_kinesis_source(
     };
 
     Ok(ClickPipePostKinesisSource {
+        protobuf_schema: None,
         format: parse_enum(&args.format)?,
         stream_name: args.stream_name.clone(),
         region: args.region.clone(),
