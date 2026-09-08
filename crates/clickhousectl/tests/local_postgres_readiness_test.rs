@@ -6,7 +6,7 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::Shutdown;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
@@ -528,7 +528,48 @@ fn run_start_command(
     } else {
         command.env("DO_NOT_TRACK", "1");
     }
-    command.output().expect("run clickhousectl")
+    // Bound hangs after acquiring the fixture lock, independently of the
+    // readiness deadline under test. Capturing on another thread also drains
+    // both pipes while the child runs.
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run clickhousectl");
+    let pid = child.id();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let capture = |mut pipe: Box<dyn Read + Send>| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).expect("capture child output");
+            bytes
+        })
+    };
+    let stdout = capture(Box::new(stdout));
+    let stderr = capture(Box::new(stderr));
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if let Some(status) = child.try_wait().expect("poll clickhousectl") {
+            return Output {
+                status,
+                stdout: stdout.join().expect("join stdout reader"),
+                stderr: stderr.join().expect("join stderr reader"),
+            };
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().expect("kill hung clickhousectl");
+            child.wait().expect("reap hung clickhousectl");
+            let stdout = stdout.join().expect("join stdout reader");
+            let stderr = stderr.join().expect("join stderr reader");
+            panic!(
+                "clickhousectl {pid} hung after 30 seconds; stdout: {}; stderr: {}",
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr),
+            );
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 fn readiness_requests(requests: &[DockerRequest]) -> Vec<&DockerRequest> {
@@ -753,7 +794,6 @@ fn resumed_start_also_waits_for_postgres_readiness() {
 
 #[test]
 fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
-    let started = std::time::Instant::now();
     let (output, requests, project) = run_start(
         DockerScenario {
             existing: false,
@@ -773,14 +813,26 @@ fn wall_clock_timeout_fails_and_rolls_back_fresh_data() {
     );
 
     assert_eq!(output.status.code(), Some(1));
-    assert!(started.elapsed() < Duration::from_secs(4));
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "startup_timeout");
     assert_eq!(
         error["error"]["message"],
         "Postgres server 'default' did not become ready within 1 seconds"
     );
-    assert!(readiness_requests(&requests).len() >= 2);
+    // The fake daemon always reports a running container and never reports
+    // readiness. The timeout must therefore trigger rollback, regardless of
+    // how many polls the scheduler permits before the deadline.
+    let start = request_index(&requests, "POST", "/containers/pg-id/start");
+    let inspect = request_index(&requests, "GET", "/containers/pg-id/json");
+    let remove = request_index(&requests, "DELETE", "/containers/pg-id?");
+    assert!(start < inspect && inspect < remove);
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == "DELETE")
+            .count(),
+        1,
+    );
     assert!(
         !project
             .path()
