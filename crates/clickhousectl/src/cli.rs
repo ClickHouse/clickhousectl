@@ -127,6 +127,136 @@ pub struct UpdateArgs {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+    use std::collections::BTreeMap;
+
+    fn visit_commands(
+        command: &clap::Command,
+        path: &str,
+        visit: &mut impl FnMut(&clap::Command, &str),
+    ) {
+        visit(command, path);
+        for child in command.get_subcommands() {
+            visit_commands(child, &format!("{path} {}", child.get_name()), visit);
+        }
+    }
+
+    #[test]
+    fn whole_command_tree_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn whole_command_tree_has_descriptions() {
+        let mut failures = Vec::new();
+        visit_commands(&Cli::command(), "clickhousectl", &mut |command, path| {
+            if command
+                .get_about()
+                .is_none_or(|about| about.to_string().trim().is_empty())
+            {
+                failures.push(format!("{path}: missing command description"));
+            }
+            for arg in command.get_arguments() {
+                if arg
+                    .get_help()
+                    .is_none_or(|help| help.to_string().trim().is_empty())
+                {
+                    failures.push(format!("{path}: missing description for {}", arg.get_id()));
+                }
+            }
+        });
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn whole_command_tree_follows_help_structure() {
+        let mut failures = Vec::new();
+        visit_commands(&Cli::command(), "clickhousectl", &mut |command, path| {
+            if command
+                .get_about()
+                .is_some_and(|about| about.to_string().lines().count() != 1)
+            {
+                failures.push(format!("{path}: about must be one line"));
+            }
+            if command.get_long_about().is_some() {
+                failures.push(format!("{path}: long_about is not allowed"));
+            }
+            if command.get_before_help().is_some() || command.get_before_long_help().is_some() {
+                failures.push(format!("{path}: before_help is not allowed"));
+            }
+            if command.get_after_long_help().is_some() {
+                failures.push(format!("{path}: use after_help for agent context"));
+            }
+            if command
+                .get_subcommand_help_heading()
+                .is_some_and(|heading| heading != "Commands")
+            {
+                failures.push(format!("{path}: use the standard Commands heading"));
+            }
+            for arg in command.get_arguments() {
+                if arg
+                    .get_help_heading()
+                    .is_some_and(|heading| !["Arguments", "Options"].contains(&heading))
+                {
+                    failures.push(format!(
+                        "{path}: {} has a custom help heading",
+                        arg.get_id()
+                    ));
+                }
+            }
+            if let Some(after_help) = command.get_after_help() {
+                let text = after_help.to_string();
+                let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+                if lines.next() != Some("CONTEXT FOR AGENTS:") {
+                    failures.push(format!(
+                        "{path}: after_help must start with CONTEXT FOR AGENTS:"
+                    ));
+                }
+                let content: Vec<_> = lines.collect();
+                if content.is_empty() || content.len() > 8 {
+                    failures.push(format!(
+                        "{path}: agent context has {} content lines (expected 1–8)",
+                        content.len()
+                    ));
+                }
+                for line in content {
+                    if line.chars().count() > 120 {
+                        failures.push(format!(
+                            "{path}: context line exceeds 120 characters: {line}"
+                        ));
+                    }
+                }
+            }
+        });
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn shared_flags_have_identical_help_at_every_declaration() {
+        let shared = ["api-key", "api-secret", "url", "org-id", "json", "debug"];
+        let mut declarations = BTreeMap::new();
+        let mut failures = Vec::new();
+        // Inspect declarations before build() propagates global flags to descendants.
+        visit_commands(&Cli::command(), "clickhousectl", &mut |command, path| {
+            for arg in command.get_arguments() {
+                let Some(flag) = arg.get_long().filter(|flag| shared.contains(flag)) else {
+                    continue;
+                };
+                let help = (
+                    arg.get_help().map(ToString::to_string),
+                    arg.get_long_help().map(ToString::to_string),
+                );
+                if let Some((previous_path, previous_help)) = declarations.get(flag) {
+                    if previous_help != &help {
+                        failures.push(format!("--{flag}: {path} differs from {previous_path}: {help:?} != {previous_help:?}"));
+                    }
+                } else {
+                    declarations.insert(flag.to_owned(), (path.to_owned(), help));
+                }
+            }
+        });
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
 
     #[test]
     fn unknown_command_exits_with_a_usage_error() {

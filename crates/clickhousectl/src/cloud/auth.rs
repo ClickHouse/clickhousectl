@@ -26,11 +26,11 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         interactive: bool,
 
-        /// API key to save (requires --api-secret)
+        /// Cloud API key (requires --api-secret for auth login)
         #[arg(long)]
         api_key: Option<String>,
 
-        /// API secret to save (requires --api-key)
+        /// Cloud API secret (requires --api-key for auth login)
         #[arg(long)]
         api_secret: Option<String>,
     },

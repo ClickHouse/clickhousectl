@@ -2783,6 +2783,12 @@ All three list commands expose `--cursor` and `--limit` (1–100) and retain pag
 
 The UDF API request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation. The OpenAPI analyzer checks inline union payload fields and request requiredness; its report format is version 5.
 
+## CLI help checks
+
+`cargo test -p clickhousectl --bin clickhousectl cli::tests::` checks clap's full command tree,
+command and argument descriptions, help structure, agent context limits, and shared flag consistency.
+Run it with `--no-default-features` as well to check the tree without telemetry.
+
 ## Cloud integration testing
 
 Maintainer operation, exact-SHA overrides, stacked-PR policy, and the required

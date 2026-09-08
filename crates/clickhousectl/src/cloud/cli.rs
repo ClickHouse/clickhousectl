@@ -25,11 +25,11 @@ use clap::{Args, Subcommand};
 
 #[derive(Args)]
 pub struct CloudArgs {
-    /// Cloud API key; overrides stored and environment credentials
+    /// Cloud API key (requires --api-secret for auth login)
     #[arg(long, global = true)]
     pub api_key: Option<String>,
 
-    /// Cloud API secret; overrides stored and environment credentials
+    /// Cloud API secret (requires --api-key for auth login)
     #[arg(long, global = true)]
     pub api_secret: Option<String>,
 
@@ -522,24 +522,5 @@ mod tests {
             ],
             true,
         );
-    }
-
-    #[test]
-    fn every_cloud_subcommand_has_a_help_about() {
-        use clap::CommandFactory;
-
-        let mut command = Cli::command();
-        let cloud = command
-            .find_subcommand_mut("cloud")
-            .expect("cloud subcommand");
-
-        for sub in cloud.get_subcommands() {
-            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
-            assert!(
-                !about.trim().is_empty(),
-                "cloud subcommand `{}` has no about text",
-                sub.get_name()
-            );
-        }
     }
 }
