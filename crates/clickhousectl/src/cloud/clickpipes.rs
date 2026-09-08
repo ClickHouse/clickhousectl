@@ -1439,8 +1439,12 @@ pub struct MySqlCreateArgs {
     #[arg(long)]
     pub host: String,
 
-    /// MySQL port
-    #[arg(long, default_value = "3306")]
+    /// MySQL port (1-65535)
+    #[arg(
+        long,
+        default_value = "3306",
+        value_parser = clap::value_parser!(u16).range(1..=65535)
+    )]
     pub port: u16,
 
     /// Username (required with --auth basic; invalid with --auth IAM_ROLE)
@@ -8616,6 +8620,39 @@ mod tests {
             let mut args = mysql_create_cli_args();
             args.extend([flag, invalid]);
             assert_rejected(&args);
+        }
+    }
+
+    #[test]
+    fn mysql_port_accepts_default_and_boundaries_and_rejects_out_of_range_values() {
+        for (port, expected) in [(None, 3306), (Some("1"), 1), (Some("65535"), 65535)] {
+            let mut args = mysql_create_cli_args();
+            args.extend(["--username", "user", "--password", "password"]);
+            if let Some(port) = port {
+                args.extend(["--port", port]);
+            }
+            let ClickPipeCommands::Create {
+                command: ClickPipeCreateCommands::MySQL(parsed),
+            } = parse_clickpipe(&args)
+            else {
+                panic!("expected mysql create");
+            };
+            assert_eq!(parsed.port, expected);
+        }
+
+        for port in ["0", "65536"] {
+            let mut args = mysql_create_cli_args();
+            args.extend([
+                "--username",
+                "user",
+                "--password",
+                "password",
+                "--port",
+                port,
+            ]);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert_eq!(error.exit_code(), 2);
         }
     }
 

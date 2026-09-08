@@ -2220,6 +2220,10 @@ checked before the request is sent.
 
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
 
+PostgreSQL and MySQL source `--port` values must be between 1 and 65535
+(defaults: 5432 and 3306, respectively). Values outside this range are usage
+errors (exit code 2) before any request is made.
+
 #### MySQL ClickPipe authentication
 
 `clickpipe create mysql` authenticates with either a username and password
