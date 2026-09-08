@@ -725,13 +725,13 @@ pub async fn list_project_postgres(
     Ok(out)
 }
 
-/// Run `psql` inside a container in non-interactive mode: no TTY, no raw
-/// mode, no stdin. Streams stdout+stderr to the host. Used when the caller
-/// passes `--query` or `--queries-file` so the output can be piped/scripted.
+/// Run `psql` without a TTY, streaming an optional host SQL file or stdin
+/// into the exec stream while forwarding stdout and stderr independently.
 pub async fn exec_psql_one_shot(
     docker: &Docker,
     container_id: &str,
     psql_args: &[String],
+    reader: Option<Box<dyn io::Read + Send>>,
 ) -> Result<()> {
     use bollard::exec::StartExecResults;
     use bollard::models::ExecConfig;
@@ -746,7 +746,7 @@ pub async fn exec_psql_one_shot(
             ExecConfig {
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
-                attach_stdin: Some(false),
+                attach_stdin: Some(reader.is_some()),
                 tty: Some(false),
                 cmd: Some(cmd),
                 ..Default::default()
@@ -760,32 +760,97 @@ pub async fn exec_psql_one_shot(
         .start_exec(&exec_id, None)
         .await
         .map_err(|e| Error::DockerError(e.to_string()))?;
-    let mut output = match started {
-        StartExecResults::Attached { output, .. } => output,
-        StartExecResults::Detached => return Ok(()),
+    let (mut output, mut input) = match started {
+        StartExecResults::Attached { output, input } => (output, input),
+        StartExecResults::Detached => {
+            return Err(Error::DockerError("psql exec unexpectedly detached".into()));
+        }
     };
 
-    let mut stdout = tokio::io::stdout();
-    let mut stderr = tokio::io::stderr();
-    while let Some(chunk) = output.next().await {
-        match chunk {
-            Ok(bollard::container::LogOutput::StdErr { message }) => {
-                let _ = stderr.write_all(&message).await;
-            }
-            Ok(out) => {
-                let _ = stdout.write_all(&out.into_bytes()).await;
-            }
-            Err(_) => break,
+    let write_input = async {
+        if let Some(reader) = reader {
+            let result = stream_psql_input(reader, &mut input).await;
+            // Docker needs a half-close to deliver EOF to psql's -f -. Keep
+            // the read half alive until all output and the exit status arrive.
+            let shutdown = input.shutdown().await;
+            result?;
+            shutdown?;
         }
-    }
-    let _ = stdout.flush().await;
-    let _ = stderr.flush().await;
+        Ok::<_, Error>(())
+    };
+    let read_output = async {
+        let mut stdout = tokio::io::stdout();
+        let mut stderr = tokio::io::stderr();
+        while let Some(chunk) = output.next().await {
+            match chunk.map_err(|error| Error::DockerError(error.to_string()))? {
+                bollard::container::LogOutput::StdErr { message } => {
+                    stderr.write_all(&message).await?;
+                    stderr.flush().await?;
+                }
+                out => {
+                    stdout.write_all(&out.into_bytes()).await?;
+                    stdout.flush().await?;
+                }
+            }
+        }
+        Ok::<_, Error>(())
+    };
+    tokio::pin!(write_input, read_output);
+    let (input_result, output_result) = tokio::select! {
+        result = &mut write_input => (result, read_output.await),
+        result = &mut read_output => (Ok(()), result),
+    };
 
-    if let Ok(info) = docker.inspect_exec(&exec_id).await
-        && let Some(code) = info.exit_code
-        && code != 0
-    {
-        return Err(Error::ChildExit(code as i32));
+    let info = docker
+        .inspect_exec(&exec_id)
+        .await
+        .map_err(|error| Error::DockerError(error.to_string()))?;
+    match info.exit_code {
+        Some(code) if code != 0 => Err(Error::ChildExit(code as i32)),
+        Some(0) if info.running != Some(true) => {
+            output_result?;
+            input_result
+        }
+        _ => Err(Error::DockerError(
+            "psql exec has no final exit status".into(),
+        )),
+    }
+}
+
+async fn stream_psql_input(
+    mut reader: Box<dyn io::Read + Send>,
+    input: &mut (impl tokio::io::AsyncWrite + Unpin),
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    // A dedicated reader thread and bounded channel keep pipes streaming with
+    // bounded memory. Unlike tokio::io::stdin's blocking-pool task, this thread
+    // cannot hold runtime shutdown hostage when psql exits before stdin EOF.
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+    std::thread::Builder::new()
+        .name("psql-input".into())
+        .spawn(move || {
+            loop {
+                let mut buffer = vec![0; 8192];
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        buffer.truncate(count);
+                        if sender.blocking_send(Ok(buffer)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        let _ = sender.blocking_send(Err(error));
+                        break;
+                    }
+                }
+            }
+        })?;
+    while let Some(chunk) = receiver.recv().await {
+        input.write_all(&chunk?).await?;
+        input.flush().await?;
     }
     Ok(())
 }

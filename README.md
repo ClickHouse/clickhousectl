@@ -569,6 +569,8 @@ clickhousectl local postgres remove                       # Remove "default"
 clickhousectl local postgres remove dev
 ```
 
+`local postgres client --queries-file` accepts relative or absolute host paths, or `-` to read stdin (for example, `cat seed.sql | clickhousectl local postgres client --queries-file -`). This also works when host `psql` is unavailable: the Docker fallback streams the SQL to container `psql`. When combined, `--query` executes before the file; append `-- -v ON_ERROR_STOP=1` to stop on SQL errors and preserve psql's nonzero exit status. In Docker mode, file contents are streamed as `psql -f -`; paths used inside SQL (such as `\i` or `\copy`) still refer to the container filesystem.
+
 Postgres `--name` and `--version` select a managed instance and cannot be combined with direct `--host` or `--port` selectors.
 
 The Postgres `dotenv` command includes the generated password. Do not commit its output; prefer `--local` when your application reads `.env.local`.

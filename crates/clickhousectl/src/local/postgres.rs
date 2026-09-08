@@ -1102,16 +1102,28 @@ async fn client(
         psql_args.push("-c".into());
         psql_args.push(q);
     }
-    if let Some(f) = queries_file {
-        psql_args.push("-f".into());
-        psql_args.push(f);
-    }
+    // Host paths do not exist inside the container. Stream the selected file
+    // through psql's explicit stdin file argument, after any -c command.
+    let input: Option<Box<dyn std::io::Read + Send>> = match queries_file {
+        Some(file) => {
+            let reader: Box<dyn std::io::Read + Send> = if file == "-" {
+                Box::new(std::io::stdin())
+            } else {
+                Box::new(std::fs::File::open(&file).map_err(|error| {
+                    Error::Postgres(format!("could not open SQL file {file:?}: {error}"))
+                })?)
+            };
+            psql_args.extend(["-f".into(), "-".into()]);
+            Some(reader)
+        }
+        None => None,
+    };
     psql_args.extend(extra_args);
 
     if one_shot {
         // Non-interactive: no TTY, no raw mode, output goes to stdout/stderr
         // so the caller can pipe / capture / redirect.
-        docker::exec_psql_one_shot(&docker, container_id, &psql_args).await
+        docker::exec_psql_one_shot(&docker, container_id, &psql_args, input).await
     } else {
         docker::exec_psql_in_container(&docker, container_id, &psql_args).await
     }
