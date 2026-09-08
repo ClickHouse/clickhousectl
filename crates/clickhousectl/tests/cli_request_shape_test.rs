@@ -22534,3 +22534,159 @@ async fn service_settings_set_names_unreadable_files_before_organization_discove
     }
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
+
+#[tokio::test]
+async fn org_get_and_update_select_explicit_legacy_or_detected_organization() {
+    for subcommand in ["get", "update"] {
+        for selector in [
+            vec![],
+            vec!["--org-id", "00000000-0000-0000-0000-000000000001"],
+            vec!["00000000-0000-0000-0000-000000000001"],
+        ] {
+            let mock = MockServer::start().await;
+            let home = tempfile::tempdir().unwrap();
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": [{"id": "00000000-0000-0000-0000-000000000001", "name": "Only org"}]
+                })))
+                .expect(if selector.is_empty() { 1 } else { 0 })
+                .mount(&mock)
+                .await;
+            let result = serde_json::json!({"id": "00000000-0000-0000-0000-000000000001", "name": "Selected org"});
+            let mut target = Mock::given(method(if subcommand == "get" { "GET" } else { "PATCH" }))
+                .and(path(
+                    "/v1/organizations/00000000-0000-0000-0000-000000000001",
+                ))
+                .and(header(
+                    "authorization",
+                    "Basic dGVzdC1rZXk6dGVzdC1zZWNyZXQ=",
+                ));
+            if subcommand == "update" {
+                target = target.and(body_json(serde_json::json!({"name": "Selected org"})));
+            }
+            target
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
+            let mut cmd = Command::new(clickhousectl_binary());
+            clear_inherited_env(&mut cmd);
+            cmd.current_dir(home.path())
+                .env("HOME", home.path())
+                .env("DO_NOT_TRACK", "1")
+                .args([
+                    "cloud",
+                    "--url",
+                    &mock.uri(),
+                    "--api-key",
+                    "test-key",
+                    "--api-secret",
+                    "test-secret",
+                    "--json",
+                    "org",
+                    subcommand,
+                ])
+                .args(&selector);
+            if subcommand == "update" {
+                cmd.args(["--name", "Selected org"]);
+            }
+            let output = cmd.output().unwrap();
+            assert_success(&output);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                result
+            );
+            assert_eq!(
+                mock.received_requests().await.unwrap().len(),
+                if selector.is_empty() { 2 } else { 1 }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn org_get_and_update_reject_conflicting_selectors_before_http() {
+    let mock = MockServer::start().await;
+    let home = tempfile::tempdir().unwrap();
+    for subcommand in ["get", "update"] {
+        for positional in [
+            "00000000-0000-0000-0000-000000000001",
+            "00000000-0000-0000-0000-000000000002",
+        ] {
+            let mut cmd = Command::new(clickhousectl_binary());
+            clear_inherited_env(&mut cmd);
+            let output = cmd
+                .current_dir(home.path())
+                .env("HOME", home.path())
+                .env("DO_NOT_TRACK", "1")
+                .args([
+                    "cloud",
+                    "--url",
+                    &mock.uri(),
+                    "--api-key",
+                    "test-key",
+                    "--api-secret",
+                    "test-secret",
+                    "org",
+                    subcommand,
+                    positional,
+                    "--org-id",
+                    "00000000-0000-0000-0000-000000000001",
+                ])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(2), "{output:?}");
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn org_get_and_update_require_one_organization_for_autodetection() {
+    for subcommand in ["get", "update"] {
+        for organizations in [
+            serde_json::json!([]),
+            serde_json::json!([
+                {"id": "00000000-0000-0000-0000-000000000001", "name": "First"}, {"id": "00000000-0000-0000-0000-000000000002", "name": "Second"}
+            ]),
+        ] {
+            let mock = MockServer::start().await;
+            let home = tempfile::tempdir().unwrap();
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"result": organizations})),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
+            let mut cmd = Command::new(clickhousectl_binary());
+            clear_inherited_env(&mut cmd);
+            let output = cmd
+                .current_dir(home.path())
+                .env("HOME", home.path())
+                .env("DO_NOT_TRACK", "1")
+                .args([
+                    "cloud",
+                    "--url",
+                    &mock.uri(),
+                    "--api-key",
+                    "test-key",
+                    "--api-secret",
+                    "test-secret",
+                    "org",
+                    subcommand,
+                ])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{output:?}");
+            let requests = mock.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(requests[0].url.path(), "/v1/organizations");
+        }
+    }
+}

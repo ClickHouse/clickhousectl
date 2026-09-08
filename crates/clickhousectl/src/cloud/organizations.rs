@@ -21,8 +21,13 @@ pub enum OrgCommands {
 
     /// Get organization details
     Get {
-        /// Organization ID
-        org_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Organization ID (deprecated positional form; use --org-id)
+        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
+        legacy_org_id: Option<String>,
     },
 
     /// View organization quotas (Beta)
@@ -61,8 +66,13 @@ CONTEXT FOR AGENTS:
   Only the flags you pass change; everything else is left as-is.
   This can only remove private endpoints; add them with `cloud service update --add-private-endpoint-id`.")]
     Update {
-        /// Organization ID
-        org_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Organization ID (deprecated positional form; use --org-id)
+        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
+        legacy_org_id: Option<String>,
 
         /// New organization name
         #[arg(long)]
@@ -220,7 +230,7 @@ pub enum ByocCommands {
     /// Create BYOC infrastructure
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Wait for `cloud org get <org-id>` to show state `infra-ready` before creating a service.
+  Wait for `cloud org get --org-id <org-id>` to show state `infra-ready` before creating a service.
   Discover profiles with `cloud service profile list --region <region> --byoc-id <id>`.")]
     Create {
         /// Cloud region ID
@@ -427,13 +437,21 @@ impl InvitationCommands {
 pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> CloudResult<()> {
     match command {
         OrgCommands::List => org_list(client, json).await,
-        OrgCommands::Get { org_id } => org_get(client, &org_id, json).await,
+        OrgCommands::Get {
+            org_id,
+            legacy_org_id,
+        } => {
+            let org_id =
+                resolve_org_id(client, org_id.as_deref().or(legacy_org_id.as_deref())).await?;
+            org_get(client, &org_id, json).await
+        }
         OrgCommands::Quota { command } => run_quota(client, command, json).await,
         OrgCommands::Balance { org_id } => org_balance(client, org_id.as_deref(), json).await,
         OrgCommands::Byoc { command } => run_byoc(client, command, json).await,
         OrgCommands::Role { command } => run_role(client, command, json).await,
         OrgCommands::Update {
             org_id,
+            legacy_org_id,
             name,
             remove_private_endpoint,
             enable_core_dumps,
@@ -443,7 +461,13 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
                 remove_private_endpoints: remove_private_endpoint,
                 enable_core_dumps,
             };
-            org_update(client, &org_id, options, json).await
+            org_update(
+                client,
+                org_id.as_deref().or(legacy_org_id.as_deref()),
+                options,
+                json,
+            )
+            .await
         }
         OrgCommands::Prometheus {
             command,
@@ -1023,12 +1047,13 @@ async fn org_balance(client: &CloudClient, org_id: Option<&str>, json: bool) -> 
 
 async fn org_update(
     client: &CloudClient,
-    org_id: &str,
+    org_id: Option<&str>,
     options: OrgUpdateOptions,
     json: bool,
 ) -> CloudResult<()> {
     let request = build_org_update_request(&options)?;
-    let organization = client.update_organization(org_id, &request).await?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let organization = client.update_organization(&org_id, &request).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&organization)?);
@@ -1871,6 +1896,78 @@ mod tests {
     }
 
     #[test]
+    fn org_get_and_update_hide_only_the_legacy_selector() {
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        let org = cli
+            .find_subcommand("cloud")
+            .unwrap()
+            .find_subcommand("org")
+            .unwrap();
+        for name in ["get", "update"] {
+            let command = org.find_subcommand(name).unwrap();
+            let legacy = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == "legacy_org_id")
+                .unwrap();
+            let flag = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == "org_id")
+                .unwrap();
+            assert!(legacy.is_hide_set());
+            assert!(!legacy.is_required_set());
+            assert_eq!(flag.get_long(), Some("org-id"));
+            assert!(!flag.is_hide_set());
+            assert!(!flag.is_required_set());
+        }
+    }
+
+    #[test]
+    fn org_get_and_update_accept_optional_and_legacy_selectors() {
+        for subcommand in ["get", "update"] {
+            for selector in [vec![], vec!["--org-id", "org-1"], vec!["org-1"]] {
+                let mut args = vec!["clickhousectl", "cloud", "org", subcommand];
+                args.extend(&selector);
+                let CloudCommands::Org { command } = parse_cloud_command(&args) else {
+                    panic!("expected org command");
+                };
+                assert_eq!(command.is_write(), subcommand == "update");
+                let (org_id, legacy_org_id) = match command {
+                    OrgCommands::Get {
+                        org_id,
+                        legacy_org_id,
+                    }
+                    | OrgCommands::Update {
+                        org_id,
+                        legacy_org_id,
+                        ..
+                    } => (org_id, legacy_org_id),
+                    _ => panic!("expected get or update"),
+                };
+                assert_eq!(org_id.as_deref(), (selector.len() == 2).then_some("org-1"));
+                assert_eq!(
+                    legacy_org_id.as_deref(),
+                    (selector.len() == 1).then_some("org-1")
+                );
+            }
+            for positional in ["org-1", "org-2"] {
+                let err = Cli::try_parse_from([
+                    "clickhousectl",
+                    "cloud",
+                    "org",
+                    subcommand,
+                    positional,
+                    "--org-id",
+                    "org-1",
+                ])
+                .err()
+                .expect("conflicting selectors must fail");
+                assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+            }
+        }
+    }
+
+    #[test]
     fn parses_organization_body_command_defaults() {
         let CloudCommands::Org { command } =
             parse_cloud_command(&["clickhousectl", "cloud", "org", "update", "org-1"])
@@ -1879,6 +1976,7 @@ mod tests {
         };
         let OrgCommands::Update {
             org_id,
+            legacy_org_id,
             name,
             remove_private_endpoint,
             enable_core_dumps,
@@ -1886,7 +1984,8 @@ mod tests {
         else {
             panic!("expected org update");
         };
-        assert_eq!(org_id, "org-1");
+        assert!(org_id.is_none());
+        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
         assert!(name.is_none());
         assert!(remove_private_endpoint.is_empty());
         assert!(enable_core_dumps.is_none());
@@ -1954,6 +2053,7 @@ mod tests {
         };
         let OrgCommands::Update {
             org_id,
+            legacy_org_id,
             name,
             remove_private_endpoint,
             enable_core_dumps,
@@ -1961,7 +2061,8 @@ mod tests {
         else {
             panic!("expected org update");
         };
-        assert_eq!(org_id, "org-1");
+        assert!(org_id.is_none());
+        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
         assert_eq!(name.as_deref(), Some("Updated Org"));
         assert_eq!(
             remove_private_endpoint,

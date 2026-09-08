@@ -696,12 +696,12 @@ Reading a service, Postgres service or organization â€” or deleting a service â€
 
 ```bash
 clickhousectl cloud org list              # List organizations
-clickhousectl cloud org get <org-id>      # Get organization details
+clickhousectl cloud org get --org-id <org-id>      # Get organization details
 clickhousectl cloud org quota list --org-id <org-id>
 clickhousectl cloud org quota get services-per-organization --org-id <org-id>
 clickhousectl cloud org balance --org-id <org-id>  # Active trial and prepaid credits
-clickhousectl cloud org update <org-id> --name "Renamed Org"
-clickhousectl cloud org update <org-id> \
+clickhousectl cloud org update --org-id <org-id> --name "Renamed Org"
+clickhousectl cloud org update --org-id <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
   --enable-core-dumps false
 # Create BYOC infrastructure (repeat --availability-zone-suffix as needed)
@@ -710,7 +710,7 @@ clickhousectl cloud org byoc create --org-id <org-id> \
   --availability-zone-suffix a --availability-zone-suffix b \
   --vpc-cidr-range 10.0.0.0/16 --display-name production
 # Find the infrastructure ID and state in the organization's byocConfig
-clickhousectl cloud org get <org-id>
+clickhousectl cloud org get --org-id <org-id>
 clickhousectl cloud org byoc update <infrastructure-id> \
   --display-name renamed --org-id <org-id>
 clickhousectl cloud org byoc delete <infrastructure-id> --org-id <org-id>
@@ -720,11 +720,14 @@ clickhousectl cloud org usage \
   --from-date 2024-01-01 \
   --to-date 2024-01-31 \
   --filter tag:Environment=Production   # max 31-day window (to-date inclusive), costs in CHC
-# Org quota, balance, prometheus, and usage commands auto-detect the org when --org-id is omitted.
-# Org list takes no ID; org get/update take a positional <org-id>.
+# Org get, update, quota, balance, prometheus, and usage auto-detect the org without --org-id.
+# Org list takes no ID.
 # It is auto-detected only when your credentials reach exactly one organization.
 # Organization quota and balance commands are beta and read-only, so they support OAuth.
 ```
+
+`org get` and `org update` still accept the legacy positional organization ID.
+Prefer `--org-id` in new commands; supplying both forms is a usage error (exit 2).
 
 BYOC create, update, and delete require API key authentication. Update requires
 `--display-name`, so it cannot send an empty/no-op patch. The API has no separate
