@@ -407,6 +407,8 @@ clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an in
 clickhousectl local client -- --format Pretty        # Extra clickhouse-client args after --
 ```
 
+`local client` and `local postgres client` now require `--` before native arguments. Put wrapper options such as `--name`, `--host`, `--port`, and `--query` before it; unknown options there produce a usage error (exit 2). Existing commands that passed native options without the separator must add it, for example `local client --name dev -- --format CSV`. Everything after `--` is passed literally to the native client, including options that share wrapper names.
+
 `--name` selects the connection and local client binary from managed server metadata, so named mode does not need a global default. It cannot be combined with direct `--host` or `--port` selectors, and named mode does not accept `--version`.
 
 Without `--host` or `--port`, managed client lookup uses `.clickhouse/servers` from the canonical current directory only. It does not search parent directories. If lookup fails, return to the project root that owns the server, inspect that project's servers with `local server list`, or use direct mode.
@@ -556,6 +558,7 @@ clickhousectl local postgres client --name dev --queries-file schema.sql  # Run 
 clickhousectl local postgres client --name dev --version 17               # Disambiguate two majors
 clickhousectl local postgres client --host remote-host       # Direct mode; port defaults to 5432
 clickhousectl local postgres client --port 55432             # Direct mode; connects locally
+clickhousectl local postgres client --name dev -- -X -v ON_ERROR_STOP=1 # Native psql options
 
 # Write POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE into .env.local
 clickhousectl local postgres dotenv --name dev --local
@@ -568,6 +571,8 @@ clickhousectl local postgres stop-all                     # Stop all Postgres in
 clickhousectl local postgres remove                       # Remove "default"
 clickhousectl local postgres remove dev
 ```
+
+Native `psql` arguments require `--`, with all wrapper selectors before it: `local postgres client --host remote-host -- -X`. Without the separator, unknown options are usage errors (exit 2); after it, even `--host` and `--port` are forwarded literally.
 
 `local postgres client --queries-file` accepts relative or absolute host paths, or `-` to read stdin. Plain pipes also work, for example `cat seed.sql | clickhousectl local postgres client`. Both forms work when host `psql` is unavailable: the Docker fallback streams SQL to container `psql`, preserves EOF and returns psql's exit status. When combined, `--query` executes before the file; append native arguments such as `-- -v ON_ERROR_STOP=1` to stop on SQL errors. In Docker mode, file contents are streamed as `psql -f -`; paths used inside SQL (such as `\i` or `\copy`) still refer to the container filesystem.
 
@@ -2686,7 +2691,7 @@ There is no install ID, no device ID, and no fingerprinting of any kind. The pay
 `clickhousectl local server stop analytics-prod` records `positionals: ["name"]` — that a server was named, not which one. Three exclusions keep that honest:
 
 - only arguments you actually passed count, so a value clap filled in from a default (or from the environment), and a name the CLI generated for you, are absent — which is what makes "you named it" and "we picked one" distinguishable
-- arguments forwarded to another program are never recorded: everything after `--` for `local server start`, and the trailing arguments of `local client` and `local postgres client`, belong to `clickhouse-server`, `clickhouse-client`, and `psql`
+- arguments forwarded to another program are never recorded: everything after `--` for `local server start`, `local client`, and `local postgres client` belongs to `clickhouse-server`, `clickhouse-client`, and `psql`
 - when a command fails to parse, the unmatched token is still never recorded — only the slot it would have filled
 
 A failed *runtime* invocation may also carry up to six failure-classification fields, so that "exit code 1" stops being the only thing we know about a broken command. Each one is a closed vocabulary defined in the source, and nothing else can ever appear in it:

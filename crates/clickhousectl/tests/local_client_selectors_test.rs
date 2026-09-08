@@ -650,3 +650,129 @@ fn postgres_client_uses_the_same_validation_and_direct_mode_defaults() {
         ],
     );
 }
+
+#[test]
+fn both_clients_reject_native_arguments_without_boundary_before_child_execution() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    install_fake_clickhouse(home.path(), VERSION_A);
+    let bin = home.path().join("bin");
+    write_arg_printer(&bin.join("psql"));
+
+    for client in [
+        &["local", "client"][..],
+        &["local", "postgres", "client"][..],
+    ] {
+        for native in ["--format=CSV", "--unknown", "-X", "dbname"] {
+            for selectors in [
+                &["--name", "dev"][..],
+                &["--host", "wrapper-host", "--port", "12345"][..],
+            ] {
+                for native_first in [true, false] {
+                    let tail: Vec<&str> = if native_first {
+                        [native]
+                            .into_iter()
+                            .chain(selectors.iter().copied())
+                            .collect()
+                    } else {
+                        selectors.iter().copied().chain([native]).collect()
+                    };
+                    let argv: Vec<&str> = client.iter().copied().chain(tail).collect();
+                    let output = run(project.path(), home.path(), Some(&bin), &argv);
+                    assert_eq!(output.status.code(), Some(2), "argv: {argv:?}; {output:?}");
+                    assert!(output.stdout.is_empty(), "fake child ran: {output:?}");
+                    assert!(!project.path().join(".clickhouse").exists());
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn both_clients_forward_native_argv_literally_after_wrapper_arguments() {
+    let project = tempfile::tempdir().expect("create project tempdir");
+    let home = tempfile::tempdir().expect("create home tempdir");
+    let bin = home.path().join("bin");
+    // NUL framing distinguishes empty arguments, embedded newlines and spaces.
+    let script = "#!/bin/sh\nprintf '%s\\0' \"$@\"\n";
+    write_executable(
+        &home
+            .path()
+            .join(".clickhouse/versions")
+            .join(VERSION_A)
+            .join("clickhouse"),
+        script,
+    );
+    write_executable(&bin.join("psql"), script);
+    let native = [
+        "--format=CSV",
+        "-X",
+        "--name",
+        "native-name",
+        "--host",
+        "native-host",
+        "--port",
+        "0",
+        "--version",
+        "native-version",
+        "--query",
+        "SELECT 'a b'\n",
+        "--json",
+        "--help",
+        "",
+        "--",
+        "-",
+    ];
+    for (client, wrapper) in [
+        (
+            &["local", "client"][..],
+            &[
+                "client",
+                "--host",
+                "wrapper-host",
+                "--port",
+                "12345",
+                "--query",
+                "SELECT 1",
+            ][..],
+        ),
+        (
+            &["local", "postgres", "client"][..],
+            &[
+                "-h",
+                "wrapper-host",
+                "-p",
+                "12345",
+                "-U",
+                "postgres",
+                "-d",
+                "postgres",
+                "-c",
+                "SELECT 1",
+            ][..],
+        ),
+    ] {
+        let argv: Vec<&str> = client
+            .iter()
+            .copied()
+            .chain([
+                "--host",
+                "wrapper-host",
+                "--port",
+                "12345",
+                "--query",
+                "SELECT 1",
+                "--",
+            ])
+            .chain(native)
+            .collect();
+        let output = run(project.path(), home.path(), Some(&bin), &argv);
+        assert!(output.status.success(), "argv: {argv:?}; {output:?}");
+        let actual: Vec<&str> = std::str::from_utf8(&output.stdout)
+            .expect("native argv is UTF-8")
+            .split_terminator('\0')
+            .collect();
+        let expected: Vec<&str> = wrapper.iter().copied().chain(native).collect();
+        assert_eq!(actual, expected, "argv: {argv:?}");
+    }
+}

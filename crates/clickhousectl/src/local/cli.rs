@@ -226,7 +226,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Default mode looks up a server started by `clickhousectl local server start`; the name defaults
   to \"default\".
-  Extra clickhouse-client arguments go after `--`.
+  Put wrapper options before `--`; all arguments after it go to clickhouse-client.
   Next: `clickhousectl local server list` to see running servers."
     )]
     Client {
@@ -261,8 +261,8 @@ CONTEXT FOR AGENTS:
         #[arg(long, num_args = 1.., conflicts_with = "query")]
         queries_file: Vec<String>,
 
-        /// Additional arguments to pass to clickhouse-client
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// Native clickhouse-client arguments (require --)
+        #[arg(last = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
 
@@ -557,7 +557,7 @@ CONTEXT FOR AGENTS:
   psql inside the container via `docker exec`.
   Direct mode (--host/--port) requires `psql` on PATH and connects as user/database \"postgres\"
   with no password; it does not read managed credentials.
-  Extra psql arguments go after `--`.")]
+  Put wrapper options before `--`; all arguments after it go to psql.")]
     Client {
         /// Managed instance to connect to (default: "default")
         #[arg(long, short, conflicts_with_all = ["host", "port"])]
@@ -587,8 +587,8 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         queries_file: Option<String>,
 
-        /// Additional arguments to pass to psql
-        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        /// Native psql arguments (require --)
+        #[arg(last = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
 
@@ -990,6 +990,91 @@ mod tests {
                 error.to_string().contains("--queries-file <QUERIES_FILE>"),
                 "{error}"
             );
+        }
+    }
+
+    #[test]
+    fn both_clients_require_boundary_before_native_arguments() {
+        for client in [&["client"][..], &["postgres", "client"][..]] {
+            for native in ["--unknown", "--format", "-X", "dbname"] {
+                for selectors in [
+                    &["--name", "dev"][..],
+                    &["--host", "remote", "--port", "9000"][..],
+                    &["--query", "SELECT 1"][..],
+                ] {
+                    for native_first in [true, false] {
+                        let tail: Vec<&str> = if native_first {
+                            [native]
+                                .into_iter()
+                                .chain(selectors.iter().copied())
+                                .collect()
+                        } else {
+                            selectors.iter().copied().chain([native]).collect()
+                        };
+                        let argv: Vec<&str> = client.iter().copied().chain(tail).collect();
+                        assert_eq!(
+                            local_parse_error(&argv).kind(),
+                            clap::error::ErrorKind::UnknownArgument,
+                            "argv: {argv:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn both_clients_preserve_all_native_arguments_after_boundary() {
+        let native = [
+            "--format=CSV",
+            "-X",
+            "--name",
+            "native-name",
+            "--host",
+            "native-host",
+            "--port",
+            "0",
+            "--version",
+            "native-version",
+            "--query",
+            "SELECT 'a b'",
+            "--json",
+            "--help",
+            "",
+            "--",
+            "-",
+        ];
+        for client in [&["client"][..], &["postgres", "client"][..]] {
+            let argv: Vec<&str> = client
+                .iter()
+                .copied()
+                .chain(["--host", "wrapper-host", "--port", "12345", "--"])
+                .chain(native)
+                .collect();
+            let (name, host, port, args) = match local_command(&argv) {
+                LocalCommands::Client {
+                    name,
+                    host,
+                    port,
+                    args,
+                    ..
+                }
+                | LocalCommands::Postgres {
+                    command:
+                        PostgresCommands::Client {
+                            name,
+                            host,
+                            port,
+                            args,
+                            ..
+                        },
+                } => (name, host, port, args),
+                _ => panic!("expected client"),
+            };
+            assert!(name.is_none());
+            assert_eq!(host.as_deref(), Some("wrapper-host"));
+            assert_eq!(port, Some(12345));
+            assert_eq!(args, native);
         }
     }
 
