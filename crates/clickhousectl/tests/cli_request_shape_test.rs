@@ -17527,6 +17527,75 @@ async fn pgbouncer_invalid_file_values_fail_before_any_api_request() {
 }
 
 #[tokio::test]
+async fn postgres_config_get_honors_human_explicit_json_and_agent_output() {
+    let mock = MockServer::start().await;
+    let config = serde_json::json!({
+        "pgConfig": {"work_mem": "64MB", "max_connections": 500},
+        "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
+        .and(header(
+            "authorization",
+            "Basic ZmFrZS1rZXktZm9yLXRlc3RzOmZha2Utc2VjcmV0LWZvci10ZXN0cw==",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": config
+        })))
+        .expect(3)
+        .mount(&mock)
+        .await;
+
+    let args = ["postgres", "config", "get", "pg-1", "--org-id", "org-1"];
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    assert!(serde_json::from_slice::<Value>(&human.stdout).is_err());
+    let human = String::from_utf8(human.stdout).unwrap();
+    for line in [
+        "pgConfig:",
+        "  work_mem: 64MB",
+        "  max_connections: 500",
+        "pgBouncerConfig:",
+        "  default_pool_size: 16",
+        "  future_parameter: on",
+    ] {
+        assert!(human.lines().any(|actual| actual == line), "{human}");
+    }
+
+    let explicit = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&explicit);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&explicit.stdout).unwrap(),
+        config
+    );
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let agent = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("AI_AGENT", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args(["cloud", "--url", &mock.uri()])
+        .args(args)
+        .output()
+        .unwrap();
+    assert_success(&agent);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&agent.stdout).unwrap(),
+        config
+    );
+    for request in mock.received_requests().await.unwrap() {
+        assert_eq!(request.url.query(), None);
+        assert!(request.body.is_empty());
+    }
+}
+
+#[tokio::test]
 async fn pgbouncer_config_get_json_preserves_values_and_tolerates_absent_sections() {
     for result in [
         serde_json::json!({"pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"}}),

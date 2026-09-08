@@ -1143,12 +1143,13 @@ clickhousectl cloud postgres delete <pg-id>
 clickhousectl cloud postgres certs get <pg-id>                   # raw PEM to stdout
 clickhousectl cloud postgres certs get <pg-id> --output ca.pem   # file (mode 0600 on unix)
 
-# Runtime configuration (`config get` always prints JSON; --json changes nothing)
+# Runtime configuration (human-readable by default; JSON with --json or for coding agents)
 clickhousectl cloud postgres config get <pg-id>
+clickhousectl cloud postgres config get <pg-id> --json > complete-config.json
 clickhousectl cloud postgres config patch <pg-id> --set max_connections=500 --set random_page_cost=1.1
 clickhousectl cloud postgres config patch <pg-id> --file patch.json
 
-# Replace the entire configuration only with a complete object obtained from `config get`
+# Replace the entire configuration only with a complete object obtained from `config get --json`
 clickhousectl cloud postgres config replace <pg-id> --file complete-config.json
 
 # Password
@@ -1184,7 +1185,7 @@ For `postgres config patch --file`, put that map under `pgBouncerConfig` alongsi
 {"pgConfig":{},"pgBouncerConfig":{"default_pool_size":"16"}}
 ```
 
-PgBouncer parameter names are open-ended; values must be quoted strings, including numbers. Invalid value types fail locally before any API request. `config replace` replaces the complete Postgres and PgBouncer configuration: obtain the current document with `config get`, edit it, and retain both sections and every setting you want to keep.
+PgBouncer parameter names are open-ended; values must be quoted strings, including numbers. Invalid value types fail locally before any API request. `config replace` replaces the complete Postgres and PgBouncer configuration: obtain the current document with `config get --json`, edit it, and retain both sections and every setting you want to keep.
 
 `pgConfig` uses the closed set of GUC names supported by the Cloud API. Unknown names and `null` values are rejected locally on `--set` and every PgConfig file path, and the enum-valued settings accept only `default_transaction_isolation` (`read committed`, `repeatable read`, `serializable`), `ssl_min_protocol_version` (`TLSv1` through `TLSv1.3`), and `wal_compression` (`off`, `on`, `lz4`, `zstd`). Files for `config patch` and `config replace` must contain both `pgConfig` and `pgBouncerConfig`; use an explicit `{}` when a section is intentionally empty rather than omitting it.
 

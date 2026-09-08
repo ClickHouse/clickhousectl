@@ -173,8 +173,7 @@ CONTEXT FOR AGENTS:
         subcommand,
         after_help = "\
 CONTEXT FOR AGENTS:
-  `get` always prints JSON; --json changes nothing.
-  `replace` sends the whole object — start from `config get` output, not a fragment.
+  `replace` sends the whole object — start from `config get --json` output, not a fragment.
   `patch --set` only touches pgConfig; use --file to patch pgBouncerConfig."
     )]
     Config(ConfigCommands),
@@ -347,7 +346,7 @@ pub enum ConfigCommands {
         postgres_id: String,
         /// JSON file with a complete PostgresInstanceConfig object
         ///
-        /// Not a fragment: use a document obtained from `config get`.
+        /// Not a fragment: use a document obtained from `config get --json`.
         #[arg(long)]
         file: PathBuf,
         /// Organization ID (auto-detected only if you have one org)
@@ -1743,7 +1742,7 @@ pub async fn postgres_config_get(
     client: &CloudClient,
     postgres_id: &str,
     org_id: Option<&str>,
-    _json: bool,
+    json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let resp = client
@@ -1752,8 +1751,11 @@ pub async fn postgres_config_get(
         .await
         .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let cfg = unwrap_api(resp)?;
-    // Config is a flat 20+ field object — always emit as JSON (pretty).
-    println!("{}", serde_json::to_string_pretty(&cfg)?);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&cfg)?);
+    } else {
+        print_human(&cfg)?;
+    }
     Ok(())
 }
 
