@@ -730,6 +730,10 @@ BYOC create, update, and delete require API key authentication. Update requires
 `--display-name`, so it cannot send an empty/no-op patch. The API has no separate
 BYOC list command; `cloud org get` returns the organization's `byocConfig` entries.
 
+Each `cloud org update --remove-private-endpoint` value must include both
+`cloud-provider` and `region`; incomplete endpoint identities are rejected before
+any request is sent.
+
 `cloud org prometheus discovery` returns the beta HTTP service-discovery target groups used by Prometheus `http_sd_configs`; `--json` preserves the complete target and label array. The command defaults discovered scrape targets to filtered metrics. The command without `discovery` still calls the deprecated organization metrics endpoint and emits raw Prometheus exposition text for compatibility.
 
 ### Services

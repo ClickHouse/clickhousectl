@@ -70,10 +70,11 @@ CONTEXT FOR AGENTS:
 
         /// Remove a private endpoint from the org allow list (repeatable)
         ///
-        /// Format: id[,description=TEXT][,cloud-provider=aws|gcp|azure][,region=REGION]
-        ///
-        /// Omitting cloud-provider or region sends gcp / ap-northeast-1, not "unchanged".
-        #[arg(long = "remove-private-endpoint")]
+        /// Format: id[,description=TEXT],cloud-provider=aws|gcp|azure,region=REGION
+        #[arg(
+            long = "remove-private-endpoint",
+            value_parser = parse_org_private_endpoint_remove_arg
+        )]
         remove_private_endpoint: Vec<String>,
 
         /// Enable or disable core dump collection at the organization level
@@ -605,12 +606,10 @@ struct OrgUpdateOptions {
 }
 
 fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPatchPrivateEndpoint> {
-    let mut endpoint = OrganizationPatchPrivateEndpoint {
-        id: String::new(),
-        description: None,
-        cloud_provider: OrganizationPatchPrivateEndpointCloudprovider::default(),
-        region: OrganizationPatchPrivateEndpointRegion::default(),
-    };
+    let mut id = String::new();
+    let mut description = None;
+    let mut cloud_provider = None;
+    let mut region = None;
 
     for (index, part) in value.split(',').enumerate() {
         let part = part.trim();
@@ -619,7 +618,7 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
         }
 
         if index == 0 && !part.contains('=') {
-            endpoint.id = part.to_string();
+            id = part.to_string();
             continue;
         }
 
@@ -631,20 +630,35 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
         })?;
 
         match key {
-            "id" => endpoint.id = raw_value.to_string(),
-            "description" => endpoint.description = Some(raw_value.to_string()),
+            "id" => id = raw_value.to_string(),
+            "description" => description = Some(raw_value.to_string()),
             "cloud-provider" => {
-                endpoint.cloud_provider =
+                if raw_value.trim().is_empty() {
+                    return Err(CloudError::new(format!(
+                        "remove-private-endpoint '{}' requires a non-empty cloud-provider",
+                        value
+                    )));
+                }
+                cloud_provider = Some(
                     serde_json::from_value::<OrganizationPatchPrivateEndpointCloudprovider>(
                         serde_json::Value::String(raw_value.to_string()),
                     )
-                    .expect("enum with Unknown variant should always deserialize");
+                    .expect("enum with Unknown variant should always deserialize"),
+                );
             }
             "region" => {
-                endpoint.region = serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
-                    serde_json::Value::String(raw_value.to_string()),
-                )
-                .expect("enum with Unknown variant should always deserialize");
+                if raw_value.trim().is_empty() {
+                    return Err(CloudError::new(format!(
+                        "remove-private-endpoint '{}' requires a non-empty region",
+                        value
+                    )));
+                }
+                region = Some(
+                    serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
+                        serde_json::Value::String(raw_value.to_string()),
+                    )
+                    .expect("enum with Unknown variant should always deserialize"),
+                );
             }
             _ => {
                 return Err(CloudError::new(format!(
@@ -655,14 +669,49 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
         }
     }
 
-    if endpoint.id.trim().is_empty() {
+    if id.trim().is_empty() {
         return Err(CloudError::new(format!(
             "remove-private-endpoint '{}' requires a non-empty id",
             value
         )));
     }
 
-    Ok(endpoint)
+    let (cloud_provider, region) = match (cloud_provider, region) {
+        (Some(cloud_provider), Some(region)) => (cloud_provider, region),
+        (None, None) => {
+            return Err(CloudError::new(format!(
+                "remove-private-endpoint '{}' requires cloud-provider and region",
+                value
+            )));
+        }
+        (None, Some(_)) => {
+            return Err(CloudError::new(format!(
+                "remove-private-endpoint '{}' requires cloud-provider",
+                value
+            )));
+        }
+        (Some(_), None) => {
+            return Err(CloudError::new(format!(
+                "remove-private-endpoint '{}' requires region",
+                value
+            )));
+        }
+    };
+
+    Ok(OrganizationPatchPrivateEndpoint {
+        id,
+        description,
+        cloud_provider,
+        region,
+    })
+}
+
+/// Validate endpoint removals during clap parsing so incomplete endpoint
+/// identities fail as usage errors before credentials or networking are used.
+fn parse_org_private_endpoint_remove_arg(value: &str) -> Result<String, String> {
+    parse_org_private_endpoint_remove(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
 }
 
 fn parse_org_private_endpoints_patch(
@@ -1982,6 +2031,65 @@ mod tests {
     }
 
     #[test]
+    fn parses_minimal_private_endpoint_removal() {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "update",
+            "org-1",
+            "--remove-private-endpoint",
+            "pe-1,cloud-provider=aws,region=us-east-1",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Update {
+            remove_private_endpoint,
+            ..
+        } = command
+        else {
+            panic!("expected org update");
+        };
+
+        assert_eq!(
+            remove_private_endpoint,
+            ["pe-1,cloud-provider=aws,region=us-east-1"]
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_private_endpoint_removals_during_clap_parsing() {
+        for (value, required) in [
+            ("pe-1,region=us-east-1", "requires cloud-provider"),
+            ("pe-1,cloud-provider=aws", "requires region"),
+            ("pe-1,description=old", "requires cloud-provider and region"),
+            (
+                "pe-1,cloud-provider=,region=us-east-1",
+                "requires a non-empty cloud-provider",
+            ),
+            (
+                "pe-1,cloud-provider=aws,region= ",
+                "requires a non-empty region",
+            ),
+        ] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "org",
+                "update",
+                "org-1",
+                "--remove-private-endpoint",
+                value,
+            ])
+            .err()
+            .expect("incomplete endpoint removal should fail");
+
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert!(error.to_string().contains(required), "{error}");
+        }
+    }
+
+    #[test]
     fn parses_member_clear_roles() {
         let CloudCommands::Member { command } = parse_cloud_command(&[
             "clickhousectl",
@@ -2545,6 +2653,26 @@ mod tests {
                 error.to_string().contains("requires a non-empty id"),
                 "unexpected error for {value:?}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn parse_org_private_endpoint_remove_requires_provider_and_region() {
+        for (value, required) in [
+            ("pe-1,region=us-east-1", "requires cloud-provider"),
+            ("pe-1,cloud-provider=aws", "requires region"),
+            ("pe-1", "requires cloud-provider and region"),
+            (
+                "pe-1,cloud-provider= ,region=us-east-1",
+                "requires a non-empty cloud-provider",
+            ),
+            (
+                "pe-1,cloud-provider=aws,region= ",
+                "requires a non-empty region",
+            ),
+        ] {
+            let error = parse_org_private_endpoint_remove(value).unwrap_err();
+            assert!(error.to_string().contains(required), "{error}");
         }
     }
 

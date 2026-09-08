@@ -702,6 +702,33 @@ async fn organization_role_create_rejects_invalid_nested_config_before_http() {
 }
 
 #[tokio::test]
+async fn organization_update_rejects_incomplete_endpoint_removals_before_http() {
+    let mock = MockServer::start().await;
+
+    for value in [
+        "pe-1,region=us-east-1",
+        "pe-1,cloud-provider=aws",
+        "pe-1,description=old",
+        "pe-1,cloud-provider=,region=us-east-1",
+        "pe-1,cloud-provider=aws,region= ",
+    ] {
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &["org", "update", "org-1", "--remove-private-endpoint", value],
+        );
+
+        assert_eq!(output.status.code(), Some(2));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("requires"),
+            "unexpected stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn org_quota_list_preserves_sparse_json_and_supports_oauth() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
