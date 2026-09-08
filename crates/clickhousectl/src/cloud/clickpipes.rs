@@ -86,7 +86,7 @@ fn parse_cdc_memory_gb(value: &str) -> Result<f64, String> {
     Ok(value)
 }
 
-fn parse_create_memory_gb(value: &str) -> Result<f64, String> {
+fn parse_streaming_memory_gb(value: &str) -> Result<f64, String> {
     let value = value
         .parse::<f64>()
         .map_err(|_| "must be a number from 0.5 to 8".to_string())?;
@@ -348,15 +348,15 @@ CONTEXT FOR AGENTS:
         clickpipe_id: String,
 
         /// Number of replicas (1-40)
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=40))]
         replicas: Option<u32>,
 
         /// CPU millicores per replica (125-2000, streaming pipes)
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(125..=2000))]
         cpu_millicores: Option<u32>,
 
         /// Memory GB per replica (0.5-8, streaming pipes)
-        #[arg(long)]
+        #[arg(long, value_parser = parse_streaming_memory_gb)]
         memory_gb: Option<f64>,
 
         /// Organization ID (auto-detected only if you have one org)
@@ -814,7 +814,7 @@ pub struct ClickPipeCreateRequestArgs {
     pub cpu_millicores: Option<u32>,
 
     /// Initial memory GB per replica (0.5-8)
-    #[arg(long, value_parser = parse_create_memory_gb)]
+    #[arg(long, value_parser = parse_streaming_memory_gb)]
     pub memory_gb: Option<f64>,
 
     /// Field mapping JSON with sourceField and destinationField (repeatable)
@@ -6277,6 +6277,69 @@ mod tests {
         assert_eq!(cpu_millicores, Some(500));
         assert_eq!(memory_gb, Some(1.5));
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn scale_accepts_inclusive_boundaries() {
+        for (replicas, cpu, memory) in [("1", "125", "0.5"), ("40", "2000", "8")] {
+            let ClickPipeCommands::Scale {
+                replicas: parsed_replicas,
+                cpu_millicores,
+                memory_gb,
+                ..
+            } = parse_clickpipe(&[
+                "scale",
+                "svc-1",
+                "pipe-1",
+                "--replicas",
+                replicas,
+                "--cpu-millicores",
+                cpu,
+                "--memory-gb",
+                memory,
+            ])
+            else {
+                panic!("expected scale");
+            };
+            assert_eq!(parsed_replicas, Some(replicas.parse().unwrap()));
+            assert_eq!(cpu_millicores, Some(cpu.parse().unwrap()));
+            assert_eq!(memory_gb, Some(memory.parse().unwrap()));
+        }
+    }
+
+    #[test]
+    fn scale_rejects_out_of_range_and_non_finite_values() {
+        for (flag, values) in [
+            ("replicas", &["0", "41", "-1"][..]),
+            ("cpu-millicores", &["0", "124", "2001", "-1"][..]),
+            (
+                "memory-gb",
+                &[
+                    "0",
+                    "0.49",
+                    "8.01",
+                    "9",
+                    "-1",
+                    "NaN",
+                    "inf",
+                    "+inf",
+                    "-inf",
+                    "infinity",
+                    "-infinity",
+                ][..],
+            ),
+        ] {
+            for value in values {
+                let argument = format!("--{flag}={value}");
+                let error = clickpipe_parse_error(&["scale", "svc-1", "pipe-1", &argument]);
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ValueValidation,
+                    "{argument}"
+                );
+                assert_eq!(error.exit_code(), 2, "{argument}");
+            }
+        }
     }
 
     #[test]

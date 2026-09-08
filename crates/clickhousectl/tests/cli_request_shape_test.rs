@@ -15850,6 +15850,92 @@ async fn clickpipe_scale_with_a_single_flag_sends_the_request() {
     assert_eq!(body["replicas"], 4);
 }
 
+#[tokio::test]
+async fn clickpipe_scale_invalid_values_make_no_request() {
+    let mock = MockServer::start().await;
+    for argument in [
+        "--replicas=0",
+        "--replicas=41",
+        "--cpu-millicores=0",
+        "--cpu-millicores=124",
+        "--cpu-millicores=2001",
+        "--memory-gb=0",
+        "--memory-gb=0.49",
+        "--memory-gb=8.01",
+        "--memory-gb=9",
+        "--memory-gb=NaN",
+        "--memory-gb=inf",
+        "--memory-gb=+inf",
+        "--memory-gb=-inf",
+    ] {
+        // Omit --org-id so the check also catches accidental organization discovery.
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &["clickpipe", "scale", "svc-1", "pipe-1", argument],
+        );
+        assert_eq!(output.status.code(), Some(2), "{argument}: {output:?}");
+    }
+    assert!(
+        mock.received_requests().await.unwrap().is_empty(),
+        "invalid scale values must be rejected before any API request"
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_scale_boundaries_preserve_wire_values() {
+    for (replicas, cpu, memory, body) in [
+        (
+            "1",
+            "125",
+            "0.5",
+            serde_json::json!({
+                "replicas": 1, "replicaCpuMillicores": 125, "replicaMemoryGb": 0.5
+            }),
+        ),
+        (
+            "40",
+            "2000",
+            "8",
+            serde_json::json!({
+                "replicas": 40, "replicaCpuMillicores": 2000, "replicaMemoryGb": 8.0
+            }),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1/scaling",
+            ))
+            .and(body_json(&body))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {"id": "11111111-2222-3333-4444-555555555555", "scaling": body},
+                "status": 200,
+                "requestId": "stub-clickpipe-scale",
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "scale",
+                "svc-1",
+                "pipe-1",
+                "--org-id",
+                "org-1",
+                "--replicas",
+                replicas,
+                "--cpu-millicores",
+                cpu,
+                "--memory-gb",
+                memory,
+            ],
+        );
+        assert_success(&output);
+    }
+}
+
 // ── service-wide ClickPipes CDC scaling (issue #586) ───────────────────────
 
 const CDC_SCALING_PATH: &str = "/v1/organizations/org-1/services/svc-1/clickpipesCdcScaling";

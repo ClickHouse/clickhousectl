@@ -1316,6 +1316,10 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
 clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
 ```
 
+`clickpipe scale` accepts replicas 1–40, CPU 125–2000 millicores, and memory
+0.5–8 GB. Out-of-range and non-finite values fail with usage exit 2 before any
+API request.
+
 CDC scaling CPU accepts 1000-32000 millicores in increments of 1000, and
 memory accepts 4-128 GiB in increments of 4. Memory must be four times the CPU
 core count when both are changed together; omitted update flags preserve their
