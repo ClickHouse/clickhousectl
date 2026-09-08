@@ -295,7 +295,7 @@ impl ByocCommands {
 
 #[derive(Subcommand)]
 pub enum PrometheusCommands {
-    /// List Prometheus scrape targets (Beta)
+    /// List Prometheus scrape targets
     Discovery,
 }
 
