@@ -22690,3 +22690,106 @@ async fn org_get_and_update_require_one_organization_for_autodetection() {
         }
     }
 }
+
+#[tokio::test]
+async fn service_settings_get_preserves_json_types_and_renders_human_values() {
+    let mock = MockServer::start().await;
+    for (name, value, display) in [
+        ("max_query_size", serde_json::json!(262146), "262146"),
+        ("compatibility", serde_json::json!("26.2"), "26.2"),
+        ("future_bool", serde_json::json!(false), "false"),
+    ] {
+        let setting = serde_json::json!({"name": name, "value": value});
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1/organizations/org-1/services/svc-1/clickhouseSettings/{name}"
+            )))
+            .and(wiremock::matchers::basic_auth(
+                "fake-key-for-tests",
+                "fake-secret-for-tests",
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": setting, "status": 200
+            })))
+            .expect(2)
+            .mount(&mock)
+            .await;
+        let args = [
+            "service", "settings", "get", "svc-1", name, "--org-id", "org-1",
+        ];
+        let json = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_success(&json);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+            setting
+        );
+        let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+        assert_success(&human);
+        let stdout = String::from_utf8(human.stdout).unwrap();
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line == format!("value: {display}")),
+            "{stdout}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn service_settings_list_preserves_mixed_json_types_and_renders_sparse_rows() {
+    let mock = MockServer::start().await;
+    let settings = serde_json::json!([
+        {"name": "max_query_size", "value": 262146},
+        {"name": "compatibility", "value": "26.2"},
+        {"name": "future_bool", "value": false},
+        {"name": "missing_value"},
+        {"name": "null_value", "value": null},
+        {"value": "unnamed"}
+    ]);
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickhouseSettings",
+        ))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"settings": settings}, "status": 200
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    let args = ["service", "settings", "list", "svc-1", "--org-id", "org-1"];
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    let mut expected = settings;
+    expected[4].as_object_mut().unwrap().remove("value");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!({"settings": expected})
+    );
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    let rows: Vec<Vec<&str>> = stdout
+        .lines()
+        .filter(|line| line.starts_with('|'))
+        .map(|line| {
+            line.split('|')
+                .map(str::trim)
+                .filter(|cell| !cell.is_empty())
+                .collect()
+        })
+        .collect();
+    for expected in [
+        vec!["max_query_size", "262146"],
+        vec!["compatibility", "26.2"],
+        vec!["future_bool", "false"],
+        vec!["missing_value", "-"],
+        vec!["null_value", "-"],
+        vec!["-", "unnamed"],
+    ] {
+        assert!(rows.contains(&expected), "missing {expected:?} in {stdout}");
+    }
+}

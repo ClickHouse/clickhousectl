@@ -1790,7 +1790,10 @@ async fn service_settings_list(
             .into_iter()
             .map(|setting| Row {
                 name: or_absent(setting.name),
-                value: or_absent(setting.value),
+                value: or_absent(setting.value.map(|value| match value {
+                    serde_json::Value::String(value) => value,
+                    value => value.to_string(),
+                })),
             })
             .collect::<Vec<_>>();
         println!("{}", Table::new(rows).with(Style::markdown()));
