@@ -79,7 +79,8 @@ reachability from return types across the client module tree, so a newly wired o
 - `models_carry_no_serde_default` — via the analyzer's `model_fields_with_serde_default()`.
 - `scim_models_are_outside_the_response_tree` — the 40 `Scim*` schemas have no spec path and no `Client` method,
   so they are legitimately strict; the test fails if one becomes response-reachable.
-- `integer_schema_fields_are_not_typed_as_float` — integer schemas do not use floating-point Rust fields.
+- `integer_schema_fields_are_not_typed_as_float` — integer schemas do not use floating-point Rust fields, except
+  verified response-only runtime divergences in `fractional_response_exemptions`.
 
 Scope enforcement to the response tree, never to "every model type": operation-unreferenced and request-only
 schemas resolve in request position, so making them all-`Option` reports genuine `FieldOptionalityMismatch` drift.
@@ -160,6 +161,9 @@ Rust type names but spec/wire field and enum values:
 - `non_openapi_client_methods` — intentional `Client` helpers with no operation, keyed by snake-case method name.
 - `optionality_exemptions` — fields deliberately optional despite the resolved spec, keyed by
   `(RustStructName, specFieldName)`. Request-position only, so a response-only entry can never hit and surfaces as stale.
+- `fractional_response_exemptions` — verified fractional runtime measurements declared as integers by the spec,
+  keyed by `(RustStructName, specFieldName)`. Only response-only `f64` fields qualify; request fields cannot be
+  exempted. Entries become stale when the field, response reachability, Rust type, or upstream integer type changes.
 - `extra_field_exemptions` — deliberate code-only fields, keyed by `(RustStructName, specFieldName)`.
 - `deprecated_field_exemptions` — spec-deprecated fields deliberately excluded from hiding, same key shape.
 - `extra_enum_value_exemptions` — intentional Rust-only wire values, keyed by `(RustEnumName, wireValue)`.

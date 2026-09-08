@@ -20,9 +20,71 @@ pub(crate) fn compare(
     compare_additional_properties(rust, spec, &mut report);
     compare_beta_and_deprecation(rust, spec, config, &mut report);
     compare_enums(rust, spec, config, &mut report);
+    let fractional = integer_float_fields(rust, spec);
+    stale_pairs(
+        "fractional_response",
+        &config.fractional_response_exemptions,
+        &fractional.response_only,
+        &mut report,
+    );
     compare_snapshot(spec, snapshot, &mut report);
     report.finish();
     report
+}
+
+/// Returns all integer/f64 mismatches and the response-only subset eligible for
+/// a verified runtime divergence. Shared by the public policy inventory and the
+/// stale-exemption check so a corrected schema cannot silently retain an entry.
+pub(crate) struct IntegerFloatFields {
+    pub all: BTreeSet<(String, String)>,
+    pub response_only: BTreeSet<(String, String)>,
+}
+
+pub(crate) fn integer_float_fields(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+) -> IntegerFloatFields {
+    let response_types = rust.response_reachable_types();
+    let mut offenders = BTreeSet::new();
+    let mut response_fields = BTreeSet::new();
+    let mut request_fields = BTreeSet::new();
+    for ((schema_name, property_name), property) in &spec.properties {
+        if property.schema_type.as_deref() != Some("integer") {
+            continue;
+        }
+        for (rust_name, direction) in field_check_targets(rust, spec, schema_name) {
+            if direction == Direction::Response && !response_types.contains(&rust_name) {
+                continue;
+            }
+            let Some(field) = rust
+                .structs
+                .get(&rust_name)
+                .and_then(|info| info.fields.get(property_name))
+            else {
+                continue;
+            };
+            if rust.terminal_type(&field.rust_type).as_deref() == Some("f64") {
+                let key = (rust_name, property_name.clone());
+                offenders.insert(key.clone());
+                match direction {
+                    Direction::Response => {
+                        response_fields.insert(key);
+                    }
+                    Direction::Request => {
+                        request_fields.insert(key);
+                    }
+                }
+            }
+        }
+    }
+    let eligible = response_fields
+        .difference(&request_fields)
+        .cloned()
+        .collect();
+    IntegerFloatFields {
+        all: offenders,
+        response_only: eligible,
+    }
 }
 
 fn compare_operations(

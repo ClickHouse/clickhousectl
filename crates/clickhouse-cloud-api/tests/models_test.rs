@@ -6611,3 +6611,106 @@ fn udf_request_inline_variants_preserve_determinism_and_memory() {
     check::<UdfVersionCreateRequestV1>("executable", false);
     check::<UdfVersionCreateRequestV2>("executable_pool", false);
 }
+
+#[test]
+fn postgres_slow_query_durations_preserve_fractions_and_integral_counts() {
+    let aggregate = serde_json::json!({
+        "avgDurationUs": 1190.8419405320817,
+        "maxDurationUs": 2000.75,
+        "p50DurationUs": 1100.25,
+        "p95DurationUs": 1800.5,
+        "p99DurationUs": 1950.125,
+        "totalDurationUs": 3572.525821596245,
+        "callCount": 3, "errorCount": 0, "totalRows": 9007199254740993_i64,
+        "totalSharedBlksHit": 10, "totalSharedBlksRead": 2,
+        "totalCpuTimeUs": 2000, "totalWalBytes": 128
+    });
+    let list: Vec<PostgresSlowQueryPattern> =
+        serde_json::from_value(serde_json::json!([aggregate])).unwrap();
+    assert_eq!(list[0].avg_duration_us, Some(1190.8419405320817));
+    assert_eq!(list[0].total_rows, Some(9007199254740993));
+    assert_eq!(
+        serde_json::to_value(&list).unwrap(),
+        serde_json::json!([aggregate])
+    );
+
+    let detail = serde_json::json!({
+        "aggregate": aggregate,
+        "recentExecutions": [{"durationUs": 1234.56789, "rows": 9007199254740993_i64,
+            "cpuSysTimeUs": 12, "jitFunctions": 2, "sharedBlksHit": 3, "walBytes": 128}]
+    });
+    let parsed: PostgresSlowQueryPatternDetail = serde_json::from_value(detail.clone()).unwrap();
+    assert_eq!(
+        parsed.recent_executions.as_ref().unwrap()[0].duration_us,
+        Some(1234.56789)
+    );
+    assert_eq!(serde_json::to_value(parsed).unwrap(), detail);
+
+    // Existing integer-valued measurements remain accepted as durations.
+    let integer: PostgresQueryExecution =
+        serde_json::from_value(serde_json::json!({"durationUs": 1234})).unwrap();
+    assert_eq!(integer.duration_us, Some(1234.0));
+    let integer: PostgresSlowQueryPattern = serde_json::from_value(serde_json::json!({
+        "avgDurationUs": 1, "maxDurationUs": 2, "p50DurationUs": 1,
+        "p95DurationUs": 2, "p99DurationUs": 2, "totalDurationUs": 3
+    }))
+    .unwrap();
+    assert_eq!(integer.avg_duration_us, Some(1.0));
+    for field in [
+        "callCount",
+        "errorCount",
+        "totalRows",
+        "totalSharedBlksHit",
+        "totalSharedBlksRead",
+        "totalWalBytes",
+    ] {
+        assert!(
+            serde_json::from_value::<PostgresSlowQueryPattern>(serde_json::json!({field: 1.5}))
+                .is_err(),
+            "{field} must remain integral"
+        );
+    }
+    for field in ["rows", "jitFunctions", "sharedBlksHit", "walBytes"] {
+        assert!(
+            serde_json::from_value::<PostgresQueryExecution>(serde_json::json!({field: 1.5}))
+                .is_err(),
+            "{field} must remain integral"
+        );
+    }
+}
+
+#[test]
+fn postgres_slow_query_durations_allow_missing_and_null() {
+    for aggregate in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "avgDurationUs": null, "maxDurationUs": null, "p50DurationUs": null,
+            "p95DurationUs": null, "p99DurationUs": null, "totalDurationUs": null
+        }),
+    ] {
+        let parsed: PostgresSlowQueryPattern = serde_json::from_value(aggregate.clone()).unwrap();
+        assert_eq!(parsed, PostgresSlowQueryPattern::default());
+        assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::json!({}));
+        let detail: PostgresSlowQueryPatternDetail = serde_json::from_value(serde_json::json!({
+            "aggregate": aggregate, "recentExecutions": [{}, {"durationUs": null}]
+        }))
+        .unwrap();
+        assert_eq!(detail.aggregate, Some(PostgresSlowQueryPattern::default()));
+        assert_eq!(
+            detail.recent_executions,
+            Some(vec![PostgresQueryExecution::default(); 2])
+        );
+        assert_eq!(
+            serde_json::to_value(detail).unwrap(),
+            serde_json::json!({"aggregate": {}, "recentExecutions": [{}, {}]})
+        );
+    }
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({"aggregate": null, "recentExecutions": null}),
+    ] {
+        let parsed: PostgresSlowQueryPatternDetail = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, PostgresSlowQueryPatternDetail::default());
+        assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::json!({}));
+    }
+}

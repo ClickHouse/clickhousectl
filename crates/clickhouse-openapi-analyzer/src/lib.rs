@@ -125,6 +125,8 @@ pub fn response_tree(rust_source_root: &Path) -> Result<ResponseTree, AnalyzeErr
 /// The analyzer resolves request/response split variants with the same mapping
 /// used by drift analysis. Response targets are additionally constrained to the
 /// Rust response tree, so unused schemas do not expand the policy surface.
+/// Verified response-only runtime divergences in `fractional_response_exemptions`
+/// are excluded; drift analysis reports stale entries using this same inventory.
 pub fn integer_model_fields_typed_as_float(
     spec_json: &str,
     rust_source_root: &Path,
@@ -133,31 +135,15 @@ pub fn integer_model_fields_typed_as_float(
     let spec = serde_json::from_str(spec_json).map_err(AnalyzeError::SpecJson)?;
     let spec = OpenApiInventory::build(&spec, config).map_err(AnalyzeError::SpecInventory)?;
     let rust = load_rust_inventory(rust_source_root)?;
-    let response_types = rust.response_reachable_types();
-    let mut offenders = BTreeSet::new();
-
-    for ((schema_name, property_name), property) in &spec.properties {
-        if property.schema_type.as_deref() != Some("integer") {
-            continue;
-        }
-        for (rust_name, direction) in compare::field_check_targets(&rust, &spec, schema_name) {
-            if direction == compare::Direction::Response && !response_types.contains(&rust_name) {
-                continue;
-            }
-            let Some(field) = rust
-                .structs
-                .get(&rust_name)
-                .and_then(|info| info.fields.get(property_name))
-            else {
-                continue;
-            };
-            if rust.terminal_type(&field.rust_type).as_deref() == Some("f64") {
-                offenders.insert((rust_name, property_name.clone()));
-            }
-        }
+    let mut fields = compare::integer_float_fields(&rust, &spec);
+    for key in config
+        .fractional_response_exemptions
+        .intersection(&fields.response_only)
+    {
+        fields.all.remove(key);
     }
 
-    Ok(offenders)
+    Ok(fields.all)
 }
 
 /// Lists every public model struct field in the model module tree that carries a
@@ -340,5 +326,122 @@ mod tests {
                 ("WidgetResponse".to_string(), "nullableCount".to_string()),
             ])
         );
+    }
+    #[test]
+    fn fractional_response_exemptions_are_narrow_and_report_staleness() {
+        let spec = serde_json::json!({
+            "paths": {"/widgets": {"get": {
+                "operationId": "getWidget",
+                "responses": {"200": {"content": {"application/json": {
+                    "schema": {"$ref": "#/components/schemas/Widget"}
+                }}}}
+            }}},
+            "components": {"schemas": {"Widget": {
+                "type": "object", "properties": {
+                    "duration": {"type": "integer"}, "count": {"type": "integer"}
+                }
+            }}}
+        });
+        let client = "pub struct Client; impl Client { pub async fn get_widget(&self) -> Result<Widget, Error> { unimplemented!() } }";
+        let models = "pub struct Widget { pub duration: Option<f64>, pub count: Option<f64> }";
+        let key = ("Widget".to_string(), "duration".to_string());
+        let config = AnalyzerConfig {
+            fractional_response_exemptions: BTreeSet::from([key.clone()]),
+            ..AnalyzerConfig::default()
+        };
+        for scenario in [
+            "active",
+            "number",
+            "field_removed",
+            "integer_rust",
+            "rust_field_removed",
+            "unwired",
+            "request",
+            "shared_request",
+        ] {
+            let mut spec = spec.clone();
+            let mut client = client;
+            let mut models = models;
+            match scenario {
+                "number" => {
+                    spec["components"]["schemas"]["Widget"]["properties"]["duration"]["type"] =
+                        serde_json::json!("number")
+                }
+                "field_removed" => {
+                    spec["components"]["schemas"]["Widget"]["properties"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("duration");
+                }
+                "integer_rust" => {
+                    models =
+                        "pub struct Widget { pub duration: Option<i64>, pub count: Option<f64> }"
+                }
+                "rust_field_removed" => models = "pub struct Widget { pub count: Option<f64> }",
+                "unwired" => client = "pub struct Client;",
+                "shared_request" => {
+                    spec["paths"]["/widgets"]["post"] = serde_json::json!({
+                        "operationId": "createWidget",
+                        "requestBody": {"content": {"application/json": {
+                            "schema": {"$ref": "#/components/schemas/Widget"}
+                        }}}, "responses": {}
+                    });
+                }
+                "request" => {
+                    spec["paths"] = serde_json::json!({});
+                }
+                _ => {}
+            }
+            let source = source_tree(client, models);
+            let spec = spec.to_string();
+            let offenders =
+                integer_model_fields_typed_as_float(&spec, source.path(), &config).unwrap();
+            if scenario == "active" {
+                assert_eq!(
+                    offenders,
+                    BTreeSet::from([("Widget".to_string(), "count".to_string())])
+                );
+            }
+            if matches!(scenario, "request" | "shared_request") {
+                assert!(offenders.contains(&key));
+            }
+            let report = analyze(
+                AnalysisInput {
+                    spec_json: &spec,
+                    snapshot_json: &spec,
+                    rust_source_root: source.path(),
+                },
+                &config,
+            )
+            .unwrap();
+            let stale: Vec<_> = report
+                .findings
+                .iter()
+                .filter(|finding| finding.kind == report::FindingKind::StaleExemption)
+                .collect();
+            assert_eq!(
+                stale.len(),
+                usize::from(scenario != "active"),
+                "{scenario}: {report:?}"
+            );
+            if let Some(finding) = stale.first() {
+                assert_eq!(finding.details["exemption_kind"], "fractional_response");
+                assert_eq!(finding.details["left"], "Widget");
+                assert_eq!(finding.details["right"], "duration");
+            }
+            let repeated = analyze(
+                AnalysisInput {
+                    spec_json: &spec,
+                    snapshot_json: &spec,
+                    rust_source_root: source.path(),
+                },
+                &config,
+            )
+            .unwrap();
+            assert_eq!(
+                serde_json::to_string(&report).unwrap(),
+                serde_json::to_string(&repeated).unwrap()
+            );
+        }
     }
 }
