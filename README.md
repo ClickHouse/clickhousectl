@@ -672,6 +672,8 @@ inactive and identifies the source that outranked them.
 
 Pass `--debug` to a Cloud resource command to print the resolved credential source (and the API URL) to stderr before the command runs. This works with and without `--json`.
 
+Cloud notices on stderr are best-effort: if their reader goes away, the operation still runs and reports its outcome through the exit status.
+
 ```bash
 clickhousectl cloud --debug service list
 # [debug] auth source: credentials file (.clickhouse/credentials.json)

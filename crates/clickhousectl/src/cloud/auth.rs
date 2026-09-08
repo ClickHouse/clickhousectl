@@ -1,4 +1,5 @@
 use crate::cloud::credentials;
+use crate::cloud::output::eprint_line;
 use crate::cloud::{
     AuthSource, dotenv_env_provenance, env_cred_presence, resolve_active_auth_source,
 };
@@ -265,8 +266,10 @@ pub async fn run(
 
             if debug {
                 match active {
-                    Some(source) => eprintln!("[debug] auth source: {}", source.describe()),
-                    None => eprintln!("[debug] auth source: none (no credentials configured)"),
+                    Some(source) => {
+                        eprint_line(format!("[debug] auth source: {}", source.describe()))
+                    }
+                    None => eprint_line("[debug] auth source: none (no credentials configured)"),
                 }
             }
 
@@ -682,8 +685,10 @@ pub async fn ensure_fresh_tokens() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => {
             // Refresh failed — clear stale tokens so we fall back to API keys
             clear_tokens();
-            eprintln!("Warning: OAuth token refresh failed. Tokens cleared.");
-            eprintln!("Run `clickhousectl cloud auth login` to re-authenticate, or use API keys.");
+            eprint_line("Warning: OAuth token refresh failed. Tokens cleared.");
+            eprint_line(
+                "Run `clickhousectl cloud auth login` to re-authenticate, or use API keys.",
+            );
         }
     }
 

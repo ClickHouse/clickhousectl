@@ -3582,10 +3582,10 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         return Err(refused_query_provisioning_error(&service_id, &error)
                             .at_stage(FailureStage::QueryRequest));
                     }
-                    eprintln!(
+                    eprint_line(format!(
                         "Provisioning Query API endpoint + key for service '{}'...",
                         service_name
-                    );
+                    ));
                     failure::set_provisioning_state(ProvisioningState::Provisioning);
                     let key = crate::cloud::service_query::ensure_service_query_setup(
                         client,
@@ -3645,7 +3645,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         QueryOutputCompletion::Newline => handle
             .write_all(b"\n")
             .map_err(|error| stream_failure(CloudError::from(error)))?,
-        QueryOutputCompletion::Acknowledge => eprintln!("OK"),
+        QueryOutputCompletion::Acknowledge => eprint_line("OK"),
     }
     handle
         .flush()
@@ -3683,7 +3683,9 @@ fn query_format_uses_text_lines(format: &str) -> bool {
 }
 
 fn eprint_waking_service(service_name: &str) {
-    eprintln!("Service '{service_name}' is idle; waking it (this may take a minute)...");
+    eprint_line(format!(
+        "Service '{service_name}' is idle; waking it (this may take a minute)..."
+    ));
 }
 
 /// A service's native-protocol (`nativesecure`) endpoint.

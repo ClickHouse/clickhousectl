@@ -2402,6 +2402,62 @@ async fn credentials_file_reports_that_environment_credentials_are_ignored() {
     assert_eq!(authorization, expected);
 }
 
+/// #677: credential-precedence and debug notices are emitted before dispatch.
+/// A reader may close stderr before either notice is written; the command must
+/// still reach the API and report its outcome through the exit status.
+#[tokio::test]
+async fn cloud_command_survives_closed_stderr_with_credential_notice_and_debug() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [],
+            "status": 200,
+            "requestId": "stub-org-list",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    write_project_api_credentials(dir.path(), "file-key", "file-secret");
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    let mut child = command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret")
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "--debug",
+            "org",
+            "list",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn clickhousectl");
+
+    drop(child.stderr.take().expect("stderr was piped"));
+    let status = child.wait().expect("failed to wait for clickhousectl");
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "a closed stderr must not prevent cloud command dispatch"
+    );
+    assert_eq!(
+        received_request_shape(&mock).await,
+        vec![("GET".to_string(), "/v1/organizations".to_string())]
+    );
+}
+
 #[test]
 fn auth_status_marks_outranked_environment_credentials_inactive() {
     let dir = tempfile::tempdir().unwrap();
