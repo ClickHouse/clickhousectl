@@ -2569,6 +2569,9 @@ Usage errors and cancelled actions use distinct exit codes.
 | `3`  | Cancelled (user aborted)                                 |
 | `4`  | Auth required (no credentials, 401/403, OAuth-only writes) |
 
+Flags with a fixed value set show their choices in `--help`. An unsupported
+choice exits with code `2` before a Cloud request or Skills download begins.
+
 ## Skills
 
 Install the official ClickHouse Agent Skills from [ClickHouse/agent-skills](https://github.com/ClickHouse/agent-skills).

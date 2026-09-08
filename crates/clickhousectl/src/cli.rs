@@ -49,9 +49,7 @@ CONTEXT FOR AGENTS:
   are still prompted.
   Agent selection without one of those three flags needs a TTY and errors out without one.
   Scope: prompted on a TTY, else the current project directory; --global forces your home directory.
-  The universal `.agents/skills` target is always installed, alongside any selected agent.
-  --agent values: claude, cursor, opencode, codex, agent, roo, trae, windsurf, zencoder, neovate,
-  pochi, adal, openclaw, cline, command-code, kiro-cli, agents")]
+  The universal `.agents/skills` target is always installed, alongside any selected agent.")]
     Skills(SkillsArgs),
 
     /// Update clickhousectl to the latest version
@@ -98,7 +96,12 @@ pub enum TelemetryCommands {
 #[derive(Args, Debug)]
 pub struct SkillsArgs {
     /// Install into specific agents (repeatable, comma-separated)
-    #[arg(long = "agent", value_name = "AGENT", value_delimiter = ',')]
+    #[arg(
+        long = "agent",
+        value_name = "AGENT",
+        value_delimiter = ',',
+        value_parser = clap::builder::PossibleValuesParser::new(crate::skills::supported_agent_keys())
+    )]
     pub agents: Vec<String>,
 
     /// Install into every supported agent in the selected scope without prompting
@@ -182,6 +185,27 @@ mod tests {
         assert!(!args.detected_only);
         assert!(args.global);
         assert_eq!(args.agents, vec!["claude", "codex", "agents"]);
+    }
+
+    #[test]
+    fn skills_agent_accepts_every_supported_agent_and_rejects_unknown_values() {
+        let supported = crate::skills::supported_agent_keys().collect::<Vec<_>>();
+        let joined = supported.join(",");
+        let cli = Cli::try_parse_from(["clickhousectl", "skills", "--agent", &joined]).unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("expected skills command");
+        };
+        assert_eq!(args.agents, supported);
+
+        let error = Cli::try_parse_from(["clickhousectl", "skills", "--agent", "unknown"])
+            .err()
+            .expect("unknown agent must be rejected by clap");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        assert_eq!(error.exit_code(), 2);
+        let message = error.to_string();
+        for agent in crate::skills::supported_agent_keys() {
+            assert!(message.contains(agent), "missing `{agent}`: {message}");
+        }
     }
 
     #[cfg(feature = "telemetry")]

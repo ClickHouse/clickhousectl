@@ -145,6 +145,10 @@ const SUPPORTED_AGENTS: &[AgentSpec] = &[
     },
 ];
 
+pub(crate) fn supported_agent_keys() -> impl Iterator<Item = &'static str> {
+    SUPPORTED_AGENTS.iter().map(|agent| agent.key)
+}
+
 pub async fn install(args: SkillsArgs) -> Result<()> {
     let home = home_dir()?;
     let scope = resolve_scope(&args)?;
@@ -634,11 +638,7 @@ fn find_agent(name: &str) -> Option<&'static AgentSpec> {
 }
 
 fn supported_agent_list() -> String {
-    SUPPORTED_AGENTS
-        .iter()
-        .map(|agent| agent.key)
-        .collect::<Vec<_>>()
-        .join(", ")
+    supported_agent_keys().collect::<Vec<_>>().join(", ")
 }
 
 fn home_dir() -> Result<PathBuf> {

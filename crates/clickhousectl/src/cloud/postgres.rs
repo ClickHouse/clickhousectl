@@ -93,8 +93,12 @@ CONTEXT FOR AGENTS:
         /// Instance size (e.g. c6gd.xlarge); validated by the server
         #[arg(long)]
         size: String,
-        /// Cloud provider (aws or gcp)
-        #[arg(long, default_value = "aws")]
+        /// Cloud provider
+        #[arg(
+            long,
+            default_value = "aws",
+            value_parser = clap::builder::PossibleValuesParser::new(PgProvider::VALUES)
+        )]
         provider: String,
         /// Postgres major version
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgVersion::VALUES))]
@@ -2996,6 +3000,59 @@ mod tests {
         assert_eq!(provider, "aws");
         assert!(pg_version.is_none());
         assert!(ha_type.is_none());
+    }
+
+    #[test]
+    fn postgres_create_provider_uses_the_api_value_set() {
+        for provider in PgProvider::VALUES {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "create",
+                "--name",
+                "pg1",
+                "--region",
+                "us-east-1",
+                "--size",
+                "m7i.2xlarge",
+                "--provider",
+                provider,
+            ]);
+            let PostgresCommands::Create {
+                provider: parsed, ..
+            } = cmd
+            else {
+                panic!("expected create");
+            };
+            assert_eq!(parsed, *provider);
+        }
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "m7i.2xlarge",
+            "--provider",
+            "azure",
+        ])
+        .err()
+        .expect("invalid provider must be rejected by clap");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        assert_eq!(error.exit_code(), 2);
+        let message = error.to_string();
+        for provider in PgProvider::VALUES {
+            assert!(
+                message.contains(provider),
+                "missing `{provider}`: {message}"
+            );
+        }
     }
 
     #[test]

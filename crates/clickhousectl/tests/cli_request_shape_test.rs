@@ -242,6 +242,42 @@ fn invoke_cli_with_cloud_credentials(mock: &MockServer, cli_args: &[&str]) -> st
         .expect("failed to spawn clickhousectl")
 }
 
+#[tokio::test]
+async fn fixed_enum_flags_are_usage_errors_before_any_cloud_request() {
+    for args in [
+        vec![
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "m7i.2xlarge",
+            "--provider",
+            "azure",
+            "--org-id",
+            "org-1",
+        ],
+        vec![
+            "key", "create", "--name", "ci-key", "--state", "broken", "--org-id", "org-1",
+        ],
+        vec![
+            "key", "update", "key-1", "--state", "broken", "--org-id", "org-1",
+        ],
+    ] {
+        let mock = MockServer::start().await;
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("possible values"), "{args:?}: {stderr}");
+        assert!(
+            mock.received_requests().await.unwrap().is_empty(),
+            "{args:?}"
+        );
+    }
+}
+
 fn invoke_cli_with_cloud_credentials_and_stdin(
     mock: &MockServer,
     cli_args: &[&str],
