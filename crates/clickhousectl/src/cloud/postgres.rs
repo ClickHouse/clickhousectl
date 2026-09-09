@@ -3,6 +3,7 @@ use crate::cloud::client::{
 };
 use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
+use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultTransactionIsolation,
@@ -18,6 +19,8 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tabled::{Table, Tabled, settings::Style};
+
+const POSTGRES_LOG_SORT_ORDERS: &[&str] = &["asc", "desc"];
 
 #[derive(Subcommand)]
 pub enum PostgresCommands {
@@ -60,7 +63,12 @@ pub enum PostgresCommands {
         #[arg(long)]
         severity: Option<String>,
         /// Sort order
-        #[arg(long, value_parser = parse_postgres_logs_sort_order)]
+        #[arg(
+            long,
+            value_parser = clap::builder::PossibleValuesParser::new(
+                POSTGRES_LOG_SORT_ORDERS
+            ).try_map(parse_known_postgres_logs_sort_order)
+        )]
         sort_order: Option<PostgresLogsGetListSortorder>,
         /// Maximum number of log entries
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..=2000))]
@@ -1354,6 +1362,12 @@ fn parse_postgres_logs_sort_order(value: &str) -> Result<PostgresLogsGetListSort
     let parsed = serde_json::from_value(serde_json::Value::String(value.to_string()))
         .map_err(|error| format!("invalid sort order '{value}': {error}"))?;
     validate_postgres_logs_sort_order(parsed)
+}
+
+fn parse_known_postgres_logs_sort_order(
+    value: String,
+) -> Result<PostgresLogsGetListSortorder, String> {
+    parse_postgres_logs_sort_order(&value)
 }
 
 fn validate_postgres_logs_sort_order(
@@ -2866,6 +2880,50 @@ mod tests {
     }
 
     #[test]
+    fn postgres_logs_sort_order_exposes_every_supported_value() {
+        use clap::CommandFactory;
+
+        let command = PostgresCli::command();
+        let sort_order = command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == "logs")
+            .and_then(|logs| {
+                logs.get_arguments()
+                    .find(|arg| arg.get_id() == "sort_order")
+            })
+            .expect("logs --sort-order argument");
+        let possible_values: Vec<_> = sort_order
+            .get_possible_values()
+            .into_iter()
+            .map(|value| value.get_name().to_string())
+            .collect();
+        assert_eq!(possible_values, POSTGRES_LOG_SORT_ORDERS);
+
+        for &value in POSTGRES_LOG_SORT_ORDERS {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "logs",
+                "pg-1",
+                "--from-date",
+                "2026-08-01T00:00:00Z",
+                "--to-date",
+                "2026-08-02T00:00:00Z",
+                "--sort-order",
+                value,
+            ]);
+            let PostgresCommands::Logs { sort_order, .. } = cmd else {
+                panic!("expected logs");
+            };
+            assert_eq!(
+                sort_order.as_ref().map(ToString::to_string).as_deref(),
+                Some(value)
+            );
+        }
+    }
+
+    #[test]
     fn rejects_invalid_postgres_logs_flag_values() {
         let invalid_datetime = PostgresCli::try_parse_from([
             "clickhousectl",
@@ -2887,7 +2945,7 @@ mod tests {
             (
                 "--sort-order",
                 "newest",
-                clap::error::ErrorKind::ValueValidation,
+                clap::error::ErrorKind::InvalidValue,
             ),
             ("--limit", "0", clap::error::ErrorKind::ValueValidation),
             ("--limit", "2001", clap::error::ErrorKind::ValueValidation),

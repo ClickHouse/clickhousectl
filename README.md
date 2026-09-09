@@ -1217,7 +1217,7 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 
 `postgres metrics` requires an RFC 3339 start and end time, with the start no later than the end. Whole seconds, fractional seconds, and UTC offsets are normalized to UTC with three fractional digits (for example, `2026-04-16T13:00:00+01:00` becomes `2026-04-16T12:00:00.000Z`). The endpoint supports millisecond precision; finer nonzero fractional digits are rejected before any request instead of rounding or truncating the interval. Its JSON output preserves metric metadata, series labels, and data points; the default output renders the same nested response as a readable tree. `--bucket-size-seconds` must be positive and is omitted from the API request when not supplied.
 
-`postgres logs` reads an inclusive RFC 3339 time window of at most 30 days. Results default to the API's newest-first order and page size; use `--sort-order`, `--limit` and `--offset` to control pagination.
+`postgres logs` reads an inclusive RFC 3339 time window of at most 30 days. Results default to the API's newest-first order and page size; use `--sort-order asc|desc`, `--limit` and `--offset` to control pagination.
 
 `postgres slow-queries list` requires an RFC 3339 start and end time and supports database, user, operation and application filters, sorting, limits and offsets. Copy `queryId`, `dbName`, `dbUser` and `dbOperation` from a list result into `slow-queries get`; add `--app` when the list result has one, and optionally select a recent execution with `--timestamp`. JSON and human output preserve every aggregate and execution field the API returns, including sparse beta responses. Duration values are microseconds and may be fractional; call, row and block counts remain integers.
 
