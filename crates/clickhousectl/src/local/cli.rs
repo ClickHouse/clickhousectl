@@ -368,7 +368,7 @@ CONTEXT FOR AGENTS:
 
     /// List all server instances (running and stopped)
     List {
-        /// List ClickHouse servers in all projects; the default is project-scoped
+        /// List running ClickHouse servers across all projects
         #[arg(long)]
         global: bool,
     },
