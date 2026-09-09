@@ -222,6 +222,7 @@ CONTEXT FOR AGENTS:
     /// Connect to a running ClickHouse server with clickhouse-client
     #[command(
         group(ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
+        override_usage = "clickhousectl local client [OPTIONS] [-- <ARGS>...]",
         after_help = "\
 CONTEXT FOR AGENTS:
   Default mode looks up a server started by `clickhousectl local server start`; the name defaults
@@ -1023,6 +1024,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn clickhouse_client_native_option_error_has_compatible_usage() {
+        let error = local_parse_error(&["client", "--name", "dev", "--format", "JSONEachRow"]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+        assert_eq!(error.exit_code(), 2);
+
+        let rendered = error.to_string();
+        let usage = rendered
+            .lines()
+            .find(|line| line.starts_with("Usage:"))
+            .expect("usage error should include a Usage line");
+        assert!(usage.contains("[OPTIONS]"), "{usage}");
+        assert!(
+            !usage.contains("--name") && !usage.contains("--port"),
+            "{usage}"
+        );
     }
 
     #[test]
