@@ -1460,7 +1460,8 @@ These observations concern root object-storage field mappings, not CDC
 `tableMappingsToAdd` or `tableMappingsToRemove` arrays.
 
 A source patch selects at most one of the seven supported arms.
-`validateSamples` is optional. Kafka credentials must match the selected
+BigQuery sources cannot be updated by this API. `validateSamples` is optional.
+Kafka credentials must match the selected
 authentication: username and password for PLAIN/SCRAM, access key and secret
 for IAM user, or certificate and private key for mutual TLS. Event Hubs
 connection-string credentials use PLAIN. IAM role uses `iamRole` without a

@@ -3237,6 +3237,12 @@ fn validate_clickpipe_patch_required_fields(
         return Ok(());
     };
 
+    if source.contains_key("bigquery") {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: `source.bigquery` cannot be updated by the ClickPipes API"
+        )));
+    }
+
     if let Some(mysql) = source.get("mysql") {
         require_patch_object_fields(mysql, "source.mysql", &["host", "port"], config_source)?;
         if let Some(mappings) = mysql
@@ -9935,6 +9941,28 @@ mod tests {
         }});
         let request = build_clickpipe_update_request(omitted.clone(), "test").unwrap();
         assert_eq!(serde_json::to_value(request).unwrap(), omitted);
+    }
+
+    #[test]
+    fn clickpipe_update_builder_reports_bigquery_as_an_unsupported_source() {
+        let error = build_clickpipe_update_request(
+            serde_json::json!({"source": {
+                "bigquery": {},
+                "validateSamples": false
+            }}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("`source.bigquery`"), "{error}");
+        assert!(error.message.contains("cannot be updated"), "{error}");
+        assert!(!error.message.contains(".?."), "{error}");
+
+        let unknown = build_clickpipe_update_request(
+            serde_json::json!({"source": {"kafka": {"unknownOption": true}}}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(unknown.message.contains("unknownOption"), "{unknown}");
     }
 
     #[test]

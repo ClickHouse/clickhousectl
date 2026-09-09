@@ -22409,15 +22409,28 @@ async fn clickpipe_update_accepts_database_port_boundaries_and_preserves_omissio
 }
 
 #[tokio::test]
-async fn clickpipe_update_rejects_noop_unknown_nested_fields_and_bigquery_before_http() {
+async fn clickpipe_update_reports_bigquery_as_unsupported_before_http() {
+    let mock = MockServer::start().await;
+    let patch = serde_json::json!({"source": {
+        "bigquery": {},
+        "validateSamples": false
+    }});
+    let output = invoke_clickpipe_update_file(&mock, &patch);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("`source.bigquery`"), "{stderr}");
+    assert!(stderr.contains("cannot be updated"), "{stderr}");
+    assert!(!stderr.contains(".?."), "{stderr}");
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn clickpipe_update_rejects_noop_and_unknown_nested_fields_before_http() {
     for patch in [
         serde_json::json!({}),
         serde_json::json!({"destination": {}}),
         serde_json::json!({"destination": {"colums": []}}),
-        serde_json::json!({"source": {
-            "bigquery": {},
-            "validateSamples": false
-        }}),
         serde_json::json!({"source": {
             "kafka": {
                 "credentials": {"username": "user", "password": "pw", "token": "bad"},
