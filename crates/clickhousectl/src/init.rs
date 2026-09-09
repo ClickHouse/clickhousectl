@@ -42,13 +42,14 @@ pub struct InitResult {
 pub fn init() -> Result<InitResult> {
     let dir = local_dir();
 
-    let clickhouse_dir_created = if is_initialized() {
-        false
-    } else {
+    let clickhouse_dir_created = !is_initialized();
+    if clickhouse_dir_created {
         std::fs::create_dir_all(&dir)?;
+    }
+    let gitignore = dir.join(".gitignore");
+    if !gitignore.exists() {
         std::fs::write(dir.join(".gitignore"), "*\n")?;
-        true
-    };
+    }
 
     let clickhouse_scaffold_created = create_project_scaffold(
         project_dir(),
