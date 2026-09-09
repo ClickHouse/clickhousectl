@@ -22346,6 +22346,69 @@ async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values() {
 }
 
 #[tokio::test]
+async fn clickpipe_update_rejects_mysql_port_zero_from_file_and_stdin_before_http() {
+    let patch = serde_json::json!({"source": {
+        "mysql": {"host": "mysql.example.com", "port": 0}
+    }});
+
+    let file_mock = MockServer::start().await;
+    let file_output = invoke_clickpipe_update_file(&file_mock, &patch);
+    assert_eq!(file_output.status.code(), Some(1));
+    let file_stderr = String::from_utf8_lossy(&file_output.stderr);
+    assert!(
+        file_stderr.contains("source.mysql.port` must be in the range 1..=65535"),
+        "{file_stderr}"
+    );
+    assert!(file_mock.received_requests().await.unwrap().is_empty());
+
+    let stdin_mock = MockServer::start().await;
+    let stdin_output = invoke_cli_with_cloud_credentials_and_stdin(
+        &stdin_mock,
+        &[
+            "clickpipe",
+            "update",
+            "svc-1",
+            "pipe-1",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        &patch.to_string(),
+    );
+    assert_eq!(stdin_output.status.code(), Some(1));
+    let stdin_stderr = String::from_utf8_lossy(&stdin_output.stderr);
+    assert!(
+        stdin_stderr.contains("source.mysql.port` must be in the range 1..=65535"),
+        "{stdin_stderr}"
+    );
+    assert!(stdin_mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn clickpipe_update_accepts_database_port_boundaries_and_preserves_omission() {
+    for provider in ["mysql", "postgres"] {
+        for port in [1, 65535] {
+            let patch = serde_json::json!({"source": {
+                (provider): {"host": "db.example.com", "port": port}
+            }});
+            let mock = MockServer::start().await;
+            mount_clickpipe_update(&mock, patch.clone()).await;
+            let output = invoke_clickpipe_update_file(&mock, &patch);
+            assert_success(&output);
+        }
+    }
+
+    let omitted = serde_json::json!({"source": {
+        "postgres": {"host": "db.example.com"}
+    }});
+    let mock = MockServer::start().await;
+    mount_clickpipe_update(&mock, omitted.clone()).await;
+    let output = invoke_clickpipe_update_file(&mock, &omitted);
+    assert_success(&output);
+}
+
+#[tokio::test]
 async fn clickpipe_update_rejects_noop_unknown_nested_fields_and_bigquery_before_http() {
     for patch in [
         serde_json::json!({}),

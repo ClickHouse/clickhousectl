@@ -3422,6 +3422,7 @@ fn validate_clickpipe_patch_source(
     }
 
     if let Some(source) = &patch.postgres {
+        validate_clickpipe_patch_port(source.port, "source.postgres.port", config_source)?;
         if let Some(mappings) = &source.table_mappings_to_add {
             for mapping in mappings {
                 if let PostgresAddEngine::Unknown(value) = &mapping.table_engine {
@@ -3443,6 +3444,7 @@ fn validate_clickpipe_patch_source(
     }
 
     if let Some(source) = &patch.mysql {
+        validate_clickpipe_patch_port(source.port, "source.mysql.port", config_source)?;
         if let Some(MySqlAuth::Unknown(value)) = &source.authentication {
             return Err(CloudError::new(format!(
                 "invalid request body in config {config_source}: unknown `source.mysql.authentication` value `{value}`"
@@ -3494,6 +3496,19 @@ fn validate_clickpipe_patch_source(
         }
     }
 
+    Ok(())
+}
+
+fn validate_clickpipe_patch_port(
+    port: Option<i64>,
+    path: &str,
+    config_source: &str,
+) -> CloudResult<()> {
+    if port.is_some_and(|port| !(1..=u16::MAX.into()).contains(&port)) {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: `{path}` must be in the range 1..=65535"
+        )));
+    }
     Ok(())
 }
 
@@ -9888,6 +9903,38 @@ mod tests {
                 "omitted PATCH fields must remain absent"
             );
         }
+    }
+
+    #[test]
+    fn clickpipe_update_builder_validates_typed_database_source_ports() {
+        for provider in ["mysql", "postgres"] {
+            for port in [1, 65535] {
+                let patch = serde_json::json!({"source": {
+                    (provider): {"host": "db.example.com", "port": port}
+                }});
+                let request = build_clickpipe_update_request(patch.clone(), "test").unwrap();
+                assert_eq!(serde_json::to_value(request).unwrap(), patch);
+            }
+
+            for port in [-1, 0, 65536] {
+                let patch = serde_json::json!({"source": {
+                    (provider): {"host": "db.example.com", "port": port}
+                }});
+                let error = build_clickpipe_update_request(patch, "test").unwrap_err();
+                assert!(
+                    error.message.contains(&format!(
+                        "source.{provider}.port` must be in the range 1..=65535"
+                    )),
+                    "{error}"
+                );
+            }
+        }
+
+        let omitted = serde_json::json!({"source": {
+            "postgres": {"host": "db.example.com"}
+        }});
+        let request = build_clickpipe_update_request(omitted.clone(), "test").unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), omitted);
     }
 
     #[test]

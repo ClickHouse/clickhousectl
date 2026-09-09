@@ -1468,6 +1468,9 @@ credentials object, and workload identity uses neither field. Authentication,
 credentials, CA certificate, and reverse private endpoints can each be omitted
 when changing an unrelated Kafka field.
 
+MySQL and Postgres source ports must be in the range 1–65535. Omitting a
+Postgres port from a partial source update preserves the configured port.
+
 ```json
 {
   "source": {
