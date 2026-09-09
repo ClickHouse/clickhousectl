@@ -578,6 +578,8 @@ Native `psql` arguments require `--`, with all wrapper selectors before it: `loc
 
 `local postgres client` also retains native psql output for interactive sessions, `--query` and `--queries-file`, regardless of `--json` or coding-agent detection. Put psql output options after `--`, for example `local postgres client --query "SELECT 1" -- --csv`.
 
+When `local postgres start` is run without `--name`, the first instance is named `default`. If that instance is already running, each subsequent unnamed start gets a fresh generated name instead of resuming or colliding with existing Postgres state.
+
 `local postgres client --queries-file` accepts relative or absolute host paths, or `-` to read stdin. Plain pipes also work, for example `cat seed.sql | clickhousectl local postgres client`. Both forms work when host `psql` is unavailable: the Docker fallback streams SQL to container `psql`, preserves EOF and returns psql's exit status. When combined, `--query` executes before the file; append native arguments such as `-- -v ON_ERROR_STOP=1` to stop on SQL errors. In Docker mode, file contents are streamed as `psql -f -`; paths used inside SQL (such as `\i` or `\copy`) still refer to the container filesystem.
 
 Postgres `--name` and `--version` select a managed instance and cannot be combined with direct `--host` or `--port` selectors.

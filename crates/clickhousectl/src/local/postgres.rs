@@ -526,18 +526,23 @@ async fn rollback_failed_fresh_start(
 /// Default user-facing name when `--name` is omitted: `"default"` if no
 /// postgres "default" is running, otherwise a random adjective-noun.
 fn default_pg_name_locked(metadata_lock: &server::MetadataLock) -> Result<String> {
+    default_pg_name_locked_with(metadata_lock, docker::is_container_running_blocking)
+}
+
+fn default_pg_name_locked_with(
+    metadata_lock: &server::MetadataLock,
+    is_container_running: impl Fn(&str) -> bool,
+) -> Result<String> {
     let any_default_running = server::find_pg_instances_locked("default", metadata_lock)?
         .iter()
         .any(|i| {
             i.container_id
                 .as_deref()
-                .map(docker::is_container_running_blocking)
+                .map(&is_container_running)
                 .unwrap_or(false)
         });
     if any_default_running {
-        // Fall back to the existing random-name generator, which checks
-        // metadata file uniqueness across engines.
-        server::resolve_name_locked(None, metadata_lock)
+        server::generate_random_name_locked(metadata_lock)
     } else {
         Ok("default".into())
     }
@@ -1319,6 +1324,43 @@ mod tests {
                 .pop_front()
                 .expect("fake pg_isready result exhausted")
         }
+    }
+
+    #[test]
+    fn unnamed_start_after_running_default_selects_fresh_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = server::MetadataLock::acquire_at(directory.path()).unwrap();
+        assert_eq!(
+            default_pg_name_locked_with(&lock, |_| true).unwrap(),
+            "default"
+        );
+
+        let info = ServerInfo {
+            name: server::pg_instance_key("default", "18"),
+            pid: 0,
+            version: "postgres:18".into(),
+            http_port: 0,
+            tcp_port: 5432,
+            started_at: "1700000000".into(),
+            cwd: "/tmp/project".into(),
+            engine: Engine::Postgres,
+            container_id: Some("running-default".into()),
+        };
+        server::save_server_info_locked(&info, &lock).unwrap();
+
+        assert_eq!(
+            default_pg_name_locked_with(&lock, |_| false).unwrap(),
+            "default"
+        );
+
+        let selected = default_pg_name_locked_with(&lock, |id| id == "running-default").unwrap();
+
+        assert_ne!(selected, "default");
+        assert!(
+            server::find_pg_instances_locked(&selected, &lock)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
