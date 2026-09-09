@@ -772,7 +772,7 @@ pub enum ScalingScheduleCommands {
     /// Create or replace the scaling schedule
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  --file is a JSON ScalingSchedulePostRequest; '-' reads it from stdin.
+  --file is a JSON object with an entries array; '-' reads it from stdin.
   Set replaces every existing entry. Get, edit only entries, then set to preserve other entries.
   Hours and weekdays are UTC. baseConfig is response-only and must not be sent.")]
     Set {
