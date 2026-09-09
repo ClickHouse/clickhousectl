@@ -59,6 +59,8 @@ enum LocalErrorCode {
     /// A Postgres validation or state error whose text (and recovery
     /// guidance) clickhousectl composes itself, rendered verbatim.
     PostgresError,
+    SqlInputOpenFailed,
+    SqlInputReadFailed,
     IoError,
     LocalError,
 }
@@ -442,6 +444,14 @@ impl LocalErrorOutput {
             // Self-composed validation and state guidance; the foreign-text
             // sibling `Error::Postgres` stays in the fallback below.
             Error::PostgresUsage(_) => Mapping::parity(LocalErrorCode::PostgresError),
+            Error::SqlInputOpen { .. } => Mapping::redacted(
+                LocalErrorCode::SqlInputOpenFailed,
+                "Could not open SQL input file; check that --queries-file exists and is readable",
+            ),
+            Error::SqlInputRead(_) => Mapping::redacted(
+                LocalErrorCode::SqlInputReadFailed,
+                "Could not read SQL input; check the file or stdin source is readable",
+            ),
 
             // ── bounded fallback ────────────────────────────────────────────
             // Subprocess text and `Postgres` (OS text from a failed psql
@@ -1797,6 +1807,36 @@ mod tests {
                 serde_json::Value::String(error.to_string()),
                 "JSON message must match human output for {error:?}"
             );
+        }
+    }
+
+    #[test]
+    fn sql_input_errors_keep_categories_without_paths_or_os_messages() {
+        let secret = "password=hunter2; SELECT secret FROM private_table";
+        for (error, code) in [
+            (
+                Error::SqlInputOpen {
+                    path: secret.into(),
+                    source: std::io::Error::other(secret),
+                },
+                "sql_input_open_failed",
+            ),
+            (
+                Error::SqlInputRead(std::io::Error::other(secret)),
+                "sql_input_read_failed",
+            ),
+        ] {
+            assert!(error.to_string().contains(secret));
+            let json = error_json(&error);
+            assert_eq!(json["error"]["code"], code);
+            assert!(!json.to_string().contains(secret));
+            assert!(
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("SQL input")
+            );
+            assert_eq!(error.exit_code(), 1);
         }
     }
 

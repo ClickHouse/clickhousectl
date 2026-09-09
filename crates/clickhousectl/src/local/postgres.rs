@@ -1120,9 +1120,12 @@ async fn client(
             let reader: Box<dyn std::io::Read + Send> = if file == "-" {
                 Box::new(std::io::stdin())
             } else {
-                Box::new(std::fs::File::open(&file).map_err(|error| {
-                    Error::Postgres(format!("could not open SQL file {file:?}: {error}"))
-                })?)
+                Box::new(
+                    std::fs::File::open(&file).map_err(|error| Error::SqlInputOpen {
+                        path: file.into(),
+                        source: error,
+                    })?,
+                )
             };
             psql_args.extend(["-f".into(), "-".into()]);
             Some(reader)

@@ -553,6 +553,17 @@ pub enum Error {
     #[error("Postgres error: {0}")]
     Postgres(String),
 
+    /// SQL file paths and OS errors stay in human diagnostics only.
+    #[error("could not open SQL file {path:?}: {source}")]
+    SqlInputOpen {
+        path: PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("could not read SQL input: {0}")]
+    SqlInputRead(#[source] std::io::Error),
+
     /// A Postgres validation or state error whose text clickhousectl composes
     /// itself, including its recovery guidance. Kept separate from
     /// [`Error::Postgres`] so structured output can render it verbatim.

@@ -849,7 +849,9 @@ async fn stream_psql_input(
             }
         })?;
     while let Some(chunk) = receiver.recv().await {
-        input.write_all(&chunk?).await?;
+        input
+            .write_all(&chunk.map_err(Error::SqlInputRead)?)
+            .await?;
         input.flush().await?;
     }
     Ok(())
@@ -1198,6 +1200,27 @@ pub fn recover_project_postgres_blocking(
 mod tests {
     use super::*;
     use bollard::models::{CreateImageInfo, ProgressDetail};
+
+    #[tokio::test]
+    async fn sql_reader_failures_are_distinct_from_docker_input_write_failures() {
+        struct FailedReader;
+        impl io::Read for FailedReader {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("private SQL input source"))
+            }
+        }
+        let error = stream_psql_input(Box::new(FailedReader), &mut tokio::io::sink())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::SqlInputRead(_)));
+
+        let (mut writer, reader) = tokio::io::duplex(16);
+        drop(reader);
+        let error = stream_psql_input(Box::new(io::Cursor::new(b"select 1")), &mut writer)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Io(_)));
+    }
 
     #[test]
     fn docker_failures_keep_safe_causes_without_endpoint_values() {

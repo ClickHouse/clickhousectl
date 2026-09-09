@@ -369,18 +369,49 @@ fn plain_piped_stdin_preserves_psql_error_status() {
 
 #[test]
 fn missing_host_file_fails_before_executing_query() {
-    let fixture = Fixture::new(0, false);
-    let output = fixture
-        .command(&[
+    for mode in ["human", "explicit", "agent"] {
+        let fixture = Fixture::new(0, false);
+        let mut command = fixture.command(&[
             "--query",
-            "DROP TABLE data",
+            "DROP TABLE secret_data",
             "--queries-file",
-            "missing.sql",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(output.status.code(), Some(1));
-    assert!(fixture.execution.lock().unwrap().config.is_none());
+            "private-password-path.sql",
+        ]);
+        command
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", fixture.home.path())
+            .env("PATH", fixture.project.path().join("empty-path"))
+            .env(
+                "DOCKER_HOST",
+                format!(
+                    "unix://{}",
+                    fixture.home.path().join("docker.sock").display()
+                ),
+            );
+        match mode {
+            "explicit" => {
+                command.arg("--json");
+            }
+            "agent" => {
+                command.env("AI_AGENT", "1");
+            }
+            _ => {}
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(fixture.execution.lock().unwrap().config.is_none());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        if mode == "human" {
+            assert!(stderr.contains("private-password-path.sql"), "{stderr}");
+        } else {
+            let json: Value = serde_json::from_str(&stderr).unwrap();
+            assert_eq!(json["error"]["code"], "sql_input_open_failed");
+            assert!(!stderr.contains("private-password-path"), "{stderr}");
+            assert!(!stderr.contains("secret_data"), "{stderr}");
+        }
+    }
 }
 
 #[test]
