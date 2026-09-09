@@ -473,7 +473,11 @@ pub enum SlowQueryCommands {
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..=500))]
         limit: Option<i64>,
         /// Number of patterns to skip
-        #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(i64).range(0..)
+        )]
         offset: Option<i64>,
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
@@ -3839,6 +3843,30 @@ mod tests {
     }
 
     #[test]
+    fn slow_query_list_accepts_zero_and_positive_offsets() {
+        for (value, expected) in [("0", 0), ("37", 37)] {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "slow-queries",
+                "list",
+                "pg-1",
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+                "--offset",
+                value,
+            ]);
+            let PostgresCommands::SlowQueries(SlowQueryCommands::List { offset, .. }) = cmd else {
+                panic!("expected slow-query list");
+            };
+            assert_eq!(offset, Some(expected));
+        }
+    }
+
+    #[test]
     fn slow_query_list_requires_dates_and_validates_schema_bounds() {
         let missing_date = Cli::try_parse_from([
             "clickhousectl",
@@ -3880,7 +3908,7 @@ mod tests {
             ),
             ("--limit", "0", clap::error::ErrorKind::ValueValidation),
             ("--limit", "501", clap::error::ErrorKind::ValueValidation),
-            ("--offset", "-1", clap::error::ErrorKind::UnknownArgument),
+            ("--offset", "-1", clap::error::ErrorKind::ValueValidation),
         ] {
             let mut args = vec![
                 "clickhousectl",
@@ -3905,6 +3933,27 @@ mod tests {
                 .expect("expected parse error");
             assert_eq!(error.kind(), expected_kind);
         }
+
+        let negative_offset_equals = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+            "--to-date",
+            "2026-04-16T13:00:00Z",
+            "--offset=-1",
+        ])
+        .err()
+        .expect("negative offset should fail during clap parsing");
+        assert_eq!(
+            negative_offset_equals.kind(),
+            clap::error::ErrorKind::ValueValidation
+        );
+        assert_eq!(negative_offset_equals.exit_code(), 2);
     }
 
     #[test]
