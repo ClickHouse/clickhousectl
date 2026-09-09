@@ -175,7 +175,7 @@ pub fn print_error(detail: &CloudErrorDetail) {
 /// - String values are unquoted.
 /// - Arrays of scalars render inline (`key: [a, b, c]`); arrays of objects
 ///   render as `-` bullet blocks.
-/// - Null values and empty strings/arrays/objects are omitted.
+/// - Empty objects render as `{}`; nulls and empty strings/arrays are omitted.
 pub fn print_human<T: Serialize>(value: &T) -> Result<(), serde_json::Error> {
     let value = serde_json::to_value(value)?;
     let mut lines = Vec::new();
@@ -195,7 +195,7 @@ fn is_empty(value: &Value) -> bool {
         Value::Null => true,
         Value::String(s) => s.is_empty(),
         Value::Array(a) => a.is_empty(),
-        Value::Object(o) => o.is_empty(),
+        Value::Object(_) => false,
         _ => false,
     }
 }
@@ -407,6 +407,7 @@ fn pem_summary(value: &str) -> Option<String> {
 /// anchor a caller can retrofit a `-` bullet onto.
 fn render(lines: &mut Vec<String>, indent: usize, value: &Value) {
     match value {
+        Value::Object(map) if map.is_empty() => lines.push(format!("{}{{}}", pad(indent))),
         Value::Object(map) => render_object(lines, indent, map),
         Value::Array(items) => render_array(lines, indent, items),
         scalar => {
@@ -423,6 +424,9 @@ fn render_object(lines: &mut Vec<String>, indent: usize, map: &Map<String, Value
             continue;
         }
         match value {
+            Value::Object(inner) if inner.is_empty() => {
+                lines.push(format!("{}{}: {{}}", pad(indent), key));
+            }
             Value::Object(inner) => {
                 let start = lines.len();
                 lines.push(format!("{}{}:", pad(indent), key));
@@ -517,8 +521,22 @@ mod tests {
             "count": 0,
             "flag": false
         });
-        // null/empty-string/empty-array/empty-object are dropped; 0 and false stay.
-        assert_eq!(render_to_string(&v), "name: svc\ncount: 0\nflag: false");
+        // Missing scalar values are dropped; explicit objects, 0 and false stay.
+        assert_eq!(
+            render_to_string(&v),
+            "name: svc\nmeta: {}\ncount: 0\nflag: false"
+        );
+    }
+
+    #[test]
+    fn renders_explicit_empty_objects_at_every_depth() {
+        assert_eq!(render_to_string(&json!({})), "{}");
+        assert_eq!(
+            render_to_string(&json!({"pgConfig": {}, "pgBouncerConfig": {}})),
+            "pgConfig: {}\npgBouncerConfig: {}"
+        );
+        assert_eq!(render_to_string(&json!({"items": [{}]})), "items:\n  - {}");
+        assert_eq!(render_to_string(&json!({"absent": {"value": null}})), "");
     }
 
     #[test]

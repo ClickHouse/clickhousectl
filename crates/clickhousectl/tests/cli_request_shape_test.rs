@@ -15224,7 +15224,7 @@ async fn clickpipe_context_get_renders_full_and_sparse_responses() {
         &["clickpipe", "context", "get", "svc-id", "--org-id", "org"],
     );
     assert_success(&output);
-    assert!(output.stdout.is_empty());
+    assert_eq!(output.stdout, b"{}\n");
 
     let not_ready = MockServer::start().await;
     mount_clickpipe_context(
@@ -17673,6 +17673,33 @@ async fn postgres_config_get_honors_human_explicit_json_and_agent_output() {
         assert_eq!(request.url.query(), None);
         assert!(request.body.is_empty());
     }
+}
+
+#[tokio::test]
+async fn postgres_config_get_shows_empty_sections_in_human_output() {
+    let mock = MockServer::start().await;
+    let config = serde_json::json!({"pgConfig": {}, "pgBouncerConfig": {}});
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": config
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    let args = ["postgres", "config", "get", "pg-1", "--org-id", "org-1"];
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    assert_eq!(
+        String::from_utf8(human.stdout).unwrap(),
+        "pgBouncerConfig: {}\npgConfig: {}\n"
+    );
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        config
+    );
 }
 
 #[tokio::test]
