@@ -4501,7 +4501,7 @@ async fn service_clickhouse_settings_update_sends_and_receives_objects() {
         .respond_with(ok_json(
             serde_json::json!({"settings": settings, "warnings": []}),
         ))
-        .expect(2)
+        .expect(3)
         .mount(&server)
         .await;
     let body: ServiceClickhouseSettingsPatchRequest =
@@ -4519,6 +4519,13 @@ async fn service_clickhouse_settings_update_sends_and_receives_objects() {
     };
     client
         .service_clickhouse_settings_update("org-1", "svc-1", &legacy)
+        .await
+        .unwrap();
+    let typed = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(serde_json::from_value::<ServiceClickhouseSettingsMap>(settings).unwrap()),
+    };
+    client
+        .service_clickhouse_settings_update("org-1", "svc-1", &typed)
         .await
         .unwrap();
 }

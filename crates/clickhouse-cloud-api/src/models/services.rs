@@ -1659,15 +1659,39 @@ pub struct Service {
     pub transparent_data_encryption_key_id: Option<String>,
 }
 
+/// A native string or integer setting value from the published OpenAPI contract.
+///
+/// Decimal settings such as `mark_cache_ram_ratio` use strings. The unsigned
+/// variant preserves integers above `i64::MAX` without rounding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ServiceClickhouseSettingValue {
+    String(String),
+    Integer(i64),
+    UnsignedInteger(u64),
+}
+
+/// A settings map for typed PATCH requests. The request serializer rejects an
+/// empty map; use the per-setting DELETE endpoint to reset an override.
+pub type ServiceClickhouseSettingsMap =
+    std::collections::BTreeMap<String, ServiceClickhouseSettingValue>;
+
+/// Tolerant response value: preserve future wire types without coercion.
+pub type ServiceClickhouseSettingValueResponse = serde_json::Value;
+
+/// Tolerant settings response map, retaining unknown setting names and values.
+pub type ServiceClickhouseSettingsMapResponse =
+    std::collections::BTreeMap<String, ServiceClickhouseSettingValueResponse>;
+
 /// `ServiceClickhouseSetting` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSetting {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Preserve the API's JSON value without coercion. The live API returns numbers
-    /// as well as strings, despite the OpenAPI string schema (#779).
+    /// The published contract permits strings and integers. Preserve future
+    /// response types as JSON as well, without coercion.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<serde_json::Value>,
+    pub value: Option<ServiceClickhouseSettingValueResponse>,
 }
 
 /// `ServiceClickhouseSettingSchemaEntry` from the ClickHouse Cloud API.
@@ -1707,8 +1731,10 @@ pub struct ServiceClickhouseSettingsList {
 
 /// Settings to update as a JSON object of setting names to values.
 ///
-/// The live API requires an object despite the OpenAPI schema declaring a
-/// string (ClickHouse/clickhousectl#759). The default type models that contract.
+/// The published OpenAPI requires a nonempty object with string/integer values.
+/// Use `ServiceClickhouseSettingsPatchRequest<ServiceClickhouseSettingsMap>` for
+/// that typed value contract. The default JSON-value map remains available for
+/// existing callers; the API validates per-setting constraints.
 /// Legacy callers may explicitly use `String` containing an encoded object;
 /// serialization validates and converts it to the same object wire format.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -1744,9 +1770,8 @@ fn serialize_clickhouse_settings<T: Serialize, S: serde::Serializer>(
 /// `ServiceClickhouseSettingsPatchResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsPatchResponse {
-    // The live API returns an object, not the string declared by OpenAPI (#759).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<std::collections::BTreeMap<String, serde_json::Value>>,
+    pub settings: Option<ServiceClickhouseSettingsMapResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<ServiceClickhouseSettingWarning>>,
 }

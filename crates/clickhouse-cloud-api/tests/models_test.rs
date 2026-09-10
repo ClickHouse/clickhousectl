@@ -6716,6 +6716,57 @@ fn postgres_slow_query_durations_allow_missing_and_null() {
 }
 
 #[test]
+fn service_clickhouse_settings_typed_request_preserves_native_values() {
+    let settings = serde_json::json!({
+        "compatibility": "26.2", "max_query_size": 262146,
+        "mark_cache_ram_ratio": "0.5", "signed": -42,
+        "unsigned": u64::MAX
+    });
+    let map: ServiceClickhouseSettingsMap = serde_json::from_value(settings.clone()).unwrap();
+    assert_eq!(
+        map["compatibility"],
+        ServiceClickhouseSettingValue::String("26.2".into())
+    );
+    assert_eq!(
+        map["max_query_size"],
+        ServiceClickhouseSettingValue::Integer(262146)
+    );
+    assert_eq!(
+        map["unsigned"],
+        ServiceClickhouseSettingValue::UnsignedInteger(u64::MAX)
+    );
+    let request = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(map),
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+    let empty = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(ServiceClickhouseSettingsMap::new()),
+    };
+    assert!(serde_json::to_value(empty).is_err());
+}
+
+#[test]
+fn service_clickhouse_settings_typed_request_rejects_unsupported_value_types() {
+    for value in [
+        serde_json::json!(true),
+        serde_json::Value::Null,
+        serde_json::json!(1.5),
+        serde_json::json!({"nested": true}),
+        serde_json::json!([1]),
+    ] {
+        assert!(
+            serde_json::from_value::<ServiceClickhouseSettingsMap>(
+                serde_json::json!({"setting": value})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
 fn service_clickhouse_settings_preserves_dynamic_json_values() {
     let settings = serde_json::json!({
         "string": "26.2", "integer": 262144, "boolean": false, "null": null,

@@ -4,6 +4,104 @@ use clickhouse_cloud_api::Client;
 use clickhouse_cloud_api::models::*;
 use common::support::*;
 
+/// Supply CLICKHOUSE_CLOUD_TEST_ORG_ID and
+/// CLICKHOUSE_CLOUD_TEST_SETTINGS_SERVICE_ID for a disposable running service.
+#[tokio::test]
+#[ignore = "requires live credentials and an explicitly supplied disposable service"]
+async fn cloud_clickhouse_settings_native_contract() -> TestResult<()> {
+    let client = create_client()?;
+    let org = required_env("CLICKHOUSE_CLOUD_TEST_ORG_ID")?;
+    let service = required_env("CLICKHOUSE_CLOUD_TEST_SETTINGS_SERVICE_ID")?;
+    let original = client
+        .service_clickhouse_settings_list_get(&org, &service)
+        .await?
+        .result
+        .ok_or("missing original settings result")?
+        .settings
+        .ok_or("missing original settings list")?;
+    let names = ["compatibility", "max_query_size"];
+    let original: std::collections::BTreeMap<_, _> = original
+        .into_iter()
+        .filter_map(|setting| Some((setting.name?, setting.value?)))
+        .filter(|(name, _)| names.contains(&name.as_str()))
+        .collect();
+    let wanted = serde_json::json!({"compatibility": "26.2", "max_query_size": 262146});
+    // Keep errors inside the future so every attempted write is followed by cleanup.
+    let outcome: TestResult<()> = async {
+        let request = ServiceClickhouseSettingsPatchRequest {
+            settings: Some(serde_json::from_value::<ServiceClickhouseSettingsMap>(
+                wanted.clone(),
+            )?),
+        };
+        let patched = client
+            .service_clickhouse_settings_update(&org, &service, &request)
+            .await?
+            .result
+            .ok_or("missing PATCH result")?;
+        if serde_json::to_value(patched.settings)? != wanted {
+            return Err("PATCH did not preserve the native settings map".into());
+        }
+        for name in names {
+            let setting = client
+                .service_clickhouse_setting_get(&org, &service, name)
+                .await?
+                .result
+                .ok_or("missing single GET result")?;
+            if setting.value.as_ref() != wanted.get(name) {
+                return Err(
+                    format!("single GET did not preserve {name}'s native type/value").into(),
+                );
+            }
+        }
+        let listed = client
+            .service_clickhouse_settings_list_get(&org, &service)
+            .await?
+            .result
+            .ok_or("missing list GET result")?
+            .settings
+            .ok_or("missing settings list")?;
+        for name in names {
+            let value = listed
+                .iter()
+                .find(|setting| setting.name.as_deref() == Some(name))
+                .and_then(|setting| setting.value.as_ref());
+            if value != wanted.get(name) {
+                return Err(format!("list GET did not preserve {name}'s native type/value").into());
+            }
+        }
+        Ok(())
+    }
+    .await;
+    let mut cleanup_errors = Vec::new();
+    for name in names {
+        if let Err(error) = client
+            .service_clickhouse_setting_delete(&org, &service, name)
+            .await
+        {
+            cleanup_errors.push(format!("reset {name}: {error}"));
+        }
+    }
+    if !original.is_empty() {
+        let request = ServiceClickhouseSettingsPatchRequest {
+            settings: Some(original),
+        };
+        if let Err(error) = client
+            .service_clickhouse_settings_update(&org, &service, &request)
+            .await
+        {
+            cleanup_errors.push(format!("restore original settings: {error}"));
+        }
+    }
+    if !cleanup_errors.is_empty() {
+        return Err(format!(
+            "contract outcome: {outcome:?}; cleanup: {}",
+            cleanup_errors.join("; ")
+        )
+        .into());
+    }
+    outcome
+}
+
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
 async fn cloud_service_crud_lifecycle() -> TestResult<()> {
