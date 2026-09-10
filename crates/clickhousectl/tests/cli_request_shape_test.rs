@@ -6124,7 +6124,7 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
         "--object-storage-polling-interval-ms".into(),
         "100".into(),
         "--object-storage-max-insert-bytes".into(),
-        "10485760".into(),
+        "524288000".into(),
         "--object-storage-max-file-count".into(),
         "1".into(),
         "--object-storage-use-cluster-function".into(),
@@ -13854,6 +13854,97 @@ async fn recorded_put_body(mock: &MockServer) -> Value {
         .find(|request| request.method == wiremock::http::Method::PUT)
         .expect("no settings PUT request recorded by mock");
     serde_json::from_slice::<Value>(&put.body).unwrap()
+}
+
+#[tokio::test]
+async fn object_storage_insert_size_bounds_reach_create_and_settings_put() {
+    for size in [524_288_000_u64, 10_737_418_240] {
+        let size_arg = size.to_string();
+        let mock = start_mock_clickpipes_api().await;
+        let body = invoke_cli_capture_body(
+            &mock,
+            &[
+                "clickpipe",
+                "create",
+                "object-storage",
+                "svc-id",
+                "--name",
+                "pipe",
+                "--source-url",
+                "https://example.test/data.csv",
+                "--format",
+                "CSVWithNames",
+                "--database",
+                "default",
+                "--table",
+                "events",
+                "--org-id",
+                "org",
+                "--object-storage-max-insert-bytes",
+                &size_arg,
+            ],
+        )
+        .await;
+        assert_eq!(body["settings"]["object_storage_max_insert_bytes"], size);
+
+        let mock = MockServer::start().await;
+        mount_clickpipe_get(&mock, serde_json::json!({"objectStorage": {"type": "s3"}})).await;
+        let expected = serde_json::json!({"object_storage_max_insert_bytes": size});
+        mount_clickpipe_settings_put(&mock, expected.clone()).await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "settings",
+                "update",
+                "svc-id",
+                "pipe-id",
+                "--org-id",
+                "org",
+                "--object-storage-max-insert-bytes",
+                &size_arg,
+            ],
+        );
+        assert_success(&output);
+        assert_eq!(recorded_put_body(&mock).await, expected);
+    }
+}
+
+#[tokio::test]
+async fn object_storage_insert_size_outside_bounds_fails_before_http() {
+    let mock = MockServer::start().await;
+    for size in [524_287_999_u64, 10_737_418_241, 10_485_760, 53_687_091_200] {
+        let size_arg = size.to_string();
+        for mut args in [
+            vec![
+                "clickpipe",
+                "create",
+                "object-storage",
+                "svc-id",
+                "--name",
+                "pipe",
+                "--source-url",
+                "https://example.test/data.csv",
+                "--format",
+                "CSVWithNames",
+                "--database",
+                "default",
+                "--table",
+                "events",
+            ],
+            vec!["clickpipe", "settings", "update", "svc-id", "pipe-id"],
+        ] {
+            args.extend([
+                "--org-id",
+                "org",
+                "--object-storage-max-insert-bytes",
+                &size_arg,
+            ]);
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

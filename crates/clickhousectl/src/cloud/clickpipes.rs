@@ -673,8 +673,8 @@ pub struct ClickPipeSettingsValues {
     #[arg(long, value_parser = clap::value_parser!(u32).range(100..=3600000))]
     object_storage_polling_interval_ms: Option<u32>,
 
-    /// Bytes per insert batch (10485760-53687091200)
-    #[arg(long, value_parser = clap::value_parser!(u64).range(10485760..=53687091200))]
+    /// Bytes per insert batch (524288000-10737418240)
+    #[arg(long, value_parser = clap::value_parser!(u64).range(524288000..=10737418240))]
     object_storage_max_insert_bytes: Option<u64>,
 
     /// Max files per insert batch (1-10000)
@@ -6525,6 +6525,66 @@ mod tests {
     }
 
     #[test]
+    fn object_storage_insert_size_boundaries_match_create_and_settings_update() {
+        for size in [
+            524_287_999_u64,
+            524_288_000,
+            10_737_418_240,
+            10_737_418_241,
+            10_485_760,
+            53_687_091_200,
+        ] {
+            let size_arg = size.to_string();
+            for mut args in [
+                vec![
+                    "create",
+                    "object-storage",
+                    "svc-1",
+                    "--name",
+                    "pipe-1",
+                    "--source-url",
+                    "https://example.test/data.csv",
+                    "--format",
+                    "CSVWithNames",
+                    "--database",
+                    "default",
+                    "--table",
+                    "events",
+                ],
+                vec!["settings", "update", "svc-1", "pipe-1"],
+            ] {
+                args.extend(["--object-storage-max-insert-bytes", &size_arg]);
+                let result = Cli::try_parse_from(
+                    ["chctl", "cloud", "clickpipe"]
+                        .into_iter()
+                        .chain(args.iter().copied()),
+                );
+                if [524_288_000, 10_737_418_240].contains(&size) {
+                    assert!(result.is_ok(), "{args:?}");
+                    let settings = match parse_clickpipe(&args) {
+                        ClickPipeCommands::Create {
+                            command: ClickPipeCreateCommands::ObjectStorage(args),
+                        } => args.request.settings,
+                        ClickPipeCommands::Settings {
+                            command: ClickPipeSettingsCommands::Update { settings, .. },
+                        } => settings,
+                        _ => panic!("unexpected command"),
+                    };
+                    assert_eq!(settings.object_storage_max_insert_bytes, Some(size));
+                    let request = build_clickpipe_settings_request(&settings, None);
+                    assert_eq!(request.object_storage_max_insert_bytes, Some(size as i64));
+                } else {
+                    assert_eq!(
+                        result.err().expect("out-of-range size must fail").kind(),
+                        clap::error::ErrorKind::ValueValidation,
+                        "{args:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn parses_settings_commands_flags_and_defaults() {
         let ClickPipeCommands::Settings {
             command:
@@ -6561,7 +6621,7 @@ mod tests {
             "--object-storage-polling-interval-ms",
             "3000",
             "--object-storage-max-insert-bytes",
-            "10485760",
+            "524288000",
             "--object-storage-max-file-count",
             "5",
             "--clickhouse-max-threads",
@@ -6591,7 +6651,7 @@ mod tests {
         assert_eq!(settings.streaming_max_insert_wait_ms, Some(1000));
         assert_eq!(settings.object_storage_concurrency, Some(2));
         assert_eq!(settings.object_storage_polling_interval_ms, Some(3000));
-        assert_eq!(settings.object_storage_max_insert_bytes, Some(10_485_760));
+        assert_eq!(settings.object_storage_max_insert_bytes, Some(524_288_000));
         assert_eq!(settings.object_storage_max_file_count, Some(5));
         assert_eq!(settings.clickhouse_max_threads, Some(6));
         assert_eq!(settings.clickhouse_max_insert_threads, Some(7));
@@ -6793,7 +6853,7 @@ mod tests {
                 settings: ClickPipeSettingsValues {
                     object_storage_concurrency: Some(1),
                     object_storage_polling_interval_ms: Some(100),
-                    object_storage_max_insert_bytes: Some(10_485_760),
+                    object_storage_max_insert_bytes: Some(524_288_000),
                     object_storage_max_file_count: Some(1),
                     object_storage_use_cluster_function: Some(false),
                     ..Default::default()

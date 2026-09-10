@@ -1695,6 +1695,10 @@ request contains other settings. Database-source creates use their source-specif
 CDC setting and table-mapping flags instead. With no common setting flag, the
 request omits the whole `settings` block; explicit `0` and `false` remain present.
 
+`--object-storage-max-insert-bytes` accepts 524,288,000–10,737,418,240 bytes (500 MiB–10 GiB), inclusive, on create and `clickpipe settings update`.
+Use `clickpipe settings update` to change this value on an existing pipe.
+The current API validates this value in whole-pipe PATCH but does not apply it.
+
 ```bash
 clickhousectl cloud clickpipe create kafka <service-id> \
   --name mapped-events \
