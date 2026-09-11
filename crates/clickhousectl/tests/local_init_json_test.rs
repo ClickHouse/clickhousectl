@@ -2,6 +2,7 @@
 //! full set of paths the command created, and the human output must report
 //! each created path exactly once (issue #609).
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -48,7 +49,7 @@ fn init_json_reports_clickhouse_dir_and_both_scaffolds_on_first_run() {
 }
 
 #[test]
-fn init_json_on_second_run_reports_only_the_clickhouse_dir() {
+fn init_json_on_second_run_reports_no_created_paths() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
 
@@ -56,7 +57,25 @@ fn init_json_on_second_run_reports_only_the_clickhouse_dir() {
     let output = run(project.path(), home.path(), &["local", "init", "--json"]);
     let json = stdout_json(&output);
 
-    assert_eq!(json["paths"], serde_json::json!([".clickhouse/"]));
+    assert_eq!(json["paths"], serde_json::json!([]));
+}
+
+#[test]
+fn init_json_reports_runtime_gitignore_repair() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+
+    run(project.path(), home.path(), &["local", "init", "--json"]);
+    std::fs::remove_file(project.path().join(".clickhouse/.gitignore"))
+        .expect("remove runtime gitignore");
+    let output = run(project.path(), home.path(), &["local", "init", "--json"]);
+    let json = stdout_json(&output);
+
+    assert_eq!(json["paths"], serde_json::json!([".clickhouse/.gitignore"]));
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".clickhouse/.gitignore")).unwrap(),
+        "*\n"
+    );
 }
 
 #[test]
@@ -104,6 +123,23 @@ fn init_human_output_second_run_reports_already_initialized() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
         "Already initialized at .clickhouse/\n"
+    );
+}
+
+#[test]
+fn init_human_output_reports_a_scaffold_only_repair() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+
+    run(project.path(), home.path(), &["local", "init"]);
+    std::fs::remove_dir_all(project.path().join("postgres/views"))
+        .expect("remove one scaffold directory");
+    let output = run(project.path(), home.path(), &["local", "init"]);
+
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Already initialized at .clickhouse/\nCreated project scaffold in postgres/\n"
     );
 }
 
@@ -167,4 +203,30 @@ fn init_preserves_existing_runtime_gitignore() {
         std::fs::read_to_string(runtime_dir.join(".gitignore")).unwrap(),
         "custom-entry\n"
     );
+}
+
+#[test]
+fn init_propagates_runtime_gitignore_write_failure() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    let runtime_dir = project.path().join(".clickhouse");
+    std::fs::create_dir(&runtime_dir).unwrap();
+    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+    let output = run(project.path(), home.path(), &["local", "init", "--json"]);
+
+    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert!(!runtime_dir.join(".gitignore").exists());
+}
+
+#[test]
+fn init_rejects_a_runtime_gitignore_directory() {
+    let project = tempfile::tempdir().expect("create project");
+    let home = tempfile::tempdir().expect("create home");
+    std::fs::create_dir_all(project.path().join(".clickhouse/.gitignore")).unwrap();
+
+    let output = run(project.path(), home.path(), &["local", "init", "--json"]);
+
+    assert_eq!(output.status.code(), Some(1));
 }

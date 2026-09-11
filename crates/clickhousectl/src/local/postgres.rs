@@ -288,6 +288,7 @@ async fn start(
             drop(metadata_lock);
             continue;
         }
+        crate::init::ensure_runtime_gitignore()?;
 
         // Resume path: an instance for this exact (name, major) already exists.
         if let Some(prior) = prior {

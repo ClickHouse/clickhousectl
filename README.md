@@ -613,7 +613,7 @@ All project-local server data lives inside `.clickhouse/` in your project direct
         └── data/           # ClickHouse data files for "dev" server
 ```
 
-`local init` creates `.clickhouse/.gitignore` whenever it is missing, including when an earlier local command already created `.clickhouse/`. Repeated initialization preserves an existing ignore file and any custom entries in it.
+`local init` and starting a local ClickHouse or Postgres server create `.clickhouse/.gitignore` whenever it is missing, including when an earlier local command already created `.clickhouse/`. Repeated initialization and startup preserve an existing ignore file and any custom entries in it. `local init --json` reports only paths created by that run: `[]` for a no-op and `[".clickhouse/.gitignore"]` when it repairs only the ignore file.
 
 Each named server has its own data directory, so servers are fully isolated from each other. Data persists between restarts — stop and start a server by name to pick up where you left off. Use `clickhousectl local server remove <name>` to permanently delete a server's data.
 

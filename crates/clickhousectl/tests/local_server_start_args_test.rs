@@ -102,6 +102,10 @@ fn positional_name_keeps_following_version_and_passthrough_separate() {
             .join(".clickhouse/servers/existing.json")
             .exists()
     );
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".clickhouse/.gitignore")).unwrap(),
+        "*\n"
+    );
     assert!(
         !project
             .path()

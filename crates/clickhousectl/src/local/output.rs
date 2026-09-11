@@ -816,28 +816,33 @@ impl fmt::Display for RemoveOutput {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InitOutput {
-    /// Every project-local path this invocation created or manages, e.g.
-    /// `.clickhouse/`, and (when newly created) `clickhouse/` and `postgres/`.
+    /// Every project-local path this invocation created, e.g. `.clickhouse/`,
+    /// `.clickhouse/.gitignore`, `clickhouse/`, or `postgres/`.
     pub paths: Vec<String>,
     /// Human-output detail only: the project dir already existed before this
-    /// run. JSON consumers can tell from `paths`, so it is not serialized.
+    /// run. This affects human wording only, so it is not serialized.
     #[serde(skip)]
     pub already_initialized: bool,
 }
 
 impl fmt::Display for InitOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let dir = self
+        if !self.already_initialized {
+            write!(f, "Initialized ClickHouse project in .clickhouse/")?;
+        } else if self
             .paths
-            .first()
-            .map(String::as_str)
-            .unwrap_or(".clickhouse/");
-        if self.already_initialized {
-            write!(f, "Already initialized at {dir}")?;
+            .iter()
+            .any(|path| path == ".clickhouse/.gitignore")
+        {
+            write!(f, "Restored runtime ignore at .clickhouse/.gitignore")?;
         } else {
-            write!(f, "Initialized ClickHouse project in {dir}")?;
+            write!(f, "Already initialized at .clickhouse/")?;
         }
-        for path in self.paths.iter().skip(1) {
+        for path in self
+            .paths
+            .iter()
+            .filter(|path| !path.starts_with(".clickhouse/"))
+        {
             write!(f, "\nCreated project scaffold in {path}")?;
         }
         Ok(())
@@ -2070,15 +2075,15 @@ mod tests {
     }
 
     #[test]
-    fn init_json_idempotent_run_only_reports_clickhouse_dir() {
+    fn init_json_idempotent_run_reports_no_created_paths() {
         let output = InitOutput {
-            paths: vec![".clickhouse/".to_string()],
+            paths: vec![],
             already_initialized: true,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
-        assert_eq!(json["paths"], serde_json::json!([".clickhouse/"]));
+        assert_eq!(json["paths"], serde_json::json!([]));
     }
 
     #[test]
@@ -2405,10 +2410,34 @@ mod tests {
     #[test]
     fn init_display_idempotent() {
         let output = InitOutput {
-            paths: vec![".clickhouse/".to_string()],
+            paths: vec![],
             already_initialized: true,
         };
         assert_eq!(output.to_string(), "Already initialized at .clickhouse/");
+    }
+
+    #[test]
+    fn init_display_reports_runtime_ignore_repair() {
+        let output = InitOutput {
+            paths: vec![".clickhouse/.gitignore".to_string()],
+            already_initialized: true,
+        };
+        assert_eq!(
+            output.to_string(),
+            "Restored runtime ignore at .clickhouse/.gitignore"
+        );
+    }
+
+    #[test]
+    fn init_display_reports_scaffold_repair_without_runtime_path() {
+        let output = InitOutput {
+            paths: vec!["postgres/".to_string()],
+            already_initialized: true,
+        };
+        assert_eq!(
+            output.to_string(),
+            "Already initialized at .clickhouse/\nCreated project scaffold in postgres/"
+        );
     }
 
     #[test]

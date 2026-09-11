@@ -193,16 +193,11 @@ pub fn pg_data_dir(name: &str, major: &str) -> PathBuf {
         .join("data")
 }
 
-/// Ensure project-local servers dir + .gitignore exist. Idempotent.
+/// Ensure the project-local server and ignore paths exist. Idempotent.
 fn ensure_servers_dir() -> Result<()> {
     let dir = servers_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
-        let gitignore = init::local_dir().join(".gitignore");
-        if !gitignore.exists() {
-            let _ = std::fs::write(gitignore, "*\n");
-        }
-    }
+    std::fs::create_dir_all(&dir)?;
+    init::ensure_runtime_gitignore()?;
     Ok(())
 }
 

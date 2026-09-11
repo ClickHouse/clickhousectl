@@ -1,4 +1,5 @@
 use crate::error::Result;
+use std::io::Write;
 use std::path::PathBuf;
 
 pub fn local_dir() -> PathBuf {
@@ -25,31 +26,55 @@ pub fn postgres_project_dir() -> PathBuf {
         .join("postgres")
 }
 
-pub fn is_initialized() -> bool {
-    local_dir().exists()
-}
-
 /// Which project-local paths `init()` created during this invocation. The
 /// caller renders this in both the human-readable and `--json` output, so
 /// `init()` itself prints nothing.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InitResult {
     pub clickhouse_dir_created: bool,
+    pub runtime_gitignore_created: bool,
     pub clickhouse_scaffold_created: bool,
     pub postgres_scaffold_created: bool,
 }
 
-pub fn init() -> Result<InitResult> {
-    let dir = local_dir();
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeIgnoreResult {
+    pub directory_created: bool,
+    pub gitignore_created: bool,
+}
 
-    let clickhouse_dir_created = !is_initialized();
-    if clickhouse_dir_created {
-        std::fs::create_dir_all(&dir)?;
-    }
+/// Ensure project-local runtime state is ignored without replacing a custom
+/// ignore file. The create-new write also preserves a file created by a
+/// concurrent process, and every other I/O failure reaches the caller.
+pub fn ensure_runtime_gitignore() -> Result<RuntimeIgnoreResult> {
+    let dir = local_dir();
+    let directory_created = !dir.exists();
+    std::fs::create_dir_all(&dir)?;
+
     let gitignore = dir.join(".gitignore");
-    if !gitignore.exists() {
-        std::fs::write(dir.join(".gitignore"), "*\n")?;
-    }
+    let gitignore_created = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&gitignore)
+    {
+        Ok(mut file) => {
+            file.write_all(b"*\n")?;
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && gitignore.is_file() => {
+            false
+        }
+        Err(error) => return Err(error.into()),
+    };
+
+    Ok(RuntimeIgnoreResult {
+        directory_created,
+        gitignore_created,
+    })
+}
+
+pub fn init() -> Result<InitResult> {
+    let runtime_ignore = ensure_runtime_gitignore()?;
 
     let clickhouse_scaffold_created = create_project_scaffold(
         project_dir(),
@@ -61,7 +86,8 @@ pub fn init() -> Result<InitResult> {
     )?;
 
     Ok(InitResult {
-        clickhouse_dir_created,
+        clickhouse_dir_created: runtime_ignore.directory_created,
+        runtime_gitignore_created: runtime_ignore.gitignore_created,
         clickhouse_scaffold_created,
         postgres_scaffold_created,
     })
