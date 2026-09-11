@@ -774,7 +774,8 @@ pub enum ScalingScheduleCommands {
 CONTEXT FOR AGENTS:
   --file is a JSON object with an entries array; '-' reads it from stdin.
   Set replaces every existing entry. Get, edit only entries, then set to preserve other entries.
-  Hours and weekdays are UTC. baseConfig is response-only and must not be sent.")]
+  Hours and weekdays are UTC.
+  Omit response-only baseConfig and each entry's id and isActiveNow when setting a schedule.")]
     Set {
         /// Service ID
         service_id: String,
