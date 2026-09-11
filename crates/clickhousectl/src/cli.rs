@@ -220,6 +220,11 @@ mod tests {
                     ));
                 }
                 for line in content {
+                    if !line.starts_with("  ") {
+                        failures.push(format!(
+                            "{path}: context content must be indented by at least two spaces"
+                        ));
+                    }
                     if line.chars().count() > 120 {
                         failures.push(format!(
                             "{path}: context line exceeds 120 characters: {line}"

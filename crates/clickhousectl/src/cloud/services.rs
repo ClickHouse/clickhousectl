@@ -590,11 +590,12 @@ pub enum QueryEndpointCommands {
     },
 
     /// Create or update the Query API endpoint
-    #[command(after_help = "CONTEXT FOR AGENTS:\n\
-        Existing API keys are preserved unless --replace-open-api-keys is set.\n\
-        Roles replace the endpoint-wide role list for every authorized key.\n\
-        First creation requires --allowed-origins; use '*' explicitly for all.\n\
-        Avoid concurrent changes to the same endpoint.")]
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Existing API keys are preserved unless --replace-open-api-keys is set.
+  Roles replace the endpoint-wide role list for every authorized key.
+  First creation requires --allowed-origins; use '*' explicitly for all.
+  Avoid concurrent changes to the same endpoint.")]
     Create {
         /// Service ID
         service_id: String,
@@ -719,9 +720,10 @@ pub enum ServiceSettingsCommands {
     /// Set one or more ClickHouse settings
     #[command(
         group(ArgGroup::new("settings_input").required(true).args(["setting", "settings_file"])),
-        after_help = "CONTEXT FOR AGENTS:\n\
-  Discover supported names and types with `settings schema <service-id>`.\n\
-  --setting values are JSON literals; quote string values inside the argument.\n\
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Discover supported names and types with `settings schema <service-id>`.
+  --setting values are JSON literals; quote string values inside the argument.
   --settings-file reads a JSON settings map; `-` reads stdin. Only named settings change."
     )]
     Set {
