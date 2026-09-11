@@ -267,6 +267,56 @@ fn explicit_stdin_and_empty_input_reach_eof() {
 }
 
 #[test]
+fn plain_piped_stdin_uses_non_tty_exec_and_reaches_eof() {
+    let fixture = Fixture::new(0, false);
+    let mut child = fixture
+        .command(&[])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"SELECT 1;\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_success(&output);
+
+    let execution = fixture.execution.lock().unwrap();
+    assert_eq!(execution.input, b"SELECT 1;\n");
+    let config = execution.config.as_ref().unwrap();
+    assert_eq!(config["AttachStdin"], true);
+    assert_eq!(config["Tty"], false);
+    assert_eq!(
+        config["Cmd"],
+        json!(["psql", "-U", "postgres", "-d", "postgres"])
+    );
+}
+
+#[test]
+fn native_command_passthrough_uses_non_tty_exec() {
+    let fixture = Fixture::new(0, false);
+    let output = fixture
+        .command(&["--", "-c", "SELECT 2"])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let execution = fixture.execution.lock().unwrap();
+    let config = execution.config.as_ref().unwrap();
+    assert_eq!(config["AttachStdin"], true);
+    assert_eq!(config["Tty"], false);
+    assert_eq!(
+        config["Cmd"],
+        json!(["psql", "-U", "postgres", "-d", "postgres", "-c", "SELECT 2"])
+    );
+}
+
+#[test]
 fn file_and_stdin_preserve_psql_error_status() {
     for stdin in [false, true] {
         let fixture = Fixture::new(3, false);
@@ -294,6 +344,27 @@ fn file_and_stdin_preserve_psql_error_status() {
         assert_eq!(output.status.code(), Some(3));
         assert!(String::from_utf8_lossy(&output.stderr).contains("psql diagnostic"));
     }
+}
+
+#[test]
+fn plain_piped_stdin_preserves_psql_error_status() {
+    let fixture = Fixture::new(3, false);
+    let mut child = fixture
+        .command(&[])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"BAD SQL;\n")
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("psql diagnostic"));
 }
 
 #[test]

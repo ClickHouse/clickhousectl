@@ -12,6 +12,7 @@ use crate::local::server::{self, Engine, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashSet;
 use std::future::Future;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -1096,7 +1097,9 @@ async fn client(
         );
     }
 
-    let one_shot = query.is_some() || queries_file.is_some();
+    let explicit_input = query.is_some() || queries_file.is_some();
+    let interactive =
+        !explicit_input && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let mut psql_args: Vec<String> = vec!["-U".into(), user, "-d".into(), database];
     if let Some(q) = query {
         psql_args.push("-c".into());
@@ -1116,11 +1119,14 @@ async fn client(
             psql_args.extend(["-f".into(), "-".into()]);
             Some(reader)
         }
+        // Match host psql: without an explicit wrapper input, a non-terminal
+        // stdin is still SQL input. Docker must attach it and receive EOF.
+        None if !explicit_input && !interactive => Some(Box::new(std::io::stdin())),
         None => None,
     };
     psql_args.extend(extra_args);
 
-    if one_shot {
+    if !interactive {
         // Non-interactive: no TTY, no raw mode, output goes to stdout/stderr
         // so the caller can pipe / capture / redirect.
         docker::exec_psql_one_shot(&docker, container_id, &psql_args, input).await
