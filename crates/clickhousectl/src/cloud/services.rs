@@ -1634,12 +1634,39 @@ async fn service_profile_list(
     Ok(())
 }
 
+// serde_json preserves i64/u64 integers, but falls back to f64 for overflow
+// and exponent/decimal literals. Reject that representation before it can be
+// rounded and sent, including numbers nested in future setting value shapes.
+fn validate_setting_numbers(value: &serde_json::Value, source: &str) -> CloudResult<()> {
+    match value {
+        serde_json::Value::Number(number) if number.is_f64() => Err(CloudError::new(format!(
+            "{source}: numeric settings must be integers from {} to {}; decimal and exponent values must be JSON strings",
+            i64::MIN,
+            u64::MAX
+        ))),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                validate_setting_numbers(value, source)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                validate_setting_numbers(value, source)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn parse_settings_map_document(
     raw: &str,
     source: &str,
 ) -> CloudResult<BTreeMap<String, serde_json::Value>> {
     let value: serde_json::Value = serde_json::from_str(raw)
         .map_err(|error| CloudError::new(format!("invalid JSON in {source}: {error}")))?;
+    validate_setting_numbers(&value, source)?;
     let object = value.as_object().ok_or_else(|| {
         CloudError::new(format!(
             "{source} must contain a JSON object mapping setting names to values"
@@ -1684,6 +1711,7 @@ fn parse_setting_assignments(
                 "--setting #{position} value is not valid JSON: {error}; quote string values, for example compatibility=\"24.8\""
             ))
         })?;
+        validate_setting_numbers(&value, &format!("--setting #{position} ('{name}')"))?;
         if settings.insert(name.to_string(), value).is_some() {
             return Err(CloudError::new(format!(
                 "setting '{name}' was provided more than once"
@@ -1702,11 +1730,15 @@ fn read_service_settings(
 
         let (raw, source) = if path == "-" {
             let mut raw = String::new();
-            std::io::stdin().read_to_string(&mut raw)?;
+            std::io::stdin().read_to_string(&mut raw).map_err(|error| {
+                CloudError::new(format!("failed to read settings from stdin: {error}"))
+            })?;
             (raw, "stdin".to_string())
         } else {
             (
-                std::fs::read_to_string(path)?,
+                std::fs::read_to_string(path).map_err(|error| {
+                    CloudError::new(format!("failed to read settings file '{path}': {error}"))
+                })?,
                 format!("settings file '{path}'"),
             )
         };

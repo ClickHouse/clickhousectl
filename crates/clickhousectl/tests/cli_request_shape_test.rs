@@ -22383,3 +22383,154 @@ async fn service_settings_set_rejects_malformed_inputs_before_organization_disco
         "invalid local inputs must fail before even organization discovery"
     );
 }
+
+#[tokio::test]
+async fn service_settings_set_preserves_integer_boundaries_on_the_wire() {
+    let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let settings_file = directory.path().join("settings.json");
+    let document = r#"{"minimum":-9223372036854775808,"signed_maximum":9223372036854775807,"maximum":18446744073709551615,"decimal_string":"0.5","exponent_string":"1e3"}"#;
+    std::fs::write(&settings_file, document).unwrap();
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickhouseSettings",
+        ))
+        .and(body_json(
+            serde_json::json!({"settings": serde_json::from_str::<Value>(document).unwrap()}),
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"warnings": []}, "status": 200
+        })))
+        .expect(3)
+        .mount(&mock)
+        .await;
+    let base = ["service", "settings", "set", "svc-1", "--org-id", "org-1"];
+    let mut arguments = base.to_vec();
+    arguments.extend([
+        "--setting",
+        "minimum=-9223372036854775808",
+        "--setting",
+        "signed_maximum=9223372036854775807",
+        "--setting",
+        "maximum=18446744073709551615",
+        "--setting",
+        "decimal_string=\"0.5\"",
+        "--setting",
+        "exponent_string=\"1e3\"",
+    ]);
+    assert_success(&invoke_cli_with_cloud_credentials(&mock, &arguments));
+    let mut arguments = base.to_vec();
+    arguments.extend(["--settings-file", settings_file.to_str().unwrap()]);
+    assert_success(&invoke_cli_with_cloud_credentials(&mock, &arguments));
+    let mut arguments = base.to_vec();
+    arguments.extend(["--settings-file", "-"]);
+    assert_success(&invoke_cli_with_cloud_credentials_and_stdin(
+        &mock, &arguments, document,
+    ));
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    for request in requests {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        assert_eq!(body["settings"]["minimum"].as_i64(), Some(i64::MIN));
+        assert_eq!(body["settings"]["signed_maximum"].as_i64(), Some(i64::MAX));
+        assert_eq!(body["settings"]["maximum"].as_u64(), Some(u64::MAX));
+    }
+}
+
+#[tokio::test]
+async fn service_settings_set_rejects_inexact_numbers_before_organization_discovery() {
+    let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let settings_file = directory.path().join("settings.json");
+    for literal in [
+        "18446744073709551616",
+        "99999999999999999999",
+        "-9223372036854775809",
+        "1e3",
+        "1E3",
+        "1e-3",
+        "1.5",
+        "18446744073709551615.0",
+        "[99999999999999999999]",
+        r#"{"nested":1e3}"#,
+    ] {
+        let assignment = format!("value={literal}");
+        let document = format!("{{\"value\":{literal}}}");
+        std::fs::write(&settings_file, &document).unwrap();
+        let outputs = [
+            invoke_cli_with_cloud_credentials(
+                &mock,
+                &[
+                    "service",
+                    "settings",
+                    "set",
+                    "svc-1",
+                    "--setting",
+                    &assignment,
+                ],
+            ),
+            invoke_cli_with_cloud_credentials(
+                &mock,
+                &[
+                    "service",
+                    "settings",
+                    "set",
+                    "svc-1",
+                    "--settings-file",
+                    settings_file.to_str().unwrap(),
+                ],
+            ),
+            invoke_cli_with_cloud_credentials_and_stdin(
+                &mock,
+                &[
+                    "service",
+                    "settings",
+                    "set",
+                    "svc-1",
+                    "--settings-file",
+                    "-",
+                ],
+                &document,
+            ),
+        ];
+        for output in outputs {
+            assert_eq!(output.status.code(), Some(1), "{literal}: {output:?}");
+            assert!(
+                String::from_utf8_lossy(&output.stderr)
+                    .contains("numeric settings must be integers"),
+                "{literal}: {output:?}"
+            );
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_settings_set_names_unreadable_files_before_organization_discovery() {
+    let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let settings_file = directory.path().join("missing-settings.json");
+    // Exercise both opening a missing file and reading invalid UTF-8.
+    for contents in [None, Some([0xff])] {
+        if let Some(contents) = contents {
+            std::fs::write(&settings_file, contents).unwrap();
+        }
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "service",
+                "settings",
+                "set",
+                "svc-1",
+                "--settings-file",
+                settings_file.to_str().unwrap(),
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(settings_file.to_str().unwrap()),
+            "{output:?}"
+        );
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
