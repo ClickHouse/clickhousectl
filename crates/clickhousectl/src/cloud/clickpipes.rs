@@ -347,7 +347,7 @@ CONTEXT FOR AGENTS:
         /// ClickPipe ID
         clickpipe_id: String,
 
-        /// Number of replicas (1-40)
+        /// Number of replicas (1-40, streaming pipes)
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=40))]
         replicas: Option<u32>,
 
