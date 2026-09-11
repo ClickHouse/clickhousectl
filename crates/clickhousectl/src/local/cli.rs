@@ -289,6 +289,7 @@ CONTEXT FOR AGENTS:
   Requires Docker installed and running.
   Each instance is keyed on (name, major version); pass --version when one name has two majors.
   There is no `postgres list` — `local server list` shows ClickHouse and Postgres together.
+  `local server list --global` only discovers running ClickHouse servers, excluding Postgres.
   Typical flow: `postgres start` -> `postgres client` -> `postgres dotenv --local` -> `postgres stop`")]
     Postgres {
         #[command(subcommand)]
