@@ -6529,6 +6529,7 @@ mod tests {
         for size in [
             524_287_999_u64,
             524_288_000,
+            536_870_912,
             10_737_418_240,
             10_737_418_241,
             10_485_760,
@@ -6559,7 +6560,7 @@ mod tests {
                         .into_iter()
                         .chain(args.iter().copied()),
                 );
-                if [524_288_000, 10_737_418_240].contains(&size) {
+                if [524_288_000, 536_870_912, 10_737_418_240].contains(&size) {
                     assert!(result.is_ok(), "{args:?}");
                     let settings = match parse_clickpipe(&args) {
                         ClickPipeCommands::Create {

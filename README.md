@@ -1333,7 +1333,7 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
   --object-storage-concurrency 8 \
   --object-storage-polling-interval-ms 30000 \
   --object-storage-max-file-count 500 \
-  --object-storage-max-insert-bytes 268435456 \
+  --object-storage-max-insert-bytes 536870912 \
   --object-storage-use-cluster-function true \
   --clickhouse-max-threads 16 --clickhouse-max-insert-threads 4 \
   --clickhouse-max-download-threads 8 \
