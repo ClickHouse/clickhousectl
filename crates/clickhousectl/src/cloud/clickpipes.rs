@@ -2,7 +2,7 @@ use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value, read_typed_config};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
-use clap::builder::PossibleValuesParser;
+use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
     ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipeBigQueryPipeTableMappingTableengine,
@@ -207,6 +207,32 @@ fn parse_supported_kafka_auth(value: &str) -> Result<String, String> {
     parse_kafka_authentication(value)
         .map(|_| value.to_string())
         .map_err(|error| error.message)
+}
+
+/// Expose canonical choices while retaining the existing authentication parser.
+#[derive(Clone)]
+struct AuthenticationValueParser {
+    parse: fn(&str) -> Result<String, String>,
+    values: &'static [&'static str],
+}
+
+impl TypedValueParser for AuthenticationValueParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        command: &clap::Command,
+        argument: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        (self.parse).parse_ref(command, argument, value)
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        Some(Box::new(
+            self.values.iter().copied().map(PossibleValue::new),
+        ))
+    }
 }
 
 #[derive(Subcommand)]
@@ -867,7 +893,7 @@ pub struct ObjectStorageSourceFields {
     ///
     /// Inferred from credential flags when omitted; with no credentials, no
     /// authentication is sent. Workload identity is only valid for GCS.
-    #[arg(long, value_parser = parse_supported_object_storage_auth)]
+    #[arg(long, value_parser = AuthenticationValueParser { parse: parse_supported_object_storage_auth, values: &["IAM_ROLE", "IAM_USER", "CONNECTION_STRING", "SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] })]
     pub auth: Option<String>,
 
     /// Enable continuous ingestion
@@ -997,7 +1023,7 @@ pub struct KafkaSourceFields {
     ///
     /// Inferred from the credential flags when omitted; with no credential flag
     /// at all, no authentication is sent.
-    #[arg(long, value_parser = parse_supported_kafka_auth)]
+    #[arg(long, value_parser = AuthenticationValueParser { parse: parse_supported_kafka_auth, values: ClickPipePostKafkaSourceAuthentication::VALUES })]
     pub auth: Option<String>,
 
     /// Azure Event Hubs connection string
@@ -1687,7 +1713,7 @@ pub struct BigQueryCreateArgs {
     #[arg(
         long,
         default_value = "SERVICE_ACCOUNT",
-        value_parser = parse_supported_bigquery_auth,
+        value_parser = AuthenticationValueParser { parse: parse_supported_bigquery_auth, values: &["SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] },
     )]
     pub auth: String,
 
@@ -1820,7 +1846,7 @@ pub struct PubSubSourceFields {
     #[arg(
         long,
         default_value = "SERVICE_ACCOUNT",
-        value_parser = parse_supported_pubsub_auth,
+        value_parser = AuthenticationValueParser { parse: parse_supported_pubsub_auth, values: &["SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] },
     )]
     pub auth: String,
 
@@ -9186,6 +9212,53 @@ mod tests {
             }
             assert_pubsub_value("--seek-type", value);
         }
+    }
+
+    #[test]
+    fn every_clickpipe_auth_flag_exposes_valid_canonical_choices() {
+        use clap::CommandFactory;
+        fn visit(command: &clap::Command, count: &mut usize) {
+            for argument in command
+                .get_arguments()
+                .filter(|arg| arg.get_long() == Some("auth"))
+            {
+                let parser = argument.get_value_parser();
+                let choices: Vec<_> = parser.possible_values().expect("auth choices").collect();
+                assert!(!choices.is_empty(), "{}", command.get_name());
+                for choice in choices {
+                    let value = choice.get_name();
+                    // Validate every advertised choice through the existing domain parser.
+                    match command.get_name() {
+                        "object-storage" => {
+                            parse_supported_object_storage_auth(value).unwrap();
+                        }
+                        "kafka" => {
+                            parse_supported_kafka_auth(value).unwrap();
+                        }
+                        "pubsub" => {
+                            parse_supported_pubsub_auth(value).unwrap();
+                        }
+                        "bigquery" => {
+                            parse_supported_bigquery_auth(value).unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+                *count += 1;
+            }
+            for child in command.get_subcommands() {
+                visit(child, count);
+            }
+        }
+        let tree = crate::cli::Cli::command();
+        let clickpipe = tree
+            .find_subcommand("cloud")
+            .unwrap()
+            .find_subcommand("clickpipe")
+            .unwrap();
+        let mut count = 0;
+        visit(clickpipe, &mut count);
+        assert_eq!(count, 11);
     }
 
     #[test]

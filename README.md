@@ -1259,6 +1259,8 @@ generate-backup-bucket-json | clickhousectl cloud backup bucket create <service-
 
 ### ClickPipes
 
+Every ClickPipe `--auth` flag lists its accepted canonical modes in `--help`.
+
 Manage ClickPipes for ingesting data into ClickHouse Cloud from external sources. See the [ClickPipes documentation](https://clickhouse.com/docs/integrations/clickpipes).
 
 ```bash
