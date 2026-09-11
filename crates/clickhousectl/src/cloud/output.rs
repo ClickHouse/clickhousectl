@@ -175,7 +175,8 @@ pub fn print_error(detail: &CloudErrorDetail) {
 /// - String values are unquoted.
 /// - Arrays of scalars render inline (`key: [a, b, c]`); arrays of objects
 ///   render as `-` bullet blocks.
-/// - Empty objects render as `{}`; nulls and empty strings/arrays are omitted.
+/// - Present empty objects, strings, and arrays remain visible as `{}`, `""`,
+///   and `[]`; nulls are omitted.
 pub fn print_human<T: Serialize>(value: &T) -> Result<(), serde_json::Error> {
     let value = serde_json::to_value(value)?;
     let mut lines = Vec::new();
@@ -191,13 +192,7 @@ fn pad(indent: usize) -> String {
 }
 
 fn is_empty(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::String(s) => s.is_empty(),
-        Value::Array(a) => a.is_empty(),
-        Value::Object(_) => false,
-        _ => false,
-    }
+    matches!(value, Value::Null)
 }
 
 fn is_scalar(value: &Value) -> bool {
@@ -209,6 +204,7 @@ fn scalar_string(value: &Value) -> Option<String> {
         // The single place a string scalar becomes human text, so summarizing
         // PEM here covers object fields, nested objects and arrays of strings
         // alike.
+        Value::String(s) if s.is_empty() => Some("\"\"".to_string()),
         Value::String(s) => Some(pem_summary(s).unwrap_or_else(|| s.clone())),
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
@@ -408,6 +404,7 @@ fn pem_summary(value: &str) -> Option<String> {
 fn render(lines: &mut Vec<String>, indent: usize, value: &Value) {
     match value {
         Value::Object(map) if map.is_empty() => lines.push(format!("{}{{}}", pad(indent))),
+        Value::Array(items) if items.is_empty() => lines.push(format!("{}[]", pad(indent))),
         Value::Object(map) => render_object(lines, indent, map),
         Value::Array(items) => render_array(lines, indent, items),
         scalar => {
@@ -511,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn omits_null_and_empty_values() {
+    fn omits_null_but_renders_present_empty_values() {
         let v = json!({
             "name": "svc",
             "note": null,
@@ -521,16 +518,19 @@ mod tests {
             "count": 0,
             "flag": false
         });
-        // Missing scalar values are dropped; explicit objects, 0 and false stay.
+        // Missing fields serialize as absent; null is omitted while explicit
+        // empty values, 0 and false remain distinguishable.
         assert_eq!(
             render_to_string(&v),
-            "name: svc\nmeta: {}\ncount: 0\nflag: false"
+            "name: svc\nempty: \"\"\ntags: []\nmeta: {}\ncount: 0\nflag: false"
         );
     }
 
     #[test]
     fn renders_explicit_empty_objects_at_every_depth() {
         assert_eq!(render_to_string(&json!({})), "{}");
+        assert_eq!(render_to_string(&json!([])), "[]");
+        assert_eq!(render_to_string(&json!("")), "\"\"");
         assert_eq!(
             render_to_string(&json!({"pgConfig": {}, "pgBouncerConfig": {}})),
             "pgConfig: {}\npgBouncerConfig: {}"

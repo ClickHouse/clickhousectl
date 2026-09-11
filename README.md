@@ -1205,7 +1205,7 @@ For `postgres config patch --file`, put that map under `pgBouncerConfig` alongsi
 
 PgBouncer parameter names are open-ended; values must be quoted strings, including numbers. Invalid value types fail locally before any API request. `config replace` replaces the complete Postgres and PgBouncer configuration: obtain the current document with `config get --json`, edit it, and retain both sections and every setting you want to keep.
 
-Human detail output shows explicit empty configuration sections as `pgConfig: {}` and `pgBouncerConfig: {}`. JSON retains the original objects.
+Human detail output preserves explicit empty values: configuration sections show as `pgConfig: {}` and `pgBouncerConfig: {}`, empty lists as `[]`, and empty strings as `""`. JSON retains the original values.
 
 `pgConfig` uses the closed set of GUC names supported by the Cloud API. Unknown names and `null` values are rejected locally on `--set` and every PgConfig file path, and the enum-valued settings accept only `default_transaction_isolation` (`read committed`, `repeatable read`, `serializable`), `ssl_min_protocol_version` (`TLSv1` through `TLSv1.3`), and `wal_compression` (`off`, `on`, `lz4`, `zstd`). Files for `config patch` and `config replace` must contain both `pgConfig` and `pgBouncerConfig`; use an explicit `{}` when a section is intentionally empty rather than omitting it.
 

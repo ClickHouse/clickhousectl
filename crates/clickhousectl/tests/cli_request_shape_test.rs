@@ -3451,6 +3451,44 @@ async fn postgres_slow_query_get_omits_optional_query_and_renders_sparse_detail(
     );
 }
 
+#[tokio::test]
+async fn postgres_slow_query_get_renders_an_explicit_empty_execution_list() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!({"recentExecutions": []});
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns/query-1",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "query-1",
+            "--db-name",
+            "app",
+            "--db-user",
+            "reader",
+            "--db-operation",
+            "SELECT",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(output.stdout, b"recentExecutions: []\n");
+}
+
 // ── Postgres Prometheus metrics (issue #584) ──────────────────────────────
 
 #[tokio::test]
@@ -17096,6 +17134,26 @@ async fn clickpipe_get_human_output_summarizes_the_ca_certificate() {
 }
 
 #[tokio::test]
+async fn clickpipe_get_human_output_shows_present_empty_fields() {
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(
+        &mock,
+        serde_json::json!({"kafka": {"brokers": "", "consumerGroup": ""}}),
+    )
+    .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("brokers: \"\""), "{stdout}");
+    assert!(stdout.contains("consumerGroup: \"\""), "{stdout}");
+}
+
+#[tokio::test]
 async fn clickpipe_get_json_output_keeps_the_full_ca_certificate() {
     let mock = MockServer::start().await;
     mount_clickpipe_get(&mock, postgres_source_with_certificate()).await;
@@ -22805,6 +22863,7 @@ async fn service_settings_get_preserves_json_types_and_renders_human_values() {
         ("max_query_size", serde_json::json!(262146), "262146"),
         ("compatibility", serde_json::json!("26.2"), "26.2"),
         ("future_bool", serde_json::json!(false), "false"),
+        ("empty_value", serde_json::json!(""), "\"\""),
     ] {
         let setting = serde_json::json!({"name": name, "value": value});
         Mock::given(method("GET"))
