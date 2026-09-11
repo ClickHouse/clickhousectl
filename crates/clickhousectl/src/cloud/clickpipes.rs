@@ -1,5 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::config::{deserialize_strict_config, read_config_value, read_typed_config};
+use crate::cloud::config::{
+    config_source_label, deserialize_strict_config, read_config_value, read_typed_config,
+};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
@@ -3551,7 +3553,8 @@ async fn clickpipe_update(
     org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let request = build_clickpipe_update_request(read_config_value(config_file)?, config_file)?;
+    let config_source = config_source_label(config_file);
+    let request = build_clickpipe_update_request(read_config_value(config_file)?, config_source)?;
     let org_id = resolve_org_id(client, org_id).await?;
     let clickpipe = client
         .update_clickpipe(&org_id, service_id, clickpipe_id, &request)

@@ -1461,6 +1461,8 @@ These observations concern root object-storage field mappings, not CDC
 
 A source patch selects at most one of the seven supported arms.
 BigQuery sources cannot be updated by this API. `validateSamples` is optional.
+Unknown PATCH fields are rejected before a request is sent; diagnostics use the
+JSON field path and identify `--config-file -` as stdin.
 Kafka credentials must match the selected
 authentication: username and password for PLAIN/SCRAM, access key and secret
 for IAM user, or certificate and private key for mutual TLS. Event Hubs

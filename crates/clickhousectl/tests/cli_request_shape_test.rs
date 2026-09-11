@@ -22346,6 +22346,50 @@ async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values() {
 }
 
 #[tokio::test]
+async fn clickpipe_update_reports_clean_unknown_paths_and_names_stdin() {
+    let patch = serde_json::json!({"source": {"kafka": {"unknownOption": true}}});
+
+    let file_mock = MockServer::start().await;
+    let file_output = invoke_clickpipe_update_file(&file_mock, &patch);
+    assert_eq!(file_output.status.code(), Some(1));
+    let file_stderr = String::from_utf8_lossy(&file_output.stderr);
+    assert!(
+        file_stderr.contains("unknown field `source.kafka.unknownOption`"),
+        "{file_stderr}"
+    );
+    assert!(!file_stderr.contains(".?"), "{file_stderr}");
+    assert!(file_mock.received_requests().await.unwrap().is_empty());
+
+    let stdin_mock = MockServer::start().await;
+    let stdin_output = invoke_cli_with_cloud_credentials_and_stdin(
+        &stdin_mock,
+        &[
+            "clickpipe",
+            "update",
+            "svc-1",
+            "pipe-1",
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        &patch.to_string(),
+    );
+    assert_eq!(stdin_output.status.code(), Some(1));
+    let stdin_stderr = String::from_utf8_lossy(&stdin_output.stderr);
+    assert!(
+        stdin_stderr.contains("invalid request body in config stdin"),
+        "{stdin_stderr}"
+    );
+    assert!(
+        stdin_stderr.contains("unknown field `source.kafka.unknownOption`"),
+        "{stdin_stderr}"
+    );
+    assert!(!stdin_stderr.contains(".?"), "{stdin_stderr}");
+    assert!(stdin_mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn clickpipe_update_rejects_mysql_port_zero_from_file_and_stdin_before_http() {
     let patch = serde_json::json!({"source": {
         "mysql": {"host": "mysql.example.com", "port": 0}
