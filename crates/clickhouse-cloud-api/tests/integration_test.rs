@@ -4,16 +4,14 @@ use clickhouse_cloud_api::Client;
 use clickhouse_cloud_api::models::*;
 use common::support::*;
 
-/// Supply CLICKHOUSE_CLOUD_TEST_ORG_ID and
-/// CLICKHOUSE_CLOUD_TEST_SETTINGS_SERVICE_ID for a disposable running service.
-#[tokio::test]
-#[ignore = "requires live credentials and an explicitly supplied disposable service"]
-async fn cloud_clickhouse_settings_native_contract() -> TestResult<()> {
-    let client = create_client()?;
-    let org = required_env("CLICKHOUSE_CLOUD_TEST_ORG_ID")?;
-    let service = required_env("CLICKHOUSE_CLOUD_TEST_SETTINGS_SERVICE_ID")?;
+/// Use the lifecycle's disposable service and restore its seeded overrides.
+async fn cloud_clickhouse_settings_native_contract(
+    client: &Client,
+    org: &str,
+    service: &str,
+) -> TestResult<()> {
     let original = client
-        .service_clickhouse_settings_list_get(&org, &service)
+        .service_clickhouse_settings_list_get(org, service)
         .await?
         .result
         .ok_or("missing original settings result")?
@@ -34,7 +32,7 @@ async fn cloud_clickhouse_settings_native_contract() -> TestResult<()> {
             )?),
         };
         let patched = client
-            .service_clickhouse_settings_update(&org, &service, &request)
+            .service_clickhouse_settings_update(org, service, &request)
             .await?
             .result
             .ok_or("missing PATCH result")?;
@@ -43,7 +41,7 @@ async fn cloud_clickhouse_settings_native_contract() -> TestResult<()> {
         }
         for name in names {
             let setting = client
-                .service_clickhouse_setting_get(&org, &service, name)
+                .service_clickhouse_setting_get(org, service, name)
                 .await?
                 .result
                 .ok_or("missing single GET result")?;
@@ -54,7 +52,7 @@ async fn cloud_clickhouse_settings_native_contract() -> TestResult<()> {
             }
         }
         let listed = client
-            .service_clickhouse_settings_list_get(&org, &service)
+            .service_clickhouse_settings_list_get(org, service)
             .await?
             .result
             .ok_or("missing list GET result")?
@@ -75,7 +73,7 @@ async fn cloud_clickhouse_settings_native_contract() -> TestResult<()> {
     let mut cleanup_errors = Vec::new();
     for name in names {
         if let Err(error) = client
-            .service_clickhouse_setting_delete(&org, &service, name)
+            .service_clickhouse_setting_delete(org, service, name)
             .await
         {
             cleanup_errors.push(format!("reset {name}: {error}"));
@@ -86,7 +84,7 @@ async fn cloud_clickhouse_settings_native_contract() -> TestResult<()> {
             settings: Some(original),
         };
         if let Err(error) = client
-            .service_clickhouse_settings_update(&org, &service, &request)
+            .service_clickhouse_settings_update(org, service, &request)
             .await
         {
             cleanup_errors.push(format!("restore original settings: {error}"));
@@ -100,6 +98,89 @@ async fn cloud_clickhouse_settings_native_contract() -> TestResult<()> {
         .into());
     }
     outcome
+}
+
+#[tokio::test]
+async fn settings_native_contract_restores_overrides_after_success_or_type_mismatch() {
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    for corrupt_readback in [false, true] {
+        let server = MockServer::start().await;
+        let client = Client::with_base_url(server.uri(), "key", "secret");
+        let collection = "/v1/organizations/org/services/service/clickhouseSettings";
+        let original = serde_json::json!({"compatibility": "25.8", "max_query_size": 262144});
+        let wanted = serde_json::json!({"compatibility": "26.2", "max_query_size": 262146});
+        let response = |result: serde_json::Value| {
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"status": 200, "result": result}))
+        };
+        let list = |settings: &serde_json::Value| {
+            serde_json::json!({"settings": settings.as_object().unwrap().iter()
+                .map(|(name, value)| serde_json::json!({"name": name, "value": value}))
+                .collect::<Vec<_>>()})
+        };
+        Mock::given(method("GET"))
+            .and(path(collection))
+            .respond_with(response(list(&original)))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(collection))
+            .respond_with(response(list(&wanted)))
+            .with_priority(2)
+            .expect(if corrupt_readback { 0 } else { 1 })
+            .mount(&server)
+            .await;
+        for settings in [&wanted, &original] {
+            Mock::given(method("PATCH"))
+                .and(path(collection))
+                .and(body_json(serde_json::json!({"settings": settings})))
+                .respond_with(response(serde_json::json!({"settings": settings})))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        for name in ["compatibility", "max_query_size"] {
+            let value = if corrupt_readback && name == "max_query_size" {
+                serde_json::json!("262146")
+            } else {
+                wanted[name].clone()
+            };
+            Mock::given(method("GET"))
+                .and(path(format!("{collection}/{name}")))
+                .respond_with(response(serde_json::json!({"name": name, "value": value})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path(format!("{collection}/{name}")))
+                .respond_with(response(serde_json::Value::Null))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let outcome = cloud_clickhouse_settings_native_contract(&client, "org", "service").await;
+        if corrupt_readback {
+            assert!(
+                outcome
+                    .unwrap_err()
+                    .to_string()
+                    .contains("native type/value")
+            );
+        } else {
+            outcome.unwrap();
+        }
+        server.verify().await;
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[requests.len() - 3].method, "DELETE");
+        assert_eq!(requests[requests.len() - 2].method, "DELETE");
+        let restored: serde_json::Value = requests.last().unwrap().body_json().unwrap();
+        assert_eq!(restored, serde_json::json!({"settings": original}));
+    }
 }
 
 #[tokio::test]
@@ -1181,6 +1262,15 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         // non-blocking failure rather than guessing at an unknown setting.
 
         log_phase("ClickHouse Settings");
+
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "clickhouse settings native string/integer contract",
+                || cloud_clickhouse_settings_native_contract(&client, &ctx.org_id, &service_id),
+            )
+            .await?;
 
         let settings_schema = failures
             .run(

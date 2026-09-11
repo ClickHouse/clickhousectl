@@ -2864,6 +2864,8 @@ Cloud API integration is tested against a real ClickHouse Cloud workspace via th
 
 Generated service and replica names stay within 50 characters, including rename suffixes.
 Long run labels are shortened with a hash of the full run ID; resource tags retain the full ID.
+The service lifecycle also verifies native string/integer settings through PATCH and GET using
+its disposable service, restoring the original overrides before continuing.
 
 Required environment variables:
 
