@@ -71,7 +71,7 @@ pub enum PostgresCommands {
         )]
         sort_order: Option<PostgresLogsGetListSortorder>,
         /// Maximum number of log entries
-        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=2000))]
+        #[arg(long, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(1..=2000))]
         limit: Option<i64>,
         /// Number of log entries to skip
         #[arg(
@@ -470,7 +470,7 @@ pub enum SlowQueryCommands {
         )]
         sort_order: Option<String>,
         /// Maximum number of patterns to return
-        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=500))]
+        #[arg(long, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(1..=500))]
         limit: Option<i64>,
         /// Number of patterns to skip
         #[arg(
@@ -2951,6 +2951,7 @@ mod tests {
                 "newest",
                 clap::error::ErrorKind::InvalidValue,
             ),
+            ("--limit", "-1", clap::error::ErrorKind::ValueValidation),
             ("--limit", "0", clap::error::ErrorKind::ValueValidation),
             ("--limit", "2001", clap::error::ErrorKind::ValueValidation),
             ("--offset", "-1", clap::error::ErrorKind::ValueValidation),
@@ -3906,6 +3907,7 @@ mod tests {
                 "sideways",
                 clap::error::ErrorKind::InvalidValue,
             ),
+            ("--limit", "-1", clap::error::ErrorKind::ValueValidation),
             ("--limit", "0", clap::error::ErrorKind::ValueValidation),
             ("--limit", "501", clap::error::ErrorKind::ValueValidation),
             ("--offset", "-1", clap::error::ErrorKind::ValueValidation),
@@ -3954,6 +3956,27 @@ mod tests {
             clap::error::ErrorKind::ValueValidation
         );
         assert_eq!(negative_offset_equals.exit_code(), 2);
+    }
+
+    #[test]
+    fn negative_limits_use_range_validation_with_both_flag_forms() {
+        for command in [vec!["logs"], vec!["slow-queries", "list"]] {
+            for limit_args in [vec!["--limit", "-1"], vec!["--limit=-1"]] {
+                let mut args = vec!["clickhousectl", "cloud", "postgres"];
+                args.extend(command.iter().copied());
+                args.extend([
+                    "pg-1",
+                    "--from-date",
+                    "2026-04-16T12:00:00Z",
+                    "--to-date",
+                    "2026-04-16T13:00:00Z",
+                ]);
+                args.extend(limit_args);
+                let error = Cli::try_parse_from(args).err().expect("negative limit");
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                assert_eq!(error.exit_code(), 2);
+            }
+        }
     }
 
     #[test]
