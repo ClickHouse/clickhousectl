@@ -23955,3 +23955,133 @@ async fn query_api_endpoint_api_errors_preserve_auth_and_generic_exit_codes() {
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 }
+
+#[tokio::test]
+async fn clickpipe_list_renders_source_destination_table_and_preserves_json() {
+    let mock = MockServer::start().await;
+    let sources = [
+        ("objectStorage", "Object storage"),
+        ("kafka", "Kafka"),
+        ("kinesis", "Kinesis"),
+        ("pubsub", "Pub/Sub"),
+        ("postgres", "Postgres"),
+        ("mysql", "MySQL"),
+        ("mongodb", "MongoDB"),
+        ("bigquery", "BigQuery"),
+    ];
+    let mut pipes: Vec<Value> = sources
+        .iter()
+        .enumerate()
+        .map(|(index, (source, _))| {
+            serde_json::json!({
+                "id": format!("00000000-0000-0000-0000-{index:012}"),
+                "name": format!("pipe-{index}"),
+                "source": { *source: {} },
+                "destination": { "database": "analytics", "table": format!("events_{index}") },
+                "state": "Running"
+            })
+        })
+        .collect();
+    pipes.extend([
+        serde_json::json!({}),
+        serde_json::json!({"source": {}, "destination": {}}),
+        serde_json::json!({"destination": {"database": "database_only"}, "state": "FutureState"}),
+        serde_json::json!({"destination": {"table": "table_only"}}),
+    ]);
+    let result = serde_json::json!(pipes);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes"))
+        .and(header(
+            "authorization",
+            "Basic ZmFrZS1rZXktZm9yLXRlc3RzOmZha2Utc2VjcmV0LWZvci10ZXN0cw==",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+        )
+        .expect(3)
+        .mount(&mock)
+        .await;
+    let args = ["clickpipe", "list", "svc-1", "--org-id", "org-1"];
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    let rows: Vec<Vec<&str>> = stdout
+        .lines()
+        .map(|line| line.trim_matches('|').split('|').map(str::trim).collect())
+        .collect();
+    assert_eq!(rows.len(), pipes.len() + 2, "{stdout}");
+    assert_eq!(rows[0], ["Name", "ID", "Source", "Destination", "State"]);
+    for (index, (_, label)) in sources.iter().enumerate() {
+        assert_eq!(
+            rows[index + 2],
+            [
+                format!("pipe-{index}"),
+                format!("00000000-0000-0000-0000-{index:012}"),
+                label.to_string(),
+                format!("analytics.events_{index}"),
+                "Running".to_string(),
+            ],
+            "{stdout}"
+        );
+    }
+    assert_eq!(rows[10], ["-", "-", "-", "-", "-"]);
+    assert_eq!(rows[11], ["-", "-", "-", "-", "-"]);
+    assert_eq!(rows[12], ["-", "-", "-", "database_only", "FutureState"]);
+    assert_eq!(rows[13], ["-", "-", "-", "table_only", "-"]);
+
+    let explicit = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&explicit);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&explicit.stdout).unwrap(),
+        result
+    );
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    std::fs::create_dir(&home).unwrap();
+    let agent = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("AI_AGENT", "1")
+        .env("HOME", home)
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args(["cloud", "--url", &mock.uri()])
+        .args(args)
+        .output()
+        .unwrap();
+    assert_success(&agent);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&agent.stdout).unwrap(),
+        result
+    );
+    for request in mock.received_requests().await.unwrap() {
+        assert_eq!(request.url.query(), None);
+        assert!(request.body.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_list_empty_results_keep_human_message_and_json_array() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    let args = ["clickpipe", "list", "svc-1", "--org-id", "org-1"];
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    assert_eq!(
+        String::from_utf8(human.stdout).unwrap(),
+        "No ClickPipes found\n"
+    );
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!([])
+    );
+}

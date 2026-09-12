@@ -2,7 +2,7 @@ use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{
     config_source_label, deserialize_strict_config, read_config_value, read_typed_config,
 };
-use crate::cloud::output::{or_absent, print_human};
+use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{ArgGroup, Args, Subcommand};
@@ -2129,15 +2129,47 @@ async fn clickpipe_list(
     } else if clickpipes.is_empty() {
         println!("No ClickPipes found");
     } else {
-        println!("ClickPipes:");
-        for clickpipe in &clickpipes {
-            println!(
-                "  {} ({}) - {}",
-                or_absent(clickpipe.name.as_deref()),
-                or_absent(clickpipe.id.as_ref()),
-                or_absent(clickpipe.state.as_ref())
-            );
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "Source")]
+            source: &'static str,
+            #[tabled(rename = "Destination")]
+            destination: String,
+            #[tabled(rename = "State")]
+            state: String,
         }
+        let rows = clickpipes.iter().map(|clickpipe| {
+            let destination = clickpipe.destination.as_ref();
+            let database = destination.and_then(|destination| destination.database.as_deref());
+            let table = destination.and_then(|destination| destination.table.as_deref());
+            Row {
+                name: or_absent(clickpipe.name.as_deref()),
+                id: or_absent(clickpipe.id.as_ref()),
+                source: match classify_clickpipe_source(clickpipe) {
+                    ClickPipeSourceKind::Kafka => "Kafka",
+                    ClickPipeSourceKind::Kinesis => "Kinesis",
+                    ClickPipeSourceKind::PubSub => "Pub/Sub",
+                    ClickPipeSourceKind::ObjectStorage => "Object storage",
+                    ClickPipeSourceKind::Postgres => "Postgres",
+                    ClickPipeSourceKind::MySql => "MySQL",
+                    ClickPipeSourceKind::MongoDb => "MongoDB",
+                    ClickPipeSourceKind::BigQuery => "BigQuery",
+                    ClickPipeSourceKind::Absent => ABSENT,
+                },
+                destination: match (database, table) {
+                    (Some(database), Some(table)) => format!("{database}.{table}"),
+                    (Some(database), None) => database.to_string(),
+                    (None, Some(table)) => table.to_string(),
+                    (None, None) => ABSENT.to_string(),
+                },
+                state: or_absent(clickpipe.state.as_ref()),
+            }
+        });
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }

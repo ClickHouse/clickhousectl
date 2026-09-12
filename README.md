@@ -1344,6 +1344,8 @@ Every ClickPipe `--auth` flag lists its accepted canonical modes in `--help`.
 
 Manage ClickPipes for ingesting data into ClickHouse Cloud from external sources. See the [ClickPipes documentation](https://clickhouse.com/docs/integrations/clickpipes).
 
+`clickpipe list` displays a table with name, ID, source kind, destination and state. The destination shows `database.table`, or the available component when only one is returned; absent values display as `-`. With `--json` or coding-agent detection, the command retains the API-shaped JSON array.
+
 ```bash
 # List ClickPipes for a service
 clickhousectl cloud clickpipe list <service-id>
