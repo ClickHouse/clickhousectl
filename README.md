@@ -425,7 +425,9 @@ Without `--version`, direct mode uses the valid default. If no default exists, z
 
 Start and manage ClickHouse server instances. Each server gets its own isolated data directory at `.clickhouse/servers/<name>/data/`.
 
-A bare `clickhousectl local server start` bootstraps from zero: if no version is installed and no default is set, it installs `latest` and starts with it (it does not set a default, so you keep tracking `latest` on subsequent starts). Pin a version with `--version`, or set a default with `local use`, to opt out. Because `latest` tracks the rolling master build, repeat `latest` installs/starts do a cheap `HEAD` against `builds.clickhouse.com` and skip the ~150 MB re-download when master hasn't changed (the build's `etag` is cached in `~/.clickhouse/versions/.master-builds.json`).
+A bare `clickhousectl local server start` bootstraps from zero: if no version is installed and no default is set, it installs `latest` and starts with it (it does not set a default, so you keep tracking `latest` on subsequent starts). Pin a version with `--version`, or set a default with `local use`, to opt out.
+
+Because `latest` tracks the rolling master build, repeat `latest` installs, uses, and starts validate the installed build with a conditional `GET` against `builds.clickhouse.com`; a `304 Not Modified` skips the ~150 MB download and version detection. The ETag from each successful download is cached in `~/.clickhouse/versions/.master-builds.json`. A missing binary or missing usable ETag requires a full download; `local install latest --force` always downloads afresh. Remote failures are reported rather than silently reusing an unverified build.
 
 ```bash
 # Canonical named lifecycle

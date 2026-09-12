@@ -1,7 +1,7 @@
 use crate::error::{Error, Result};
 use crate::paths;
 use crate::version_manager::atomic::{CommitLock, InstallStaging, sync_directory};
-use crate::version_manager::download::download_from_source;
+use crate::version_manager::download::{DownloadOutcome, download_from_source};
 use crate::version_manager::list::list_installed_versions;
 use crate::version_manager::master;
 use crate::version_manager::platform::{DownloadSource, Platform};
@@ -75,27 +75,12 @@ pub async fn install_resolved(
         resolved.source,
         DownloadSource::Builds { ref version_path } if version_path == "master"
     );
-    let mut master_head = None;
-    if is_master {
-        match master::head_info(platform).await {
-            Ok(head) => master_head = head,
-            Err(error) => {
-                if !structured_output {
-                    eprintln!("Master freshness check skipped: {error}");
-                }
-            }
-        }
-        if !force && let Some(version) = master::reuse_if_unchanged(platform, master_head.as_ref())
-        {
-            if !structured_output {
-                eprintln!(
-                    "latest is up to date (master build unchanged); using {}",
-                    version
-                );
-            }
-            return Ok(version);
-        }
-    }
+    let cached_master = if is_master && !force {
+        let lock = CommitLock::acquire(&versions_dir).await?;
+        master::usable_record(&lock, platform)
+    } else {
+        None
+    };
 
     // If we know the exact version upfront, check if already installed
     if let Some(ref version) = resolved.exact_version
@@ -131,18 +116,64 @@ pub async fn install_resolved(
     let binary_path = staging.binary_path();
 
     if !structured_output {
-        eprintln!("Downloading ClickHouse {}...", resolved.display_version);
+        if cached_master.is_some() {
+            eprintln!("Checking ClickHouse {}...", resolved.display_version);
+        } else {
+            eprintln!("Downloading ClickHouse {}...", resolved.display_version);
+        }
     }
 
+    let download_path = if resolved.source.is_tarball(platform) {
+        staging.path().join("clickhouse.tgz")
+    } else {
+        binary_path.clone()
+    };
+    let outcome = download_from_source(
+        &resolved.source,
+        platform,
+        &download_path,
+        structured_output,
+        cached_master.as_ref().map(|record| record.etag.as_str()),
+    )
+    .await?;
+    let artifact_info = match outcome {
+        DownloadOutcome::Downloaded(info) => info,
+        DownloadOutcome::NotModified => {
+            // Another installer can replace the same version while GET is in
+            // flight. Recheck the record under the commit lock before reuse.
+            let lock = CommitLock::acquire(&versions_dir).await?;
+            let current = master::usable_record(&lock, platform);
+            if let Some(record) = current.filter(|record| Some(record) == cached_master.as_ref()) {
+                if !structured_output {
+                    eprintln!(
+                        "latest is up to date (master build unchanged); using {}",
+                        record.version
+                    );
+                }
+                return Ok(record.version);
+            }
+            drop(lock);
+            // The validated local artifact disappeared or was replaced. Fetch
+            // bytes unconditionally instead of reusing a different artifact.
+            match download_from_source(
+                &resolved.source,
+                platform,
+                &download_path,
+                structured_output,
+                None,
+            )
+            .await?
+            {
+                DownloadOutcome::Downloaded(info) => info,
+                DownloadOutcome::NotModified => unreachable!("unconditional downloads reject 304"),
+            }
+        }
+    };
     if resolved.source.is_tarball(platform) {
-        let tarball_path = staging.path().join("clickhouse.tgz");
-        download_from_source(&resolved.source, platform, &tarball_path, structured_output).await?;
         if !structured_output {
             eprintln!("Extracting...");
         }
-        extract_tarball_auto(&tarball_path, staging.payload())?;
-    } else {
-        download_from_source(&resolved.source, platform, &binary_path, structured_output).await?;
+        extract_tarball_auto(&download_path, staging.payload())?;
     }
 
     // Make the binary executable
@@ -169,7 +200,7 @@ pub async fn install_resolved(
         force,
         is_master,
         platform,
-        master_head.as_ref(),
+        artifact_info.as_ref(),
         |version| {
             if structured_output {
                 Ok(false)
@@ -216,7 +247,7 @@ fn commit_staged_install_locked(
     force: bool,
     is_master: bool,
     platform: &Platform,
-    master_head: Option<&master::HeadInfo>,
+    artifact_info: Option<&master::ArtifactInfo>,
     version_in_use: impl FnOnce(&str) -> Result<bool>,
     mut checkpoint: impl FnMut(CommitCheckpoint) -> Result<()>,
 ) -> Result<(bool, bool)> {
@@ -257,7 +288,7 @@ fn commit_staged_install_locked(
     sync_directory(versions_dir)?;
     checkpoint(CommitCheckpoint::BinaryReplaced)?;
 
-    if is_master && let Some(head) = master_head {
+    if is_master && let Some(info) = artifact_info {
         // The binary is already durably committed. A failed freshness record
         // must only cause a later re-download, not report the install as failed.
         let _ = master::record_install(
@@ -265,7 +296,7 @@ fn commit_staged_install_locked(
             versions_dir,
             staging.path(),
             platform,
-            head,
+            info,
             exact_version,
         );
     }
@@ -490,6 +521,322 @@ mod tests {
     use std::time::{Duration, Instant, SystemTime};
     use tar::{Builder, EntryType, Header};
 
+    #[tokio::test]
+    #[ignore = "isolated subprocess helper for master download tests"]
+    async fn master_download_process_helper() {
+        let Ok(args) = std::env::var("CHCTL_TEST_MASTER_ARGS") else {
+            return;
+        };
+        if args == "ensure" {
+            ensure_installed_local_first(&VersionSpec::Latest, &Platform::detect().unwrap(), true)
+                .await
+                .unwrap();
+            return;
+        }
+        use clap::Parser;
+        let cli = crate::cli::Cli::try_parse_from(
+            ["clickhousectl", "local"]
+                .into_iter()
+                .chain(args.split_whitespace()),
+        )
+        .unwrap();
+        let crate::cli::Commands::Local(local) = cli.command else {
+            panic!("expected local command");
+        };
+        crate::local::run(local.command, true).await.unwrap();
+    }
+
+    struct MasterFixture {
+        home: tempfile::TempDir,
+        server: wiremock::MockServer,
+    }
+
+    impl MasterFixture {
+        async fn new() -> Self {
+            Self {
+                home: tempfile::tempdir().unwrap(),
+                server: wiremock::MockServer::start().await,
+            }
+        }
+
+        fn binary(&self) -> PathBuf {
+            self.home
+                .path()
+                .join(".clickhouse/versions/26.9.1.1292/clickhouse")
+        }
+
+        fn sidecar(&self) -> PathBuf {
+            self.home
+                .path()
+                .join(".clickhouse/versions/.master-builds.json")
+        }
+
+        fn record(&self) -> Option<serde_json::Value> {
+            let bytes = fs::read(self.sidecar()).ok()?;
+            let sidecar: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            sidecar["builds"]
+                .get(Platform::detect().unwrap().builds_path())
+                .cloned()
+        }
+
+        fn default(&self) -> String {
+            fs::read_to_string(self.home.path().join(".clickhouse/default")).unwrap()
+        }
+
+        async fn run(&self, args: &str) -> std::process::Output {
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "version_manager::install::tests::master_download_process_helper",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env_clear()
+                .env("HOME", self.home.path())
+                .env("DO_NOT_TRACK", "1")
+                .env(
+                    "CHCTL_TEST_MASTER_URL",
+                    format!("{}/master", self.server.uri()),
+                )
+                .env("CHCTL_TEST_MASTER_ARGS", args)
+                .current_dir(self.home.path());
+            tokio::task::spawn_blocking(move || command.output().unwrap())
+                .await
+                .unwrap()
+        }
+
+        async fn success(&self, args: &str) {
+            let output = self.run(args).await;
+            assert!(
+                output.status.success(),
+                "{args}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        async fn artifact(&self, etag: Option<&str>, marker: &str) {
+            self.server.reset().await;
+            let mut response = wiremock::ResponseTemplate::new(200)
+                .set_body_string(format!(
+                    "#!/bin/sh\necho detected >> \"$HOME/detections\"\necho 'ClickHouse client version 26.9.1.1292 (official build).'\n# {marker}\n"
+                ))
+                .insert_header("last-modified", "Wed, 21 Oct 2015 07:28:00 GMT");
+            if let Some(etag) = etag {
+                response = response.insert_header("etag", etag);
+            }
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(response)
+                .mount(&self.server)
+                .await;
+        }
+
+        async fn unchanged(&self, etag: &str) {
+            self.server.reset().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .and(wiremock::matchers::header("if-none-match", etag))
+                .respond_with(wiremock::ResponseTemplate::new(304))
+                .mount(&self.server)
+                .await;
+        }
+
+        async fn validators(&self) -> Vec<Option<String>> {
+            self.server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .map(|request| {
+                    assert_eq!(request.method.as_str(), "GET");
+                    request
+                        .headers
+                        .get("if-none-match")
+                        .map(|value| value.to_str().unwrap().to_string())
+                })
+                .collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn master_install_use_and_ensure_transfer_one_body_without_head() {
+        let fixture = MasterFixture::new().await;
+        // Preserve an existing default on install, then change it on use.
+        let previous_binary = fixture
+            .home
+            .path()
+            .join(".clickhouse/versions/25.12.9.61/clickhouse");
+        fs::create_dir_all(previous_binary.parent().unwrap()).unwrap();
+        fs::write(previous_binary, "previous build").unwrap();
+        fs::write(
+            fixture.home.path().join(".clickhouse/default"),
+            "25.12.9.61",
+        )
+        .unwrap();
+        fixture.artifact(Some("\"get-etag\""), "original").await;
+        // HEAD is deliberately unusable. The conditional-GET path must never
+        // wait for it or use its different ETag to describe the GET bytes.
+        wiremock::Mock::given(wiremock::matchers::method("HEAD"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("etag", "\"head-etag\"")
+                    .set_delay(Duration::from_secs(60)),
+            )
+            .expect(0)
+            .mount(&fixture.server)
+            .await;
+        fixture.success("install latest").await;
+        assert_eq!(fixture.validators().await, vec![None]);
+        assert_eq!(fixture.default(), "25.12.9.61");
+        let record = fixture.record().unwrap();
+        assert_eq!(record["etag"], "\"get-etag\"");
+        assert_eq!(record["last_modified"], "Wed, 21 Oct 2015 07:28:00 GMT");
+        let bytes = fs::read(fixture.binary()).unwrap();
+
+        fixture.unchanged("\"get-etag\"").await;
+        fixture.success("install latest").await;
+        assert_eq!(fixture.default(), "25.12.9.61");
+        fixture.success("use latest --no-global").await;
+        fixture.success("ensure").await;
+        assert_eq!(fixture.default(), "26.9.1.1292");
+        assert_eq!(
+            fixture.validators().await,
+            vec![Some("\"get-etag\"".to_string()); 3]
+        );
+        assert_eq!(fs::read(fixture.binary()).unwrap(), bytes);
+        assert_eq!(
+            fs::read_to_string(fixture.home.path().join("detections")).unwrap(),
+            "detected\n"
+        );
+        assert_eq!(fixture.record().unwrap(), record);
+    }
+
+    #[tokio::test]
+    async fn master_changed_etag_replaces_bytes_with_the_same_version() {
+        let fixture = MasterFixture::new().await;
+        fixture.artifact(Some("\"old\""), "old").await;
+        fixture.success("install latest").await;
+        let old_bytes = fs::read(fixture.binary()).unwrap();
+        fixture.artifact(Some("\"new\""), "new").await;
+        fixture.success("use latest --no-global").await;
+        assert_eq!(
+            fixture.validators().await,
+            vec![Some("\"old\"".to_string())]
+        );
+        assert_ne!(fs::read(fixture.binary()).unwrap(), old_bytes);
+        assert_eq!(fixture.record().unwrap()["etag"], "\"new\"");
+        assert_eq!(fixture.record().unwrap()["version"], "26.9.1.1292");
+    }
+
+    #[tokio::test]
+    async fn master_force_and_missing_binary_download_without_validator() {
+        let fixture = MasterFixture::new().await;
+        fixture.artifact(Some("\"same\""), "first").await;
+        fixture.success("install latest").await;
+        fixture.artifact(Some("\"same\""), "forced").await;
+        fixture.success("install latest --force").await;
+        assert_eq!(fixture.validators().await, vec![None]);
+        assert!(
+            fs::read_to_string(fixture.binary())
+                .unwrap()
+                .contains("# forced")
+        );
+        fs::remove_file(fixture.binary()).unwrap();
+        fixture.artifact(Some("\"same\""), "restored").await;
+        fixture.success("use latest --no-global").await;
+        assert_eq!(fixture.validators().await, vec![None]);
+        assert!(fixture.binary().is_file());
+    }
+
+    #[tokio::test]
+    async fn master_missing_or_invalid_validator_never_reuses_blindly() {
+        for etag in [None, Some("*"), Some("invalid")] {
+            let fixture = MasterFixture::new().await;
+            fixture.artifact(etag, "first").await;
+            fixture.success("install latest").await;
+            assert!(fixture.record().is_none());
+            fixture.success("install latest").await;
+            assert_eq!(fixture.validators().await, vec![None, None]);
+        }
+    }
+
+    #[tokio::test]
+    async fn master_download_without_etag_invalidates_old_record() {
+        let fixture = MasterFixture::new().await;
+        fixture.artifact(Some("\"old\""), "old").await;
+        fixture.success("install latest").await;
+        fixture.artifact(None, "new").await;
+        fixture.success("install latest").await;
+        assert!(fixture.record().is_none());
+        fixture.artifact(Some("\"next\""), "next").await;
+        fixture.success("install latest").await;
+        assert_eq!(fixture.validators().await, vec![None]);
+    }
+
+    #[tokio::test]
+    async fn master_failed_validation_or_version_detection_preserves_install() {
+        let fixture = MasterFixture::new().await;
+        fixture.artifact(Some("\"old\""), "old").await;
+        fixture.success("install latest").await;
+        let bytes = fs::read(fixture.binary()).unwrap();
+        let record = fixture.record().unwrap();
+        for response in [
+            wiremock::ResponseTemplate::new(403),
+            wiremock::ResponseTemplate::new(200)
+                .insert_header("etag", "\"broken\"")
+                .set_body_string("#!/bin/sh\nexit 1\n"),
+        ] {
+            fixture.server.reset().await;
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(response)
+                .mount(&fixture.server)
+                .await;
+            assert!(!fixture.run("use latest --no-global").await.status.success());
+            assert_eq!(fs::read(fixture.binary()).unwrap(), bytes);
+            assert_eq!(fixture.record().unwrap(), record);
+            assert_eq!(
+                fixture.validators().await,
+                vec![Some("\"old\"".to_string())]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn master_changed_local_record_during_validation_forces_full_download() {
+        for remove_binary in [false, true] {
+            let fixture = MasterFixture::new().await;
+            fixture.artifact(Some("\"old\""), "old").await;
+            fixture.success("install latest").await;
+            fixture.artifact(Some("\"current\""), "current").await;
+            let binary = fixture.binary();
+            let sidecar = fixture.sidecar();
+            wiremock::Mock::given(wiremock::matchers::method("GET"))
+                .and(wiremock::matchers::header("if-none-match", "\"old\""))
+                .respond_with(move |_: &wiremock::Request| {
+                    if remove_binary {
+                        fs::remove_file(&binary).unwrap();
+                    } else {
+                        fs::write(&sidecar, "{}").unwrap();
+                    }
+                    wiremock::ResponseTemplate::new(304)
+                })
+                .with_priority(1)
+                .mount(&fixture.server)
+                .await;
+            fixture.success("use latest --no-global").await;
+            assert_eq!(
+                fixture.validators().await,
+                vec![Some("\"old\"".to_string()), None]
+            );
+            assert_eq!(fixture.record().unwrap()["etag"], "\"current\"");
+            assert!(
+                fs::read_to_string(fixture.binary())
+                    .unwrap()
+                    .contains("# current")
+            );
+        }
+    }
+
     fn write_archive(archive_path: &Path, entry_path: &str, contents: &[u8]) {
         let archive_file = File::create(archive_path).unwrap();
         let encoder = GzEncoder::new(archive_file, Compression::default());
@@ -657,7 +1004,7 @@ mod tests {
         fs::write(staging.binary_path(), b"complete-master-build").unwrap();
         fs::write(staging.path().join("master-builds.json.tmp"), b"occupied").unwrap();
         let lock = CommitLock::acquire_blocking(&versions_dir).unwrap();
-        let head = master::HeadInfo {
+        let head = master::ArtifactInfo {
             etag: "etag-new".to_string(),
             last_modified: None,
         };
@@ -751,7 +1098,7 @@ mod tests {
         wait_for_env_path("CHCTL_ATOMIC_LOCK_RELEASE");
 
         let pause_at = std::env::var("CHCTL_ATOMIC_PAUSE_AT").ok();
-        let head = master::HeadInfo {
+        let head = master::ArtifactInfo {
             etag,
             last_modified: None,
         };

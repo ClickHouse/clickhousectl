@@ -1,11 +1,11 @@
 use crate::error::{Error, NetworkFailure, NetworkStage, Result};
-use crate::version_manager::network;
 use crate::version_manager::platform::{DownloadSource, Platform};
+use crate::version_manager::{master::ArtifactInfo, network};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::StatusCode;
-use reqwest::header::RETRY_AFTER;
+use reqwest::header::{IF_NONE_MATCH, RETRY_AFTER};
 use std::path::Path;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
@@ -37,28 +37,46 @@ enum DownloadAttemptError {
     Io(std::io::Error),
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DownloadOutcome {
+    Downloaded(Option<ArtifactInfo>),
+    NotModified,
+}
+
 /// Downloads from a DownloadSource to the specified path.
 pub async fn download_from_source(
     source: &DownloadSource,
     platform: &Platform,
     dest_path: &Path,
     structured_output: bool,
-) -> Result<()> {
+    etag: Option<&str>,
+) -> Result<DownloadOutcome> {
     let url = source.url(platform);
-    download_url_with_output(&url, dest_path, structured_output).await
+    // Only the unit-test executable accepts an override, allowing isolated
+    // subprocess tests to exercise the actual local command dispatch.
+    #[cfg(test)]
+    let url = if matches!(source, DownloadSource::Builds { version_path } if version_path == "master")
+    {
+        std::env::var("CHCTL_TEST_MASTER_URL").unwrap_or(url)
+    } else {
+        url
+    };
+    download_url_with_output(&url, dest_path, structured_output, etag).await
 }
 
 async fn download_url_with_output(
     url: &str,
     dest_path: &Path,
     structured_output: bool,
-) -> Result<()> {
+    etag: Option<&str>,
+) -> Result<DownloadOutcome> {
     download_url_with_policy_and_output(
         url,
         dest_path,
         network::DOWNLOAD_POLICY,
         INSTALL_RETRY_POLICY,
         structured_output,
+        etag,
     )
     .await
 }
@@ -69,8 +87,9 @@ async fn download_url_with_policy(
     dest_path: &Path,
     request_policy: network::RequestPolicy,
     retry_policy: RetryPolicy,
-) -> Result<()> {
-    download_url_with_policy_and_output(url, dest_path, request_policy, retry_policy, false).await
+) -> Result<DownloadOutcome> {
+    download_url_with_policy_and_output(url, dest_path, request_policy, retry_policy, false, None)
+        .await
 }
 
 async fn download_url_with_policy_and_output(
@@ -79,13 +98,15 @@ async fn download_url_with_policy_and_output(
     request_policy: network::RequestPolicy,
     retry_policy: RetryPolicy,
     structured_output: bool,
-) -> Result<()> {
+    etag: Option<&str>,
+) -> Result<DownloadOutcome> {
     let download = download_with_retries(
         url,
         dest_path,
         request_policy,
         retry_policy,
         structured_output,
+        etag,
     );
     match network::with_operation_timeout(
         retry_policy.operation_timeout,
@@ -109,11 +130,12 @@ async fn download_with_retries(
     request_policy: network::RequestPolicy,
     retry_policy: RetryPolicy,
     structured_output: bool,
-) -> Result<()> {
+    etag: Option<&str>,
+) -> Result<DownloadOutcome> {
     let client = network::client(request_policy, NetworkStage::DownloadHeaders, url)?;
     for attempt in 1..=retry_policy.max_attempts {
-        match download_once(&client, url, dest_path, structured_output).await {
-            Ok(()) => return Ok(()),
+        match download_once(&client, url, dest_path, structured_output, etag).await {
+            Ok(outcome) => return Ok(outcome),
             Err(DownloadAttemptError::Io(error)) => return Err(Error::Io(error)),
             Err(DownloadAttemptError::Network(error))
                 if error.retryable && attempt < retry_policy.max_attempts =>
@@ -140,8 +162,13 @@ async fn download_once(
     url: &str,
     dest_path: &Path,
     structured_output: bool,
-) -> std::result::Result<(), DownloadAttemptError> {
-    let response = network::send(client.get(url), NetworkStage::DownloadHeaders, url)
+    etag: Option<&str>,
+) -> std::result::Result<DownloadOutcome, DownloadAttemptError> {
+    let mut request = client.get(url);
+    if let Some(etag) = etag {
+        request = request.header(IF_NONE_MATCH, etag);
+    }
+    let response = network::send(request, NetworkStage::DownloadHeaders, url)
         .await
         .map_err(|failure| {
             DownloadAttemptError::Network(DownloadAttemptFailure {
@@ -151,7 +178,12 @@ async fn download_once(
             })
         })?;
     let status = response.status();
-    if !status.is_success() {
+    if status == StatusCode::NOT_MODIFIED && etag.is_some() {
+        // No destination file or body stream is needed for a validated reuse.
+        let _ = tokio::fs::remove_file(dest_path).await;
+        return Ok(DownloadOutcome::NotModified);
+    }
+    if status != StatusCode::OK {
         let retry_after = response
             .headers()
             .get(RETRY_AFTER)
@@ -166,6 +198,7 @@ async fn download_once(
         }));
     }
 
+    let metadata = ArtifactInfo::from_headers(response.headers());
     let total_size = response.content_length().unwrap_or(0);
     let pb = ProgressBar::new(total_size);
     if structured_output {
@@ -205,7 +238,7 @@ async fn download_once(
     file.flush().await.map_err(DownloadAttemptError::Io)?;
     file.shutdown().await.map_err(DownloadAttemptError::Io)?;
     pb.finish_with_message("Download complete");
-    Ok(())
+    Ok(DownloadOutcome::Downloaded(metadata))
 }
 
 fn retry_delay(policy: &RetryPolicy, attempt: usize, retry_after: Option<Duration>) -> Duration {
@@ -319,6 +352,76 @@ mod tests {
         ] {
             assert_eq!(parse_retry_after(value, now), None, "{value}");
         }
+    }
+
+    #[tokio::test]
+    async fn unsolicited_not_modified_and_partial_content_are_rejected() {
+        for status in ["304 Not Modified", "206 Partial Content"] {
+            let (url, _, server) = scripted_status_server(vec![(status, None)]).await;
+            let temp = tempfile::tempdir().unwrap();
+            let destination = temp.path().join("artifact");
+            let error = download_url_with_policy(
+                &url,
+                &destination,
+                test_request_policy(),
+                test_retry_policy(1),
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(
+                error,
+                Error::Network(NetworkFailure {
+                    stage: NetworkStage::DownloadHeaders,
+                    category: NetworkCategory::UnexpectedStatus,
+                    ..
+                })
+            ));
+            assert!(!destination.exists());
+            server.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn conditional_download_retries_with_validator_and_returns_response_metadata() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::header("if-none-match", "\"old\""))
+            .respond_with(wiremock::ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::header("if-none-match", "\"old\""))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .insert_header("etag", "\"new\"")
+                    .set_body_string("new bytes"),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let temp = tempfile::tempdir().unwrap();
+        let destination = temp.path().join("artifact");
+        let outcome = download_url_with_policy_and_output(
+            &server.uri(),
+            &destination,
+            test_request_policy(),
+            test_retry_policy(2),
+            true,
+            Some("\"old\""),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            outcome,
+            DownloadOutcome::Downloaded(Some(ArtifactInfo {
+                etag: "\"new\"".to_string(),
+                last_modified: None,
+            }))
+        );
+        assert_eq!(tokio::fs::read(destination).await.unwrap(), b"new bytes");
     }
 
     #[tokio::test]
