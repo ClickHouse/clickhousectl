@@ -9,7 +9,9 @@ use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
 use crate::cloud::service_query::{RepairVerification, existing_open_api_keys};
-use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
+use crate::cloud::shared::{
+    parse_ip_access_entries, parse_serde_enum, parse_tag_filter, parse_tags, resolve_org_id,
+};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
 use clap::builder::PossibleValuesParser;
@@ -65,8 +67,8 @@ pub enum ServiceCommands {
         #[arg(long)]
         org_id: Option<String>,
 
-        /// Filter by resource tag, e.g. "tag:env=production" (repeatable)
-        #[arg(long)]
+        /// Filter by resource tag: `tag:KEY=VALUE` or `tag:KEY` (repeatable)
+        #[arg(long, value_parser = parse_tag_filter)]
         filter: Vec<String>,
     },
 
@@ -4860,6 +4862,44 @@ mod tests {
         };
         assert_eq!(org_id.as_deref(), Some("org-1"));
         assert_eq!(filter, vec!["tag:env=prod", "tag:team=analytics"]);
+    }
+
+    #[test]
+    fn service_list_tag_filters_preserve_api_grammar() {
+        for value in ["tag:env=prod", "tag:active", "tag:empty=", "tag:expr=a=b"] {
+            let command = parse_service(&[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "list",
+                "--filter",
+                value,
+            ]);
+            let ServiceCommands::List { filter, .. } = command else {
+                panic!("expected service list");
+            };
+            assert_eq!(filter, [value]);
+        }
+        for value in [
+            "garbage",
+            "state=running",
+            "env=prod",
+            "tag:",
+            "tag:=x",
+            "tag: =x",
+        ] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "service",
+                "list",
+                "--filter",
+                value,
+            ])
+            .err()
+            .expect("malformed filter must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
     }
 
     #[test]

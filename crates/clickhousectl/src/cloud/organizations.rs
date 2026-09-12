@@ -1,7 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, ResourceLookup, Result as CloudResult};
 use crate::cloud::config::read_typed_config;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
-use crate::cloud::shared::{parse_date_only, resolve_org_id};
+use crate::cloud::shared::{parse_date_only, parse_tag_filter, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use clap::Subcommand;
 use clickhouse_cloud_api::models::{
@@ -136,8 +136,8 @@ CONTEXT FOR AGENTS:
         #[arg(long, value_parser = parse_date_only)]
         to_date: String,
 
-        /// Filter by resource tag: `tag:Key=Value` or `tag:Key` (repeatable)
-        #[arg(long)]
+        /// Filter by resource tag: `tag:KEY=VALUE` or `tag:KEY` (repeatable)
+        #[arg(long, value_parser = parse_tag_filter)]
         filter: Vec<String>,
     },
 }
@@ -2266,6 +2266,50 @@ mod tests {
         assert_eq!(legacy_org_id, None);
         assert_eq!(from_date, "2025-01-01");
         assert_eq!(to_date, "2025-01-31");
+    }
+
+    #[test]
+    fn org_usage_tag_filters_preserve_api_grammar() {
+        let base_args = [
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ];
+        let filters = ["tag:env=prod", "tag:active", "tag:empty=", "tag:expr=a=b"];
+        let cli = Cli::try_parse_from(
+            base_args
+                .into_iter()
+                .chain(filters.iter().flat_map(|value| ["--filter", *value])),
+        )
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let crate::cloud::cli::CloudCommands::Org {
+            command: OrgCommands::Usage { filter, .. },
+        } = args.command
+        else {
+            panic!("expected org usage");
+        };
+        assert_eq!(filter, filters);
+        for value in [
+            "garbage",
+            "state=running",
+            "env=prod",
+            "tag:",
+            "tag:=x",
+            "tag: =x",
+        ] {
+            let error = Cli::try_parse_from(base_args.into_iter().chain(["--filter", value]))
+                .err()
+                .expect("malformed filter must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
     }
 
     #[test]

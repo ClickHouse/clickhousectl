@@ -5220,6 +5220,87 @@ async fn org_usage_auto_detects_the_only_organization() {
 }
 
 #[tokio::test]
+async fn tag_filters_reject_malformed_values_before_auth_or_http() {
+    let mock = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    for mut args in [
+        vec!["service", "list"],
+        vec![
+            "org",
+            "usage",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ],
+    ] {
+        args.extend(["--filter", "tag:env=prod", "--filter", "garbage"]);
+        let mut command = Command::new(clickhousectl_binary());
+        clear_inherited_env(&mut command);
+        let output = command
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", dir.path())
+            .current_dir(dir.path())
+            .args(["cloud", "--url", &mock.uri(), "--json"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("tag:KEY"));
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn tag_filters_preserve_repeated_equality_and_existence_filters_on_wire() {
+    let mock = MockServer::start().await;
+    for endpoint in ["services", "usageCost"] {
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/organizations/org-1/{endpoint}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 200,
+                "result": if endpoint == "services" { serde_json::json!([]) } else { serde_json::json!({}) }
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+    }
+    let filters = [
+        "tag:env=prod",
+        "tag:active",
+        "tag:empty=",
+        "tag:expression=a=b & c",
+    ];
+    for mut args in [
+        vec!["service", "list"],
+        vec![
+            "org",
+            "usage",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ],
+    ] {
+        args.extend(["--org-id", "org-1"]);
+        args.extend(filters.iter().flat_map(|value| ["--filter", *value]));
+        assert_success(&invoke_cli_with_cloud_credentials(&mock, &args));
+    }
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        let actual: Vec<_> = request
+            .url
+            .query_pairs()
+            .filter(|(key, _)| key == "filter")
+            .map(|(_, value)| value.into_owned())
+            .collect();
+        assert_eq!(actual, filters);
+    }
+}
+
+#[tokio::test]
 async fn org_prometheus_accepts_legacy_positional_org_id() {
     let mock = start_mock_org_auto_detection_api().await;
     let output =

@@ -744,6 +744,10 @@ clickhousectl cloud org usage \
 `org get` and `org update` still accept the legacy positional organization ID.
 Prefer `--org-id` in new commands; supplying both forms is a usage error (exit 2).
 
+`cloud service list` and `cloud org usage` accept repeatable `--filter tag:KEY=VALUE`
+or `--filter tag:KEY` (tag existence). A missing `tag:` prefix or empty key is a
+usage error (exit 2), rejected before authentication or HTTP requests.
+
 BYOC create, update, and delete require API key authentication. Update requires
 `--display-name`, so it cannot send an empty/no-op patch. The API has no separate
 BYOC list command; `cloud org get` returns the organization's `byocConfig` entries.
