@@ -4,6 +4,191 @@ use clickhouse_cloud_api::Client;
 use clickhouse_cloud_api::models::*;
 use common::support::*;
 
+fn assert_saved_query_endpoint(
+    endpoint: &PublicQueryApiEndpoint,
+    expected: &PublicQueryApiEndpointRequest,
+) -> TestResult<()> {
+    let parameters = expected.parameters.clone().unwrap_or_default();
+    let origins = expected.allowed_origins.clone().unwrap_or_default();
+    if endpoint.name.as_ref() != Some(&expected.name)
+        || endpoint.sql.as_ref() != Some(&expected.sql)
+        || endpoint.database.as_ref() != Some(&expected.database)
+        || endpoint.parameters.as_ref() != Some(&parameters)
+        || endpoint.api_key_ids.as_ref() != Some(&expected.api_key_ids)
+        || endpoint.roles.as_ref() != Some(&expected.roles)
+        || endpoint.allowed_origins.as_ref() != Some(&origins)
+        || endpoint.owner_type != Some(PublicQueryApiEndpointOwnertype::QueryApiEndpoint)
+        || endpoint.url.as_ref().is_none_or(String::is_empty)
+    {
+        return Err("saved Query API endpoint did not preserve its configuration".into());
+    }
+    Ok(())
+}
+
+/// Page through a disposable service without assuming every endpoint is API-owned.
+async fn list_saved_query_endpoints(
+    client: &Client,
+    org: &str,
+    service: &str,
+) -> TestResult<Vec<PublicQueryApiEndpointListItem>> {
+    let mut cursor = None;
+    let mut seen_cursors = std::collections::BTreeSet::new();
+    let mut seen_ids = std::collections::BTreeSet::new();
+    let mut listed = Vec::new();
+    for _ in 0..100 {
+        let page = client
+            .query_api_endpoint_list(org, service, cursor.as_deref(), Some(1))
+            .await?
+            .result
+            .ok_or("Query API endpoint list returned no result")?;
+        let items = page.items.ok_or("Query API endpoint list omitted items")?;
+        let pagination = page
+            .pagination
+            .ok_or("Query API endpoint list omitted pagination")?;
+        if items.len() > 1 || pagination.limit != Some(1) {
+            return Err("Query API endpoint list did not respect limit=1".into());
+        }
+        if cursor.is_none() && pagination.current_cursor.is_some() {
+            return Err("Query API endpoint first page has a non-null current cursor".into());
+        }
+        for item in items {
+            let id = item.id.ok_or("Query API endpoint list item omitted id")?;
+            if !seen_ids.insert(id) {
+                return Err("Query API endpoint pagination repeated an endpoint".into());
+            }
+            listed.push(item);
+        }
+        cursor = pagination.next_cursor;
+        let Some(next_cursor) = &cursor else {
+            if pagination.total_records != Some(listed.len() as i64) {
+                return Err("Query API endpoint pagination total does not match items".into());
+            }
+            return Ok(listed);
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err("Query API endpoint pagination repeated a cursor".into());
+        }
+    }
+    Err("Query API endpoint pagination exceeded 100 pages on a disposable service".into())
+}
+
+/// Reuse the lifecycle's disposable service and API key. Register each newly
+/// created ID before assertions so the outer teardown also covers early failures.
+async fn cloud_saved_query_endpoint_lifecycle(
+    client: &Client,
+    cleanup: &mut CleanupRegistry,
+    org: &str,
+    service: &str,
+    api_key_id: &str,
+    name: &str,
+) -> TestResult<()> {
+    let mut request = PublicQueryApiEndpointRequest {
+        name: format!("{name}-saved-query"),
+        sql: "SELECT 1 AS value".to_string(),
+        database: "default".to_string(),
+        parameters: None,
+        api_key_ids: vec![api_key_id.parse()?],
+        roles: vec!["sql_console_admin".to_string()],
+        allowed_origins: None,
+    };
+    let mut created_ids = Vec::new();
+    // Two endpoints guarantee that limit=1 exercises a subsequent cursor page.
+    for suffix in ["first", "second"] {
+        request.name = format!("{name}-saved-query-{suffix}");
+        let created = client
+            .query_api_endpoint_create(org, service, &request)
+            .await?
+            .result
+            .ok_or("Query API endpoint create returned no result")?;
+        let id = created.id.ok_or("Query API endpoint create omitted id")?;
+        cleanup.register_query_api_endpoint(service, id.to_string());
+        created_ids.push(id);
+        assert_saved_query_endpoint(&created, &request)?;
+        let fetched = client
+            .query_api_endpoint_get(org, service, &id.to_string())
+            .await?
+            .result
+            .ok_or("Query API endpoint get returned no result")?;
+        if fetched.id != Some(id) {
+            return Err("Query API endpoint get returned a different id".into());
+        }
+        assert_saved_query_endpoint(&fetched, &request)?;
+    }
+
+    request.name = format!("{name}-saved-query-updated");
+    request.sql = "SELECT {value:UInt32} AS value".to_string();
+    request.parameters = Some(std::collections::BTreeMap::from([(
+        "value".to_string(),
+        "42".to_string(),
+    )]));
+    request.allowed_origins = Some(vec!["https://example.com".to_string()]);
+    let updated_id = created_ids[0];
+    let updated = client
+        .query_api_endpoint_update(org, service, &updated_id.to_string(), &request)
+        .await?
+        .result
+        .ok_or("Query API endpoint update returned no result")?;
+    if updated.id != Some(updated_id) {
+        return Err("Query API endpoint update changed its id".into());
+    }
+    assert_saved_query_endpoint(&updated, &request)?;
+    let fetched = client
+        .query_api_endpoint_get(org, service, &updated_id.to_string())
+        .await?
+        .result
+        .ok_or("Query API endpoint get after update returned no result")?;
+    if fetched.id != Some(updated_id) {
+        return Err("Query API endpoint get after update returned a different id".into());
+    }
+    assert_saved_query_endpoint(&fetched, &request)?;
+
+    let listed = list_saved_query_endpoints(client, org, service).await?;
+    for id in &created_ids {
+        let item = listed
+            .iter()
+            .find(|item| item.id == Some(*id))
+            .ok_or("Query API endpoint list omitted a created endpoint")?;
+        if item.owner_type != Some(PublicQueryApiEndpointListItemOwnertype::QueryApiEndpoint)
+            || item.api_key_ids.as_ref() != Some(&request.api_key_ids)
+            || item.roles.as_ref() != Some(&request.roles)
+            || item.database.as_ref() != Some(&request.database)
+            || item.url.as_ref().is_none_or(String::is_empty)
+        {
+            return Err("Query API endpoint list did not preserve endpoint metadata".into());
+        }
+        if *id == updated_id
+            && (item.name.as_ref() != Some(&request.name)
+                || item.allowed_origins != request.allowed_origins)
+        {
+            return Err("Query API endpoint list did not reflect the update".into());
+        }
+    }
+
+    for id in &created_ids {
+        client
+            .query_api_endpoint_delete(org, service, &id.to_string())
+            .await?;
+        cleanup.unregister_query_api_endpoint(service, &id.to_string());
+        match client
+            .query_api_endpoint_get(org, service, &id.to_string())
+            .await
+        {
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+            other => {
+                return Err(format!("expected 404 after endpoint deletion, got {other:?}").into());
+            }
+        }
+    }
+    let remaining = list_saved_query_endpoints(client, org, service).await?;
+    if remaining
+        .iter()
+        .any(|item| item.id.is_some_and(|id| created_ids.contains(&id)))
+    {
+        return Err("Query API endpoint list still includes a deleted endpoint".into());
+    }
+    Ok(())
+}
+
 /// Use the lifecycle's disposable service and restore its seeded overrides.
 async fn cloud_clickhouse_settings_native_contract(
     client: &Client,
@@ -940,6 +1125,27 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                             .into()),
                         }
                     }
+                },
+            )
+            .await?;
+
+        // Saved Query API endpoint management is independent of the instance
+        // binding above. Reuse its key only after those assertions complete.
+        log_phase("Saved Query API Endpoints");
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "saved Query API endpoint create/get/list/update/delete",
+                || {
+                    cloud_saved_query_endpoint_lifecycle(
+                        &client,
+                        &mut cleanup,
+                        &ctx.org_id,
+                        &service_id,
+                        &api_key_uuid,
+                        &ctx.run_id,
+                    )
                 },
             )
             .await?;

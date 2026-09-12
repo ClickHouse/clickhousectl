@@ -11,6 +11,7 @@ mod clickpipes;
 mod clickstack;
 mod organizations;
 mod postgres;
+mod query_api_endpoints;
 mod services;
 mod udfs;
 

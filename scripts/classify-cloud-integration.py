@@ -33,6 +33,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/client/postgres.rs": frozenset(
         {"postgres", "clickpipes"}
     ),
+    "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/services.rs": frozenset(
         {"service", "clickpipes"}
     ),
@@ -80,6 +81,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/models/postgres.rs": frozenset(
         {"postgres", "clickpipes"}
     ),
+    "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/models/quotas.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/rbac.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/models/scim.rs": NO_SUITES,

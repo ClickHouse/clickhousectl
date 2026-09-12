@@ -1088,6 +1088,8 @@ Querying an **idled** service wakes it automatically in both auth modes — unde
 
 The Query API host is derived from the API base URL per environment (`api.[control-plane.]<domain>` → `queries.<domain>`, e.g. `https://queries.clickhouse.cloud` for production). Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override it.
 
+The Rust [Cloud API library](crates/clickhouse-cloud-api/README.md) also supports beta Query API endpoint management: create, get, list with cursor pagination, update, and delete. These methods manage named SQL endpoints; CLI exposure is separate.
+
 ### Postgres (beta)
 
 Manage ClickHouse Cloud managed Postgres services. All write commands require API key auth.

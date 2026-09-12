@@ -466,6 +466,8 @@ pub struct CleanupRegistry {
     // before the key they point to, otherwise we can't distinguish "binding
     // cleanup works" from "API key was already gone."
     query_endpoint_service_ids: Vec<String>,
+    // Saved Query API endpoints are distinct from instance-level bindings.
+    query_api_endpoints: Vec<(String, String)>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
     clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
@@ -555,6 +557,8 @@ impl CleanupRegistry {
         self.api_key_ids.append(&mut other.api_key_ids);
         self.query_endpoint_service_ids
             .append(&mut other.query_endpoint_service_ids);
+        self.query_api_endpoints
+            .append(&mut other.query_api_endpoints);
         self.role_ids.append(&mut other.role_ids);
         self.invitation_ids.append(&mut other.invitation_ids);
         self.clickhouse_setting_restores
@@ -581,6 +585,20 @@ impl CleanupRegistry {
     pub fn unregister_query_endpoint(&mut self, service_id: &str) {
         self.query_endpoint_service_ids
             .retain(|registered| registered != service_id);
+    }
+
+    pub fn register_query_api_endpoint(
+        &mut self,
+        service_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
+    ) {
+        self.query_api_endpoints
+            .push((service_id.into(), endpoint_id.into()));
+    }
+
+    pub fn unregister_query_api_endpoint(&mut self, service_id: &str, endpoint_id: &str) {
+        self.query_api_endpoints
+            .retain(|(service, endpoint)| service != service_id || endpoint != endpoint_id);
     }
 
     pub fn register_role(&mut self, role_id: impl Into<String>) {
@@ -759,6 +777,21 @@ impl CleanupRegistry {
                     "upgrade window restore {service_id}: {error}",
                     service_id = restore.service_id
                 ));
+            }
+        }
+
+        // Saved endpoints also reference API keys and services. Delete only
+        // endpoint IDs created and registered by this test, before either parent.
+        while let Some((service_id, endpoint_id)) = self.query_api_endpoints.pop() {
+            match client
+                .query_api_endpoint_delete(org_id, &service_id, &endpoint_id)
+                .await
+            {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!(
+                    "query API endpoint {endpoint_id} on {service_id}: {e}"
+                )),
             }
         }
 

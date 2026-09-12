@@ -136,6 +136,7 @@ mod members;
 mod organization_private_endpoints;
 mod organizations;
 mod postgres;
+mod query_api_endpoints;
 mod quotas;
 mod rbac;
 mod scim;
@@ -199,6 +200,11 @@ pub use postgres::{
     PostgresServiceSetState, PostgresServiceSetStateCommand, PostgresSlowQueryPattern,
     PostgresSlowQueryPatternDetail, SlowQueryPatternsGetListSortby,
     SlowQueryPatternsGetListSortorder,
+};
+pub use query_api_endpoints::{
+    PublicQueryApiEndpoint, PublicQueryApiEndpointListItem,
+    PublicQueryApiEndpointListItemOwnertype, PublicQueryApiEndpointOwnertype,
+    PublicQueryApiEndpointRequest, QueryApiEndpointListResponse,
 };
 pub use quotas::{OrganizationQuota, OrganizationQuotaQuotacode, OrganizationQuotaScope};
 pub use rbac::{

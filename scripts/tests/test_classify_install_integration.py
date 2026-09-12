@@ -116,6 +116,8 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             classifier.NON_INSTALL_EXACT_PATHS,
             frozenset(
                 {
+                    "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
+                    "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
                     "crates/clickhousectl/src/cloud/clickstack.rs",
                     "crates/clickhousectl/src/cloud/config.rs",
                     "crates/clickhousectl/src/cloud/udfs.rs",
