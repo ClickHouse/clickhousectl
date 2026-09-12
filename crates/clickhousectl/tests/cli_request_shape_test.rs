@@ -23602,6 +23602,34 @@ async fn query_api_endpoint_human_reads_tolerate_sparse_fields_and_show_next_cur
             "Query API endpoints: -\n"
         );
     }
+
+    let empty_server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(QUERY_API_ENDPOINTS_PATH))
+        .respond_with(query_api_endpoint_envelope(
+            200,
+            serde_json::json!({
+                "items": [],
+                "pagination": {"nextCursor": "after-empty-page"}
+            }),
+        ))
+        .expect(1)
+        .mount(&empty_server)
+        .await;
+    let empty_project = tempfile::tempdir().unwrap();
+    let empty = invoke_query_api_endpoint(
+        &empty_server,
+        empty_project.path(),
+        false,
+        false,
+        &["list", "svc-1", "--org-id", "org-1"],
+        None,
+    );
+    assert_success(&empty);
+    assert_eq!(
+        String::from_utf8_lossy(&empty.stdout),
+        "No Query API endpoints found\nNext cursor: after-empty-page\n"
+    );
 }
 
 #[tokio::test]

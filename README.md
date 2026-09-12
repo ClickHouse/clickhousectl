@@ -1120,6 +1120,16 @@ Create and update also accept `--config-file -` to read JSON from stdin. Unknown
 
 List returns one page; pass `pagination.nextCursor` from JSON output to `--cursor` to continue. Human output also displays the next cursor when present. `--limit` accepts 1–100. `--org-id` works before or after the subcommand. List/get support OAuth; create/update/delete require API key authentication. User-owned endpoints can be listed and read, but cannot be updated or deleted through these commands.
 
+Call the returned `url` with the bound key's `keyId` and `keySecret` (the credentials returned at key creation, distinct from the management `id` used in `apiKeyIds`). Supply every SQL placeholder explicitly: live validation found that stored `parameters` were returned by management GET but were not applied when executing the endpoint.
+
+```bash
+curl --user "$QUERY_KEY_ID:$QUERY_KEY_SECRET" "$ENDPOINT_URL" \
+  --header 'Content-Type: application/json' \
+  --data '{"queryVariables":{"status":"paid"},"format":"JSONEachRow"}'
+```
+
+GET requests use `param_status=paid` and `format=JSONEachRow` query parameters instead. `allowedOrigins` controls browser CORS access; it does not prevent an authenticated non-browser client from executing the endpoint. An empty list grants no cross-origin browser access; `["*"]` allows any origin.
+
 ### Postgres (beta)
 
 Manage ClickHouse Cloud managed Postgres services. All write commands require API key auth.

@@ -174,17 +174,19 @@ fn print_endpoints(data: QueryApiEndpointListResponse) {
         owner_type: String,
         url: String,
     }
-    if let Some(items) = data.items {
-        let rows = items.into_iter().map(|item| Row {
-            id: or_absent(item.id),
-            name: or_absent(item.name),
-            database: or_absent(item.database),
-            owner_type: or_absent(item.owner_type),
-            url: or_absent(item.url),
-        });
-        println!("{}", Table::new(rows).with(Style::rounded()));
-    } else {
-        println!("Query API endpoints: {ABSENT}");
+    match data.items {
+        Some(items) if items.is_empty() => println!("No Query API endpoints found"),
+        Some(items) => {
+            let rows = items.into_iter().map(|item| Row {
+                id: or_absent(item.id),
+                name: or_absent(item.name),
+                database: or_absent(item.database),
+                owner_type: or_absent(item.owner_type),
+                url: or_absent(item.url),
+            });
+            println!("{}", Table::new(rows).with(Style::rounded()));
+        }
+        None => println!("Query API endpoints: {ABSENT}"),
     }
     if let Some(cursor) = data
         .pagination
