@@ -16,6 +16,7 @@ pub(crate) use crate::cloud::clickpipes::{
 };
 pub(crate) use crate::cloud::clickstack::ClickStackCommands;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
+pub(crate) use crate::cloud::query_api_endpoints::QueryApiEndpointArgs;
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::services::{
     PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, UpgradeWindowCommands,
@@ -129,6 +130,15 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ServiceCommands,
     },
+
+    /// Manage Query API endpoints (Beta)
+    #[command(after_help = "CONTEXT FOR AGENTS:
+  Writes require API key authentication; list/get support OAuth.
+  Service IDs: `cloud service list`; API key IDs: `cloud key list`.
+  Endpoint IDs: `cloud query-api-endpoint list <service-id>`.
+  User-owned endpoints can be read but cannot be updated or deleted.
+  Typical flow: create -> get -> update -> delete.")]
+    QueryApiEndpoint(QueryApiEndpointArgs),
 
     /// Manage service backups and backup buckets
     #[command(after_help = "\
@@ -250,6 +260,7 @@ impl CloudCommands {
             CloudCommands::Invitation { command } => command.is_write(),
             CloudCommands::Key { command } => command.is_write(),
             CloudCommands::Udf(args) => args.is_write(),
+            CloudCommands::QueryApiEndpoint(args) => args.is_write(),
             CloudCommands::Activity { command } => command.is_write(),
             CloudCommands::Postgres { command } => command.is_write(),
             CloudCommands::ClickPipe { command } => command.is_write(),

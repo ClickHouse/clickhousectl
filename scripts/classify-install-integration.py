@@ -46,6 +46,7 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
         "crates/clickhousectl/src/cloud/clickstack.rs",
         "crates/clickhousectl/src/cloud/config.rs",
+        "crates/clickhousectl/src/cloud/query_api_endpoints.rs",
         "crates/clickhousectl/src/cloud/udfs.rs",
         "crates/clickhousectl/src/dotenv.rs",
         "crates/clickhousectl/src/failure.rs",

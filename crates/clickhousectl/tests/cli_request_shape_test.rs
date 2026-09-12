@@ -23170,3 +23170,625 @@ async fn service_settings_list_preserves_mixed_json_types_and_renders_sparse_row
         assert!(rows.contains(&expected), "missing {expected:?} in {stdout}");
     }
 }
+
+// Query API endpoint management (#766).
+
+const QUERY_API_ENDPOINTS_PATH: &str = "/v1/organizations/org-1/services/svc-1/query-api-endpoints";
+const QUERY_API_ENDPOINT_ID: &str = "11111111-2222-3333-8444-555555555555";
+const QUERY_API_KEY_ID: &str = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+
+fn query_api_endpoint_config() -> Value {
+    serde_json::json!({
+        "name": "orders",
+        "sql": "SELECT * FROM orders WHERE id = {id:String}",
+        "database": "analytics",
+        "parameters": {"id": "default-id", "region": "eu-west"},
+        "apiKeyIds": [QUERY_API_KEY_ID],
+        "roles": ["query_api", "reader"],
+        "allowedOrigins": []
+    })
+}
+
+fn query_api_endpoint_response() -> Value {
+    let mut response = query_api_endpoint_config();
+    response.as_object_mut().unwrap().extend(
+        serde_json::json!({
+            "id": QUERY_API_ENDPOINT_ID,
+            "url": format!("https://queries.clickhouse.cloud/run/{QUERY_API_ENDPOINT_ID}"),
+            "ownerType": "queryApiEndpoint"
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    );
+    response
+}
+
+fn invoke_query_api_endpoint(
+    server: &MockServer,
+    project: &Path,
+    oauth: bool,
+    json: bool,
+    args: &[&str],
+    stdin: Option<&str>,
+) -> std::process::Output {
+    let home = project.join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    if oauth {
+        write_oauth_tokens(&cloud_dir, &server.uri());
+    }
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("HOME", home)
+        .env("DO_NOT_TRACK", "1")
+        .current_dir(project)
+        .args(["cloud", "--url", &server.uri()]);
+    if !oauth {
+        command.args([
+            "--api-key",
+            "query-endpoint-key",
+            "--api-secret",
+            "query-endpoint-secret",
+        ]);
+    }
+    if json {
+        command.arg("--json");
+    }
+    command.arg("query-api-endpoint").args(args);
+    if let Some(input) = stdin {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        child.wait_with_output().unwrap()
+    } else {
+        command.stdin(Stdio::null()).output().unwrap()
+    }
+}
+
+fn query_api_endpoint_envelope(status: u16, result: Value) -> ResponseTemplate {
+    ResponseTemplate::new(status).set_body_json(serde_json::json!({
+        "status": status,
+        "requestId": "query-api-endpoint-request",
+        "result": result
+    }))
+}
+
+#[tokio::test]
+async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies() {
+    let server = MockServer::start().await;
+    let endpoint = query_api_endpoint_response();
+    let list = serde_json::json!({
+        "items": [{
+            "id": QUERY_API_ENDPOINT_ID,
+            "name": "orders",
+            "database": "analytics",
+            "apiKeyIds": [QUERY_API_KEY_ID],
+            "roles": ["query_api", "reader"],
+            "allowedOrigins": [],
+            "url": format!("https://queries.clickhouse.cloud/run/{QUERY_API_ENDPOINT_ID}"),
+            "ownerType": "queryApiEndpoint"
+        }],
+        "pagination": {"currentCursor": "current", "limit": 100, "totalRecords": 1}
+    });
+    for (verb, suffix, body, status, result) in [
+        (
+            "POST",
+            "",
+            Some(query_api_endpoint_config()),
+            201,
+            endpoint.clone(),
+        ),
+        (
+            "PUT",
+            QUERY_API_ENDPOINT_ID,
+            Some(query_api_endpoint_config()),
+            200,
+            endpoint.clone(),
+        ),
+        ("GET", "", None, 200, list.clone()),
+        ("GET", QUERY_API_ENDPOINT_ID, None, 200, endpoint.clone()),
+    ] {
+        let route = if suffix.is_empty() {
+            QUERY_API_ENDPOINTS_PATH.to_string()
+        } else {
+            format!("{QUERY_API_ENDPOINTS_PATH}/{suffix}")
+        };
+        let mut mock =
+            Mock::given(method(verb))
+                .and(path(route))
+                .and(wiremock::matchers::basic_auth(
+                    "query-endpoint-key",
+                    "query-endpoint-secret",
+                ));
+        if let Some(body) = body {
+            mock = mock.and(body_json(body));
+        }
+        mock.respond_with(query_api_endpoint_envelope(status, result))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "{QUERY_API_ENDPOINTS_PATH}/{QUERY_API_ENDPOINT_ID}"
+        )))
+        .and(wiremock::matchers::basic_auth(
+            "query-endpoint-key",
+            "query-endpoint-secret",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200, "requestId": "query-api-endpoint-delete"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let config_path = project.path().join("endpoint.json");
+    std::fs::write(&config_path, query_api_endpoint_config().to_string()).unwrap();
+    let create = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        false,
+        true,
+        &[
+            "--org-id",
+            "org-1",
+            "create",
+            "svc-1",
+            "--config-file",
+            config_path.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_success(&create);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&create.stdout).unwrap(),
+        endpoint
+    );
+
+    let request_stdin = query_api_endpoint_config().to_string();
+    let update = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        false,
+        true,
+        &[
+            "update",
+            "svc-1",
+            QUERY_API_ENDPOINT_ID,
+            "--config-file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        Some(&request_stdin),
+    );
+    assert_success(&update);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&update.stdout).unwrap(),
+        endpoint
+    );
+
+    let list_output = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["list", "svc-1", "--org-id", "org-1"],
+        None,
+    );
+    assert_success(&list_output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list_output.stdout).unwrap(),
+        list
+    );
+    let get = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["get", "svc-1", QUERY_API_ENDPOINT_ID, "--org-id", "org-1"],
+        None,
+    );
+    assert_success(&get);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&get.stdout).unwrap(),
+        endpoint
+    );
+    let delete = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        false,
+        true,
+        &[
+            "delete",
+            "svc-1",
+            QUERY_API_ENDPOINT_ID,
+            "--org-id",
+            "org-1",
+        ],
+        None,
+    );
+    assert_success(&delete);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&delete.stdout).unwrap(),
+        serde_json::json!({"status": 200, "requestId": "query-api-endpoint-delete"})
+    );
+
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 5);
+    let list_request = requests
+        .iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::GET
+                && request.url.path() == QUERY_API_ENDPOINTS_PATH
+        })
+        .unwrap();
+    assert!(list_request.url.query().is_none());
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request.method == wiremock::http::Method::GET)
+            .count(),
+        2,
+        "update must not prefetch the endpoint"
+    );
+}
+
+#[tokio::test]
+async fn query_api_endpoint_reads_support_oauth_and_preserve_reserved_list_cursor() {
+    let server = MockServer::start().await;
+    let result = serde_json::json!({
+        "items": [{}],
+        "pagination": {
+            "currentCursor": "page /+?",
+            "nextCursor": null,
+            "limit": 2,
+            "totalRecords": 3
+        }
+    });
+    Mock::given(method("GET"))
+        .and(path(QUERY_API_ENDPOINTS_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(query_api_endpoint_envelope(200, result.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{QUERY_API_ENDPOINTS_PATH}/{QUERY_API_ENDPOINT_ID}"
+        )))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(query_api_endpoint_envelope(200, serde_json::json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let list = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        true,
+        true,
+        &[
+            "list", "svc-1", "--cursor", "page /+?", "--limit", "2", "--org-id", "org-1",
+        ],
+        None,
+    );
+    assert_success(&list);
+    let mut expected = result;
+    expected["pagination"]
+        .as_object_mut()
+        .unwrap()
+        .remove("nextCursor");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&list.stdout).unwrap(),
+        expected
+    );
+    let get = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        true,
+        true,
+        &["get", "svc-1", QUERY_API_ENDPOINT_ID, "--org-id", "org-1"],
+        None,
+    );
+    assert_success(&get);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&get.stdout).unwrap(),
+        serde_json::json!({})
+    );
+
+    let request = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|request| request.url.path() == QUERY_API_ENDPOINTS_PATH)
+        .unwrap();
+    let query: std::collections::HashMap<_, _> = request.url.query_pairs().into_owned().collect();
+    assert_eq!(query.get("cursor").map(String::as_str), Some("page /+?"));
+    assert_eq!(query.get("limit").map(String::as_str), Some("2"));
+}
+
+#[tokio::test]
+async fn query_api_endpoint_human_reads_tolerate_sparse_fields_and_show_next_cursor() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "{QUERY_API_ENDPOINTS_PATH}/{QUERY_API_ENDPOINT_ID}"
+        )))
+        .respond_with(query_api_endpoint_envelope(200, serde_json::json!({})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(QUERY_API_ENDPOINTS_PATH))
+        .respond_with(query_api_endpoint_envelope(
+            200,
+            serde_json::json!({
+                "items": [
+                    {},
+                    {
+                        "id": QUERY_API_ENDPOINT_ID,
+                        "name": "orders",
+                        "database": "analytics",
+                        "ownerType": "futureOwner",
+                        "url": "https://queries.clickhouse.cloud/run/example"
+                    }
+                ],
+                "pagination": {"nextCursor": "next /+?"}
+            }),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let get = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        false,
+        false,
+        &["get", "svc-1", QUERY_API_ENDPOINT_ID, "--org-id", "org-1"],
+        None,
+    );
+    assert_success(&get);
+    assert_eq!(String::from_utf8_lossy(&get.stdout), "{}\n");
+    let list = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        false,
+        false,
+        &["list", "svc-1", "--org-id", "org-1"],
+        None,
+    );
+    assert_success(&list);
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    for value in ["orders", "analytics", "futureOwner", "next /+?", "-"] {
+        assert!(stdout.contains(value), "missing {value}:\n{stdout}");
+    }
+
+    for result in [serde_json::json!({}), serde_json::json!({"items": null})] {
+        let sparse_server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(QUERY_API_ENDPOINTS_PATH))
+            .respond_with(query_api_endpoint_envelope(200, result))
+            .expect(1)
+            .mount(&sparse_server)
+            .await;
+        let sparse_project = tempfile::tempdir().unwrap();
+        let output = invoke_query_api_endpoint(
+            &sparse_server,
+            sparse_project.path(),
+            false,
+            false,
+            &["list", "svc-1", "--org-id", "org-1"],
+            None,
+        );
+        assert_success(&output);
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            "Query API endpoints: -\n"
+        );
+    }
+}
+
+#[tokio::test]
+async fn query_api_endpoint_delete_has_a_typed_human_confirmation() {
+    let server = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "{QUERY_API_ENDPOINTS_PATH}/{QUERY_API_ENDPOINT_ID}"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200, "requestId": "delete-request"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let output = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        false,
+        false,
+        &[
+            "delete",
+            "svc-1",
+            QUERY_API_ENDPOINT_ID,
+            "--org-id",
+            "org-1",
+        ],
+        None,
+    );
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("Deleted Query API endpoint {QUERY_API_ENDPOINT_ID}\n")
+    );
+}
+
+#[tokio::test]
+async fn query_api_endpoint_invalid_configs_fail_before_org_discovery() {
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let valid = query_api_endpoint_config();
+    let cases = [
+        ("malformed.json", "{".to_string(), "parse"),
+        (
+            "unknown.json",
+            {
+                let mut body = valid.clone();
+                body["typo"] = serde_json::json!(true);
+                body.to_string()
+            },
+            "typo",
+        ),
+        ("missing.json", serde_json::json!({}).to_string(), "name"),
+    ];
+    for (file_name, body, expected) in cases {
+        let file = project.path().join(file_name);
+        std::fs::write(&file, body).unwrap();
+        let output = invoke_query_api_endpoint(
+            &server,
+            project.path(),
+            false,
+            true,
+            &["create", "svc-1", "--config-file", file.to_str().unwrap()],
+            None,
+        );
+        assert_eq!(output.status.code(), Some(1), "{file_name}");
+        assert!(output.stdout.is_empty(), "{file_name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{file_name}: {stderr}");
+    }
+    let missing_file = project.path().join("does-not-exist.json");
+    let output = invoke_query_api_endpoint(
+        &server,
+        project.path(),
+        false,
+        true,
+        &[
+            "update",
+            "svc-1",
+            QUERY_API_ENDPOINT_ID,
+            "--config-file",
+            missing_file.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("does-not-exist.json"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn query_api_endpoint_writes_reject_oauth_before_config_or_http() {
+    let server = MockServer::start().await;
+    for args in [
+        vec!["create", "svc-1", "--config-file", "does-not-exist.json"],
+        vec![
+            "update",
+            "svc-1",
+            QUERY_API_ENDPOINT_ID,
+            "--config-file",
+            "does-not-exist.json",
+        ],
+        vec!["delete", "svc-1", QUERY_API_ENDPOINT_ID],
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let output = invoke_query_api_endpoint(&server, project.path(), true, true, &args, None);
+        assert_eq!(output.status.code(), Some(4), "{args:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("API key"),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn query_api_endpoint_list_rejects_limits_outside_one_to_one_hundred() {
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["list", "svc-1", "--limit", "0", "--org-id", "org-1"],
+        vec!["list", "svc-1", "--limit", "101", "--org-id", "org-1"],
+        vec!["list", "svc-1", "--limit", "-1", "--org-id", "org-1"],
+        vec!["list", "svc-1", "--limit=-1", "--org-id", "org-1"],
+    ] {
+        let output = invoke_query_api_endpoint(&server, project.path(), false, true, &args, None);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn query_api_endpoint_api_errors_preserve_auth_and_generic_exit_codes() {
+    for (verb, status, expected_exit) in [("GET", 403, 4), ("PUT", 409, 1), ("PUT", 500, 1)] {
+        let server = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        let config_path = project.path().join("endpoint.json");
+        std::fs::write(&config_path, query_api_endpoint_config().to_string()).unwrap();
+        let mut mock = Mock::given(method(verb))
+            .and(path(format!(
+                "{QUERY_API_ENDPOINTS_PATH}/{QUERY_API_ENDPOINT_ID}"
+            )))
+            .and(wiremock::matchers::basic_auth(
+                "query-endpoint-key",
+                "query-endpoint-secret",
+            ));
+        if verb == "PUT" {
+            mock = mock.and(body_json(query_api_endpoint_config()));
+        }
+        let error = format!("query endpoint failure {status}");
+        mock.respond_with(
+            ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                "status": status,
+                "requestId": "query-api-endpoint-error",
+                "error": error
+            })),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+        let args = if verb == "GET" {
+            vec!["get", "svc-1", QUERY_API_ENDPOINT_ID, "--org-id", "org-1"]
+        } else {
+            vec![
+                "update",
+                "svc-1",
+                QUERY_API_ENDPOINT_ID,
+                "--config-file",
+                config_path.to_str().unwrap(),
+                "--org-id",
+                "org-1",
+            ]
+        };
+        let output = invoke_query_api_endpoint(&server, project.path(), false, true, &args, None);
+        assert_eq!(output.status.code(), Some(expected_exit), "{verb} {status}");
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(&error),
+            "{verb} {status}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+}

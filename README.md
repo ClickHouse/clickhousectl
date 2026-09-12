@@ -1088,7 +1088,37 @@ Querying an **idled** service wakes it automatically in both auth modes — unde
 
 The Query API host is derived from the API base URL per environment (`api.[control-plane.]<domain>` → `queries.<domain>`, e.g. `https://queries.clickhouse.cloud` for production). Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override it.
 
-The Rust [Cloud API library](crates/clickhouse-cloud-api/README.md) also supports beta Query API endpoint management: create, get, list with cursor pagination, update, and delete. These methods manage named SQL endpoints; CLI exposure is separate.
+#### Named Query API endpoints (beta)
+
+`cloud query-api-endpoint` manages named SQL endpoints with their own SQL, default parameters, database roles, API key bindings, and allowed origins. The existing `cloud service query-endpoint` commands manage the service-level binding used by `cloud service query`.
+
+Create an endpoint from a complete JSON definition:
+
+```json
+{
+  "name": "Order count",
+  "sql": "SELECT count() FROM orders WHERE status = {status:String}",
+  "database": "default",
+  "apiKeyIds": ["11111111-1111-4111-8111-111111111111"],
+  "roles": ["sql_console_read_only"],
+  "parameters": {"status": "paid"},
+  "allowedOrigins": ["https://example.com"]
+}
+```
+
+Save this as `endpoint.json` and replace the example key ID with one from `cloud key list`. `roles` contains database role names, not organization role IDs. `name`, `sql`, `database`, `apiKeyIds`, and `roles` are required; `parameters` and `allowedOrigins` are optional.
+
+```bash
+clickhousectl cloud query-api-endpoint create <service-id> --config-file endpoint.json
+clickhousectl cloud query-api-endpoint list <service-id> --limit 10 --json
+clickhousectl cloud query-api-endpoint get <service-id> <endpoint-id>
+clickhousectl cloud query-api-endpoint update <service-id> <endpoint-id> --config-file endpoint.json
+clickhousectl cloud query-api-endpoint delete <service-id> <endpoint-id>
+```
+
+Create and update also accept `--config-file -` to read JSON from stdin. Unknown fields and incomplete definitions are rejected before organization discovery. Update replaces the complete definition: omitted `parameters` and `allowedOrigins` use empty defaults, so include any values you want to retain. A GET response includes response-only fields; construct an update definition from the writable fields shown above.
+
+List returns one page; pass `pagination.nextCursor` from JSON output to `--cursor` to continue. Human output also displays the next cursor when present. `--limit` accepts 1–100. `--org-id` works before or after the subcommand. List/get support OAuth; create/update/delete require API key authentication. User-owned endpoints can be listed and read, but cannot be updated or deleted through these commands.
 
 ### Postgres (beta)
 
