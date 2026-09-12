@@ -3,6 +3,15 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use std::io::Read as _;
 
+/// User-facing label for a file-or-stdin configuration source.
+pub(crate) fn config_source_label(config_file: &str) -> &str {
+    if config_file == "-" {
+        "stdin"
+    } else {
+        config_file
+    }
+}
+
 /// Read a JSON request body from a file or stdin.
 pub(crate) fn read_config_value(config_file: &str) -> CloudResult<Value> {
     let contents = if config_file == "-" {
@@ -21,9 +30,35 @@ pub(crate) fn read_config_value(config_file: &str) -> CloudResult<Value> {
 
     serde_json::from_str(&contents).map_err(|error| {
         CloudError::new(format!(
-            "failed to parse config {config_file} as JSON: {error}"
+            "failed to parse config {} as JSON: {error}",
+            config_source_label(config_file)
         ))
     })
+}
+
+fn display_ignored_path(path: &serde_ignored::Path<'_>) -> String {
+    fn collect(path: &serde_ignored::Path<'_>, parts: &mut Vec<String>) {
+        match path {
+            serde_ignored::Path::Root => {}
+            serde_ignored::Path::Seq { parent, index } => {
+                collect(parent, parts);
+                parts.push(index.to_string());
+            }
+            serde_ignored::Path::Map { parent, key } => {
+                collect(parent, parts);
+                parts.push(key.clone());
+            }
+            // These variants are Rust deserializer traversal details, not
+            // components of the JSON field path.
+            serde_ignored::Path::Some { parent }
+            | serde_ignored::Path::NewtypeStruct { parent }
+            | serde_ignored::Path::NewtypeVariant { parent } => collect(parent, parts),
+        }
+    }
+
+    let mut parts = Vec::new();
+    collect(path, &mut parts);
+    parts.join(".")
 }
 
 /// Strictly deserialize a raw request body into a library request type.
@@ -39,7 +74,7 @@ where
     let mut deserializer = serde_json::Deserializer::from_slice(&encoded);
     let mut ignored = Vec::new();
     let request = serde_ignored::deserialize(&mut deserializer, |path| {
-        ignored.push(path.to_string());
+        ignored.push(display_ignored_path(&path));
     })
     .map_err(|error| {
         CloudError::new(format!("invalid request body in config {source}: {error}"))
@@ -83,6 +118,9 @@ mod tests {
         nested: Option<Nested>,
     }
 
+    #[derive(Debug, Deserialize)]
+    struct Empty {}
+
     #[test]
     fn strict_config_rejects_ignored_nested_fields_including_null() {
         let parsed: Example = deserialize_strict_config(
@@ -103,6 +141,27 @@ mod tests {
             "test",
         )
         .unwrap_err();
-        assert!(error.message.contains("enabeld"), "{error}");
+        assert!(
+            error.message.contains("unknown field `nested.enabeld`"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn ignored_paths_preserve_map_keys_while_hiding_traversal_markers() {
+        for key in ["?", "", "dotted.key"] {
+            let error = deserialize_strict_config::<Empty>(serde_json::json!({key: true}), "test")
+                .unwrap_err();
+            assert!(
+                error.message.contains(&format!("unknown field `{key}`")),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn stdin_has_a_clear_config_source_label() {
+        assert_eq!(config_source_label("-"), "stdin");
+        assert_eq!(config_source_label("patch.json"), "patch.json");
     }
 }

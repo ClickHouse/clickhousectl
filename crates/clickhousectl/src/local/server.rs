@@ -114,7 +114,7 @@ pub(crate) struct MetadataLock {
 }
 
 impl MetadataLock {
-    fn acquire_at(dir: &Path) -> Result<Self> {
+    pub(crate) fn acquire_at(dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(dir).map_err(|source| {
             server_lock_error(
                 "create the server metadata lock directory",
@@ -193,16 +193,11 @@ pub fn pg_data_dir(name: &str, major: &str) -> PathBuf {
         .join("data")
 }
 
-/// Ensure project-local servers dir + .gitignore exist. Idempotent.
+/// Ensure the project-local server and ignore paths exist. Idempotent.
 fn ensure_servers_dir() -> Result<()> {
     let dir = servers_dir();
-    if !dir.exists() {
-        std::fs::create_dir_all(&dir)?;
-        let gitignore = init::local_dir().join(".gitignore");
-        if !gitignore.exists() {
-            let _ = std::fs::write(gitignore, "*\n");
-        }
-    }
+    std::fs::create_dir_all(&dir)?;
+    init::ensure_runtime_gitignore()?;
     Ok(())
 }
 
@@ -758,7 +753,7 @@ pub(crate) fn resolve_name_locked(name: Option<&str>, lock: &MetadataLock) -> Re
     }
 }
 
-fn generate_random_name_locked(lock: &MetadataLock) -> Result<String> {
+pub(crate) fn generate_random_name_locked(lock: &MetadataLock) -> Result<String> {
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -768,15 +763,22 @@ fn generate_random_name_locked(lock: &MetadataLock) -> Result<String> {
     let noun = NOUNS[((mixed / ADJECTIVES.len() as u128) % NOUNS.len() as u128) as usize];
     let tag = format!("{}-{}", adj, noun);
 
-    if is_server_running_locked(&tag, lock)? {
-        for i in 2..100 {
-            let candidate = format!("{}-{}", tag, i);
-            if !is_server_running_locked(&candidate, lock)? {
-                return Ok(candidate);
-            }
+    unique_generated_name_locked(&tag, lock)
+}
+
+fn unique_generated_name_locked(tag: &str, lock: &MetadataLock) -> Result<String> {
+    if load_info_locked(tag, lock)?.is_none() && find_pg_instances_locked(tag, lock)?.is_empty() {
+        return Ok(tag.to_string());
+    }
+    for i in 2_u64.. {
+        let candidate = format!("{}-{}", tag, i);
+        if load_info_locked(&candidate, lock)?.is_none()
+            && find_pg_instances_locked(&candidate, lock)?.is_empty()
+        {
+            return Ok(candidate);
         }
     }
-    Ok(tag)
+    unreachable!("a finite metadata directory cannot exhaust generated names")
 }
 
 /// Wait a moment after spawn and check if the child exited immediately.
@@ -1303,6 +1305,22 @@ mod tests {
         assert_eq!(parsed.engine, Engine::Postgres);
         assert_eq!(parsed.container_id.as_deref(), Some("abc123"));
         assert!(json.contains("\"engine\":\"postgres\""));
+    }
+
+    #[test]
+    fn generated_name_avoids_postgres_metadata_collisions() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = MetadataLock::acquire_at(directory.path()).unwrap();
+        let mut info = test_info(0, "postgres:18");
+        info.name = pg_instance_key("calm-bird", "18");
+        info.engine = Engine::Postgres;
+        info.container_id = Some("stopped-container".into());
+        save_server_info_locked(&info, &lock).unwrap();
+
+        assert_eq!(
+            unique_generated_name_locked("calm-bird", &lock).unwrap(),
+            "calm-bird-2"
+        );
     }
 
     #[test]

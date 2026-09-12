@@ -96,14 +96,6 @@ fn install_fake_clickhouse(home: &Path, script: &str) {
         .expect("make fake ClickHouse executable");
 }
 
-fn unused_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .expect("bind temporary port")
-        .local_addr()
-        .unwrap()
-        .port()
-}
-
 #[test]
 fn explicit_json_and_agent_mode_emit_the_same_exact_server_error() {
     let project = tempfile::tempdir().expect("create project");
@@ -237,10 +229,10 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
             Some("clickhousectl local server start --help"),
         ),
     );
+    // Keep the occupied port reserved through its assertion. For the fake
+    // child below, let the CLI choose ports: it never binds a socket, so
+    // handing it bind-then-drop ephemeral ports only introduces a race.
     drop(occupied);
-
-    let http_port = unused_port().to_string();
-    let tcp_port = unused_port().to_string();
     let startup = run(
         project.path(),
         home.path(),
@@ -251,10 +243,6 @@ fn version_port_and_startup_failures_have_typed_safe_shapes() {
             "start",
             "--version",
             VERSION,
-            "--http-port",
-            &http_port,
-            "--tcp-port",
-            &tcp_port,
             "--no-wait",
         ],
     );
@@ -493,8 +481,6 @@ fn foreground_child_exit_is_not_wrapped_as_a_local_error() {
     let project = tempfile::tempdir().expect("create project");
     let home = tempfile::tempdir().expect("create home");
     install_fake_clickhouse(home.path(), "#!/bin/sh\nexit 7\n");
-    let http_port = unused_port().to_string();
-    let tcp_port = unused_port().to_string();
 
     let output = run(
         project.path(),
@@ -506,10 +492,6 @@ fn foreground_child_exit_is_not_wrapped_as_a_local_error() {
             "start",
             "--version",
             VERSION,
-            "--http-port",
-            &http_port,
-            "--tcp-port",
-            &tcp_port,
             "--foreground",
         ],
     );

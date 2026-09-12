@@ -59,6 +59,8 @@ enum LocalErrorCode {
     /// A Postgres validation or state error whose text (and recovery
     /// guidance) clickhousectl composes itself, rendered verbatim.
     PostgresError,
+    SqlInputOpenFailed,
+    SqlInputReadFailed,
     IoError,
     LocalError,
 }
@@ -292,9 +294,8 @@ impl LocalErrorOutput {
                 .command("clickhousectl local server list"),
             // Stopping *this* server is the recovery; `server list` only
             // restates what the error already says.
-            Error::ServerRunningCannotRemove(name) => {
-                Mapping::parity(LocalErrorCode::ServerRunning)
-                    .command(format!("clickhousectl local server stop {name}"))
+            Error::ServerRunningCannotRemove { command, .. } => {
+                Mapping::parity(LocalErrorCode::ServerRunning).command(command.clone())
             }
             Error::InvalidServerName(_) => Mapping::parity(LocalErrorCode::InvalidServerName)
                 .command("clickhousectl local server list"),
@@ -443,6 +444,14 @@ impl LocalErrorOutput {
             // Self-composed validation and state guidance; the foreign-text
             // sibling `Error::Postgres` stays in the fallback below.
             Error::PostgresUsage(_) => Mapping::parity(LocalErrorCode::PostgresError),
+            Error::SqlInputOpen { .. } => Mapping::redacted(
+                LocalErrorCode::SqlInputOpenFailed,
+                "Could not open SQL input file; check that --queries-file exists and is readable",
+            ),
+            Error::SqlInputRead(_) => Mapping::redacted(
+                LocalErrorCode::SqlInputReadFailed,
+                "Could not read SQL input; check the file or stdin source is readable",
+            ),
 
             // ── bounded fallback ────────────────────────────────────────────
             // Subprocess text and `Postgres` (OS text from a failed psql
@@ -807,28 +816,33 @@ impl fmt::Display for RemoveOutput {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InitOutput {
-    /// Every project-local path this invocation created or manages, e.g.
-    /// `.clickhouse/`, and (when newly created) `clickhouse/` and `postgres/`.
+    /// Every project-local path this invocation created, e.g. `.clickhouse/`,
+    /// `.clickhouse/.gitignore`, `clickhouse/`, or `postgres/`.
     pub paths: Vec<String>,
     /// Human-output detail only: the project dir already existed before this
-    /// run. JSON consumers can tell from `paths`, so it is not serialized.
+    /// run. This affects human wording only, so it is not serialized.
     #[serde(skip)]
     pub already_initialized: bool,
 }
 
 impl fmt::Display for InitOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let dir = self
+        if !self.already_initialized {
+            write!(f, "Initialized ClickHouse project in .clickhouse/")?;
+        } else if self
             .paths
-            .first()
-            .map(String::as_str)
-            .unwrap_or(".clickhouse/");
-        if self.already_initialized {
-            write!(f, "Already initialized at {dir}")?;
+            .iter()
+            .any(|path| path == ".clickhouse/.gitignore")
+        {
+            write!(f, "Restored runtime ignore at .clickhouse/.gitignore")?;
         } else {
-            write!(f, "Initialized ClickHouse project in {dir}")?;
+            write!(f, "Already initialized at .clickhouse/")?;
         }
-        for path in self.paths.iter().skip(1) {
+        for path in self
+            .paths
+            .iter()
+            .filter(|path| !path.starts_with(".clickhouse/"))
+        {
             write!(f, "\nCreated project scaffold in {path}")?;
         }
         Ok(())
@@ -1504,7 +1518,10 @@ mod tests {
                 "postgres_error",
             ),
             (
-                Error::ServerRunningCannotRemove("dev".into()),
+                Error::ServerRunningCannotRemove {
+                    name: "dev".into(),
+                    command: "clickhousectl local server stop dev".into(),
+                },
                 "server_running",
             ),
             (
@@ -1653,7 +1670,10 @@ mod tests {
     fn running_server_remove_json_error_points_at_stopping_that_server() {
         assert_eq!(
             serde_json::to_string(&LocalErrorOutput::from_error(
-                &Error::ServerRunningCannotRemove("dev".into())
+                &Error::ServerRunningCannotRemove {
+                    name: "dev".into(),
+                    command: "clickhousectl local server stop dev".into()
+                }
             ))
             .unwrap(),
             r#"{"error":{"code":"server_running","message":"Server 'dev' is running; stop it first with `clickhousectl local server stop dev`","command":"clickhousectl local server stop dev"}}"#
@@ -1713,7 +1733,10 @@ mod tests {
             Error::ServerNotFound("dev".into()),
             Error::ServerNotRunning("dev".into()),
             Error::ServerAlreadyRunning("dev".into()),
-            Error::ServerRunningCannotRemove("dev".into()),
+            Error::ServerRunningCannotRemove {
+                name: "dev".into(),
+                command: "clickhousectl local server stop dev".into(),
+            },
             Error::ServerStopSelectionRequired { available: 2 },
             Error::ServerRemoveSelectionRequired { available: 1 },
             Error::ServerInMultipleProjects {
@@ -1789,6 +1812,36 @@ mod tests {
                 serde_json::Value::String(error.to_string()),
                 "JSON message must match human output for {error:?}"
             );
+        }
+    }
+
+    #[test]
+    fn sql_input_errors_keep_categories_without_paths_or_os_messages() {
+        let secret = "password=hunter2; SELECT secret FROM private_table";
+        for (error, code) in [
+            (
+                Error::SqlInputOpen {
+                    path: secret.into(),
+                    source: std::io::Error::other(secret),
+                },
+                "sql_input_open_failed",
+            ),
+            (
+                Error::SqlInputRead(std::io::Error::other(secret)),
+                "sql_input_read_failed",
+            ),
+        ] {
+            assert!(error.to_string().contains(secret));
+            let json = error_json(&error);
+            assert_eq!(json["error"]["code"], code);
+            assert!(!json.to_string().contains(secret));
+            assert!(
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("SQL input")
+            );
+            assert_eq!(error.exit_code(), 1);
         }
     }
 
@@ -2022,15 +2075,15 @@ mod tests {
     }
 
     #[test]
-    fn init_json_idempotent_run_only_reports_clickhouse_dir() {
+    fn init_json_idempotent_run_reports_no_created_paths() {
         let output = InitOutput {
-            paths: vec![".clickhouse/".to_string()],
+            paths: vec![],
             already_initialized: true,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
-        assert_eq!(json["paths"], serde_json::json!([".clickhouse/"]));
+        assert_eq!(json["paths"], serde_json::json!([]));
     }
 
     #[test]
@@ -2357,10 +2410,34 @@ mod tests {
     #[test]
     fn init_display_idempotent() {
         let output = InitOutput {
-            paths: vec![".clickhouse/".to_string()],
+            paths: vec![],
             already_initialized: true,
         };
         assert_eq!(output.to_string(), "Already initialized at .clickhouse/");
+    }
+
+    #[test]
+    fn init_display_reports_runtime_ignore_repair() {
+        let output = InitOutput {
+            paths: vec![".clickhouse/.gitignore".to_string()],
+            already_initialized: true,
+        };
+        assert_eq!(
+            output.to_string(),
+            "Restored runtime ignore at .clickhouse/.gitignore"
+        );
+    }
+
+    #[test]
+    fn init_display_reports_scaffold_repair_without_runtime_path() {
+        let output = InitOutput {
+            paths: vec!["postgres/".to_string()],
+            already_initialized: true,
+        };
+        assert_eq!(
+            output.to_string(),
+            "Already initialized at .clickhouse/\nCreated project scaffold in postgres/"
+        );
     }
 
     #[test]

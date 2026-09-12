@@ -1659,13 +1659,39 @@ pub struct Service {
     pub transparent_data_encryption_key_id: Option<String>,
 }
 
+/// A native string or integer setting value from the published OpenAPI contract.
+///
+/// Decimal settings such as `mark_cache_ram_ratio` use strings. The unsigned
+/// variant preserves integers above `i64::MAX` without rounding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ServiceClickhouseSettingValue {
+    String(String),
+    Integer(i64),
+    UnsignedInteger(u64),
+}
+
+/// A settings map for typed PATCH requests. The request serializer rejects an
+/// empty map; use the per-setting DELETE endpoint to reset an override.
+pub type ServiceClickhouseSettingsMap =
+    std::collections::BTreeMap<String, ServiceClickhouseSettingValue>;
+
+/// Tolerant response value: preserve future wire types without coercion.
+pub type ServiceClickhouseSettingValueResponse = serde_json::Value;
+
+/// Tolerant settings response map, retaining unknown setting names and values.
+pub type ServiceClickhouseSettingsMapResponse =
+    std::collections::BTreeMap<String, ServiceClickhouseSettingValueResponse>;
+
 /// `ServiceClickhouseSetting` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSetting {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// The published contract permits strings and integers. Preserve future
+    /// response types as JSON as well, without coercion.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub value: Option<String>,
+    pub value: Option<ServiceClickhouseSettingValueResponse>,
 }
 
 /// `ServiceClickhouseSettingSchemaEntry` from the ClickHouse Cloud API.
@@ -1703,18 +1729,49 @@ pub struct ServiceClickhouseSettingsList {
     pub settings: Option<Vec<ServiceClickhouseSetting>>,
 }
 
-/// `ServiceClickhouseSettingsPatchRequest` from the ClickHouse Cloud API.
+/// Settings to update as a JSON object of setting names to values.
+///
+/// The published OpenAPI requires a nonempty object with string/integer values.
+/// Use `ServiceClickhouseSettingsPatchRequest<ServiceClickhouseSettingsMap>` for
+/// that typed value contract. The default JSON-value map remains available for
+/// existing callers; the API validates per-setting constraints.
+/// Legacy callers may explicitly use `String` containing an encoded object;
+/// serialization validates and converts it to the same object wire format.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ServiceClickhouseSettingsPatchRequest {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<String>,
+pub struct ServiceClickhouseSettingsPatchRequest<
+    T: Serialize = std::collections::BTreeMap<String, serde_json::Value>,
+> {
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "serialize_clickhouse_settings"
+    )]
+    pub settings: Option<T>,
+}
+
+fn serialize_clickhouse_settings<T: Serialize, S: serde::Serializer>(
+    settings: &Option<T>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::Error as _;
+
+    let value = serde_json::to_value(settings).map_err(S::Error::custom)?;
+    let value = match value {
+        serde_json::Value::String(encoded) => {
+            serde_json::from_str(&encoded).map_err(S::Error::custom)?
+        }
+        value => value,
+    };
+    if value.as_object().is_none_or(|object| object.is_empty()) {
+        return Err(S::Error::custom("settings must be a non-empty object"));
+    }
+    value.serialize(serializer)
 }
 
 /// `ServiceClickhouseSettingsPatchResponse` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceClickhouseSettingsPatchResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub settings: Option<String>,
+    pub settings: Option<ServiceClickhouseSettingsMapResponse>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<ServiceClickhouseSettingWarning>>,
 }

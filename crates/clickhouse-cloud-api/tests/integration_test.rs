@@ -4,6 +4,370 @@ use clickhouse_cloud_api::Client;
 use clickhouse_cloud_api::models::*;
 use common::support::*;
 
+fn assert_saved_query_endpoint(
+    endpoint: &PublicQueryApiEndpoint,
+    expected: &PublicQueryApiEndpointRequest,
+) -> TestResult<()> {
+    let parameters = expected.parameters.clone().unwrap_or_default();
+    let origins = expected.allowed_origins.clone().unwrap_or_default();
+    if endpoint.name.as_ref() != Some(&expected.name)
+        || endpoint.sql.as_ref() != Some(&expected.sql)
+        || endpoint.database.as_ref() != Some(&expected.database)
+        || endpoint.parameters.as_ref() != Some(&parameters)
+        || endpoint.api_key_ids.as_ref() != Some(&expected.api_key_ids)
+        || endpoint.roles.as_ref() != Some(&expected.roles)
+        || endpoint.allowed_origins.as_ref() != Some(&origins)
+        || endpoint.owner_type != Some(PublicQueryApiEndpointOwnertype::QueryApiEndpoint)
+        || endpoint.url.as_ref().is_none_or(String::is_empty)
+    {
+        return Err("saved Query API endpoint did not preserve its configuration".into());
+    }
+    Ok(())
+}
+
+/// Page through a disposable service without assuming every endpoint is API-owned.
+async fn list_saved_query_endpoints(
+    client: &Client,
+    org: &str,
+    service: &str,
+) -> TestResult<Vec<PublicQueryApiEndpointListItem>> {
+    let mut cursor = None;
+    let mut seen_cursors = std::collections::BTreeSet::new();
+    let mut seen_ids = std::collections::BTreeSet::new();
+    let mut listed = Vec::new();
+    for _ in 0..100 {
+        let page = client
+            .query_api_endpoint_list(org, service, cursor.as_deref(), Some(1))
+            .await?
+            .result
+            .ok_or("Query API endpoint list returned no result")?;
+        let items = page.items.ok_or("Query API endpoint list omitted items")?;
+        let pagination = page
+            .pagination
+            .ok_or("Query API endpoint list omitted pagination")?;
+        if items.len() > 1 || pagination.limit != Some(1) {
+            return Err("Query API endpoint list did not respect limit=1".into());
+        }
+        if cursor.is_none() && pagination.current_cursor.is_some() {
+            return Err("Query API endpoint first page has a non-null current cursor".into());
+        }
+        for item in items {
+            let id = item.id.ok_or("Query API endpoint list item omitted id")?;
+            if !seen_ids.insert(id) {
+                return Err("Query API endpoint pagination repeated an endpoint".into());
+            }
+            listed.push(item);
+        }
+        cursor = pagination.next_cursor;
+        let Some(next_cursor) = &cursor else {
+            if pagination.total_records != Some(listed.len() as i64) {
+                return Err("Query API endpoint pagination total does not match items".into());
+            }
+            return Ok(listed);
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err("Query API endpoint pagination repeated a cursor".into());
+        }
+    }
+    Err("Query API endpoint pagination exceeded 100 pages on a disposable service".into())
+}
+
+/// Reuse the lifecycle's disposable service and API key. Register each newly
+/// created ID before assertions so the outer teardown also covers early failures.
+async fn cloud_saved_query_endpoint_lifecycle(
+    client: &Client,
+    cleanup: &mut CleanupRegistry,
+    org: &str,
+    service: &str,
+    api_key_id: &str,
+    name: &str,
+) -> TestResult<()> {
+    let mut request = PublicQueryApiEndpointRequest {
+        name: format!("{name}-saved-query"),
+        sql: "SELECT 1 AS value".to_string(),
+        database: "default".to_string(),
+        parameters: None,
+        api_key_ids: vec![api_key_id.parse()?],
+        roles: vec!["sql_console_admin".to_string()],
+        allowed_origins: None,
+    };
+    let mut created_ids = Vec::new();
+    // Two endpoints guarantee that limit=1 exercises a subsequent cursor page.
+    for suffix in ["first", "second"] {
+        request.name = format!("{name}-saved-query-{suffix}");
+        let created = client
+            .query_api_endpoint_create(org, service, &request)
+            .await?
+            .result
+            .ok_or("Query API endpoint create returned no result")?;
+        let id = created.id.ok_or("Query API endpoint create omitted id")?;
+        cleanup.register_query_api_endpoint(service, id.to_string());
+        created_ids.push(id);
+        assert_saved_query_endpoint(&created, &request)?;
+        let fetched = client
+            .query_api_endpoint_get(org, service, &id.to_string())
+            .await?
+            .result
+            .ok_or("Query API endpoint get returned no result")?;
+        if fetched.id != Some(id) {
+            return Err("Query API endpoint get returned a different id".into());
+        }
+        assert_saved_query_endpoint(&fetched, &request)?;
+    }
+
+    request.name = format!("{name}-saved-query-updated");
+    request.sql = "SELECT {value:UInt32} AS value".to_string();
+    request.parameters = Some(std::collections::BTreeMap::from([(
+        "value".to_string(),
+        "42".to_string(),
+    )]));
+    request.allowed_origins = Some(vec!["https://example.com".to_string()]);
+    let updated_id = created_ids[0];
+    let updated = client
+        .query_api_endpoint_update(org, service, &updated_id.to_string(), &request)
+        .await?
+        .result
+        .ok_or("Query API endpoint update returned no result")?;
+    if updated.id != Some(updated_id) {
+        return Err("Query API endpoint update changed its id".into());
+    }
+    assert_saved_query_endpoint(&updated, &request)?;
+    let fetched = client
+        .query_api_endpoint_get(org, service, &updated_id.to_string())
+        .await?
+        .result
+        .ok_or("Query API endpoint get after update returned no result")?;
+    if fetched.id != Some(updated_id) {
+        return Err("Query API endpoint get after update returned a different id".into());
+    }
+    assert_saved_query_endpoint(&fetched, &request)?;
+
+    let listed = list_saved_query_endpoints(client, org, service).await?;
+    for id in &created_ids {
+        let item = listed
+            .iter()
+            .find(|item| item.id == Some(*id))
+            .ok_or("Query API endpoint list omitted a created endpoint")?;
+        if item.owner_type != Some(PublicQueryApiEndpointListItemOwnertype::QueryApiEndpoint)
+            || item.api_key_ids.as_ref() != Some(&request.api_key_ids)
+            || item.roles.as_ref() != Some(&request.roles)
+            || item.database.as_ref() != Some(&request.database)
+            || item.url.as_ref().is_none_or(String::is_empty)
+        {
+            return Err("Query API endpoint list did not preserve endpoint metadata".into());
+        }
+        if *id == updated_id
+            && (item.name.as_ref() != Some(&request.name)
+                || item.allowed_origins != request.allowed_origins)
+        {
+            return Err("Query API endpoint list did not reflect the update".into());
+        }
+    }
+
+    for id in &created_ids {
+        client
+            .query_api_endpoint_delete(org, service, &id.to_string())
+            .await?;
+        cleanup.unregister_query_api_endpoint(service, &id.to_string());
+        match client
+            .query_api_endpoint_get(org, service, &id.to_string())
+            .await
+        {
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+            other => {
+                return Err(format!("expected 404 after endpoint deletion, got {other:?}").into());
+            }
+        }
+    }
+    let remaining = list_saved_query_endpoints(client, org, service).await?;
+    if remaining
+        .iter()
+        .any(|item| item.id.is_some_and(|id| created_ids.contains(&id)))
+    {
+        return Err("Query API endpoint list still includes a deleted endpoint".into());
+    }
+    Ok(())
+}
+
+/// Use the lifecycle's disposable service and restore its seeded overrides.
+async fn cloud_clickhouse_settings_native_contract(
+    client: &Client,
+    org: &str,
+    service: &str,
+) -> TestResult<()> {
+    let original = client
+        .service_clickhouse_settings_list_get(org, service)
+        .await?
+        .result
+        .ok_or("missing original settings result")?
+        .settings
+        .ok_or("missing original settings list")?;
+    let names = ["compatibility", "max_query_size"];
+    let original: std::collections::BTreeMap<_, _> = original
+        .into_iter()
+        .filter_map(|setting| Some((setting.name?, setting.value?)))
+        .filter(|(name, _)| names.contains(&name.as_str()))
+        .collect();
+    let wanted = serde_json::json!({"compatibility": "26.2", "max_query_size": 262146});
+    // Keep errors inside the future so every attempted write is followed by cleanup.
+    let outcome: TestResult<()> = async {
+        let request = ServiceClickhouseSettingsPatchRequest {
+            settings: Some(serde_json::from_value::<ServiceClickhouseSettingsMap>(
+                wanted.clone(),
+            )?),
+        };
+        let patched = client
+            .service_clickhouse_settings_update(org, service, &request)
+            .await?
+            .result
+            .ok_or("missing PATCH result")?;
+        if serde_json::to_value(patched.settings)? != wanted {
+            return Err("PATCH did not preserve the native settings map".into());
+        }
+        for name in names {
+            let setting = client
+                .service_clickhouse_setting_get(org, service, name)
+                .await?
+                .result
+                .ok_or("missing single GET result")?;
+            if setting.value.as_ref() != wanted.get(name) {
+                return Err(
+                    format!("single GET did not preserve {name}'s native type/value").into(),
+                );
+            }
+        }
+        let listed = client
+            .service_clickhouse_settings_list_get(org, service)
+            .await?
+            .result
+            .ok_or("missing list GET result")?
+            .settings
+            .ok_or("missing settings list")?;
+        for name in names {
+            let value = listed
+                .iter()
+                .find(|setting| setting.name.as_deref() == Some(name))
+                .and_then(|setting| setting.value.as_ref());
+            if value != wanted.get(name) {
+                return Err(format!("list GET did not preserve {name}'s native type/value").into());
+            }
+        }
+        Ok(())
+    }
+    .await;
+    let mut cleanup_errors = Vec::new();
+    for name in names {
+        if let Err(error) = client
+            .service_clickhouse_setting_delete(org, service, name)
+            .await
+        {
+            cleanup_errors.push(format!("reset {name}: {error}"));
+        }
+    }
+    if !original.is_empty() {
+        let request = ServiceClickhouseSettingsPatchRequest {
+            settings: Some(original),
+        };
+        if let Err(error) = client
+            .service_clickhouse_settings_update(org, service, &request)
+            .await
+        {
+            cleanup_errors.push(format!("restore original settings: {error}"));
+        }
+    }
+    if !cleanup_errors.is_empty() {
+        return Err(format!(
+            "contract outcome: {outcome:?}; cleanup: {}",
+            cleanup_errors.join("; ")
+        )
+        .into());
+    }
+    outcome
+}
+
+#[tokio::test]
+async fn settings_native_contract_restores_overrides_after_success_or_type_mismatch() {
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    for corrupt_readback in [false, true] {
+        let server = MockServer::start().await;
+        let client = Client::with_base_url(server.uri(), "key", "secret");
+        let collection = "/v1/organizations/org/services/service/clickhouseSettings";
+        let original = serde_json::json!({"compatibility": "25.8", "max_query_size": 262144});
+        let wanted = serde_json::json!({"compatibility": "26.2", "max_query_size": 262146});
+        let response = |result: serde_json::Value| {
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"status": 200, "result": result}))
+        };
+        let list = |settings: &serde_json::Value| {
+            serde_json::json!({"settings": settings.as_object().unwrap().iter()
+                .map(|(name, value)| serde_json::json!({"name": name, "value": value}))
+                .collect::<Vec<_>>()})
+        };
+        Mock::given(method("GET"))
+            .and(path(collection))
+            .respond_with(response(list(&original)))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(collection))
+            .respond_with(response(list(&wanted)))
+            .with_priority(2)
+            .expect(if corrupt_readback { 0 } else { 1 })
+            .mount(&server)
+            .await;
+        for settings in [&wanted, &original] {
+            Mock::given(method("PATCH"))
+                .and(path(collection))
+                .and(body_json(serde_json::json!({"settings": settings})))
+                .respond_with(response(serde_json::json!({"settings": settings})))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        for name in ["compatibility", "max_query_size"] {
+            let value = if corrupt_readback && name == "max_query_size" {
+                serde_json::json!("262146")
+            } else {
+                wanted[name].clone()
+            };
+            Mock::given(method("GET"))
+                .and(path(format!("{collection}/{name}")))
+                .respond_with(response(serde_json::json!({"name": name, "value": value})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path(format!("{collection}/{name}")))
+                .respond_with(response(serde_json::Value::Null))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let outcome = cloud_clickhouse_settings_native_contract(&client, "org", "service").await;
+        if corrupt_readback {
+            assert!(
+                outcome
+                    .unwrap_err()
+                    .to_string()
+                    .contains("native type/value")
+            );
+        } else {
+            outcome.unwrap();
+        }
+        server.verify().await;
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[requests.len() - 3].method, "DELETE");
+        assert_eq!(requests[requests.len() - 2].method, "DELETE");
+        let restored: serde_json::Value = requests.last().unwrap().body_json().unwrap();
+        assert_eq!(restored, serde_json::json!({"settings": original}));
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
 async fn cloud_service_crud_lifecycle() -> TestResult<()> {
@@ -765,6 +1129,27 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
+        // Saved Query API endpoint management is independent of the instance
+        // binding above. Reuse its key only after those assertions complete.
+        log_phase("Saved Query API Endpoints");
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "saved Query API endpoint create/get/list/update/delete",
+                || {
+                    cloud_saved_query_endpoint_lifecycle(
+                        &client,
+                        &mut cleanup,
+                        &ctx.org_id,
+                        &service_id,
+                        &api_key_uuid,
+                        &ctx.run_id,
+                    )
+                },
+            )
+            .await?;
+
         failures
             .run(&ctx, StepKind::Blocking, "delete query API key", || {
                 let client = client.clone();
@@ -1084,6 +1469,15 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
 
         log_phase("ClickHouse Settings");
 
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "clickhouse settings native string/integer contract",
+                || cloud_clickhouse_settings_native_contract(&client, &ctx.org_id, &service_id),
+            )
+            .await?;
+
         let settings_schema = failures
             .run(
                 &ctx,
@@ -1194,15 +1588,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 if let Some(original) = original_value {
                     eprintln!("  current value: {original}");
 
-                    // Pick a new numeric value that differs from the current
-                    // one. The candidates are all integer-typed settings, so
-                    // we parse the current value as an integer; if parsing
-                    // fails we bail to the next pre-set safe value below.
-                    let new_value = match original.parse::<u64>() {
-                        Ok(0) => "1".to_string(),
-                        Ok(n) => (n.saturating_add(1)).to_string(),
-                        Err(_) => "1".to_string(),
-                    };
+                    // Integer settings may arrive as a JSON number or string.
+                    // Send a numeric update and preserve the original JSON type
+                    // separately for cleanup.
+                    let current = original.as_u64().or_else(|| {
+                        original.as_str().and_then(|value| value.parse::<u64>().ok())
+                    });
+                    let new_value = serde_json::json!(current.unwrap_or(0).saturating_add(1));
 
                     // Register the restore BEFORE attempting the mutation so
                     // a failed mid-mutation still triggers a cleanup attempt.
@@ -1212,13 +1604,10 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         original.clone(),
                     );
 
-                    // The `settings` field on the API is a JSON-encoded string
-                    // (the spec example is "{\"compatibility\":\"24.8\"}"). Build
-                    // it with serde_json so the inner JSON escapes correctly
-                    // regardless of what the setting name/value look like.
-                    let patch_body_settings = serde_json::to_string(
-                        &serde_json::json!({ setting_name.clone(): new_value.clone() }),
-                    )?;
+                    let patch_body_settings = std::collections::BTreeMap::from([(
+                        setting_name.clone(),
+                        serde_json::json!(new_value),
+                    )]);
                     let update_ok = failures
                         .run(
                             &ctx,
@@ -1291,8 +1680,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                                     let got = resp.result.ok_or(
                                                         "clickhouse setting get returned no result",
                                                     )?;
-                                                    if got.value.as_deref()
-                                                        == Some(expected.as_str())
+                                                    if got.value.as_ref()
+                                                        == Some(&expected)
                                                     {
                                                         Ok(Some(()))
                                                     } else {

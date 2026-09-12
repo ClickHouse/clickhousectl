@@ -303,6 +303,7 @@ pub enum ClickPipeKinesisSourceFormat {
     JSONEachRow,
     Avro,
     AvroConfluent,
+    Protobuf,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -314,6 +315,7 @@ impl std::fmt::Display for ClickPipeKinesisSourceFormat {
             Self::JSONEachRow => write!(f, "JSONEachRow"),
             Self::Avro => write!(f, "Avro"),
             Self::AvroConfluent => write!(f, "AvroConfluent"),
+            Self::Protobuf => write!(f, "Protobuf"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1291,6 +1293,7 @@ pub enum ClickPipePostKinesisSourceFormat {
     JSONEachRow,
     Avro,
     AvroConfluent,
+    Protobuf,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -1302,6 +1305,7 @@ impl std::fmt::Display for ClickPipePostKinesisSourceFormat {
             Self::JSONEachRow => write!(f, "JSONEachRow"),
             Self::Avro => write!(f, "Avro"),
             Self::AvroConfluent => write!(f, "AvroConfluent"),
+            Self::Protobuf => write!(f, "Protobuf"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -3125,6 +3129,9 @@ pub struct ClickPipePostKinesisSource {
     pub timestamp: Option<i64>,
     #[serde(rename = "useEnhancedFanOut", skip_serializing_if = "Option::is_none")]
     pub use_enhanced_fan_out: Option<bool>,
+    /// Base64-encoded .proto or FileDescriptorSet; required only for Protobuf.
+    #[serde(rename = "protobufSchema", skip_serializing_if = "Option::is_none")]
+    pub protobuf_schema: Option<String>,
 }
 
 /// `ClickPipeSchemaDiscoveryField` from the ClickHouse Cloud API.

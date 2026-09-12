@@ -4,13 +4,15 @@ use crate::cloud::output::{eprint_line, or_absent, print_human};
 use crate::cloud::shared::{parse_datetime, parse_ip_access_entries, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::FailureStage;
-use clap::Subcommand;
+use clap::{Subcommand, builder::PossibleValuesParser};
 #[cfg(test)]
 use clickhouse_cloud_api::models::IpAccessListEntry;
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
 };
 use tabled::{Table, Tabled, settings::Style};
+
+const API_KEY_STATES: &[&str] = &["enabled", "disabled"];
 
 #[derive(Subcommand)]
 pub enum KeyCommands {
@@ -35,8 +37,8 @@ pub enum KeyCommands {
         #[arg(long, value_parser = parse_datetime)]
         expires_at: Option<String>,
 
-        /// Key state (enabled or disabled)
-        #[arg(long)]
+        /// Key state
+        #[arg(long, value_parser = PossibleValuesParser::new(API_KEY_STATES))]
         state: Option<String>,
 
         /// Allowed IP/CIDR, optionally IP_OR_CIDR=DESCRIPTION (repeatable)
@@ -95,8 +97,8 @@ pub enum KeyCommands {
         #[arg(long, conflicts_with = "expires_at")]
         clear_expiry: bool,
 
-        /// Key state (enabled or disabled)
-        #[arg(long)]
+        /// Key state
+        #[arg(long, value_parser = PossibleValuesParser::new(API_KEY_STATES))]
         state: Option<String>,
 
         /// Allowed IP/CIDR, optionally IP_OR_CIDR=DESCRIPTION (repeatable)
@@ -841,6 +843,41 @@ mod tests {
         assert_eq!(hash_key_id_suffix.as_deref(), Some("abcd"));
         assert_eq!(hash_key_secret.as_deref(), Some("secret-hash"));
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn rejects_invalid_api_key_states_as_usage_errors() {
+        for args in [
+            vec![
+                "clickhousectl",
+                "cloud",
+                "key",
+                "create",
+                "--name",
+                "ci-key",
+                "--state",
+                "broken",
+            ],
+            vec![
+                "clickhousectl",
+                "cloud",
+                "key",
+                "update",
+                "key-1",
+                "--state",
+                "broken",
+            ],
+        ] {
+            let error = Cli::try_parse_from(args)
+                .err()
+                .expect("invalid state must be rejected by clap");
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+            assert_eq!(error.exit_code(), 2);
+            let message = error.to_string();
+            for state in API_KEY_STATES {
+                assert!(message.contains(state), "missing `{state}`: {message}");
+            }
+        }
     }
 
     #[test]

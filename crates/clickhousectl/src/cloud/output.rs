@@ -175,7 +175,8 @@ pub fn print_error(detail: &CloudErrorDetail) {
 /// - String values are unquoted.
 /// - Arrays of scalars render inline (`key: [a, b, c]`); arrays of objects
 ///   render as `-` bullet blocks.
-/// - Null values and empty strings/arrays/objects are omitted.
+/// - Present empty objects, strings, and arrays remain visible as `{}`, `""`,
+///   and `[]`; nulls are omitted.
 pub fn print_human<T: Serialize>(value: &T) -> Result<(), serde_json::Error> {
     let value = serde_json::to_value(value)?;
     let mut lines = Vec::new();
@@ -191,13 +192,7 @@ fn pad(indent: usize) -> String {
 }
 
 fn is_empty(value: &Value) -> bool {
-    match value {
-        Value::Null => true,
-        Value::String(s) => s.is_empty(),
-        Value::Array(a) => a.is_empty(),
-        Value::Object(o) => o.is_empty(),
-        _ => false,
-    }
+    matches!(value, Value::Null)
 }
 
 fn is_scalar(value: &Value) -> bool {
@@ -209,6 +204,7 @@ fn scalar_string(value: &Value) -> Option<String> {
         // The single place a string scalar becomes human text, so summarizing
         // PEM here covers object fields, nested objects and arrays of strings
         // alike.
+        Value::String(s) if s.is_empty() => Some("\"\"".to_string()),
         Value::String(s) => Some(pem_summary(s).unwrap_or_else(|| s.clone())),
         Value::Number(n) => Some(n.to_string()),
         Value::Bool(b) => Some(b.to_string()),
@@ -407,6 +403,8 @@ fn pem_summary(value: &str) -> Option<String> {
 /// anchor a caller can retrofit a `-` bullet onto.
 fn render(lines: &mut Vec<String>, indent: usize, value: &Value) {
     match value {
+        Value::Object(map) if map.is_empty() => lines.push(format!("{}{{}}", pad(indent))),
+        Value::Array(items) if items.is_empty() => lines.push(format!("{}[]", pad(indent))),
         Value::Object(map) => render_object(lines, indent, map),
         Value::Array(items) => render_array(lines, indent, items),
         scalar => {
@@ -423,6 +421,9 @@ fn render_object(lines: &mut Vec<String>, indent: usize, map: &Map<String, Value
             continue;
         }
         match value {
+            Value::Object(inner) if inner.is_empty() => {
+                lines.push(format!("{}{}: {{}}", pad(indent), key));
+            }
             Value::Object(inner) => {
                 let start = lines.len();
                 lines.push(format!("{}{}:", pad(indent), key));
@@ -507,7 +508,7 @@ mod tests {
     }
 
     #[test]
-    fn omits_null_and_empty_values() {
+    fn omits_null_but_renders_present_empty_values() {
         let v = json!({
             "name": "svc",
             "note": null,
@@ -517,8 +518,25 @@ mod tests {
             "count": 0,
             "flag": false
         });
-        // null/empty-string/empty-array/empty-object are dropped; 0 and false stay.
-        assert_eq!(render_to_string(&v), "name: svc\ncount: 0\nflag: false");
+        // Missing fields serialize as absent; null is omitted while explicit
+        // empty values, 0 and false remain distinguishable.
+        assert_eq!(
+            render_to_string(&v),
+            "name: svc\nempty: \"\"\ntags: []\nmeta: {}\ncount: 0\nflag: false"
+        );
+    }
+
+    #[test]
+    fn renders_explicit_empty_objects_at_every_depth() {
+        assert_eq!(render_to_string(&json!({})), "{}");
+        assert_eq!(render_to_string(&json!([])), "[]");
+        assert_eq!(render_to_string(&json!("")), "\"\"");
+        assert_eq!(
+            render_to_string(&json!({"pgConfig": {}, "pgBouncerConfig": {}})),
+            "pgConfig: {}\npgBouncerConfig: {}"
+        );
+        assert_eq!(render_to_string(&json!({"items": [{}]})), "items:\n  - {}");
+        assert_eq!(render_to_string(&json!({"absent": {"value": null}})), "");
     }
 
     #[test]

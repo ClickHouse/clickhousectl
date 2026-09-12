@@ -37,7 +37,12 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         LocalCommands::Which => which(json),
         LocalCommands::Init => {
             let result = init::init()?;
-            let mut paths = vec![".clickhouse/".to_string()];
+            let mut paths = Vec::new();
+            if result.clickhouse_dir_created {
+                paths.push(".clickhouse/".to_string());
+            } else if result.runtime_gitignore_created {
+                paths.push(".clickhouse/.gitignore".to_string());
+            }
             if result.clickhouse_scaffold_created {
                 paths.push("clickhouse/".to_string());
             }
@@ -566,6 +571,7 @@ async fn start_server(
     if name.is_some() && server::is_server_running_locked(&server_name, &metadata_lock)? {
         return Err(Error::ServerAlreadyRunning(server_name));
     }
+    init::ensure_runtime_gitignore()?;
 
     // Show running server count
     let running = server::advisory_running_server_count_locked(&metadata_lock);
@@ -1104,7 +1110,10 @@ fn remove_server(name_input: ServerNameInput, json: bool) -> Result<()> {
     };
 
     if server::is_server_running_locked(&name, &metadata_lock)? {
-        return Err(Error::ServerRunningCannotRemove(name));
+        return Err(Error::ServerRunningCannotRemove {
+            command: format!("clickhousectl local server stop {name}"),
+            name,
+        });
     }
     let data_dir = server::server_data_dir(&name);
     if !data_dir.exists() {

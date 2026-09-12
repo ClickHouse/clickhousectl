@@ -160,7 +160,7 @@ clickhousectl cloud postgres get <postgres-id>
 psql "$POSTGRES_CONNECTION_STRING" --command "SELECT version()"
 ```
 
-`postgres create` returns an initial password, which the CLI prints once; store it securely.
+`postgres create` returns an initial password, which the CLI prints once; store it securely. Managed Postgres also runs on GCP in [private preview](https://clickhouse.com/cloud/postgres#gcp-waitlist): pass `--provider gcp` with a GCP region and instance size (see [Postgres (beta)](#postgres-beta) below).
 
 Manage ClickStack data sources, roles, dashboards, alerts, and webhooks for an existing service with JSON configuration files:
 
@@ -407,6 +407,8 @@ clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an in
 clickhousectl local client -- --format Pretty        # Extra clickhouse-client args after --
 ```
 
+`local client` and `local postgres client` now require `--` before native arguments. Put wrapper options such as `--name`, `--host`, `--port`, and `--query` before it; unknown options there produce a usage error (exit 2). Existing commands that passed native options without the separator must add it, for example `local client --name dev -- --format CSV`. Everything after `--` is passed literally to the native client, including options that share wrapper names.
+
 `--name` selects the connection and local client binary from managed server metadata, so named mode does not need a global default. It cannot be combined with direct `--host` or `--port` selectors, and named mode does not accept `--version`.
 
 Without `--host` or `--port`, managed client lookup uses `.clickhouse/servers` from the canonical current directory only. It does not search parent directories. If lookup fails, return to the project root that owns the server, inspect that project's servers with `local server list`, or use direct mode.
@@ -414,6 +416,8 @@ Without `--host` or `--port`, managed client lookup uses `.clickhouse/servers` f
 In direct mode, `--host` and `--port` select the server connection while `--version` independently selects an already installed local client binary. Numeric selectors such as `26`, `26.8`, and `26.8.1.1760` select the newest installed match. This does not install a binary or change `~/.clickhouse/default`.
 
 Without `--version`, direct mode uses the valid default. If no default exists, zero installed versions is an error, one installed version is used without creating a default, and multiple installed versions require either `--version` or `local use`. A default that names a missing binary is an error; repair it with `local use`, or bypass it for one direct connection with `--version`.
+
+`local client` keeps native ClickHouse output in interactive sessions, `--query` calls and `--queries-file` calls (including multiple statements). Neither `--json` nor coding-agent detection selects a SQL output format or wraps the client output. Choose a format in SQL (`SELECT 1 FORMAT JSONEachRow`) or pass native options after `--`, for example `local client --json --query "SELECT 1" -- --format JSONEachRow` (or `--output-format JSONEachRow`). ClickHouse controls precedence between its native options and SQL `FORMAT` clauses. Errors from clickhousectl before handover still follow its JSON error contract; errors from the native client stay native.
 
 `--query` can be repeated, while each `--queries-file` accepts one or more paths and the flag itself can also be repeated. Values, including empty strings, are passed to the native client unchanged and in order. The two options cannot be combined because the native ClickHouse client rejects that combination, so clickhousectl reports a usage error before resolving a binary. Arguments after `--` are appended after all wrapper-generated arguments. Repeatable `--query` requires ClickHouse 23.9.1.1854 or newer, where [ClickHouse added the native behavior](https://github.com/ClickHouse/ClickHouse/blob/8f9a227de1f530cdbda52c145d41a6b0f1d29961/docs/changelogs/archive/v23.9.1.1854-stable.md); clickhousectl checks the selected client version before execution.
 
@@ -556,6 +560,7 @@ clickhousectl local postgres client --name dev --queries-file schema.sql  # Run 
 clickhousectl local postgres client --name dev --version 17               # Disambiguate two majors
 clickhousectl local postgres client --host remote-host       # Direct mode; port defaults to 5432
 clickhousectl local postgres client --port 55432             # Direct mode; connects locally
+clickhousectl local postgres client --name dev -- -X -v ON_ERROR_STOP=1 # Native psql options
 
 # Write POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE into .env.local
 clickhousectl local postgres dotenv --name dev --local
@@ -569,6 +574,14 @@ clickhousectl local postgres remove                       # Remove "default"
 clickhousectl local postgres remove dev
 ```
 
+Native `psql` arguments require `--`, with all wrapper selectors before it: `local postgres client --host remote-host -- -X`. Without the separator, unknown options are usage errors (exit 2); after it, even `--host` and `--port` are forwarded literally.
+
+`local postgres client` also retains native psql output for interactive sessions, `--query` and `--queries-file`, regardless of `--json` or coding-agent detection. Put psql output options after `--`, for example `local postgres client --query "SELECT 1" -- --csv`.
+
+When `local postgres start` is run without `--name`, the first instance is named `default`. If that instance is already running, each subsequent unnamed start gets a fresh generated name instead of resuming or colliding with existing Postgres state.
+
+`local postgres client --queries-file` accepts relative or absolute host paths, or `-` to read stdin. Plain pipes also work, for example `cat seed.sql | clickhousectl local postgres client`. Both forms work when host `psql` is unavailable: the Docker fallback streams SQL to container `psql`, preserves EOF and returns psql's exit status. When combined, `--query` executes before the file; append native arguments such as `-- -v ON_ERROR_STOP=1` to stop on SQL errors. In Docker mode, file contents are streamed as `psql -f -`; paths used inside SQL (such as `\i` or `\copy`) still refer to the container filesystem.
+
 Postgres `--name` and `--version` select a managed instance and cannot be combined with direct `--host` or `--port` selectors.
 
 The Postgres `dotenv` command includes the generated password. Do not commit its output; prefer `--local` when your application reads `.env.local`.
@@ -576,6 +589,8 @@ The Postgres `dotenv` command includes the generated password. Do not commit its
 `--env` accepts each valid `KEY=VALUE` key once. `POSTGRES_USER`, `POSTGRES_DB`, and `PGDATA` are generated by clickhousectl and cannot be supplied through `--env`; use `--user` or `--database` for the first two. For compatibility, `-e POSTGRES_PASSWORD=...` remains an alternative to `--password`, but combining the two or repeating `POSTGRES_PASSWORD` is an error. This guarantees that every generated variable appears exactly once in the container environment.
 
 `local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, the command exits and asks you to pass `--version`. A resume reuses the stored settings, so `--port`, `--user`, `--password`, `--database` and `-e` have no effect on a resumed instance and `start` prints a note to stderr when you pass them. They are still validated first, so an explicitly requested port that is already in use aborts the resume with exit `1` (`port_in_use`), and a malformed `-e`/`--password` exits `2`. Run `local postgres remove <name>` then `start` to change them. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory. The unified `local server stop-all` stops both ClickHouse and Postgres instances in the current project; the dedicated `local postgres stop-all` remains available when only Postgres should be stopped.
+
+`local postgres remove` refuses running instances with exit `1` (`server_running` in JSON) and supplies a `clickhousectl local postgres stop <name> --version <major>` recovery command. Stop the selected instance before retrying removal; a refused removal preserves its container and data.
 
 Fresh and resumed starts wait until `pg_isready` reports that PostgreSQL is accepting connections inside the container. The readiness timeout defaults to 60 seconds and can be set from 1 to 600 seconds with `--wait-timeout`. A timeout or early container exit fails the command and prints a bounded tail of the container logs instead of connection credentials. A failed fresh startup removes the newly created container, metadata, and PGDATA created by that attempt only when rollback completes. Pre-existing PGDATA is preserved, and recovery metadata is retained whenever cleanup is incomplete. A failed resume stops the existing container but preserves its metadata and data.
 
@@ -597,6 +612,8 @@ All project-local server data lives inside `.clickhouse/` in your project direct
     └── dev/
         └── data/           # ClickHouse data files for "dev" server
 ```
+
+`local init` and starting a local ClickHouse or Postgres server create `.clickhouse/.gitignore` whenever it is missing, including when an earlier local command already created `.clickhouse/`. Repeated initialization and startup preserve an existing ignore file and any custom entries in it. `local init --json` reports only paths created by that run: `[]` for a no-op and `[".clickhouse/.gitignore"]` when it repairs only the ignore file.
 
 Each named server has its own data directory, so servers are fully isolated from each other. Data persists between restarts — stop and start a server by name to pick up where you left off. Use `clickhousectl local server remove <name>` to permanently delete a server's data.
 
@@ -672,6 +689,8 @@ inactive and identifies the source that outranked them.
 
 Pass `--debug` to a Cloud resource command to print the resolved credential source (and the API URL) to stderr before the command runs. This works with and without `--json`.
 
+Cloud notices on stderr are best-effort: if their reader goes away, the operation still runs and reports its outcome through the exit status.
+
 ```bash
 clickhousectl cloud --debug service list
 # [debug] auth source: credentials file (.clickhouse/credentials.json)
@@ -692,12 +711,12 @@ Reading a service, Postgres service or organization — or deleting a service �
 
 ```bash
 clickhousectl cloud org list              # List organizations
-clickhousectl cloud org get <org-id>      # Get organization details
+clickhousectl cloud org get --org-id <org-id>      # Get organization details
 clickhousectl cloud org quota list --org-id <org-id>
 clickhousectl cloud org quota get services-per-organization --org-id <org-id>
 clickhousectl cloud org balance --org-id <org-id>  # Active trial and prepaid credits
-clickhousectl cloud org update <org-id> --name "Renamed Org"
-clickhousectl cloud org update <org-id> \
+clickhousectl cloud org update --org-id <org-id> --name "Renamed Org"
+clickhousectl cloud org update --org-id <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
   --enable-core-dumps false
 # Create BYOC infrastructure (repeat --availability-zone-suffix as needed)
@@ -706,7 +725,7 @@ clickhousectl cloud org byoc create --org-id <org-id> \
   --availability-zone-suffix a --availability-zone-suffix b \
   --vpc-cidr-range 10.0.0.0/16 --display-name production
 # Find the infrastructure ID and state in the organization's byocConfig
-clickhousectl cloud org get <org-id>
+clickhousectl cloud org get --org-id <org-id>
 clickhousectl cloud org byoc update <infrastructure-id> \
   --display-name renamed --org-id <org-id>
 clickhousectl cloud org byoc delete <infrastructure-id> --org-id <org-id>
@@ -716,17 +735,28 @@ clickhousectl cloud org usage \
   --from-date 2024-01-01 \
   --to-date 2024-01-31 \
   --filter tag:Environment=Production   # max 31-day window (to-date inclusive), costs in CHC
-# Org quota, balance, prometheus, and usage commands auto-detect the org when --org-id is omitted.
-# Org list takes no ID; org get/update take a positional <org-id>.
+# Org get, update, quota, balance, prometheus, and usage auto-detect the org without --org-id.
+# Org list takes no ID.
 # It is auto-detected only when your credentials reach exactly one organization.
 # Organization quota and balance commands are beta and read-only, so they support OAuth.
 ```
+
+`org get` and `org update` still accept the legacy positional organization ID.
+Prefer `--org-id` in new commands; supplying both forms is a usage error (exit 2).
+
+`cloud service list` and `cloud org usage` accept repeatable `--filter tag:KEY=VALUE`
+or `--filter tag:KEY` (tag existence). A missing `tag:` prefix or empty key is a
+usage error (exit 2), rejected before authentication or HTTP requests.
 
 BYOC create, update, and delete require API key authentication. Update requires
 `--display-name`, so it cannot send an empty/no-op patch. The API has no separate
 BYOC list command; `cloud org get` returns the organization's `byocConfig` entries.
 
-`cloud org prometheus discovery` returns the beta HTTP service-discovery target groups used by Prometheus `http_sd_configs`; `--json` preserves the complete target and label array. The command defaults discovered scrape targets to filtered metrics. The command without `discovery` still calls the deprecated organization metrics endpoint and emits raw Prometheus exposition text for compatibility.
+Each `cloud org update --remove-private-endpoint` value must include both
+`cloud-provider` and `region`; incomplete endpoint identities are rejected before
+any request is sent.
+
+`cloud org prometheus discovery` returns the HTTP service-discovery target groups used by Prometheus `http_sd_configs`; `--json` preserves the complete target and label array. The command defaults discovered scrape targets to filtered metrics. The command without `discovery` still calls the deprecated organization metrics endpoint and emits raw Prometheus exposition text for compatibility.
 
 ### Services
 
@@ -921,6 +951,9 @@ clickhousectl cloud service delete <service-id>
 clickhousectl cloud service delete <service-id> --force
 ```
 
+If deletion returns a conflict, the CLI includes the API response and suggests `--force` only
+conditionally: use it when the service is running; resolve other reported conflicts before retrying.
+
 IP allowlist flags accept `IP_OR_CIDR` or `IP_OR_CIDR=DESCRIPTION`. The `=`
 delimiter is safe with IPv6; quote entries whose descriptions contain spaces.
 
@@ -964,7 +997,11 @@ Upgrade-window days are numeric: `0` is Sunday, `1` Monday, through `6` Saturday
 Pass `--allowed-origins` on first creation or to change browser access (`'*'` explicitly allows every origin). Use `--replace-open-api-keys` with `--open-api-key` to deliberately replace the entire authorized-key list.
 The command reads the existing configuration before updating; a failed or incomplete read prevents changes to unknown fields. Avoid concurrent changes to the same query endpoint.
 
-`service settings schema` discovers the setting names and accepted types for a service. `settings set` changes only the names supplied: repeat `--setting NAME=JSON_VALUE`, or pass a JSON object such as `{"compatibility":"24.8","enable_analyzer":1}` with `--settings-file` (`-` reads stdin). String values in `--setting` must retain their JSON quotes. The CLI handles the API's JSON-encoded string transport, so a settings file contains the map itself, not a `{ "settings": ... }` request wrapper. Unknown setting names are sent to the API for validation. `settings unset` is idempotent and resets one setting to its platform default; it does not assign JSON `null`.
+The Rust API client's `ServiceClickhouseSettingsPatchRequest` uses a map of setting names to JSON values, and `ServiceClickhouseSettingsPatchResponse.settings` returns the applied map. The published OpenAPI now describes both fields as nonempty objects with string or integer values. Use `ServiceClickhouseSettingsPatchRequest<ServiceClickhouseSettingsMap>` and `ServiceClickhouseSettingValue` for typed requests; the default JSON-value map remains source-compatible with existing callers. Explicit `ServiceClickhouseSettingsPatchRequest<String>` callers remain supported: encoded objects are validated and serialized as objects before sending.
+
+`ServiceClickhouseSetting.value` is `Option<serde_json::Value>`: the published contract permits strings and integers. The response aliases `ServiceClickhouseSettingValueResponse` and `ServiceClickhouseSettingsMapResponse` retain arbitrary JSON to tolerate future response types. Values retain their JSON types; missing and null values remain absent. `cloud service settings get` and `list` preserve these types in `--json` output; human output displays string values without JSON quotes and numeric values as numbers.
+
+`service settings schema` discovers the setting names and accepted types for a service. `settings set` changes only the names supplied: repeat `--setting NAME=JSON_VALUE`, or pass a JSON object such as `{"compatibility":"24.8","enable_analyzer":1}` with `--settings-file` (`-` reads stdin). String values in `--setting` must retain their JSON quotes. The CLI sends settings as a JSON object and preserves each accepted value's JSON type. Numeric literals must be integers from -9223372036854775808 to 18446744073709551615; overflow, decimal and exponent literals are rejected before networking to prevent rounding. Use JSON strings for decimal or exponent values when the setting accepts them. A settings file contains the map itself, not a `{ "settings": ... }` request wrapper; malformed or empty input fails before any network request. Unknown setting names are sent to the API for validation. `settings unset` is idempotent and resets one setting to its platform default; it does not assign JSON `null`.
 
 `--backup-start-time` requires the backup period to be 24 or 48 hours. Nothing is defaulted when the period is omitted: the API validates the new start time against the period already stored on the service, so either pass `--backup-period-hours 24` or `--backup-period-hours 48` in the same call, or leave the stored period at one of those. When a start time is given without a period, the CLI reads the current configuration first and fails before sending the update if the stored period is something else.
 
@@ -1055,6 +1092,48 @@ Querying an **idled** service wakes it automatically in both auth modes — unde
 
 The Query API host is derived from the API base URL per environment (`api.[control-plane.]<domain>` → `queries.<domain>`, e.g. `https://queries.clickhouse.cloud` for production). Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override it.
 
+#### Named Query API endpoints (beta)
+
+`cloud query-api-endpoint` manages named SQL endpoints with their own SQL, default parameters, database roles, API key bindings, and allowed origins. The existing `cloud service query-endpoint` commands manage the service-level binding used by `cloud service query`.
+
+Create an endpoint from a complete JSON definition:
+
+```json
+{
+  "name": "Order count",
+  "sql": "SELECT count() FROM orders WHERE status = {status:String}",
+  "database": "default",
+  "apiKeyIds": ["11111111-1111-4111-8111-111111111111"],
+  "roles": ["sql_console_read_only"],
+  "parameters": {"status": "paid"},
+  "allowedOrigins": ["https://example.com"]
+}
+```
+
+Save this as `endpoint.json` and replace the example key ID with one from `cloud key list`. `roles` contains database role names, not organization role IDs. `name`, `sql`, `database`, `apiKeyIds`, and `roles` are required; `parameters` and `allowedOrigins` are optional.
+
+```bash
+clickhousectl cloud query-api-endpoint create <service-id> --config-file endpoint.json
+clickhousectl cloud query-api-endpoint list <service-id> --limit 10 --json
+clickhousectl cloud query-api-endpoint get <service-id> <endpoint-id>
+clickhousectl cloud query-api-endpoint update <service-id> <endpoint-id> --config-file endpoint.json
+clickhousectl cloud query-api-endpoint delete <service-id> <endpoint-id>
+```
+
+Create and update also accept `--config-file -` to read JSON from stdin. Unknown fields and incomplete definitions are rejected before organization discovery. Update replaces the complete definition: omitted `parameters` and `allowedOrigins` use empty defaults, so include any values you want to retain. A GET response includes response-only fields; construct an update definition from the writable fields shown above.
+
+List returns one page; pass `pagination.nextCursor` from JSON output to `--cursor` to continue. Human output also displays the next cursor when present. `--limit` accepts 1–100. `--org-id` works before or after the subcommand. List/get support OAuth; create/update/delete require API key authentication. User-owned endpoints can be listed and read, but cannot be updated or deleted through these commands.
+
+Call the returned `url` with the bound key's `keyId` and `keySecret` (the credentials returned at key creation, distinct from the management `id` used in `apiKeyIds`). Supply every SQL placeholder explicitly: live validation found that stored `parameters` were returned by management GET but were not applied when executing the endpoint.
+
+```bash
+curl --user "$QUERY_KEY_ID:$QUERY_KEY_SECRET" "$ENDPOINT_URL" \
+  --header 'Content-Type: application/json' \
+  --data '{"queryVariables":{"status":"paid"},"format":"JSONEachRow"}'
+```
+
+GET requests use `param_status=paid` and `format=JSONEachRow` query parameters instead. `allowedOrigins` controls browser CORS access; it does not prevent an authenticated non-browser client from executing the endpoint. An empty list grants no cross-origin browser access; `["*"]` allows any origin.
+
 ### Postgres (beta)
 
 Manage ClickHouse Cloud managed Postgres services. All write commands require API key auth.
@@ -1094,12 +1173,20 @@ clickhousectl cloud postgres slow-queries get <pg-id> <query-id> \
 clickhousectl cloud postgres prometheus service <pg-id>
 clickhousectl cloud postgres prometheus org
 
-# Create
+# Create on AWS
 clickhousectl cloud postgres create \
   --name my-pg \
   --provider aws \
   --region us-east-1 \
   --size c6gd.xlarge \
+  --pg-version 18
+
+# Create on GCP (private preview); region and size use GCP names
+clickhousectl cloud postgres create \
+  --name my-pg \
+  --provider gcp \
+  --region us-central1 \
+  --size c4-standard-4 \
   --pg-version 18
 
 # Create with HA + tags + advanced config
@@ -1123,7 +1210,9 @@ clickhousectl cloud postgres update <pg-id> \
 clickhousectl cloud postgres update <pg-id> --clear-tags
 
 # --clear-tags replaces the tag list with an empty list and conflicts with
-# --add-tag and --remove-tag; omitting all three leaves tags unchanged.
+# --add-tag and --remove-tag; omitting all three preserves the fetched tags.
+# Updates read the complete tag list first (except --clear-tags) and fail if it
+# cannot be read safely. Avoid concurrent tag changes: PATCH replaces that snapshot.
 
 # Delete (works from any state, including running; no stop needed first)
 clickhousectl cloud postgres delete <pg-id>
@@ -1132,12 +1221,13 @@ clickhousectl cloud postgres delete <pg-id>
 clickhousectl cloud postgres certs get <pg-id>                   # raw PEM to stdout
 clickhousectl cloud postgres certs get <pg-id> --output ca.pem   # file (mode 0600 on unix)
 
-# Runtime configuration (`config get` always prints JSON; --json changes nothing)
+# Runtime configuration (human-readable by default; JSON with --json or for coding agents)
 clickhousectl cloud postgres config get <pg-id>
+clickhousectl cloud postgres config get <pg-id> --json > complete-config.json
 clickhousectl cloud postgres config patch <pg-id> --set max_connections=500 --set random_page_cost=1.1
 clickhousectl cloud postgres config patch <pg-id> --file patch.json
 
-# Replace the entire configuration only with a complete object obtained from `config get`
+# Replace the entire configuration only with a complete object obtained from `config get --json`
 clickhousectl cloud postgres config replace <pg-id> --file complete-config.json
 
 # Password
@@ -1173,17 +1263,19 @@ For `postgres config patch --file`, put that map under `pgBouncerConfig` alongsi
 {"pgConfig":{},"pgBouncerConfig":{"default_pool_size":"16"}}
 ```
 
-PgBouncer parameter names are open-ended; values must be quoted strings, including numbers. Invalid value types fail locally before any API request. `config replace` replaces the complete Postgres and PgBouncer configuration: obtain the current document with `config get`, edit it, and retain both sections and every setting you want to keep.
+PgBouncer parameter names are open-ended; values must be quoted strings, including numbers. Invalid value types fail locally before any API request. `config replace` replaces the complete Postgres and PgBouncer configuration: obtain the current document with `config get --json`, edit it, and retain both sections and every setting you want to keep.
+
+Human detail output preserves explicit empty values: configuration sections show as `pgConfig: {}` and `pgBouncerConfig: {}`, empty lists as `[]`, and empty strings as `""`. JSON retains the original values.
 
 `pgConfig` uses the closed set of GUC names supported by the Cloud API. Unknown names and `null` values are rejected locally on `--set` and every PgConfig file path, and the enum-valued settings accept only `default_transaction_isolation` (`read committed`, `repeatable read`, `serializable`), `ssl_min_protocol_version` (`TLSv1` through `TLSv1.3`), and `wal_compression` (`off`, `on`, `lz4`, `zstd`). Files for `config patch` and `config replace` must contain both `pgConfig` and `pgBouncerConfig`; use an explicit `{}` when a section is intentionally empty rather than omitting it.
 
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
 
-`postgres metrics` requires an RFC 3339 start and end time, with the start no later than the end. Its JSON output preserves metric metadata, series labels, and data points; the default output renders the same nested response as a readable tree. `--bucket-size-seconds` must be positive and is omitted from the API request when not supplied.
+`postgres metrics` requires an RFC 3339 start and end time, with the start no later than the end. Whole seconds, fractional seconds, and UTC offsets are normalized to UTC with three fractional digits (for example, `2026-04-16T13:00:00+01:00` becomes `2026-04-16T12:00:00.000Z`). The endpoint supports millisecond precision; finer nonzero fractional digits are rejected before any request instead of rounding or truncating the interval. Its JSON output preserves metric metadata, series labels, and data points; the default output renders the same nested response as a readable tree. `--bucket-size-seconds` must be positive and is omitted from the API request when not supplied.
 
-`postgres logs` reads an inclusive RFC 3339 time window of at most 30 days. Results default to the API's newest-first order and page size; use `--sort-order`, `--limit` and `--offset` to control pagination.
+`postgres logs` reads an inclusive RFC 3339 time window of at most 30 days. Results default to the API's newest-first order and page size; use `--sort-order asc|desc`, `--limit` and `--offset` to control pagination.
 
-`postgres slow-queries list` requires an RFC 3339 start and end time and supports database, user, operation and application filters, sorting, limits and offsets. Copy `queryId`, `dbName`, `dbUser` and `dbOperation` from a list result into `slow-queries get`; add `--app` when the list result has one, and optionally select a recent execution with `--timestamp`. JSON and human output preserve every aggregate and execution field the API returns, including sparse beta responses.
+`postgres slow-queries list` requires an RFC 3339 start and end time and supports database, user, operation and application filters, sorting, limits and non-negative offsets. Copy `queryId`, `dbName`, `dbUser` and `dbOperation` from a list result into `slow-queries get`; add `--app` when the list result has one, and optionally select a recent execution with `--timestamp`. JSON and human output preserve every aggregate and execution field the API returns, including sparse beta responses. Duration values are microseconds and may be fractional; call, row and block counts remain integers.
 
 `postgres prometheus service` and `postgres prometheus org` return the beta API's raw Prometheus exposition text for scraping. In `--json` mode, including automatic coding-agent mode, the complete text is emitted as one JSON string; it is not parsed into metric series. These endpoints have no filtered-metrics query parameter. Use `postgres metrics` when you need time-bucketed metric objects over a chosen date range.
 
@@ -1248,7 +1340,11 @@ generate-backup-bucket-json | clickhousectl cloud backup bucket create <service-
 
 ### ClickPipes
 
+Every ClickPipe `--auth` flag lists its accepted canonical modes in `--help`.
+
 Manage ClickPipes for ingesting data into ClickHouse Cloud from external sources. See the [ClickPipes documentation](https://clickhouse.com/docs/integrations/clickpipes).
+
+`clickpipe list` displays a table with name, ID, source kind, destination and state. The destination shows `database.table`, or the available component when only one is returned; absent values display as `-`. With `--json` or coding-agent detection, the command retains the API-shaped JSON array.
 
 ```bash
 # List ClickPipes for a service
@@ -1287,7 +1383,7 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
   --object-storage-concurrency 8 \
   --object-storage-polling-interval-ms 30000 \
   --object-storage-max-file-count 500 \
-  --object-storage-max-insert-bytes 268435456 \
+  --object-storage-max-insert-bytes 536870912 \
   --object-storage-use-cluster-function true \
   --clickhouse-max-threads 16 --clickhouse-max-insert-threads 4 \
   --clickhouse-max-download-threads 8 \
@@ -1302,6 +1398,10 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
 # Manage reverse private endpoints for private source connectivity
 clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
 ```
+
+`clickpipe scale` accepts replicas 1–40, CPU 125–2000 millicores, and memory
+0.5–8 GB. Out-of-range and non-finite values fail with usage exit 2 before any
+API request.
 
 CDC scaling CPU accepts 1000-32000 millicores in increments of 1000, and
 memory accepts 4-128 GiB in increments of 4. Memory must be four times the CPU
@@ -1381,14 +1481,60 @@ The `kafka_read_committed` setting applies only to Kafka pipes.
 }
 ```
 
+For object-storage pipes, sending root `fieldMappings` also requires
+`destination.columns` in the same patch. Send the complete column and mapping
+arrays: every destination column must have a mapping. This changes the ClickPipe
+configuration, not the destination table schema.
+
+For example, replace mappings on an existing object-storage pipe whose destination
+has `station String` and `avg Float64` columns. Inspect your pipe with
+`clickhousectl cloud clickpipe get "$SERVICE_ID" "$PIPE_ID" --json` first and use
+its complete destination column list; only `columns` belongs in the destination
+patch, so leave out `database`, `table`, `managedTable`, and `tableDefinition`.
+
+```bash
+clickhousectl cloud clickpipe update "$SERVICE_ID" "$PIPE_ID" --config-file - <<'JSON'
+{
+  "destination": {
+    "columns": [
+      { "name": "station", "type": "String" },
+      { "name": "avg", "type": "Float64" }
+    ]
+  },
+  "fieldMappings": [
+    { "sourceField": "station", "destinationField": "station" },
+    { "sourceField": "avg", "destinationField": "avg" }
+  ]
+}
+JSON
+
+# Rename while preserving the existing mappings, source, destination and settings.
+printf '%s\n' '{"name":"stations-v2"}' |
+  clickhousectl cloud clickpipe update "$SERVICE_ID" "$PIPE_ID" --config-file -
+```
+
+Omitting `fieldMappings` preserves saved mappings, including when resending
+`destination.columns`. An explicit `"fieldMappings": []` is different: live
+object-storage verification rejected it without columns (columns required) and
+with columns (every column requires a mapping); the saved mappings remained
+unchanged. No clearing workflow that retains the configured columns was verified.
+These observations concern root object-storage field mappings, not CDC
+`tableMappingsToAdd` or `tableMappingsToRemove` arrays.
+
 A source patch selects at most one of the seven supported arms.
-`validateSamples` is optional. Kafka credentials must match the selected
+BigQuery sources cannot be updated by this API. `validateSamples` is optional.
+Unknown PATCH fields are rejected before a request is sent; diagnostics use the
+JSON field path and identify `--config-file -` as stdin.
+Kafka credentials must match the selected
 authentication: username and password for PLAIN/SCRAM, access key and secret
 for IAM user, or certificate and private key for mutual TLS. Event Hubs
 connection-string credentials use PLAIN. IAM role uses `iamRole` without a
 credentials object, and workload identity uses neither field. Authentication,
 credentials, CA certificate, and reverse private endpoints can each be omitted
 when changing an unrelated Kafka field.
+
+MySQL and Postgres source ports must be in the range 1–65535. Omitting a
+Postgres port from a partial source update preserves the configured port.
 
 ```json
 {
@@ -1598,6 +1744,10 @@ applies to Kafka. Other source types omit that Kafka-only setting even when thei
 request contains other settings. Database-source creates use their source-specific
 CDC setting and table-mapping flags instead. With no common setting flag, the
 request omits the whole `settings` block; explicit `0` and `false` remain present.
+
+`--object-storage-max-insert-bytes` accepts 524,288,000–10,737,418,240 bytes (500 MiB–10 GiB), inclusive, on create and `clickpipe settings update`.
+Use `clickpipe settings update` to change this value on an existing pipe.
+The current API validates this value in whole-pipe PATCH but does not apply it.
 
 ```bash
 clickhousectl cloud clickpipe create kafka <service-id> \
@@ -2207,6 +2357,10 @@ checked before the request is sent.
 
 Use `clickhousectl cloud clickpipe create <source> --help` for the full list of options per source type.
 
+PostgreSQL and MySQL source `--port` values must be between 1 and 65535
+(defaults: 5432 and 3306, respectively). Values outside this range are usage
+errors (exit code 2) before any request is made.
+
 #### MySQL ClickPipe authentication
 
 `clickpipe create mysql` authenticates with either a username and password
@@ -2456,7 +2610,7 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
-`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: the legacy `cloud org prometheus` command and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `local client` and `local postgres client` keep native output in interactive, query and query-file modes, regardless of explicit or automatic JSON mode; the legacy `cloud org prometheus` command and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
 
 Human-readable detail views (`cloud clickpipe get` and every other `get`-style command) never print PEM-framed material. Each well-formed PEM block in a value is replaced, where it stands, by a one-line summary of that block: `<PEM CERTIFICATE, SHA-256 fingerprint AB:CD:...>` for a certificate, certificate request or CRL, using the fingerprint `openssl x509 -fingerprint -sha256` prints for that block, and `<PEM EC PRIVATE KEY, 121 bytes>` for any other label, because a private key is reported by size and never fingerprinted. Text around the blocks, such as a bundle's header comments, is kept as it was. This affects human output only: `--json` still returns the value verbatim, and `cloud postgres certs get` deliberately still prints the raw PEM, since emitting the certificate is that command's purpose.
 
@@ -2503,7 +2657,7 @@ Local runtime failures also use structured output when `local --json` is set or 
 
 `error.code` and `error.message` are always present. General errors can include an optional top-level `error.command` safe recovery command, which names the step that actually recovers the failure (for example `clickhousectl local server stop dev` when `server remove dev` is refused because that server is running). Project-local `server stop` and `server remove` not-found errors instead include `project_scope`, `server`, and ordered `guidance`; their top-level `command` field is absent.
 
-`error.message` carries the same detail as the human `Error: ...` line whenever clickhousectl composes that text itself — a missing `--config` name lists the configs directory and the available files in both modes. The exception is text that interpolates output clickhousectl does not control: subprocess stderr and log tails (`startup_exit`, `startup_timeout`), Docker daemon strings (`docker_error`), download bodies (`download_failed`), and OS or serialization sources (`io_error`, `local_error`) are summarized instead, so JSON never carries raw I/O errors, credentials, SQL, or container logs. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
+`error.message` carries the same detail as the human `Error: ...` line whenever clickhousectl composes that text itself — a missing `--config` name lists the configs directory and the available files in both modes. The exception is text that interpolates output clickhousectl does not control: subprocess stderr and log tails (`startup_exit`, `startup_timeout`), Docker daemon strings (`docker_error`), download bodies (`download_failed`), and OS or serialization sources (`io_error`, `local_error`) are summarized instead, so JSON never carries raw I/O errors, credentials, SQL, or container logs. SQL input open/read failures use `sql_input_open_failed` / `sql_input_read_failed` with file or stdin guidance, while paths and OS error text remain redacted. Human local errors retain the concise `Error: ...` format. Clap usage errors, Cloud errors, and child-process output are not wrapped in this local schema.
 
 When `.clickhouse` is absent from the current directory, bare `server stop` includes the same `project_scope` and `guidance` in its successful no-op output, while bare `server remove` includes them in its `server_selection_required` error. This distinguishes a missing project root from an initialized project that has no matching ClickHouse server.
 
@@ -2557,6 +2711,9 @@ Usage errors and cancelled actions use distinct exit codes.
 | `2`  | Usage error (invalid command line)                       |
 | `3`  | Cancelled (user aborted)                                 |
 | `4`  | Auth required (no credentials, 401/403, OAuth-only writes) |
+
+Flags with a fixed value set show their choices in `--help`. An unsupported
+choice exits with code `2` before a Cloud request or Skills download begins.
 
 ## Skills
 
@@ -2654,7 +2811,7 @@ There is no install ID, no device ID, and no fingerprinting of any kind. The pay
 `clickhousectl local server stop analytics-prod` records `positionals: ["name"]` — that a server was named, not which one. Three exclusions keep that honest:
 
 - only arguments you actually passed count, so a value clap filled in from a default (or from the environment), and a name the CLI generated for you, are absent — which is what makes "you named it" and "we picked one" distinguishable
-- arguments forwarded to another program are never recorded: everything after `--` for `local server start`, and the trailing arguments of `local client` and `local postgres client`, belong to `clickhouse-server`, `clickhouse-client`, and `psql`
+- arguments forwarded to another program are never recorded: everything after `--` for `local server start`, `local client`, and `local postgres client` belongs to `clickhouse-server`, `clickhouse-client`, and `psql`
 - when a command fails to parse, the unmatched token is still never recorded — only the slot it would have filled
 
 A failed *runtime* invocation may also carry up to six failure-classification fields, so that "exit code 1" stops being the only thing we know about a broken command. Each one is a closed vocabulary defined in the source, and nothing else can ever appear in it:
@@ -2668,7 +2825,7 @@ A failed *runtime* invocation may also carry up to six failure-classification fi
 
 These are fixed strings compiled into the binary (plus one allowlisted status), set only where a failure is owned — never derived from an error text. No classification is attached to a successful run.
 
-Exactly one event is recorded per invocation. `local client` and `local postgres client` `exec()` into the native client, so clickhousectl's event is recorded just before the handover with the censored outcome `exec_attempt` and a fixed exit code `0` — it means "the handoff was reached", not "the native client succeeded". Failures clickhousectl can see itself (missing/non-executable binary, `psql` not on `PATH`) are refused first and report their real exit code.
+Except for the read-only `telemetry status` command, exactly one event is recorded per invocation. `local client` and `local postgres client` `exec()` into the native client, so clickhousectl's event is recorded just before the handover with the censored outcome `exec_attempt` and a fixed exit code `0` — it means "the handoff was reached", not "the native client succeeded". Failures clickhousectl can see itself (missing/non-executable binary, `psql` not on `PATH`) are refused first and report their real exit code.
 
 Nothing is sent before you have seen the notice unless you explicitly enable telemetry with `clickhousectl telemetry enable`. The first run normally prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run. Explicitly enabling telemetry starts it immediately and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
 
@@ -2685,7 +2842,7 @@ export DO_NOT_TRACK=1
 clickhousectl telemetry status
 ```
 
-On a machine that has never seen the notice, `telemetry status` reports "not yet configured" and then completes the first run itself: it writes `~/.clickhouse/telemetry.json` and prints the notice, so sending starts from the next run.
+`telemetry status` only reads the current preference. It does not create `~/.clickhouse/telemetry.json`, record an event or refresh the update-check cache. On a machine that has never seen the notice, it reports "not yet configured"; the next ordinary command performs the usual first-run notice flow.
 
 To see exactly what would be sent without sending it, set `CHCTL_TELEMETRY_DEBUG=1` — the payload is printed to stderr and nothing leaves the machine.
 
@@ -2740,6 +2897,12 @@ All three list commands expose `--cursor` and `--limit` (1–100) and retain pag
 
 The UDF API request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation. The OpenAPI analyzer checks inline union payload fields and request requiredness; its report format is version 5.
 
+## CLI help checks
+
+`cargo test -p clickhousectl --bin clickhousectl cli::tests::` checks clap's full command tree,
+command and argument descriptions, help structure, agent context limits, and shared flag consistency.
+Run it with `--no-default-features` as well to check the tree without telemetry.
+
 ## Cloud integration testing
 
 Maintainer operation, exact-SHA overrides, stacked-PR policy, and the required
@@ -2752,6 +2915,11 @@ Cloud API integration is tested against a real ClickHouse Cloud workspace via th
 - [`tests/integration_postgres_test.rs`](crates/clickhouse-cloud-api/tests/integration_postgres_test.rs) — Postgres service CRUD
 - [`tests/integration_org_test.rs`](crates/clickhouse-cloud-api/tests/integration_org_test.rs) — org-scoped endpoints (members, invitations, roles, activity, prometheus, private endpoint config)
 - [`tests/clickpipes/`](crates/clickhouse-cloud-api/tests/clickpipes/) — ClickPipes E2E; only Postgres CDC runs in CI
+
+Generated service and replica names stay within 50 characters, including rename suffixes.
+Long run labels are shortened with a hash of the full run ID; resource tags retain the full ID.
+The service lifecycle also verifies native string/integer settings through PATCH and GET using
+its disposable service, restoring the original overrides before continuing.
 
 Required environment variables:
 

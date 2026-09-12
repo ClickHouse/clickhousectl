@@ -8,6 +8,9 @@ pub struct AnalyzerConfig {
     /// suppressed entirely in response position, so a response-only entry can
     /// never be hit and would surface as a stale exemption.
     pub optionality_exemptions: BTreeSet<(String, String)>,
+    /// Response-only integer properties whose verified runtime values require f64.
+    /// Entries become stale when the spec, Rust type, or response reachability changes.
+    pub fractional_response_exemptions: BTreeSet<(String, String)>,
     pub extra_field_exemptions: BTreeSet<(String, String)>,
     pub deprecated_field_exemptions: BTreeSet<(String, String)>,
     pub extra_enum_value_exemptions: BTreeSet<(String, String)>,
@@ -36,6 +39,7 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
     AnalyzerConfig {
         non_openapi_client_methods: strings(&["run_query", "run_query_bearer"]),
         optionality_exemptions: pairs(OPTIONALITY_EXEMPTIONS),
+        fractional_response_exemptions: pairs(FRACTIONAL_RESPONSE_EXEMPTIONS),
         extra_field_exemptions: BTreeSet::new(),
         deprecated_field_exemptions: BTreeSet::new(),
         extra_enum_value_exemptions: BTreeSet::new(),
@@ -49,10 +53,28 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
     }
 }
 
+// Live slow-query list/detail responses contain fractional microsecond durations,
+// including avgDurationUs = 1190.8419405320817. The public spec still declares
+// integers (verified 2026-09-08); rounding would destroy valid response data.
+// https://github.com/ClickHouse/clickhousectl/issues/758
+// Only duration measurements are widened; counts and CPU/JIT counters stay i64.
+const FRACTIONAL_RESPONSE_EXEMPTIONS: &[(&str, &str)] = &[
+    ("PostgresSlowQueryPattern", "avgDurationUs"),
+    ("PostgresSlowQueryPattern", "maxDurationUs"),
+    ("PostgresSlowQueryPattern", "p50DurationUs"),
+    ("PostgresSlowQueryPattern", "p95DurationUs"),
+    ("PostgresSlowQueryPattern", "p99DurationUs"),
+    ("PostgresSlowQueryPattern", "totalDurationUs"),
+    ("PostgresQueryExecution", "durationUs"),
+];
+
 const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // The spec allows protobufSchema only for Protobuf without schemaRegistry;
     // requiring it would reject JSON/Avro and schema-registry Kafka requests.
     ("ClickPipePostKafkaSource", "protobufSchema"),
+    // Kinesis likewise requires protobufSchema only for Protobuf and forbids it
+    // for other formats; the legacy requiredness heuristic misses that condition.
+    ("ClickPipePostKinesisSource", "protobufSchema"),
     // The legacy service-create schema marks almost every property required,
     // but the API requires only name/provider/region and rejects many defaults.
     ("ServicePostRequest", "autoscalingMode"),

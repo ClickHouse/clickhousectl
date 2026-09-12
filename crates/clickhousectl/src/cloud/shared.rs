@@ -78,6 +78,21 @@ pub(super) fn parse_tags(values: &[String]) -> CloudResult<Option<Vec<ResourceTa
     }
 }
 
+/// Validate the API's equality and existence tag filters without changing the
+/// key or value sent on the wire. Tag values may be empty or contain `=`.
+pub(super) fn parse_tag_filter(value: &str) -> Result<String, String> {
+    let key = value
+        .strip_prefix("tag:")
+        .map(|tag| tag.split_once('=').map_or(tag, |(key, _)| key));
+    if key.is_none_or(|key| key.trim().is_empty()) {
+        return Err(
+            "expected tag:KEY=VALUE or tag:KEY with a nonempty key (e.g. tag:env=production)"
+                .to_string(),
+        );
+    }
+    Ok(value.to_string())
+}
+
 /// Parse an IP allowlist argument in `SOURCE[=DESCRIPTION]` form.
 ///
 /// `=` keeps the description delimiter unambiguous for IPv6 sources. The

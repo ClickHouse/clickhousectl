@@ -3,6 +3,7 @@ use crate::cloud::client::{
 };
 use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
+use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultTransactionIsolation,
@@ -18,6 +19,8 @@ use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tabled::{Table, Tabled, settings::Style};
+
+const POSTGRES_LOG_SORT_ORDERS: &[&str] = &["asc", "desc"];
 
 #[derive(Subcommand)]
 pub enum PostgresCommands {
@@ -60,10 +63,15 @@ pub enum PostgresCommands {
         #[arg(long)]
         severity: Option<String>,
         /// Sort order
-        #[arg(long, value_parser = parse_postgres_logs_sort_order)]
+        #[arg(
+            long,
+            value_parser = clap::builder::PossibleValuesParser::new(
+                POSTGRES_LOG_SORT_ORDERS
+            ).try_map(parse_known_postgres_logs_sort_order)
+        )]
         sort_order: Option<PostgresLogsGetListSortorder>,
         /// Maximum number of log entries
-        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=2000))]
+        #[arg(long, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(1..=2000))]
         limit: Option<i64>,
         /// Number of log entries to skip
         #[arg(
@@ -93,8 +101,12 @@ CONTEXT FOR AGENTS:
         /// Instance size (e.g. c6gd.xlarge); validated by the server
         #[arg(long)]
         size: String,
-        /// Cloud provider (aws or gcp)
-        #[arg(long, default_value = "aws")]
+        /// Cloud provider
+        #[arg(
+            long,
+            default_value = "aws",
+            value_parser = clap::builder::PossibleValuesParser::new(PgProvider::VALUES)
+        )]
         provider: String,
         /// Postgres major version
         #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgVersion::VALUES))]
@@ -169,8 +181,7 @@ CONTEXT FOR AGENTS:
         subcommand,
         after_help = "\
 CONTEXT FOR AGENTS:
-  `get` always prints JSON; --json changes nothing.
-  `replace` sends the whole object — start from `config get` output, not a fragment.
+  `replace` sends the whole object — start from `config get --json` output, not a fragment.
   `patch --set` only touches pgConfig; use --file to patch pgBouncerConfig."
     )]
     Config(ConfigCommands),
@@ -201,11 +212,11 @@ CONTEXT FOR AGENTS:
     Metrics {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// Start time (ISO 8601 / RFC 3339)
-        #[arg(long, value_parser = parse_datetime)]
+        /// Start time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_metrics_datetime)]
         from_date: String,
-        /// End time (ISO 8601 / RFC 3339)
-        #[arg(long, value_parser = parse_datetime)]
+        /// End time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_metrics_datetime)]
         to_date: String,
         /// Time bucket size in seconds
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
@@ -343,7 +354,7 @@ pub enum ConfigCommands {
         postgres_id: String,
         /// JSON file with a complete PostgresInstanceConfig object
         ///
-        /// Not a fragment: use a document obtained from `config get`.
+        /// Not a fragment: use a document obtained from `config get --json`.
         #[arg(long)]
         file: PathBuf,
         /// Organization ID (auto-detected only if you have one org)
@@ -459,10 +470,14 @@ pub enum SlowQueryCommands {
         )]
         sort_order: Option<String>,
         /// Maximum number of patterns to return
-        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=500))]
+        #[arg(long, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(1..=500))]
         limit: Option<i64>,
         /// Number of patterns to skip
-        #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(i64).range(0..)
+        )]
         offset: Option<i64>,
         /// Organization ID (auto-detected only if you have one org)
         #[arg(long)]
@@ -1219,7 +1234,7 @@ fn merge_tags(
     merged
 }
 
-/// Merges `--add-tag`/`--remove-tag` against the tag list a GET returned.
+/// Preserves or merges the tag list a GET returned before every update.
 ///
 /// An omitted `tags` in the response is indistinguishable from a field the API
 /// dropped, so a read-modify-write must not proceed on it: `tags` is replaced
@@ -1233,9 +1248,9 @@ fn merge_response_tags(
 ) -> CloudResult<Vec<ResourceTagsV1>> {
     let current = current.ok_or_else(|| {
         CloudError::new(
-            "the API response omitted the tags field, so --add-tag/--remove-tag cannot be merged \
-             safely: an update replaces the tag set wholesale, and merging against an assumed empty \
-             set would delete any tags the service already has",
+            "the API response omitted the tags field or returned null, so the update cannot preserve \
+             tags safely: an update replaces the tag set wholesale, and assuming an empty set \
+             would delete any tags the service already has",
         )
     })?;
     let existing = current
@@ -1351,6 +1366,12 @@ fn parse_postgres_logs_sort_order(value: &str) -> Result<PostgresLogsGetListSort
     let parsed = serde_json::from_value(serde_json::Value::String(value.to_string()))
         .map_err(|error| format!("invalid sort order '{value}': {error}"))?;
     validate_postgres_logs_sort_order(parsed)
+}
+
+fn parse_known_postgres_logs_sort_order(
+    value: String,
+) -> Result<PostgresLogsGetListSortorder, String> {
+    parse_postgres_logs_sort_order(&value)
 }
 
 fn validate_postgres_logs_sort_order(
@@ -1623,10 +1644,11 @@ pub async fn postgres_update(
         .transpose()?;
 
     // Clearing is already a complete replacement, so it never needs a GET.
-    // Add/remove still merges against a complete current tag snapshot.
+    // The API clears tags when PATCH omits them, even for a rename or resize.
+    // Every other update must preserve a complete current tag snapshot.
     let tags = if opts.clear_tags {
         Some(Vec::new())
-    } else if !opts.add_tag.is_empty() || !opts.remove_tag.is_empty() {
+    } else {
         let current = client
             .api()
             .postgres_service_get(&org_id, postgres_id)
@@ -1635,8 +1657,6 @@ pub async fn postgres_update(
         let current = unwrap_api(current)?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
         Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
-    } else {
-        None
     };
 
     let req = build_postgres_update_request(opts.name, size, ha_type, tags);
@@ -1739,7 +1759,7 @@ pub async fn postgres_config_get(
     client: &CloudClient,
     postgres_id: &str,
     org_id: Option<&str>,
-    _json: bool,
+    json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client, org_id).await?;
     let resp = client
@@ -1748,8 +1768,11 @@ pub async fn postgres_config_get(
         .await
         .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let cfg = unwrap_api(resp)?;
-    // Config is a flat 20+ field object — always emit as JSON (pretty).
-    println!("{}", serde_json::to_string_pretty(&cfg)?);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&cfg)?);
+    } else {
+        print_human(&cfg)?;
+    }
     Ok(())
 }
 
@@ -1986,6 +2009,27 @@ pub async fn postgres_state_change(
         render_postgres_service(&svc);
     }
     Ok(())
+}
+
+// The metrics endpoint accepts UTC timestamps with exactly three fractional digits.
+// Check the original fraction: chrono discards digits beyond nanosecond precision.
+fn parse_metrics_datetime(value: &str) -> Result<String, String> {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(value)
+        .map_err(|_| format!("invalid datetime '{value}': expected ISO 8601 / RFC 3339"))?;
+    if value.split_once('.').is_some_and(|(_, fraction)| {
+        fraction
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .skip(3)
+            .any(|digit| digit != b'0')
+    }) {
+        return Err(format!(
+            "invalid datetime '{value}': Postgres metrics supports at most millisecond precision"
+        ));
+    }
+    Ok(timestamp
+        .with_timezone(&chrono::Utc)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
 }
 
 fn validate_datetime_range(from_date: &str, to_date: &str) -> CloudResult<()> {
@@ -2839,6 +2883,50 @@ mod tests {
     }
 
     #[test]
+    fn postgres_logs_sort_order_exposes_every_supported_value() {
+        use clap::CommandFactory;
+
+        let command = PostgresCli::command();
+        let sort_order = command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == "logs")
+            .and_then(|logs| {
+                logs.get_arguments()
+                    .find(|arg| arg.get_id() == "sort_order")
+            })
+            .expect("logs --sort-order argument");
+        let possible_values: Vec<_> = sort_order
+            .get_possible_values()
+            .into_iter()
+            .map(|value| value.get_name().to_string())
+            .collect();
+        assert_eq!(possible_values, POSTGRES_LOG_SORT_ORDERS);
+
+        for &value in POSTGRES_LOG_SORT_ORDERS {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "logs",
+                "pg-1",
+                "--from-date",
+                "2026-08-01T00:00:00Z",
+                "--to-date",
+                "2026-08-02T00:00:00Z",
+                "--sort-order",
+                value,
+            ]);
+            let PostgresCommands::Logs { sort_order, .. } = cmd else {
+                panic!("expected logs");
+            };
+            assert_eq!(
+                sort_order.as_ref().map(ToString::to_string).as_deref(),
+                Some(value)
+            );
+        }
+    }
+
+    #[test]
     fn rejects_invalid_postgres_logs_flag_values() {
         let invalid_datetime = PostgresCli::try_parse_from([
             "clickhousectl",
@@ -2860,8 +2948,9 @@ mod tests {
             (
                 "--sort-order",
                 "newest",
-                clap::error::ErrorKind::ValueValidation,
+                clap::error::ErrorKind::InvalidValue,
             ),
+            ("--limit", "-1", clap::error::ErrorKind::ValueValidation),
             ("--limit", "0", clap::error::ErrorKind::ValueValidation),
             ("--limit", "2001", clap::error::ErrorKind::ValueValidation),
             ("--offset", "-1", clap::error::ErrorKind::ValueValidation),
@@ -2996,6 +3085,59 @@ mod tests {
         assert_eq!(provider, "aws");
         assert!(pg_version.is_none());
         assert!(ha_type.is_none());
+    }
+
+    #[test]
+    fn postgres_create_provider_uses_the_api_value_set() {
+        for provider in PgProvider::VALUES {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "create",
+                "--name",
+                "pg1",
+                "--region",
+                "us-east-1",
+                "--size",
+                "m7i.2xlarge",
+                "--provider",
+                provider,
+            ]);
+            let PostgresCommands::Create {
+                provider: parsed, ..
+            } = cmd
+            else {
+                panic!("expected create");
+            };
+            assert_eq!(parsed, *provider);
+        }
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "m7i.2xlarge",
+            "--provider",
+            "azure",
+        ])
+        .err()
+        .expect("invalid provider must be rejected by clap");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        assert_eq!(error.exit_code(), 2);
+        let message = error.to_string();
+        for provider in PgProvider::VALUES {
+            assert!(
+                message.contains(provider),
+                "missing `{provider}`: {message}"
+            );
+        }
     }
 
     #[test]
@@ -3519,8 +3661,8 @@ mod tests {
             panic!("expected metrics");
         };
         assert_eq!(postgres_id, "pg-1");
-        assert_eq!(from_date, "2026-04-16T12:00:00+01:00");
-        assert_eq!(to_date, "2026-04-16T13:00:00+01:00");
+        assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
+        assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
         assert_eq!(bucket_size_seconds, Some(60));
         assert_eq!(org_id.as_deref(), Some("org-1"));
     }
@@ -3569,6 +3711,9 @@ mod tests {
         for (flag, value) in [
             ("--from-date", "yesterday"),
             ("--to-date", "tomorrow"),
+            ("--from-date", "2026-04-16T12:00:00.123456Z"),
+            ("--to-date", "2026-04-16T13:00:00.123456789Z"),
+            ("--from-date", "2026-04-16T12:00:00.0000000001Z"),
             ("--bucket-size-seconds", "0"),
         ] {
             let mut args = vec![
@@ -3592,6 +3737,31 @@ mod tests {
                 .err()
                 .expect("expected parse error");
             assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn postgres_metrics_normalizes_without_changing_the_instant() {
+        for (input, expected) in [
+            ("2026-04-16T12:00:00Z", "2026-04-16T12:00:00.000Z"),
+            ("2026-04-16T12:00:00.000Z", "2026-04-16T12:00:00.000Z"),
+            ("2026-04-16T12:00:00+00:00", "2026-04-16T12:00:00.000Z"),
+            ("2026-04-16T12:00:00.1Z", "2026-04-16T12:00:00.100Z"),
+            ("2026-04-16T12:00:00.12Z", "2026-04-16T12:00:00.120Z"),
+            ("2026-04-16T00:00:00.123+05:30", "2026-04-15T18:30:00.123Z"),
+            ("2026-04-16T23:00:00.999-02:30", "2026-04-17T01:30:00.999Z"),
+            (
+                "2026-04-16T12:00:00.1230000000Z",
+                "2026-04-16T12:00:00.123Z",
+            ),
+        ] {
+            let normalized = parse_metrics_datetime(input).unwrap();
+            assert_eq!(normalized, expected, "{input}");
+            assert_eq!(
+                chrono::DateTime::parse_from_rfc3339(input).unwrap(),
+                chrono::DateTime::parse_from_rfc3339(&normalized).unwrap(),
+                "normalization changed {input}"
+            );
         }
     }
 
@@ -3673,6 +3843,30 @@ mod tests {
     }
 
     #[test]
+    fn slow_query_list_accepts_zero_and_positive_offsets() {
+        for (value, expected) in [("0", 0), ("37", 37)] {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "slow-queries",
+                "list",
+                "pg-1",
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+                "--offset",
+                value,
+            ]);
+            let PostgresCommands::SlowQueries(SlowQueryCommands::List { offset, .. }) = cmd else {
+                panic!("expected slow-query list");
+            };
+            assert_eq!(offset, Some(expected));
+        }
+    }
+
+    #[test]
     fn slow_query_list_requires_dates_and_validates_schema_bounds() {
         let missing_date = Cli::try_parse_from([
             "clickhousectl",
@@ -3712,9 +3906,10 @@ mod tests {
                 "sideways",
                 clap::error::ErrorKind::InvalidValue,
             ),
+            ("--limit", "-1", clap::error::ErrorKind::ValueValidation),
             ("--limit", "0", clap::error::ErrorKind::ValueValidation),
             ("--limit", "501", clap::error::ErrorKind::ValueValidation),
-            ("--offset", "-1", clap::error::ErrorKind::UnknownArgument),
+            ("--offset", "-1", clap::error::ErrorKind::ValueValidation),
         ] {
             let mut args = vec![
                 "clickhousectl",
@@ -3738,6 +3933,48 @@ mod tests {
                 .err()
                 .expect("expected parse error");
             assert_eq!(error.kind(), expected_kind);
+        }
+
+        let negative_offset_equals = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+            "--to-date",
+            "2026-04-16T13:00:00Z",
+            "--offset=-1",
+        ])
+        .err()
+        .expect("negative offset should fail during clap parsing");
+        assert_eq!(
+            negative_offset_equals.kind(),
+            clap::error::ErrorKind::ValueValidation
+        );
+        assert_eq!(negative_offset_equals.exit_code(), 2);
+    }
+
+    #[test]
+    fn negative_limits_use_range_validation_with_both_flag_forms() {
+        for command in [vec!["logs"], vec!["slow-queries", "list"]] {
+            for limit_args in [vec!["--limit", "-1"], vec!["--limit=-1"]] {
+                let mut args = vec!["clickhousectl", "cloud", "postgres"];
+                args.extend(command.iter().copied());
+                args.extend([
+                    "pg-1",
+                    "--from-date",
+                    "2026-04-16T12:00:00Z",
+                    "--to-date",
+                    "2026-04-16T13:00:00Z",
+                ]);
+                args.extend(limit_args);
+                let error = Cli::try_parse_from(args).err().expect("negative limit");
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                assert_eq!(error.exit_code(), 2);
+            }
         }
     }
 

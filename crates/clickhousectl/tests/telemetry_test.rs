@@ -1243,6 +1243,45 @@ async fn disable_persists_and_silences() {
 }
 
 #[tokio::test]
+async fn status_is_read_only_when_telemetry_is_unconfigured() {
+    let sandbox = Sandbox::new().await;
+
+    let output = sandbox.run(&["telemetry", "status"]);
+    assert!(output.status.success());
+    assert!(stdout_of(&output).contains("not yet configured"));
+    assert!(!stderr_of(&output).contains("anonymous usage data"));
+    assert!(!sandbox.state_path().exists());
+    assert!(
+        !sandbox
+            .home
+            .path()
+            .join(".clickhouse/last_update_check")
+            .exists()
+    );
+    sandbox.assert_no_requests().await;
+}
+
+#[tokio::test]
+async fn status_is_read_only_when_telemetry_is_enabled() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let original_state = std::fs::read(sandbox.state_path()).unwrap();
+
+    let output = sandbox.run(&["telemetry", "status"]);
+    assert!(output.status.success());
+    assert!(stdout_of(&output).contains("Telemetry is enabled"));
+    assert_eq!(std::fs::read(sandbox.state_path()).unwrap(), original_state);
+    assert!(
+        !sandbox
+            .home
+            .path()
+            .join(".clickhouse/last_update_check")
+            .exists()
+    );
+    sandbox.assert_no_requests().await;
+}
+
+#[tokio::test]
 async fn enable_sends_an_event_for_itself() {
     let sandbox = Sandbox::new().await;
     sandbox.write_state(true);

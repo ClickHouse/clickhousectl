@@ -12,6 +12,7 @@ use crate::local::server::{self, Engine, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashSet;
 use std::future::Future;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
@@ -287,6 +288,7 @@ async fn start(
             drop(metadata_lock);
             continue;
         }
+        crate::init::ensure_runtime_gitignore()?;
 
         // Resume path: an instance for this exact (name, major) already exists.
         if let Some(prior) = prior {
@@ -525,18 +527,23 @@ async fn rollback_failed_fresh_start(
 /// Default user-facing name when `--name` is omitted: `"default"` if no
 /// postgres "default" is running, otherwise a random adjective-noun.
 fn default_pg_name_locked(metadata_lock: &server::MetadataLock) -> Result<String> {
+    default_pg_name_locked_with(metadata_lock, docker::is_container_running_blocking)
+}
+
+fn default_pg_name_locked_with(
+    metadata_lock: &server::MetadataLock,
+    is_container_running: impl Fn(&str) -> bool,
+) -> Result<String> {
     let any_default_running = server::find_pg_instances_locked("default", metadata_lock)?
         .iter()
         .any(|i| {
             i.container_id
                 .as_deref()
-                .map(docker::is_container_running_blocking)
+                .map(&is_container_running)
                 .unwrap_or(false)
         });
     if any_default_running {
-        // Fall back to the existing random-name generator, which checks
-        // metadata file uniqueness across engines.
-        server::resolve_name_locked(None, metadata_lock)
+        server::generate_random_name_locked(metadata_lock)
     } else {
         Ok("default".into())
     }
@@ -1006,7 +1013,15 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     let target = resolve_pg_target_locked(name, version, &metadata_lock)?;
     let key = target.name.clone();
     if server::is_server_running_locked(&key, &metadata_lock)? {
-        return Err(Error::ServerAlreadyRunning(name.to_string()));
+        let tag = target
+            .version
+            .strip_prefix("postgres:")
+            .unwrap_or(&target.version);
+        let major = pg_major_from_tag(tag);
+        return Err(Error::ServerRunningCannotRemove {
+            name: name.to_string(),
+            command: format!("clickhousectl local postgres stop {name} --version {major}"),
+        });
     }
 
     if let Some(cid) = target.container_id.as_deref() {
@@ -1096,22 +1111,42 @@ async fn client(
         );
     }
 
-    let one_shot = query.is_some() || queries_file.is_some();
+    let explicit_input = query.is_some() || queries_file.is_some();
+    let interactive =
+        !explicit_input && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     let mut psql_args: Vec<String> = vec!["-U".into(), user, "-d".into(), database];
     if let Some(q) = query {
         psql_args.push("-c".into());
         psql_args.push(q);
     }
-    if let Some(f) = queries_file {
-        psql_args.push("-f".into());
-        psql_args.push(f);
-    }
+    // Host paths do not exist inside the container. Stream the selected file
+    // through psql's explicit stdin file argument, after any -c command.
+    let input: Option<Box<dyn std::io::Read + Send>> = match queries_file {
+        Some(file) => {
+            let reader: Box<dyn std::io::Read + Send> = if file == "-" {
+                Box::new(std::io::stdin())
+            } else {
+                Box::new(
+                    std::fs::File::open(&file).map_err(|error| Error::SqlInputOpen {
+                        path: file.into(),
+                        source: error,
+                    })?,
+                )
+            };
+            psql_args.extend(["-f".into(), "-".into()]);
+            Some(reader)
+        }
+        // Match host psql: without an explicit wrapper input, a non-terminal
+        // stdin is still SQL input. Docker must attach it and receive EOF.
+        None if !explicit_input && !interactive => Some(Box::new(std::io::stdin())),
+        None => None,
+    };
     psql_args.extend(extra_args);
 
-    if one_shot {
+    if !interactive {
         // Non-interactive: no TTY, no raw mode, output goes to stdout/stderr
         // so the caller can pipe / capture / redirect.
-        docker::exec_psql_one_shot(&docker, container_id, &psql_args).await
+        docker::exec_psql_one_shot(&docker, container_id, &psql_args, input).await
     } else {
         docker::exec_psql_in_container(&docker, container_id, &psql_args).await
     }
@@ -1290,6 +1325,43 @@ mod tests {
                 .pop_front()
                 .expect("fake pg_isready result exhausted")
         }
+    }
+
+    #[test]
+    fn unnamed_start_after_running_default_selects_fresh_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = server::MetadataLock::acquire_at(directory.path()).unwrap();
+        assert_eq!(
+            default_pg_name_locked_with(&lock, |_| true).unwrap(),
+            "default"
+        );
+
+        let info = ServerInfo {
+            name: server::pg_instance_key("default", "18"),
+            pid: 0,
+            version: "postgres:18".into(),
+            http_port: 0,
+            tcp_port: 5432,
+            started_at: "1700000000".into(),
+            cwd: "/tmp/project".into(),
+            engine: Engine::Postgres,
+            container_id: Some("running-default".into()),
+        };
+        server::save_server_info_locked(&info, &lock).unwrap();
+
+        assert_eq!(
+            default_pg_name_locked_with(&lock, |_| false).unwrap(),
+            "default"
+        );
+
+        let selected = default_pg_name_locked_with(&lock, |id| id == "running-default").unwrap();
+
+        assert_ne!(selected, "default");
+        assert!(
+            server::find_pg_instances_locked(&selected, &lock)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

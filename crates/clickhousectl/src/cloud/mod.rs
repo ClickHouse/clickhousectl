@@ -12,6 +12,7 @@ pub mod credentials;
 pub mod organizations;
 pub mod output;
 pub mod postgres;
+pub mod query_api_endpoints;
 pub mod service_query;
 pub mod services;
 mod shared;
@@ -28,6 +29,7 @@ pub use client::{
 
 use crate::error::{Error, Result};
 use cli::{CloudArgs, CloudCommands};
+use output::eprint_line;
 
 /// Explain when a configured environment credential cannot participate in
 /// authentication because a higher-precedence source won. Keep this notice on
@@ -75,12 +77,15 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
 
     if let Some(notice) = ignored_env_credentials_notice(client.auth_source(), env_cred_presence())
     {
-        eprintln!("{notice}");
+        eprint_line(notice);
     }
 
     if args.debug {
-        eprintln!("[debug] auth source: {}", client.auth_source().describe());
-        eprintln!("[debug] api url: {}", client.base_url());
+        eprint_line(format!(
+            "[debug] auth source: {}",
+            client.auth_source().describe()
+        ));
+        eprint_line(format!("[debug] api url: {}", client.base_url()));
     }
 
     // OAuth (Bearer) tokens are read-only. Block write commands early
@@ -128,6 +133,7 @@ async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> c
         }
         CloudCommands::Key { command } => api_keys::run(client, command, json).await,
         CloudCommands::Udf(args) => udfs::run(client, args, json).await,
+        CloudCommands::QueryApiEndpoint(args) => query_api_endpoints::run(client, args, json).await,
         CloudCommands::Activity { command } => activity::run(client, command, json).await,
         CloudCommands::Backup { command } => backups::run(client, command, json).await,
         CloudCommands::Postgres { command } => postgres::run(client, command, json).await,

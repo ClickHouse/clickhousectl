@@ -1,8 +1,10 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::config::{deserialize_strict_config, read_config_value, read_typed_config};
-use crate::cloud::output::{or_absent, print_human};
+use crate::cloud::config::{
+    config_source_label, deserialize_strict_config, read_config_value, read_typed_config,
+};
+use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
-use clap::builder::PossibleValuesParser;
+use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
     ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipeBigQueryPipeTableMappingTableengine,
@@ -86,7 +88,7 @@ fn parse_cdc_memory_gb(value: &str) -> Result<f64, String> {
     Ok(value)
 }
 
-fn parse_create_memory_gb(value: &str) -> Result<f64, String> {
+fn parse_streaming_memory_gb(value: &str) -> Result<f64, String> {
     let value = value
         .parse::<f64>()
         .map_err(|_| "must be a number from 0.5 to 8".to_string())?;
@@ -209,6 +211,32 @@ fn parse_supported_kafka_auth(value: &str) -> Result<String, String> {
         .map_err(|error| error.message)
 }
 
+/// Expose canonical choices while retaining the existing authentication parser.
+#[derive(Clone)]
+struct AuthenticationValueParser {
+    parse: fn(&str) -> Result<String, String>,
+    values: &'static [&'static str],
+}
+
+impl TypedValueParser for AuthenticationValueParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        command: &clap::Command,
+        argument: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        (self.parse).parse_ref(command, argument, value)
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        Some(Box::new(
+            self.values.iter().copied().map(PossibleValue::new),
+        ))
+    }
+}
+
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub enum ClickPipeCommands {
@@ -241,6 +269,7 @@ CONTEXT FOR AGENTS:
   The file is a typed PATCH body; omitted top-level fields remain unchanged.
   Source updates support kafka, kinesis, objectStorage, pubsub, postgres, mysql,
   and mongodb. BigQuery sources cannot be updated by this API.
+  For object-storage, fieldMappings (including []) requires destination.columns.
   Use `-` to read the JSON body from stdin.")]
     Update {
         /// Service ID
@@ -321,16 +350,16 @@ CONTEXT FOR AGENTS:
         /// ClickPipe ID
         clickpipe_id: String,
 
-        /// Number of replicas (1-40)
-        #[arg(long)]
+        /// Number of replicas (1-40, streaming pipes)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=40))]
         replicas: Option<u32>,
 
         /// CPU millicores per replica (125-2000, streaming pipes)
-        #[arg(long)]
+        #[arg(long, value_parser = clap::value_parser!(u32).range(125..=2000))]
         cpu_millicores: Option<u32>,
 
         /// Memory GB per replica (0.5-8, streaming pipes)
-        #[arg(long)]
+        #[arg(long, value_parser = parse_streaming_memory_gb)]
         memory_gb: Option<f64>,
 
         /// Organization ID (auto-detected only if you have one org)
@@ -644,8 +673,8 @@ pub struct ClickPipeSettingsValues {
     #[arg(long, value_parser = clap::value_parser!(u32).range(100..=3600000))]
     object_storage_polling_interval_ms: Option<u32>,
 
-    /// Bytes per insert batch (10485760-53687091200)
-    #[arg(long, value_parser = clap::value_parser!(u64).range(10485760..=53687091200))]
+    /// Bytes per insert batch (524288000-10737418240)
+    #[arg(long, value_parser = clap::value_parser!(u64).range(524288000..=10737418240))]
     object_storage_max_insert_bytes: Option<u64>,
 
     /// Max files per insert batch (1-10000)
@@ -788,7 +817,7 @@ pub struct ClickPipeCreateRequestArgs {
     pub cpu_millicores: Option<u32>,
 
     /// Initial memory GB per replica (0.5-8)
-    #[arg(long, value_parser = parse_create_memory_gb)]
+    #[arg(long, value_parser = parse_streaming_memory_gb)]
     pub memory_gb: Option<f64>,
 
     /// Field mapping JSON with sourceField and destinationField (repeatable)
@@ -867,7 +896,7 @@ pub struct ObjectStorageSourceFields {
     ///
     /// Inferred from credential flags when omitted; with no credentials, no
     /// authentication is sent. Workload identity is only valid for GCS.
-    #[arg(long, value_parser = parse_supported_object_storage_auth)]
+    #[arg(long, value_parser = AuthenticationValueParser { parse: parse_supported_object_storage_auth, values: &["IAM_ROLE", "IAM_USER", "CONNECTION_STRING", "SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] })]
     pub auth: Option<String>,
 
     /// Enable continuous ingestion
@@ -997,7 +1026,7 @@ pub struct KafkaSourceFields {
     ///
     /// Inferred from the credential flags when omitted; with no credential flag
     /// at all, no authentication is sent.
-    #[arg(long, value_parser = parse_supported_kafka_auth)]
+    #[arg(long, value_parser = AuthenticationValueParser { parse: parse_supported_kafka_auth, values: ClickPipePostKafkaSourceAuthentication::VALUES })]
     pub auth: Option<String>,
 
     /// Azure Event Hubs connection string
@@ -1413,8 +1442,12 @@ pub struct MySqlCreateArgs {
     #[arg(long)]
     pub host: String,
 
-    /// MySQL port
-    #[arg(long, default_value = "3306")]
+    /// MySQL port (1-65535)
+    #[arg(
+        long,
+        default_value = "3306",
+        value_parser = clap::value_parser!(u16).range(1..=65535)
+    )]
     pub port: u16,
 
     /// Username (required with --auth basic; invalid with --auth IAM_ROLE)
@@ -1687,7 +1720,7 @@ pub struct BigQueryCreateArgs {
     #[arg(
         long,
         default_value = "SERVICE_ACCOUNT",
-        value_parser = parse_supported_bigquery_auth,
+        value_parser = AuthenticationValueParser { parse: parse_supported_bigquery_auth, values: &["SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] },
     )]
     pub auth: String,
 
@@ -1820,7 +1853,7 @@ pub struct PubSubSourceFields {
     #[arg(
         long,
         default_value = "SERVICE_ACCOUNT",
-        value_parser = parse_supported_pubsub_auth,
+        value_parser = AuthenticationValueParser { parse: parse_supported_pubsub_auth, values: &["SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] },
     )]
     pub auth: String,
 
@@ -2096,15 +2129,47 @@ async fn clickpipe_list(
     } else if clickpipes.is_empty() {
         println!("No ClickPipes found");
     } else {
-        println!("ClickPipes:");
-        for clickpipe in &clickpipes {
-            println!(
-                "  {} ({}) - {}",
-                or_absent(clickpipe.name.as_deref()),
-                or_absent(clickpipe.id.as_ref()),
-                or_absent(clickpipe.state.as_ref())
-            );
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "Source")]
+            source: &'static str,
+            #[tabled(rename = "Destination")]
+            destination: String,
+            #[tabled(rename = "State")]
+            state: String,
         }
+        let rows = clickpipes.iter().map(|clickpipe| {
+            let destination = clickpipe.destination.as_ref();
+            let database = destination.and_then(|destination| destination.database.as_deref());
+            let table = destination.and_then(|destination| destination.table.as_deref());
+            Row {
+                name: or_absent(clickpipe.name.as_deref()),
+                id: or_absent(clickpipe.id.as_ref()),
+                source: match classify_clickpipe_source(clickpipe) {
+                    ClickPipeSourceKind::Kafka => "Kafka",
+                    ClickPipeSourceKind::Kinesis => "Kinesis",
+                    ClickPipeSourceKind::PubSub => "Pub/Sub",
+                    ClickPipeSourceKind::ObjectStorage => "Object storage",
+                    ClickPipeSourceKind::Postgres => "Postgres",
+                    ClickPipeSourceKind::MySql => "MySQL",
+                    ClickPipeSourceKind::MongoDb => "MongoDB",
+                    ClickPipeSourceKind::BigQuery => "BigQuery",
+                    ClickPipeSourceKind::Absent => ABSENT,
+                },
+                destination: match (database, table) {
+                    (Some(database), Some(table)) => format!("{database}.{table}"),
+                    (Some(database), None) => database.to_string(),
+                    (None, Some(table)) => table.to_string(),
+                    (None, None) => ABSENT.to_string(),
+                },
+                state: or_absent(clickpipe.state.as_ref()),
+            }
+        });
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
 }
@@ -2731,6 +2796,7 @@ fn build_kinesis_source(
     };
 
     Ok(ClickPipePostKinesisSource {
+        protobuf_schema: None,
         format: parse_enum(&args.format)?,
         stream_name: args.stream_name.clone(),
         region: args.region.clone(),
@@ -3205,6 +3271,12 @@ fn validate_clickpipe_patch_required_fields(
         return Ok(());
     };
 
+    if source.contains_key("bigquery") {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: `source.bigquery` cannot be updated by the ClickPipes API"
+        )));
+    }
+
     if let Some(mysql) = source.get("mysql") {
         require_patch_object_fields(mysql, "source.mysql", &["host", "port"], config_source)?;
         if let Some(mappings) = mysql
@@ -3390,6 +3462,7 @@ fn validate_clickpipe_patch_source(
     }
 
     if let Some(source) = &patch.postgres {
+        validate_clickpipe_patch_port(source.port, "source.postgres.port", config_source)?;
         if let Some(mappings) = &source.table_mappings_to_add {
             for mapping in mappings {
                 if let PostgresAddEngine::Unknown(value) = &mapping.table_engine {
@@ -3411,6 +3484,7 @@ fn validate_clickpipe_patch_source(
     }
 
     if let Some(source) = &patch.mysql {
+        validate_clickpipe_patch_port(source.port, "source.mysql.port", config_source)?;
         if let Some(MySqlAuth::Unknown(value)) = &source.authentication {
             return Err(CloudError::new(format!(
                 "invalid request body in config {config_source}: unknown `source.mysql.authentication` value `{value}`"
@@ -3465,6 +3539,19 @@ fn validate_clickpipe_patch_source(
     Ok(())
 }
 
+fn validate_clickpipe_patch_port(
+    port: Option<i64>,
+    path: &str,
+    config_source: &str,
+) -> CloudResult<()> {
+    if port.is_some_and(|port| !(1..=u16::MAX.into()).contains(&port)) {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: `{path}` must be in the range 1..=65535"
+        )));
+    }
+    Ok(())
+}
+
 fn build_clickpipe_update_request(
     value: serde_json::Value,
     config_source: &str,
@@ -3498,7 +3585,8 @@ async fn clickpipe_update(
     org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let request = build_clickpipe_update_request(read_config_value(config_file)?, config_file)?;
+    let config_source = config_source_label(config_file);
+    let request = build_clickpipe_update_request(read_config_value(config_file)?, config_source)?;
     let org_id = resolve_org_id(client, org_id).await?;
     let clickpipe = client
         .update_clickpipe(&org_id, service_id, clickpipe_id, &request)
@@ -6250,6 +6338,69 @@ mod tests {
     }
 
     #[test]
+    fn scale_accepts_inclusive_boundaries() {
+        for (replicas, cpu, memory) in [("1", "125", "0.5"), ("40", "2000", "8")] {
+            let ClickPipeCommands::Scale {
+                replicas: parsed_replicas,
+                cpu_millicores,
+                memory_gb,
+                ..
+            } = parse_clickpipe(&[
+                "scale",
+                "svc-1",
+                "pipe-1",
+                "--replicas",
+                replicas,
+                "--cpu-millicores",
+                cpu,
+                "--memory-gb",
+                memory,
+            ])
+            else {
+                panic!("expected scale");
+            };
+            assert_eq!(parsed_replicas, Some(replicas.parse().unwrap()));
+            assert_eq!(cpu_millicores, Some(cpu.parse().unwrap()));
+            assert_eq!(memory_gb, Some(memory.parse().unwrap()));
+        }
+    }
+
+    #[test]
+    fn scale_rejects_out_of_range_and_non_finite_values() {
+        for (flag, values) in [
+            ("replicas", &["0", "41", "-1"][..]),
+            ("cpu-millicores", &["0", "124", "2001", "-1"][..]),
+            (
+                "memory-gb",
+                &[
+                    "0",
+                    "0.49",
+                    "8.01",
+                    "9",
+                    "-1",
+                    "NaN",
+                    "inf",
+                    "+inf",
+                    "-inf",
+                    "infinity",
+                    "-infinity",
+                ][..],
+            ),
+        ] {
+            for value in values {
+                let argument = format!("--{flag}={value}");
+                let error = clickpipe_parse_error(&["scale", "svc-1", "pipe-1", &argument]);
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ValueValidation,
+                    "{argument}"
+                );
+                assert_eq!(error.exit_code(), 2, "{argument}");
+            }
+        }
+    }
+
+    #[test]
     fn scale_requires_at_least_one_of_replicas_cpu_or_memory() {
         assert_rejected(&["scale", "svc-1", "pipe-1"]);
     }
@@ -6406,6 +6557,67 @@ mod tests {
     }
 
     #[test]
+    fn object_storage_insert_size_boundaries_match_create_and_settings_update() {
+        for size in [
+            524_287_999_u64,
+            524_288_000,
+            536_870_912,
+            10_737_418_240,
+            10_737_418_241,
+            10_485_760,
+            53_687_091_200,
+        ] {
+            let size_arg = size.to_string();
+            for mut args in [
+                vec![
+                    "create",
+                    "object-storage",
+                    "svc-1",
+                    "--name",
+                    "pipe-1",
+                    "--source-url",
+                    "https://example.test/data.csv",
+                    "--format",
+                    "CSVWithNames",
+                    "--database",
+                    "default",
+                    "--table",
+                    "events",
+                ],
+                vec!["settings", "update", "svc-1", "pipe-1"],
+            ] {
+                args.extend(["--object-storage-max-insert-bytes", &size_arg]);
+                let result = Cli::try_parse_from(
+                    ["chctl", "cloud", "clickpipe"]
+                        .into_iter()
+                        .chain(args.iter().copied()),
+                );
+                if [524_288_000, 536_870_912, 10_737_418_240].contains(&size) {
+                    assert!(result.is_ok(), "{args:?}");
+                    let settings = match parse_clickpipe(&args) {
+                        ClickPipeCommands::Create {
+                            command: ClickPipeCreateCommands::ObjectStorage(args),
+                        } => args.request.settings,
+                        ClickPipeCommands::Settings {
+                            command: ClickPipeSettingsCommands::Update { settings, .. },
+                        } => settings,
+                        _ => panic!("unexpected command"),
+                    };
+                    assert_eq!(settings.object_storage_max_insert_bytes, Some(size));
+                    let request = build_clickpipe_settings_request(&settings, None);
+                    assert_eq!(request.object_storage_max_insert_bytes, Some(size as i64));
+                } else {
+                    assert_eq!(
+                        result.err().expect("out-of-range size must fail").kind(),
+                        clap::error::ErrorKind::ValueValidation,
+                        "{args:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn parses_settings_commands_flags_and_defaults() {
         let ClickPipeCommands::Settings {
             command:
@@ -6442,7 +6654,7 @@ mod tests {
             "--object-storage-polling-interval-ms",
             "3000",
             "--object-storage-max-insert-bytes",
-            "10485760",
+            "524288000",
             "--object-storage-max-file-count",
             "5",
             "--clickhouse-max-threads",
@@ -6472,7 +6684,7 @@ mod tests {
         assert_eq!(settings.streaming_max_insert_wait_ms, Some(1000));
         assert_eq!(settings.object_storage_concurrency, Some(2));
         assert_eq!(settings.object_storage_polling_interval_ms, Some(3000));
-        assert_eq!(settings.object_storage_max_insert_bytes, Some(10_485_760));
+        assert_eq!(settings.object_storage_max_insert_bytes, Some(524_288_000));
         assert_eq!(settings.object_storage_max_file_count, Some(5));
         assert_eq!(settings.clickhouse_max_threads, Some(6));
         assert_eq!(settings.clickhouse_max_insert_threads, Some(7));
@@ -6674,7 +6886,7 @@ mod tests {
                 settings: ClickPipeSettingsValues {
                     object_storage_concurrency: Some(1),
                     object_storage_polling_interval_ms: Some(100),
-                    object_storage_max_insert_bytes: Some(10_485_760),
+                    object_storage_max_insert_bytes: Some(524_288_000),
                     object_storage_max_file_count: Some(1),
                     object_storage_use_cluster_function: Some(false),
                     ..Default::default()
@@ -8593,6 +8805,39 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mysql_port_accepts_default_and_boundaries_and_rejects_out_of_range_values() {
+        for (port, expected) in [(None, 3306), (Some("1"), 1), (Some("65535"), 65535)] {
+            let mut args = mysql_create_cli_args();
+            args.extend(["--username", "user", "--password", "password"]);
+            if let Some(port) = port {
+                args.extend(["--port", port]);
+            }
+            let ClickPipeCommands::Create {
+                command: ClickPipeCreateCommands::MySQL(parsed),
+            } = parse_clickpipe(&args)
+            else {
+                panic!("expected mysql create");
+            };
+            assert_eq!(parsed.port, expected);
+        }
+
+        for port in ["0", "65536"] {
+            let mut args = mysql_create_cli_args();
+            args.extend([
+                "--username",
+                "user",
+                "--password",
+                "password",
+                "--port",
+                port,
+            ]);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert_eq!(error.exit_code(), 2);
+        }
+    }
+
     /// Minimal `clickpipe create mysql` invocation, before any auth flags.
     fn mysql_create_cli_args() -> Vec<&'static str> {
         vec![
@@ -9189,6 +9434,53 @@ mod tests {
     }
 
     #[test]
+    fn every_clickpipe_auth_flag_exposes_valid_canonical_choices() {
+        use clap::CommandFactory;
+        fn visit(command: &clap::Command, count: &mut usize) {
+            for argument in command
+                .get_arguments()
+                .filter(|arg| arg.get_long() == Some("auth"))
+            {
+                let parser = argument.get_value_parser();
+                let choices: Vec<_> = parser.possible_values().expect("auth choices").collect();
+                assert!(!choices.is_empty(), "{}", command.get_name());
+                for choice in choices {
+                    let value = choice.get_name();
+                    // Validate every advertised choice through the existing domain parser.
+                    match command.get_name() {
+                        "object-storage" => {
+                            parse_supported_object_storage_auth(value).unwrap();
+                        }
+                        "kafka" => {
+                            parse_supported_kafka_auth(value).unwrap();
+                        }
+                        "pubsub" => {
+                            parse_supported_pubsub_auth(value).unwrap();
+                        }
+                        "bigquery" => {
+                            parse_supported_bigquery_auth(value).unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+                *count += 1;
+            }
+            for child in command.get_subcommands() {
+                visit(child, count);
+            }
+        }
+        let tree = crate::cli::Cli::command();
+        let clickpipe = tree
+            .find_subcommand("cloud")
+            .unwrap()
+            .find_subcommand("clickpipe")
+            .unwrap();
+        let mut count = 0;
+        visit(clickpipe, &mut count);
+        assert_eq!(count, 11);
+    }
+
+    #[test]
     fn possible_value_parsers_reject_unknown_values() {
         let invalid = "not-a-valid-value";
         let object_base = [
@@ -9713,6 +10005,60 @@ mod tests {
                 "omitted PATCH fields must remain absent"
             );
         }
+    }
+
+    #[test]
+    fn clickpipe_update_builder_validates_typed_database_source_ports() {
+        for provider in ["mysql", "postgres"] {
+            for port in [1, 65535] {
+                let patch = serde_json::json!({"source": {
+                    (provider): {"host": "db.example.com", "port": port}
+                }});
+                let request = build_clickpipe_update_request(patch.clone(), "test").unwrap();
+                assert_eq!(serde_json::to_value(request).unwrap(), patch);
+            }
+
+            for port in [-1, 0, 65536] {
+                let patch = serde_json::json!({"source": {
+                    (provider): {"host": "db.example.com", "port": port}
+                }});
+                let error = build_clickpipe_update_request(patch, "test").unwrap_err();
+                assert!(
+                    error.message.contains(&format!(
+                        "source.{provider}.port` must be in the range 1..=65535"
+                    )),
+                    "{error}"
+                );
+            }
+        }
+
+        let omitted = serde_json::json!({"source": {
+            "postgres": {"host": "db.example.com"}
+        }});
+        let request = build_clickpipe_update_request(omitted.clone(), "test").unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), omitted);
+    }
+
+    #[test]
+    fn clickpipe_update_builder_reports_bigquery_as_an_unsupported_source() {
+        let error = build_clickpipe_update_request(
+            serde_json::json!({"source": {
+                "bigquery": {},
+                "validateSamples": false
+            }}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("`source.bigquery`"), "{error}");
+        assert!(error.message.contains("cannot be updated"), "{error}");
+        assert!(!error.message.contains(".?."), "{error}");
+
+        let unknown = build_clickpipe_update_request(
+            serde_json::json!({"source": {"kafka": {"unknownOption": true}}}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(unknown.message.contains("unknownOption"), "{unknown}");
     }
 
     #[test]

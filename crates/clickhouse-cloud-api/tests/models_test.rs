@@ -6611,3 +6611,367 @@ fn udf_request_inline_variants_preserve_determinism_and_memory() {
     check::<UdfVersionCreateRequestV1>("executable", false);
     check::<UdfVersionCreateRequestV2>("executable_pool", false);
 }
+
+#[test]
+fn postgres_slow_query_durations_preserve_fractions_and_integral_counts() {
+    let aggregate = serde_json::json!({
+        "avgDurationUs": 1190.8419405320817,
+        "maxDurationUs": 2000.75,
+        "p50DurationUs": 1100.25,
+        "p95DurationUs": 1800.5,
+        "p99DurationUs": 1950.125,
+        "totalDurationUs": 3572.525821596245,
+        "callCount": 3, "errorCount": 0, "totalRows": 9007199254740993_i64,
+        "totalSharedBlksHit": 10, "totalSharedBlksRead": 2,
+        "totalCpuTimeUs": 2000, "totalWalBytes": 128
+    });
+    let list: Vec<PostgresSlowQueryPattern> =
+        serde_json::from_value(serde_json::json!([aggregate])).unwrap();
+    assert_eq!(list[0].avg_duration_us, Some(1190.8419405320817));
+    assert_eq!(list[0].total_rows, Some(9007199254740993));
+    assert_eq!(
+        serde_json::to_value(&list).unwrap(),
+        serde_json::json!([aggregate])
+    );
+
+    let detail = serde_json::json!({
+        "aggregate": aggregate,
+        "recentExecutions": [{"durationUs": 1234.56789, "rows": 9007199254740993_i64,
+            "cpuSysTimeUs": 12, "jitFunctions": 2, "sharedBlksHit": 3, "walBytes": 128}]
+    });
+    let parsed: PostgresSlowQueryPatternDetail = serde_json::from_value(detail.clone()).unwrap();
+    assert_eq!(
+        parsed.recent_executions.as_ref().unwrap()[0].duration_us,
+        Some(1234.56789)
+    );
+    assert_eq!(serde_json::to_value(parsed).unwrap(), detail);
+
+    // Existing integer-valued measurements remain accepted as durations.
+    let integer: PostgresQueryExecution =
+        serde_json::from_value(serde_json::json!({"durationUs": 1234})).unwrap();
+    assert_eq!(integer.duration_us, Some(1234.0));
+    let integer: PostgresSlowQueryPattern = serde_json::from_value(serde_json::json!({
+        "avgDurationUs": 1, "maxDurationUs": 2, "p50DurationUs": 1,
+        "p95DurationUs": 2, "p99DurationUs": 2, "totalDurationUs": 3
+    }))
+    .unwrap();
+    assert_eq!(integer.avg_duration_us, Some(1.0));
+    for field in [
+        "callCount",
+        "errorCount",
+        "totalRows",
+        "totalSharedBlksHit",
+        "totalSharedBlksRead",
+        "totalWalBytes",
+    ] {
+        assert!(
+            serde_json::from_value::<PostgresSlowQueryPattern>(serde_json::json!({field: 1.5}))
+                .is_err(),
+            "{field} must remain integral"
+        );
+    }
+    for field in ["rows", "jitFunctions", "sharedBlksHit", "walBytes"] {
+        assert!(
+            serde_json::from_value::<PostgresQueryExecution>(serde_json::json!({field: 1.5}))
+                .is_err(),
+            "{field} must remain integral"
+        );
+    }
+}
+
+#[test]
+fn postgres_slow_query_durations_allow_missing_and_null() {
+    for aggregate in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "avgDurationUs": null, "maxDurationUs": null, "p50DurationUs": null,
+            "p95DurationUs": null, "p99DurationUs": null, "totalDurationUs": null
+        }),
+    ] {
+        let parsed: PostgresSlowQueryPattern = serde_json::from_value(aggregate.clone()).unwrap();
+        assert_eq!(parsed, PostgresSlowQueryPattern::default());
+        assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::json!({}));
+        let detail: PostgresSlowQueryPatternDetail = serde_json::from_value(serde_json::json!({
+            "aggregate": aggregate, "recentExecutions": [{}, {"durationUs": null}]
+        }))
+        .unwrap();
+        assert_eq!(detail.aggregate, Some(PostgresSlowQueryPattern::default()));
+        assert_eq!(
+            detail.recent_executions,
+            Some(vec![PostgresQueryExecution::default(); 2])
+        );
+        assert_eq!(
+            serde_json::to_value(detail).unwrap(),
+            serde_json::json!({"aggregate": {}, "recentExecutions": [{}, {}]})
+        );
+    }
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({"aggregate": null, "recentExecutions": null}),
+    ] {
+        let parsed: PostgresSlowQueryPatternDetail = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, PostgresSlowQueryPatternDetail::default());
+        assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn service_clickhouse_settings_typed_request_preserves_native_values() {
+    let settings = serde_json::json!({
+        "compatibility": "26.2", "max_query_size": 262146,
+        "mark_cache_ram_ratio": "0.5", "signed": -42,
+        "unsigned": u64::MAX
+    });
+    let map: ServiceClickhouseSettingsMap = serde_json::from_value(settings.clone()).unwrap();
+    assert_eq!(
+        map["compatibility"],
+        ServiceClickhouseSettingValue::String("26.2".into())
+    );
+    assert_eq!(
+        map["max_query_size"],
+        ServiceClickhouseSettingValue::Integer(262146)
+    );
+    assert_eq!(
+        map["unsigned"],
+        ServiceClickhouseSettingValue::UnsignedInteger(u64::MAX)
+    );
+    let request = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(map),
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+    let empty = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(ServiceClickhouseSettingsMap::new()),
+    };
+    assert!(serde_json::to_value(empty).is_err());
+}
+
+#[test]
+fn service_clickhouse_settings_typed_request_rejects_unsupported_value_types() {
+    for value in [
+        serde_json::json!(true),
+        serde_json::Value::Null,
+        serde_json::json!(1.5),
+        serde_json::json!({"nested": true}),
+        serde_json::json!([1]),
+    ] {
+        assert!(
+            serde_json::from_value::<ServiceClickhouseSettingsMap>(
+                serde_json::json!({"setting": value})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn service_clickhouse_settings_preserves_dynamic_json_values() {
+    let settings = serde_json::json!({
+        "string": "26.2", "integer": 262144, "boolean": false, "null": null,
+        "array": [1, "two"], "future": {"nested": true}
+    });
+    let request: ServiceClickhouseSettingsPatchRequest =
+        serde_json::from_value(serde_json::json!({"settings": settings})).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+    let response: ServiceClickhouseSettingsPatchResponse =
+        serde_json::from_value(serde_json::json!({"settings": settings})).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+    for sparse in [
+        serde_json::json!({}),
+        serde_json::json!({"settings": null, "warnings": null}),
+    ] {
+        let response: ServiceClickhouseSettingsPatchResponse =
+            serde_json::from_value(sparse).unwrap();
+        assert!(response.settings.is_none());
+        assert!(response.warnings.is_none());
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    let empty = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(std::collections::BTreeMap::<String, serde_json::Value>::new()),
+    };
+    assert!(serde_json::to_value(empty).is_err());
+}
+
+#[test]
+fn service_clickhouse_setting_preserves_json_value_types() {
+    for value in [
+        serde_json::json!(262146),
+        serde_json::json!(18446744073709551615_u64),
+        serde_json::json!(-42),
+        serde_json::json!(1.25),
+        serde_json::json!("26.2"),
+        serde_json::json!("262146"),
+        serde_json::json!(false),
+        serde_json::json!({"future": [1, true]}),
+    ] {
+        let wire = serde_json::json!({"name": "setting", "value": value});
+        let setting: ServiceClickhouseSetting = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(setting.value.as_ref(), Some(&value));
+        assert_eq!(serde_json::to_value(&setting).unwrap(), wire);
+        let list_wire = serde_json::json!({"settings": [wire]});
+        let list: ServiceClickhouseSettingsList =
+            serde_json::from_value(list_wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(list).unwrap(), list_wire);
+    }
+}
+
+#[test]
+fn service_clickhouse_setting_missing_and_null_values_remain_absent() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"name": null, "value": null}),
+    ] {
+        let setting: ServiceClickhouseSetting = serde_json::from_value(wire).unwrap();
+        assert_eq!(setting.name, None);
+        assert_eq!(setting.value, None);
+        assert_eq!(
+            serde_json::to_value(setting).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[test]
+fn kinesis_protobuf_schema_round_trips_and_other_formats_omit_it() {
+    let json_source = ClickPipePostKinesisSource::default();
+    let wire = serde_json::to_value(&json_source).unwrap();
+    assert!(wire.get("protobufSchema").is_none());
+    assert_eq!(
+        serde_json::from_value::<ClickPipePostKinesisSource>(wire).unwrap(),
+        json_source
+    );
+
+    let protobuf = ClickPipePostKinesisSource {
+        format: ClickPipePostKinesisSourceFormat::Protobuf,
+        protobuf_schema: Some("c3ludGF4".into()),
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(&protobuf).unwrap();
+    assert_eq!(wire["format"], "Protobuf");
+    assert_eq!(wire["protobufSchema"], "c3ludGF4");
+    assert_eq!(
+        serde_json::from_value::<ClickPipePostKinesisSource>(wire).unwrap(),
+        protobuf
+    );
+    assert_eq!(protobuf.format.to_string(), "Protobuf");
+
+    let response: ClickPipeKinesisSource =
+        serde_json::from_value(serde_json::json!({"format": "Protobuf"})).unwrap();
+    assert_eq!(
+        response.format,
+        Some(ClickPipeKinesisSourceFormat::Protobuf)
+    );
+    assert_eq!(response.format.unwrap().to_string(), "Protobuf");
+    assert!(
+        matches!(serde_json::from_str::<ClickPipeKinesisSourceFormat>("\"FutureFormat\"").unwrap(), ClickPipeKinesisSourceFormat::Unknown(value) if value == "FutureFormat")
+    );
+}
+
+#[test]
+fn query_api_endpoint_request_is_strict_and_omits_optional_fields() {
+    let required = serde_json::json!({
+        "name": "orders",
+        "sql": "SELECT * FROM orders WHERE id = {id:String}",
+        "database": "default",
+        "apiKeyIds": ["11111111-2222-3333-8444-555555555555"],
+        "roles": ["query_api"]
+    });
+    let request: PublicQueryApiEndpointRequest = serde_json::from_value(required.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), required);
+
+    for field in ["name", "sql", "database", "apiKeyIds", "roles"] {
+        let mut missing = required.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<PublicQueryApiEndpointRequest>(missing).is_err(),
+            "missing required field {field} must fail"
+        );
+    }
+}
+
+#[test]
+fn query_api_endpoint_responses_tolerate_missing_and_null_fields() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "id": null,
+            "name": null,
+            "sql": null,
+            "database": null,
+            "parameters": null,
+            "apiKeyIds": null,
+            "roles": null,
+            "allowedOrigins": null,
+            "url": null,
+            "ownerType": null
+        }),
+    ] {
+        let endpoint: PublicQueryApiEndpoint = serde_json::from_value(wire).unwrap();
+        assert_eq!(endpoint, PublicQueryApiEndpoint::default());
+        assert_eq!(
+            serde_json::to_value(endpoint).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "id": null,
+            "name": null,
+            "database": null,
+            "apiKeyIds": null,
+            "roles": null,
+            "allowedOrigins": null,
+            "url": null,
+            "ownerType": null
+        }),
+    ] {
+        let item: PublicQueryApiEndpointListItem = serde_json::from_value(wire).unwrap();
+        assert_eq!(item, PublicQueryApiEndpointListItem::default());
+        assert_eq!(serde_json::to_value(item).unwrap(), serde_json::json!({}));
+    }
+
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"items": null, "pagination": null}),
+    ] {
+        let list: QueryApiEndpointListResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(list, QueryApiEndpointListResponse::default());
+        assert_eq!(serde_json::to_value(list).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn query_api_endpoint_owner_types_preserve_unknown_values() {
+    let owner: PublicQueryApiEndpointOwnertype = serde_json::from_str("\"futureOwner\"").unwrap();
+    assert_eq!(
+        owner,
+        PublicQueryApiEndpointOwnertype::Unknown("futureOwner".into())
+    );
+    assert_eq!(owner.to_string(), "futureOwner");
+    assert_eq!(serde_json::to_string(&owner).unwrap(), "\"futureOwner\"");
+
+    let list_owner: PublicQueryApiEndpointListItemOwnertype =
+        serde_json::from_str("\"futureOwner\"").unwrap();
+    assert_eq!(
+        list_owner,
+        PublicQueryApiEndpointListItemOwnertype::Unknown("futureOwner".into())
+    );
+    assert_eq!(list_owner.to_string(), "futureOwner");
+    assert_eq!(
+        serde_json::to_string(&list_owner).unwrap(),
+        "\"futureOwner\""
+    );
+}

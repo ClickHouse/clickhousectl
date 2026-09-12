@@ -4487,3 +4487,333 @@ async fn update_api_key_sends_omitted_timestamp_and_null_expiry() {
         assert_eq!(response.result.unwrap().name.as_deref(), Some("retained"));
     }
 }
+
+#[tokio::test]
+async fn service_clickhouse_settings_update_sends_and_receives_objects() {
+    let (server, client) = setup().await;
+    let settings = serde_json::json!({"compatibility": "26.2", "max_query_size": 262144});
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickhouseSettings",
+        ))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({"settings": settings})))
+        .respond_with(ok_json(
+            serde_json::json!({"settings": settings, "warnings": []}),
+        ))
+        .expect(3)
+        .mount(&server)
+        .await;
+    let body: ServiceClickhouseSettingsPatchRequest =
+        serde_json::from_value(serde_json::json!({"settings": settings})).unwrap();
+    let response = client
+        .service_clickhouse_settings_update("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(response.result.unwrap().settings.unwrap()).unwrap(),
+        settings
+    );
+    let legacy = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(settings.to_string()),
+    };
+    client
+        .service_clickhouse_settings_update("org-1", "svc-1", &legacy)
+        .await
+        .unwrap();
+    let typed = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(serde_json::from_value::<ServiceClickhouseSettingsMap>(settings).unwrap()),
+    };
+    client
+        .service_clickhouse_settings_update("org-1", "svc-1", &typed)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn service_clickhouse_settings_update_rejects_invalid_legacy_input_before_http() {
+    let (server, client) = setup().await;
+    for invalid in ["{broken", "{}", "[]", "null", "42", r#""string""#] {
+        let body = ServiceClickhouseSettingsPatchRequest {
+            settings: Some(invalid.to_string()),
+        };
+        assert!(
+            client
+                .service_clickhouse_settings_update("org-1", "svc-1", &body)
+                .await
+                .is_err()
+        );
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_clickhouse_setting_reads_preserve_numeric_and_string_values() {
+    let (server, client) = setup().await;
+    let collection = "/v1/organizations/org-1/services/svc-1/clickhouseSettings";
+    let settings = serde_json::json!([
+        {"name": "max_query_size", "value": 262146},
+        {"name": "compatibility", "value": "26.2"},
+        {"name": "future_bool", "value": false}
+    ]);
+    for setting in settings.as_array().unwrap() {
+        let name = setting["name"].as_str().unwrap();
+        Mock::given(method("GET"))
+            .and(path(format!("{collection}/{name}")))
+            .and(basic_auth("key", "secret"))
+            .respond_with(ok_json(setting.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client
+            .service_clickhouse_setting_get("org-1", "svc-1", name)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(response.result.unwrap()).unwrap(),
+            *setting
+        );
+    }
+    Mock::given(method("GET"))
+        .and(path(collection))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({"settings": settings})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client
+        .service_clickhouse_settings_list_get("org-1", "svc-1")
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::to_value(response.result.unwrap()).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+}
+
+#[tokio::test]
+async fn query_api_endpoint_create_and_update_send_complete_requests() {
+    let (server, client) = setup().await;
+    let collection = "/v1/organizations/org-1/services/svc-1/query-api-endpoints";
+    let minimal = serde_json::json!({
+        "name": "daily total", "sql": "SELECT count() FROM events", "database": "default",
+        "apiKeyIds": ["00000000-0000-4000-8000-000000000001"], "roles": ["reader"]
+    });
+    let maximal = serde_json::json!({
+        "name": "filtered total", "sql": "SELECT count() FROM events WHERE kind = {kind:String}",
+        "database": "analytics", "apiKeyIds": ["00000000-0000-4000-8000-000000000001", "00000000-0000-4000-8000-000000000002"], "roles": ["reader"],
+        "parameters": {"kind": "page view"}, "allowedOrigins": ["https://example.com"]
+    });
+    for body in [minimal, maximal] {
+        let request: PublicQueryApiEndpointRequest = serde_json::from_value(body.clone()).unwrap();
+        let mut returned = body.clone();
+        returned["id"] = serde_json::json!("00000000-0000-4000-8000-000000000003");
+        returned["url"] = serde_json::json!("https://queries.clickhouse.cloud/run/endpoint-1");
+        returned["ownerType"] = serde_json::json!("queryApiEndpoint");
+        Mock::given(method("POST"))
+            .and(path(collection))
+            .and(basic_auth("key", "secret"))
+            .and(body_json(body.clone()))
+            .respond_with(created_json(returned.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client
+            .query_api_endpoint_create("org-1", "svc-1", &request)
+            .await
+            .unwrap();
+        assert_eq!(response.status, Some(201));
+        assert_eq!(
+            serde_json::to_value(response.result.unwrap()).unwrap(),
+            returned
+        );
+
+        Mock::given(method("PUT"))
+            .and(path(format!("{collection}/endpoint-1")))
+            .and(basic_auth("key", "secret"))
+            .and(body_json(body))
+            .respond_with(ok_json(returned.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client
+            .query_api_endpoint_update("org-1", "svc-1", "endpoint-1", &request)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(response.result.unwrap()).unwrap(),
+            returned
+        );
+    }
+}
+
+#[tokio::test]
+async fn query_api_endpoint_get_and_delete_use_endpoint_path() {
+    let (server, client) = setup().await;
+    let endpoint_path = "/v1/organizations/org-1/services/svc-1/query-api-endpoints/endpoint-1";
+    Mock::given(method("GET"))
+        .and(path(endpoint_path))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(
+            serde_json::json!({"id": "00000000-0000-4000-8000-000000000003", "name": "example"}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client
+        .query_api_endpoint_get("org-1", "svc-1", "endpoint-1")
+        .await
+        .unwrap();
+    assert_eq!(
+        response.result.unwrap().id,
+        Some(uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000003").unwrap())
+    );
+    Mock::given(method("DELETE"))
+        .and(path(endpoint_path))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_empty())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client
+        .query_api_endpoint_delete("org-1", "svc-1", "endpoint-1")
+        .await
+        .unwrap();
+    assert_eq!(response.status, Some(200));
+    assert_eq!(response.request_id.as_deref(), Some("req-test"));
+    assert!(response.result.is_none());
+    for request in server.received_requests().await.unwrap() {
+        assert!(request.body.is_empty());
+        assert!(request.url.query().is_none());
+    }
+}
+
+#[tokio::test]
+async fn query_api_endpoint_list_encodes_cursor_and_omits_absent_parameters() {
+    for (cursor, limit) in [
+        (None, None),
+        (Some("next+/=&? page"), None),
+        (None, Some(25)),
+        (Some("next+/=&? page"), Some(25)),
+    ] {
+        let (server, client) = setup().await;
+        let result = serde_json::json!({
+            "items": [{"id": "00000000-0000-4000-8000-000000000003", "name": "example", "ownerType": "user"}],
+            "pagination": {"nextCursor": "another-page"}
+        });
+        Mock::given(method("GET"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/query-api-endpoints",
+            ))
+            .and(basic_auth("key", "secret"))
+            .respond_with(ok_json(result.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client
+            .query_api_endpoint_list("org-1", "svc-1", cursor, limit)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(response.result.unwrap()).unwrap(),
+            result
+        );
+        let requests = server.received_requests().await.unwrap();
+        let query: std::collections::HashMap<_, _> =
+            requests[0].url.query_pairs().into_owned().collect();
+        let mut expected = std::collections::HashMap::new();
+        if let Some(cursor) = cursor {
+            expected.insert("cursor".to_owned(), cursor.to_owned());
+        }
+        if let Some(limit) = limit {
+            expected.insert("limit".to_owned(), limit.to_string());
+        }
+        assert_eq!(query, expected);
+        if cursor.is_none() && limit.is_none() {
+            assert!(requests[0].url.query().is_none());
+        }
+        assert!(requests[0].body.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn query_api_endpoint_reads_use_bearer_auth() {
+    let server = MockServer::start().await;
+    let client = Client::with_bearer_token(server.uri(), "token");
+    for endpoint_path in [
+        "/v1/organizations/org/services/svc/query-api-endpoints",
+        "/v1/organizations/org/services/svc/query-api-endpoints/endpoint",
+    ] {
+        Mock::given(method("GET"))
+            .and(path(endpoint_path))
+            .and(bearer_token("token"))
+            .respond_with(ok_json(serde_json::json!({})))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    client
+        .query_api_endpoint_list("org", "svc", None, None)
+        .await
+        .unwrap();
+    client
+        .query_api_endpoint_get("org", "svc", "endpoint")
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn query_api_endpoint_methods_propagate_api_errors() {
+    for (status, body, expected_message) in [
+        (
+            403,
+            serde_json::json!({"status": 403, "error": "forbidden"}).to_string(),
+            "forbidden",
+        ),
+        (
+            409,
+            serde_json::json!({"status": 409, "error": "user-owned endpoint"}).to_string(),
+            "user-owned endpoint",
+        ),
+        (500, "upstream failed".to_owned(), "upstream failed"),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(basic_auth("key", "secret"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .expect(5)
+            .mount(&server)
+            .await;
+        let request: PublicQueryApiEndpointRequest = serde_json::from_value(serde_json::json!({
+            "name": "example", "sql": "SELECT 1", "database": "default",
+            "apiKeyIds": ["00000000-0000-4000-8000-000000000001"], "roles": ["reader"]
+        }))
+        .unwrap();
+        let errors = [
+            client
+                .query_api_endpoint_create("org", "svc", &request)
+                .await
+                .unwrap_err(),
+            client
+                .query_api_endpoint_get("org", "svc", "endpoint")
+                .await
+                .unwrap_err(),
+            client
+                .query_api_endpoint_list("org", "svc", None, None)
+                .await
+                .unwrap_err(),
+            client
+                .query_api_endpoint_update("org", "svc", "endpoint", &request)
+                .await
+                .unwrap_err(),
+            client
+                .query_api_endpoint_delete("org", "svc", "endpoint")
+                .await
+                .unwrap_err(),
+        ];
+        for error in errors {
+            assert!(
+                matches!(error, clickhouse_cloud_api::Error::Api { status: actual_status, message } if actual_status == status && message == expected_message)
+            );
+        }
+    }
+}

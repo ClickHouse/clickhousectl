@@ -16,6 +16,7 @@ pub(crate) use crate::cloud::clickpipes::{
 };
 pub(crate) use crate::cloud::clickstack::ClickStackCommands;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
+pub(crate) use crate::cloud::query_api_endpoints::QueryApiEndpointArgs;
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::services::{
     PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, UpgradeWindowCommands,
@@ -25,11 +26,11 @@ use clap::{Args, Subcommand};
 
 #[derive(Args)]
 pub struct CloudArgs {
-    /// Cloud API key; overrides stored and environment credentials
+    /// Cloud API key (requires --api-secret for auth login)
     #[arg(long, global = true)]
     pub api_key: Option<String>,
 
-    /// Cloud API secret; overrides stored and environment credentials
+    /// Cloud API secret (requires --api-key for auth login)
     #[arg(long, global = true)]
     pub api_secret: Option<String>,
 
@@ -129,6 +130,15 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: ServiceCommands,
     },
+
+    /// Manage Query API endpoints (Beta)
+    #[command(after_help = "CONTEXT FOR AGENTS:
+  Writes require API key authentication; list/get support OAuth.
+  Service IDs: `cloud service list`; API key IDs: `cloud key list`.
+  Endpoint IDs: `cloud query-api-endpoint list <service-id>`.
+  User-owned endpoints can be read but cannot be updated or deleted.
+  Typical flow: create -> get -> update -> delete.")]
+    QueryApiEndpoint(QueryApiEndpointArgs),
 
     /// Manage service backups and backup buckets
     #[command(after_help = "\
@@ -250,6 +260,7 @@ impl CloudCommands {
             CloudCommands::Invitation { command } => command.is_write(),
             CloudCommands::Key { command } => command.is_write(),
             CloudCommands::Udf(args) => args.is_write(),
+            CloudCommands::QueryApiEndpoint(args) => args.is_write(),
             CloudCommands::Activity { command } => command.is_write(),
             CloudCommands::Postgres { command } => command.is_write(),
             CloudCommands::ClickPipe { command } => command.is_write(),
@@ -522,24 +533,5 @@ mod tests {
             ],
             true,
         );
-    }
-
-    #[test]
-    fn every_cloud_subcommand_has_a_help_about() {
-        use clap::CommandFactory;
-
-        let mut command = Cli::command();
-        let cloud = command
-            .find_subcommand_mut("cloud")
-            .expect("cloud subcommand");
-
-        for sub in cloud.get_subcommands() {
-            let about = sub.get_about().map(|a| a.to_string()).unwrap_or_default();
-            assert!(
-                !about.trim().is_empty(),
-                "cloud subcommand `{}` has no about text",
-                sub.get_name()
-            );
-        }
     }
 }

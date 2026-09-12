@@ -105,12 +105,35 @@ impl TestContext {
         })
     }
 
+    /// Keep generated resource names within the Cloud service name limit. Hash
+    /// the full run ID before shortening, so a shared label prefix does not
+    /// collapse distinct runs. Reserve the suffix before trimming the label.
+    fn resource_name(&self, prefix: &str, suffix: &str) -> String {
+        const MAX_NAME_CHARS: usize = 50;
+        let name = format!("{prefix}{}{suffix}", self.run_id);
+        if name.chars().count() <= MAX_NAME_CHARS {
+            return name;
+        }
+        // Fixed FNV-1a keeps names reproducible across processes and Rust
+        // versions; this fingerprint is for collision avoidance, not security.
+        let hash = self
+            .run_id
+            .bytes()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+            });
+        let fingerprint = format!("{hash:016x}");
+        let label_budget = MAX_NAME_CHARS - prefix.len() - suffix.len() - fingerprint.len() - 1;
+        let label: String = self.run_id.chars().take(label_budget).collect();
+        format!("{prefix}{label}-{fingerprint}{suffix}")
+    }
+
     pub fn service_name(&self) -> String {
-        format!("clickhousectl-it-{}", self.run_id)
+        self.resource_name("clickhousectl-it-", "")
     }
 
     pub fn updated_service_name(&self) -> String {
-        format!("{}-updated", self.service_name())
+        self.resource_name("clickhousectl-it-", "-updated")
     }
 
     pub fn run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -139,11 +162,11 @@ impl TestContext {
     }
 
     pub fn postgres_service_name(&self) -> String {
-        format!("clickhousectl-it-pg-{}", self.run_id)
+        self.resource_name("clickhousectl-it-pg-", "")
     }
 
     pub fn postgres_replica_name(&self) -> String {
-        format!("clickhousectl-it-pgrr-{}", self.run_id)
+        self.resource_name("clickhousectl-it-pgrr-", "")
     }
 
     pub fn postgres_run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -209,11 +232,11 @@ impl TestContext {
     }
 
     pub fn clickpipe_service_name(&self) -> String {
-        format!("clickhousectl-it-cp-{}", self.run_id)
+        self.resource_name("clickhousectl-it-cp-", "")
     }
 
     pub fn clickpipe_postgres_service_name(&self) -> String {
-        format!("clickhousectl-it-cp-pg-{}", self.run_id)
+        self.resource_name("clickhousectl-it-cp-pg-", "")
     }
 
     pub fn clickpipe_run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -244,7 +267,7 @@ impl TestContext {
     /// Shared service name for the multi-source E2E driver — one ClickHouse
     /// service hosts all per-source stages in a run.
     pub fn clickpipe_e2e_service_name(&self) -> String {
-        format!("clickhousectl-it-cp-e2e-{}", self.run_id)
+        self.resource_name("clickhousectl-it-cp-e2e-", "")
     }
 
     pub fn clickpipe_e2e_run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -275,25 +298,25 @@ impl TestContext {
     /// S3 bucket names must be globally unique, 3–63 chars, lowercase letters,
     /// digits, hyphens. `run_id` is already constrained to safe chars.
     pub fn aws_s3_bucket_name(&self) -> String {
-        let raw = format!("clickhousectl-e2e-s3-{}", self.run_id);
+        let raw = self.resource_name("clickhousectl-e2e-s3-", "");
         // S3 forbids underscores; substitute for safety even if run_id is clean today.
         raw.replace('_', "-").to_ascii_lowercase()
     }
 
     pub fn aws_iam_role_name(&self) -> String {
-        format!("clickhousectl-e2e-s3-{}", self.run_id)
+        self.resource_name("clickhousectl-e2e-s3-", "")
     }
 
     /// Kinesis stream names: 1–128 chars, `[A-Za-z0-9_.-]`. `run_id` is already
     /// safe but keep this distinct from the S3 role/bucket names for clarity.
     pub fn aws_kinesis_stream_name(&self) -> String {
-        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+        self.resource_name("clickhousectl-e2e-kinesis-", "")
     }
 
     /// IAM role name dedicated to the Kinesis stage (trust scoped to the
     /// per-test CHC service principal).
     pub fn aws_kinesis_iam_role_name(&self) -> String {
-        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+        self.resource_name("clickhousectl-e2e-kinesis-", "")
     }
 }
 
@@ -420,7 +443,7 @@ impl FailureRecorder {
 pub struct ClickhouseSettingRestore {
     pub service_id: String,
     pub setting_name: String,
-    pub original_value: String,
+    pub original_value: serde_json::Value,
 }
 
 #[derive(Default)]
@@ -443,6 +466,8 @@ pub struct CleanupRegistry {
     // before the key they point to, otherwise we can't distinguish "binding
     // cleanup works" from "API key was already gone."
     query_endpoint_service_ids: Vec<String>,
+    // Saved Query API endpoints are distinct from instance-level bindings.
+    query_api_endpoints: Vec<(String, String)>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
     clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
@@ -532,6 +557,8 @@ impl CleanupRegistry {
         self.api_key_ids.append(&mut other.api_key_ids);
         self.query_endpoint_service_ids
             .append(&mut other.query_endpoint_service_ids);
+        self.query_api_endpoints
+            .append(&mut other.query_api_endpoints);
         self.role_ids.append(&mut other.role_ids);
         self.invitation_ids.append(&mut other.invitation_ids);
         self.clickhouse_setting_restores
@@ -560,6 +587,20 @@ impl CleanupRegistry {
             .retain(|registered| registered != service_id);
     }
 
+    pub fn register_query_api_endpoint(
+        &mut self,
+        service_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
+    ) {
+        self.query_api_endpoints
+            .push((service_id.into(), endpoint_id.into()));
+    }
+
+    pub fn unregister_query_api_endpoint(&mut self, service_id: &str, endpoint_id: &str) {
+        self.query_api_endpoints
+            .retain(|(service, endpoint)| service != service_id || endpoint != endpoint_id);
+    }
+
     pub fn register_role(&mut self, role_id: impl Into<String>) {
         self.role_ids.push(role_id.into());
     }
@@ -581,7 +622,7 @@ impl CleanupRegistry {
         &mut self,
         service_id: impl Into<String>,
         setting_name: impl Into<String>,
-        original_value: impl Into<String>,
+        original_value: impl Into<serde_json::Value>,
     ) {
         self.clickhouse_setting_restores
             .push(ClickhouseSettingRestore {
@@ -696,23 +737,11 @@ impl CleanupRegistry {
         // them. If the service is already gone (e.g. test deleted it as part of
         // its body) the restore call will 404 and is skipped.
         while let Some(restore) = self.clickhouse_setting_restores.pop() {
-            // The `settings` field on the API is a JSON-encoded string; build
-            // it with serde_json so quotes / backslashes in the original value
-            // round-trip correctly.
-            let inner = match serde_json::to_string(&serde_json::json!({
-                restore.setting_name.clone(): restore.original_value.clone(),
-            })) {
-                Ok(s) => s,
-                Err(e) => {
-                    failures.push(format!(
-                        "serialize clickhouse setting restore body for {} on {}: {}",
-                        restore.setting_name, restore.service_id, e
-                    ));
-                    continue;
-                }
-            };
             let body = ServiceClickhouseSettingsPatchRequest {
-                settings: Some(inner),
+                settings: Some(std::collections::BTreeMap::from([(
+                    restore.setting_name.clone(),
+                    serde_json::json!(restore.original_value),
+                )])),
             };
             match client
                 .service_clickhouse_settings_update(org_id, &restore.service_id, &body)
@@ -748,6 +777,21 @@ impl CleanupRegistry {
                     "upgrade window restore {service_id}: {error}",
                     service_id = restore.service_id
                 ));
+            }
+        }
+
+        // Saved endpoints also reference API keys and services. Delete only
+        // endpoint IDs created and registered by this test, before either parent.
+        while let Some((service_id, endpoint_id)) = self.query_api_endpoints.pop() {
+            match client
+                .query_api_endpoint_delete(org_id, &service_id, &endpoint_id)
+                .await
+            {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!(
+                    "query API endpoint {endpoint_id} on {service_id}: {e}"
+                )),
             }
         }
 
@@ -1572,5 +1616,95 @@ fn optional_env(name: &str) -> Option<String> {
     match env::var(name) {
         Ok(value) if !value.is_empty() => Some(value),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn context(run_id: &str) -> TestContext {
+        TestContext {
+            org_id: String::new(),
+            provider: String::new(),
+            region: String::new(),
+            run_id: run_id.to_owned(),
+            secondary_user_id: None,
+            create_timeout: Duration::ZERO,
+            delete_timeout: Duration::ZERO,
+            steady_state_timeout: Duration::ZERO,
+            poll_interval: Duration::ZERO,
+            continue_on_non_blocking_failures: false,
+        }
+    }
+
+    fn names(ctx: &TestContext) -> [String; 11] {
+        [
+            ctx.service_name(),
+            ctx.updated_service_name(),
+            ctx.postgres_service_name(),
+            ctx.postgres_replica_name(),
+            ctx.clickpipe_service_name(),
+            ctx.clickpipe_postgres_service_name(),
+            ctx.clickpipe_e2e_service_name(),
+            ctx.aws_s3_bucket_name(),
+            ctx.aws_iam_role_name(),
+            ctx.aws_kinesis_stream_name(),
+            ctx.aws_kinesis_iam_role_name(),
+        ]
+    }
+
+    #[test]
+    fn all_name_builders_respect_limit_for_arbitrary_run_labels() {
+        for run_id in [
+            String::new(),
+            "nightly-1c577b3".to_owned(),
+            "manual-33677928044-1c577b3".to_owned(),
+            "long-label-".repeat(1000),
+            "é🦀".repeat(1000),
+        ] {
+            let ctx = context(&run_id);
+            for name in names(&ctx) {
+                assert!(name.chars().count() <= 50, "{name}");
+            }
+            assert!(ctx.updated_service_name().ends_with("-updated"));
+            // Each Cloud resource keeps its distinct purpose, even when the
+            // run ID consumes the entire available label budget.
+            assert_eq!(names(&ctx)[..7].iter().collect::<HashSet<_>>().len(), 7);
+            assert_eq!(names(&ctx), names(&ctx));
+        }
+    }
+
+    #[test]
+    fn shortening_preserves_distinct_run_tails() {
+        let shared_prefix = "same-prefix-".repeat(100);
+        let first = context(&format!("{shared_prefix}a-1c577b3"));
+        let second = context(&format!("{shared_prefix}b-1c577b3"));
+        let other_commit = context(&format!("{shared_prefix}a-7654321"));
+        for ((first, second), other_commit) in names(&first)
+            .into_iter()
+            .zip(names(&second))
+            .zip(names(&other_commit))
+        {
+            assert_ne!(first, second);
+            assert_ne!(first, other_commit);
+        }
+    }
+
+    #[test]
+    fn short_names_and_exact_limit_are_preserved() {
+        let ctx = context("pr-676-1c577b3");
+        assert_eq!(ctx.service_name(), "clickhousectl-it-pr-676-1c577b3");
+        assert_eq!(
+            ctx.updated_service_name(),
+            "clickhousectl-it-pr-676-1c577b3-updated"
+        );
+        let ctx = context(&"a".repeat(50 - "clickhousectl-it-".len() - "-updated".len()));
+        assert_eq!(
+            ctx.updated_service_name(),
+            format!("clickhousectl-it-{}-updated", ctx.run_id)
+        );
+        assert_eq!(ctx.updated_service_name().len(), 50);
     }
 }

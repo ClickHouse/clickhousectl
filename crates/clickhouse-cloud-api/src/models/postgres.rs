@@ -1081,7 +1081,7 @@ pub struct PostgresQueryExecution {
     #[serde(rename = "dbUser", skip_serializing_if = "Option::is_none")]
     pub db_user: Option<String>,
     #[serde(rename = "durationUs", skip_serializing_if = "Option::is_none")]
-    pub duration_us: Option<i64>,
+    pub duration_us: Option<f64>,
     #[serde(rename = "errElevel", skip_serializing_if = "Option::is_none")]
     pub err_elevel: Option<i64>,
     #[serde(rename = "errMessage", skip_serializing_if = "Option::is_none")]
@@ -1180,7 +1180,7 @@ pub struct PostgresSlowQueryPattern {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app: Option<String>,
     #[serde(rename = "avgDurationUs", skip_serializing_if = "Option::is_none")]
-    pub avg_duration_us: Option<i64>,
+    pub avg_duration_us: Option<f64>,
     #[serde(rename = "callCount", skip_serializing_if = "Option::is_none")]
     pub call_count: Option<i64>,
     #[serde(rename = "dbName", skip_serializing_if = "Option::is_none")]
@@ -1192,13 +1192,13 @@ pub struct PostgresSlowQueryPattern {
     #[serde(rename = "errorCount", skip_serializing_if = "Option::is_none")]
     pub error_count: Option<i64>,
     #[serde(rename = "maxDurationUs", skip_serializing_if = "Option::is_none")]
-    pub max_duration_us: Option<i64>,
+    pub max_duration_us: Option<f64>,
     #[serde(rename = "p50DurationUs", skip_serializing_if = "Option::is_none")]
-    pub p50_duration_us: Option<i64>,
+    pub p50_duration_us: Option<f64>,
     #[serde(rename = "p95DurationUs", skip_serializing_if = "Option::is_none")]
-    pub p95_duration_us: Option<i64>,
+    pub p95_duration_us: Option<f64>,
     #[serde(rename = "p99DurationUs", skip_serializing_if = "Option::is_none")]
-    pub p99_duration_us: Option<i64>,
+    pub p99_duration_us: Option<f64>,
     #[serde(rename = "queryId", skip_serializing_if = "Option::is_none")]
     pub query_id: Option<String>,
     #[serde(rename = "queryText", skip_serializing_if = "Option::is_none")]
@@ -1206,7 +1206,7 @@ pub struct PostgresSlowQueryPattern {
     #[serde(rename = "totalCpuTimeUs", skip_serializing_if = "Option::is_none")]
     pub total_cpu_time_us: Option<i64>,
     #[serde(rename = "totalDurationUs", skip_serializing_if = "Option::is_none")]
-    pub total_duration_us: Option<i64>,
+    pub total_duration_us: Option<f64>,
     #[serde(rename = "totalRows", skip_serializing_if = "Option::is_none")]
     pub total_rows: Option<i64>,
     #[serde(rename = "totalSharedBlksHit", skip_serializing_if = "Option::is_none")]

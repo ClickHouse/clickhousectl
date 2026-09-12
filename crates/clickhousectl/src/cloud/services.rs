@@ -9,7 +9,9 @@ use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
 use crate::cloud::service_query::{RepairVerification, existing_open_api_keys};
-use crate::cloud::shared::{parse_ip_access_entries, parse_serde_enum, parse_tags, resolve_org_id};
+use crate::cloud::shared::{
+    parse_ip_access_entries, parse_serde_enum, parse_tag_filter, parse_tags, resolve_org_id,
+};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningState};
 use clap::builder::PossibleValuesParser;
@@ -65,8 +67,8 @@ pub enum ServiceCommands {
         #[arg(long)]
         org_id: Option<String>,
 
-        /// Filter by resource tag, e.g. "tag:env=production" (repeatable)
-        #[arg(long)]
+        /// Filter by resource tag: `tag:KEY=VALUE` or `tag:KEY` (repeatable)
+        #[arg(long, value_parser = parse_tag_filter)]
         filter: Vec<String>,
     },
 
@@ -590,11 +592,12 @@ pub enum QueryEndpointCommands {
     },
 
     /// Create or update the Query API endpoint
-    #[command(after_help = "CONTEXT FOR AGENTS:\n\
-        Existing API keys are preserved unless --replace-open-api-keys is set.\n\
-        Roles replace the endpoint-wide role list for every authorized key.\n\
-        First creation requires --allowed-origins; use '*' explicitly for all.\n\
-        Avoid concurrent changes to the same endpoint.")]
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Existing API keys are preserved unless --replace-open-api-keys is set.
+  Roles replace the endpoint-wide role list for every authorized key.
+  First creation requires --allowed-origins; use '*' explicitly for all.
+  Avoid concurrent changes to the same endpoint.")]
     Create {
         /// Service ID
         service_id: String,
@@ -719,9 +722,10 @@ pub enum ServiceSettingsCommands {
     /// Set one or more ClickHouse settings
     #[command(
         group(ArgGroup::new("settings_input").required(true).args(["setting", "settings_file"])),
-        after_help = "CONTEXT FOR AGENTS:\n\
-  Discover supported names and types with `settings schema <service-id>`.\n\
-  --setting values are JSON literals; quote string values inside the argument.\n\
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Discover supported names and types with `settings schema <service-id>`.
+  --setting values are JSON literals; quote string values inside the argument.
   --settings-file reads a JSON settings map; `-` reads stdin. Only named settings change."
     )]
     Set {
@@ -770,9 +774,10 @@ pub enum ScalingScheduleCommands {
     /// Create or replace the scaling schedule
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  --file is a JSON ScalingSchedulePostRequest; '-' reads it from stdin.
+  --file is a JSON object with an entries array; '-' reads it from stdin.
   Set replaces every existing entry. Get, edit only entries, then set to preserve other entries.
-  Hours and weekdays are UTC. baseConfig is response-only and must not be sent.")]
+  Hours and weekdays are UTC.
+  Omit response-only baseConfig and each entry's id and isActiveNow when setting a schedule.")]
     Set {
         /// Service ID
         service_id: String,
@@ -1634,12 +1639,39 @@ async fn service_profile_list(
     Ok(())
 }
 
+// serde_json preserves i64/u64 integers, but falls back to f64 for overflow
+// and exponent/decimal literals. Reject that representation before it can be
+// rounded and sent, including numbers nested in future setting value shapes.
+fn validate_setting_numbers(value: &serde_json::Value, source: &str) -> CloudResult<()> {
+    match value {
+        serde_json::Value::Number(number) if number.is_f64() => Err(CloudError::new(format!(
+            "{source}: numeric settings must be integers from {} to {}; decimal and exponent values must be JSON strings",
+            i64::MIN,
+            u64::MAX
+        ))),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                validate_setting_numbers(value, source)?;
+            }
+            Ok(())
+        }
+        serde_json::Value::Object(values) => {
+            for value in values.values() {
+                validate_setting_numbers(value, source)?;
+            }
+            Ok(())
+        }
+        _ => Ok(()),
+    }
+}
+
 fn parse_settings_map_document(
     raw: &str,
     source: &str,
 ) -> CloudResult<BTreeMap<String, serde_json::Value>> {
     let value: serde_json::Value = serde_json::from_str(raw)
         .map_err(|error| CloudError::new(format!("invalid JSON in {source}: {error}")))?;
+    validate_setting_numbers(&value, source)?;
     let object = value.as_object().ok_or_else(|| {
         CloudError::new(format!(
             "{source} must contain a JSON object mapping setting names to values"
@@ -1684,6 +1716,7 @@ fn parse_setting_assignments(
                 "--setting #{position} value is not valid JSON: {error}; quote string values, for example compatibility=\"24.8\""
             ))
         })?;
+        validate_setting_numbers(&value, &format!("--setting #{position} ('{name}')"))?;
         if settings.insert(name.to_string(), value).is_some() {
             return Err(CloudError::new(format!(
                 "setting '{name}' was provided more than once"
@@ -1702,11 +1735,15 @@ fn read_service_settings(
 
         let (raw, source) = if path == "-" {
             let mut raw = String::new();
-            std::io::stdin().read_to_string(&mut raw)?;
+            std::io::stdin().read_to_string(&mut raw).map_err(|error| {
+                CloudError::new(format!("failed to read settings from stdin: {error}"))
+            })?;
             (raw, "stdin".to_string())
         } else {
             (
-                std::fs::read_to_string(path)?,
+                std::fs::read_to_string(path).map_err(|error| {
+                    CloudError::new(format!("failed to read settings file '{path}': {error}"))
+                })?,
                 format!("settings file '{path}'"),
             )
         };
@@ -1723,7 +1760,7 @@ fn build_service_settings_patch_request(
         return Err(CloudError::new("provide at least one ClickHouse setting"));
     }
     Ok(ServiceClickhouseSettingsPatchRequest {
-        settings: Some(serde_json::to_string(settings)?),
+        settings: Some(settings.clone()),
     })
 }
 
@@ -1758,7 +1795,10 @@ async fn service_settings_list(
             .into_iter()
             .map(|setting| Row {
                 name: or_absent(setting.name),
-                value: or_absent(setting.value),
+                value: or_absent(setting.value.map(|value| match value {
+                    serde_json::Value::String(value) => value,
+                    value => value.to_string(),
+                })),
             })
             .collect::<Vec<_>>();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -2572,15 +2612,30 @@ impl StopPollProgress {
     }
 }
 
-fn service_delete_error(error: CloudError, force: bool, service_id: &str) -> CloudError {
-    if !force
-        && error.message.starts_with("CONFLICT:")
-        && error.message.contains("Current state: 'running'")
-    {
-        CloudError::new(format!(
-            "service is running and cannot be deleted. Use --force to stop it first, or \
-             `clickhousectl cloud service stop {service_id}`."
-        ))
+fn service_delete_conflict(error: CloudError, service_id: &str) -> CloudError {
+    let api_message = error.message.clone();
+    let message = format!(
+        "service could not be deleted because of a conflict. If it is running, use --force to \
+         stop it first, or `clickhousectl cloud service stop {service_id}`. API response: \
+         {api_message}"
+    );
+    CloudError { message, ..error }
+}
+
+fn service_delete_error(
+    client: &CloudClient,
+    error: clickhouse_cloud_api::Error,
+    force: bool,
+    service_id: &str,
+    org_id: &str,
+) -> CloudError {
+    let is_conflict = matches!(&error, clickhouse_cloud_api::Error::Api { status: 409, .. });
+    let error = client.convert_error_for_lookup(
+        error,
+        ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
+    );
+    if is_conflict && !force {
+        service_delete_conflict(error, service_id)
     } else {
         error
     }
@@ -2633,10 +2688,7 @@ async fn service_delete(
         }
     }
 
-    let response = client
-        .delete_service(&org_id, service_id)
-        .await
-        .map_err(|error| service_delete_error(error, force, service_id))?;
+    let response = client.delete_service(&org_id, service_id, force).await?;
     cleanup_service_query_key(client, &org_id, service_id, &query_key_ids).await?;
     if !retain_query_key {
         credentials::remove_service_query_key(service_id)?;
@@ -3582,10 +3634,10 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                         return Err(refused_query_provisioning_error(&service_id, &error)
                             .at_stage(FailureStage::QueryRequest));
                     }
-                    eprintln!(
+                    eprint_line(format!(
                         "Provisioning Query API endpoint + key for service '{}'...",
                         service_name
-                    );
+                    ));
                     failure::set_provisioning_state(ProvisioningState::Provisioning);
                     let key = crate::cloud::service_query::ensure_service_query_setup(
                         client,
@@ -3645,7 +3697,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         QueryOutputCompletion::Newline => handle
             .write_all(b"\n")
             .map_err(|error| stream_failure(CloudError::from(error)))?,
-        QueryOutputCompletion::Acknowledge => eprintln!("OK"),
+        QueryOutputCompletion::Acknowledge => eprint_line("OK"),
     }
     handle
         .flush()
@@ -3683,7 +3735,9 @@ fn query_format_uses_text_lines(format: &str) -> bool {
 }
 
 fn eprint_waking_service(service_name: &str) {
-    eprintln!("Service '{service_name}' is idle; waking it (this may take a minute)...");
+    eprint_line(format!(
+        "Service '{service_name}' is idle; waking it (this may take a minute)..."
+    ));
 }
 
 /// A service's native-protocol (`nativesecure`) endpoint.
@@ -4325,20 +4379,13 @@ impl CloudClient {
         &self,
         org_id: &str,
         service_id: &str,
+        force: bool,
     ) -> crate::cloud::client::Result<DeleteResponse> {
         let response = self
             .api()
             .instance_delete(org_id, service_id)
             .await
-            .map_err(|error| {
-                // A delete by identifier carries the same single class of
-                // user input as the read, so the same 400 means the same
-                // thing (#666).
-                self.convert_error_for_lookup(
-                    error,
-                    ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
-                )
-            })?;
+            .map_err(|error| service_delete_error(self, error, force, service_id, org_id))?;
         Ok(DeleteResponse {
             status: response.status,
             request_id: response.request_id,
@@ -4815,6 +4862,44 @@ mod tests {
         };
         assert_eq!(org_id.as_deref(), Some("org-1"));
         assert_eq!(filter, vec!["tag:env=prod", "tag:team=analytics"]);
+    }
+
+    #[test]
+    fn service_list_tag_filters_preserve_api_grammar() {
+        for value in ["tag:env=prod", "tag:active", "tag:empty=", "tag:expr=a=b"] {
+            let command = parse_service(&[
+                "clickhousectl",
+                "cloud",
+                "service",
+                "list",
+                "--filter",
+                value,
+            ]);
+            let ServiceCommands::List { filter, .. } = command else {
+                panic!("expected service list");
+            };
+            assert_eq!(filter, [value]);
+        }
+        for value in [
+            "garbage",
+            "state=running",
+            "env=prod",
+            "tag:",
+            "tag:=x",
+            "tag: =x",
+        ] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "service",
+                "list",
+                "--filter",
+                value,
+            ])
+            .err()
+            .expect("malformed filter must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
     }
 
     #[test]
@@ -7289,30 +7374,98 @@ mod tests {
     }
 
     #[test]
-    fn service_delete_error_suggests_force_for_a_running_service() {
-        let error = CloudError::new(
-            "CONFLICT: Only instance in one of the following states can be terminated. \
-             Current state: 'running'",
+    fn service_delete_error_uses_the_api_status_and_preserves_classification() {
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let error = clickhouse_cloud_api::Error::Api {
+            status: 409,
+            message: "opaque conflict response".into(),
+        };
+        let rewritten = service_delete_error(&client, error, false, "svc-1", "org-1");
+
+        assert_eq!(
+            rewritten.message,
+            "service could not be deleted because of a conflict. If it is running, use --force \
+             to stop it first, or `clickhousectl cloud service stop svc-1`. API response: opaque \
+             conflict response"
         );
         assert_eq!(
-            service_delete_error(error, false, "svc-1").message,
-            "service is running and cannot be deleted. Use --force to stop it first, or \
-             `clickhousectl cloud service stop svc-1`."
+            rewritten.kind,
+            crate::cloud::client::CloudErrorKind::Generic
+        );
+        assert_eq!(
+            rewritten.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 409))
         );
     }
 
     #[test]
-    fn service_delete_error_preserves_unrelated_and_forced_failures() {
-        let unrelated = CloudError::new("CONFLICT: service has dependent resources");
+    fn service_delete_error_does_not_classify_from_message_text() {
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let running_prose = || clickhouse_cloud_api::Error::Api {
+            status: 400,
+            message: "CONFLICT: Current state: 'running'".into(),
+        };
+
+        let ordinary = service_delete_error(&client, running_prose(), false, "svc-1", "org-1");
+        assert_eq!(ordinary.message, "CONFLICT: Current state: 'running'");
         assert_eq!(
-            service_delete_error(unrelated, false, "svc-1").message,
-            "CONFLICT: service has dependent resources"
+            ordinary.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 400))
         );
-        let forced = CloudError::new("CONFLICT: Current state: 'running'");
+
+        let forced = service_delete_error(
+            &client,
+            clickhouse_cloud_api::Error::Api {
+                status: 409,
+                message: "opaque conflict response".into(),
+            },
+            true,
+            "svc-1",
+            "org-1",
+        );
+        assert_eq!(forced.message, "opaque conflict response");
         assert_eq!(
-            service_delete_error(forced, true, "svc-1").message,
-            "CONFLICT: Current state: 'running'"
+            forced.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 409))
         );
+    }
+
+    #[test]
+    fn service_delete_conflict_preserves_converted_error_metadata() {
+        let detail = CloudErrorDetail {
+            code: CloudErrorCode::ResourceNotFound,
+            message: "structured error".into(),
+            host: None,
+            port: None,
+            command: Some("cloud service list".into()),
+            api_key_id: None,
+            ip_access_list: None,
+        };
+        let error = CloudError::auth("opaque conflict response")
+            .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 409))
+            .with_details(detail);
+
+        let rewritten = service_delete_conflict(error, "svc-1");
+
+        assert_eq!(rewritten.kind, crate::cloud::client::CloudErrorKind::Auth);
+        assert_eq!(
+            rewritten.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 409))
+        );
+        let detail = rewritten.details.as_deref().expect("structured details");
+        assert_eq!(detail.code, CloudErrorCode::ResourceNotFound);
+        assert_eq!(detail.message, "structured error");
+        assert_eq!(detail.command.as_deref(), Some("cloud service list"));
     }
 
     #[test]
@@ -8548,13 +8701,10 @@ mod tests {
     }
 
     #[test]
-    fn builds_settings_patch_with_json_encoded_string_and_preserved_types() {
+    fn builds_settings_patch_with_object_and_preserved_types() {
         let minimal = BTreeMap::from([("compatibility".to_string(), serde_json::json!("24.8"))]);
         let request = build_service_settings_patch_request(&minimal).unwrap();
-        assert_eq!(
-            request.settings.as_deref(),
-            Some(r#"{"compatibility":"24.8"}"#)
-        );
+        assert_eq!(request.settings, Some(minimal));
 
         let maximal = BTreeMap::from([
             ("bool_setting".to_string(), serde_json::json!(false)),
@@ -8567,9 +8717,9 @@ mod tests {
             ),
         ]);
         let request = build_service_settings_patch_request(&maximal).unwrap();
-        let encoded = request.settings.as_deref().unwrap();
+        assert_eq!(request.settings, Some(maximal.clone()));
         assert_eq!(
-            serde_json::from_str::<serde_json::Value>(encoded).unwrap(),
+            serde_json::to_value(&request).unwrap()["settings"],
             serde_json::json!({
                 "bool_setting": false,
                 "null_setting": null,

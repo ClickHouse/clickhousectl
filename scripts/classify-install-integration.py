@@ -42,8 +42,11 @@ INSTALL_PREFIXES = ("crates/clickhousectl/src/version_manager/",)
 # inventory test to reject an unclassified new shared/local source or test.
 NON_INSTALL_EXACT_PATHS = frozenset(
     {
+        "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
+        "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
         "crates/clickhousectl/src/cloud/clickstack.rs",
         "crates/clickhousectl/src/cloud/config.rs",
+        "crates/clickhousectl/src/cloud/query_api_endpoints.rs",
         "crates/clickhousectl/src/cloud/udfs.rs",
         "crates/clickhousectl/src/dotenv.rs",
         "crates/clickhousectl/src/failure.rs",
@@ -56,9 +59,11 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/tests/cli_request_shape_test.rs",
         "crates/clickhousectl/tests/local_client_project_scope_errors_test.rs",
         "crates/clickhousectl/tests/local_client_selectors_test.rs",
+        "crates/clickhousectl/tests/local_client_output_contract_test.rs",
         "crates/clickhousectl/tests/local_docker_diagnostics_test.rs",
         "crates/clickhousectl/tests/local_docker_pull_progress_test.rs",
         "crates/clickhousectl/tests/local_init_json_test.rs",
+        "crates/clickhousectl/tests/local_postgres_client_input_test.rs",
         "crates/clickhousectl/tests/local_postgres_readiness_test.rs",
         "crates/clickhousectl/tests/local_postgres_start_validation_test.rs",
         "crates/clickhousectl/tests/local_remove_default_test.rs",

@@ -136,6 +136,7 @@ mod members;
 mod organization_private_endpoints;
 mod organizations;
 mod postgres;
+mod query_api_endpoints;
 mod quotas;
 mod rbac;
 mod scim;
@@ -200,6 +201,11 @@ pub use postgres::{
     PostgresSlowQueryPatternDetail, SlowQueryPatternsGetListSortby,
     SlowQueryPatternsGetListSortorder,
 };
+pub use query_api_endpoints::{
+    PublicQueryApiEndpoint, PublicQueryApiEndpointListItem,
+    PublicQueryApiEndpointListItemOwnertype, PublicQueryApiEndpointOwnertype,
+    PublicQueryApiEndpointRequest, QueryApiEndpointListResponse,
+};
 pub use quotas::{OrganizationQuota, OrganizationQuotaQuotacode, OrganizationQuotaScope};
 pub use rbac::{
     RBACPolicy, RBACPolicyAllowdeny, RBACPolicyCreateRequest, RBACPolicyCreateRequestAllowdeny,
@@ -225,8 +231,10 @@ pub use services::{
     PrivateEndpointConfig, QueryEndpointRole, ScalingSchedule, ScalingScheduleBaseConfig,
     ScalingScheduleEntry, ScalingScheduleEntryRequest, ScalingSchedulePostRequest,
     ServicPrivateEndpointePostRequest, Service, ServiceClickhouseSetting,
-    ServiceClickhouseSettingSchemaEntry, ServiceClickhouseSettingWarning,
-    ServiceClickhouseSettingsList, ServiceClickhouseSettingsPatchRequest,
+    ServiceClickhouseSettingSchemaEntry, ServiceClickhouseSettingValue,
+    ServiceClickhouseSettingValueResponse, ServiceClickhouseSettingWarning,
+    ServiceClickhouseSettingsList, ServiceClickhouseSettingsMap,
+    ServiceClickhouseSettingsMapResponse, ServiceClickhouseSettingsPatchRequest,
     ServiceClickhouseSettingsPatchResponse, ServiceClickhouseSettingsSchema, ServiceCompliancetype,
     ServiceEndpoint, ServiceEndpointChange, ServiceEndpointChangeProtocol, ServiceEndpointProtocol,
     ServicePasswordPatchRequest, ServicePasswordPatchResponse, ServicePatchRequest,

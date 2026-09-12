@@ -16,6 +16,7 @@ NO_SUITES = frozenset()
 SOURCE_PATH_SUITES = {
     "crates/clickhousectl/src/cloud/clickstack.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/config.rs": NO_SUITES,
+    "crates/clickhousectl/src/cloud/query_api_endpoints.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/udfs.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/client.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/client/activity.rs": frozenset({"organization"}),
@@ -33,6 +34,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/client/postgres.rs": frozenset(
         {"postgres", "clickpipes"}
     ),
+    "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/services.rs": frozenset(
         {"service", "clickpipes"}
     ),
@@ -80,6 +82,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/models/postgres.rs": frozenset(
         {"postgres", "clickpipes"}
     ),
+    "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/models/quotas.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/rbac.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/models/scim.rs": NO_SUITES,
@@ -92,6 +95,8 @@ SOURCE_PATH_SUITES = {
 }
 
 TEST_PATH_SUITES = {
+    "crates/clickhousectl/tests/local_client_output_contract_test.rs": NO_SUITES,
+    "crates/clickhousectl/tests/local_postgres_client_input_test.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/clickpipes/driver.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/clickpipes/e2e_test.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/clickpipes/kafka_test.rs": NO_SUITES,

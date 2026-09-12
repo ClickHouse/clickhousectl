@@ -303,6 +303,10 @@ fn exhausted_auto_port_range_does_not_block_resume() {
     let body: Value = serde_json::from_slice(&output.stdout).expect("parse start JSON");
     assert_eq!(body["port"], stored_port);
     assert_eq!(body["container_id"], "existing-container");
+    assert_eq!(
+        std::fs::read_to_string(project.path().join(".clickhouse/.gitignore")).unwrap(),
+        "*\n"
+    );
 }
 
 #[test]

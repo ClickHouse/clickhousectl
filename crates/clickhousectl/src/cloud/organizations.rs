@@ -1,7 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, ResourceLookup, Result as CloudResult};
 use crate::cloud::config::read_typed_config;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
-use crate::cloud::shared::{parse_date_only, resolve_org_id};
+use crate::cloud::shared::{parse_date_only, parse_tag_filter, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use clap::Subcommand;
 use clickhouse_cloud_api::models::{
@@ -21,8 +21,13 @@ pub enum OrgCommands {
 
     /// Get organization details
     Get {
-        /// Organization ID
-        org_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Organization ID (deprecated positional form; use --org-id)
+        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
+        legacy_org_id: Option<String>,
     },
 
     /// View organization quotas (Beta)
@@ -61,8 +66,13 @@ CONTEXT FOR AGENTS:
   Only the flags you pass change; everything else is left as-is.
   This can only remove private endpoints; add them with `cloud service update --add-private-endpoint-id`.")]
     Update {
-        /// Organization ID
-        org_id: String,
+        /// Organization ID (auto-detected only if you have one org)
+        #[arg(long)]
+        org_id: Option<String>,
+
+        /// Organization ID (deprecated positional form; use --org-id)
+        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
+        legacy_org_id: Option<String>,
 
         /// New organization name
         #[arg(long)]
@@ -70,10 +80,11 @@ CONTEXT FOR AGENTS:
 
         /// Remove a private endpoint from the org allow list (repeatable)
         ///
-        /// Format: id[,description=TEXT][,cloud-provider=aws|gcp|azure][,region=REGION]
-        ///
-        /// Omitting cloud-provider or region sends gcp / ap-northeast-1, not "unchanged".
-        #[arg(long = "remove-private-endpoint")]
+        /// Format: id[,description=TEXT],cloud-provider=aws|gcp|azure,region=REGION
+        #[arg(
+            long = "remove-private-endpoint",
+            value_parser = parse_org_private_endpoint_remove_arg
+        )]
         remove_private_endpoint: Vec<String>,
 
         /// Enable or disable core dump collection at the organization level
@@ -125,8 +136,8 @@ CONTEXT FOR AGENTS:
         #[arg(long, value_parser = parse_date_only)]
         to_date: String,
 
-        /// Filter by resource tag: `tag:Key=Value` or `tag:Key` (repeatable)
-        #[arg(long)]
+        /// Filter by resource tag: `tag:KEY=VALUE` or `tag:KEY` (repeatable)
+        #[arg(long, value_parser = parse_tag_filter)]
         filter: Vec<String>,
     },
 }
@@ -219,7 +230,7 @@ pub enum ByocCommands {
     /// Create BYOC infrastructure
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Wait for `cloud org get <org-id>` to show state `infra-ready` before creating a service.
+  Wait for `cloud org get --org-id <org-id>` to show state `infra-ready` before creating a service.
   Discover profiles with `cloud service profile list --region <region> --byoc-id <id>`.")]
     Create {
         /// Cloud region ID
@@ -284,7 +295,7 @@ impl ByocCommands {
 
 #[derive(Subcommand)]
 pub enum PrometheusCommands {
-    /// List Prometheus scrape targets (Beta)
+    /// List Prometheus scrape targets
     Discovery,
 }
 
@@ -426,13 +437,21 @@ impl InvitationCommands {
 pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> CloudResult<()> {
     match command {
         OrgCommands::List => org_list(client, json).await,
-        OrgCommands::Get { org_id } => org_get(client, &org_id, json).await,
+        OrgCommands::Get {
+            org_id,
+            legacy_org_id,
+        } => {
+            let org_id =
+                resolve_org_id(client, org_id.as_deref().or(legacy_org_id.as_deref())).await?;
+            org_get(client, &org_id, json).await
+        }
         OrgCommands::Quota { command } => run_quota(client, command, json).await,
         OrgCommands::Balance { org_id } => org_balance(client, org_id.as_deref(), json).await,
         OrgCommands::Byoc { command } => run_byoc(client, command, json).await,
         OrgCommands::Role { command } => run_role(client, command, json).await,
         OrgCommands::Update {
             org_id,
+            legacy_org_id,
             name,
             remove_private_endpoint,
             enable_core_dumps,
@@ -442,7 +461,13 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
                 remove_private_endpoints: remove_private_endpoint,
                 enable_core_dumps,
             };
-            org_update(client, &org_id, options, json).await
+            org_update(
+                client,
+                org_id.as_deref().or(legacy_org_id.as_deref()),
+                options,
+                json,
+            )
+            .await
         }
         OrgCommands::Prometheus {
             command,
@@ -605,12 +630,10 @@ struct OrgUpdateOptions {
 }
 
 fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPatchPrivateEndpoint> {
-    let mut endpoint = OrganizationPatchPrivateEndpoint {
-        id: String::new(),
-        description: None,
-        cloud_provider: OrganizationPatchPrivateEndpointCloudprovider::default(),
-        region: OrganizationPatchPrivateEndpointRegion::default(),
-    };
+    let mut id = String::new();
+    let mut description = None;
+    let mut cloud_provider = None;
+    let mut region = None;
 
     for (index, part) in value.split(',').enumerate() {
         let part = part.trim();
@@ -619,7 +642,7 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
         }
 
         if index == 0 && !part.contains('=') {
-            endpoint.id = part.to_string();
+            id = part.to_string();
             continue;
         }
 
@@ -631,20 +654,35 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
         })?;
 
         match key {
-            "id" => endpoint.id = raw_value.to_string(),
-            "description" => endpoint.description = Some(raw_value.to_string()),
+            "id" => id = raw_value.to_string(),
+            "description" => description = Some(raw_value.to_string()),
             "cloud-provider" => {
-                endpoint.cloud_provider =
+                if raw_value.trim().is_empty() {
+                    return Err(CloudError::new(format!(
+                        "remove-private-endpoint '{}' requires a non-empty cloud-provider",
+                        value
+                    )));
+                }
+                cloud_provider = Some(
                     serde_json::from_value::<OrganizationPatchPrivateEndpointCloudprovider>(
                         serde_json::Value::String(raw_value.to_string()),
                     )
-                    .expect("enum with Unknown variant should always deserialize");
+                    .expect("enum with Unknown variant should always deserialize"),
+                );
             }
             "region" => {
-                endpoint.region = serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
-                    serde_json::Value::String(raw_value.to_string()),
-                )
-                .expect("enum with Unknown variant should always deserialize");
+                if raw_value.trim().is_empty() {
+                    return Err(CloudError::new(format!(
+                        "remove-private-endpoint '{}' requires a non-empty region",
+                        value
+                    )));
+                }
+                region = Some(
+                    serde_json::from_value::<OrganizationPatchPrivateEndpointRegion>(
+                        serde_json::Value::String(raw_value.to_string()),
+                    )
+                    .expect("enum with Unknown variant should always deserialize"),
+                );
             }
             _ => {
                 return Err(CloudError::new(format!(
@@ -655,14 +693,49 @@ fn parse_org_private_endpoint_remove(value: &str) -> CloudResult<OrganizationPat
         }
     }
 
-    if endpoint.id.trim().is_empty() {
+    if id.trim().is_empty() {
         return Err(CloudError::new(format!(
             "remove-private-endpoint '{}' requires a non-empty id",
             value
         )));
     }
 
-    Ok(endpoint)
+    let (cloud_provider, region) = match (cloud_provider, region) {
+        (Some(cloud_provider), Some(region)) => (cloud_provider, region),
+        (None, None) => {
+            return Err(CloudError::new(format!(
+                "remove-private-endpoint '{}' requires cloud-provider and region",
+                value
+            )));
+        }
+        (None, Some(_)) => {
+            return Err(CloudError::new(format!(
+                "remove-private-endpoint '{}' requires cloud-provider",
+                value
+            )));
+        }
+        (Some(_), None) => {
+            return Err(CloudError::new(format!(
+                "remove-private-endpoint '{}' requires region",
+                value
+            )));
+        }
+    };
+
+    Ok(OrganizationPatchPrivateEndpoint {
+        id,
+        description,
+        cloud_provider,
+        region,
+    })
+}
+
+/// Validate endpoint removals during clap parsing so incomplete endpoint
+/// identities fail as usage errors before credentials or networking are used.
+fn parse_org_private_endpoint_remove_arg(value: &str) -> Result<String, String> {
+    parse_org_private_endpoint_remove(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
 }
 
 fn parse_org_private_endpoints_patch(
@@ -974,12 +1047,13 @@ async fn org_balance(client: &CloudClient, org_id: Option<&str>, json: bool) -> 
 
 async fn org_update(
     client: &CloudClient,
-    org_id: &str,
+    org_id: Option<&str>,
     options: OrgUpdateOptions,
     json: bool,
 ) -> CloudResult<()> {
     let request = build_org_update_request(&options)?;
-    let organization = client.update_organization(org_id, &request).await?;
+    let org_id = resolve_org_id(client, org_id).await?;
+    let organization = client.update_organization(&org_id, &request).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&organization)?);
@@ -1822,6 +1896,78 @@ mod tests {
     }
 
     #[test]
+    fn org_get_and_update_hide_only_the_legacy_selector() {
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        let org = cli
+            .find_subcommand("cloud")
+            .unwrap()
+            .find_subcommand("org")
+            .unwrap();
+        for name in ["get", "update"] {
+            let command = org.find_subcommand(name).unwrap();
+            let legacy = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == "legacy_org_id")
+                .unwrap();
+            let flag = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == "org_id")
+                .unwrap();
+            assert!(legacy.is_hide_set());
+            assert!(!legacy.is_required_set());
+            assert_eq!(flag.get_long(), Some("org-id"));
+            assert!(!flag.is_hide_set());
+            assert!(!flag.is_required_set());
+        }
+    }
+
+    #[test]
+    fn org_get_and_update_accept_optional_and_legacy_selectors() {
+        for subcommand in ["get", "update"] {
+            for selector in [vec![], vec!["--org-id", "org-1"], vec!["org-1"]] {
+                let mut args = vec!["clickhousectl", "cloud", "org", subcommand];
+                args.extend(&selector);
+                let CloudCommands::Org { command } = parse_cloud_command(&args) else {
+                    panic!("expected org command");
+                };
+                assert_eq!(command.is_write(), subcommand == "update");
+                let (org_id, legacy_org_id) = match command {
+                    OrgCommands::Get {
+                        org_id,
+                        legacy_org_id,
+                    }
+                    | OrgCommands::Update {
+                        org_id,
+                        legacy_org_id,
+                        ..
+                    } => (org_id, legacy_org_id),
+                    _ => panic!("expected get or update"),
+                };
+                assert_eq!(org_id.as_deref(), (selector.len() == 2).then_some("org-1"));
+                assert_eq!(
+                    legacy_org_id.as_deref(),
+                    (selector.len() == 1).then_some("org-1")
+                );
+            }
+            for positional in ["org-1", "org-2"] {
+                let err = Cli::try_parse_from([
+                    "clickhousectl",
+                    "cloud",
+                    "org",
+                    subcommand,
+                    positional,
+                    "--org-id",
+                    "org-1",
+                ])
+                .err()
+                .expect("conflicting selectors must fail");
+                assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+            }
+        }
+    }
+
+    #[test]
     fn parses_organization_body_command_defaults() {
         let CloudCommands::Org { command } =
             parse_cloud_command(&["clickhousectl", "cloud", "org", "update", "org-1"])
@@ -1830,6 +1976,7 @@ mod tests {
         };
         let OrgCommands::Update {
             org_id,
+            legacy_org_id,
             name,
             remove_private_endpoint,
             enable_core_dumps,
@@ -1837,7 +1984,8 @@ mod tests {
         else {
             panic!("expected org update");
         };
-        assert_eq!(org_id, "org-1");
+        assert!(org_id.is_none());
+        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
         assert!(name.is_none());
         assert!(remove_private_endpoint.is_empty());
         assert!(enable_core_dumps.is_none());
@@ -1905,6 +2053,7 @@ mod tests {
         };
         let OrgCommands::Update {
             org_id,
+            legacy_org_id,
             name,
             remove_private_endpoint,
             enable_core_dumps,
@@ -1912,7 +2061,8 @@ mod tests {
         else {
             panic!("expected org update");
         };
-        assert_eq!(org_id, "org-1");
+        assert!(org_id.is_none());
+        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
         assert_eq!(name.as_deref(), Some("Updated Org"));
         assert_eq!(
             remove_private_endpoint,
@@ -1979,6 +2129,65 @@ mod tests {
         assert_eq!(email, "user@example.com");
         assert_eq!(role_id, vec!["role-1", "role-2"]);
         assert_eq!(org_id.as_deref(), Some("org-1"));
+    }
+
+    #[test]
+    fn parses_minimal_private_endpoint_removal() {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "update",
+            "org-1",
+            "--remove-private-endpoint",
+            "pe-1,cloud-provider=aws,region=us-east-1",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Update {
+            remove_private_endpoint,
+            ..
+        } = command
+        else {
+            panic!("expected org update");
+        };
+
+        assert_eq!(
+            remove_private_endpoint,
+            ["pe-1,cloud-provider=aws,region=us-east-1"]
+        );
+    }
+
+    #[test]
+    fn rejects_incomplete_private_endpoint_removals_during_clap_parsing() {
+        for (value, required) in [
+            ("pe-1,region=us-east-1", "requires cloud-provider"),
+            ("pe-1,cloud-provider=aws", "requires region"),
+            ("pe-1,description=old", "requires cloud-provider and region"),
+            (
+                "pe-1,cloud-provider=,region=us-east-1",
+                "requires a non-empty cloud-provider",
+            ),
+            (
+                "pe-1,cloud-provider=aws,region= ",
+                "requires a non-empty region",
+            ),
+        ] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "org",
+                "update",
+                "org-1",
+                "--remove-private-endpoint",
+                value,
+            ])
+            .err()
+            .expect("incomplete endpoint removal should fail");
+
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert!(error.to_string().contains(required), "{error}");
+        }
     }
 
     #[test]
@@ -2057,6 +2266,50 @@ mod tests {
         assert_eq!(legacy_org_id, None);
         assert_eq!(from_date, "2025-01-01");
         assert_eq!(to_date, "2025-01-31");
+    }
+
+    #[test]
+    fn org_usage_tag_filters_preserve_api_grammar() {
+        let base_args = [
+            "clickhousectl",
+            "cloud",
+            "org",
+            "usage",
+            "--from-date",
+            "2025-01-01",
+            "--to-date",
+            "2025-01-31",
+        ];
+        let filters = ["tag:env=prod", "tag:active", "tag:empty=", "tag:expr=a=b"];
+        let cli = Cli::try_parse_from(
+            base_args
+                .into_iter()
+                .chain(filters.iter().flat_map(|value| ["--filter", *value])),
+        )
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        let crate::cloud::cli::CloudCommands::Org {
+            command: OrgCommands::Usage { filter, .. },
+        } = args.command
+        else {
+            panic!("expected org usage");
+        };
+        assert_eq!(filter, filters);
+        for value in [
+            "garbage",
+            "state=running",
+            "env=prod",
+            "tag:",
+            "tag:=x",
+            "tag: =x",
+        ] {
+            let error = Cli::try_parse_from(base_args.into_iter().chain(["--filter", value]))
+                .err()
+                .expect("malformed filter must fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
     }
 
     #[test]
@@ -2545,6 +2798,26 @@ mod tests {
                 error.to_string().contains("requires a non-empty id"),
                 "unexpected error for {value:?}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn parse_org_private_endpoint_remove_requires_provider_and_region() {
+        for (value, required) in [
+            ("pe-1,region=us-east-1", "requires cloud-provider"),
+            ("pe-1,cloud-provider=aws", "requires region"),
+            ("pe-1", "requires cloud-provider and region"),
+            (
+                "pe-1,cloud-provider= ,region=us-east-1",
+                "requires a non-empty cloud-provider",
+            ),
+            (
+                "pe-1,cloud-provider=aws,region= ",
+                "requires a non-empty region",
+            ),
+        ] {
+            let error = parse_org_private_endpoint_remove(value).unwrap_err();
+            assert!(error.to_string().contains(required), "{error}");
         }
     }
 

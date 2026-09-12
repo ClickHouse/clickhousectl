@@ -57,7 +57,6 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "click_stack_update_webhook",
     "click_stack_validate_dashboard",
     "credit_balances_get",
-    "organization_prometheus_discovery_get",
     "organization_quota_get",
     "organization_quotas_get_list",
     "postgres_instance_config_get",
@@ -77,6 +76,11 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "postgres_service_patch",
     "postgres_service_patch_state",
     "postgres_service_set_password",
+    "query_api_endpoint_create",
+    "query_api_endpoint_delete",
+    "query_api_endpoint_get",
+    "query_api_endpoint_list",
+    "query_api_endpoint_update",
     "scaling_schedule_delete",
     "scaling_schedule_get",
     "scaling_schedule_upsert",
@@ -202,6 +206,7 @@ mod tests {
         assert!(is_beta_operation("scaling_schedule_get"));
         assert!(is_beta_operation("postgres_service_get_list"));
         assert!(!is_beta_operation("services_list"));
+        assert!(!is_beta_operation("organization_prometheus_discovery_get"));
         assert!(!is_beta_operation("not_a_real_op"));
     }
 
