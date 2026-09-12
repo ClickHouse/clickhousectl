@@ -65,8 +65,9 @@ async fn main() {
             // a clap derive bug, not a user error.
             let cli = Cli::from_arg_matches(&matches)
                 .expect("Cli::from_arg_matches must accept matches from Cli::command()");
+            let read_only_telemetry_status = is_read_only_telemetry_status(&cli.command);
             let run_result = match validate_post_parse(&cli, &mut cmd) {
-                Ok(()) => run_parsed(cli).await,
+                Ok(()) => run_parsed(cli, read_only_telemetry_status).await,
                 Err(e) => {
                     let _ = e.print();
                     (e.exit_code(), false, false)
@@ -79,7 +80,12 @@ async fn main() {
             }
             #[cfg(not(feature = "telemetry"))]
             let _ = is_child_exit;
-            (exit_code, invocation, defer_telemetry_notice)
+            (
+                exit_code,
+                invocation,
+                defer_telemetry_notice,
+                read_only_telemetry_status,
+            )
         }
         Err(e) => {
             // clap keeps its own formatting and colors; help/version print to
@@ -109,19 +115,23 @@ async fn main() {
             // clap's own exit codes: 0 for help/version, 2 for usage errors.
             // Dispatched commands reserve 3 for cancellation, so 2 remains
             // unambiguous to shell callers.
-            (e.exit_code(), invocation, false)
+            (e.exit_code(), invocation, false, false)
         }
     };
-    let (exit_code, telemetry_invocation, defer_telemetry_notice) = outcome;
+    let (exit_code, telemetry_invocation, defer_telemetry_notice, read_only_telemetry_status) =
+        outcome;
 
     // Consent is evaluated here, after the command ran, so `telemetry disable`
     // silences its own event and `telemetry enable` sends one.
     #[cfg(feature = "telemetry")]
-    telemetry::finalize(telemetry_invocation, exit_code, defer_telemetry_notice);
+    if !read_only_telemetry_status {
+        telemetry::finalize(telemetry_invocation, exit_code, defer_telemetry_notice);
+    }
     #[cfg(not(feature = "telemetry"))]
     {
         let () = telemetry_invocation;
         let _ = defer_telemetry_notice;
+        let _ = read_only_telemetry_status;
     }
 
     std::process::exit(exit_code);
@@ -203,7 +213,7 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
 /// The hidden `telemetry send` child is the one deliberate early exit in the
 /// binary: it does exactly one POST — no update-cache refresh, no dispatch,
 /// and no telemetry hook of its own, so a send can never trigger another send.
-async fn run_parsed(cli: Cli) -> (i32, bool, bool) {
+async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, bool) {
     #[cfg(feature = "telemetry")]
     if matches!(
         cli.command,
@@ -219,7 +229,7 @@ async fn run_parsed(cli: Cli) -> (i32, bool, bool) {
     // commands. The refresh is gated to one network call per 24h; the notice
     // below is driven off whatever the cache currently holds.
     let is_update_cmd = matches!(cli.command, Commands::Update(_));
-    let cache_refresh = if !is_update_cmd {
+    let cache_refresh = if !is_update_cmd && !read_only_telemetry_status {
         Some(tokio::spawn(update::refresh_update_cache()))
     } else {
         None
@@ -287,6 +297,25 @@ async fn run_parsed(cli: Cli) -> (i32, bool, bool) {
     }
 
     (exit_code, is_child_exit, defer_telemetry_notice)
+}
+
+/// `telemetry status` reports persisted consent without changing any global
+/// state itself: it neither records a telemetry event nor refreshes the update
+/// cache. Keep this check on the parsed enum so aliases or argument text can
+/// never accidentally select the exemption.
+#[cfg(feature = "telemetry")]
+fn is_read_only_telemetry_status(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Telemetry(cli::TelemetryArgs {
+            command: cli::TelemetryCommands::Status
+        })
+    )
+}
+
+#[cfg(not(feature = "telemetry"))]
+fn is_read_only_telemetry_status(_command: &Commands) -> bool {
+    false
 }
 
 /// The explicit `--json` flag for a command, or `None` for commands that never

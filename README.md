@@ -2825,7 +2825,7 @@ A failed *runtime* invocation may also carry up to six failure-classification fi
 
 These are fixed strings compiled into the binary (plus one allowlisted status), set only where a failure is owned — never derived from an error text. No classification is attached to a successful run.
 
-Exactly one event is recorded per invocation. `local client` and `local postgres client` `exec()` into the native client, so clickhousectl's event is recorded just before the handover with the censored outcome `exec_attempt` and a fixed exit code `0` — it means "the handoff was reached", not "the native client succeeded". Failures clickhousectl can see itself (missing/non-executable binary, `psql` not on `PATH`) are refused first and report their real exit code.
+Except for the read-only `telemetry status` command, exactly one event is recorded per invocation. `local client` and `local postgres client` `exec()` into the native client, so clickhousectl's event is recorded just before the handover with the censored outcome `exec_attempt` and a fixed exit code `0` — it means "the handoff was reached", not "the native client succeeded". Failures clickhousectl can see itself (missing/non-executable binary, `psql` not on `PATH`) are refused first and report their real exit code.
 
 Nothing is sent before you have seen the notice unless you explicitly enable telemetry with `clickhousectl telemetry enable`. The first run normally prints a one-time notice to stderr, records that it was shown in `~/.clickhouse/telemetry.json`, and sends nothing. Sending starts from the following run. Explicitly enabling telemetry starts it immediately and skips the notice. The send happens in a short-lived detached process, so command latency is unaffected even when the endpoint is unreachable.
 
@@ -2842,7 +2842,7 @@ export DO_NOT_TRACK=1
 clickhousectl telemetry status
 ```
 
-On a machine that has never seen the notice, `telemetry status` reports "not yet configured" and then completes the first run itself: it writes `~/.clickhouse/telemetry.json` and prints the notice, so sending starts from the next run.
+`telemetry status` only reads the current preference. It does not create `~/.clickhouse/telemetry.json`, record an event or refresh the update-check cache. On a machine that has never seen the notice, it reports "not yet configured"; the next ordinary command performs the usual first-run notice flow.
 
 To see exactly what would be sent without sending it, set `CHCTL_TELEMETRY_DEBUG=1` — the payload is printed to stderr and nothing leaves the machine.
 
