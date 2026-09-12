@@ -3675,59 +3675,113 @@ async fn postgres_delete_json_emits_the_resource_object_not_the_envelope() {
 
 // ── Postgres update --name (issue #663) ────────────────────────────────────
 
-/// `postgres update --name` must PATCH the API with only `name` set: no
-/// `size`, `haType`, or `tags` key should appear when only `--name` is
-/// passed, and no discovery `GET` is issued (no tag diff was requested).
+/// Non-tag updates must echo the current tag snapshot while omitting unrelated
+/// update fields. An empty list is known empty; key-only and empty-value tags
+/// remain distinct under the API model's optional-value contract.
 #[tokio::test]
-async fn postgres_update_name_sends_only_the_name_field() {
-    let mock = MockServer::start().await;
-    let postgres_id = "11111111-2222-3333-4444-555555555555";
-    Mock::given(method("PATCH"))
-        .and(path(format!(
-            "/v1/organizations/org-1/postgres/{postgres_id}"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {
-                "id": postgres_id,
-                "name": "renamed-pg",
-                "state": "running",
-            },
-            "status": 200,
-            "requestId": "stub-postgres-update",
-        })))
-        .expect(1)
-        .mount(&mock)
-        .await;
+async fn postgres_update_preserves_tags_when_changing_other_fields() {
+    for (flag, field, value) in [
+        ("--name", "name", "renamed-pg"),
+        ("--size", "size", "c6gd.large"),
+        ("--ha-type", "haType", "async"),
+    ] {
+        for tags in [
+            serde_json::json!([]),
+            serde_json::json!([
+                {"key": "env", "value": "prod"},
+                {"key": "owner", "value": "me"},
+                {"key": "key-only"},
+                {"key": "empty", "value": ""}
+            ]),
+        ] {
+            let mock = MockServer::start().await;
+            let postgres_id = "11111111-2222-3333-4444-555555555555";
+            let postgres_path = format!("/v1/organizations/org-1/postgres/{postgres_id}");
+            Mock::given(method("GET"))
+                .and(path(&postgres_path))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": {"id": postgres_id, "tags": tags},
+                })))
+                .expect(1)
+                .mount(&mock)
+                .await;
+            let expected_body = serde_json::json!({field: value, "tags": tags});
+            Mock::given(method("PATCH"))
+                .and(path(&postgres_path))
+                .and(body_json(expected_body))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": {"id": postgres_id, "tags": tags},
+                })))
+                .expect(1)
+                .mount(&mock)
+                .await;
+            let output = invoke_cli_with_cloud_credentials(
+                &mock,
+                &[
+                    "postgres",
+                    "update",
+                    postgres_id,
+                    "--org-id",
+                    "org-1",
+                    flag,
+                    value,
+                ],
+            );
+            assert_success(&output);
+            assert_eq!(
+                received_request_shape(&mock).await,
+                vec![
+                    ("GET".into(), postgres_path.clone()),
+                    ("PATCH".into(), postgres_path)
+                ]
+            );
+            let output: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(output["tags"], tags);
+        }
+    }
+}
 
-    let output = invoke_cli_with_cloud_credentials(
-        &mock,
-        &[
-            "postgres",
-            "update",
-            postgres_id,
-            "--org-id",
-            "org-1",
-            "--name",
-            "renamed-pg",
-        ],
-    );
-
-    assert_success(&output);
-
-    let requests = mock.received_requests().await.unwrap();
-    assert_eq!(
-        requests.len(),
-        1,
-        "expected only the PATCH, no discovery GET"
-    );
-    assert_eq!(requests[0].method, wiremock::http::Method::PATCH);
-
-    let body: Value = serde_json::from_slice(&requests[0].body).expect("PATCH body wasn't JSON");
-    assert_eq!(body["name"], "renamed-pg");
-    assert!(
-        body.get("size").is_none() && body.get("haType").is_none() && body.get("tags").is_none(),
-        "unexpected keys in PATCH body: {body}"
-    );
+#[tokio::test]
+async fn postgres_update_without_tag_flags_refuses_incomplete_or_failed_reads() {
+    for response in [
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {}})),
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {"tags": null}})),
+        ResponseTemplate::new(200)
+            .set_body_json(serde_json::json!({"result": {"tags": [{"value": "prod"}]}})),
+        ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"result": {"tags": [{"key": null, "value": "prod"}]}}),
+        ),
+        ResponseTemplate::new(403).set_body_json(serde_json::json!({"error": "forbidden"})),
+        ResponseTemplate::new(500).set_body_json(serde_json::json!({"error": "read failed"})),
+    ] {
+        let mock = MockServer::start().await;
+        let postgres_id = "11111111-2222-3333-4444-555555555555";
+        let postgres_path = format!("/v1/organizations/org-1/postgres/{postgres_id}");
+        Mock::given(method("GET"))
+            .and(path(&postgres_path))
+            .respond_with(response)
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "postgres",
+                "update",
+                postgres_id,
+                "--org-id",
+                "org-1",
+                "--name",
+                "renamed",
+            ],
+        );
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert_eq!(
+            received_request_shape(&mock).await,
+            vec![("GET".into(), postgres_path)]
+        );
+    }
 }
 
 // ── Postgres list --filter validation (issue #603) ────────────────────────

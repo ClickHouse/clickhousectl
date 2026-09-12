@@ -1210,7 +1210,9 @@ clickhousectl cloud postgres update <pg-id> \
 clickhousectl cloud postgres update <pg-id> --clear-tags
 
 # --clear-tags replaces the tag list with an empty list and conflicts with
-# --add-tag and --remove-tag; omitting all three leaves tags unchanged.
+# --add-tag and --remove-tag; omitting all three preserves the fetched tags.
+# Updates read the complete tag list first (except --clear-tags) and fail if it
+# cannot be read safely. Avoid concurrent tag changes: PATCH replaces that snapshot.
 
 # Delete (works from any state, including running; no stop needed first)
 clickhousectl cloud postgres delete <pg-id>

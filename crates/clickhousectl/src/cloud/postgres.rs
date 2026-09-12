@@ -1234,7 +1234,7 @@ fn merge_tags(
     merged
 }
 
-/// Merges `--add-tag`/`--remove-tag` against the tag list a GET returned.
+/// Preserves or merges the tag list a GET returned before every update.
 ///
 /// An omitted `tags` in the response is indistinguishable from a field the API
 /// dropped, so a read-modify-write must not proceed on it: `tags` is replaced
@@ -1248,9 +1248,9 @@ fn merge_response_tags(
 ) -> CloudResult<Vec<ResourceTagsV1>> {
     let current = current.ok_or_else(|| {
         CloudError::new(
-            "the API response omitted the tags field, so --add-tag/--remove-tag cannot be merged \
-             safely: an update replaces the tag set wholesale, and merging against an assumed empty \
-             set would delete any tags the service already has",
+            "the API response omitted the tags field or returned null, so the update cannot preserve \
+             tags safely: an update replaces the tag set wholesale, and assuming an empty set \
+             would delete any tags the service already has",
         )
     })?;
     let existing = current
@@ -1644,10 +1644,11 @@ pub async fn postgres_update(
         .transpose()?;
 
     // Clearing is already a complete replacement, so it never needs a GET.
-    // Add/remove still merges against a complete current tag snapshot.
+    // The API clears tags when PATCH omits them, even for a rename or resize.
+    // Every other update must preserve a complete current tag snapshot.
     let tags = if opts.clear_tags {
         Some(Vec::new())
-    } else if !opts.add_tag.is_empty() || !opts.remove_tag.is_empty() {
+    } else {
         let current = client
             .api()
             .postgres_service_get(&org_id, postgres_id)
@@ -1656,8 +1657,6 @@ pub async fn postgres_update(
         let current = unwrap_api(current)?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
         Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
-    } else {
-        None
     };
 
     let req = build_postgres_update_request(opts.name, size, ha_type, tags);
