@@ -949,6 +949,47 @@ fn invoke_cli_without_cloud_credentials(
         .expect("failed to spawn clickhousectl")
 }
 
+#[tokio::test]
+async fn partial_cloud_credentials_are_usage_errors_before_auth_or_http() {
+    let mock = MockServer::start().await;
+    for args in [
+        vec!["auth", "login", "--api-key", "key"],
+        vec!["auth", "login", "--api-secret", "secret"],
+        vec!["key", "create", "--name", "key", "--hash-key-id", "hash"],
+        vec![
+            "clickpipe",
+            "create",
+            "object-storage",
+            "svc-1",
+            "--name",
+            "pipe",
+            "--source-url",
+            "https://bucket.example/events",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            "--column",
+            "bad_no_colon",
+        ],
+    ] {
+        let args = args.into_iter().map(String::from).collect::<Vec<_>>();
+        let output = invoke_cli_without_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if args[0] != "clickpipe" {
+            assert!(stderr.contains("Usage:"), "{stderr}");
+        } else {
+            assert!(stderr.contains("--column <COLUMNS>"), "{stderr}");
+        }
+    }
+    let output = invoke_cli_without_cloud_credentials(&mock, &["service".into(), "list".into()]);
+    assert_eq!(output.status.code(), Some(4));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     let credentials_dir = root.join(".clickhouse");
     std::fs::create_dir_all(&credentials_dir).unwrap();

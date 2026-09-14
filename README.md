@@ -2732,6 +2732,10 @@ Usage errors and cancelled actions use distinct exit codes.
 
 Flags with a fixed value set show their choices in `--help`. An unsupported
 choice exits with code `2` before a Cloud request or Skills download begins.
+Malformed ClickPipe `--column` values (expected `name:type`), partial login
+credential pairs, and incomplete pre-hashed key fields also exit with code `2`.
+Without a TTY, `skills` requires `--all`, `--detected-only`, or `--agent` (exit `2`
+when omitted); missing or invalid runtime Cloud authentication still exits `4`.
 
 ## Skills
 

@@ -154,6 +154,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/tests/local_server_watchdog_pid_test.rs",
                     "crates/clickhousectl/tests/local_structured_errors_test.rs",
                     "crates/clickhousectl/tests/telemetry_test.rs",
+                    "crates/clickhousectl/tests/skills_usage_test.rs",
                 }
             ),
         )

@@ -58,6 +58,22 @@ CONTEXT FOR AGENTS:
 }
 
 impl AuthCommands {
+    pub fn login_validation_error(&self) -> Option<&'static str> {
+        let Self::Login {
+            api_key,
+            api_secret,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        match (api_key.is_some(), api_secret.is_some()) {
+            (true, false) => Some("--api-secret is required when --api-key is provided"),
+            (false, true) => Some("--api-key is required when --api-secret is provided"),
+            _ => None,
+        }
+    }
+
     pub fn is_write(&self) -> bool {
         match self {
             AuthCommands::Login { .. } => false,

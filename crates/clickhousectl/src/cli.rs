@@ -117,6 +117,18 @@ pub struct SkillsArgs {
     pub global: bool,
 }
 
+impl SkillsArgs {
+    pub fn selection_validation_error(&self, has_terminal: bool) -> Option<&'static str> {
+        if !has_terminal && !self.all && !self.detected_only && self.agents.is_empty() {
+            Some(
+                "Interactive selection requires a TTY. Use --all, --detected-only, or --agent <AGENT> in non-interactive environments.",
+            )
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct UpdateArgs {
     /// Check for updates without installing
@@ -272,6 +284,32 @@ mod tests {
                 .exit_code(),
             2
         );
+    }
+
+    #[test]
+    fn skills_requires_selection_only_without_a_terminal() {
+        for flags in [
+            vec![],
+            vec!["--global"],
+            vec!["--all"],
+            vec!["--detected-only"],
+            vec!["--agent", "claude"],
+        ] {
+            let cli = Cli::try_parse_from(
+                ["clickhousectl", "skills"]
+                    .into_iter()
+                    .chain(flags.iter().copied()),
+            )
+            .unwrap();
+            let Commands::Skills(args) = cli.command else {
+                panic!("skills command");
+            };
+            assert!(args.selection_validation_error(true).is_none());
+            assert_eq!(
+                args.selection_validation_error(false).is_some(),
+                flags.is_empty() || flags == ["--global"]
+            );
+        }
     }
 
     #[test]

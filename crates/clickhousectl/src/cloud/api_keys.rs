@@ -51,15 +51,15 @@ CONTEXT FOR AGENTS:
         ip_allow: Vec<String>,
 
         /// Pre-hashed key ID digest; needs --hash-key-id-suffix and --hash-key-secret
-        #[arg(long)]
+        #[arg(long, requires_all = ["hash_key_id_suffix", "hash_key_secret"])]
         hash_key_id: Option<String>,
 
         /// Suffix of the pre-hashed key ID; needs --hash-key-id and --hash-key-secret
-        #[arg(long)]
+        #[arg(long, requires_all = ["hash_key_id", "hash_key_secret"])]
         hash_key_id_suffix: Option<String>,
 
         /// Pre-hashed key secret digest; needs --hash-key-id and --hash-key-id-suffix
-        #[arg(long)]
+        #[arg(long, requires_all = ["hash_key_id", "hash_key_id_suffix"])]
         hash_key_secret: Option<String>,
 
         /// Organization ID (auto-detected only if you have one org)
@@ -716,6 +716,30 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
+
+    #[test]
+    fn pre_hashed_credentials_require_all_three_fields() {
+        let fields = ["--hash-key-id", "--hash-key-id-suffix", "--hash-key-secret"];
+        for mask in 0..8 {
+            let mut args = vec!["clickhousectl", "cloud", "key", "create", "--name", "key"];
+            for (index, field) in fields.iter().enumerate() {
+                if mask & (1 << index) != 0 {
+                    args.extend([*field, "value"]);
+                }
+            }
+            let result = Cli::try_parse_from(args);
+            if mask == 0 || mask == 7 {
+                assert!(result.is_ok());
+            } else {
+                let error = result.err().expect("partial hash credentials");
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::MissingRequiredArgument
+                );
+                assert_eq!(error.exit_code(), 2);
+            }
+        }
+    }
 
     #[derive(Parser)]
     struct KeyCli {

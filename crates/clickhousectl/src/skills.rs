@@ -436,10 +436,10 @@ fn resolve_selection(
         return Ok(selected);
     }
 
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(Error::Skills(
-            "Interactive selection requires a TTY. Use --all or --agent <name> in non-interactive environments.".into(),
-        ));
+    if let Some(message) =
+        args.selection_validation_error(io::stdin().is_terminal() && io::stdout().is_terminal())
+    {
+        return Err(Error::Skills(message.into()));
     }
 
     interactive_select(detected)

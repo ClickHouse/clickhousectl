@@ -138,6 +138,19 @@ async fn main() {
 }
 
 fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Result<(), clap::Error> {
+    if let Commands::Skills(args) = &cli.command {
+        use std::io::IsTerminal;
+        if let Some(message) = args.selection_validation_error(
+            std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        ) {
+            let skills = cmd
+                .find_subcommand_mut("skills")
+                .expect("skills command must exist");
+            return Err(skills.error(ErrorKind::MissingRequiredArgument, message));
+        }
+        return Ok(());
+    }
+
     if let Commands::Local(args) = &cli.command {
         let Some(message) = args.postgres_start_validation_error() else {
             return Ok(());
@@ -153,6 +166,19 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
     let Commands::Cloud(args) = &cli.command else {
         return Ok(());
     };
+    // Login's credentials are global arguments. Validate after propagation so
+    // a pair split across command levels remains valid.
+    if let cloud::cli::CloudCommands::Auth { command } = &args.command
+        && let Some(message) = command.login_validation_error()
+    {
+        let login = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("auth"))
+            .and_then(|auth| auth.find_subcommand_mut("login"))
+            .expect("cloud auth login command must exist");
+        return Err(login.error(ErrorKind::MissingRequiredArgument, message));
+    }
+
     if args.has_explicit_json_format_conflict() {
         // clap validates each subcommand before propagating values supplied for a
         // global argument at a parent level, so this cross-level conflict needs a
@@ -390,6 +416,70 @@ async fn run_skills(args: SkillsArgs) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn login_credential_pairs_are_validated_after_global_flag_propagation() {
+        for prefix in [
+            vec!["clickhousectl", "cloud", "auth", "login"],
+            vec!["clickhousectl", "cloud"],
+        ] {
+            for flag in ["--api-key", "--api-secret"] {
+                let mut args = prefix.clone();
+                args.extend([flag, "value"]);
+                if prefix.len() == 2 {
+                    args.extend(["auth", "login"]);
+                }
+                let error = parse_and_validate(&args).err().expect("partial pair");
+                assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+                assert_eq!(error.exit_code(), 2);
+            }
+        }
+        for args in [
+            vec!["clickhousectl", "cloud", "auth", "login"],
+            vec!["clickhousectl", "cloud", "auth", "login", "--interactive"],
+            vec![
+                "clickhousectl",
+                "cloud",
+                "--api-key",
+                "key",
+                "auth",
+                "login",
+                "--api-secret",
+                "secret",
+            ],
+            vec![
+                "clickhousectl",
+                "cloud",
+                "--api-secret",
+                "secret",
+                "auth",
+                "login",
+                "--api-key",
+                "key",
+            ],
+            vec![
+                "clickhousectl",
+                "cloud",
+                "--api-key",
+                "key",
+                "--api-secret",
+                "secret",
+                "auth",
+                "login",
+            ],
+            // A partial runtime credential override is outside login's contract.
+            vec![
+                "clickhousectl",
+                "cloud",
+                "--api-key",
+                "key",
+                "service",
+                "list",
+            ],
+        ] {
+            assert!(parse_and_validate(&args).is_ok(), "{args:?}");
+        }
+    }
 
     #[test]
     fn json_output_true_when_flag_set() {

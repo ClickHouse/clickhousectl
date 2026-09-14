@@ -976,7 +976,7 @@ pub struct ObjectStorageCreateArgs {
     pub table: String,
 
     /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
-    #[arg(long = "column")]
+    #[arg(long = "column", value_parser = parse_destination_column)]
     pub columns: Vec<String>,
 
     #[command(flatten)]
@@ -1151,7 +1151,7 @@ pub struct KafkaCreateArgs {
     pub table: String,
 
     /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
-    #[arg(long = "column")]
+    #[arg(long = "column", value_parser = parse_destination_column)]
     pub columns: Vec<String>,
 
     #[command(flatten)]
@@ -1243,7 +1243,7 @@ pub struct KinesisCreateArgs {
     pub table: String,
 
     /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
-    #[arg(long = "column")]
+    #[arg(long = "column", value_parser = parse_destination_column)]
     pub columns: Vec<String>,
 
     #[command(flatten)]
@@ -1898,7 +1898,7 @@ pub struct PubSubCreateArgs {
     pub table: String,
 
     /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
-    #[arg(long = "column")]
+    #[arg(long = "column", value_parser = parse_destination_column)]
     pub columns: Vec<String>,
 
     #[command(flatten)]
@@ -4188,21 +4188,29 @@ fn parse_enum<T: serde::de::DeserializeOwned>(value: &str) -> CloudResult<T> {
 fn parse_columns(
     columns: &[String],
 ) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
-    columns
-        .iter()
-        .map(|column| {
-            let (name, column_type) = column.split_once(':').ok_or_else(|| {
-                CloudError::new(format!(
-                    "Invalid column format '{}': expected name:type",
-                    column
-                ))
-            })?;
-            Ok(clickhouse_cloud_api::models::ClickPipeDestinationColumn {
-                name: name.to_string(),
-                r#type: column_type.to_string(),
-            })
-        })
-        .collect()
+    columns.iter().map(|column| parse_column(column)).collect()
+}
+
+fn parse_column(
+    column: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeDestinationColumn> {
+    let (name, column_type) = column.split_once(':').ok_or_else(|| {
+        CloudError::new(format!(
+            "Invalid column format '{}': expected name:type",
+            column
+        ))
+    })?;
+    Ok(clickhouse_cloud_api::models::ClickPipeDestinationColumn {
+        name: name.to_string(),
+        r#type: column_type.to_string(),
+    })
+}
+
+/// Validate the same grammar as the request builder before credential lookup.
+fn parse_destination_column(column: &str) -> Result<String, String> {
+    parse_column(column)
+        .map(|_| column.to_string())
+        .map_err(|error| error.message)
 }
 
 /// Role names the API reserves for ClickPipes itself and rejects in
@@ -12271,6 +12279,67 @@ mod tests {
             authentication,
             ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_256
         );
+    }
+
+    #[test]
+    fn column_grammar_is_validated_on_every_streaming_create() {
+        let mut pubsub = vec!["create", "pubsub", "svc-1", "--name", "pipe-1"];
+        pubsub.extend(pubsub_source_flags("./sa-key.json"));
+        pubsub.extend(["--database", "db", "--table", "events"]);
+        for source_args in [
+            vec![
+                "create",
+                "object-storage",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--source-url",
+                "https://bucket.example/events",
+                "--format",
+                "JSONEachRow",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ],
+            kafka_create_cli_args(),
+            vec![
+                "create",
+                "kinesis",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--stream-name",
+                "events",
+                "--region",
+                "eu-west-1",
+                "--format",
+                "JSONEachRow",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ],
+            pubsub,
+        ] {
+            for (column, valid) in [
+                ("bad_no_colon", false),
+                ("id:Int64", true),
+                ("metadata:Tuple(key String, value String)", true),
+            ] {
+                let mut args = vec!["clickhousectl", "cloud", "clickpipe"];
+                args.extend(source_args.iter().copied());
+                args.extend(["--column", column]);
+                let parsed = Cli::try_parse_from(args);
+                if valid {
+                    assert!(parsed.is_ok(), "{}: {column}", source_args[1]);
+                } else {
+                    let error = parsed.err().expect("invalid column");
+                    assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                    assert_eq!(error.exit_code(), 2);
+                }
+            }
+        }
     }
 
     #[test]
