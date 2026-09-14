@@ -61,6 +61,10 @@ enum LocalErrorCode {
     PostgresError,
     SqlInputOpenFailed,
     SqlInputReadFailed,
+    /// A managed server metadata file contains invalid JSON. The structured
+    /// body names the file and gives conservative recovery guidance without
+    /// exposing serde's source text.
+    ServerMetadataInvalid,
     IoError,
     LocalError,
 }
@@ -161,6 +165,14 @@ struct LocalGuidance {
     command: Option<&'static str>,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ServerMetadataParseErrorDetail {
+    code: LocalErrorCode,
+    message: &'static str,
+    path: String,
+    guidance: Vec<LocalGuidance>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum LocalGuidanceAction {
@@ -216,6 +228,7 @@ enum LocalErrorBody {
     ManagedClient(ManagedClientErrorDetail),
     ProjectServer(ProjectServerErrorDetail),
     ProjectServerStateMissing(ProjectServerStateMissingDetail),
+    ServerMetadataParse(ServerMetadataParseErrorDetail),
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -262,6 +275,13 @@ impl LocalErrorOutput {
                 return Self {
                     error: LocalErrorBody::ProjectServerStateMissing(
                         ProjectServerStateMissingDetail::from_error(missing),
+                    ),
+                };
+            }
+            Error::ServerMetadataParse { path, .. } => {
+                return Self {
+                    error: LocalErrorBody::ServerMetadataParse(
+                        ServerMetadataParseErrorDetail::from_path(path),
                     ),
                 };
             }
@@ -434,7 +454,6 @@ impl LocalErrorOutput {
             | Error::ServerMetadataPermission { .. }
             | Error::ServerMetadataRead { .. }
             | Error::ServerMetadataUtf8 { .. }
-            | Error::ServerMetadataParse { .. }
             | Error::ServerMetadataWrite { .. }
             | Error::ServerLock { .. } => {
                 Mapping::redacted(LocalErrorCode::IoError, "Local I/O operation failed")
@@ -472,6 +491,34 @@ impl LocalErrorOutput {
         };
         Self {
             error: LocalErrorBody::General(mapping.into_detail(error)),
+        }
+    }
+}
+
+impl ServerMetadataParseErrorDetail {
+    fn from_path(path: &Path) -> Self {
+        Self {
+            code: LocalErrorCode::ServerMetadataInvalid,
+            message: "Server metadata is not valid JSON",
+            path: path.display().to_string(),
+            guidance: vec![
+                LocalGuidance {
+                    message: "Repair the metadata file, then retry",
+                    command: None,
+                },
+                LocalGuidance {
+                    message: "For ClickHouse, if repair is not possible, confirm that the running server is discoverable before moving the metadata file aside",
+                    command: Some("clickhousectl local server list --global"),
+                },
+                LocalGuidance {
+                    message: "For Postgres, verify the container state separately before moving the metadata file aside",
+                    command: None,
+                },
+                LocalGuidance {
+                    message: "Retry from the owning project; ClickHouse recovery requires the server to remain running and discoverable",
+                    command: Some("clickhousectl local server list"),
+                },
+            ],
         }
     }
 }
@@ -1555,6 +1602,14 @@ mod tests {
             (
                 Error::Io(std::io::Error::other("raw I/O details")),
                 "io_error",
+            ),
+            (
+                Error::ServerMetadataParse {
+                    path: "/work/.clickhouse/servers/default.json".into(),
+                    source: serde_json::from_str::<serde_json::Value>("{")
+                        .expect_err("invalid fixture must fail to parse"),
+                },
+                "server_metadata_invalid",
             ),
             (Error::Exec("raw fallback details".into()), "local_error"),
             (

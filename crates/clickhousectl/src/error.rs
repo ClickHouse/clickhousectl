@@ -659,7 +659,7 @@ pub enum Error {
     },
 
     #[error(
-        "Server metadata '{}' is not valid JSON: {source}. Repair or remove the metadata file, then retry.",
+        "Server metadata '{}' is not valid JSON: {source}. Repair the metadata file, then retry.",
         path.display()
     )]
     ServerMetadataParse {
