@@ -24,6 +24,11 @@ pub enum KeyCommands {
     },
 
     /// Create an API key
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Omitting --ip-allow creates an empty IP allowlist, which denies all network access.
+  The management resource ID identifies the key for get, update, and delete.
+  The authentication key ID and secret are credentials; a generated secret is printed once.")]
     Create {
         /// Key name
         #[arg(long)]
@@ -64,7 +69,8 @@ pub enum KeyCommands {
 
     /// Get API key details
     Get {
-        /// API key ID
+        /// Management resource ID
+        #[arg(value_name = "RESOURCE_ID")]
         key_id: String,
 
         /// Organization ID (auto-detected only if you have one org)
@@ -74,7 +80,8 @@ pub enum KeyCommands {
 
     /// Update an API key
     Update {
-        /// API key ID
+        /// Management resource ID
+        #[arg(value_name = "RESOURCE_ID")]
         key_id: String,
 
         /// New key name
@@ -120,7 +127,8 @@ pub enum KeyCommands {
 
     /// Delete an API key
     Delete {
-        /// API key ID
+        /// Management resource ID
+        #[arg(value_name = "RESOURCE_ID")]
         key_id: String,
 
         /// Organization ID (auto-detected only if you have one org)
@@ -437,10 +445,12 @@ async fn key_create(
 ) -> CloudResult<()> {
     // Validate before organization resolution so malformed inputs make no network call.
     let request = build_api_key_create_request(&options)?;
+    let deny_all = request.ip_access_list.is_empty();
     let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
     let response = client.create_api_key(&org_id, &request).await?;
 
     let name = response.key.as_ref().and_then(|key| key.name.as_deref());
+    let resource_id = response.key.as_ref().and_then(|key| key.id.as_ref());
     // Validate before either output branch: generated material is returned only once.
     let material = resolve_key_create_material(
         request.hash_data.is_some(),
@@ -454,9 +464,10 @@ async fn key_create(
     } else {
         println!("API key created!");
         println!("  Name: {}", or_absent(name));
+        println!("  Management resource ID: {}", or_absent(resource_id));
         match material {
             KeyCreateMaterial::Generated { key_id, key_secret } => {
-                println!("  Key ID: {}", key_id);
+                println!("  Authentication key ID: {}", key_id);
                 println!("  Key Secret: {}", key_secret);
                 println!();
                 println!("Save the key secret now — it will not be shown again.");
@@ -464,6 +475,11 @@ async fn key_create(
             KeyCreateMaterial::PreHashed => {
                 println!("  Pre-hashed credentials accepted; no generated key material returned");
             }
+        }
+        if deny_all {
+            eprint_line(
+                "Warning: no --ip-allow entries were supplied; the empty IP allowlist denies all network access. Add an allowed IP/CIDR with `cloud key update <resource-id> --ip-allow <IP_OR_CIDR>`.",
+            );
         }
     }
     Ok(())
@@ -724,6 +740,18 @@ mod tests {
             panic!("expected key command");
         };
         command
+    }
+
+    #[test]
+    fn key_management_commands_label_the_resource_id() {
+        for command in ["get", "update", "delete"] {
+            let error = KeyCli::try_parse_from(["clickhousectl", command, "--help"])
+                .err()
+                .expect("help must stop parsing");
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+            let help = error.to_string();
+            assert!(help.contains("<RESOURCE_ID>"), "{command}: {help}");
+        }
     }
 
     #[test]

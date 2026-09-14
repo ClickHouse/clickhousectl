@@ -2577,7 +2577,7 @@ clickhousectl cloud invitation delete <invitation-id>
 
 ```bash
 clickhousectl cloud key list
-clickhousectl cloud key get <key-id>
+clickhousectl cloud key get <resource-id>
 # the key secret is printed once, at create time only
 clickhousectl cloud key create --name ci-key \
   --role-id <role-id> \
@@ -2585,14 +2585,23 @@ clickhousectl cloud key create --name ci-key \
   --ip-allow '<trusted-egress-ip>/32=CI runners' \
   --state disabled   # create the key already disabled
 # --hash-key-id/--hash-key-id-suffix/--hash-key-secret submit a pre-hashed key; no secret is returned
-clickhousectl cloud key update <key-id> \
+clickhousectl cloud key update <resource-id> \
   --name renamed-key \
   --state disabled
-clickhousectl cloud key update <key-id> --expires-at 2030-12-31T23:59:59Z
-clickhousectl cloud key update <key-id> --clear-expiry
-clickhousectl cloud key update <key-id> --clear-roles --clear-ip-allow
-clickhousectl cloud key delete <key-id>
+clickhousectl cloud key update <resource-id> --expires-at 2030-12-31T23:59:59Z
+clickhousectl cloud key update <resource-id> --clear-expiry
+clickhousectl cloud key update <resource-id> --clear-roles --clear-ip-allow
+clickhousectl cloud key delete <resource-id>
 ```
+
+The management resource ID identifies the key for `get`, `update`, and
+`delete`; it is also available from `key list` and `key get`. The authentication
+key ID and secret are the credentials used to authenticate, and generated
+credentials are shown only once, when the key is created.
+
+Omitting `--ip-allow` when creating a key sends an empty IP allowlist, which
+denies all network access. Pass at least one trusted IP or CIDR explicitly to
+make the key usable; use `0.0.0.0/0` only when unrestricted access is intended.
 
 On update, omitting expiry, role, or IP allowlist flags keeps that setting.
 `--clear-expiry`, `--clear-roles`, and `--clear-ip-allow` remove the respective

@@ -15696,11 +15696,17 @@ async fn run_key_create(result: Value, extra_args: &[&str]) -> std::process::Out
     ];
     args.extend(extra_args);
 
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir(&home).unwrap();
     Command::new(clickhousectl_binary())
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
         .args(&args)
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(dir.path())
         .output()
         .expect("failed to spawn clickhousectl")
 }
@@ -15750,6 +15756,46 @@ async fn key_create_json_prints_the_raw_response() {
     // --json reflects the key set the API sent; nothing is synthesized from
     // the resolved material.
     assert_eq!(body, result);
+}
+
+#[tokio::test]
+async fn key_create_human_output_distinguishes_ids_and_warns_about_deny_all() {
+    let output = run_key_create(
+        serde_json::json!({
+            "key": { "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "ci" },
+            "keyId": "generated-key-id",
+            "keySecret": "generated-key-secret",
+        }),
+        &[],
+    )
+    .await;
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "API key created!\n  Name: ci\n  Management resource ID: aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n  Authentication key ID: generated-key-id\n  Key Secret: generated-key-secret\n\nSave the key secret now — it will not be shown again.\n"
+    );
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Warning: no --ip-allow entries were supplied; the empty IP allowlist denies all network access. Add an allowed IP/CIDR with `cloud key update <resource-id> --ip-allow <IP_OR_CIDR>`.\n"
+    );
+}
+
+#[tokio::test]
+async fn key_create_human_output_renders_absent_resource_fields() {
+    let output = run_key_create(
+        serde_json::json!({
+            "keyId": "generated-key-id",
+            "keySecret": "generated-key-secret",
+        }),
+        &["--ip-allow", "198.51.100.4/32"],
+    )
+    .await;
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "API key created!\n  Name: -\n  Management resource ID: -\n  Authentication key ID: generated-key-id\n  Key Secret: generated-key-secret\n\nSave the key secret now — it will not be shown again.\n"
+    );
+    assert!(output.stderr.is_empty());
 }
 
 #[tokio::test]
