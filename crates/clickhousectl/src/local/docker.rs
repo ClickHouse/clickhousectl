@@ -462,10 +462,35 @@ pub async fn ensure_name_free(
     }
 }
 
-pub async fn is_container_running(docker: &Docker, id: &str) -> bool {
+/// A missing container is distinct from an inspection failure. Only Docker's
+/// typed 404 response establishes absence; all other failures remain errors.
+pub async fn inspect_container(
+    docker: &Docker,
+    id: &str,
+) -> Result<Option<bollard::models::ContainerInspectResponse>> {
     match docker.inspect_container(id, None).await {
-        Ok(resp) => resp.state.and_then(|s| s.running).unwrap_or(false),
-        Err(_) => false,
+        Ok(response) => Ok(Some(response)),
+        Err(BollardError::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(None),
+        Err(error) => Err(Error::DockerError(error.to_string())),
+    }
+}
+
+pub fn inspected_container_running(
+    response: &bollard::models::ContainerInspectResponse,
+) -> Result<bool> {
+    response
+        .state
+        .as_ref()
+        .and_then(|state| state.running)
+        .ok_or_else(|| Error::DockerError("container inspection omitted its running state".into()))
+}
+
+pub async fn is_container_running(docker: &Docker, id: &str) -> Result<bool> {
+    match inspect_container(docker, id).await? {
+        Some(response) => inspected_container_running(&response),
+        None => Ok(false),
     }
 }
 
@@ -1011,13 +1036,10 @@ pub(crate) fn block_on<F: std::future::Future>(f: F) -> F::Output {
     }
 }
 
-pub fn is_container_running_blocking(id: &str) -> bool {
+pub fn is_container_running_blocking(id: &str) -> Result<bool> {
     let id = id.to_string();
     block_on(async move {
-        let docker = match connect().await {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
+        let docker = connect().await?;
         is_container_running(&docker, &id).await
     })
 }

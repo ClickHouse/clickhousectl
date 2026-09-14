@@ -296,7 +296,7 @@ async fn start(
             let inspected = if cid.is_empty() {
                 None
             } else {
-                docker.inspect_container(cid, None).await.ok()
+                docker::inspect_container(&docker, cid).await?
             };
             let Some(inspected) = inspected else {
                 return Err(Error::PostgresUsage(format!(
@@ -306,7 +306,7 @@ async fn start(
                     user_name, major, user_name
                 )));
             };
-            if inspected.state.and_then(|state| state.running) == Some(true) {
+            if docker::inspected_container_running(&inspected)? {
                 return Err(Error::ServerAlreadyRunning(user_name));
             }
             if !json
@@ -532,21 +532,16 @@ fn default_pg_name_locked(metadata_lock: &server::MetadataLock) -> Result<String
 
 fn default_pg_name_locked_with(
     metadata_lock: &server::MetadataLock,
-    is_container_running: impl Fn(&str) -> bool,
+    is_container_running: impl Fn(&str) -> Result<bool>,
 ) -> Result<String> {
-    let any_default_running = server::find_pg_instances_locked("default", metadata_lock)?
-        .iter()
-        .any(|i| {
-            i.container_id
-                .as_deref()
-                .map(&is_container_running)
-                .unwrap_or(false)
-        });
-    if any_default_running {
-        server::generate_random_name_locked(metadata_lock)
-    } else {
-        Ok("default".into())
+    for info in server::find_pg_instances_locked("default", metadata_lock)? {
+        if let Some(id) = info.container_id.as_deref()
+            && is_container_running(id)?
+        {
+            return server::generate_random_name_locked(metadata_lock);
+        }
     }
+    Ok("default".into())
 }
 
 /// Resolve the image tag for a user-facing name. The caller invokes this both
@@ -1332,7 +1327,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let lock = server::MetadataLock::acquire_at(directory.path()).unwrap();
         assert_eq!(
-            default_pg_name_locked_with(&lock, |_| true).unwrap(),
+            default_pg_name_locked_with(&lock, |_| Ok(true)).unwrap(),
             "default"
         );
 
@@ -1350,11 +1345,21 @@ mod tests {
         server::save_server_info_locked(&info, &lock).unwrap();
 
         assert_eq!(
-            default_pg_name_locked_with(&lock, |_| false).unwrap(),
+            default_pg_name_locked_with(&lock, |_| Ok(false)).unwrap(),
             "default"
         );
 
-        let selected = default_pg_name_locked_with(&lock, |id| id == "running-default").unwrap();
+        let unavailable = default_pg_name_locked_with(&lock, |_| {
+            Err(Error::DockerNotAvailable("test daemon unavailable".into()))
+        });
+        assert!(matches!(unavailable, Err(Error::DockerNotAvailable(_))));
+        let failed_inspection = default_pg_name_locked_with(&lock, |_| {
+            Err(Error::DockerError("test inspection failed".into()))
+        });
+        assert!(matches!(failed_inspection, Err(Error::DockerError(_))));
+
+        let selected =
+            default_pg_name_locked_with(&lock, |id| Ok(id == "running-default")).unwrap();
 
         assert_ne!(selected, "default");
         assert!(

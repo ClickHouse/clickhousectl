@@ -541,6 +541,8 @@ ClickHouse merges partial configurations recursively; XML `replace` and `remove`
 
 When you also need a local Postgres alongside ClickHouse — e.g. for testing CDC pipelines or ingesting from Postgres — use `local postgres`. Each instance is keyed on `(name, major version)` so the same name can host multiple Postgres majors with isolated data: data lives at `.clickhouse/servers/<name>-pg<major>/data/`, metadata at `.clickhouse/servers/<name>-pg<major>.json`, and the container is `clickhousectl-pg-<name>-<major>`. ClickHouse paths (`<name>/data/`, `<name>.json`) stay separate, so a name can be used by both engines. Requires Docker to be installed and running.
 
+Status checks (including `local server list`, client connections, and lifecycle commands) fail when Docker is unavailable or container inspection fails; they report stopped only after a successful stopped-state check or a confirmed missing container.
+
 ```bash
 # Pre-pull a Postgres image (optional; start will pull on demand). Supported: 17, 18 (and any sub-tag like 17-alpine, 17.0, 18-bookworm).
 clickhousectl local install postgres@17
