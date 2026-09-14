@@ -4290,8 +4290,7 @@ impl CloudClient {
             .instance_get(org_id, service_id)
             .await
             .map_err(|error| {
-                // A read by identifier: a 400 over well-formed UUIDs is a
-                // missing service, not a bad request (#666).
+                // This path identifies the service itself, not a subresource.
                 self.convert_error_for_lookup(
                     error,
                     ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
@@ -4456,12 +4455,24 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
-        let response = self
+        match self
             .api()
             .instance_query_endpoint_get(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
-        Self::unwrap_response(response)
+        {
+            Ok(response) => Self::unwrap_response(response),
+            Err(error) => {
+                // A 404 can mean the endpoint is absent on an existing service.
+                // Only the service lookup can establish that its parent is missing.
+                let lookup = ResourceLookup::in_org(ResourceKind::Service, service_id, org_id);
+                if matches!(&error, clickhouse_cloud_api::Error::Api { status: 404, .. })
+                    && lookup.rejected_well_formed_ids(&error)
+                {
+                    self.get_service(org_id, service_id).await?;
+                }
+                Err(self.convert_error_for_organization(error, org_id))
+            }
+        }
     }
 
     pub async fn create_query_endpoint(

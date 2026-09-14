@@ -1697,7 +1697,12 @@ pub async fn postgres_delete(
         .api()
         .postgres_service_delete(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
+        .map_err(|error| {
+            client.convert_error_for_lookup(
+                error,
+                ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, &org_id),
+            )
+        })?;
 
     // The service is already gone by here, so a closed stdout must not turn a
     // completed deletion into a panic — see `print_line` and #598.
@@ -2361,8 +2366,7 @@ impl CloudClient {
             .postgres_service_get(org_id, postgres_id)
             .await
             .map_err(|error| {
-                // A read by identifier: a 400 over well-formed UUIDs is a
-                // missing Postgres service, not a bad request (#666).
+                // This path identifies the Postgres service itself.
                 self.convert_error_for_lookup(
                     error,
                     ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id),

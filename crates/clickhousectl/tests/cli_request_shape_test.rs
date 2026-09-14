@@ -24131,3 +24131,197 @@ async fn clickpipe_list_empty_results_keep_human_message_and_json_array() {
         serde_json::json!([])
     );
 }
+
+// Deleted resources return 404, while never-existing UUIDs may return 400 (#831).
+fn deleted_resource_404_response() -> ResponseTemplate {
+    ResponseTemplate::new(404).set_body_json(serde_json::json!({
+        "status": 404, "error": "NOT_FOUND: Not Found", "requestId": "deleted-resource"
+    }))
+}
+
+#[tokio::test]
+async fn deleted_resource_404_get_and_delete_have_structured_scope_and_guidance() {
+    for (domain, collection) in [
+        ("service", "services"),
+        ("postgres", "postgres"),
+        ("org", ""),
+    ] {
+        for operation in ["get", "delete"] {
+            if domain == "org" && operation == "delete" {
+                continue;
+            }
+            for human in [false, true] {
+                let mock = MockServer::start().await;
+                let resource_path = if domain == "org" {
+                    format!("/v1/organizations/{UNKNOWN_UUID}")
+                } else {
+                    format!("/v1/organizations/{LOOKUP_ORG_ID}/{collection}/{UNKNOWN_UUID}")
+                };
+                // Postgres deletion first reads the object to render it. Test
+                // deletion racing with that read, so the DELETE itself fails.
+                if domain == "postgres" && operation == "delete" {
+                    Mock::given(method("GET"))
+                        .and(path(resource_path.clone()))
+                        .respond_with(manual_query_endpoint_response(
+                            serde_json::json!({"id": UNKNOWN_UUID}),
+                        ))
+                        .expect(1)
+                        .mount(&mock)
+                        .await;
+                }
+                Mock::given(method(if operation == "delete" {
+                    "DELETE"
+                } else {
+                    "GET"
+                }))
+                .and(path(resource_path))
+                .respond_with(deleted_resource_404_response())
+                .expect(1)
+                .mount(&mock)
+                .await;
+                let mut args = vec![domain, operation, UNKNOWN_UUID];
+                if domain != "org" {
+                    args.extend(["--org-id", LOOKUP_ORG_ID]);
+                }
+                let output = if human {
+                    invoke_cli_human(&mock, &args)
+                } else {
+                    invoke_cli_with_cloud_credentials(&mock, &args)
+                };
+                assert_eq!(output.status.code(), Some(1), "{args:?}");
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.contains(UNKNOWN_UUID), "{stderr}");
+                assert!(stderr.contains("NOT_FOUND: Not Found"), "{stderr}");
+                if domain != "org" {
+                    assert!(
+                        stderr.contains(&format!("(organization {LOOKUP_ORG_ID})")),
+                        "{stderr}"
+                    );
+                }
+                if human {
+                    assert!(stderr.starts_with("Error: No such "), "{stderr}");
+                } else {
+                    let error: Value =
+                        serde_json::from_str(stderr.trim()).expect("structured error");
+                    assert_eq!(error["error"]["code"], "resource_not_found");
+                    let command = if domain == "org" {
+                        "clickhousectl cloud org list".to_string()
+                    } else {
+                        format!("clickhousectl cloud {domain} list --org-id {LOOKUP_ORG_ID}")
+                    };
+                    assert_eq!(error["error"]["command"], command);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn deleted_resource_404_query_endpoint_checks_parent_before_naming_missing_service() {
+    for parent_status in [200, 400, 404] {
+        let mock = MockServer::start().await;
+        let service_path = format!("/v1/organizations/{LOOKUP_ORG_ID}/services/{UNKNOWN_UUID}");
+        Mock::given(method("GET"))
+            .and(path(format!("{service_path}/serviceQueryEndpoint")))
+            .respond_with(deleted_resource_404_response())
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let parent = match parent_status {
+            200 => manual_query_endpoint_response(serde_json::json!({"id": UNKNOWN_UUID})),
+            400 => invalid_id_400_response("service", UNKNOWN_UUID),
+            _ => deleted_resource_404_response(),
+        };
+        Mock::given(method("GET"))
+            .and(path(service_path.clone()))
+            .respond_with(parent)
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "service",
+                "query-endpoint",
+                "get",
+                UNKNOWN_UUID,
+                "--org-id",
+                LOOKUP_ORG_ID,
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if parent_status == 200 {
+            assert!(!stderr.contains("resource_not_found"), "{stderr}");
+            assert!(!stderr.contains("No such service"), "{stderr}");
+            assert!(stderr.contains("NOT_FOUND: Not Found"), "{stderr}");
+            assert!(stderr.contains(LOOKUP_ORG_ID), "{stderr}");
+        } else {
+            let error: Value = serde_json::from_str(stderr.trim()).expect("structured error");
+            assert_eq!(error["error"]["code"], "resource_not_found");
+            assert!(
+                error["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("No such service:")
+            );
+        }
+        assert_eq!(
+            received_request_shape(&mock).await,
+            vec![
+                ("GET".into(), format!("{service_path}/serviceQueryEndpoint")),
+                ("GET".into(), service_path)
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn deleted_resource_404_does_not_reclassify_malformed_ids_or_authentication() {
+    for (id, org_id, status) in [
+        ("service-name", LOOKUP_ORG_ID, 404),
+        (UNKNOWN_UUID, "org-name", 404),
+        (UNKNOWN_UUID, LOOKUP_ORG_ID, 401),
+        (UNKNOWN_UUID, LOOKUP_ORG_ID, 403),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/organizations/{org_id}/services/{id}")))
+            .respond_with(ResponseTemplate::new(status).set_body_json(
+                serde_json::json!({"status": status, "error": "NOT_FOUND: Not Found"}),
+            ))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output =
+            invoke_cli_with_cloud_credentials(&mock, &["service", "get", id, "--org-id", org_id]);
+        assert_eq!(
+            output.status.code(),
+            Some(if status == 404 { 1 } else { 4 })
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("resource_not_found"), "{stderr}");
+        assert!(!stderr.contains("No such service"), "{stderr}");
+        assert!(stderr.contains("NOT_FOUND: Not Found"), "{stderr}");
+    }
+}
+
+#[tokio::test]
+async fn deleted_resource_404_wrong_organization_scope_is_included_for_lists() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/organizations/{LOOKUP_ORG_ID}/services")))
+        .respond_with(deleted_resource_404_response())
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output =
+        invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-id", LOOKUP_ORG_ID]);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        stderr.contains(&format!("request scoped to organization {LOOKUP_ORG_ID}")),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("resource_not_found"), "{stderr}");
+}
