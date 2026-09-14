@@ -2469,7 +2469,9 @@ pipe. It takes the same source
 connection flags as the corresponding `create` subcommand (minus the
 destination `--name`/`--database`/`--table`/`--column` options). Object-storage
 discovery runs on the destination service, so that service must be running.
-Schema discovery requires API-key authentication:
+Schema discovery requires API-key authentication. For multi-organization
+accounts, `--org-id <org-id>` can appear before the service ID, between the
+service ID and source, or after the source options:
 
 ```bash
 # Discover schema from Kafka

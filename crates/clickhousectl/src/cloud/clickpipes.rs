@@ -410,7 +410,7 @@ CONTEXT FOR AGENTS:
         command: ClickPipeSchemaDiscoverCommands,
 
         /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
+        #[arg(long, global = true)]
         org_id: Option<String>,
     },
 
@@ -7871,6 +7871,110 @@ mod tests {
         assert_eq!(args.auth, "IAM_ROLE");
         assert_eq!(args.iterator_type, "TRIM_HORIZON");
         assert_eq!(org_id.as_deref(), Some("org-kinesis"));
+    }
+
+    #[test]
+    fn every_schema_discovery_source_accepts_org_id_at_each_level() {
+        let sources: [(&str, &[&str]); 4] = [
+            (
+                "kafka",
+                &[
+                    "--brokers",
+                    "broker:9092",
+                    "--topics",
+                    "topic",
+                    "--format",
+                    "JSONEachRow",
+                ],
+            ),
+            (
+                "kinesis",
+                &[
+                    "--stream-name",
+                    "stream-1",
+                    "--region",
+                    "us-east-1",
+                    "--format",
+                    "JSONEachRow",
+                ],
+            ),
+            (
+                "object-storage",
+                &[
+                    "--source-url",
+                    "https://bucket.example/data/*.json",
+                    "--format",
+                    "JSONEachRow",
+                ],
+            ),
+            (
+                "pubsub",
+                &[
+                    "--topic",
+                    "events",
+                    "--project-id",
+                    "my-gcp-project",
+                    "--format",
+                    "JSONEachRow",
+                    "--seek-type",
+                    "earliest",
+                    "--service-account-file",
+                    "./sa-key.json",
+                ],
+            ),
+        ];
+
+        for (source, source_args) in sources {
+            for placement in ["before-service", "before-source", "after-source-options"] {
+                let mut args = vec!["schema-discover"];
+                if placement == "before-service" {
+                    args.extend(["--org-id", "org-1"]);
+                }
+                args.push("svc-1");
+                if placement == "before-source" {
+                    args.extend(["--org-id", "org-1"]);
+                }
+                args.push(source);
+                args.extend(source_args.iter().copied());
+                if placement == "after-source-options" {
+                    args.extend(["--org-id", "org-1"]);
+                }
+
+                let ClickPipeCommands::SchemaDiscover { org_id, .. } = parse_clickpipe(&args)
+                else {
+                    panic!("expected {source} schema discovery");
+                };
+                assert_eq!(
+                    org_id.as_deref(),
+                    Some("org-1"),
+                    "{source} did not inherit --org-id at {placement}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_schema_discovery_source_exposes_org_id() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        command.build();
+        let schema_discover = command
+            .find_subcommand("cloud")
+            .and_then(|cloud| cloud.find_subcommand("clickpipe"))
+            .and_then(|clickpipe| clickpipe.find_subcommand("schema-discover"))
+            .expect("clickpipe schema-discover command");
+        for source in ["kafka", "kinesis", "object-storage", "pubsub"] {
+            let command = schema_discover
+                .find_subcommand(source)
+                .expect("schema-discover source subcommand");
+            assert!(
+                command
+                    .get_arguments()
+                    .any(|argument| argument.get_id() == "org_id"),
+                "clickpipe schema-discover {source} is missing --org-id"
+            );
+        }
     }
 
     /// `schema-discover object-storage` takes the same source flags as
