@@ -13,6 +13,14 @@ use std::io::Write;
 use std::path::Path;
 use tabled::{Table, Tabled, settings::Style};
 
+const ABSENT: &str = "-";
+
+fn or_absent<T: fmt::Display>(value: Option<T>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| ABSENT.to_string())
+}
+
 /// Stable codes for local runtime failures. New codes may be added, but
 /// existing spellings and meanings are part of the machine-output contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1069,9 +1077,9 @@ impl fmt::Display for ServerListOutput {
                         e.container_id
                             .as_deref()
                             .map(|s| s.chars().take(12).collect::<String>())
-                            .unwrap_or_default()
+                            .unwrap_or_else(|| ABSENT.to_string())
                     } else {
-                        e.pid.map(|p| p.to_string()).unwrap_or_default()
+                        or_absent(e.pid)
                     };
                     ServerListRowWithEngine {
                         name: e.name.clone(),
@@ -1082,9 +1090,9 @@ impl fmt::Display for ServerListOutput {
                             "stopped".into()
                         },
                         pid_or_container: id,
-                        version: e.version.clone().unwrap_or_default(),
-                        http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                        tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+                        version: or_absent(e.version.as_deref()),
+                        http_port: or_absent(e.http_port),
+                        tcp_port: or_absent(e.tcp_port),
                     }
                 })
                 .collect();
@@ -1110,11 +1118,11 @@ impl fmt::Display for ServerListOutput {
                     } else {
                         "stopped".to_string()
                     },
-                    pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
-                    version: e.version.clone().unwrap_or_default(),
-                    http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                    tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
-                    project: e.project.clone().unwrap_or_default(),
+                    pid: or_absent(e.pid),
+                    version: or_absent(e.version.as_deref()),
+                    http_port: or_absent(e.http_port),
+                    tcp_port: or_absent(e.tcp_port),
+                    project: or_absent(e.project.as_deref()),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::markdown()).to_string();
@@ -1130,10 +1138,10 @@ impl fmt::Display for ServerListOutput {
                     } else {
                         "stopped".to_string()
                     },
-                    pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
-                    version: e.version.clone().unwrap_or_default(),
-                    http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                    tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+                    pid: or_absent(e.pid),
+                    version: or_absent(e.version.as_deref()),
+                    http_port: or_absent(e.http_port),
+                    tcp_port: or_absent(e.tcp_port),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::markdown()).to_string();
@@ -2575,7 +2583,92 @@ mod tests {
         assert!(text.contains("9000"));
         assert!(text.contains("test"));
         assert!(text.contains("stopped"));
+        let stopped = text
+            .lines()
+            .find(|line| line.contains("| test"))
+            .expect("stopped server row");
+        let cells: Vec<_> = stopped.split('|').map(str::trim).collect();
+        assert_eq!(cells, ["", "test", "stopped", "-", "-", "-", "-", ""]);
         assert!(text.contains("2 servers, 1 running"));
+    }
+
+    #[test]
+    fn server_list_display_marks_unavailable_postgres_and_global_fields() {
+        let postgres = ServerListOutput {
+            servers: vec![ServerListEntry {
+                name: "pg".to_string(),
+                running: true,
+                pid: None,
+                version: Some("postgres:18".to_string()),
+                http_port: None,
+                tcp_port: Some(5432),
+                project: None,
+                engine: "postgres".to_string(),
+                container_id: Some("1234567890abcdef".to_string()),
+            }],
+            total_servers: 1,
+            total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
+        }
+        .to_string();
+        let postgres_row = postgres
+            .lines()
+            .find(|line| line.contains("| pg"))
+            .expect("Postgres server row");
+        let postgres_cells: Vec<_> = postgres_row.split('|').map(str::trim).collect();
+        assert_eq!(
+            postgres_cells,
+            [
+                "",
+                "pg",
+                "postgres",
+                "running",
+                "1234567890ab",
+                "postgres:18",
+                "-",
+                "5432",
+                ""
+            ]
+        );
+
+        let global = ServerListOutput {
+            servers: vec![ServerListEntry {
+                name: "recovered".to_string(),
+                running: true,
+                pid: Some(42),
+                version: None,
+                http_port: None,
+                tcp_port: None,
+                project: Some("/project".to_string()),
+                engine: "clickhouse".to_string(),
+                container_id: None,
+            }],
+            total_servers: 1,
+            total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
+        }
+        .to_string();
+        let global_row = global
+            .lines()
+            .find(|line| line.contains("| recovered"))
+            .expect("globally discovered server row");
+        let global_cells: Vec<_> = global_row.split('|').map(str::trim).collect();
+        assert_eq!(
+            global_cells,
+            [
+                "",
+                "recovered",
+                "running",
+                "42",
+                "-",
+                "-",
+                "-",
+                "/project",
+                ""
+            ]
+        );
     }
 
     #[test]
