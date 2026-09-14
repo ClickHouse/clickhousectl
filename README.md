@@ -596,6 +596,8 @@ The Postgres `dotenv` command includes the generated password. Do not commit its
 
 `local postgres remove` refuses running instances with exit `1` (`server_running` in JSON) and supplies a `clickhousectl local postgres stop <name> --version <major>` recovery command. Stop the selected instance before retrying removal; a refused removal preserves its container and data.
 
+Removing a stopped Postgres instance also cleans up anonymous Docker volumes created by the image. Existing bind-mounted Postgres data survives stop/start; explicitly removing the instance also deletes its data.
+
 Fresh and resumed starts wait until `pg_isready` reports that PostgreSQL is accepting connections inside the container. The readiness timeout defaults to 60 seconds and can be set from 1 to 600 seconds with `--wait-timeout`. A timeout or early container exit fails the command and prints a bounded tail of the container logs instead of connection credentials. A failed fresh startup removes the newly created container, metadata, and PGDATA created by that attempt only when rollback completes. Pre-existing PGDATA is preserved, and recovery metadata is retained whenever cleanup is incomplete. A failed resume stops the existing container but preserves its metadata and data.
 
 Containers are tagged with `clickhousectl.engine=postgres`, `clickhousectl.name=<name>`, `clickhousectl.major=<major>`, `clickhousectl.project=<cwd>`, and `created_by=clickhousectl_<version>` labels. `server list` recovers orphaned containers belonging to the current project via these labels, so deleting `.clickhouse/servers/<name>-pg<major>.json` is non-destructive — the next list/start rediscovers it.

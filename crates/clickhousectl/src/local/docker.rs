@@ -608,7 +608,12 @@ pub async fn remove_container(docker: &Docker, id: &str) -> Result<()> {
         docker
             .remove_container(
                 id,
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+                Some(
+                    RemoveContainerOptionsBuilder::default()
+                        .force(true)
+                        .v(true)
+                        .build(),
+                ),
             )
             .await,
     )
@@ -1222,6 +1227,57 @@ pub fn recover_project_postgres_blocking(
 mod tests {
     use super::*;
     use bollard::models::{CreateImageInfo, ProgressDetail};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_container_requests_anonymous_volume_cleanup() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let directory = tempfile::tempdir().expect("create Docker mock directory");
+        let socket_path = directory.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind Docker mock socket");
+        let request = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Docker request");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read Docker request");
+                assert!(count > 0, "Docker request ended before its headers");
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write Docker response");
+            String::from_utf8(bytes).expect("Docker request is UTF-8")
+        });
+        let docker = Docker::connect_with_unix(
+            socket_path.to_str().expect("socket path is UTF-8"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .expect("connect to Docker mock");
+
+        remove_container(&docker, "pg-id")
+            .await
+            .expect("remove container");
+
+        let request = request.join().expect("join Docker mock");
+        let request_line = request.lines().next().expect("Docker request line");
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .expect("Docker request path");
+        let query = path.split_once('?').expect("Docker request query").1;
+        let parameters: HashMap<_, _> = query
+            .split('&')
+            .filter_map(|parameter| parameter.split_once('='))
+            .collect();
+        assert_eq!(parameters.get("force"), Some(&"true"));
+        assert_eq!(parameters.get("v"), Some(&"true"));
+    }
 
     #[tokio::test]
     async fn sql_reader_failures_are_distinct_from_docker_input_write_failures() {
