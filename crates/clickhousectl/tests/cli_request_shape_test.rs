@@ -19532,11 +19532,16 @@ async fn udf_delete_attach_detach_methods_and_auth() {
             .expect(1)
             .mount(&server)
             .await;
-        assert_success(
-            &udf_test_command(&server, project.path(), false, true, &args)
-                .output()
-                .unwrap(),
-        );
+        let output = udf_test_command(&server, project.path(), false, true, &args)
+            .output()
+            .unwrap();
+        assert_success(&output);
+        if verb == "DELETE" {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                serde_json::json!({"status":200,"requestId":"delete-request"})
+            );
+        }
         let request = server.received_requests().await.unwrap().pop().unwrap();
         match expected_body {
             Some(body) => assert_eq!(
@@ -19545,6 +19550,84 @@ async fn udf_delete_attach_detach_methods_and_auth() {
             ),
             None => assert!(request.body.is_empty()),
         }
+    }
+}
+
+#[tokio::test]
+async fn udf_delete_commands_print_human_confirmations() {
+    for (args, suffix, expected) in [
+        (vec!["delete", "my_udf"], "/my_udf", "UDF my_udf deleted\n"),
+        (
+            vec!["version", "delete", "my_udf", "2"],
+            "/my_udf/versions/2",
+            "UDF my_udf version 2 deleted\n",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        Mock::given(method("DELETE"))
+            .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+            .and(header("authorization", "Basic dWRmLWtleTp1ZGYtc2VjcmV0"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status":200,"requestId":"delete-request"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let output = udf_test_command(&server, project.path(), false, false, &args)
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(String::from_utf8(output.stdout).unwrap(), expected);
+    }
+}
+
+#[tokio::test]
+async fn udf_empty_lists_have_named_empty_states_and_readable_pagination() {
+    for (args, suffix, empty_state) in [
+        (vec!["list"], "", "No UDFs found"),
+        (
+            vec!["attachment", "list", "my_udf"],
+            "/my_udf/attachments",
+            "No UDF attachments found",
+        ),
+        (
+            vec!["version", "list", "my_udf"],
+            "/my_udf/versions",
+            "No UDF versions found",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": {
+                    "items": [],
+                    "pagination": {
+                        "currentCursor": "current page",
+                        "limit": 100,
+                        "nextCursor": "next page",
+                        "totalRecords": 0
+                    }
+                }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let output = udf_test_command(&server, project.path(), false, false, &args)
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!(
+                "{empty_state}\nPagination: 0 total records; page limit 100; current cursor: current page; next cursor: next page\n"
+            )
+        );
     }
 }
 
