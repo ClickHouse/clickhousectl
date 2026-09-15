@@ -1448,9 +1448,56 @@ async fn postgres_logs(
     } else if logs.is_empty() {
         println!("No Postgres logs found");
     } else {
-        print_human(&logs)?;
+        println!("{}", render_postgres_logs_table(&logs));
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Tabled)]
+struct PostgresLogRow {
+    #[tabled(rename = "Timestamp")]
+    timestamp: String,
+    #[tabled(rename = "Severity")]
+    severity: String,
+    #[tabled(rename = "Message")]
+    message: String,
+}
+
+fn render_postgres_logs_table(logs: &[PostgresLogEntry]) -> String {
+    let rows = logs.iter().map(postgres_log_row);
+    Table::new(rows).with(Style::markdown()).to_string()
+}
+
+fn postgres_log_row(log: &PostgresLogEntry) -> PostgresLogRow {
+    PostgresLogRow {
+        timestamp: or_absent(
+            log.timestamp
+                .as_ref()
+                .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)),
+        ),
+        severity: or_absent(log.severity.as_deref()),
+        message: postgres_log_message(log.body.as_deref()),
+    }
+}
+
+/// Extract the useful message from the JSON document carried in `body`.
+///
+/// The API model deliberately keeps `body` as a string. Returning that string
+/// unchanged for every other shape avoids hiding data when the provider sends
+/// plain text, malformed JSON, a missing message, or a future message type.
+fn postgres_log_message(body: Option<&str>) -> String {
+    let Some(body) = body else {
+        return ABSENT.to_string();
+    };
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| body.to_string())
 }
 
 /// The post-create credentials block, or the warning that replaces it.
@@ -2993,6 +3040,47 @@ mod tests {
         assert_eq!(query.sort_order, Some(PostgresLogsGetListSortorder::Asc));
         assert_eq!(query.limit, Some(2000));
         assert_eq!(query.offset, Some(0));
+    }
+
+    #[test]
+    fn postgres_log_row_extracts_a_string_message_and_formats_utc() {
+        let log = PostgresLogEntry {
+            timestamp: Some("2026-08-01T12:00:00.123Z".parse().unwrap()),
+            severity: Some("LOG".to_string()),
+            body: Some(
+                serde_json::json!({
+                    "message": "checkpoint complete",
+                    "detail": "all buffers written"
+                })
+                .to_string(),
+            ),
+        };
+
+        assert_eq!(
+            postgres_log_row(&log),
+            PostgresLogRow {
+                timestamp: "2026-08-01T12:00:00.123Z".to_string(),
+                severity: "LOG".to_string(),
+                message: "checkpoint complete".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn postgres_log_message_preserves_raw_and_unusual_bodies() {
+        let long_message = "x".repeat(4096);
+        for body in [
+            "recovery complete",
+            r#"{"message":42,"detail":"kept"}"#,
+            r#"{"detail":"message absent"}"#,
+            r#"{"message":"unfinished""#,
+            "null",
+            long_message.as_str(),
+        ] {
+            assert_eq!(postgres_log_message(Some(body)), body);
+        }
+        assert_eq!(postgres_log_message(None), ABSENT);
+        assert_eq!(postgres_log_message(Some("")), "");
     }
 
     #[test]

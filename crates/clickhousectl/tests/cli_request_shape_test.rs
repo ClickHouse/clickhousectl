@@ -3121,7 +3121,7 @@ async fn postgres_logs_routes_all_query_parameters_and_preserves_json_with_oauth
         {
             "timestamp": "2026-08-01T12:00:00Z",
             "severity": "LOG",
-            "body": "checkpoint complete"
+            "body": "{\"message\":\"checkpoint complete\",\"detail\":\"all buffers written\"}"
         },
         { "severity": "WARNING" }
     ]);
@@ -3208,7 +3208,16 @@ async fn postgres_logs_minimal_query_and_sparse_human_output() {
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/logs"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [{ "severity": "WARNING" }, { "body": "recovery complete" }],
+            "result": [
+                {
+                    "timestamp": "2026-08-01T12:00:00Z",
+                    "severity": "LOG",
+                    "body": "{\"message\":\"checkpoint complete\",\"detail\":\"all buffers written\"}"
+                },
+                { "severity": "WARNING", "body": "recovery complete" },
+                { "body": "{\"message\":42,\"detail\":\"kept\"}" },
+                {}
+            ],
             "status": 200
         })))
         .expect(1)
@@ -3235,9 +3244,22 @@ async fn postgres_logs_minimal_query_and_sparse_human_output() {
 
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("severity: WARNING"), "{stdout}");
-    assert!(stdout.contains("body: recovery complete"), "{stdout}");
-    assert!(!stdout.contains("timestamp:"), "{stdout}");
+    for heading in ["Timestamp", "Severity", "Message"] {
+        assert!(stdout.contains(heading), "{heading} missing from: {stdout}");
+    }
+    assert!(stdout.contains("2026-08-01T12:00:00Z"), "{stdout}");
+    assert!(stdout.contains("checkpoint complete"), "{stdout}");
+    assert!(!stdout.contains("all buffers written"), "{stdout}");
+    assert!(stdout.contains("recovery complete"), "{stdout}");
+    assert!(
+        stdout.contains(r#"{"message":42,"detail":"kept"}"#),
+        "{stdout}"
+    );
+    let absent_row = stdout
+        .lines()
+        .rfind(|line| line.contains('|'))
+        .expect("missing final table row");
+    assert_eq!(absent_row.matches('-').count(), 3, "{absent_row}");
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(
