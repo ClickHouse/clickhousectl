@@ -3,7 +3,12 @@ use std::process::{Command, Stdio};
 
 #[test]
 fn missing_selection_without_a_terminal_is_a_usage_error() {
-    for flags in [vec![], vec!["--global"]] {
+    for flags in [
+        vec![],
+        vec!["--global"],
+        vec!["--json"],
+        vec!["--global", "--json"],
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_clickhousectl"))
             .env_clear()

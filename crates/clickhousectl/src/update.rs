@@ -1,9 +1,9 @@
 use crate::error::{Error, Result};
 use crate::paths;
 use flate2::read::GzDecoder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{self, Cursor};
+use std::io::{self, Cursor, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tar::Archive;
@@ -15,6 +15,63 @@ const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
 #[derive(Deserialize)]
 struct GitHubRelease {
     tag_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UpdateAction {
+    UpToDate,
+    UpdateAvailable,
+    Updated,
+}
+
+#[derive(Serialize)]
+pub struct UpdateResult {
+    current_version: String,
+    latest_version: String,
+    action: UpdateAction,
+}
+
+impl UpdateResult {
+    fn checked(current: &str, latest: &str) -> Self {
+        Self {
+            current_version: current.to_owned(),
+            latest_version: latest.strip_prefix('v').unwrap_or(latest).to_owned(),
+            action: if is_newer(current, latest) {
+                UpdateAction::UpdateAvailable
+            } else {
+                UpdateAction::UpToDate
+            },
+        }
+    }
+
+    pub fn write(&self, output: &mut dyn Write, json: bool) -> Result<()> {
+        if json {
+            writeln!(output, "{}", serde_json::to_string_pretty(self)?)?;
+        } else {
+            match self.action {
+                UpdateAction::UpToDate => {
+                    writeln!(output, "Already up to date (v{}).", self.current_version)?;
+                }
+                UpdateAction::UpdateAvailable => {
+                    writeln!(
+                        output,
+                        "Update available: v{} → v{}",
+                        self.current_version, self.latest_version
+                    )?;
+                    writeln!(output, "Run `clickhousectl update` to upgrade.")?;
+                }
+                UpdateAction::Updated => {
+                    writeln!(
+                        output,
+                        "Updated clickhousectl: v{} → v{}",
+                        self.current_version, self.latest_version
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The platform target triple used in release artifact names.
@@ -115,9 +172,9 @@ const EXPLICIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10)
 /// Timeout for the implicit background cache refresh.
 const BACKGROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// Check for updates. Returns Some((current, latest)) if an update is available.
+/// Check for updates and retain both versions even when no update is available.
 /// Uses the explicit (longer) timeout since this is called from user-initiated commands.
-pub async fn check_for_update() -> Result<Option<(String, String)>> {
+pub async fn check_for_update() -> Result<UpdateResult> {
     let current = env!("CARGO_PKG_VERSION");
     let release = fetch_latest_release(EXPLICIT_TIMEOUT).await?;
     let latest = &release.tag_name;
@@ -127,26 +184,22 @@ pub async fn check_for_update() -> Result<Option<(String, String)>> {
     // timer, so subsequent commands reflect what we just learned.
     let _ = save_update_check(display);
 
-    if is_newer(current, latest) {
-        Ok(Some((current.to_string(), display.to_string())))
-    } else {
-        Ok(None)
-    }
+    Ok(UpdateResult::checked(current, latest))
 }
 
 /// Download the latest release and replace the current binary.
-pub async fn perform_update() -> Result<()> {
+pub async fn perform_update(json: bool) -> Result<UpdateResult> {
     let current = env!("CARGO_PKG_VERSION");
     let release = fetch_latest_release(EXPLICIT_TIMEOUT).await?;
     let latest = &release.tag_name;
+    let mut result = UpdateResult::checked(current, latest);
 
-    if !is_newer(current, latest) {
+    if matches!(result.action, UpdateAction::UpToDate) {
         let display = latest.strip_prefix('v').unwrap_or(latest);
-        println!("Already up to date (v{}).", display);
         // Refresh the cache with the network truth so a stale "update available"
         // notice can't keep nagging after the user explicitly checked.
         let _ = save_update_check(display);
-        return Ok(());
+        return Ok(result);
     }
 
     let target = target_triple()?;
@@ -154,7 +207,9 @@ pub async fn perform_update() -> Result<()> {
     let download_url = format!("{}/{}", BUILDS_BASE_URL, archive_name);
 
     let display = latest.strip_prefix('v').unwrap_or(latest);
-    println!("Downloading clickhousectl v{}...", display);
+    if !json {
+        println!("Downloading clickhousectl v{}...", display);
+    }
 
     let client = crate::http::client_builder()
         .timeout(std::time::Duration::from_secs(300))
@@ -211,10 +266,10 @@ pub async fn perform_update() -> Result<()> {
         ))
     })?;
 
-    println!("Updated clickhousectl: v{} → v{}", current, display);
     // Clear the check cache so the update notice disappears immediately.
     let _ = clear_update_check();
-    Ok(())
+    result.action = UpdateAction::Updated;
+    Ok(result)
 }
 
 // --- Background update check with caching ---
@@ -331,6 +386,35 @@ pub async fn force_refresh_update_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_update_check_preserves_the_current_and_actual_latest_versions() {
+        for (latest, action) in [
+            ("v0.5.0", "update_available"),
+            ("v0.4.2", "up_to_date"),
+            ("v0.4.1", "up_to_date"),
+        ] {
+            let result = UpdateResult::checked("0.4.2", latest);
+            let mut output = Vec::new();
+            result.write(&mut output, true).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(value["current_version"], "0.4.2");
+            assert_eq!(value["latest_version"], latest.trim_start_matches('v'));
+            assert_eq!(value["action"], action);
+        }
+    }
+
+    #[test]
+    fn json_update_completion_reports_the_upgrade() {
+        let mut result = UpdateResult::checked("0.4.2", "v0.5.0");
+        result.action = UpdateAction::Updated;
+        let mut output = Vec::new();
+        result.write(&mut output, true).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["action"], "updated");
+        assert_eq!(value["current_version"], "0.4.2");
+        assert_eq!(value["latest_version"], "0.5.0");
+    }
 
     #[test]
     fn test_parse_version() {

@@ -2727,7 +2727,16 @@ Every Cloud runtime failure uses an `{"error":{"code":"…","message":"…"}}` e
 
 Error rendering writes nothing to stdout. A failure before any result leaves stdout empty; streaming queries and commands that report a committed change can already have emitted output before a later failure. Successful SQL and Prometheus output retain their native formats. Exit codes remain 1 for runtime errors, 3 for cancellation, and 4 for authentication; Clap usage errors keep their own text and exit 2, and child processes retain their output and status. Human Cloud failures keep `Error: <message>`. Explicit `--debug` and command-specific progress or cleanup warnings can add diagnostic lines before the error object on stderr.
 
-The `skills`, `telemetry`, and `update` management commands continue to use human-readable output; structured management output is tracked by [#862](https://github.com/ClickHouse/clickhousectl/issues/862).
+The `skills`, `telemetry`, and `update` management commands also accept `--json` and automatically select JSON when a coding agent is detected. Each successful invocation writes one object to stdout, without progress prose:
+
+| Command | Successful JSON fields |
+|---|---|
+| `skills --agent claude --json` | `scope` (`project` or `global`), `skills` (names), and `agents` (each target's `agent`, `path`, `created_files`, `updated_files`, `unchanged_files`). |
+| `telemetry status/enable/disable --json` | `action`, saved `preference` (`unconfigured`, `enabled`, `disabled`, or `unavailable`), effective `enabled`, `reason`, and `config_path` when available. `DO_NOT_TRACK` can keep effective `enabled` false after enabling the saved preference. |
+| `update --check --json` | `current_version`, `latest_version`, and `action` (`up_to_date` or `update_available`). |
+| `update --json` | The same version fields, with `action` set to `up_to_date` or `updated`. After an upgrade, `current_version` is the version before replacement. |
+
+JSON mode preserves skills selection and scope behavior; interactive prompts use stderr. Use an explicit agent-selection flag for unattended installation. Management-command failures retain their existing stderr diagnostics and exit codes.
 
 Managed `local client` failures deliberately use dedicated `managed_client_*` codes rather than the general server codes. Their error object includes `project_scope.path` (the canonical directory inspected), `server.selection` and `server.name`, an optional `server.binary_version`, and ordered `guidance` entries with allowlisted messages and optional commands. No raw lock, metadata, or I/O error is included in JSON. The nested shape distinguishes this exact-project lookup contract from failures in other local commands without changing those commands' stable envelopes.
 

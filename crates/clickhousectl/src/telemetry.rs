@@ -1016,12 +1016,85 @@ pub async fn run_child_send() {
 // `clickhousectl telemetry` subcommand
 // ---------------------------------------------------------------------------
 
-pub fn run_command(cmd: crate::cli::TelemetryCommands) -> Result<()> {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TelemetryPreference {
+    Unavailable,
+    Unconfigured,
+    Enabled,
+    Disabled,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TelemetryReason {
+    DoNotTrack,
+    HomeUnavailable,
+    Unconfigured,
+    PreferenceEnabled,
+    PreferenceDisabled,
+}
+
+#[derive(serde::Serialize)]
+struct TelemetryStatus {
+    preference: TelemetryPreference,
+    enabled: bool,
+    reason: TelemetryReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_path: Option<PathBuf>,
+}
+
+impl TelemetryStatus {
+    fn read(config_path: Option<PathBuf>, do_not_track: bool) -> Self {
+        let preference = match config_path.as_deref().map(load_state_from) {
+            None => TelemetryPreference::Unavailable,
+            Some(State::Missing) => TelemetryPreference::Unconfigured,
+            Some(State::Enabled) => TelemetryPreference::Enabled,
+            Some(State::Disabled) => TelemetryPreference::Disabled,
+        };
+        let reason = if do_not_track {
+            TelemetryReason::DoNotTrack
+        } else {
+            match preference {
+                TelemetryPreference::Unavailable => TelemetryReason::HomeUnavailable,
+                TelemetryPreference::Unconfigured => TelemetryReason::Unconfigured,
+                TelemetryPreference::Enabled => TelemetryReason::PreferenceEnabled,
+                TelemetryPreference::Disabled => TelemetryReason::PreferenceDisabled,
+            }
+        };
+        Self {
+            preference,
+            enabled: matches!(reason, TelemetryReason::PreferenceEnabled),
+            reason,
+            config_path,
+        }
+    }
+}
+
+fn print_json_status(action: &'static str) -> Result<()> {
+    #[derive(serde::Serialize)]
+    struct Output {
+        action: &'static str,
+        #[serde(flatten)]
+        status: TelemetryStatus,
+    }
+    let output = Output {
+        action,
+        status: TelemetryStatus::read(state_path(), env_truthy(real_env_lookup(DNT_ENV))),
+    };
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+pub fn run_command(cmd: crate::cli::TelemetryCommands, json: bool) -> Result<()> {
     use crate::cli::TelemetryCommands;
 
     match cmd {
         TelemetryCommands::Enable => {
             set_disabled(false)?;
+            if json {
+                return print_json_status("enable");
+            }
             println!("Telemetry enabled.");
             // The preference is recorded either way, but DNT overrides it
             // (see `decide`): without this note the user would see success
@@ -1039,10 +1112,16 @@ pub fn run_command(cmd: crate::cli::TelemetryCommands) -> Result<()> {
         }
         TelemetryCommands::Disable => {
             set_disabled(true)?;
+            if json {
+                return print_json_status("disable");
+            }
             println!("Telemetry disabled.");
             Ok(())
         }
         TelemetryCommands::Status => {
+            if json {
+                return print_json_status("status");
+            }
             print_status();
             Ok(())
         }
@@ -1088,6 +1167,16 @@ fn print_status() {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn json_status_reports_unavailable_home_without_a_config_path() {
+        let status = TelemetryStatus::read(None, false);
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value["preference"], "unavailable");
+        assert_eq!(value["enabled"], false);
+        assert_eq!(value["reason"], "home_unavailable");
+        assert!(value.get("config_path").is_none());
+    }
 
     /// Env lookup over a synthetic map; `set_var` is unsafe in edition 2024.
     fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {

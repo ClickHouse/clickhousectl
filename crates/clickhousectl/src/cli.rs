@@ -86,6 +86,10 @@ CONTEXT FOR AGENTS:
 #[cfg(feature = "telemetry")]
 #[derive(Args, Debug)]
 pub struct TelemetryArgs {
+    /// Output as JSON
+    #[arg(long, global = true, display_order = help_order::JSON)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: TelemetryCommands,
 }
@@ -112,6 +116,10 @@ pub enum TelemetryCommands {
 
 #[derive(Args, Debug)]
 pub struct SkillsArgs {
+    /// Output as JSON
+    #[arg(long, display_order = help_order::JSON)]
+    pub json: bool,
+
     /// Install into specific agents (repeatable, comma-separated)
     #[arg(
         long = "agent",
@@ -148,6 +156,10 @@ impl SkillsArgs {
 
 #[derive(Args, Debug)]
 pub struct UpdateArgs {
+    /// Output as JSON
+    #[arg(long, display_order = help_order::JSON)]
+    pub json: bool,
+
     /// Check for updates without installing
     #[arg(long)]
     pub check: bool,
@@ -652,5 +664,66 @@ mod tests {
     #[test]
     fn telemetry_requires_a_subcommand() {
         assert!(Cli::try_parse_from(["clickhousectl", "telemetry"]).is_err());
+    }
+
+    #[test]
+    fn management_commands_parse_json_without_changing_defaults() {
+        for json in [false, true] {
+            for command in ["skills", "update"] {
+                let mut argv = vec!["clickhousectl", command];
+                if json {
+                    argv.push("--json");
+                }
+                let cli = Cli::try_parse_from(argv).unwrap();
+                match cli.command {
+                    Commands::Skills(args) => {
+                        assert_eq!(args.json, json);
+                        assert!(!args.all && !args.detected_only && !args.global);
+                        assert!(args.agents.is_empty());
+                    }
+                    Commands::Update(args) => {
+                        assert_eq!(args.json, json);
+                        assert!(!args.check);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        let cli = Cli::try_parse_from(["clickhousectl", "update", "--check", "--json"]).unwrap();
+        let Commands::Update(args) = cli.command else {
+            panic!("update")
+        };
+        assert!(args.check && args.json);
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "skills",
+            "--agent",
+            "claude,codex",
+            "--global",
+            "--json",
+        ])
+        .unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("skills")
+        };
+        assert!(args.global && args.json);
+        assert_eq!(args.agents, ["claude", "codex"]);
+    }
+
+    #[cfg(feature = "telemetry")]
+    #[test]
+    fn telemetry_json_is_available_before_and_after_each_subcommand() {
+        for command in ["status", "enable", "disable"] {
+            for argv in [
+                vec!["clickhousectl", "telemetry", "--json", command],
+                vec!["clickhousectl", "telemetry", command, "--json"],
+            ] {
+                let cli = Cli::try_parse_from(argv).unwrap();
+                let Commands::Telemetry(args) = cli.command else {
+                    panic!("telemetry")
+                };
+                assert!(args.json);
+            }
+        }
     }
 }
