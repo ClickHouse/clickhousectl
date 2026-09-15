@@ -86,14 +86,6 @@ cargo install --path crates/clickhousectl
 
 Prebuilt archives for each release are hosted at `https://builds.clickhouse.com/clickhousectl/`. Archives are named `clickhousectl-{target}-v{version}.tar.gz` and contain a single directory of the same name with the `clickhousectl` binary inside. Supported targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`.
 
-## Upgrading to 0.5.0
-
-Primary Cloud JSON document inputs use `--file <PATH>`. This covers UDF and version creation, organization role create/update, service settings and scaling schedules, Query API endpoint and backup bucket create/update, ClickPipe update, ClickStack resource create/update and dashboard validation, and Postgres config replace/patch.
-
-The previous `--config-file`, `--settings-file`, and existing Cloud `--config` spellings remain hidden compatibility aliases on the commands that accepted them. Use only one spelling per invocation; mixing aliases or repeating `--file` is an error.
-
-All of these inputs accept `--file -` for stdin except Postgres config replace/patch, which read filesystem paths only: `-` is a literal filename there. Local server `--config <NAME>`, ancillary inputs such as `--artifact` and `--pg-config-file`, and SQL `--queries-file` keep their existing meaning.
-
 ## Common workflows
 
 This README focuses on common tasks and representative examples. The CLI help is the complete, version-matched command reference: start with `clickhousectl --help`, then use help at any level, such as `clickhousectl cloud postgres --help` or `clickhousectl local server start --help`.
