@@ -1184,6 +1184,122 @@ async fn delete_query_endpoint() {
 // ===========================================================================
 
 #[tokio::test]
+async fn list_snapshots() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1/snapshots"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!([
+            {"status": "throttled", "type": "full", "durationInSeconds": 1.5},
+            {"status": "done", "type": "full", "sizeInBytes": 2048}
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let snapshots = client
+        .snapshot_get_list("org-1", "svc-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].status, Some(SnapshotStatus::Throttled));
+    assert_eq!(snapshots[0].r#type, Some(SnapshotType::Full));
+    assert_eq!(snapshots[0].duration_in_seconds, Some(1.5));
+    assert_eq!(snapshots[1].status, Some(SnapshotStatus::Done));
+}
+
+#[tokio::test]
+async fn get_snapshot() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/snapshots/snapshot-1",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "serviceId": "svc-1",
+            "status": "done",
+            "type": "full",
+            "sizeInBytes": 2048,
+            "bucket": {"bucketProvider": "AWS", "bucketPath": "s3://backups"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let snapshot = client
+        .snapshot_get("org-1", "svc-1", "snapshot-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        snapshot.id.unwrap().to_string(),
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    );
+    assert_eq!(snapshot.service_id.as_deref(), Some("svc-1"));
+    assert_eq!(snapshot.size_in_bytes, Some(2048.0));
+    assert_eq!(snapshot.bucket.unwrap()["bucketPath"], "s3://backups");
+}
+
+#[tokio::test]
+async fn snapshot_methods_preserve_api_errors() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1/snapshots"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403, "error": "Access denied"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/snapshots/missing",
+        ))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Snapshot lookup failed"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let list_error = client
+        .snapshot_get_list("org-1", "svc-1")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(list_error, clickhouse_cloud_api::Error::Api { status: 403, message } if message == "Access denied")
+    );
+    let get_error = client
+        .snapshot_get("org-1", "svc-1", "missing")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(get_error, clickhouse_cloud_api::Error::Api { status: 500, message } if message == "Snapshot lookup failed")
+    );
+}
+
+#[tokio::test]
+async fn snapshot_methods_reject_malformed_success_payloads() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not JSON"))
+        .expect(2)
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        client.snapshot_get_list("org-1", "svc-1").await,
+        Err(clickhouse_cloud_api::Error::Json(_))
+    ));
+    assert!(matches!(
+        client.snapshot_get("org-1", "svc-1", "snapshot-1").await,
+        Err(clickhouse_cloud_api::Error::Json(_))
+    ));
+}
+
+#[tokio::test]
 async fn list_backups() {
     let mock_server = MockServer::start().await;
 
@@ -1499,6 +1615,40 @@ async fn create_click_pipe() {
     let resp = c.click_pipe_create("org-1", "svc-1", &body).await.unwrap();
     let pipe = resp.result.unwrap();
     assert_eq!(pipe.name.as_deref(), Some("new-pipe"));
+}
+
+#[tokio::test]
+async fn create_click_pipe_sends_start_paused_and_table_ttl() {
+    let (server, client) = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes"))
+        .and(body_partial_json(serde_json::json!({
+            "startPaused": true,
+            "destination": {"tableDefinition": {"ttl": "event_time + INTERVAL 30 DAY"}}
+        })))
+        .respond_with(ok_json(serde_json::json!({"state": "Stopped"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let request = ClickPipePostRequest {
+        start_paused: true,
+        destination: ClickPipeMutateDestination {
+            table_definition: Some(ClickPipeDestinationTableDefinition {
+                ttl: "event_time + INTERVAL 30 DAY".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let response = client
+        .click_pipe_create("org-1", "svc-1", &request)
+        .await
+        .unwrap();
+    assert_eq!(
+        response.result.unwrap().state,
+        Some(ClickPipeState::Stopped)
+    );
 }
 
 #[tokio::test]

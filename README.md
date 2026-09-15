@@ -1313,6 +1313,10 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 
 ### Backups
 
+The Rust API client provides the beta `snapshot_get_list` and `snapshot_get` methods
+for service snapshots. See the [library documentation](crates/clickhouse-cloud-api/README.md)
+for snapshot models and the latest ClickPipes request fields.
+
 ```bash
 clickhousectl cloud backup list <service-id>
 clickhousectl cloud backup get <service-id> <backup-id>
@@ -2131,8 +2135,10 @@ Kafka, Kinesis, object-storage, and Pub/Sub creates accept
 ClickPipes table definition and must include the complete required shape shown
 above. Engine types are `MergeTree`, `ReplacingMergeTree`, `SummingMergeTree`,
 and `Null`; `versionColumnId` may be `null`, while `columnIds` selects columns
-for `SummingMergeTree`. Unknown fields at any level and unknown engine types are
-rejected before an API request. `--managed-table <true|false>` defaults to
+for `SummingMergeTree`. `ttl` accepts a SQL TTL expression; omitting it preserves
+existing table-definition files and sends no TTL configuration. Unknown fields
+at any level and unknown engine types are rejected before an API request.
+`--managed-table <true|false>` defaults to
 `true`; omitting both flags preserves the managed `MergeTree` destination.
 
 `--role` is available on every `clickpipe create` subcommand and is repeatable.

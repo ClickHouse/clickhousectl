@@ -1,5 +1,14 @@
 use clickhouse_cloud_api as api;
 
+#[test]
+fn snapshot_and_udf_output_types_are_available_through_both_public_paths() {
+    let snapshot: api::Snapshot = api::models::Snapshot::default();
+    assert_eq!(snapshot, api::Snapshot::default());
+    let argument: api::UdfArgumentOutput = api::models::UdfArgumentOutput::default();
+    let compatible: api::UdfArgumentResponse = argument;
+    assert_eq!(compatible, api::models::UdfArgumentResponse::default());
+}
+
 fn assert_same_type<T>(_: T, _: T) {}
 
 #[test]

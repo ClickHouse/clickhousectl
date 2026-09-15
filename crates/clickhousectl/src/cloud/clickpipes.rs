@@ -1,7 +1,5 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
-use crate::cloud::config::{
-    config_source_label, deserialize_strict_config, read_config_value, read_typed_config,
-};
+use crate::cloud::config::{config_source_label, deserialize_strict_config, read_config_value};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{NameSelector, select_named_id};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
@@ -4242,8 +4240,17 @@ fn read_destination_table_definition(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition> {
     use clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType;
 
+    let mut value = read_config_value(config_file)?;
+    // TTL was added after table-definition files shipped. Preserve omission in
+    // existing files; the strict library request omits this empty sentinel when
+    // serialized. Explicit nulls or wrong types still fail strict parsing.
+    if let Some(object) = value.as_object_mut() {
+        object
+            .entry("ttl")
+            .or_insert_with(|| serde_json::Value::String(String::new()));
+    }
     let definition: clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition =
-        read_typed_config(config_file)?;
+        deserialize_strict_config(value, config_file)?;
     if let ClickPipeDestinationTableEngineType::Unknown(value) = &definition.engine.r#type {
         return Err(CloudError::new(format!(
             "invalid destination table definition in config {config_file}: unknown engine.type value `{value}`"
@@ -5383,6 +5390,7 @@ fn build_mongodb_request(
             None
         },
         settings: ClickPipeMongoDBPipeSettings {
+            initial_load_parallelism: None,
             replication_mode,
             delete_on_merge: args.delete_on_merge,
             pull_batch_size: args.pull_batch_size,
@@ -12406,6 +12414,41 @@ mod tests {
         assert_eq!(definition.partition_by, "toYYYYMM(created_at)");
         assert_eq!(definition.primary_key, "event_id");
         assert_eq!(definition.sorting_key, ["event_id", "created_at"]);
+        assert!(definition.ttl.is_empty());
+        assert!(
+            serde_json::to_value(&definition)
+                .unwrap()
+                .get("ttl")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn destination_table_definition_preserves_explicit_ttl_and_rejects_invalid_types() {
+        use std::io::Write as _;
+
+        for ttl in [
+            serde_json::json!("created_at + INTERVAL 30 DAY"),
+            serde_json::Value::Null,
+            serde_json::json!(false),
+        ] {
+            let mut config = tempfile::NamedTempFile::new().unwrap();
+            let value = serde_json::json!({
+                "engine": {"columnIds": [], "type": "MergeTree", "versionColumnId": null},
+                "partitionBy": "tuple()", "primaryKey": "event_id", "sortingKey": ["event_id"],
+                "ttl": ttl
+            });
+            write!(config, "{value}").unwrap();
+            let result = read_destination_table_definition(config.path().to_str().unwrap());
+            if let Some(expected) = ttl.as_str() {
+                assert_eq!(result.unwrap().ttl, expected);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "invalid TTL must not become an omitted field"
+                );
+            }
+        }
     }
 
     #[test]

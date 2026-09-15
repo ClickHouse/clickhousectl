@@ -607,6 +607,34 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             "created service was not visible in service list"
         );
 
+        failures
+            .run(&ctx, StepKind::NonBlocking, "list and get service snapshots", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let service_id = service_id.clone();
+                async move {
+                    let snapshots = client
+                        .snapshot_get_list(&org_id, &service_id)
+                        .await?
+                        .result
+                        .ok_or("snapshot list returned no result")?;
+                    // Fresh services may have no snapshots yet. Exercise get
+                    // whenever one exists without waiting for a scheduled backup.
+                    if let Some(snapshot) = snapshots.first() {
+                        let id = snapshot.id.ok_or("snapshot list item omitted id")?;
+                        let fetched = client
+                            .snapshot_get(&org_id, &service_id, &id.to_string())
+                            .await?
+                            .result
+                            .ok_or("snapshot get returned no result")?;
+                        assert_eq!(fetched.id, Some(id));
+                        assert_eq!(fetched.service_id.as_deref(), Some(service_id.as_str()));
+                    }
+                    Ok(())
+                }
+            })
+            .await?;
+
         // ── 2. Query API Endpoint ────────────────────────────────────
         //
         // Exercise the path that `cloud service query` uses: create a

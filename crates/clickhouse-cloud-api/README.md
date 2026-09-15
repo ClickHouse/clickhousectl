@@ -4,6 +4,18 @@ Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/
 
 ## Updated Cloud API surface
 
+The beta `snapshot_get_list` and `snapshot_get` methods return service `Snapshot`
+records, including the `throttled` status and full snapshot type. Snapshot response
+fields tolerate missing and null values; provider-specific bucket properties and
+unknown status/type values remain lossless.
+
+ClickPipes requests now include destination-table `ttl`, MongoDB
+`initial_load_parallelism`, and `start_paused`. Empty TTL and false `start_paused`
+values are omitted to preserve existing create behavior; set a nonempty TTL SQL
+expression or `start_paused: true` to send them. Starting paused is unsupported
+for database ClickPipes. `UdfArgumentOutput` matches the newly named UDF response
+schema; `UdfArgumentResponse` remains a compatible alias.
+
 The live snapshot adds `credit_balances_get` (trial and prepaid credit balances), `service_profiles_list` (region and optional BYOC infrastructure), and `click_pipes_service_context_get` (GCP workload identity readiness and principal).
 
 BigQuery and Pub/Sub source models now distinguish service-account and workload-identity authentication with typed unions. Build `ClickPipePostBigQueryServiceAccountSource` or `ClickPipePostPubSubServiceAccountSource` and call `.into()` for existing service-account flows; workload-identity variants omit customer credentials. BigQuery settings and table mappings now permit the optional fields the API accepts. Kafka requests gain optional `protobuf_schema`, which is only supported for Protobuf without a schema registry; MySQL table mappings gain `partition_by_expr`.

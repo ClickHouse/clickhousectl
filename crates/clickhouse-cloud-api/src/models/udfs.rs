@@ -91,7 +91,7 @@ pub struct Udf {
     #[serde(rename = "deterministic", skip_serializing_if = "Option::is_none")]
     pub deterministic: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub arguments: Option<Vec<UdfArgumentResponse>>,
+    pub arguments: Option<Vec<UdfArgumentOutput>>,
     #[serde(rename = "commandReadTimeout", skip_serializing_if = "Option::is_none")]
     pub command_read_timeout: Option<i64>,
     #[serde(
@@ -143,12 +143,15 @@ pub struct Udf {
 /// Used in response position only: every field is `Option<T>`, so a field the
 /// API drops or sends as `null` deserializes to `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct UdfArgumentResponse {
+pub struct UdfArgumentOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub r#type: Option<String>,
 }
+
+/// Compatibility name for [`UdfArgumentOutput`].
+pub type UdfArgumentResponse = UdfArgumentOutput;
 
 /// Inline enum for `Udf.runtime`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
