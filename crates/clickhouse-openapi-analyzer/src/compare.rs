@@ -20,6 +20,7 @@ pub(crate) fn compare(
     compare_additional_properties(rust, spec, &mut report);
     compare_beta_and_deprecation(rust, spec, config, &mut report);
     compare_enums(rust, spec, config, &mut report);
+    compare_acknowledged_enums(spec, snapshot, config, &mut report);
     let fractional = integer_float_fields(rust, spec);
     stale_pairs(
         "fractional_response",
@@ -912,6 +913,48 @@ fn compare_enums(
     compare_enum_values_consts(rust, report);
 }
 
+fn compare_acknowledged_enums(
+    spec: &OpenApiInventory,
+    snapshot: &OpenApiInventory,
+    config: &AnalyzerConfig,
+    report: &mut DriftReport,
+) {
+    for constraint in &spec.enum_constraints {
+        if !config
+            .acknowledged_unsupported_enum_pointers
+            .contains(&constraint.pointer)
+        {
+            continue;
+        }
+        let previous = snapshot
+            .enum_constraints
+            .iter()
+            .find(|item| item.pointer == constraint.pointer);
+        if previous.is_some_and(|item| item.wire_values == constraint.wire_values) {
+            continue;
+        }
+        let format_values = |item: &EnumConstraint| {
+            item.wire_values
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let previous_values = previous
+            .map(format_values)
+            .unwrap_or_else(|| "(absent)".to_string());
+        report.findings.push(
+            Finding::new(
+                FindingKind::AcknowledgedEnumConstraintChanged,
+                "acknowledged enum values differ from the vendored snapshot; review the legacy contract",
+            )
+            .at_spec(&constraint.pointer)
+            .detail("previous_values", previous_values)
+            .detail("current_values", format_values(constraint)),
+        );
+    }
+}
+
 fn compare_enum_values_consts(rust: &RustInventory, report: &mut DriftReport) {
     for (name, info) in &rust.enums {
         let Some(values_const) = &info.values_const else {
@@ -1466,7 +1509,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
             serde_json::json!({
-                "schema_version": 7,
+                "schema_version": 8,
                 "findings": expected_findings,
                 "unsupported_enum_constraints": [],
             })
@@ -1664,7 +1707,7 @@ mod tests {
             Some("models.rs::WidgetResponse")
         );
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 7);
+        assert_eq!(json["schema_version"], 8);
         assert_eq!(
             json["findings"][0]["kind"],
             "additional_properties_mismatch"
@@ -2080,6 +2123,159 @@ mod tests {
                 .iter()
                 .any(|finding| { finding.kind == FindingKind::StaleExemption })
         );
+    }
+
+    fn compare_acknowledged_fixture(
+        before: Option<serde_json::Value>,
+        after: Option<serde_json::Value>,
+    ) -> DriftReport {
+        let pointer = "/components/schemas/Widget/properties/roles/items";
+        let config = AnalyzerConfig {
+            acknowledged_unsupported_enum_pointers: BTreeSet::from([pointer.into()]),
+            ..AnalyzerConfig::default()
+        };
+        let rust =
+            RustInventory::parse("", "pub struct Widget { pub roles: Vec<String> }", "").unwrap();
+        let make_spec = |values| {
+            let mut document = serde_json::json!({
+                "paths": {}, "components": {"schemas": {"Widget": {
+                    "required": ["roles"],
+                    "properties": {"roles": {"type": "array", "items": {}}}
+                }}}
+            });
+            if let Some(values) = values {
+                document["components"]["schemas"]["Widget"]["properties"]["roles"]["items"]["enum"] =
+                    values;
+            }
+            OpenApiInventory::build(&document, &config).unwrap()
+        };
+        compare(&rust, &make_spec(after), &make_spec(before), &config)
+    }
+
+    #[test]
+    fn acknowledged_enum_sets_ignore_order_and_duplicates_for_all_value_kinds() {
+        for (before, after) in [
+            (
+                serde_json::json!(["a", "b"]),
+                serde_json::json!(["b", "a", "b"]),
+            ),
+            (serde_json::json!([1, 2]), serde_json::json!([2, 1, 2])),
+            (serde_json::json!([1, 2]), serde_json::json!([2.0, 1.0])),
+            (
+                serde_json::json!([1.1, 2.2]),
+                serde_json::json!([2.2, 1.1, 1.1]),
+            ),
+            (
+                serde_json::json!(["a", true, null, 3]),
+                serde_json::json!([3, null, true, "a", 3]),
+            ),
+            (serde_json::json!(["a", 1]), serde_json::json!([1.0, "a"])),
+            (serde_json::json!([]), serde_json::json!([])),
+        ] {
+            let report = compare_acknowledged_fixture(Some(before), Some(after));
+            assert!(!report.has_drift(), "{}", report.render_text());
+            assert_eq!(report.unsupported_enum_constraints.len(), 1);
+            assert!(report.unsupported_enum_constraints[0].acknowledged);
+        }
+    }
+
+    #[test]
+    fn acknowledged_enum_value_changes_are_actionable_and_report_both_sets() {
+        for (before, after, previous_values, current_values) in [
+            (
+                serde_json::json!(["a"]),
+                serde_json::json!(["b", "a"]),
+                "\"a\"",
+                "\"a\", \"b\"",
+            ),
+            (
+                serde_json::json!(["a", "b"]),
+                serde_json::json!(["a"]),
+                "\"a\", \"b\"",
+                "\"a\"",
+            ),
+            (
+                serde_json::json!([1, 2]),
+                serde_json::json!([1, 3]),
+                "1, 2",
+                "1, 3",
+            ),
+            (
+                serde_json::json!([1.1, 2.2]),
+                serde_json::json!([1.1, 3.3]),
+                "1.1, 2.2",
+                "1.1, 3.3",
+            ),
+            (
+                serde_json::json!([u64::MAX]),
+                serde_json::json!([u64::MAX - 1]),
+                "18446744073709551615",
+                "18446744073709551614",
+            ),
+            (
+                serde_json::json!(["a", true]),
+                serde_json::json!(["a", false]),
+                "\"a\", true",
+                "\"a\", false",
+            ),
+            (
+                serde_json::json!(["1", null]),
+                serde_json::json!([1, null]),
+                "\"1\", null",
+                "1, null",
+            ),
+            (serde_json::json!(["a"]), serde_json::json!([]), "\"a\"", ""),
+        ] {
+            let report = compare_acknowledged_fixture(Some(before), Some(after));
+            assert_eq!(report.actionable_count(), 1, "{}", report.render_text());
+            assert_eq!(report.unsupported_enum_constraints.len(), 1);
+            assert!(report.unsupported_enum_constraints[0].acknowledged);
+            let finding = &report.findings[0];
+            assert_eq!(finding.kind, FindingKind::AcknowledgedEnumConstraintChanged);
+            assert_eq!(
+                finding.spec_pointer.as_deref(),
+                Some("/components/schemas/Widget/properties/roles/items")
+            );
+            assert_eq!(finding.details["previous_values"], previous_values);
+            assert_eq!(finding.details["current_values"], current_values);
+            let json = serde_json::to_value(&report).unwrap();
+            assert_eq!(
+                json["findings"][0]["kind"],
+                "acknowledged_enum_constraint_changed"
+            );
+            assert_eq!(
+                json["findings"][0]["details"]["previous_values"],
+                previous_values
+            );
+            assert_eq!(
+                json["findings"][0]["details"]["current_values"],
+                current_values
+            );
+            let decoded: DriftReport = serde_json::from_value(json).unwrap();
+            assert_eq!(report, decoded);
+            assert!(report.render_text().contains("AcknowledgedEnumConstraintChanged [/components/schemas/Widget/properties/roles/items]"));
+        }
+    }
+
+    #[test]
+    fn acknowledged_enum_constraints_missing_from_either_spec_are_actionable() {
+        let added = compare_acknowledged_fixture(None, Some(serde_json::json!(["a"])));
+        assert_eq!(added.actionable_count(), 1);
+        assert_eq!(
+            added.findings[0].kind,
+            FindingKind::AcknowledgedEnumConstraintChanged
+        );
+        assert_eq!(added.findings[0].details["previous_values"], "(absent)");
+        assert!(added.unsupported_enum_constraints[0].acknowledged);
+
+        let removed = compare_acknowledged_fixture(Some(serde_json::json!(["a"])), None);
+        assert_eq!(removed.actionable_count(), 1);
+        assert_eq!(removed.findings[0].kind, FindingKind::StaleExemption);
+        assert_eq!(
+            removed.findings[0].details["exemption_kind"],
+            "unsupported_enum"
+        );
+        assert!(removed.unsupported_enum_constraints.is_empty());
     }
 
     #[test]

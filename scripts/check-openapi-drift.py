@@ -101,7 +101,7 @@ def run_analyzer(spec: dict) -> dict:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError("OpenAPI analyzer emitted invalid JSON") from error
-    if report.get("schema_version") != 7:
+    if report.get("schema_version") != 8:
         raise RuntimeError(
             f"Unsupported DriftReport schema version: {report.get('schema_version')!r}"
         )
@@ -520,6 +520,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         f"| Stale snapshot changes | {total('snapshot_added_operation', 'snapshot_removed_operation', 'snapshot_added_schema', 'snapshot_removed_schema')} |",
         f"| Stale exemptions | {counts['stale_exemption']} |",
         f"| New unsupported enum constraints | {counts['unsupported_enum_constraint']} |",
+        f"| Changed acknowledged enum constraints | {counts['acknowledged_enum_constraint_changed']} |",
         f"| Acknowledged unsupported enum constraints | {len(acknowledged)} |",
         "",
     ]
@@ -574,6 +575,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         ("snapshot_removed_schema", "Removed Schemas Still In Snapshot"),
         ("stale_exemption", "Stale Exemptions"),
         ("unsupported_enum_constraint", "Unsupported Enum Constraints"),
+        ("acknowledged_enum_constraint_changed", "Changed Acknowledged Enum Constraints"),
     ]
     for kind, title in simple_sections:
         findings = grouped.get(kind, [])
@@ -583,6 +585,12 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         for finding in findings:
             location = finding.get("spec_pointer") or finding.get("rust_item") or "unknown"
             lines.append(f"- `{location}` — {finding['message']}")
+            if kind == "acknowledged_enum_constraint_changed":
+                details = finding.get("details", {})
+                lines.append(
+                    f"  - Snapshot values: `{details.get('previous_values', '(absent)')}`; "
+                    f"live values: `{details.get('current_values', '(absent)')}`."
+                )
         lines.append("")
 
     if grouped.get("missing_model_type"):
@@ -614,7 +622,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
             "## Acknowledged Unsupported Enum Constraints",
             "",
             "These locations are inventoried but cannot yet be compared to a typed Rust value enum.",
-            "They do not count as drift; new or stale locations do.",
+            "Acknowledgments cover the snapshot's enum values; changed values and new or stale locations count as drift.",
             "",
         ]
         for item in acknowledged:

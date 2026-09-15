@@ -22,6 +22,8 @@ pub struct AnalyzerConfig {
     /// `Option<T>` by policy. Entries become stale when the schema is removed,
     /// response-only, or the override no longer changes requiredness.
     pub partial_required_schemas: BTreeSet<String>,
+    /// Unsupported locations whose value sets are acknowledged in the snapshot.
+    /// Changes to those sets still produce actionable drift.
     pub acknowledged_unsupported_enum_pointers: BTreeSet<String>,
 }
 

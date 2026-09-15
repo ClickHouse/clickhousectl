@@ -76,6 +76,9 @@ pub(crate) struct EnumConstraint {
     pub(crate) pointer: String,
     pub(crate) context: EnumContext,
     pub(crate) values: EnumValues,
+    /// JSON values retained for snapshot comparison, including numeric and mixed enums.
+    /// A set ignores ordering and duplicates while preserving each value's JSON type.
+    pub(crate) wire_values: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -843,6 +846,15 @@ fn walk_schema(
             pointer: json_pointer(path),
             context: enum_context(root, path),
             values: enum_values,
+            wire_values: values
+                .iter()
+                .map(|value| {
+                    // Match integer-enum parsing: 1 and 1.0 express the same value.
+                    integer_enum_value(value)
+                        .map(|integer| integer.to_string())
+                        .unwrap_or_else(|| value.to_string())
+                })
+                .collect(),
         });
     }
     if let Some(properties) = object.get("properties").and_then(Value::as_object) {

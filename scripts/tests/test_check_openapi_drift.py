@@ -31,7 +31,7 @@ class DriftScriptTests(unittest.TestCase):
                 ("partial_required_schema", "Widget"),
             ]
         ]
-        report = {"schema_version": 7, "findings": findings}
+        report = {"schema_version": 8, "findings": findings}
         self.assertEqual(drift.findings_by_kind(report)["stale_exemption"], findings)
         body = drift.build_issue_body(report, {})
         self.assertIn("| Stale exemptions | 2 |", body)
@@ -42,7 +42,7 @@ class DriftScriptTests(unittest.TestCase):
 
     def test_groups_findings_and_renders_spec_snippets(self):
         report = {
-            "schema_version": 7,
+            "schema_version": 8,
             "findings": [
                 {
                     "kind": "missing_client_method",
@@ -95,7 +95,7 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn("## Enum VALUES Const Mismatches", body)
 
     def test_renders_additional_properties_mismatches(self):
-        report = {"schema_version": 7, "findings": [{
+        report = {"schema_version": 8, "findings": [{
             "kind": "additional_properties_mismatch",
             "message": "PgBouncerConfig must preserve additionalProperties in a typed string-keyed map",
             "spec_pointer": "/components/schemas/pgBouncerConfig/additionalProperties",
@@ -106,6 +106,34 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn("## Additional Properties Mismatches", body)
         self.assertIn("PgBouncerConfig must preserve additionalProperties", body)
         self.assertIn("/components/schemas/pgBouncerConfig/additionalProperties", body)
+
+    def test_renders_changed_acknowledged_enum_values_as_actionable(self):
+        for previous, current in [
+            ('"admin"', '"admin", "reader"'),
+            ('1.1, 2.2', '1.1, 3.3'),
+            ('"a", true', '"a", false'),
+        ]:
+            with self.subTest(previous=previous, current=current):
+                report = {
+                    "schema_version": 8,
+                    "findings": [{
+                        "kind": "acknowledged_enum_constraint_changed",
+                        "message": "acknowledged enum values differ from the vendored snapshot",
+                        "spec_pointer": "/components/schemas/ApiKey/properties/roles/items",
+                        "details": {"previous_values": previous, "current_values": current},
+                    }],
+                    "unsupported_enum_constraints": [{
+                        "spec_pointer": "/components/schemas/ApiKey/properties/roles/items",
+                        "reason": "Rust type String is not an enum",
+                        "acknowledged": True,
+                    }],
+                }
+                body = drift.build_issue_body(report, {})
+                self.assertIn("| Changed acknowledged enum constraints | 1 |", body)
+                self.assertIn("## Changed Acknowledged Enum Constraints", body)
+                self.assertIn(f"Snapshot values: `{previous}`; live values: `{current}`", body)
+                self.assertIn("/components/schemas/ApiKey/properties/roles/items", body)
+                self.assertIn("| Acknowledged unsupported enum constraints | 1 |", body)
 
     def test_sync_creates_issue_when_none_is_open(self):
         with (
@@ -416,8 +444,8 @@ class DriftScriptTests(unittest.TestCase):
 
     def test_dry_run_never_queries_or_mutates_github(self):
         reports = [
-            {"schema_version": 7, "findings": []},
-            {"schema_version": 7, "findings": [{"kind": "missing_struct_field"}]},
+            {"schema_version": 8, "findings": []},
+            {"schema_version": 8, "findings": [{"kind": "missing_struct_field"}]},
         ]
         for report in reports:
             with self.subTest(findings=len(report["findings"])):
@@ -434,7 +462,7 @@ class DriftScriptTests(unittest.TestCase):
                 sync_issue.assert_not_called()
 
     def test_main_exits_nonzero_when_synchronization_fails(self):
-        report = {"schema_version": 7, "findings": []}
+        report = {"schema_version": 8, "findings": []}
         with (
             mock.patch.object(sys, "argv", [str(SCRIPT)]),
             mock.patch.object(drift, "fetch_live_spec", return_value={}),
@@ -638,7 +666,7 @@ class DriftScriptTests(unittest.TestCase):
     def test_analyzer_receives_the_rust_source_tree(self, run):
         run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"schema_version": 7, "findings": []}),
+            stdout=json.dumps({"schema_version": 8, "findings": []}),
             stderr="",
         )
 

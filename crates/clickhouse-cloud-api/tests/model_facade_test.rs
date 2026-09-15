@@ -11,6 +11,42 @@ fn snapshot_and_udf_output_types_are_available_through_both_public_paths() {
 
 fn assert_same_type<T>(_: T, _: T) {}
 
+#[cfg(feature = "deprecated-fields")]
+#[test]
+fn deprecated_api_key_roles_preserve_string_source_and_wire_compatibility() {
+    let roles: Vec<String> = vec!["admin".to_string(), "future_role".to_string()];
+    let response = api::ApiKey {
+        roles: Some(roles.clone()),
+        ..Default::default()
+    };
+    let patch = api::ApiKeyPatchRequest {
+        roles: Some(roles.clone()),
+        ..Default::default()
+    };
+    let post = api::ApiKeyPostRequest {
+        roles: Some(roles),
+        ..Default::default()
+    };
+    let response_wire = serde_json::to_value(&response).unwrap();
+    let patch_wire = serde_json::to_value(&patch).unwrap();
+    let post_wire = serde_json::to_value(&post).unwrap();
+    for wire in [&response_wire, &patch_wire, &post_wire] {
+        assert_eq!(wire["roles"], serde_json::json!(["admin", "future_role"]));
+    }
+    assert_eq!(
+        serde_json::from_value::<api::ApiKey>(response_wire).unwrap(),
+        response
+    );
+    assert_eq!(
+        serde_json::from_value::<api::ApiKeyPatchRequest>(patch_wire).unwrap(),
+        patch
+    );
+    assert_eq!(
+        serde_json::from_value::<api::ApiKeyPostRequest>(post_wire).unwrap(),
+        post
+    );
+}
+
 #[test]
 fn extracted_models_keep_root_and_models_paths() {
     assert_same_type(

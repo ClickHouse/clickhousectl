@@ -177,7 +177,8 @@ Rust type names but spec/wire field and enum values:
   This changes requiredness resolution (request position only) and is not a shortcut for one optionality mismatch.
   Entries are stale when the schema is gone, response-only, or the override no longer changes requiredness.
 - `acknowledged_unsupported_enum_pointers` — exact RFC 6901 pointers the analyzer inventories but cannot map to a
-  concrete Rust value enum.
+  concrete Rust value enum. The acknowledgement covers the snapshot's value set; additions or removals in the
+  target spec are actionable, including numeric and mixed values. Reordering does not change the set.
 
 Add an exemption only for intentional, verified runtime behavior, with a nearby comment stating why the spec cannot
 be followed. Never exempt missing API surface or ordinary model drift. Pair a new unsupported-enum acknowledgement

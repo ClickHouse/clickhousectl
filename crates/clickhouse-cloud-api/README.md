@@ -148,7 +148,9 @@ Add an exemption only for a deliberate runtime behavior and document why the
 spec cannot be followed. New unsupported-enum acknowledgements also require a
 tracking issue. The analyzer reports stale field/enum exemptions and vanished
 unsupported locations so obsolete entries are removed during normal drift
-remediation. See the repository `AGENTS.md` for exact key formats and the full
+remediation. Acknowledged locations also report changed enum values against
+the snapshot, including numeric and mixed values; unchanged sets remain
+acknowledged. See the repository `AGENTS.md` for exact key formats and the full
 remediation and verification procedure.
 
 ### ClickStack list pagination
