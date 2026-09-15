@@ -181,7 +181,8 @@ CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`.
   Resource IDs come from their respective `list` commands.
   Everything except list/get is a write and needs API key auth.
-  Create/update read complete JSON bodies from --file; `-` reads stdin."
+  Create/update read complete JSON bodies from --file; `-` reads stdin.
+  Updates replace the resource; supply the complete desired definition."
     )]
     ClickStack {
         #[command(subcommand)]

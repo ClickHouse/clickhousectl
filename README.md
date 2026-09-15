@@ -185,8 +185,8 @@ clickhousectl cloud clickstack dashboard create <service-id> \
 Pass `--file -` to read the JSON body from stdin. Resource IDs come from the respective
 `list` command. A saved search configuration contains `name` and `sourceId`, plus optional `select`,
 `where`, `whereLanguage`, `orderBy`, `tags`, and structured `filters`; obtain `sourceId` with
-`cloud clickstack source list`. All ClickStack `update` commands use PUT replacement semantics, so
-the configuration must contain the complete desired resource rather than only changed fields.
+`cloud clickstack source list`. All ClickStack `update` commands replace the resource, so the
+configuration must contain the complete desired definition rather than only changed fields.
 
 A dashboard configuration contains the complete tile layout and typed chart configuration. Filters may
 broadcast selections, expose variables to tile queries, or do both:
@@ -312,9 +312,8 @@ clickhousectl cloud clickstack alert update <service-id> <alert-id> \
   --file alert.json --org-id <org-id>
 ```
 
-Alert and webhook updates are full PUT replacements. A `saved_search` alert uses `savedSearchId`
-instead of `dashboardId` and `tileId`. The `30s` alert interval is accepted when the 30-second alert
-interval feature is enabled for the ClickStack team.
+A `saved_search` alert uses `savedSearchId` instead of `dashboardId` and `tileId`. The `30s` alert
+interval is accepted when the 30-second alert interval feature is enabled for the ClickStack team.
 
 The Rust API client's ClickStack alert, webhook, and saved-search list methods accept
 optional `limit` and `offset` arguments. Pass `None, None` for server defaults, or

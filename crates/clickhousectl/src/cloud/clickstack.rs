@@ -103,7 +103,6 @@ CONTEXT FOR AGENTS:
     /// Replace a ClickStack alert
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  This is a full PUT replacement; include every required and desired field.
   Both channel and channels are required by the current API contract.
   The 30s interval requires that feature to be enabled for your ClickStack team.")]
     Update {
@@ -159,9 +158,6 @@ pub enum WebhookCommands {
         config_file: String,
     },
     /// Replace a ClickStack webhook
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  This is a full PUT replacement; include every required and desired field.")]
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
@@ -224,7 +220,6 @@ pub enum DashboardCommands {
     /// Replace a ClickStack dashboard
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  This is a full PUT replacement; include every required and desired field.
   Every existing filter must retain its `id` in the request body.
   Serialize edits to one dashboard; concurrent updates can overwrite each other.")]
     Update {
@@ -310,9 +305,6 @@ pub enum SavedSearchCommands {
         config_file: String,
     },
     /// Replace a ClickStack saved search
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  This is a full PUT replacement; include every required and desired field.")]
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
@@ -373,9 +365,6 @@ pub enum SourceCommands {
         config_file: String,
     },
     /// Replace a ClickStack source
-    #[command(after_help = "\
-CONTEXT FOR AGENTS:
-  This is a full PUT replacement; include every required and desired field.")]
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
@@ -438,7 +427,7 @@ pub enum RoleCommands {
     /// Replace a ClickStack role
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  This is a full PUT replacement; permissions is the complete role permission set.")]
+  `permissions` is the complete role permission set.")]
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
