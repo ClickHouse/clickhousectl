@@ -1440,10 +1440,11 @@ async fn backup_config_start_time_refuses_an_incompatible_stored_period() {
 
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
-         Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call.\n"
+        cloud_runtime_error(&output)["message"],
+        "the stored backup period is 12 hours, but --backup-start-time requires 24 or 48. \
+         Pass --backup-period-hours 24 or --backup-period-hours 48 in the same call."
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "other");
 
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1, "expected only the configuration read");
@@ -1638,20 +1639,16 @@ async fn invoke_service_list_api_error(status: u16, message: &str) -> std::proce
 async fn dispatched_cloud_401_exits_with_auth_required() {
     let output = invoke_service_list_api_error(401, "Unauthorized").await;
     assert_eq!(output.status.code(), Some(4));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Unauthorized\n"
-    );
+    assert_eq!(cloud_runtime_error(&output)["message"], "Unauthorized");
+    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
 }
 
 #[tokio::test]
 async fn dispatched_cloud_403_exits_with_auth_required() {
     let output = invoke_service_list_api_error(403, "Forbidden").await;
     assert_eq!(output.status.code(), Some(4));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Forbidden\n"
-    );
+    assert_eq!(cloud_runtime_error(&output)["message"], "Forbidden");
+    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
 }
 
 #[tokio::test]
@@ -1659,9 +1656,10 @@ async fn dispatched_cloud_500_remains_a_generic_error() {
     let output = invoke_service_list_api_error(500, "Internal Server Error").await;
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Internal Server Error\n"
+        cloud_runtime_error(&output)["message"],
+        "Internal Server Error"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_5xx");
 }
 
 // ── Organization-scoped error context (issue #334) ─────────────────────────
@@ -1931,9 +1929,10 @@ async fn service_list_bare_not_found_includes_the_requested_organization() {
         invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-id", WRONG_ORG_ID]);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        format!("Error: NOT_FOUND: request scoped to organization {WRONG_ORG_ID}\n")
+        cloud_runtime_error(&output)["message"],
+        format!("NOT_FOUND: request scoped to organization {WRONG_ORG_ID}")
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 }
 
 #[tokio::test]
@@ -1955,9 +1954,10 @@ async fn service_get_preserves_a_detailed_not_found_error() {
     );
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Service missing-service was not found\n"
+        cloud_runtime_error(&output)["message"],
+        "Service missing-service was not found"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 }
 
 fn invoke_service_wake(mock: &MockServer, json: bool, agent: bool) -> std::process::Output {
@@ -2075,9 +2075,10 @@ async fn service_wake_preserves_api_errors() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: wake temporarily unavailable\n"
+        cloud_runtime_error(&output)["message"],
+        "wake temporarily unavailable"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_5xx");
 }
 
 #[tokio::test]
@@ -2239,9 +2240,10 @@ async fn scaling_schedule_get_renders_a_sparse_response_and_routes_errors() {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: schedule temporarily unavailable\n"
+        cloud_runtime_error(&output)["message"],
+        "schedule temporarily unavailable"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_5xx");
 }
 
 #[tokio::test]
@@ -2481,12 +2483,13 @@ async fn credentials_file_reports_that_environment_credentials_are_ignored() {
     write_project_api_credentials(dir.path(), "file-key", "file-secret");
     let url = mock.uri();
     let output = Command::new(clickhousectl_binary())
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.path().join("home"))
         .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret")
         .current_dir(dir.path())
-        .args(["cloud", "--url", &url, "--json", "org", "list"])
+        .args(["cloud", "--url", &url, "org", "list"])
         .output()
         .expect("failed to spawn clickhousectl");
 
@@ -2622,11 +2625,12 @@ async fn service_delete_conflict_suggests_force_without_inspecting_prose() {
 
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: service could not be deleted because of a conflict. If it is running, use \
+        cloud_runtime_error(&output)["message"],
+        "service could not be deleted because of a conflict. If it is running, use \
          --force to stop it first, or `clickhousectl cloud service stop svc-1`. API response: \
-         opaque conflict response\n"
+         opaque conflict response"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 }
 
 // ── Postgres metrics (issue #583) ─────────────────────────────────────────
@@ -3663,10 +3667,8 @@ async fn postgres_prometheus_converts_api_errors() {
         ],
     );
     assert_eq!(output.status.code(), Some(4));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Forbidden\n"
-    );
+    assert_eq!(cloud_runtime_error(&output)["message"], "Forbidden");
+    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
 }
 
 // ── Postgres deletion JSON output (issue #614) ────────────────────────────
@@ -4678,9 +4680,10 @@ async fn forced_service_delete_surfaces_not_found_for_an_absent_service() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: NOT_FOUND: request scoped to organization org-1\n"
+        cloud_runtime_error(&output)["message"],
+        "NOT_FOUND: request scoped to organization org-1"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 
     // The delete request never succeeded, so local query-key cleanup and the
     // organization-scoped key deletion (which would follow a successful
@@ -4931,14 +4934,15 @@ async fn service_delete_cleanup_failure_preserves_credentials_for_retry() {
     let output = invoke_service_delete(&mock, dir.path(), false);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
+        cloud_runtime_error(&output)["message"],
         format!(
-            "Error: failed to delete the auto-provisioned query API key for service \
+            "failed to delete the auto-provisioned query API key for service \
              {DELETE_TEST_SERVICE_ID} ({DELETE_TEST_API_KEY_ID}: cleanup failed). The local \
              record was kept so the exact IDs are not lost; delete each key with \
-             `clickhousectl cloud key delete <key-id> --org-id org-1`\n"
+             `clickhousectl cloud key delete <key-id> --org-id org-1`"
         )
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_5xx");
 
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 2);
@@ -4980,9 +4984,10 @@ async fn service_delete_failure_preserves_the_query_key_without_cleanup() {
     let output = invoke_service_delete(&mock, dir.path(), false);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: service delete failed\n"
+        cloud_runtime_error(&output)["message"],
+        "service delete failed"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_5xx");
 
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
@@ -5009,12 +5014,13 @@ async fn service_delete_rejects_query_key_from_another_organization() {
     let output = invoke_service_delete(&mock, dir.path(), false);
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
+        cloud_runtime_error(&output)["message"],
         format!(
-            "Error: the stored query key for service {DELETE_TEST_SERVICE_ID} belongs to \
-             organization org-2, not org-1; refusing to delete either resource\n"
+            "the stored query key for service {DELETE_TEST_SERVICE_ID} belongs to \
+             organization org-2, not org-1; refusing to delete either resource"
         )
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "other");
     assert!(mock.received_requests().await.unwrap().is_empty());
 
     let stored: Value = serde_json::from_slice(
@@ -5089,9 +5095,10 @@ async fn service_delete_does_not_treat_a_missing_organization_as_an_absent_servi
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: NOT_FOUND: request scoped to organization org-1\n"
+        cloud_runtime_error(&output)["message"],
+        "NOT_FOUND: request scoped to organization org-1"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 
     let requests = mock.received_requests().await.unwrap();
     assert_eq!(requests.len(), 1);
@@ -5123,9 +5130,10 @@ async fn service_delete_preserves_a_detailed_not_found_error() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Service missing-service was not found\n"
+        cloud_runtime_error(&output)["message"],
+        "Service missing-service was not found"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 }
 
 #[tokio::test]
@@ -5138,10 +5146,11 @@ async fn service_delete_aborts_when_query_key_credentials_are_malformed() {
 
     let output = invoke_service_delete(&mock, dir.path(), false);
     assert_eq!(output.status.code(), Some(1));
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let error = cloud_runtime_error(&output);
+    assert_eq!(error["code"], "other");
+    let message = error["message"].as_str().unwrap();
     assert!(
-        stderr.starts_with("Error: failed to parse ")
-            && stderr.contains(".clickhouse/credentials.json")
+        message.starts_with("failed to parse ") && message.contains(".clickhouse/credentials.json")
     );
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
@@ -13479,6 +13488,7 @@ async fn invoke_oauth_service_query_error(body: &str) -> std::process::Output {
 
     let url = control.uri();
     Command::new(clickhousectl_binary())
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .args([
             "cloud",
@@ -13635,6 +13645,7 @@ async fn service_query_fails_with_start_hint_when_service_is_stopped() {
 
     let url = control.uri();
     let output = Command::new(clickhousectl_binary())
+        .env_clear()
         .env("DO_NOT_TRACK", "1")
         .args([
             "cloud",
@@ -14536,14 +14547,15 @@ async fn clickpipe_settings_get_refuses_database_pipes_before_calling_the_endpoi
 
         assert_eq!(output.status.code(), Some(1), "source {source}");
         assert_eq!(
-            String::from_utf8_lossy(&output.stderr),
+            cloud_runtime_error(&output)["message"],
             format!(
-                "Error: ClickPipe pipe-id is a {label} pipe; `clickpipe settings get` and \
+                "ClickPipe pipe-id is a {label} pipe; `clickpipe settings get` and \
                  `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
                  pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
-                 itself: see `clickhousectl cloud clickpipe get svc-id pipe-id`.\n"
+                 itself: see `clickhousectl cloud clickpipe get svc-id pipe-id`."
             ),
         );
+        assert_eq!(cloud_runtime_error(&output)["code"], "other");
         assert!(
             String::from_utf8_lossy(&output.stdout).is_empty(),
             "a refusal must print no settings for source {source}"
@@ -16644,9 +16656,10 @@ async fn clickpipe_cdc_scaling_get_scopes_not_found_errors_to_the_organization()
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: NOT_FOUND: request scoped to organization org-1\n"
+        cloud_runtime_error(&output)["message"],
+        "NOT_FOUND: request scoped to organization org-1"
     );
+    assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
 }
 
 // ── the Query API gateway timeout (issue #644) ─────────────────────────────
@@ -16893,8 +16906,7 @@ async fn other_query_500s_keep_the_generic_api_error() {
     assert!(!stderr.contains("clickhouse client"), "{stderr}");
     assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
 
-    // In JSON mode it stays prose too: no structured detail was resolved for
-    // it, so no code is invented.
+    // JSON mode preserves the message and classifies the typed HTTP failure.
     let (json_output, _) = invoke_service_query_against_failing_query_host(
         &control,
         500,
@@ -16902,11 +16914,11 @@ async fn other_query_500s_keep_the_generic_api_error() {
         &["--json"],
     )
     .await;
-    let stderr = String::from_utf8_lossy(&json_output.stderr);
-    assert!(stderr.starts_with("Error: "), "{stderr}");
-    assert!(
-        serde_json::from_str::<Value>(stderr.trim()).is_err(),
-        "{stderr}"
+    let error = cloud_runtime_error(&json_output);
+    assert_eq!(error["code"], "http_5xx");
+    assert_eq!(
+        error["message"],
+        r#"Query API returned HTTP 500 Internal Server Error: {"error":"Internal error."}"#
     );
 }
 
@@ -17726,8 +17738,8 @@ async fn by_id_read_keeps_the_servers_message_for_a_malformed_id() {
     }
 }
 
-/// `--json` mode must not invent a code for a failure the CLI did not
-/// classify: a malformed id keeps the API's prose, as it does in human mode.
+/// A malformed id keeps the API's message and generic HTTP classification;
+/// it must not be misreported as the more specific `resource_not_found`.
 #[tokio::test]
 async fn by_id_read_in_json_mode_keeps_the_servers_message_for_a_malformed_id() {
     const MALFORMED_ID: &str = "not-a-uuid";
@@ -17754,15 +17766,12 @@ async fn by_id_read_in_json_mode_keeps_the_servers_message_for_a_malformed_id() 
         let output = invoke_cli_with_cloud_credentials(&mock, &args);
 
         assert_eq!(output.status.code(), Some(1), "args {args:?}");
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let error = cloud_runtime_error(&output);
         assert_eq!(
-            stderr,
-            format!("Error: BAD_REQUEST: Invalid {thing} id string:\"{MALFORMED_ID}\"\n"),
+            error["message"],
+            format!("BAD_REQUEST: Invalid {thing} id string:\"{MALFORMED_ID}\""),
         );
-        assert!(
-            !stderr.contains("\"code\""),
-            "no structured code for an unclassified failure: {stderr}"
-        );
+        assert_eq!(error["code"], "http_4xx");
     }
 }
 
@@ -21835,10 +21844,8 @@ async fn service_profile_list_routes_auth_errors() {
         ],
     );
     assert_eq!(output.status.code(), Some(4));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Unauthorized\n"
-    );
+    assert_eq!(cloud_runtime_error(&output)["message"], "Unauthorized");
+    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
 }
 
 // BYOC infrastructure and service placement (#578).
@@ -21997,10 +22004,8 @@ async fn byoc_api_errors_keep_auth_classification() {
         ],
     );
     assert_eq!(output.status.code(), Some(4));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Forbidden\n"
-    );
+    assert_eq!(cloud_runtime_error(&output)["message"], "Forbidden");
+    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
 }
 
 #[tokio::test]
@@ -22436,10 +22441,8 @@ async fn service_settings_api_errors_keep_auth_classification() {
         ],
     );
     assert_eq!(output.status.code(), Some(4));
-    assert_eq!(
-        String::from_utf8_lossy(&output.stderr),
-        "Error: Forbidden\n"
-    );
+    assert_eq!(cloud_runtime_error(&output)["message"], "Forbidden");
+    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
 }
 
 #[tokio::test]
@@ -25426,5 +25429,214 @@ async fn selectors_endpoint_pagination_integrity_and_later_errors_block_mutation
         let requests = mock.received_requests().await.unwrap();
         assert_eq!(requests.len(), 2);
         assert!(requests.iter().all(|request| request.method == "GET"));
+    }
+}
+
+fn cloud_runtime_error(output: &std::process::Output) -> Value {
+    let envelope: Value = serde_json::from_slice(&output.stderr).unwrap_or_else(|error| {
+        panic!(
+            "stderr is not one JSON object ({error}): {}",
+            String::from_utf8_lossy(&output.stderr)
+        )
+    });
+    let error = envelope["error"].clone();
+    assert!(error["code"].is_string());
+    assert!(error["message"].is_string());
+    error
+}
+
+// ── All Cloud runtime errors use the JSON envelope (issue #825) ────────────
+
+/// A clean environment makes explicit, automatically detected, and human
+/// output observable independently. Each invocation gets isolated credentials.
+fn cloud_runtime_error_command(root: &Path, url: &str, mode: &str) -> Command {
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut command = Command::new(clickhousectl_binary());
+    command
+        .env_clear()
+        .env("HOME", home)
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_API_KEY", "test-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "test-secret")
+        .current_dir(root)
+        .args(["cloud", "--url", url]);
+    match mode {
+        "explicit" => {
+            command.arg("--json");
+        }
+        "agent" => {
+            command.env("AI_AGENT", "1");
+        }
+        "human" => {}
+        _ => panic!("unknown output mode"),
+    }
+    command
+}
+
+#[tokio::test]
+async fn cloud_runtime_errors_classify_http_statuses_in_explicit_and_agent_json() {
+    for (status, code, exit) in [
+        (400, "http_4xx", 1),
+        (401, "auth_required", 4),
+        (403, "auth_required", 4),
+        (404, "http_4xx", 1),
+        (408, "timeout", 1),
+        (429, "rate_limited", 1),
+        (500, "http_5xx", 1),
+        (503, "http_5xx", 1),
+        (504, "timeout", 1),
+    ] {
+        let mock = MockServer::start().await;
+        // Deliberately identical prose: classification must come from status.
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/services"))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                    "status": status, "error": "same diagnostic", "requestId": "test"
+                })),
+            )
+            .expect(3)
+            .mount(&mock)
+            .await;
+        for mode in ["explicit", "agent", "human"] {
+            let dir = tempfile::tempdir().unwrap();
+            let output = cloud_runtime_error_command(dir.path(), &mock.uri(), mode)
+                .args(["service", "list", "--org-id", "org-1"])
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(exit),
+                "status {status}, mode {mode}"
+            );
+            assert!(output.stdout.is_empty());
+            if mode == "human" {
+                assert_eq!(
+                    String::from_utf8_lossy(&output.stderr),
+                    "Error: same diagnostic\n"
+                );
+            } else {
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&output.stderr).unwrap(),
+                    serde_json::json!({"error": {"code": code, "message": "same diagnostic"}})
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn cloud_runtime_errors_cover_missing_auth_validation_transport_and_usage() {
+    let mock = MockServer::start().await;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let closed_url = format!("http://{}", listener.local_addr().unwrap());
+    drop(listener);
+    for mode in ["explicit", "agent"] {
+        let dir = tempfile::tempdir().unwrap();
+        let mut missing_auth = cloud_runtime_error_command(dir.path(), &mock.uri(), mode);
+        missing_auth
+            .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+            .env_remove("CLICKHOUSE_CLOUD_API_SECRET");
+        let missing_auth = missing_auth.args(["service", "list"]).output().unwrap();
+        assert_eq!(missing_auth.status.code(), Some(4));
+        assert!(missing_auth.stdout.is_empty());
+        assert_eq!(
+            structured_error(&missing_auth)["error"]["code"],
+            "auth_required"
+        );
+
+        let validation = cloud_runtime_error_command(dir.path(), &mock.uri(), mode)
+            .args(["auth", "signup", "--url", "invalid-url"])
+            .output()
+            .unwrap();
+        assert_eq!(validation.status.code(), Some(1));
+        assert!(validation.stdout.is_empty());
+        assert_eq!(structured_error(&validation)["error"]["code"], "other");
+
+        let transport = cloud_runtime_error_command(dir.path(), &closed_url, mode)
+            .args(["service", "list", "--org-id", "org-1"])
+            .output()
+            .unwrap();
+        assert_eq!(transport.status.code(), Some(1));
+        assert!(transport.stdout.is_empty());
+        assert_eq!(structured_error(&transport)["error"]["code"], "transport");
+
+        let usage = cloud_runtime_error_command(dir.path(), &mock.uri(), mode)
+            .args(["service", "list", "--not-a-flag"])
+            .output()
+            .unwrap();
+        assert_eq!(usage.status.code(), Some(2));
+        assert!(usage.stdout.is_empty());
+        assert!(serde_json::from_slice::<Value>(&usage.stderr).is_err());
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn cloud_runtime_errors_report_sql_errors_with_the_typed_code() {
+    let control = start_mock_control_plane_with_service().await;
+    let (output, _) = invoke_service_query_against_failing_query_host(
+        &control,
+        400,
+        r#"{"error":{"code":"62","details":"Syntax error near FROM"}}"#,
+        &["--json"],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert_eq!(structured_error(&output)["error"]["code"], "sql_error");
+    assert_eq!(
+        structured_error(&output)["error"]["message"],
+        "SQL error 62: Syntax error near FROM"
+    );
+}
+
+#[tokio::test]
+async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400, "error": "request failed", "requestId": "test"
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    for mode in ["explicit", "agent"] {
+        let dir = tempfile::tempdir().unwrap();
+        write_project_api_credentials(dir.path(), "file-key", "file-secret");
+        let output = cloud_runtime_error_command(dir.path(), &mock.uri(), mode)
+            .args(["service", "list", "--org-id", "org-1"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(cloud_runtime_error(&output)["code"], "http_4xx");
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut command = cloud_runtime_error_command(dir.path(), &mock.uri(), mode);
+        let token_dir = dir.path().join("home/.clickhouse");
+        std::fs::create_dir_all(&token_dir).unwrap();
+        // An unknown auth host fails refresh locally, then clears stale tokens.
+        std::fs::write(
+            token_dir.join("tokens.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "access_token": "expired", "refresh_token": "refresh", "expires_at": 1,
+                "api_url": mock.uri()
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let output = command
+            .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+            .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
+            .args(["service", "list", "--org-id", "org-1"])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert!(output.stdout.is_empty());
+        assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
+        assert!(!token_dir.join("tokens.json").exists());
     }
 }

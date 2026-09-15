@@ -680,7 +680,7 @@ pub async fn refresh_access_token(
 
 /// If tokens exist and are near-expiry, refresh them. Returns Ok(()) even if
 /// no tokens are present (the user may be using API keys instead).
-pub async fn ensure_fresh_tokens() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let Some(tokens) = load_tokens() else {
         return Ok(());
     };
@@ -701,10 +701,12 @@ pub async fn ensure_fresh_tokens() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => {
             // Refresh failed — clear stale tokens so we fall back to API keys
             clear_tokens();
-            eprint_line("Warning: OAuth token refresh failed. Tokens cleared.");
-            eprint_line(
-                "Run `clickhousectl cloud auth login` to re-authenticate, or use API keys.",
-            );
+            if !json {
+                eprint_line("Warning: OAuth token refresh failed. Tokens cleared.");
+                eprint_line(
+                    "Run `clickhousectl cloud auth login` to re-authenticate, or use API keys.",
+                );
+            }
         }
     }
 

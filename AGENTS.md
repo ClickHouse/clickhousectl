@@ -41,8 +41,9 @@ work on a branch, with an associated issue and a PR.
   is passed or a coding agent is detected — `json_output()` in `main.rs` wraps `is_ai_agent::detect()`.
 - `CloudError` carries `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`) and an
   optional `details: CloudErrorDetail`. `cloud_error_to_top_level` (entered from `cloud::run`) maps `Auth` →
-  `Error::AuthRequired`, `Generic` + details → `Error::CloudDetailed`, else `Error::Cloud`. A `CloudDetailed`
-  replaces the prose only in JSON mode, where `main.rs` renders it via `cloud::output::print_error`.
+  `Error::AuthRequired`, `Generic` → `Error::CloudDetailed`, retaining existing details or deriving a fallback
+  code from `FailureKind`. JSON mode renders every Cloud runtime failure via `cloud::output::print_error`,
+  including auth and cancellation; rendering never changes exit codes. Human output keeps the same message.
 - Exit codes: `0` success, else `Error::exit_code()` — `1` error, `3` cancelled, `4` auth required, and
   `ChildExit(code)` passes a spawned child's status through. Clap uses `2` for usage errors.
 

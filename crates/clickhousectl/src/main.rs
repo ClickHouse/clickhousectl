@@ -296,20 +296,13 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
         Ok(()) => (0, false, false),
         Err(e) => {
             let is_child_exit = matches!(&e, Error::ChildExit(_));
-            // A cloud failure that carries a machine-readable detail is
-            // emitted as one JSON object on stderr in JSON mode (#644),
-            // matching the envelope local errors use. Cloud failures without
-            // a detail stay prose: nothing structured has been resolved for
-            // them, and inventing a code per message is exactly the
-            // text-derived vocabulary this codebase avoids.
-            let structured_cloud_error =
-                cloud_json && matches!(&e, Error::CloudDetailed(_)) && !is_child_exit;
+            // All Cloud runtime failures share one envelope, including auth
+            // and cancellation. Keep child output and exit statuses intact.
+            let structured_cloud_error = cloud_json && !is_child_exit;
             if !is_child_exit {
                 match &e {
                     _ if local_json => local::output::print_error(&e),
-                    Error::CloudDetailed(details) if cloud_json => {
-                        cloud::output::print_error(details);
-                    }
+                    _ if cloud_json => cloud::output::print_error(&e),
                     _ => {
                         use std::io::Write;
                         // Not `eprintln!`, which panics on a closed stderr — see

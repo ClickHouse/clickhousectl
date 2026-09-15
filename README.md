@@ -966,7 +966,7 @@ clickhousectl cloud service backup-config update <service-id> \
   --clear-backup-start-time \
   --backup-period-hours 12
 
-# Service Prometheus configuration (always raw Prometheus exposition text; --json is ignored)
+# Service Prometheus configuration (raw Prometheus exposition text on success)
 clickhousectl cloud service prometheus <service-id> --filtered-metrics true
 
 # Delete a service (must be stopped first)
@@ -1075,7 +1075,7 @@ Under `--json` (or when a coding agent is detected) that failure is emitted as o
 }
 ```
 
-`code` is a stable machine-readable identifier. `host` and `port` are omitted when the API response carried no native endpoint, in which case `command` names the `<host>` placeholder instead. The suggested command never contains your SQL or your password: both are placeholders. Cloud failures that have no structured remedy stay prose on stderr (`Error: <message>`).
+`code` is a stable machine-readable identifier. `host` and `port` are omitted when the API response carried no native endpoint, in which case `command` names the `<host>` placeholder instead. The suggested command never contains your SQL or your password: both are placeholders. Cloud failures without a specific remedy use the same envelope with a general error code and the original message.
 
 Whatever the source, the SQL must be a single statement. The Query API runs exactly one statement per request, so a multi-statement `.sql` script is rejected by ClickHouse (error 62, `Multi-statements are not allowed`). Run statements one invocation at a time, or put a real client on PATH with `clickhousectl local use latest` and run the script through `clickhouse client` connected to the service.
 
@@ -2658,7 +2658,7 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
-`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `local client` and `local postgres client` keep native output in interactive, query and query-file modes, regardless of explicit or automatic JSON mode; the legacy `cloud org prometheus` command and `cloud service prometheus` always emit raw Prometheus exposition text and silently ignore `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `local client` and `local postgres client` keep native output in interactive, query and query-file modes, regardless of explicit or automatic JSON mode; the legacy `cloud org prometheus` command and `cloud service prometheus` emit raw Prometheus exposition text on success even with `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
 
 Successful structured output follows the command's response contract. Cloud resource responses are serialized from typed API models, so field names keep the API's spelling and casing (usually camelCase). Some API schemas intentionally use snake_case, including ClickPipe ingestion settings. A list command may return a bare array or a command-specific object wrapper; do not assume one top-level shape across commands. Response fields that are absent or `null` are generally omitted because the typed response fields are optional. Numbers and timestamps keep the JSON types defined by their models: for example, `sizeInBytes` is a JSON number (the current model is `f64`, so an integral value can appear as `7139565.0`), while Postgres metric data-point `timestamp` values are integer epoch seconds. A timestamp modelled as a date-time serializes as a timestamp string.
 
@@ -2723,7 +2723,11 @@ Local runtime failures also use structured output when `local --json` is set or 
 
 When `.clickhouse` is absent from the current directory, bare `server stop` includes the same `project_scope` and `guidance` in its successful no-op output, while bare `server remove` includes them in its `server_selection_required` error. This distinguishes a missing project root from an initialized project that has no matching ClickHouse server.
 
-The successful-response rules above do not make every cloud failure JSON. A subset of cloud errors has structured remediation output; the broader cloud error contract remains tracked by [#825](https://github.com/ClickHouse/clickhousectl/issues/825). The `skills`, `telemetry`, and `update` management commands continue to use human-readable output; structured management output is tracked by [#862](https://github.com/ClickHouse/clickhousectl/issues/862).
+Every Cloud runtime failure uses an `{"error":{"code":"…","message":"…"}}` envelope on stderr when `--json` is set or a coding agent is detected. `message` preserves the human diagnostic. Existing specific codes and optional remediation fields (such as `resource_not_found` with `command`, or `query_timeout` with native connection details) take precedence. Other failures use the closed vocabulary `auth_required`, `cancelled`, `http_4xx`, `http_5xx`, `rate_limited`, `transport`, `timeout`, `sql_error`, `service_stopped`, `io`, or `other`; client-side validation and unclassified errors use `other`.
+
+Error rendering writes nothing to stdout. A failure before any result leaves stdout empty; streaming queries and commands that report a committed change can already have emitted output before a later failure. Successful SQL and Prometheus output retain their native formats. Exit codes remain 1 for runtime errors, 3 for cancellation, and 4 for authentication; Clap usage errors keep their own text and exit 2, and child processes retain their output and status. Human Cloud failures keep `Error: <message>`. Explicit `--debug` and command-specific progress or cleanup warnings can add diagnostic lines before the error object on stderr.
+
+The `skills`, `telemetry`, and `update` management commands continue to use human-readable output; structured management output is tracked by [#862](https://github.com/ClickHouse/clickhousectl/issues/862).
 
 Managed `local client` failures deliberately use dedicated `managed_client_*` codes rather than the general server codes. Their error object includes `project_scope.path` (the canonical directory inspected), `server.selection` and `server.name`, an optional `server.binary_version`, and ordered `guidance` entries with allowlisted messages and optional commands. No raw lock, metadata, or I/O error is included in JSON. The nested shape distinguishes this exact-project lookup contract from failures in other local commands without changing those commands' stable envelopes.
 

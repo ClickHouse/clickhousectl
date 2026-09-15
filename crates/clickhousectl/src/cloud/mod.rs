@@ -29,7 +29,7 @@ pub use client::{
 
 use crate::error::{Error, Result};
 use cli::{CloudArgs, CloudCommands};
-use output::eprint_line;
+use output::{CloudErrorCode, CloudErrorDetail, eprint_line};
 
 /// Explain when a configured environment credential cannot participate in
 /// authentication because a higher-precedence source won. Keep this notice on
@@ -64,7 +64,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     // Refresh OAuth tokens if needed. Errors here are filesystem failures
     // (refresh-rpc failures are swallowed and tokens cleared), so this stays
     // a generic error rather than `AuthRequired`.
-    auth::ensure_fresh_tokens()
+    auth::ensure_fresh_tokens(json)
         .await
         .map_err(|e| Error::Cloud(e.to_string()))?;
 
@@ -77,7 +77,9 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     .with_organization_id(args.org_id)
     .with_organization_name(args.org_name);
 
-    if let Some(notice) = ignored_env_credentials_notice(client.auth_source(), env_cred_presence())
+    if !json
+        && let Some(notice) =
+            ignored_env_credentials_notice(client.auth_source(), env_cred_presence())
     {
         eprint_line(notice);
     }
@@ -120,7 +122,13 @@ fn cloud_error_to_top_level(e: CloudError) -> Error {
         // A structured detail replaces the prose *only* in JSON mode; its
         // `message` is the same text, so human output is unchanged (#644).
         (CloudErrorKind::Generic, Some(details)) => Error::CloudDetailed(details),
-        (CloudErrorKind::Generic, None) => Error::Cloud(e.message),
+        (CloudErrorKind::Generic, None) => {
+            let code = CloudErrorCode::from_failure(
+                e.failure
+                    .map_or(crate::failure::FailureKind::Other, |failure| failure.kind),
+            );
+            Error::CloudDetailed(Box::new(CloudErrorDetail::new(code, e.message)))
+        }
     }
 }
 
@@ -210,9 +218,37 @@ mod runtime_tests {
         assert_eq!(auth.exit_code(), 4);
 
         let generic = cloud_error_to_top_level(CloudError::new("boom"));
-        assert!(matches!(&generic, Error::Cloud(message) if message == "boom"));
+        assert!(
+            matches!(&generic, Error::CloudDetailed(detail) if detail.message == "boom" && detail.code == CloudErrorCode::Other)
+        );
         assert_eq!(generic.exit_code(), 1);
         assert_eq!(CloudError::new("x").kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn cloud_error_fallback_codes_preserve_typed_failure_classification() {
+        use crate::failure::{ApiFailure, FailureKind};
+        for kind in [
+            FailureKind::Io,
+            FailureKind::Transport,
+            FailureKind::Http4xx,
+            FailureKind::Http5xx,
+            FailureKind::SqlError,
+            FailureKind::ServiceStopped,
+            FailureKind::Timeout,
+            FailureKind::RateLimited,
+            FailureKind::Other,
+        ] {
+            let error = cloud_error_to_top_level(
+                CloudError::new("same text for every kind").with_failure(ApiFailure::new(kind)),
+            );
+            let Error::CloudDetailed(detail) = &error else {
+                panic!("expected structured error: {error:?}");
+            };
+            assert_eq!(serde_json::to_value(detail.code).unwrap(), kind.as_str());
+            assert_eq!(error.to_string(), "same text for every kind");
+            assert_eq!(error.exit_code(), 1);
+        }
     }
 
     /// A structured detail travels to the top level, where JSON mode emits
