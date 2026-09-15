@@ -978,6 +978,8 @@ clickhousectl cloud service delete <service-id>
 clickhousectl cloud service delete <service-id> --force
 ```
 
+`backup-config update` requires at least one backup configuration flag.
+
 If deletion returns a conflict, the CLI includes the API response and suggests `--force` only
 conditionally: use it when the service is running; resolve other reported conflicts before retrying.
 

@@ -1462,6 +1462,25 @@ fn backup_config_update_args<'a>(extra: &[&'a str]) -> Vec<&'a str> {
 }
 
 #[tokio::test]
+async fn backup_config_update_without_changes_is_usage_error_before_auth_or_http() {
+    let mock = MockServer::start().await;
+    let args = [
+        "service",
+        "backup-config",
+        "update",
+        "svc-1",
+        "--org-id",
+        "org-1",
+    ]
+    .map(String::from);
+
+    let output = invoke_cli_without_cloud_credentials(&mock, &args);
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn backup_config_start_time_refuses_an_incompatible_stored_period() {
     let mock = MockServer::start().await;
     mount_stored_backup_config(&mock, 12.0).await;
