@@ -980,7 +980,12 @@ clickhousectl cloud service delete <service-id> --force
 
 `service start` and `service stop` return as soon as the API accepts the request. Human output reports the state returned with that acknowledgment; even when it already matches the requested state, use `service get` to confirm the service's current state.
 
-`backup-config update` requires at least one backup configuration flag.
+Cloud validates replica counts against the service's current limits. The API maximum is 50; the
+first service in a warehouse requires at least 2 replicas, while a service created in an existing
+warehouse can use 1. Organization tier and per-warehouse limits may set a lower maximum.
+
+`backup-config update` requires at least one backup configuration flag. Backup retention must be a
+whole number of days from 24 through 1080 hours (1 through 45 days); Cloud validates the value.
 
 If deletion returns a conflict, the CLI includes the API response and suggests `--force` only
 conditionally: use it when the service is running; resolve other reported conflicts before retrying.

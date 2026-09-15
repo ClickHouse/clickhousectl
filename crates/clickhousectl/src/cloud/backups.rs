@@ -124,7 +124,7 @@ pub enum BackupConfigCommands {
         #[arg(long)]
         backup_period_hours: Option<u32>,
 
-        /// Retention period in hours
+        /// Retention in hours (24-1080, in multiples of 24)
         #[arg(long)]
         backup_retention_period_hours: Option<u32>,
 

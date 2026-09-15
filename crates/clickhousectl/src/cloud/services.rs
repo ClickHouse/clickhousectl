@@ -128,23 +128,26 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Fixed replica count for vertical autoscaling (1-20)
+        /// Fixed replica count for vertical autoscaling (up to 50)
         ///
-        /// Conflicts with the horizontal band (--min-replicas/--max-replicas).
+        /// The first service in a warehouse needs at least 2; existing warehouses allow 1.
+        /// Tier and per-warehouse limits may lower the maximum. Conflicts with the horizontal band.
         #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
-        /// Minimum replicas for horizontal autoscaling (1-20)
+        /// Minimum replicas for horizontal autoscaling (1-50)
         ///
         /// Requires --max-replicas and conflicts with --num-replicas. Needs the horizontal
-        /// autoscaling org feature unless the band is equal and the mode is vertical.
+        /// autoscaling org feature unless the band is equal and the mode is vertical. Tier and
+        /// per-warehouse limits may lower the maximum.
         #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
-        /// Maximum replicas for horizontal autoscaling (1-20)
+        /// Maximum replicas for horizontal autoscaling (1-50)
         ///
         /// Requires --min-replicas and conflicts with --num-replicas. Needs the horizontal
-        /// autoscaling org feature unless the band is equal and the mode is vertical.
+        /// autoscaling org feature unless the band is equal and the mode is vertical. Tier and
+        /// per-warehouse limits may lower the maximum.
         #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
@@ -285,7 +288,7 @@ CONTEXT FOR AGENTS:
         service_id: NameSelector,
     },
 
-    /// Update service settings
+    /// Update service configuration
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Only the flags you pass are changed; everything else is left as it is.
@@ -345,7 +348,7 @@ CONTEXT FOR AGENTS:
         enable_core_dumps: Option<bool>,
     },
 
-    /// Update replica scaling
+    /// Update service scaling and idle behaviour
     Scale {
         /// Service ID
         #[command(flatten)]
@@ -365,23 +368,26 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Fixed replica count for vertical autoscaling (1-20)
+        /// Fixed replica count for vertical autoscaling (up to 50)
         ///
-        /// Conflicts with the horizontal band (--min-replicas/--max-replicas).
+        /// The first service in a warehouse needs at least 2; existing warehouses allow 1.
+        /// Tier and per-warehouse limits may lower the maximum. Conflicts with the horizontal band.
         #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
-        /// Minimum replicas for horizontal autoscaling (1-20)
+        /// Minimum replicas for horizontal autoscaling (1-50)
         ///
         /// Requires --max-replicas and conflicts with --num-replicas. Needs the horizontal
-        /// autoscaling org feature unless the band is equal and the mode is vertical.
+        /// autoscaling org feature unless the band is equal and the mode is vertical. Tier and
+        /// per-warehouse limits may lower the maximum.
         #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
-        /// Maximum replicas for horizontal autoscaling (1-20)
+        /// Maximum replicas for horizontal autoscaling (1-50)
         ///
         /// Requires --min-replicas and conflicts with --num-replicas. Needs the horizontal
-        /// autoscaling org feature unless the band is equal and the mode is vertical.
+        /// autoscaling org feature unless the band is equal and the mode is vertical. Tier and
+        /// per-warehouse limits may lower the maximum.
         #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
