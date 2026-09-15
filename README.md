@@ -757,10 +757,6 @@ clickhousectl cloud org usage \
 `cloud`, including after nested subcommands and positional resource IDs. Without
 it, org-scoped operations auto-detect the organization only when exactly one is available.
 
-For 0.5.0, migrate the former positional organization IDs on `org get`, `org update`,
-`org usage`, and `org prometheus` to `--org-id ORG`; positional org IDs are now usage
-errors (exit 2). For example, use `cloud --org-id ORG org get` or `cloud org get --org-id ORG`.
-
 Supplying a value option twice at the same command depth is a usage error. As with
 other cloud-wide value options, a value supplied at a deeper subcommand takes
 precedence over an ancestor's value.
