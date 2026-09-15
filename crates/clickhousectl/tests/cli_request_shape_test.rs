@@ -2988,7 +2988,7 @@ async fn postgres_metrics_rejects_malformed_and_submillisecond_dates_before_requ
 }
 
 #[tokio::test]
-async fn postgres_metrics_omits_bucket_and_renders_sparse_human_output() {
+async fn postgres_metrics_omits_bucket_and_renders_every_sparse_series_and_point() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/postgres/pg-1/metrics"))
@@ -2998,7 +2998,24 @@ async fn postgres_metrics_omits_bucket_and_renders_sparse_human_output() {
             "result": {
                 "metrics": [{
                     "key": "connections",
-                    "series": [{ "dataPoints": [{ "timestamp": 1776337200 }] }]
+                    "name": "Open connections",
+                    "description": "Connections by role",
+                    "unit": "connections",
+                    "series": [{
+                        "label": "{role=\"primary\",zone=\"eu-west-1\"}",
+                        "dataPoints": [
+                            { "timestamp": 1776337200, "value": 4 },
+                            { "timestamp": 1776337200 }
+                        ]
+                    }, {
+                        "label": "custom label / tenant=a,b",
+                        "dataPoints": []
+                    }, {}]
+                }, {
+                    "key": "empty-series",
+                    "series": []
+                }, {
+                    "key": "absent-series"
                 }]
             },
             "status": 200
@@ -3023,15 +3040,26 @@ async fn postgres_metrics_omits_bucket_and_renders_sparse_human_output() {
     );
 
     assert_success(&output);
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for text in [
-        "metrics:",
-        "key: connections",
-        "dataPoints:",
-        "timestamp: 1776337200",
-    ] {
-        assert!(stdout.contains(text), "missing {text:?} from:\n{stdout}");
-    }
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "metrics:\n\
+         \x20 - description: Connections by role\n\
+         \x20   key: connections\n\
+         \x20   name: Open connections\n\
+         \x20   series:\n\
+         \x20     - dataPoints:\n\
+         \x20         1: 2026-04-16T11:00:00Z  4 connections\n\
+         \x20         2: 2026-04-16T11:00:00Z  -\n\
+         \x20       label: {role=\"primary\",zone=\"eu-west-1\"}\n\
+         \x20     - dataPoints: []\n\
+         \x20       label: custom label / tenant=a,b\n\
+         \x20     - dataPoints: -\n\
+         \x20   unit: connections\n\
+         \x20 - key: empty-series\n\
+         \x20   series: []\n\
+         \x20 - key: absent-series\n\
+         \x20   series: -\n"
+    );
     let requests = mock.received_requests().await.unwrap();
     let query: Vec<_> = requests[0].url.query_pairs().collect();
     assert_eq!(query.len(), 2, "unexpected query parameters: {query:?}");

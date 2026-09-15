@@ -2042,6 +2042,98 @@ fn validate_datetime_range(from_date: &str, to_date: &str) -> CloudResult<()> {
     Ok(())
 }
 
+fn postgres_metric_timestamp(timestamp: Option<i64>) -> String {
+    timestamp
+        .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        // The wire type permits epoch values outside chrono's calendar range.
+        // Keep such a value visible rather than dropping its data point.
+        .unwrap_or_else(|| match timestamp {
+            Some(timestamp) => format!("{timestamp} (outside displayable date range)"),
+            None => ABSENT.to_string(),
+        })
+}
+
+/// Compact human view for the nested metrics response.
+///
+/// The view starts from the response's serde representation, retaining source
+/// field order and the same field-hiding behavior as JSON. Only data points are
+/// condensed: each becomes a numbered RFC 3339/value line. Numbering preserves
+/// duplicate points and API order. Missing collections become `-`, while empty
+/// arrays stay `[]`.
+fn postgres_metrics_human_view(
+    metrics: &PostgresMetrics,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut view = serde_json::to_value(metrics)?;
+    let root = view
+        .as_object_mut()
+        .expect("PostgresMetrics serializes as an object");
+    let Some(source_metrics) = metrics.metrics.as_ref() else {
+        root.insert(
+            "metrics".to_string(),
+            serde_json::Value::String(ABSENT.to_string()),
+        );
+        return Ok(view);
+    };
+    let view_metrics = root["metrics"]
+        .as_array_mut()
+        .expect("a present metrics field serializes as an array");
+
+    for (source_metric, view_metric) in source_metrics.iter().zip(view_metrics) {
+        let view_metric = view_metric
+            .as_object_mut()
+            .expect("PostgresMetric serializes as an object");
+        let Some(source_series) = source_metric.series.as_ref() else {
+            view_metric.insert(
+                "series".to_string(),
+                serde_json::Value::String(ABSENT.to_string()),
+            );
+            continue;
+        };
+        let view_series = view_metric["series"]
+            .as_array_mut()
+            .expect("a present series field serializes as an array");
+
+        for (source_series, view_series) in source_series.iter().zip(view_series) {
+            let view_series = view_series
+                .as_object_mut()
+                .expect("PostgresMetricSeries serializes as an object");
+            let Some(source_points) = source_series.data_points.as_ref() else {
+                view_series.insert(
+                    "dataPoints".to_string(),
+                    serde_json::Value::String(ABSENT.to_string()),
+                );
+                continue;
+            };
+            if source_points.is_empty() {
+                continue;
+            }
+
+            let mut point_lines = serde_json::Map::new();
+            for (index, point) in source_points.iter().enumerate() {
+                let timestamp = postgres_metric_timestamp(point.timestamp);
+                let value = point
+                    .value
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| ABSENT.to_string());
+                let value = match (source_metric.unit.as_deref(), point.value) {
+                    (Some(unit), Some(_)) => format!("{value} {unit}"),
+                    _ => value,
+                };
+                point_lines.insert(
+                    (index + 1).to_string(),
+                    serde_json::Value::String(format!("{timestamp}  {value}")),
+                );
+            }
+            view_series.insert(
+                "dataPoints".to_string(),
+                serde_json::Value::Object(point_lines),
+            );
+        }
+    }
+    Ok(view)
+}
+
 pub async fn postgres_metrics(
     client: &CloudClient,
     postgres_id: &str,
@@ -2065,7 +2157,7 @@ pub async fn postgres_metrics(
     if json {
         println!("{}", serde_json::to_string_pretty(&metrics)?);
     } else {
-        print_human(&metrics)?;
+        print_human(&postgres_metrics_human_view(&metrics)?)?;
     }
     Ok(())
 }
@@ -2703,6 +2795,9 @@ mod tests {
     use super::*;
     use crate::cli::Cli;
     use clap::Parser;
+    use clickhouse_cloud_api::models::{
+        PostgresMetric, PostgresMetricDataPoint, PostgresMetricSeries,
+    };
 
     #[derive(Parser)]
     struct PostgresCli {
@@ -2720,6 +2815,104 @@ mod tests {
             panic!("expected postgres command");
         };
         command
+    }
+
+    #[test]
+    fn metrics_human_view_preserves_series_points_labels_and_units() {
+        let metrics = PostgresMetrics {
+            metrics: Some(vec![
+                PostgresMetric {
+                    key: Some("cpu".to_string()),
+                    name: Some("CPU usage".to_string()),
+                    description: Some("Average CPU usage".to_string()),
+                    unit: Some("percent".to_string()),
+                    series: Some(vec![
+                        PostgresMetricSeries {
+                            label: Some("{role=\"primary\",zone=\"eu-west-1\"}".to_string()),
+                            data_points: Some(vec![
+                                PostgresMetricDataPoint {
+                                    timestamp: Some(1_776_337_200),
+                                    value: Some(12.5),
+                                },
+                                PostgresMetricDataPoint {
+                                    timestamp: Some(1_776_337_200),
+                                    value: None,
+                                },
+                            ]),
+                        },
+                        PostgresMetricSeries {
+                            label: Some("line one\nline two".to_string()),
+                            data_points: Some(Vec::new()),
+                        },
+                    ]),
+                },
+                PostgresMetric {
+                    key: Some("replication-lag".to_string()),
+                    series: None,
+                    ..Default::default()
+                },
+            ]),
+        };
+
+        assert_eq!(
+            postgres_metrics_human_view(&metrics).unwrap(),
+            serde_json::json!({
+                "metrics": [{
+                    "description": "Average CPU usage",
+                    "key": "cpu",
+                    "name": "CPU usage",
+                    "series": [{
+                        "dataPoints": {
+                            "1": "2026-04-16T11:00:00Z  12.5 percent",
+                            "2": "2026-04-16T11:00:00Z  -"
+                        },
+                        "label": "{role=\"primary\",zone=\"eu-west-1\"}"
+                    }, {
+                        "dataPoints": [],
+                        "label": "line one\nline two"
+                    }],
+                    "unit": "percent"
+                }, {
+                    "key": "replication-lag",
+                    "series": "-"
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn metrics_human_view_distinguishes_absent_empty_and_unrepresentable_timestamps() {
+        assert_eq!(
+            postgres_metrics_human_view(&PostgresMetrics::default()).unwrap(),
+            serde_json::json!({"metrics": "-"})
+        );
+        assert_eq!(
+            postgres_metrics_human_view(&PostgresMetrics {
+                metrics: Some(Vec::new())
+            })
+            .unwrap(),
+            serde_json::json!({"metrics": []})
+        );
+
+        let metrics = PostgresMetrics {
+            metrics: Some(vec![PostgresMetric {
+                series: Some(vec![PostgresMetricSeries {
+                    data_points: Some(vec![PostgresMetricDataPoint {
+                        timestamp: Some(i64::MAX),
+                        value: Some(1.0),
+                    }]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }]),
+        };
+        let output = postgres_metrics_human_view(&metrics).unwrap();
+        assert_eq!(
+            output.pointer("/metrics/0/series/0/dataPoints/1"),
+            Some(&serde_json::Value::String(
+                "9223372036854775807 (outside displayable date range)  1".to_string()
+            ))
+        );
     }
 
     #[test]
