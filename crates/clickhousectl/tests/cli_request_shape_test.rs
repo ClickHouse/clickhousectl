@@ -22680,6 +22680,70 @@ async fn upgrade_window_get_supports_oauth_and_preserves_sparse_json() {
 }
 
 #[tokio::test]
+async fn upgrade_window_get_human_output_names_weekday_and_labels_duration() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(UPGRADE_WINDOW_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"weekday": 3, "startHourUtc": 12, "duration": 6},
+            "status": 200,
+            "requestId": "stub-upgrade-window-human"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "service",
+            "upgrade-window",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "duration: 6 hours\nstartHourUtc: 12\nweekday: Wednesday (3)\n"
+    );
+}
+
+#[tokio::test]
+async fn upgrade_window_get_human_output_preserves_unknowns_and_shows_absence() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(UPGRADE_WINDOW_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {"weekday": 9, "duration": 8},
+            "status": 200,
+            "requestId": "stub-upgrade-window-human-unknown"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "service",
+            "upgrade-window",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "duration: 8 hours\nstartHourUtc: -\nweekday: 9\n"
+    );
+}
+
+#[tokio::test]
 async fn upgrade_window_set_sends_exact_body_with_basic_auth() {
     let mock = MockServer::start().await;
     Mock::given(method("PUT"))

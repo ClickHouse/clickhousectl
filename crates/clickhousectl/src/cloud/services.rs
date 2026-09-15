@@ -1507,6 +1507,43 @@ fn build_upgrade_window_request(
     })
 }
 
+#[derive(serde::Serialize)]
+struct UpgradeWindowHumanView {
+    duration: String,
+    #[serde(rename = "startHourUtc")]
+    start_hour_utc: String,
+    weekday: String,
+}
+
+fn upgrade_window_human_view(window: &UpgradeWindow) -> UpgradeWindowHumanView {
+    let duration = window
+        .duration
+        .map(|duration| {
+            let hours = i64::from(duration);
+            format!("{hours} hour{}", if hours == 1 { "" } else { "s" })
+        })
+        .unwrap_or_else(|| ABSENT.to_string());
+    let weekday = window
+        .weekday
+        .map(|weekday| match weekday {
+            0 => "Sunday (0)".to_string(),
+            1 => "Monday (1)".to_string(),
+            2 => "Tuesday (2)".to_string(),
+            3 => "Wednesday (3)".to_string(),
+            4 => "Thursday (4)".to_string(),
+            5 => "Friday (5)".to_string(),
+            6 => "Saturday (6)".to_string(),
+            unknown => unknown.to_string(),
+        })
+        .unwrap_or_else(|| ABSENT.to_string());
+
+    UpgradeWindowHumanView {
+        duration,
+        start_hour_utc: or_absent(window.start_hour_utc.as_ref()),
+        weekday,
+    }
+}
+
 async fn service_list(client: &CloudClient, filters: &[String], json: bool) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
 
@@ -1572,7 +1609,7 @@ async fn upgrade_window_get(client: &CloudClient, service_id: &str, json: bool) 
     if json {
         println!("{}", serde_json::to_string_pretty(&window)?);
     } else {
-        print_human(&window)?;
+        print_human(&upgrade_window_human_view(&window))?;
     }
     Ok(())
 }
@@ -1592,7 +1629,7 @@ async fn upgrade_window_set(
     if json {
         println!("{}", serde_json::to_string_pretty(&window)?);
     } else {
-        print_human(&window)?;
+        print_human(&upgrade_window_human_view(&window))?;
     }
     Ok(())
 }
@@ -5152,6 +5189,61 @@ mod tests {
         let latest = build_upgrade_window_request(6, "18").unwrap();
         assert_eq!(latest.weekday, 6);
         assert_eq!(latest.start_hour_utc, UpgradeWindowStartHourUtc::Hour18);
+    }
+
+    #[test]
+    fn upgrade_window_human_view_names_every_documented_weekday() {
+        let expected = [
+            "Sunday (0)",
+            "Monday (1)",
+            "Tuesday (2)",
+            "Wednesday (3)",
+            "Thursday (4)",
+            "Friday (5)",
+            "Saturday (6)",
+        ];
+
+        for (weekday, expected) in expected.into_iter().enumerate() {
+            let view = upgrade_window_human_view(&UpgradeWindow {
+                duration: None,
+                start_hour_utc: None,
+                weekday: Some(weekday as i64),
+            });
+            assert_eq!(view.weekday, expected);
+        }
+    }
+
+    #[test]
+    fn upgrade_window_human_view_labels_duration_and_preserves_sparse_unknowns() {
+        use clickhouse_cloud_api::models::UpgradeWindowDuration;
+
+        let known = upgrade_window_human_view(&UpgradeWindow {
+            duration: Some(UpgradeWindowDuration::SixHours),
+            start_hour_utc: Some(UpgradeWindowStartHourUtc::Hour12),
+            weekday: Some(3),
+        });
+        assert_eq!(
+            serde_json::to_value(known).unwrap(),
+            serde_json::json!({
+                "duration": "6 hours",
+                "startHourUtc": "12",
+                "weekday": "Wednesday (3)"
+            })
+        );
+
+        let sparse_unknown = upgrade_window_human_view(&UpgradeWindow {
+            duration: Some(UpgradeWindowDuration::Unknown(1)),
+            start_hour_utc: None,
+            weekday: Some(9),
+        });
+        assert_eq!(
+            serde_json::to_value(sparse_unknown).unwrap(),
+            serde_json::json!({
+                "duration": "1 hour",
+                "startHourUtc": "-",
+                "weekday": "9"
+            })
+        );
     }
 
     #[test]
