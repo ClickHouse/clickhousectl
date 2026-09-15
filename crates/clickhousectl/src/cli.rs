@@ -33,9 +33,10 @@ CONTEXT FOR AGENTS:
     /// Manage ClickHouse and Postgres in ClickHouse Cloud
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
+  Credentials, first wins: --api-key/--api-secret, saved API keys,
+  CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth.
   API keys are read+write; OAuth is read-only and every write command fails on it.
   `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
-  Auth precedence and storage: https://github.com/ClickHouse/clickhousectl#cloud-authentication-and-account-creation
   delete/remove act immediately — there is no confirmation prompt.
   Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
   Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud org list` -> `cloud service list`")]

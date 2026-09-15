@@ -109,7 +109,8 @@ module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new l
   doc-comment paragraph (≤ ~3 lines) only for a constraint the flag's name and type cannot convey.
 - Shared flags (`--api-key`, `--api-secret`, `--url`, `--org-id`, `--json`, `--debug`) read identically everywhere.
 - `CONTEXT FOR AGENTS:` — hard cap 8 content lines, target 3-6, one fact per line. May hold: an auth requirement or
-  precondition; where to get required inputs ("Service ID: `cloud service list`"); non-obvious runtime behaviour
+  precondition; credential precedence without storage paths; where to get required inputs
+  ("Service ID: `cloud service list`"); non-obvious runtime behaviour
   (timeouts, stdin handling, irreversibility, "must be stopped first"); an output note only when it changes what the
   agent does; a `Typical flow:` line; at most one docs URL.
   It must NOT hold implementation details, crates/files, HTTP or API mechanics, storage paths, history or
