@@ -204,7 +204,7 @@ CONTEXT FOR AGENTS:
         /// End time (RFC 3339, at most millisecond precision)
         #[arg(long, value_parser = parse_postgres_window_datetime)]
         to_date: String,
-        /// Time bucket size in seconds
+        /// Time bucket size in seconds; omit to let the API choose
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
         bucket_size_seconds: Option<i64>,
     },
