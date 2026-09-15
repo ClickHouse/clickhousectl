@@ -294,6 +294,10 @@ CONTEXT FOR AGENTS:
     },
 
     /// Start a ClickPipe
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Streaming and object-storage pipes use Stopped when halted; database CDC pipes
+  use Paused. Inspect the current state with `get` before requesting start.")]
     Start {
         /// Service ID
         service_id: String,
@@ -304,6 +308,10 @@ CONTEXT FOR AGENTS:
     },
 
     /// Stop a ClickPipe
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Streaming and object-storage pipes transition through Stopping to Stopped;
+  database CDC pipes transition through Pausing to Paused.")]
     Stop {
         /// Service ID
         service_id: String,
@@ -1981,7 +1989,7 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                 client,
                 &service_id,
                 &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
-                "start",
+                ClickPipeLifecycleCommand::Start,
                 json,
             )
             .await
@@ -1994,7 +2002,7 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                 client,
                 &service_id,
                 &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
-                "stop",
+                ClickPipeLifecycleCommand::Stop,
                 json,
             )
             .await
@@ -2007,7 +2015,7 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                 client,
                 &service_id,
                 &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
-                "resync",
+                ClickPipeLifecycleCommand::Resync,
                 json,
             )
             .await
@@ -3661,34 +3669,56 @@ async fn clickpipe_delete(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum ClickPipeLifecycleCommand {
+    Start,
+    Stop,
+    Resync,
+}
+
+impl ClickPipeLifecycleCommand {
+    fn api_command(self) -> clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand {
+        use clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand;
+
+        match self {
+            Self::Start => ClickPipeStatePatchRequestCommand::Start,
+            Self::Stop => ClickPipeStatePatchRequestCommand::Stop,
+            Self::Resync => ClickPipeStatePatchRequestCommand::Resync,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Resync => "resync",
+        }
+    }
+}
+
 async fn clickpipe_state(
     client: &CloudClient,
     service_id: &str,
     clickpipe_id: &str,
-    command: &str,
+    command: ClickPipeLifecycleCommand,
     json: bool,
 ) -> CloudResult<()> {
-    use clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand;
-    let command_value = match command {
-        "start" => ClickPipeStatePatchRequestCommand::Start,
-        "stop" => ClickPipeStatePatchRequestCommand::Stop,
-        "resync" => ClickPipeStatePatchRequestCommand::Resync,
-        other => {
-            return Err(CloudError::new(format!("Unknown state command: {}", other)));
-        }
-    };
     let org_id = resolve_org_id(client).await?;
     let clickpipe = client
-        .change_clickpipe_state(&org_id, service_id, clickpipe_id, command_value)
+        .change_clickpipe_state(&org_id, service_id, clickpipe_id, command.api_command())
         .await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&clickpipe)?);
     } else {
         println!(
-            "ClickPipe {} {} (state: {})",
-            or_absent(clickpipe.name.as_deref()),
-            command,
+            "ClickPipe {} {} request accepted (returned state: {})",
+            clickpipe
+                .name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .unwrap_or(clickpipe_id),
+            command.label(),
             or_absent(clickpipe.state.as_ref())
         );
     }

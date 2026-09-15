@@ -14106,6 +14106,115 @@ async fn agent_session_and_trace_headers_are_forwarded() {
     );
 }
 
+// ── ClickPipe lifecycle acknowledgments (#842) ──────────────────────────────
+
+#[tokio::test]
+async fn clickpipe_lifecycle_human_output_acknowledges_the_immediate_state() {
+    for (command, clickpipe_id, name, state, expected) in [
+        (
+            "start",
+            "pipe-start",
+            Some("batch-pipe"),
+            Some("Stopped"),
+            "ClickPipe batch-pipe start request accepted (returned state: Stopped)\n",
+        ),
+        (
+            "stop",
+            "pipe-stop",
+            Some("cdc-pipe"),
+            Some("Pausing"),
+            "ClickPipe cdc-pipe stop request accepted (returned state: Pausing)\n",
+        ),
+        (
+            "resync",
+            "pipe-resync",
+            None,
+            None,
+            "ClickPipe pipe-resync resync request accepted (returned state: -)\n",
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        let mut result = serde_json::Map::new();
+        if let Some(name) = name {
+            result.insert("name".into(), serde_json::json!(name));
+        }
+        if let Some(state) = state {
+            result.insert("state".into(), serde_json::json!(state));
+        }
+        Mock::given(method("PATCH"))
+            .and(path(format!(
+                "/v1/organizations/org/services/svc-id/clickpipes/{clickpipe_id}/state"
+            )))
+            .and(body_json(serde_json::json!({"command": command})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": result,
+                "status": 200,
+                "requestId": "stub-clickpipe-state-change",
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let output = invoke_cli_with_cloud_credentials_human(
+            &mock,
+            &[
+                "clickpipe",
+                command,
+                "svc-id",
+                clickpipe_id,
+                "--org-id",
+                "org",
+            ],
+        );
+
+        assert_success(&output);
+        assert!(output.stderr.is_empty());
+        assert_eq!(String::from_utf8_lossy(&output.stdout), expected);
+    }
+}
+
+#[tokio::test]
+async fn clickpipe_lifecycle_preserves_the_json_response() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!({
+        "id": "00000000-0000-0000-0000-000000000842",
+        "name": "batch-pipe",
+        "state": "Stopped",
+    });
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org/services/svc-id/clickpipes/pipe-start/state",
+        ))
+        .and(body_json(serde_json::json!({"command": "start"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-clickpipe-state-change-json",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "clickpipe",
+            "start",
+            "svc-id",
+            "pipe-start",
+            "--org-id",
+            "org",
+        ],
+    );
+
+    assert_success(&output);
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+}
+
 // ── ClickPipe object-storage ingestion-control flags (#289) ─────────────────
 //
 // `--skip-initial-load` and `--start-after` must serialize to

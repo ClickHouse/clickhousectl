@@ -1449,6 +1449,17 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
 clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
 ```
 
+Lifecycle states depend on the source. Streaming and object-storage pipes move
+through `Stopping` to `Stopped`, while database CDC pipes move through `Pausing`
+to `Paused`. Inspect the current state with `clickpipe get` before a lifecycle
+change; the API validates whether that source kind and state accept the request.
+`resync` applies only to Postgres and MySQL pipes.
+
+`start`, `stop`, and `resync` return as soon as the API accepts the request.
+Human output reports the state in that immediate response. It does not mean the
+transition completed or that an unchanged state was a no-op; use `clickpipe get`
+to observe the current state.
+
 #### Monitoring and diagnostics
 
 ClickPipes metrics are included in the destination service's Prometheus output.
