@@ -369,7 +369,12 @@ CONTEXT FOR AGENTS:
         command: ClickPipeSettingsCommands,
     },
 
-    /// Get service capabilities and workload identity
+    /// Inspect GCP workload identity support and principal
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Only applies to ClickHouse Cloud services hosted on GCP.
+  Use `get` before create to verify readiness and obtain the service principal.
+  Grant that principal access to GCS, GCMK, Pub/Sub or BigQuery source resources.")]
     Context {
         #[command(subcommand)]
         command: ClickPipeContextCommands,
@@ -409,8 +414,8 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   For kafka, kinesis, object-storage and pubsub, get --column from
   `clickhousectl cloud clickpipe schema-discover <source> <service-id>`.
-  GCP workload identity is private preview: run `clickpipe context get`, grant
-  its principal source access, then pass --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY.
+  GCP workload identity is private preview for GCS, GCMK, Pub/Sub and BigQuery:
+  run `clickpipe context get`, grant its principal access, then pass --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY.
   The source must be reachable from ClickPipes; allow the static egress IPs:
   https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips
   Prints the pipe's name, ID and state; it is not ready to query yet.
@@ -502,7 +507,7 @@ impl ClickPipeCommands {
 
 #[derive(Subcommand)]
 pub enum ClickPipeContextCommands {
-    /// Get ClickPipes service context
+    /// Get GCP workload identity readiness and principal
     Get {
         /// Service ID
         service_id: String,

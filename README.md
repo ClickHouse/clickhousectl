@@ -1868,10 +1868,11 @@ clickhousectl cloud clickpipe create kafka <service-id> \
   --kafka-read-committed false
 ```
 
-GCP workload identity is in private preview and must be enabled for the
-organization. Once enabled, get the service's ClickPipes principal, grant that
-GCP service account access to the source resources, then create the pipe
-without a customer key:
+GCP workload identity is in private preview for ClickHouse Cloud services
+hosted on GCP and must be enabled for the organization. `clickpipe context get`
+reports whether it is supported and ready, and returns the service's ClickPipes
+principal. Grant that GCP service account access to the source resources, then
+create the pipe without a customer key:
 
 ```bash
 clickhousectl cloud clickpipe context get <service-id>
