@@ -128,7 +128,7 @@ impl FromStr for ClientVersionArg {
 #[derive(Args)]
 pub struct LocalArgs {
     /// Output as JSON
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = crate::cli::help_order::JSON)]
     pub json: bool,
 
     #[command(subcommand)]
@@ -233,6 +233,7 @@ CONTEXT FOR AGENTS:
     Client {
         /// Server name to connect to (default: "default")
         #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"])]
+        #[arg(display_order = 0)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -243,10 +244,12 @@ CONTEXT FOR AGENTS:
             hide = true,
             conflicts_with_all = ["name", "host", "port"]
         )]
+        #[arg(display_order = 0)]
         name_flag: Option<String>,
 
         /// Host to connect to directly, bypassing local server lookup (port 9000)
         #[arg(long)]
+        #[arg(display_order = 1)]
         host: Option<String>,
 
         /// TCP port to connect to directly, bypassing local server lookup (host localhost)
@@ -255,6 +258,7 @@ CONTEXT FOR AGENTS:
             short,
             value_parser = clap::value_parser!(u16).range(1..=65535)
         )]
+        #[arg(display_order = 2)]
         port: Option<u16>,
 
         /// Installed local client version for direct host/port mode
@@ -262,14 +266,17 @@ CONTEXT FOR AGENTS:
         /// Requires --host or --port and conflicts with NAME. Numeric versions only
         /// (25, 25.12, 25.12.9.61). Does not change the default.
         #[arg(long, short = 'v', requires = "direct", conflicts_with_all = ["name", "name_flag"])]
+        #[arg(display_order = 3)]
         version: Option<ClientVersionArg>,
 
         /// Execute a SQL query; repeatable (repeats need ClickHouse 23.9.1.1854+)
         #[arg(long, short, conflicts_with = "queries_file")]
+        #[arg(display_order = 4)]
         query: Vec<String>,
 
         /// Execute queries from SQL files; accepts multiple paths or repeated flags
         #[arg(long, num_args = 1.., conflicts_with = "query")]
+        #[arg(display_order = 5)]
         queries_file: Vec<String>,
 
         /// Native clickhouse-client arguments (require --)
@@ -618,6 +625,7 @@ CONTEXT FOR AGENTS:
     Client {
         /// Managed instance to connect to (default: "default")
         #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"])]
+        #[arg(display_order = 0)]
         name: Option<String>,
 
         /// Compatibility form for the instance name; prefer positional NAME
@@ -628,14 +636,17 @@ CONTEXT FOR AGENTS:
             hide = true,
             conflicts_with_all = ["name", "host", "port"]
         )]
+        #[arg(display_order = 0)]
         name_flag: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
         #[arg(long, short = 'v', conflicts_with_all = ["host", "port"])]
+        #[arg(display_order = 3)]
         version: Option<String>,
 
         /// Host to connect to directly, bypassing managed lookup (port 5432)
         #[arg(long)]
+        #[arg(display_order = 1)]
         host: Option<String>,
 
         /// TCP port to connect to directly, bypassing managed lookup (host 127.0.0.1)
@@ -644,14 +655,17 @@ CONTEXT FOR AGENTS:
             short,
             value_parser = clap::value_parser!(u16).range(1..=65535)
         )]
+        #[arg(display_order = 2)]
         port: Option<u16>,
 
         /// Execute a single SQL query
         #[arg(long, short)]
+        #[arg(display_order = 4)]
         query: Option<String>,
 
         /// Execute queries from a SQL file
         #[arg(long)]
+        #[arg(display_order = 5)]
         queries_file: Option<String>,
 
         /// Native psql arguments (require --)

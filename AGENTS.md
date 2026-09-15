@@ -107,7 +107,13 @@ module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new l
 - Use `(Beta)` for beta markers; keep `(limited preview)` distinct.
 - State cross-flag constraints on the flag itself ("only with `--replication-mode cdc_only`"). Add a second
   doc-comment paragraph (≤ ~3 lines) only for a constraint the flag's name and type cannot convey.
-- Shared flags (`--api-key`, `--api-secret`, `--url`, `--org-id`, `--json`, `--debug`) read identically everywhere.
+- Shared flags (`--api-key`, `--api-secret`, `--url`, `--org-id`, `--org-name`, `--json`, `--debug`) read identically everywhere.
+- Help options: command-specific flags first (display ranks below 900), then the contiguous shared block
+  `--org-id`, `--org-name` (when available), `--api-key`, `--api-secret`, `--url`, `--json`, `--debug`, `--help`.
+  Use `src/cli.rs`'s `help_order` ranks 900–906; `--org-name` uses 901, and clap supplies help at 999.
+  Apply ranks at every declaration, including local JSON and auth flags; inheritance must preserve the block.
+  Both local clients order common arguments as name, host, port, version, query, queries-file. Names stay in
+  Arguments; compatibility flags stay hidden. Keep standard headings and release-only URL hiding.
 - `CONTEXT FOR AGENTS:` — hard cap 8 content lines, target 3-6, one fact per line. May hold: an auth requirement or
   precondition; credential precedence without storage paths; where to get required inputs
   ("Service ID: `cloud service list`"); non-obvious runtime behaviour

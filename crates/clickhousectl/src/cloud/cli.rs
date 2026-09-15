@@ -27,30 +27,31 @@ use clap::{Args, Subcommand};
 #[derive(Args)]
 pub struct CloudArgs {
     /// Cloud API key (requires --api-secret for auth login)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = crate::cli::help_order::API_KEY)]
     pub api_key: Option<String>,
 
     /// Cloud API secret (requires --api-key for auth login)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = crate::cli::help_order::API_SECRET)]
     pub api_secret: Option<String>,
 
     /// Organization ID (auto-detected only if you have one org)
-    #[arg(long, global = true, conflicts_with = "org_name")]
+    #[arg(long, global = true, conflicts_with = "org_name", display_order = crate::cli::help_order::ORG_ID)]
     pub org_id: Option<String>,
 
     /// Exact organization name
-    #[arg(long, global = true, conflicts_with = "org_id")]
+    #[arg(long, global = true, conflicts_with = "org_id", display_order = crate::cli::help_order::ORG_NAME)]
     pub org_name: Option<String>,
 
     /// Output as JSON
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = crate::cli::help_order::JSON)]
     pub json: bool,
 
     /// Print the resolved credential source and API URL to stderr
-    #[arg(long, global = true)]
+    #[arg(long, global = true, display_order = crate::cli::help_order::DEBUG)]
     pub debug: bool,
 
     /// Cloud API base URL override
+    #[arg(display_order = crate::cli::help_order::URL)]
     #[cfg_attr(debug_assertions, arg(long, global = true))]
     #[cfg_attr(not(debug_assertions), arg(long, global = true, hide = true))]
     pub url: Option<String>,

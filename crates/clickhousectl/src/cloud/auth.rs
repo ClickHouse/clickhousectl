@@ -27,11 +27,11 @@ CONTEXT FOR AGENTS:
         interactive: bool,
 
         /// Cloud API key (requires --api-secret for auth login)
-        #[arg(long)]
+        #[arg(long, display_order = crate::cli::help_order::API_KEY)]
         api_key: Option<String>,
 
         /// Cloud API secret (requires --api-key for auth login)
-        #[arg(long)]
+        #[arg(long, display_order = crate::cli::help_order::API_SECRET)]
         api_secret: Option<String>,
     },
     /// Log out and clear saved credentials
