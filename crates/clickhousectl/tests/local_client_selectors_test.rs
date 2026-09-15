@@ -575,16 +575,17 @@ fn clickhouse_named_mode_uses_server_version_without_a_default() {
     )
     .expect("write server metadata");
 
-    assert_clickhouse_child(
-        run(
-            project.path(),
-            home.path(),
-            None,
-            &["local", "client", "--name", "dev"],
-        ),
-        VERSION_B,
-        &["client", "--host", "localhost", "--port", "19000"],
-    );
+    for selector in [&["dev"][..], &["--name", "dev"][..], &["-n", "dev"][..]] {
+        let args: Vec<_> = ["local", "client"]
+            .into_iter()
+            .chain(selector.iter().copied())
+            .collect();
+        assert_clickhouse_child(
+            run(project.path(), home.path(), None, &args),
+            VERSION_B,
+            &["client", "--host", "localhost", "--port", "19000"],
+        );
+    }
     assert_default(home.path(), None);
 }
 

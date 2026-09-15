@@ -222,7 +222,6 @@ CONTEXT FOR AGENTS:
     /// Connect to a running ClickHouse server with clickhouse-client
     #[command(
         group(ArgGroup::new("direct").args(["host", "port"]).multiple(true)),
-        override_usage = "clickhousectl local client [OPTIONS] [-- <ARGS>...]",
         after_help = "\
 CONTEXT FOR AGENTS:
   Default mode looks up a server started by `clickhousectl local server start`; the name defaults
@@ -233,8 +232,18 @@ CONTEXT FOR AGENTS:
     )]
     Client {
         /// Server name to connect to (default: "default")
-        #[arg(long, short, conflicts_with_all = ["host", "port"])]
+        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"])]
         name: Option<String>,
+
+        /// Compatibility form for the instance name; prefer positional NAME
+        #[arg(
+            long = "name",
+            short = 'n',
+            value_name = "NAME",
+            hide = true,
+            conflicts_with_all = ["name", "host", "port"]
+        )]
+        name_flag: Option<String>,
 
         /// Host to connect to directly, bypassing local server lookup (port 9000)
         #[arg(long)]
@@ -250,9 +259,9 @@ CONTEXT FOR AGENTS:
 
         /// Installed local client version for direct host/port mode
         ///
-        /// Requires --host or --port and conflicts with --name. Numeric versions only
+        /// Requires --host or --port and conflicts with NAME. Numeric versions only
         /// (25, 25.12, 25.12.9.61). Does not change the default.
-        #[arg(long, short = 'v', requires = "direct", conflicts_with = "name")]
+        #[arg(long, short = 'v', requires = "direct", conflicts_with_all = ["name", "name_flag"])]
         version: Option<ClientVersionArg>,
 
         /// Execute a SQL query; repeatable (repeats need ClickHouse 23.9.1.1854+)
@@ -277,7 +286,7 @@ CONTEXT FOR AGENTS:
   Retain the name `start` returns (it may be generated) for later `stop`/`remove`.
   `local remove <version>` deletes an installed binary, not server data.
   Custom configs inherit built-in defaults; find available names with `server configs`.
-  Typical flow: `server start dev` -> `local client --name dev` -> `server stop dev`")]
+  Typical flow: `server start dev` -> `local client dev` -> `server stop dev`")]
     Server {
         #[command(subcommand)]
         command: ServerCommands,
@@ -314,7 +323,12 @@ CONTEXT FOR AGENTS:
         name: Option<String>,
 
         /// Compatibility form for the server name; prefer positional NAME
-        #[arg(long = "name", value_name = "NAME", conflicts_with = "name")]
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true
+        )]
         name_flag: Option<String>,
 
         /// Version or channel to run: latest, stable, lts, 25.12 (installs if needed)
@@ -444,8 +458,17 @@ CONTEXT FOR AGENTS:
   CLICKHOUSE_* lines are kept.")]
     Dotenv {
         /// Server name (default: "default")
-        #[arg(long)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
         name: Option<String>,
+
+        /// Compatibility form for the instance name; prefer positional NAME
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true
+        )]
+        name_flag: Option<String>,
 
         /// Write to .env.local instead of .env
         #[arg(long)]
@@ -478,8 +501,18 @@ CONTEXT FOR AGENTS:
   A failed fresh start rolls back the container and data it created; pre-existing data is kept.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
-        #[arg(long, value_parser = parse_server_name_arg)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
         name: Option<String>,
+
+        /// Compatibility form for the instance name; prefer positional NAME
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true,
+            value_parser = parse_server_name_arg
+        )]
+        name_flag: Option<String>,
 
         /// Postgres image tag, major 17 or 18 (e.g. 17-alpine, 18.1). Default: 18
         ///
@@ -528,9 +561,19 @@ CONTEXT FOR AGENTS:
 
     /// Stop a running Postgres instance
     Stop {
-        /// Name of the instance to stop
-        #[arg(default_value = "default")]
-        name: String,
+        /// Name of the instance to stop (default: "default")
+        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        name: Option<String>,
+
+        /// Compatibility form for the instance name; prefer positional NAME
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true
+        )]
+        name_flag: Option<String>,
+
         /// Postgres version to disambiguate when multiple share a name
         #[arg(long, short = 'v')]
         version: Option<String>,
@@ -545,9 +588,19 @@ CONTEXT FOR AGENTS:
   Irreversible: removes the container and deletes its data directory. Stop the instance first —
   removing a running one errors.")]
     Remove {
-        /// Name of the instance to remove
-        #[arg(default_value = "default")]
-        name: String,
+        /// Name of the instance to remove (default: "default")
+        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
+        name: Option<String>,
+
+        /// Compatibility form for the instance name; prefer positional NAME
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true
+        )]
+        name_flag: Option<String>,
+
         /// Postgres version to disambiguate when multiple share a name
         #[arg(long, short = 'v')]
         version: Option<String>,
@@ -556,7 +609,7 @@ CONTEXT FOR AGENTS:
     /// Connect to a running Postgres instance with psql
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Managed mode (the default; --name selects one) execs host `psql` when it is on PATH, else runs
+  Managed mode (the default; NAME selects one) execs host `psql` when it is on PATH, else runs
   psql inside the container via `docker exec`.
   Direct mode (--host/--port) requires `psql` on PATH and connects as user/database \"postgres\"
   with no password; it does not read managed credentials.
@@ -564,8 +617,18 @@ CONTEXT FOR AGENTS:
   Interactive, --query and --queries-file output stays native, even with --json or a coding agent.")]
     Client {
         /// Managed instance to connect to (default: "default")
-        #[arg(long, short, conflicts_with_all = ["host", "port"])]
+        #[arg(value_name = "NAME", conflicts_with_all = ["name_flag", "host", "port"])]
         name: Option<String>,
+
+        /// Compatibility form for the instance name; prefer positional NAME
+        #[arg(
+            long = "name",
+            short = 'n',
+            value_name = "NAME",
+            hide = true,
+            conflicts_with_all = ["name", "host", "port"]
+        )]
+        name_flag: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
         #[arg(long, short = 'v', conflicts_with_all = ["host", "port"])]
@@ -605,8 +668,17 @@ CONTEXT FOR AGENTS:
   Contains the password in plaintext — prefer --local and keep it out of version control.")]
     Dotenv {
         /// Instance name (default: "default")
-        #[arg(long)]
+        #[arg(value_name = "NAME", conflicts_with = "name_flag")]
         name: Option<String>,
+
+        /// Compatibility form for the instance name; prefer positional NAME
+        #[arg(
+            long = "name",
+            value_name = "NAME",
+            conflicts_with = "name",
+            hide = true
+        )]
+        name_flag: Option<String>,
 
         /// Postgres version to disambiguate when multiple share a name
         #[arg(long, short = 'v')]
@@ -843,12 +915,20 @@ mod tests {
                 .chain(selectors.iter().copied())
                 .collect();
             let LocalCommands::Client {
-                name, host, port, ..
+                name,
+                name_flag,
+                host,
+                port,
+                ..
             } = local_command(&args)
             else {
                 panic!("expected ClickHouse client for {selectors:?}");
             };
-            assert_eq!(name.as_deref(), *expected_name, "selectors: {selectors:?}");
+            assert_eq!(
+                name.or(name_flag).as_deref(),
+                *expected_name,
+                "selectors: {selectors:?}"
+            );
             assert_eq!(host.as_deref(), *expected_host, "selectors: {selectors:?}");
             assert_eq!(port, *expected_port, "selectors: {selectors:?}");
         }
@@ -1000,7 +1080,7 @@ mod tests {
     #[test]
     fn both_clients_require_boundary_before_native_arguments() {
         for client in [&["client"][..], &["postgres", "client"][..]] {
-            for native in ["--unknown", "--format", "-X", "dbname"] {
+            for native in ["--unknown", "--format", "-X"] {
                 for selectors in [
                     &["--name", "dev"][..],
                     &["--host", "remote", "--port", "9000"][..],
@@ -1025,24 +1105,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn clickhouse_client_native_option_error_has_compatible_usage() {
-        let error = local_parse_error(&["client", "--name", "dev", "--format", "JSONEachRow"]);
-        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
-        assert_eq!(error.exit_code(), 2);
-
-        let rendered = error.to_string();
-        let usage = rendered
-            .lines()
-            .find(|line| line.starts_with("Usage:"))
-            .expect("usage error should include a Usage line");
-        assert!(usage.contains("[OPTIONS]"), "{usage}");
-        assert!(
-            !usage.contains("--name") && !usage.contains("--port"),
-            "{usage}"
-        );
     }
 
     #[test]
@@ -1102,7 +1164,12 @@ mod tests {
 
     #[test]
     fn clickhouse_client_preserves_passthrough_selector_like_arguments() {
-        let LocalCommands::Client { name, args, .. } = local_command(&[
+        let LocalCommands::Client {
+            name,
+            name_flag,
+            args,
+            ..
+        } = local_command(&[
             "client",
             "--name",
             "dev",
@@ -1113,11 +1180,12 @@ mod tests {
             "0",
             "--version",
             "child-version",
-        ]) else {
+        ])
+        else {
             panic!("expected ClickHouse client");
         };
 
-        assert_eq!(name.as_deref(), Some("dev"));
+        assert_eq!(name.or(name_flag).as_deref(), Some("dev"));
         assert_eq!(
             args,
             [
@@ -1218,7 +1286,13 @@ mod tests {
     #[test]
     fn postgres_client_preserves_passthrough_selector_like_arguments() {
         let LocalCommands::Postgres {
-            command: PostgresCommands::Client { name, args, .. },
+            command:
+                PostgresCommands::Client {
+                    name,
+                    name_flag,
+                    args,
+                    ..
+                },
         } = local_command(&[
             "postgres",
             "client",
@@ -1234,7 +1308,7 @@ mod tests {
             panic!("expected Postgres client");
         };
 
-        assert_eq!(name.as_deref(), Some("dev"));
+        assert_eq!(name.or(name_flag).as_deref(), Some("dev"));
         assert_eq!(args, ["--host", "child-host", "--port", "0"]);
     }
 
@@ -1586,14 +1660,14 @@ mod tests {
     }
 
     #[test]
-    fn postgres_stop_name_defaults_to_default() {
+    fn postgres_stop_omitted_name_remains_distinguishable() {
         let LocalCommands::Postgres {
             command: PostgresCommands::Stop { name, .. },
         } = local_command(&["postgres", "stop"])
         else {
             panic!("expected postgres stop");
         };
-        assert_eq!(name, "default");
+        assert_eq!(name, None);
     }
 
     #[test]
@@ -1602,6 +1676,7 @@ mod tests {
             command:
                 PostgresCommands::Start {
                     name,
+                    name_flag,
                     version,
                     port,
                     password,
@@ -1631,7 +1706,7 @@ mod tests {
             panic!("expected postgres start");
         };
 
-        assert_eq!(name.as_deref(), Some("analytics"));
+        assert_eq!(name.or(name_flag).as_deref(), Some("analytics"));
         assert_eq!(version.as_deref(), Some("18.1-alpine3.20"));
         assert_eq!(port, Some(55432));
         assert_eq!(password.as_deref(), Some("secret"));
@@ -1665,6 +1740,7 @@ mod tests {
     fn postgres_start_rejects_invalid_name_tag_port_and_env_at_clap_time() {
         for (args, expected) in [
             (vec!["--name", "../unsafe"], "Invalid server name"),
+            (vec!["../unsafe"], "Invalid server name"),
             (
                 vec!["--version", "18garbage"],
                 "invalid or unsupported postgres version",
@@ -1699,14 +1775,14 @@ mod tests {
     }
 
     #[test]
-    fn postgres_remove_name_defaults_to_default() {
+    fn postgres_remove_omitted_name_remains_distinguishable() {
         let LocalCommands::Postgres {
             command: PostgresCommands::Remove { name, .. },
         } = local_command(&["postgres", "remove"])
         else {
             panic!("expected postgres remove");
         };
-        assert_eq!(name, "default");
+        assert_eq!(name, None);
     }
 
     #[test]
@@ -1737,7 +1813,7 @@ mod tests {
         else {
             panic!("expected postgres stop");
         };
-        assert_eq!(name, "warehouse");
+        assert_eq!(name.as_deref(), Some("warehouse"));
 
         let LocalCommands::Postgres {
             command: PostgresCommands::Remove { name, .. },
@@ -1745,6 +1821,241 @@ mod tests {
         else {
             panic!("expected postgres remove");
         };
-        assert_eq!(name, "warehouse");
+        assert_eq!(name.as_deref(), Some("warehouse"));
+    }
+
+    fn instance_commands() -> [&'static [&'static str]; 10] {
+        [
+            &["server", "start"],
+            &["server", "stop"],
+            &["server", "remove"],
+            &["server", "dotenv"],
+            &["client"],
+            &["postgres", "start"],
+            &["postgres", "stop"],
+            &["postgres", "remove"],
+            &["postgres", "dotenv"],
+            &["postgres", "client"],
+        ]
+    }
+
+    fn instance_names(command: LocalCommands) -> (Option<String>, Option<String>) {
+        match command {
+            LocalCommands::Client {
+                name, name_flag, ..
+            }
+            | LocalCommands::Server {
+                command:
+                    ServerCommands::Start {
+                        name, name_flag, ..
+                    }
+                    | ServerCommands::Stop {
+                        name, name_flag, ..
+                    }
+                    | ServerCommands::Remove {
+                        name, name_flag, ..
+                    }
+                    | ServerCommands::Dotenv {
+                        name, name_flag, ..
+                    },
+            }
+            | LocalCommands::Postgres {
+                command:
+                    PostgresCommands::Start {
+                        name, name_flag, ..
+                    }
+                    | PostgresCommands::Stop {
+                        name, name_flag, ..
+                    }
+                    | PostgresCommands::Remove {
+                        name, name_flag, ..
+                    }
+                    | PostgresCommands::Dotenv {
+                        name, name_flag, ..
+                    }
+                    | PostgresCommands::Client {
+                        name, name_flag, ..
+                    },
+            } => (name, name_flag),
+            _ => panic!("expected instance command"),
+        }
+    }
+
+    #[test]
+    fn all_instance_commands_accept_optional_positional_and_compatibility_names() {
+        for command in instance_commands() {
+            assert_eq!(instance_names(local_command(command)), (None, None));
+            for name in ["default", "custom-name"] {
+                for flag in [false, true] {
+                    let mut args = command.to_vec();
+                    if flag {
+                        args.push("--name");
+                    }
+                    args.extend([name, "--json"]);
+                    let expected = if flag {
+                        (None, Some(name.to_owned()))
+                    } else {
+                        (Some(name.to_owned()), None)
+                    };
+                    assert_eq!(instance_names(local_command(&args)), expected, "{args:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn all_instance_commands_reject_both_name_forms_even_when_equal() {
+        for command in instance_commands() {
+            for flagged in ["dev", "other"] {
+                for tail in [["dev", "--name", flagged], ["--name", flagged, "dev"]] {
+                    let args: Vec<_> = command.iter().copied().chain(tail).collect();
+                    assert_eq!(
+                        local_parse_error(&args).kind(),
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "{args:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn instance_help_advertises_optional_positional_and_hides_name_flags() {
+        use clap::CommandFactory;
+        let mut cli = Cli::command();
+        cli.build();
+        for path in instance_commands() {
+            let mut command = cli.find_subcommand("local").unwrap();
+            for part in path {
+                command = command.find_subcommand(part).unwrap();
+            }
+            let name = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == "name")
+                .unwrap();
+            assert_eq!(name.get_index(), Some(1), "{path:?}");
+            assert!(!name.is_required_set(), "{path:?}");
+            assert_eq!(name.get_value_names().unwrap()[0], "NAME", "{path:?}");
+            let compatibility = command
+                .get_arguments()
+                .find(|arg| arg.get_id() == "name_flag")
+                .unwrap();
+            assert_eq!(compatibility.get_long(), Some("name"), "{path:?}");
+            assert!(compatibility.is_hide_set(), "{path:?}");
+            // The generated usage must include the positional, including for ClickHouse client.
+            assert!(
+                command
+                    .clone()
+                    .render_usage()
+                    .to_string()
+                    .contains("[NAME]"),
+                "{path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn client_short_name_compatibility_is_preserved() {
+        for client in [&["client"][..], &["postgres", "client"][..]] {
+            let argv: Vec<_> = client.iter().copied().chain(["-n", "dev"]).collect();
+            assert_eq!(
+                instance_names(local_command(&argv)),
+                (None, Some("dev".to_owned()))
+            );
+            let argv: Vec<_> = client.iter().copied().chain(["dev", "-n", "dev"]).collect();
+            assert_eq!(
+                local_parse_error(&argv).kind(),
+                clap::error::ErrorKind::ArgumentConflict
+            );
+        }
+    }
+
+    #[test]
+    fn client_positional_names_conflict_with_direct_selectors_in_both_orders() {
+        for client in [&["client"][..], &["postgres", "client"][..]] {
+            for direct in [["--host", "remote"], ["--port", "1234"]] {
+                for tail in [["dev", direct[0], direct[1]], [direct[0], direct[1], "dev"]] {
+                    let argv: Vec<_> = client.iter().copied().chain(tail).collect();
+                    assert_eq!(
+                        local_parse_error(&argv).kind(),
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "{argv:?}"
+                    );
+                }
+            }
+        }
+        for tail in [
+            ["dev", "--version", "25.12.9.61"],
+            ["--version", "25.12.9.61", "dev"],
+        ] {
+            let argv: Vec<_> = ["client"].into_iter().chain(tail).collect();
+            assert_eq!(
+                local_parse_error(&argv).kind(),
+                clap::error::ErrorKind::ArgumentConflict
+            );
+        }
+        for tail in [["dev", "--version", "18"], ["--version", "18", "dev"]] {
+            let argv: Vec<_> = ["postgres", "client"].into_iter().chain(tail).collect();
+            assert_eq!(
+                instance_names(local_command(&argv)),
+                (Some("dev".to_owned()), None)
+            );
+        }
+    }
+
+    #[test]
+    fn native_boundary_prevents_consuming_wrapper_name_or_flags() {
+        let native = [
+            "native-name",
+            "--name",
+            "native-flag",
+            "-n",
+            "native-short",
+            "--version",
+            "bad-version",
+            "--",
+        ];
+        for command in [
+            &["client"][..],
+            &["postgres", "client"][..],
+            &["server", "start"][..],
+        ] {
+            for selector in [&[][..], &["dev"][..], &["--name", "dev"][..]] {
+                let argv: Vec<_> = command
+                    .iter()
+                    .chain(selector)
+                    .copied()
+                    .chain(["--"])
+                    .chain(native)
+                    .collect();
+                let parsed = local_command(&argv);
+                let args = match &parsed {
+                    LocalCommands::Client { args, .. }
+                    | LocalCommands::Postgres {
+                        command: PostgresCommands::Client { args, .. },
+                    }
+                    | LocalCommands::Server {
+                        command: ServerCommands::Start { args, .. },
+                    } => args,
+                    _ => panic!("expected native command"),
+                };
+                assert_eq!(args, &native, "{argv:?}");
+                assert_eq!(
+                    instance_names(parsed),
+                    instance_names(local_command(
+                        &command.iter().chain(selector).copied().collect::<Vec<_>>()
+                    ))
+                );
+            }
+            let argv: Vec<_> = command
+                .iter()
+                .copied()
+                .chain(["dev", "native-name"])
+                .collect();
+            assert_eq!(
+                local_parse_error(&argv).kind(),
+                clap::error::ErrorKind::UnknownArgument
+            );
+        }
     }
 }

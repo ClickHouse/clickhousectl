@@ -571,3 +571,35 @@ fn real_docker_file_and_stdin_apply_sql_and_propagate_errors() {
     assert_success(&rows);
     assert_eq!(String::from_utf8_lossy(&rows.stdout).trim(), "3");
 }
+
+#[test]
+fn postgres_client_name_forms_reach_the_same_managed_container() {
+    for selector in [&["dev"][..], &["--name", "dev"][..], &["-n", "dev"][..]] {
+        let fixture = Fixture::new(0, false);
+        let servers = fixture.project.path().join(".clickhouse/servers");
+        let original = servers.join("default-pg18.json");
+        let mut metadata: Value =
+            serde_json::from_slice(&std::fs::read(&original).unwrap()).unwrap();
+        metadata["name"] = json!("dev-pg18");
+        std::fs::write(servers.join("dev-pg18.json"), metadata.to_string()).unwrap();
+        std::fs::remove_file(original).unwrap();
+        let args: Vec<_> = selector
+            .iter()
+            .copied()
+            .chain(["--query", "SELECT 1", "--", "-X"])
+            .collect();
+        let output = fixture.command(&args).output().unwrap();
+        assert!(output.status.success(), "{selector:?}: {output:?}");
+        let execution = fixture.execution.lock().unwrap();
+        let config = execution
+            .config
+            .as_ref()
+            .expect("selected managed container");
+        assert_eq!(
+            config["Cmd"],
+            json!([
+                "psql", "-U", "postgres", "-d", "postgres", "-c", "SELECT 1", "-X"
+            ])
+        );
+    }
+}

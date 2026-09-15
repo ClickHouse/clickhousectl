@@ -1,4 +1,4 @@
-//! Subprocess coverage for ClickHouse server name compatibility (issue #474).
+//! Subprocess coverage for ClickHouse server name compatibility (issues #474 and #889).
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -125,5 +125,46 @@ fn conflicting_name_forms_fail_before_dispatch() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("cannot be used with"), "stderr: {stderr}");
         assert!(!project.path().join(".clickhouse").exists());
+    }
+}
+
+#[test]
+fn dotenv_positional_and_compatibility_names_select_the_same_running_server() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let servers = project.path().join(".clickhouse/servers");
+    std::fs::create_dir_all(&servers).unwrap();
+    for (name, port) in [("default", 9000), ("dev", 19000)] {
+        std::fs::write(
+            servers.join(format!("{name}.json")),
+            serde_json::json!({
+                "name": name, "pid": std::process::id(), "version": "26.8.1.1760",
+                "http_port": 8123, "tcp_port": port, "started_at": "test",
+                "cwd": project.path(), "engine": "clickhouse"
+            })
+            .to_string(),
+        )
+        .unwrap();
+    }
+    for (selector, port) in [
+        (&[][..], 9000),
+        (&["default"][..], 9000),
+        (&["--name", "default"][..], 9000),
+        (&["dev"][..], 19000),
+        (&["--name", "dev"][..], 19000),
+    ] {
+        let args: Vec<_> = ["local", "server", "dotenv"]
+            .into_iter()
+            .chain(selector.iter().copied())
+            .chain(["--json"])
+            .collect();
+        assert_success(&run(project.path(), home.path(), &args));
+        let contents = std::fs::read_to_string(project.path().join(".env")).unwrap();
+        assert!(
+            contents
+                .lines()
+                .any(|line| line == format!("CLICKHOUSE_PORT={port}")),
+            "{contents}"
+        );
     }
 }

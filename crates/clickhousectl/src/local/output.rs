@@ -1182,7 +1182,7 @@ impl fmt::Display for PostgresStartOutput {
         writeln!(f, "  Database: {}", self.database)?;
         write!(
             f,
-            "  Connect:  clickhousectl local postgres client --name {}",
+            "  Connect:  clickhousectl local postgres client {}",
             self.name
         )
     }

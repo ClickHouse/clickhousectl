@@ -58,13 +58,22 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         }
         LocalCommands::Client {
             name,
+            name_flag,
             host,
             port,
             version,
             query,
             queries_file,
             args,
-        } => run_client(name, host, port, version, query, queries_file, args),
+        } => run_client(
+            name.or(name_flag),
+            host,
+            port,
+            version,
+            query,
+            queries_file,
+            args,
+        ),
         LocalCommands::Server { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
     }
@@ -938,11 +947,19 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
         }
         ServerCommands::Dotenv {
             name,
+            name_flag,
             local,
             user,
             password,
             database,
-        } => dotenv_server(name.as_deref(), local, user, password, database, json),
+        } => dotenv_server(
+            name.or(name_flag).as_deref(),
+            local,
+            user,
+            password,
+            database,
+            json,
+        ),
         ServerCommands::Remove { name, name_flag } => {
             remove_server(ServerNameInput::from_args(name, name_flag), json)
         }

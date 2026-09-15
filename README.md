@@ -399,7 +399,7 @@ postgres/
 ```bash
 # Connect to a running server with clickhouse-client
 clickhousectl local client                           # Connects to "default" server
-clickhousectl local client --name dev                # Connects to "dev" server
+clickhousectl local client dev                       # Connects to "dev" server
 clickhousectl local client --query "SHOW DATABASES"  # Run a query
 clickhousectl local client --query "SELECT 1" --query "SELECT 2" # Run queries in order
 clickhousectl local client --queries-file schema.sql # Run queries from a file
@@ -411,9 +411,11 @@ clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an in
 clickhousectl local client -- --format Pretty        # Extra clickhouse-client args after --
 ```
 
-`local client` and `local postgres client` now require `--` before native arguments. Put wrapper options such as `--name`, `--host`, `--port`, and `--query` before it; unknown options there produce a usage error (exit 2). Existing commands that passed native options without the separator must add it, for example `local client --name dev -- --format CSV`. Everything after `--` is passed literally to the native client, including options that share wrapper names.
+Local ClickHouse and Postgres `start`, `stop`, `remove`, `dotenv`, and client commands accept an optional positional `NAME`, for example `local client dev` or `local postgres start dev`. Existing `--name NAME` forms and client `-n NAME` remain accepted but are hidden from help; use one name form per command. Omitting the name keeps the existing defaults and selection rules.
 
-`--name` selects the connection and local client binary from managed server metadata, so named mode does not need a global default. It cannot be combined with direct `--host` or `--port` selectors, and named mode does not accept `--version`.
+`local client` and `local postgres client` now require `--` before native arguments. Put the instance name and wrapper options such as `--host`, `--port`, and `--query` before it; unknown options there produce a usage error (exit 2). Existing commands that passed native options without the separator must add it, for example `local client dev -- --format CSV`. Everything after `--` is passed literally to the native client, including options that share wrapper names.
+
+The positional `NAME` selects the connection and local client binary from managed server metadata, so named mode does not need a global default. It cannot be combined with direct `--host` or `--port` selectors, and named mode does not accept `--version`.
 
 Without `--host` or `--port`, managed client lookup uses `.clickhouse/servers` from the canonical current directory only. It does not search parent directories. If lookup fails, return to the project root that owns the server, inspect that project's servers with `local server list`, or use direct mode.
 
@@ -468,7 +470,7 @@ clickhousectl local server remove                         # Remove "default" onl
 
 # Write connection env vars to .env file
 clickhousectl local server dotenv                        # From "default" server → .env
-clickhousectl local server dotenv --name dev             # From "dev" server → .env
+clickhousectl local server dotenv dev                    # From "dev" server → .env
 clickhousectl local server dotenv --local                # Write to .env.local instead
 clickhousectl local server dotenv --local --user default --database mydb  # Include user and database
 clickhousectl local server dotenv --local --user default --password secret  # Include CLICKHOUSE_PASSWORD
@@ -553,7 +555,7 @@ clickhousectl local install postgres@17
 
 # Start a Postgres instance (defaults: postgres:18, port 5432 or a free port, user "postgres", db "postgres")
 clickhousectl local postgres start
-clickhousectl local postgres start --name dev --version 17 --port 5433
+clickhousectl local postgres start dev --version 17 --port 5433
 clickhousectl local postgres start --user app --database myapp  # Generates a random password
 clickhousectl local postgres start -e POSTGRES_INITDB_ARGS=--data-checksums
 clickhousectl local postgres start --wait-timeout 120            # Default: 60s; maximum: 600s
@@ -562,16 +564,16 @@ clickhousectl local postgres start --wait-timeout 120            # Default: 60s;
 clickhousectl local server list
 
 # Connect with psql
-clickhousectl local postgres client --name dev
-clickhousectl local postgres client --name dev --query "SELECT 1"
-clickhousectl local postgres client --name dev --queries-file schema.sql  # Run a SQL file (psql -f)
-clickhousectl local postgres client --name dev --version 17               # Disambiguate two majors
+clickhousectl local postgres client dev
+clickhousectl local postgres client dev --query "SELECT 1"
+clickhousectl local postgres client dev --queries-file schema.sql  # Run a SQL file (psql -f)
+clickhousectl local postgres client dev --version 17               # Disambiguate two majors
 clickhousectl local postgres client --host remote-host       # Direct mode; port defaults to 5432
 clickhousectl local postgres client --port 55432             # Direct mode; connects locally
-clickhousectl local postgres client --name dev -- -X -v ON_ERROR_STOP=1 # Native psql options
+clickhousectl local postgres client dev -- -X -v ON_ERROR_STOP=1 # Native psql options
 
 # Write POSTGRES_HOST/PORT/USER/PASSWORD/DATABASE into .env.local
-clickhousectl local postgres dotenv --name dev --local
+clickhousectl local postgres dotenv dev --local
 
 # Stop / remove. Pass --version when more than one major shares a name.
 clickhousectl local postgres stop                         # Stop "default"
@@ -586,17 +588,17 @@ Native `psql` arguments require `--`, with all wrapper selectors before it: `loc
 
 `local postgres client` also retains native psql output for interactive sessions, `--query` and `--queries-file`, regardless of `--json` or coding-agent detection. Put psql output options after `--`, for example `local postgres client --query "SELECT 1" -- --csv`.
 
-When `local postgres start` is run without `--name`, the first instance is named `default`. If that instance is already running, each subsequent unnamed start gets a fresh generated name instead of resuming or colliding with existing Postgres state.
+When `local postgres start` is run without a name, the first instance is named `default`. If that instance is already running, each subsequent unnamed start gets a fresh generated name instead of resuming or colliding with existing Postgres state.
 
 `local postgres client --queries-file` accepts relative or absolute host paths, or `-` to read stdin. Plain pipes also work, for example `cat seed.sql | clickhousectl local postgres client`. Both forms work when host `psql` is unavailable: the Docker fallback streams SQL to container `psql`, preserves EOF and returns psql's exit status. When combined, `--query` executes before the file; append native arguments such as `-- -v ON_ERROR_STOP=1` to stop on SQL errors. In Docker mode, file contents are streamed as `psql -f -`; paths used inside SQL (such as `\i` or `\copy`) still refer to the container filesystem.
 
-Postgres `--name` and `--version` select a managed instance and cannot be combined with direct `--host` or `--port` selectors.
+Postgres `NAME` and `--version` select a managed instance and cannot be combined with direct `--host` or `--port` selectors.
 
 The Postgres `dotenv` command includes the generated password. Do not commit its output; prefer `--local` when your application reads `.env.local`.
 
 `--env` accepts each valid `KEY=VALUE` key once. `POSTGRES_USER`, `POSTGRES_DB`, and `PGDATA` are generated by clickhousectl and cannot be supplied through `--env`; use `--user` or `--database` for the first two. For compatibility, `-e POSTGRES_PASSWORD=...` remains an alternative to `--password`, but combining the two or repeating `POSTGRES_PASSWORD` is an error. This guarantees that every generated variable appears exactly once in the container environment.
 
-`local postgres start --name dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, the command exits and asks you to pass `--version`. A resume reuses the stored settings, so `--port`, `--user`, `--password`, `--database` and `-e` have no effect on a resumed instance and `start` prints a note to stderr when you pass them. They are still validated first, so an explicitly requested port that is already in use aborts the resume with exit `1` (`port_in_use`), and a malformed `-e`/`--password` exits `2`. Run `local postgres remove <name>` then `start` to change them. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory. The unified `local server stop-all` stops both ClickHouse and Postgres instances in the current project; the dedicated `local postgres stop-all` remains available when only Postgres should be stopped.
+`local postgres start dev` (no `--version`) resumes the existing instance when there's exactly one for that name; if multiple majors share the name, the command exits and asks you to pass `--version`. A resume reuses the stored settings, so `--port`, `--user`, `--password`, `--database` and `-e` have no effect on a resumed instance and `start` prints a note to stderr when you pass them. They are still validated first, so an explicitly requested port that is already in use aborts the resume with exit `1` (`port_in_use`), and a malformed `-e`/`--password` exits `2`. Run `local postgres remove <name>` then `start` to change them. Stop preserves the container and metadata so the next start resumes it; only `remove` tears down the container and deletes the data directory. The unified `local server stop-all` stops both ClickHouse and Postgres instances in the current project; the dedicated `local postgres stop-all` remains available when only Postgres should be stopped.
 
 `local postgres remove` refuses running instances with exit `1` (`server_running` in JSON) and supplies a `clickhousectl local postgres stop <name> --version <major>` recovery command. Stop the selected instance before retrying removal; a refused removal preserves its container and data.
 

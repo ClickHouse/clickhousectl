@@ -727,7 +727,7 @@ pub enum Error {
     /// so structured output can render this self-composed guidance verbatim.
     #[error(
         "Docker error: container '{0}' already exists but is not managed by clickhousectl. \
-         Remove it manually or pick a different --name."
+         Remove it manually or pick a different name."
     )]
     ContainerNameConflict(String),
 

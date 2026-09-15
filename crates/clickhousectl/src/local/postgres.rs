@@ -184,6 +184,7 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
     match cmd {
         PostgresCommands::Start {
             name,
+            name_flag,
             version,
             port,
             user,
@@ -193,7 +194,7 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
             wait_timeout,
         } => {
             start(
-                name,
+                name.or(name_flag),
                 version,
                 port,
                 user,
@@ -205,23 +206,60 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
             )
             .await
         }
-        PostgresCommands::Stop { name, version } => stop(&name, version.as_deref(), json).await,
+        PostgresCommands::Stop {
+            name,
+            name_flag,
+            version,
+        } => {
+            stop(
+                name.or(name_flag).as_deref().unwrap_or("default"),
+                version.as_deref(),
+                json,
+            )
+            .await
+        }
         PostgresCommands::StopAll => stop_all(json).await,
-        PostgresCommands::Remove { name, version } => remove(&name, version.as_deref(), json),
+        PostgresCommands::Remove {
+            name,
+            name_flag,
+            version,
+        } => remove(
+            name.or(name_flag).as_deref().unwrap_or("default"),
+            version.as_deref(),
+            json,
+        ),
         PostgresCommands::Client {
             name,
+            name_flag,
             version,
             host,
             port,
             query,
             queries_file,
             args,
-        } => client(name, version, host, port, query, queries_file, args).await,
+        } => {
+            client(
+                name.or(name_flag),
+                version,
+                host,
+                port,
+                query,
+                queries_file,
+                args,
+            )
+            .await
+        }
         PostgresCommands::Dotenv {
             name,
+            name_flag,
             version,
             local,
-        } => dotenv(name.as_deref(), version.as_deref(), local, json),
+        } => dotenv(
+            name.or(name_flag).as_deref(),
+            version.as_deref(),
+            local,
+            json,
+        ),
     }
 }
 
@@ -524,7 +562,7 @@ async fn rollback_failed_fresh_start(
     }
 }
 
-/// Default user-facing name when `--name` is omitted: `"default"` if no
+/// Default user-facing name when NAME is omitted: `"default"` if no
 /// postgres "default" is running, otherwise a random adjective-noun.
 fn default_pg_name_locked(metadata_lock: &server::MetadataLock) -> Result<String> {
     default_pg_name_locked_with(metadata_lock, docker::is_container_running_blocking)
@@ -579,7 +617,7 @@ fn resolve_pg_start_version_locked(
     }
 }
 
-/// Resolve `--name <X> [--version <V>]` to a single Postgres instance on disk.
+/// Resolve `[NAME] [--version <V>]` to a single Postgres instance on disk.
 /// If `version` is given, target the (X, major(V)) pair directly. Otherwise:
 /// 0 instances → ServerNotFound; 1 → use it; >1 → ask for `--version`.
 fn resolve_pg_target_locked(
