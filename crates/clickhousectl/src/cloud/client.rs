@@ -495,6 +495,7 @@ impl<'a> ResourceLookup<'a> {
 
 pub struct CloudClient {
     organization_id: Option<String>,
+    organization_name: Option<String>,
     resolved_organization_id: tokio::sync::OnceCell<String>,
     lib_client: clickhouse_cloud_api::Client,
     auth_mode: AuthMode,
@@ -519,13 +520,30 @@ impl CloudClient {
         self
     }
 
+    pub(super) fn with_organization_name(mut self, name: Option<String>) -> Self {
+        self.organization_name = name;
+        self.resolved_organization_id = tokio::sync::OnceCell::new();
+        self
+    }
+
     /// Resolve organization scope only when needed, caching successful detection.
     pub(super) async fn resolve_organization_id(&self) -> Result<String> {
         self.resolved_organization_id
             .get_or_try_init(|| async {
-                match &self.organization_id {
-                    Some(id) => Ok(id.clone()),
-                    None => self.get_default_org_id().await,
+                match (&self.organization_id, &self.organization_name) {
+                    (Some(_), Some(_)) => {
+                        Err(CloudError::new("--org-id conflicts with --org-name"))
+                    }
+                    (Some(id), None) => Ok(id.clone()),
+                    (None, Some(name)) => {
+                        let rows = self.list_organizations().await?;
+                        crate::cloud::shared::select_named_id(
+                            "organization",
+                            name,
+                            rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
+                        )
+                    }
+                    (None, None) => self.get_default_org_id().await,
                 }
             })
             .await
@@ -562,6 +580,7 @@ impl CloudClient {
         Ok(Self {
             lib_client,
             organization_id: None,
+            organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode,
             auth_source: resolved.source,
@@ -586,6 +605,7 @@ impl CloudClient {
         Self {
             lib_client,
             organization_id: None,
+            organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Basic {
                 key: "test_key".into(),
@@ -764,6 +784,7 @@ mod tests {
         CloudClient {
             lib_client,
             organization_id: None,
+            organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Basic {
                 key: "test_key".into(),
@@ -815,6 +836,7 @@ mod tests {
         let client = CloudClient {
             lib_client,
             organization_id: None,
+            organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,
@@ -905,6 +927,7 @@ mod tests {
         let client = CloudClient {
             lib_client,
             organization_id: None,
+            organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,

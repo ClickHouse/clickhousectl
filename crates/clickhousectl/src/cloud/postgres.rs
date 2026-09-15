@@ -2,6 +2,7 @@ use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
 use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
+use crate::cloud::shared::{NameSelector, NamedResource, SourceSelector};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
 use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
@@ -37,13 +38,15 @@ pub enum PostgresCommands {
     /// Get Postgres service details
     Get {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
     /// List Postgres server logs
     Logs {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Inclusive start of the time window (RFC 3339)
         #[arg(long, value_parser = parse_datetime)]
         from_date: String,
@@ -119,13 +122,14 @@ CONTEXT FOR AGENTS:
     /// Update a Postgres service's name, size, HA type or tags
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  --name also changes the service host name and its certificates: stored connection strings and
+  --new-name also changes the service host name and its certificates: stored connection strings and
   pinned CAs break, so re-read `cloud postgres get` and `cloud postgres certs get` afterwards.")]
     Update {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// New service name
-        #[arg(long)]
+        #[arg(long = "new-name", id = "new_name")]
         name: Option<String>,
         /// New instance size (e.g. c6gd.xlarge); validated by the server
         #[arg(long)]
@@ -151,7 +155,8 @@ CONTEXT FOR AGENTS:
   Deletes from any state, including running — no stop first, unlike `cloud service delete`.")]
     Delete {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
     /// Manage Postgres CA certificates
@@ -174,7 +179,8 @@ CONTEXT FOR AGENTS:
     )]
     ResetPassword {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// New password (min 12, must include upper, lower, digit)
         #[arg(long, conflicts_with = "generate")]
         password: Option<String>,
@@ -190,7 +196,8 @@ CONTEXT FOR AGENTS:
     /// Get Postgres service metrics
     Metrics {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Start time (RFC 3339, at most millisecond precision)
         #[arg(long, value_parser = parse_metrics_datetime)]
         from_date: String,
@@ -223,7 +230,8 @@ CONTEXT FOR AGENTS:
   --restore-target must fall inside the source's backup retention window.")]
     Restore {
         /// Source Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: SourceSelector,
         /// Name for the restored service
         #[arg(long)]
         name: String,
@@ -244,7 +252,8 @@ CONTEXT FOR AGENTS:
     /// Restart a Postgres service
     Restart {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
     /// Promote a read replica to primary
@@ -256,7 +265,8 @@ CONTEXT FOR AGENTS:
   with `cloud postgres list --filter isPrimary=true`.")]
     Promote {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Poll until the service reports isPrimary=true, and fail if it never does
         #[arg(long)]
         wait: bool,
@@ -273,7 +283,8 @@ CONTEXT FOR AGENTS:
   --wait reads the pre-command role first and refuses when the API omits isPrimary.")]
     Switchover {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Poll until the roles actually swap, and fail if they never do
         #[arg(long)]
         wait: bool,
@@ -292,7 +303,8 @@ CONTEXT FOR AGENTS:
   get --json automatically — use --output to write a usable file.")]
     Get {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Write PEM to the given file (mode 0600 on unix) instead of stdout
         #[arg(long)]
         output: Option<PathBuf>,
@@ -304,12 +316,14 @@ pub enum ConfigCommands {
     /// Get the runtime configuration (pgConfig + pgBouncerConfig)
     Get {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
     /// Replace the whole runtime configuration from a file
     Replace {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// JSON file with a complete PostgresInstanceConfig object
         ///
         /// Not a fragment: use a document obtained from `config get --json`.
@@ -322,7 +336,8 @@ pub enum ConfigCommands {
     )]
     Patch {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Set a pgConfig field (repeatable), e.g. --set max_connections=500
         ///
         /// Values parse as JSON first, falling back to a string
@@ -344,7 +359,8 @@ CONTEXT FOR AGENTS:
   Next: `cloud postgres promote <replica-id>` to make it primary.")]
     Create {
         /// Source Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: SourceSelector,
         /// Name for the new replica
         #[arg(long)]
         name: String,
@@ -365,7 +381,8 @@ pub enum PrometheusCommands {
     /// Get metrics for one Postgres service
     Service {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
     /// Get metrics for all Postgres services in an organization
     Org,
@@ -476,7 +493,14 @@ impl PostgresCommands {
 pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) -> CloudResult<()> {
     match command {
         PostgresCommands::List { filter } => postgres_list(client, &filter, json).await,
-        PostgresCommands::Get { postgres_id } => postgres_get(client, &postgres_id, json).await,
+        PostgresCommands::Get { postgres_id } => {
+            postgres_get(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
+        }
         PostgresCommands::Logs {
             postgres_id,
             from_date,
@@ -496,7 +520,13 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 limit,
                 offset,
             )?;
-            postgres_logs(client, &postgres_id, &query, json).await
+            postgres_logs(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                &query,
+                json,
+            )
+            .await
         }
         PostgresCommands::Create {
             name,
@@ -539,32 +569,78 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 remove_tag: &remove_tag,
                 clear_tags,
             };
-            postgres_update(client, &postgres_id, opts, json).await
+            postgres_update(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                opts,
+                json,
+            )
+            .await
         }
         PostgresCommands::Delete { postgres_id } => {
-            postgres_delete(client, &postgres_id, json).await
+            postgres_delete(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
         }
         PostgresCommands::Certs(CertsCommands::Get {
             postgres_id,
             output,
-        }) => postgres_certs_get(client, &postgres_id, output.as_deref(), json).await,
+        }) => {
+            postgres_certs_get(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                output.as_deref(),
+                json,
+            )
+            .await
+        }
         PostgresCommands::Config(ConfigCommands::Get { postgres_id }) => {
-            postgres_config_get(client, &postgres_id, json).await
+            postgres_config_get(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
         }
         PostgresCommands::Config(ConfigCommands::Replace { postgres_id, file }) => {
-            postgres_config_replace(client, &postgres_id, &file, json).await
+            postgres_config_replace(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                &file,
+                json,
+            )
+            .await
         }
         PostgresCommands::Config(ConfigCommands::Patch {
             postgres_id,
             sets,
             file,
-        }) => postgres_config_patch(client, &postgres_id, &sets, file.as_deref(), json).await,
+        }) => {
+            postgres_config_patch(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                &sets,
+                file.as_deref(),
+                json,
+            )
+            .await
+        }
         PostgresCommands::ResetPassword {
             postgres_id,
             password,
             generate,
         } => {
-            postgres_reset_password(client, &postgres_id, password.as_deref(), generate, json).await
+            postgres_reset_password(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                password.as_deref(),
+                generate,
+                json,
+            )
+            .await
         }
         PostgresCommands::ReadReplica(ReadReplicaCommands::Create {
             postgres_id,
@@ -579,7 +655,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
             };
-            postgres_read_replica_create(client, &postgres_id, opts, json).await
+            postgres_read_replica_create(client, &postgres_id.resolve(client).await?, opts, json)
+                .await
         }
         PostgresCommands::Metrics {
             postgres_id,
@@ -589,7 +666,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
         } => {
             postgres_metrics(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 &from_date,
                 &to_date,
                 bucket_size_seconds,
@@ -643,7 +720,12 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             postgres_slow_query_get(client, &postgres_id, &query_id, input, json).await
         }
         PostgresCommands::Prometheus(PrometheusCommands::Service { postgres_id }) => {
-            postgres_prometheus_service(client, &postgres_id, json).await
+            postgres_prometheus_service(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
         }
         PostgresCommands::Prometheus(PrometheusCommands::Org) => {
             postgres_prometheus_org(client, json).await
@@ -663,12 +745,12 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
             };
-            postgres_restore(client, &postgres_id, opts, json).await
+            postgres_restore(client, &postgres_id.resolve(client).await?, opts, json).await
         }
         PostgresCommands::Restart { postgres_id } => {
             postgres_state_change(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 PostgresServiceSetStateCommand::Restart,
                 json,
             )
@@ -681,7 +763,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
         } => {
             postgres_role_change(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 PostgresRoleCommand::Promote,
                 RoleChangeOptions {
                     wait: wait_duration(wait, wait_timeout),
@@ -697,7 +779,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
         } => {
             postgres_role_change(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 PostgresRoleCommand::Switchover,
                 RoleChangeOptions {
                     wait: wait_duration(wait, wait_timeout),
@@ -1251,6 +1333,20 @@ fn validate_postgres_logs_sort_order(
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
+
+impl CloudClient {
+    pub(super) async fn list_postgres_services(
+        &self,
+        org_id: &str,
+    ) -> CloudResult<Vec<PostgresServiceListItem>> {
+        let response = self
+            .api()
+            .postgres_service_get_list(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+}
 
 pub async fn postgres_list(
     client: &CloudClient,
@@ -2658,7 +2754,7 @@ mod tests {
         let PostgresCommands::Get { postgres_id, .. } = cmd else {
             panic!("expected get");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
     }
 
     #[test]
@@ -2688,7 +2784,7 @@ mod tests {
         else {
             panic!("expected logs");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(from_date, "2026-08-01T00:00:00Z");
         assert_eq!(to_date, "2026-08-02T00:00:00Z");
         assert_eq!(body_contains, &None);
@@ -3124,7 +3220,7 @@ mod tests {
         else {
             panic!("expected update");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(size.as_deref(), Some("c6gd.large"));
         assert_eq!(add_tag, vec!["env=prod", "team=data"]);
         assert_eq!(remove_tag, vec!["old"]);
@@ -3146,7 +3242,7 @@ mod tests {
         else {
             panic!("expected update");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert!(name.is_none());
         assert!(size.is_none());
         assert!(add_tag.is_empty());
@@ -3206,7 +3302,7 @@ mod tests {
             "postgres",
             "update",
             "pg-1",
-            "--name",
+            "--new-name",
             "renamed-pg",
         ]);
         let PostgresCommands::Update {
@@ -3215,7 +3311,7 @@ mod tests {
         else {
             panic!("expected update");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(name.as_deref(), Some("renamed-pg"));
     }
 
@@ -3225,7 +3321,7 @@ mod tests {
         let PostgresCommands::Delete { postgres_id, .. } = cmd else {
             panic!("expected delete");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
     }
 
     #[test]
@@ -3514,7 +3610,7 @@ mod tests {
         else {
             panic!("expected metrics");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
         assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
         assert_eq!(bucket_size_seconds, Some(60));
@@ -4076,7 +4172,7 @@ mod tests {
         else {
             panic!("expected service prometheus");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
 
         let org = parse_postgres(&[
             "clickhousectl",
@@ -4133,7 +4229,7 @@ mod tests {
         else {
             panic!("expected read-replica create");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(name, "replica1");
         assert_eq!(tag, vec!["role=read"]);
     }
@@ -4198,7 +4294,7 @@ mod tests {
         else {
             panic!("expected promote");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert!(wait);
         assert_eq!(wait_timeout, Some(45));
     }
@@ -4223,7 +4319,7 @@ mod tests {
         else {
             panic!("expected switchover");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert!(wait);
         assert_eq!(wait_timeout, Some(600));
     }

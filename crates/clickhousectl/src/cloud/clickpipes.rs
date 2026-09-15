@@ -3,6 +3,7 @@ use crate::cloud::config::{
     config_source_label, deserialize_strict_config, read_config_value, read_typed_config,
 };
 use crate::cloud::output::{ABSENT, or_absent, print_human};
+use crate::cloud::shared::{NameSelector, select_named_id};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{ArgGroup, Args, Subcommand};
@@ -252,7 +253,8 @@ pub enum ClickPipeCommands {
         service_id: String,
 
         /// ClickPipe ID
-        clickpipe_id: String,
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
     },
 
     /// Update a ClickPipe
@@ -268,7 +270,8 @@ CONTEXT FOR AGENTS:
         service_id: String,
 
         /// ClickPipe ID
-        clickpipe_id: String,
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
 
         /// JSON PATCH body path, or `-` for stdin
         #[arg(
@@ -286,7 +289,8 @@ CONTEXT FOR AGENTS:
         service_id: String,
 
         /// ClickPipe ID
-        clickpipe_id: String,
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
     },
 
     /// Start a ClickPipe
@@ -295,7 +299,8 @@ CONTEXT FOR AGENTS:
         service_id: String,
 
         /// ClickPipe ID
-        clickpipe_id: String,
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
     },
 
     /// Stop a ClickPipe
@@ -304,7 +309,8 @@ CONTEXT FOR AGENTS:
         service_id: String,
 
         /// ClickPipe ID
-        clickpipe_id: String,
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
     },
 
     /// Resync a ClickPipe (Postgres and MySQL pipes only)
@@ -313,7 +319,8 @@ CONTEXT FOR AGENTS:
         service_id: String,
 
         /// ClickPipe ID
-        clickpipe_id: String,
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
     },
 
     /// Update ClickPipe scaling
@@ -325,7 +332,8 @@ CONTEXT FOR AGENTS:
         service_id: String,
 
         /// ClickPipe ID
-        clickpipe_id: String,
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
 
         /// Number of replicas (1-40, streaming pipes)
         #[arg(long, value_parser = clap::value_parser!(u32).range(1..=40))]
@@ -602,7 +610,8 @@ pub enum ClickPipeSettingsCommands {
         service_id: String,
 
         /// ClickPipe ID
-        clickpipe_id: String,
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
     },
 
     /// Update ingestion settings (streaming, object-storage pipes)
@@ -634,7 +643,8 @@ CONTEXT FOR AGENTS:
         service_id: String,
 
         /// ClickPipe ID
-        clickpipe_id: String,
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
 
         #[command(flatten)]
         settings: ClickPipeSettingsValues,
@@ -1873,28 +1883,80 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
         ClickPipeCommands::Get {
             service_id,
             clickpipe_id,
-        } => clickpipe_get(client, &service_id, &clickpipe_id, json).await,
+        } => {
+            clickpipe_get(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                json,
+            )
+            .await
+        }
         ClickPipeCommands::Update {
             service_id,
             clickpipe_id,
             config_file,
-        } => clickpipe_update(client, &service_id, &clickpipe_id, &config_file, json).await,
+        } => {
+            clickpipe_update(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                &config_file,
+                json,
+            )
+            .await
+        }
         ClickPipeCommands::Delete {
             service_id,
             clickpipe_id,
-        } => clickpipe_delete(client, &service_id, &clickpipe_id, json).await,
+        } => {
+            clickpipe_delete(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                json,
+            )
+            .await
+        }
         ClickPipeCommands::Start {
             service_id,
             clickpipe_id,
-        } => clickpipe_state(client, &service_id, &clickpipe_id, "start", json).await,
+        } => {
+            clickpipe_state(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                "start",
+                json,
+            )
+            .await
+        }
         ClickPipeCommands::Stop {
             service_id,
             clickpipe_id,
-        } => clickpipe_state(client, &service_id, &clickpipe_id, "stop", json).await,
+        } => {
+            clickpipe_state(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                "stop",
+                json,
+            )
+            .await
+        }
         ClickPipeCommands::Resync {
             service_id,
             clickpipe_id,
-        } => clickpipe_state(client, &service_id, &clickpipe_id, "resync", json).await,
+        } => {
+            clickpipe_state(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                "resync",
+                json,
+            )
+            .await
+        }
         ClickPipeCommands::Scale {
             service_id,
             clickpipe_id,
@@ -1905,7 +1967,7 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
             clickpipe_scale(
                 client,
                 &service_id,
-                &clickpipe_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
                 replicas,
                 cpu_millicores,
                 memory_gb,
@@ -1933,13 +1995,28 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
             ClickPipeSettingsCommands::Get {
                 service_id,
                 clickpipe_id,
-            } => clickpipe_settings_get(client, &service_id, &clickpipe_id, json).await,
+            } => {
+                clickpipe_settings_get(
+                    client,
+                    &service_id,
+                    &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                    json,
+                )
+                .await
+            }
             ClickPipeSettingsCommands::Update {
                 service_id,
                 clickpipe_id,
                 settings,
             } => {
-                clickpipe_settings_update(client, &service_id, &clickpipe_id, &settings, json).await
+                clickpipe_settings_update(
+                    client,
+                    &service_id,
+                    &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                    &settings,
+                    json,
+                )
+                .await
             }
         },
         ClickPipeCommands::Context { command } => match command {
@@ -1980,6 +2057,29 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
             }
         },
     }
+}
+
+async fn resolve_clickpipe_id(
+    client: &CloudClient,
+    service_id: &str,
+    selector: &NameSelector,
+) -> CloudResult<String> {
+    let name = match (&selector.id, &selector.name) {
+        (Some(id), None) => return Ok(id.clone()),
+        (None, Some(name)) => name,
+        _ => {
+            return Err(CloudError::new(
+                "supply exactly one positional ClickPipe ID or --name",
+            ));
+        }
+    };
+    let org = resolve_org_id(client).await?;
+    let rows = client.list_clickpipes(&org, service_id).await?;
+    select_named_id(
+        "ClickPipe",
+        name,
+        rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
+    )
 }
 
 async fn clickpipe_context_get(
@@ -6133,7 +6233,7 @@ mod tests {
             panic!("expected get");
         };
         assert_eq!(service_id, "svc-get");
-        assert_eq!(clickpipe_id, "pipe-get");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-get"));
 
         let ClickPipeCommands::Delete {
             service_id,
@@ -6149,7 +6249,7 @@ mod tests {
             panic!("expected delete");
         };
         assert_eq!(service_id, "svc-delete");
-        assert_eq!(clickpipe_id, "pipe-delete");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-delete"));
 
         let ClickPipeCommands::Start {
             service_id,
@@ -6159,7 +6259,7 @@ mod tests {
             panic!("expected start");
         };
         assert_eq!(service_id, "svc-start");
-        assert_eq!(clickpipe_id, "pipe-start");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-start"));
 
         let ClickPipeCommands::Stop {
             service_id,
@@ -6169,7 +6269,7 @@ mod tests {
             panic!("expected stop");
         };
         assert_eq!(service_id, "svc-stop");
-        assert_eq!(clickpipe_id, "pipe-stop");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-stop"));
 
         let ClickPipeCommands::Resync {
             service_id,
@@ -6185,7 +6285,7 @@ mod tests {
             panic!("expected resync");
         };
         assert_eq!(service_id, "svc-resync");
-        assert_eq!(clickpipe_id, "pipe-resync");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-resync"));
     }
 
     #[test]
@@ -6213,7 +6313,7 @@ mod tests {
             panic!("expected scale");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(clickpipe_id, "pipe-1");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-1"));
         assert_eq!(replicas, Some(4));
         assert_eq!(cpu_millicores, Some(500));
         assert_eq!(memory_gb, Some(1.5));
@@ -6509,7 +6609,7 @@ mod tests {
             panic!("expected settings get");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(clickpipe_id, "pipe-1");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-1"));
 
         let ClickPipeCommands::Settings {
             command:
@@ -6556,7 +6656,7 @@ mod tests {
             panic!("expected settings update");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(clickpipe_id, "pipe-1");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-1"));
         assert_eq!(settings.streaming_max_insert_wait_ms, Some(1000));
         assert_eq!(settings.object_storage_concurrency, Some(2));
         assert_eq!(settings.object_storage_polling_interval_ms, Some(3000));
@@ -9918,7 +10018,7 @@ mod tests {
                 panic!("expected clickpipe update");
             };
             assert_eq!(service_id, "svc-1");
-            assert_eq!(clickpipe_id, "pipe-1");
+            assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-1"));
             assert_eq!(parsed_file, config_file);
         }
         assert_rejected(&["update", "svc-1", "pipe-1"]);

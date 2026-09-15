@@ -3730,7 +3730,7 @@ async fn postgres_delete_json_emits_the_resource_object_not_the_envelope() {
 #[tokio::test]
 async fn postgres_update_preserves_tags_when_changing_other_fields() {
     for (flag, field, value) in [
-        ("--name", "name", "renamed-pg"),
+        ("--new-name", "name", "renamed-pg"),
         ("--size", "size", "c6gd.large"),
         ("--ha-type", "haType", "async"),
     ] {
@@ -3820,7 +3820,7 @@ async fn postgres_update_without_tag_flags_refuses_incomplete_or_failed_reads() 
                 postgres_id,
                 "--org-id",
                 "org-1",
-                "--name",
+                "--new-name",
                 "renamed",
             ],
         );
@@ -9297,14 +9297,18 @@ async fn service_query_requires_exactly_one_selector_before_network_access() {
     assert!(control.received_requests().await.unwrap().is_empty());
     assert!(query_host.received_requests().await.unwrap().is_empty());
 
-    for selector in [["--name", "demo"], ["--id", QUERY_TEST_SERVICE_ID]] {
+    for selector in [
+        vec!["--name", "demo"],
+        vec!["--id", QUERY_TEST_SERVICE_ID],
+        vec![QUERY_TEST_SERVICE_ID],
+    ] {
         let output = invoke(&selector, &["--query", "SELECT 1"], true);
         assert_success(&output);
         assert_eq!(output.stdout, b"1\n");
     }
 
-    assert_eq!(control.received_requests().await.unwrap().len(), 2);
-    assert_eq!(query_host.received_requests().await.unwrap().len(), 2);
+    assert_eq!(control.received_requests().await.unwrap().len(), 3);
+    assert_eq!(query_host.received_requests().await.unwrap().len(), 3);
 }
 
 #[tokio::test]
@@ -10745,7 +10749,7 @@ async fn repair_retains_exact_old_key_id_when_final_cleanup_fails() {
     assert!(stderr.contains("temporary cleanup failure"), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "clickhousectl cloud service query --id {QUERY_TEST_SERVICE_ID} --org-id org-1"
+            "clickhousectl cloud service query {QUERY_TEST_SERVICE_ID} --org-id org-1"
         )),
         "{stderr}"
     );
@@ -12089,7 +12093,7 @@ async fn a_key_the_query_api_never_accepts_reports_the_repair_then_fails_with_it
     assert_eq!(
         error["error"]["command"],
         format!(
-            "clickhousectl cloud service query --id {QUERY_TEST_SERVICE_ID} --org-id org-1 \
+            "clickhousectl cloud service query {QUERY_TEST_SERVICE_ID} --org-id org-1 \
              --query \"SELECT 1\""
         )
     );
@@ -16075,7 +16079,13 @@ async fn service_update_skips_get_when_no_removals_requested() {
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
-            "service", "update", "svc-1", "--org-id", "org-1", "--name", "renamed",
+            "service",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+            "--new-name",
+            "renamed",
         ],
     );
 
@@ -18361,7 +18371,7 @@ async fn key_update_sends_exact_omitted_set_and_clear_bodies() {
     let cases: &[(&[&str], Value)] = &[
         (&[], serde_json::json!({})),
         (
-            &["--name", "renamed"],
+            &["--new-name", "renamed"],
             serde_json::json!({"name": "renamed"}),
         ),
         (&["--clear-expiry"], serde_json::json!({"expireAt": null})),
@@ -18376,7 +18386,7 @@ async fn key_update_sends_exact_omitted_set_and_clear_bodies() {
         (
             &[
                 "--clear-expiry",
-                "--name",
+                "--new-name",
                 "renamed",
                 "--role-id",
                 "11111111-2222-3333-4444-555555555555",
@@ -23406,7 +23416,7 @@ async fn org_get_and_update_select_explicit_or_detected_organization() {
                 ])
                 .args(&selector);
             if subcommand == "update" {
-                cmd.args(["--name", "Selected org"]);
+                cmd.args(["--new-name", "Selected org"]);
             }
             let output = cmd.output().unwrap();
             assert_success(&output);
@@ -24677,7 +24687,7 @@ async fn global_org_id_retires_all_positional_org_forms_before_http() {
     let mock = MockServer::start().await;
     for tail in [
         vec!["get", "org-1"],
-        vec!["update", "org-1", "--name", "Renamed"],
+        vec!["update", "org-1", "--new-name", "Renamed"],
         vec![
             "usage",
             "org-1",
@@ -24695,4 +24705,726 @@ async fn global_org_id_retires_all_positional_org_forms_before_http() {
         assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
     }
     assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+// #891: exact, scoped selectors resolve before the existing target handler.
+#[tokio::test]
+async fn selectors_use_exact_scoped_names_and_ids_do_not_require_list_access() {
+    const ID: &str = "11111111-2222-3333-4444-555555555555";
+    type SelectorCase = (
+        &'static [&'static str],
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+        &'static str,
+    );
+    let cases: &[SelectorCase] = &[
+        (
+            &["service", "get"],
+            "services",
+            "services",
+            "GET",
+            "name",
+            "id",
+        ),
+        (
+            &["postgres", "get"],
+            "postgres",
+            "postgres",
+            "GET",
+            "name",
+            "id",
+        ),
+        (&["key", "get"], "keys", "keys", "GET", "name", "id"),
+        (
+            &["org", "role", "get"],
+            "roles",
+            "roles",
+            "GET",
+            "name",
+            "id",
+        ),
+        (
+            &["member", "get"],
+            "members",
+            "members",
+            "GET",
+            "email",
+            "userId",
+        ),
+        (
+            &["invitation", "get"],
+            "invitations",
+            "invitations",
+            "GET",
+            "email",
+            "id",
+        ),
+        (
+            &["clickpipe", "get", "parent-service"],
+            "services/parent-service/clickpipes",
+            "services/parent-service/clickpipes",
+            "GET",
+            "name",
+            "id",
+        ),
+        (
+            &["org", "byoc", "delete"],
+            "",
+            "byocInfrastructure",
+            "DELETE",
+            "displayName",
+            "id",
+        ),
+        (
+            &["clickstack", "source", "delete", "parent-service"],
+            "services/parent-service/clickstack/sources",
+            "services/parent-service/clickstack/sources",
+            "DELETE",
+            "name",
+            "id",
+        ),
+        (
+            &["clickstack", "role", "delete", "parent-service"],
+            "services/parent-service/clickstack/roles",
+            "services/parent-service/clickstack/roles",
+            "DELETE",
+            "name",
+            "id",
+        ),
+        (
+            &["clickstack", "dashboard", "delete", "parent-service"],
+            "services/parent-service/clickstack/dashboards",
+            "services/parent-service/clickstack/dashboards",
+            "DELETE",
+            "name",
+            "id",
+        ),
+        (
+            &["clickstack", "alert", "delete", "parent-service"],
+            "services/parent-service/clickstack/alerts",
+            "services/parent-service/clickstack/alerts",
+            "DELETE",
+            "name",
+            "id",
+        ),
+        (
+            &["clickstack", "webhook", "delete", "parent-service"],
+            "services/parent-service/clickstack/webhooks",
+            "services/parent-service/clickstack/webhooks",
+            "DELETE",
+            "name",
+            "id",
+        ),
+        (
+            &["clickstack", "saved-search", "delete", "parent-service"],
+            "services/parent-service/clickstack/saved-searches",
+            "services/parent-service/clickstack/saved-searches",
+            "DELETE",
+            "name",
+            "id",
+        ),
+    ];
+    for (prefix, list_suffix, target_suffix, verb, name_field, id_field) in cases {
+        for named in [false, true] {
+            let mock = MockServer::start().await;
+            let list_path = if list_suffix.is_empty() {
+                "/v1/organizations/org-1".to_owned()
+            } else {
+                format!("/v1/organizations/org-1/{list_suffix}")
+            };
+            let mut row = serde_json::json!({*name_field: "Exact", *id_field: ID});
+            if prefix.get(1) == Some(&"source") {
+                row["kind"] = "promql".into();
+            }
+            if prefix.get(1) == Some(&"webhook") {
+                row["service"] = "slack".into();
+            }
+            let mut other = row.clone();
+            other[*name_field] = "exact".into();
+            other[*id_field] = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".into();
+            let rows = serde_json::json!([other, row]);
+            let result = if list_suffix.is_empty() {
+                serde_json::json!({"byocConfig": rows})
+            } else {
+                rows
+            };
+            Mock::given(method("GET"))
+                .and(path(&list_path))
+                .respond_with(if named {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result}))
+                } else {
+                    ResponseTemplate::new(403).set_body_string("list forbidden")
+                })
+                .expect(if named { 1 } else { 0 })
+                .mount(&mock)
+                .await;
+            let target_path = format!("/v1/organizations/org-1/{target_suffix}/{ID}");
+            Mock::given(method(*verb))
+                .and(path(&target_path))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"result": {}, "status": 200})),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
+            let selector = if *name_field == "email" {
+                "--email"
+            } else {
+                "--name"
+            };
+            let mut args = prefix.to_vec();
+            if named {
+                args.extend([selector, "Exact"]);
+            } else {
+                args.push(ID);
+            }
+            args.extend(["--org-id", "org-1"]);
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert!(
+                output.status.success(),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                mock.received_requests().await.unwrap().len(),
+                if named { 2 } else { 1 }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn selectors_refuse_bad_lists_before_mutation_and_preserve_list_errors() {
+    for (status, body, exit) in [
+        (200, serde_json::json!({"result": []}), 1),
+        (
+            200,
+            serde_json::json!({"result": [{"id": "11111111-2222-3333-4444-555555555555", "name": "other"}]}),
+            1,
+        ),
+        (200, serde_json::json!({"result": [{"name": "target"}]}), 1),
+        (
+            200,
+            serde_json::json!({"result": [{"id": "11111111-2222-3333-4444-555555555555"}]}),
+            1,
+        ),
+        (
+            200,
+            serde_json::json!({"result": [{"name": "target", "id": "11111111-2222-3333-4444-555555555555"}, {"name": "target", "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}]}),
+            1,
+        ),
+        (200, serde_json::json!({}), 1),
+        (403, serde_json::json!({"error": "list forbidden"}), 4),
+        (500, serde_json::json!({"error": "list failed"}), 1),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/services"))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "service",
+                "update",
+                "--name",
+                "target",
+                "--new-name",
+                "replacement",
+                "--org-id",
+                "org-1",
+            ],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(exit),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "GET");
+    }
+}
+
+#[tokio::test]
+async fn selectors_rename_body_and_organization_name_scope_are_independent() {
+    let org = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    let id = "11111111-2222-3333-4444-555555555555";
+    for resource in ["service", "postgres", "key", "org"] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"result": [{"id": org, "name": "Production"}]}),
+                ),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let suffix = match resource {
+            "service" => "services",
+            "postgres" => "postgres",
+            "key" => "keys",
+            _ => "",
+        };
+        let target_path = if resource == "org" {
+            format!("/v1/organizations/{org}")
+        } else {
+            format!("/v1/organizations/{org}/{suffix}/{id}")
+        };
+        if resource != "org" {
+            Mock::given(method("GET"))
+                .and(path(format!("/v1/organizations/{org}/{suffix}")))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(
+                        serde_json::json!({"result": [{"id": id, "name": "target"}]}),
+                    ),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
+        }
+        Mock::given(method("PATCH"))
+            .and(path(&target_path))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {}})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut args = vec![
+            resource,
+            "update",
+            "--org-name",
+            "Production",
+            "--new-name",
+            "replacement",
+        ];
+        if resource != "org" {
+            args.extend(["--name", "target"]);
+        }
+        if resource == "postgres" {
+            args.push("--clear-tags");
+        }
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        let patch = requests.iter().find(|r| r.method == "PATCH").unwrap();
+        let body: Value = serde_json::from_slice(&patch.body).unwrap();
+        assert_eq!(body["name"], "replacement");
+        assert!(!body.as_object().unwrap().contains_key("newName"));
+        assert_eq!(requests.len(), if resource == "org" { 2 } else { 3 });
+    }
+}
+
+#[tokio::test]
+async fn selectors_query_endpoints_read_all_cursor_pages_before_mutating() {
+    let first_id = "11111111-2222-3333-4444-555555555555";
+    let second_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    for second in [
+        serde_json::json!({"items": [], "pagination": {"nextCursor": null}}),
+        serde_json::json!({"items": [{"id": second_id, "name": "target"}], "pagination": {"nextCursor": null}}),
+        serde_json::json!({"items": []}),
+        serde_json::json!({"items": [], "pagination": {"nextCursor": "page-2"}}),
+    ] {
+        let unique = second["pagination"].is_object()
+            && second["pagination"]["nextCursor"].is_null()
+            && second["items"].as_array().unwrap().is_empty();
+        let mock = MockServer::start().await;
+        let list_path = "/v1/organizations/org-1/services/parent/query-api-endpoints";
+        Mock::given(method("GET")).and(path(list_path)).and(query_param("limit", "100")).and(wiremock::matchers::query_param_is_missing("cursor"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {"items": [{"id": first_id, "name": "target"}], "pagination": {"nextCursor": "page-2"}}})))
+            .expect(1).mount(&mock).await;
+        Mock::given(method("GET"))
+            .and(path(list_path))
+            .and(query_param("cursor", "page-2"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": second})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        Mock::given(method("DELETE"))
+            .and(path(format!("{list_path}/{first_id}")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": 200})),
+            )
+            .expect(if unique { 1 } else { 0 })
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "query-api-endpoint",
+                "delete",
+                "parent",
+                "--name",
+                "target",
+                "--org-id",
+                "org-1",
+            ],
+        );
+        assert_eq!(
+            output.status.success(),
+            unique,
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            mock.received_requests().await.unwrap().len(),
+            if unique { 3 } else { 2 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn selectors_clickstack_exhaust_offset_pages_and_reject_late_duplicates() {
+    for (command, resource) in [
+        ("alert", "alerts"),
+        ("webhook", "webhooks"),
+        ("saved-search", "saved-searches"),
+    ] {
+        for duplicate in [false, true] {
+            let mock = MockServer::start().await;
+            let list_path =
+                format!("/v1/organizations/org-1/services/parent/clickstack/{resource}");
+            let first: Vec<Value> = (0..1000).map(|index| serde_json::json!({
+                "id": format!("00000000-0000-0000-0000-{index:012}"),
+                "name": if duplicate && index == 0 { "target".to_owned() } else { format!("other-{index}") },
+                "service": "slack"
+            })).collect();
+            Mock::given(method("GET"))
+                .and(path(&list_path))
+                .and(query_param("limit", "1000"))
+                .and(query_param("offset", "0"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": first})),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
+            Mock::given(method("GET")).and(path(&list_path)).and(query_param("limit", "1000")).and(query_param("offset", "1000"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": [{"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "name": "target", "service": "slack"}]})))
+                .expect(1).mount(&mock).await;
+            Mock::given(method("DELETE"))
+                .and(path(format!(
+                    "{list_path}/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+                )))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"status": 200})),
+                )
+                .expect(if duplicate { 0 } else { 1 })
+                .mount(&mock)
+                .await;
+            let output = invoke_cli_with_cloud_credentials(
+                &mock,
+                &[
+                    "clickstack",
+                    command,
+                    "delete",
+                    "parent",
+                    "--name",
+                    "target",
+                    "--org-id",
+                    "org-1",
+                ],
+            );
+            assert_eq!(
+                output.status.success(),
+                !duplicate,
+                "{command}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(
+                mock.received_requests().await.unwrap().len(),
+                if duplicate { 2 } else { 3 }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn selectors_unknown_clickstack_variants_never_mutate() {
+    for (command, resource, discriminator) in [
+        ("source", "sources", "kind"),
+        ("webhook", "webhooks", "service"),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET")).and(path(format!("/v1/organizations/org-1/services/parent/clickstack/{resource}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": [{"id": "id", "name": "target", discriminator: "future-variant"}]})))
+            .expect(1).mount(&mock).await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickstack",
+                command,
+                "delete",
+                "parent",
+                "--name",
+                "target",
+                "--org-id",
+                "org-1",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn selectors_write_auth_gate_precedes_organization_and_target_lookups() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    for prefix in [
+        vec!["service", "update", "--new-name", "new"],
+        vec!["postgres", "delete"],
+        vec!["key", "delete"],
+        vec!["clickstack", "alert", "delete", "parent"],
+    ] {
+        let mut args = vec!["cloud", "--url"];
+        let url = mock.uri();
+        args.push(&url);
+        args.extend_from_slice(&prefix);
+        args.extend(["--name", "target", "--org-name", "production"]);
+        let output = Command::new(clickhousectl_binary())
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", &home)
+            .current_dir(project.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(4));
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn selectors_postgres_sources_keep_new_resource_names_in_the_body() {
+    let id = "11111111-2222-3333-4444-555555555555";
+    for (prefix, endpoint) in [
+        (vec!["postgres", "restore"], "restoredService"),
+        (vec!["postgres", "read-replica", "create"], "readReplica"),
+    ] {
+        for named in [true, false] {
+            let mock = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations/org-1/postgres"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(
+                        serde_json::json!({"result": [{"id": id, "name": "source"}]}),
+                    ),
+                )
+                .expect(if named { 1 } else { 0 })
+                .mount(&mock)
+                .await;
+            Mock::given(method("POST"))
+                .and(path(format!(
+                    "/v1/organizations/org-1/postgres/{id}/{endpoint}"
+                )))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {}})),
+                )
+                .expect(1)
+                .mount(&mock)
+                .await;
+            let mut args = prefix.clone();
+            if named {
+                args.extend(["--source-name", "source"]);
+            } else {
+                args.push(id);
+            }
+            args.extend(["--name", "created", "--org-id", "org-1"]);
+            if endpoint == "restoredService" {
+                args.extend(["--restore-target", "2026-09-01T12:00:00Z"]);
+            }
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert_success(&output);
+            let requests = mock.received_requests().await.unwrap();
+            let request = requests.iter().find(|r| r.method == "POST").unwrap();
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            assert_eq!(body["name"], "created");
+            assert_eq!(requests.len(), if named { 2 } else { 1 });
+        }
+    }
+}
+
+#[tokio::test]
+async fn selectors_byoc_rename_alias_preserves_display_name_body_and_conflicts() {
+    for flag in ["--new-name", "--display-name"] {
+        let mock = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-id"))
+            .and(body_json(serde_json::json!({"displayName": "replacement"})))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {}})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "org",
+                "byoc",
+                "update",
+                "byoc-id",
+                flag,
+                "replacement",
+                "--org-id",
+                "org-1",
+            ],
+        );
+        assert_success(&output);
+    }
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "update",
+            "byoc-id",
+            "--new-name",
+            "one",
+            "--display-name",
+            "two",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn selectors_organization_conflicts_and_incomplete_matches_fail_without_mutation() {
+    let mock = MockServer::start().await;
+    for args in [
+        vec![
+            "--org-id",
+            "org",
+            "service",
+            "delete",
+            "id",
+            "--org-name",
+            "production",
+        ],
+        vec![
+            "--org-name",
+            "production",
+            "service",
+            "delete",
+            "id",
+            "--org-id",
+            "org",
+        ],
+    ] {
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(2));
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+    for rows in [
+        serde_json::json!([]),
+        serde_json::json!([{ "name": "production" }]),
+        serde_json::json!([{ "name": "production", "id": "11111111-2222-3333-4444-555555555555" }, { "name": "production", "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" }]),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": rows})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "org",
+                "update",
+                "--org-name",
+                "production",
+                "--new-name",
+                "replacement",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+    }
+}
+
+#[tokio::test]
+async fn selectors_endpoint_pagination_integrity_and_later_errors_block_mutation() {
+    let target_id = "11111111-2222-3333-4444-555555555555";
+    let other_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    for (status, second, exit) in [
+        (
+            200,
+            serde_json::json!({"items": [{"id": other_id, "name": "other"}], "pagination": {"totalRecords": 3, "nextCursor": null}}),
+            1,
+        ),
+        (
+            200,
+            serde_json::json!({"items": [], "pagination": {"totalRecords": 4, "nextCursor": null}}),
+            1,
+        ),
+        (
+            200,
+            serde_json::json!({"items": [], "pagination": {"totalRecords": 3, "nextCursor": null}}),
+            1,
+        ),
+        (403, serde_json::json!({"error": "later page forbidden"}), 4),
+    ] {
+        let mock = MockServer::start().await;
+        let list_path = "/v1/organizations/org-1/services/parent/query-api-endpoints";
+        Mock::given(method("GET")).and(path(list_path)).and(wiremock::matchers::query_param_is_missing("cursor"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {"items": [{"id": target_id, "name": "target"}, {"id": other_id, "name": "other"}], "pagination": {"totalRecords": 3, "nextCursor": "page-2"}}})))
+            .expect(1).mount(&mock).await;
+        Mock::given(method("GET"))
+            .and(path(list_path))
+            .and(query_param("cursor", "page-2"))
+            .respond_with(
+                ResponseTemplate::new(status).set_body_json(if status == 200 {
+                    serde_json::json!({"result": second})
+                } else {
+                    second
+                }),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "query-api-endpoint",
+                "delete",
+                "parent",
+                "--name",
+                "target",
+                "--org-id",
+                "org-1",
+            ],
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(exit),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(requests.iter().all(|request| request.method == "GET"));
+    }
 }

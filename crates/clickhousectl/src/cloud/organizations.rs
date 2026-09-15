@@ -1,6 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, ResourceLookup, Result as CloudResult};
 use crate::cloud::config::read_typed_config;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
+use crate::cloud::shared::{EmailSelector, NameSelector, NamedResource};
 use crate::cloud::shared::{parse_date_only, parse_tag_filter, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use clap::Subcommand;
@@ -55,7 +56,7 @@ CONTEXT FOR AGENTS:
   This can only remove private endpoints; add them with `cloud service update --add-private-endpoint-id`.")]
     Update {
         /// New organization name
-        #[arg(long)]
+        #[arg(long = "new-name", id = "new_name")]
         name: Option<String>,
 
         /// Remove a private endpoint from the org allow list (repeatable)
@@ -130,7 +131,8 @@ pub enum RoleCommands {
     /// Get organization role details
     Get {
         /// Role ID (from `cloud org role list`)
-        role_id: String,
+        #[command(flatten)]
+        role_id: NameSelector,
     },
 
     /// Create a custom organization role
@@ -151,7 +153,8 @@ CONTEXT FOR AGENTS:
   Only fields present in the JSON body change; actors and policies replace their whole lists.")]
     Update {
         /// Role ID (from `cloud org role list`)
-        role_id: String,
+        #[command(flatten)]
+        role_id: NameSelector,
 
         /// JSON request body path, or `-` for stdin
         #[arg(
@@ -166,7 +169,8 @@ CONTEXT FOR AGENTS:
     /// Delete a custom organization role
     Delete {
         /// Role ID (from `cloud org role list`)
-        role_id: String,
+        #[command(flatten)]
+        role_id: NameSelector,
     },
 }
 
@@ -211,17 +215,19 @@ CONTEXT FOR AGENTS:
     /// Update BYOC infrastructure
     Update {
         /// BYOC infrastructure ID
-        byoc_id: String,
+        #[command(flatten)]
+        byoc_id: NameSelector,
 
         /// New human-readable infrastructure name
-        #[arg(long)]
+        #[arg(long = "new-name", alias = "display-name")]
         display_name: String,
     },
 
     /// Delete BYOC infrastructure
     Delete {
         /// BYOC infrastructure ID
-        byoc_id: String,
+        #[command(flatten)]
+        byoc_id: NameSelector,
     },
 }
 
@@ -261,13 +267,15 @@ pub enum MemberCommands {
     /// Get member details
     Get {
         /// User ID
-        user_id: String,
+        #[command(flatten)]
+        user_id: EmailSelector,
     },
 
     /// Update member roles
     Update {
         /// User ID
-        user_id: String,
+        #[command(flatten)]
+        user_id: EmailSelector,
 
         /// Role ID to assign (repeatable; conflicts with --clear-roles)
         #[arg(long, conflicts_with = "clear_roles")]
@@ -281,7 +289,8 @@ pub enum MemberCommands {
     /// Remove a member from the organization
     Remove {
         /// User ID
-        user_id: String,
+        #[command(flatten)]
+        user_id: EmailSelector,
     },
 }
 
@@ -315,13 +324,15 @@ pub enum InvitationCommands {
     /// Get invitation details
     Get {
         /// Invitation ID
-        invitation_id: String,
+        #[command(flatten)]
+        invitation_id: EmailSelector,
     },
 
     /// Delete an invitation
     Delete {
         /// Invitation ID
-        invitation_id: String,
+        #[command(flatten)]
+        invitation_id: EmailSelector,
     },
 }
 
@@ -379,7 +390,14 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
 async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> CloudResult<()> {
     match command {
         RoleCommands::List => role_list(client, json).await,
-        RoleCommands::Get { role_id } => role_get(client, &role_id, json).await,
+        RoleCommands::Get { role_id } => {
+            role_get(
+                client,
+                &role_id.resolve(client, NamedResource::Role).await?,
+                json,
+            )
+            .await
+        }
         RoleCommands::Create { config_file } => {
             let request = build_role_create_request(&config_file)?;
             role_create(client, request, json).await
@@ -389,9 +407,22 @@ async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> Cl
             config_file,
         } => {
             let request = build_role_update_request(&config_file)?;
-            role_update(client, &role_id, request, json).await
+            role_update(
+                client,
+                &role_id.resolve(client, NamedResource::Role).await?,
+                request,
+                json,
+            )
+            .await
         }
-        RoleCommands::Delete { role_id } => role_delete(client, &role_id, json).await,
+        RoleCommands::Delete { role_id } => {
+            role_delete(
+                client,
+                &role_id.resolve(client, NamedResource::Role).await?,
+                json,
+            )
+            .await
+        }
     }
 }
 
@@ -418,9 +449,22 @@ async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> Cl
             display_name,
         } => {
             let request = build_byoc_update_request(&display_name);
-            byoc_update(client, &byoc_id, request, json).await
+            byoc_update(
+                client,
+                &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                request,
+                json,
+            )
+            .await
         }
-        ByocCommands::Delete { byoc_id } => byoc_delete(client, &byoc_id, json).await,
+        ByocCommands::Delete { byoc_id } => {
+            byoc_delete(
+                client,
+                &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                json,
+            )
+            .await
+        }
     }
 }
 
@@ -438,13 +482,26 @@ pub async fn run_member(
 ) -> CloudResult<()> {
     match command {
         MemberCommands::List => member_list(client, json).await,
-        MemberCommands::Get { user_id } => member_get(client, &user_id, json).await,
+        MemberCommands::Get { user_id } => {
+            member_get(client, &user_id.resolve_member(client).await?, json).await
+        }
         MemberCommands::Update {
             user_id,
             role_id,
             clear_roles,
-        } => member_update(client, &user_id, &role_id, clear_roles, json).await,
-        MemberCommands::Remove { user_id } => member_remove(client, &user_id, json).await,
+        } => {
+            member_update(
+                client,
+                &user_id.resolve_member(client).await?,
+                &role_id,
+                clear_roles,
+                json,
+            )
+            .await
+        }
+        MemberCommands::Remove { user_id } => {
+            member_remove(client, &user_id.resolve_member(client).await?, json).await
+        }
     }
 }
 
@@ -459,10 +516,20 @@ pub async fn run_invitation(
             invitation_create(client, &email, &role_id, json).await
         }
         InvitationCommands::Get { invitation_id } => {
-            invitation_get(client, &invitation_id, json).await
+            invitation_get(
+                client,
+                &invitation_id.resolve_invitation(client).await?,
+                json,
+            )
+            .await
         }
         InvitationCommands::Delete { invitation_id } => {
-            invitation_delete(client, &invitation_id, json).await
+            invitation_delete(
+                client,
+                &invitation_id.resolve_invitation(client).await?,
+                json,
+            )
+            .await
         }
     }
 }
@@ -1652,7 +1719,7 @@ impl CloudClient {
                 .map(|id| id.to_string())
                 .ok_or_else(|| CloudError::new("Organization response is missing its id")),
             _ => Err(CloudError::new(
-                "Multiple organizations found. Specify --org-id to choose one. \
+                "Multiple organizations found. Specify --org-id or --org-name to choose one. \
                  Use `clickhousectl cloud org list` to see your organizations.",
             )),
         }
@@ -1743,7 +1810,7 @@ mod tests {
         else {
             panic!("expected member update");
         };
-        assert_eq!(user_id, "user-1");
+        assert_eq!(user_id.id.as_deref(), Some("user-1"));
         assert!(role_id.is_empty());
         assert!(!clear_roles);
 
@@ -1773,7 +1840,7 @@ mod tests {
             "update",
             "--org-id",
             "org-1",
-            "--name",
+            "--new-name",
             "Updated Org",
             "--remove-private-endpoint",
             "pe-1,description=old,cloud-provider=aws,region=us-east-1",
@@ -1826,7 +1893,7 @@ mod tests {
         else {
             panic!("expected member update");
         };
-        assert_eq!(user_id, "user-1");
+        assert_eq!(user_id.id.as_deref(), Some("user-1"));
         assert_eq!(role_id, vec!["role-1", "role-2"]);
         assert!(!clear_roles);
 
@@ -2527,7 +2594,7 @@ mod tests {
         else {
             panic!("expected BYOC update");
         };
-        assert_eq!(byoc_id, "byoc-1");
+        assert_eq!(byoc_id.id.as_deref(), Some("byoc-1"));
         assert_eq!(display_name, "renamed");
 
         assert_write(

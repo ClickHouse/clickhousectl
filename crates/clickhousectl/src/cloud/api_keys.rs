@@ -1,6 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::credentials;
 use crate::cloud::output::{eprint_line, or_absent, print_human};
+use crate::cloud::shared::{NameSelector, NamedResource};
 use crate::cloud::shared::{parse_datetime, parse_ip_access_entries, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::FailureStage;
@@ -62,18 +63,18 @@ CONTEXT FOR AGENTS:
     /// Get API key details
     Get {
         /// Management resource ID
-        #[arg(value_name = "RESOURCE_ID")]
-        key_id: String,
+        #[command(flatten)]
+        key_id: NameSelector,
     },
 
     /// Update an API key
     Update {
         /// Management resource ID
-        #[arg(value_name = "RESOURCE_ID")]
-        key_id: String,
+        #[command(flatten)]
+        key_id: NameSelector,
 
         /// New key name
-        #[arg(long)]
+        #[arg(long = "new-name", id = "new_name")]
         name: Option<String>,
 
         /// Role UUID to assign (repeatable; conflicts with --clear-roles)
@@ -112,8 +113,8 @@ CONTEXT FOR AGENTS:
     /// Delete an API key
     Delete {
         /// Management resource ID
-        #[arg(value_name = "RESOURCE_ID")]
-        key_id: String,
+        #[command(flatten)]
+        key_id: NameSelector,
     },
 }
 
@@ -154,7 +155,14 @@ pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> Clou
             };
             key_create(client, options, json).await
         }
-        KeyCommands::Get { key_id } => key_get(client, &key_id, json).await,
+        KeyCommands::Get { key_id } => {
+            key_get(
+                client,
+                &key_id.resolve(client, NamedResource::Key).await?,
+                json,
+            )
+            .await
+        }
         KeyCommands::Update {
             key_id,
             name,
@@ -176,9 +184,22 @@ pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> Clou
                 ip_allow,
                 clear_ip_allow,
             };
-            key_update(client, &key_id, options, json).await
+            key_update(
+                client,
+                &key_id.resolve(client, NamedResource::Key).await?,
+                options,
+                json,
+            )
+            .await
         }
-        KeyCommands::Delete { key_id } => key_delete(client, &key_id, json).await,
+        KeyCommands::Delete { key_id } => {
+            key_delete(
+                client,
+                &key_id.resolve(client, NamedResource::Key).await?,
+                json,
+            )
+            .await
+        }
     }
 }
 
@@ -724,14 +745,18 @@ mod tests {
     }
 
     #[test]
-    fn key_management_commands_label_the_resource_id() {
+    fn key_management_commands_have_positional_resource_selectors() {
+        use clap::CommandFactory;
+        let mut root = KeyCli::command();
+        root.build();
         for command in ["get", "update", "delete"] {
-            let error = KeyCli::try_parse_from(["clickhousectl", command, "--help"])
-                .err()
-                .expect("help must stop parsing");
-            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-            let help = error.to_string();
-            assert!(help.contains("<RESOURCE_ID>"), "{command}: {help}");
+            let child = root.find_subcommand(command).unwrap();
+            let id = child
+                .get_arguments()
+                .find(|arg| arg.get_id() == "resource_id")
+                .unwrap();
+            assert!(id.is_positional());
+            assert_eq!(id.get_value_names().unwrap(), &["ID"]);
         }
     }
 
@@ -780,7 +805,7 @@ mod tests {
         else {
             panic!("expected key update");
         };
-        assert_eq!(key_id, "key-1");
+        assert_eq!(key_id.id.as_deref(), Some("key-1"));
         assert!(name.is_none());
         assert!(role_id.is_empty());
         assert!(!clear_roles);
@@ -891,7 +916,7 @@ mod tests {
             "key",
             "update",
             "key-1",
-            "--name",
+            "--new-name",
             "renamed",
             "--role-id",
             "role-1",
@@ -923,7 +948,7 @@ mod tests {
         else {
             panic!("expected key update");
         };
-        assert_eq!(key_id, "key-1");
+        assert_eq!(key_id.id.as_deref(), Some("key-1"));
         assert_eq!(name.as_deref(), Some("renamed"));
         assert_eq!(role_id, vec!["role-1", "role-2"]);
         assert!(!clear_roles);

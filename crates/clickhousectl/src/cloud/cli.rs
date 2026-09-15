@@ -35,8 +35,12 @@ pub struct CloudArgs {
     pub api_secret: Option<String>,
 
     /// Organization ID (auto-detected only if you have one org)
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "org_name")]
     pub org_id: Option<String>,
+
+    /// Exact organization name
+    #[arg(long, global = true, conflicts_with = "org_id")]
+    pub org_name: Option<String>,
 
     /// Output as JSON
     #[arg(long, global = true)]
@@ -56,6 +60,11 @@ pub struct CloudArgs {
 }
 
 impl CloudArgs {
+    /// Clap validates conflicts before propagating globals from other depths.
+    pub fn has_organization_selector_conflict(&self) -> bool {
+        self.org_id.is_some() && self.org_name.is_some()
+    }
+
     pub fn has_explicit_json_format_conflict(&self) -> bool {
         self.json
             && matches!(
@@ -129,7 +138,7 @@ CONTEXT FOR AGENTS:
   Reads: list, get, profile list, settings list/get/schema, prometheus, query,
     query-endpoint get, private-endpoint get-config, backup-config get,
     scaling-schedule get, upgrade-window get. Other commands need API key auth.
-  Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query --id <id> -q 'SELECT 1'`.")]
+  Typical flow: `create --name X` -> `get <id>` until state is `running` -> `query <id> -q 'SELECT 1'`.")]
     Service {
         #[command(subcommand)]
         command: ServiceCommands,
@@ -397,7 +406,7 @@ pub(crate) mod tests {
             &["udf", "attachment", "get", "my_udf", "svc-1"],
             &["query-api-endpoint", "get", "svc-1", "endpoint-1"],
             &["org", "get"],
-            &["org", "update", "--name", "Renamed"],
+            &["org", "update", "--new-name", "Renamed"],
             &[
                 "org",
                 "usage",
@@ -519,7 +528,7 @@ pub(crate) mod tests {
     fn former_positional_org_selectors_are_usage_errors() {
         for tail in [
             vec!["get", "org-1"],
-            vec!["update", "org-1", "--name", "Renamed"],
+            vec!["update", "org-1", "--new-name", "Renamed"],
             vec![
                 "usage",
                 "org-1",
@@ -629,7 +638,7 @@ pub(crate) mod tests {
                 "key",
                 "update",
                 "key-1",
-                "--name",
+                "--new-name",
                 "new",
             ],
             true,

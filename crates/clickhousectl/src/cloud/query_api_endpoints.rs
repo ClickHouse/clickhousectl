@@ -1,7 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
-use crate::cloud::shared::resolve_org_id;
+use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use crate::cloud::types::DeleteResponse;
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::{
@@ -53,7 +53,8 @@ pub struct QueryApiEndpointTarget {
     /// Service ID
     service_id: String,
     /// Query API endpoint ID
-    endpoint_id: String,
+    #[command(flatten)]
+    endpoint_id: NameSelector,
 }
 
 #[derive(Args)]
@@ -96,16 +97,12 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
             )
         }
         QueryApiEndpointCommands::Update { target, input } => {
+            let endpoint_id = resolve_endpoint_id(client, &target).await?;
             let request = build_query_api_endpoint_request(read_config_value(&input.config_file)?)?;
             let org = resolve_org_id(client).await?;
             output(
                 &client
-                    .update_query_api_endpoint(
-                        &org,
-                        &target.service_id,
-                        &target.endpoint_id,
-                        &request,
-                    )
+                    .update_query_api_endpoint(&org, &target.service_id, &endpoint_id, &request)
                     .await?,
                 json,
             )
@@ -127,30 +124,104 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
             }
         }
         QueryApiEndpointCommands::Get(target) => {
+            let endpoint_id = resolve_endpoint_id(client, &target).await?;
             let org = resolve_org_id(client).await?;
             output(
                 &client
-                    .get_query_api_endpoint(&org, &target.service_id, &target.endpoint_id)
+                    .get_query_api_endpoint(&org, &target.service_id, &endpoint_id)
                     .await?,
                 json,
             )
         }
         QueryApiEndpointCommands::Delete(target) => {
+            let endpoint_id = resolve_endpoint_id(client, &target).await?;
             let org = resolve_org_id(client).await?;
             let data = client
-                .delete_query_api_endpoint(&org, &target.service_id, &target.endpoint_id)
+                .delete_query_api_endpoint(&org, &target.service_id, &endpoint_id)
                 .await?;
             if json {
                 output(&data, true)
             } else {
                 crate::cloud::output::print_line(format!(
                     "Deleted Query API endpoint {}",
-                    target.endpoint_id
+                    endpoint_id
                 ));
                 Ok(())
             }
         }
     }
+}
+
+async fn resolve_endpoint_id(
+    client: &CloudClient,
+    target: &QueryApiEndpointTarget,
+) -> CloudResult<String> {
+    let name = match (&target.endpoint_id.id, &target.endpoint_id.name) {
+        (Some(id), None) => return Ok(id.clone()),
+        (None, Some(name)) => name,
+        _ => {
+            return Err(CloudError::new(
+                "supply exactly one positional endpoint ID or --name",
+            ));
+        }
+    };
+    let org = resolve_org_id(client).await?;
+    let mut rows = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen = std::collections::HashSet::new();
+    let mut total_records = None;
+    let mut seen_ids = std::collections::HashSet::new();
+    loop {
+        let page = client
+            .list_query_api_endpoints(&org, &target.service_id, cursor.as_deref(), Some(100))
+            .await?;
+        let items = page
+            .items
+            .ok_or_else(|| CloudError::new("endpoint list response is missing items"))?;
+        for item in &items {
+            let id = item
+                .id
+                .ok_or_else(|| CloudError::new("endpoint list contains a missing ID"))?;
+            if !seen_ids.insert(id) {
+                return Err(CloudError::new(
+                    "endpoint pagination repeated a resource ID",
+                ));
+            }
+        }
+        rows.extend(items);
+        let pagination = page
+            .pagination
+            .ok_or_else(|| CloudError::new("endpoint list response is missing pagination"))?;
+        if let Some(total) = pagination.total_records {
+            if total < 0 || total_records.is_some_and(|previous| previous != total) {
+                return Err(CloudError::new(
+                    "endpoint list returned inconsistent totalRecords",
+                ));
+            }
+            total_records = Some(total);
+        }
+        match pagination.next_cursor {
+            None => {
+                if total_records.is_some_and(|total| total as usize != rows.len()) {
+                    return Err(CloudError::new(
+                        "endpoint list ended before all records were received",
+                    ));
+                }
+                break;
+            }
+            Some(next) if next.is_empty() || !seen.insert(next.clone()) => {
+                return Err(CloudError::new(
+                    "endpoint list returned an empty or repeated cursor",
+                ));
+            }
+            Some(next) => cursor = Some(next),
+        }
+    }
+    select_named_id(
+        "Query API endpoint",
+        name,
+        rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
+    )
 }
 
 fn output<T: Serialize>(data: &T, json: bool) -> CloudResult<()> {
@@ -466,7 +537,7 @@ mod tests {
             panic!("update")
         };
         assert_eq!(target.service_id, "svc");
-        assert_eq!(target.endpoint_id, "endpoint");
+        assert_eq!(target.endpoint_id.id.as_deref(), Some("endpoint"));
         assert_eq!(input.config_file, "-");
         for command in ["get", "delete"] {
             let args = parse(&[command, "svc", "endpoint"]);
@@ -476,7 +547,7 @@ mod tests {
                 _ => panic!("target"),
             };
             assert_eq!(target.service_id, "svc");
-            assert_eq!(target.endpoint_id, "endpoint");
+            assert_eq!(target.endpoint_id.id.as_deref(), Some("endpoint"));
         }
     }
 

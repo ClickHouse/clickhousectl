@@ -166,6 +166,16 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
     let Commands::Cloud(args) = &cli.command else {
         return Ok(());
     };
+    if args.has_organization_selector_conflict() {
+        let cloud = cmd
+            .find_subcommand_mut("cloud")
+            .expect("cloud command must exist");
+        return Err(cloud.error(
+            ErrorKind::ArgumentConflict,
+            "--org-id cannot be used with --org-name",
+        ));
+    }
+
     // Login's credentials are global arguments. Validate after propagation so
     // a pair split across command levels remains valid.
     if let cloud::cli::CloudCommands::Auth { command } = &args.command

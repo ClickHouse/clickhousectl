@@ -718,17 +718,20 @@ clickhousectl cloud --url https://api.control-plane.example.com service list
 
 Manage ClickHouse, Postgres, and other ClickHouse Cloud resources via the API.
 
-Reading a service, Postgres service or organization — or deleting a service or Postgres service — by an identifier that resolves to nothing (HTTP 400 or 404, including deleted IDs) reports `No such <resource>: <id> (organization <org-id>). The API rejected the identifier: <server text>`, and the stable code `resource_not_found` under `--json`. `org get` omits the `(organization ...)` clause. Every other resource relays the API's own error, so do not branch on `resource_not_found` for a ClickPipe, key, member, backup or endpoint. The organization clause names the scope checked: the resource may belong to another organization; verify `--org-id` and use the suggested list command. `service query-endpoint get` checks the parent service after a 404 so a missing endpoint on an existing service is not reported as a missing service. A malformed (non-UUID) identifier keeps the API's own message; use the corresponding `list` command to find IDs (`service get` does not accept names).
+Select services, Postgres services, keys, roles, BYOC infrastructure, ClickPipes, Query API endpoints, and ClickStack resources by positional ID or exact `--name`. Name lookups require list access within the selected organization or required parent service; child `--name` never selects the parent.
+
+Reading a service, Postgres service or organization — or deleting a service or Postgres service — by an identifier that resolves to nothing (HTTP 400 or 404, including deleted IDs) reports `No such <resource>: <id> (organization <org-id>). The API rejected the identifier: <server text>`, and the stable code `resource_not_found` under `--json`. `org get` omits the `(organization ...)` clause. Every other resource relays the API's own error, so do not branch on `resource_not_found` for a ClickPipe, key, member, backup or endpoint. The organization clause names the scope checked: the resource may belong to another organization; verify `--org-id` and use the suggested list command. `service query-endpoint get` checks the parent service after a 404 so a missing endpoint on an existing service is not reported as a missing service. A malformed (non-UUID) identifier keeps the API's own message; use the corresponding `list` command to find IDs (or select a service explicitly with `--name`).
 
 ### Organizations
 
 ```bash
 clickhousectl cloud org list              # List organizations
 clickhousectl cloud org get --org-id <org-id>      # Get organization details
+clickhousectl cloud org get --org-name production
 clickhousectl cloud org quota list --org-id <org-id>
 clickhousectl cloud org quota get services-per-organization --org-id <org-id>
 clickhousectl cloud org balance --org-id <org-id>  # Active trial and prepaid credits
-clickhousectl cloud org update --org-id <org-id> --name "Renamed Org"
+clickhousectl cloud org update --org-id <org-id> --new-name "Renamed Org"
 clickhousectl cloud org update --org-id <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
   --enable-core-dumps false
@@ -740,7 +743,7 @@ clickhousectl cloud org byoc create --org-id <org-id> \
 # Find the infrastructure ID and state in the organization's byocConfig
 clickhousectl cloud org get --org-id <org-id>
 clickhousectl cloud org byoc update <infrastructure-id> \
-  --display-name renamed --org-id <org-id>
+  --new-name renamed --org-id <org-id>
 clickhousectl cloud org byoc delete <infrastructure-id> --org-id <org-id>
 clickhousectl cloud org prometheus --filtered-metrics true
 clickhousectl cloud org prometheus discovery --filtered-metrics false
@@ -748,15 +751,15 @@ clickhousectl cloud org usage \
   --from-date 2024-01-01 \
   --to-date 2024-01-31 \
   --filter tag:Environment=Production   # max 31-day window (to-date inclusive), costs in CHC
-# Org get, update, quota, balance, prometheus, and usage auto-detect the org without --org-id.
+# Org-scoped commands auto-detect the org when neither --org-id nor --org-name is supplied.
 # Org list takes no ID.
 # It is auto-detected only when your credentials reach exactly one organization.
 # Organization quota and balance commands are beta and read-only, so they support OAuth.
 ```
 
-`--org-id` is shared across all cloud commands and may appear anywhere after
-`cloud`, including after nested subcommands and positional resource IDs. Without
-it, org-scoped operations auto-detect the organization only when exactly one is available.
+`--org-id` and `--org-name` are shared across all cloud commands and may appear
+anywhere after `cloud`, including after nested subcommands and positional resource IDs.
+Choose one: organization names match exactly; omitting both auto-detects the organization only when exactly one is available.
 
 Supplying a value option twice at the same command depth is a usage error. As with
 other cloud-wide value options, a value supplied at a deeper subcommand takes
@@ -767,7 +770,7 @@ or `--filter tag:KEY` (tag existence). A missing `tag:` prefix or empty key is a
 usage error (exit 2), rejected before authentication or HTTP requests.
 
 BYOC create, update, and delete require API key authentication. Update requires
-`--display-name`, so it cannot send an empty/no-op patch. The API has no separate
+`--new-name`, so it cannot send an empty/no-op patch. The API has no separate
 BYOC list command; `cloud org get` returns the organization's `byocConfig` entries.
 
 Each `cloud org update --remove-private-endpoint` value must include both
@@ -784,6 +787,7 @@ clickhousectl cloud service list
 
 # Get service details
 clickhousectl cloud service get <service-id>
+clickhousectl cloud service get --name analytics
 
 # Discover profiles available in a region before choosing --profile
 clickhousectl cloud service profile list --region us-east-1
@@ -865,7 +869,7 @@ clickhousectl cloud service upgrade-window delete <service-id>
 
 # Run SQL over HTTP via the Query API (no local clickhouse binary needed)
 clickhousectl cloud service query --name my-service --query "SELECT 1"
-clickhousectl cloud service query --id <service-id> --query "SELECT count() FROM system.tables" --format JSONEachRow
+clickhousectl cloud service query <service-id> --query "SELECT count() FROM system.tables" --format JSONEachRow
 clickhousectl cloud service query --name my-service --queries-file query.sql   # single statement only; "-" reads from stdin
 clickhousectl cloud service query --name my-service --database mydb --query "SHOW TABLES"
 echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
@@ -876,9 +880,12 @@ clickhousectl cloud service query --name my-service --query "SELECT 1" --no-auto
 # service (the way forward after a disabled, expired, unbound or IP-restricted key)
 clickhousectl cloud service repair-query-key <service-id> --org-id <org-id>
 
+# Select a service by name and rename it
+clickhousectl cloud service update --name analytics --new-name reporting
+
 # Update service metadata and patches
 clickhousectl cloud service update <service-id> \
-  --name my-renamed-service \
+  --new-name my-renamed-service \
   --add-ip-allow '<trusted-egress-cidr>=office' \
   --remove-ip-allow 0.0.0.0/0 \
   --add-private-endpoint-id pe-1 \
@@ -1037,7 +1044,7 @@ An explicit `--format` wins over agent auto-JSON.
 
 ```bash
 printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
-  clickhousectl cloud service query --id <service-id>
+  clickhousectl cloud service query <service-id>
 ```
 
 Only real input counts as a conflict: an empty non-terminal stdin (a CI runner, a coding agent) leaves `--query` working, and a silent pipe is given 250 ms to produce a byte before stdin is treated as empty.
@@ -1221,7 +1228,7 @@ clickhousectl cloud postgres create \
 
 # Update name, size, HA, or tags (all flags optional)
 clickhousectl cloud postgres update <pg-id> \
-  --name renamed-pg \
+  --new-name renamed-pg \
   --size c6gd.4xlarge \
   --ha-type sync \
   --add-tag env=prod --remove-tag legacy
@@ -1253,10 +1260,10 @@ clickhousectl cloud postgres reset-password <pg-id> --generate
 clickhousectl cloud postgres reset-password <pg-id> --password '<min-12-upper-lower-digit>'
 
 # Read replica and PITR restore
-clickhousectl cloud postgres read-replica create <pg-id> --name replica-1
+clickhousectl cloud postgres read-replica create --source-name primary --name replica-1
 clickhousectl cloud postgres read-replica create <pg-id> --name replica-2 \
   --tag env=prod --pg-config-file ./pg.json
-clickhousectl cloud postgres restore <pg-id> \
+clickhousectl cloud postgres restore --source-name primary \
   --name restored \
   --restore-target <recent-RFC3339-time-within-retention> \
   --tag env=prod --pg-bouncer-config-file ./pgbouncer.json
@@ -2574,10 +2581,13 @@ Only custom roles can be updated or deleted. `allowDeny` accepts `ALLOW` or
 ```bash
 clickhousectl cloud member list
 clickhousectl cloud member get <user-id>
+clickhousectl cloud member get --email dev@example.com
 clickhousectl cloud member update <user-id> --role-id <role-id>
 clickhousectl cloud member update <user-id> --clear-roles
 clickhousectl cloud member remove <user-id>
 ```
+
+Member and invitation `--email` selectors match the stored address exactly, including case, without trimming or normalization.
 
 Omitting both member role flags leaves assigned roles unchanged.
 `--clear-roles` removes them all and conflicts with `--role-id`.
@@ -2588,6 +2598,7 @@ Omitting both member role flags leaves assigned roles unchanged.
 clickhousectl cloud invitation list
 clickhousectl cloud invitation create --email dev@example.com --role-id <role-id>
 clickhousectl cloud invitation get <invitation-id>
+clickhousectl cloud invitation get --email dev@example.com
 clickhousectl cloud invitation delete <invitation-id>
 ```
 
@@ -2604,7 +2615,7 @@ clickhousectl cloud key create --name ci-key \
   --state disabled   # create the key already disabled
 # --hash-key-id/--hash-key-id-suffix/--hash-key-secret submit a pre-hashed key; no secret is returned
 clickhousectl cloud key update <resource-id> \
-  --name renamed-key \
+  --new-name renamed-key \
   --state disabled
 clickhousectl cloud key update <resource-id> --expires-at 2030-12-31T23:59:59Z
 clickhousectl cloud key update <resource-id> --clear-expiry

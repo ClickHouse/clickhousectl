@@ -2,6 +2,7 @@ use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
+use crate::cloud::shared::{NameSelector, NamedResource};
 use crate::cloud::types::DeleteResponse;
 use clap::Subcommand;
 use clickhouse_cloud_api::models::{
@@ -96,13 +97,15 @@ pub enum BackupConfigCommands {
     /// Get the backup configuration
     Get {
         /// Service ID (from `cloud service list`)
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Update the backup configuration
     Update {
         /// Service ID (from `cloud service list`)
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// Interval in hours between backups
         ///
@@ -188,7 +191,12 @@ pub async fn run_config(
 ) -> CloudResult<()> {
     match command {
         BackupConfigCommands::Get { service_id } => {
-            backup_config_get(client, &service_id, json).await
+            backup_config_get(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                json,
+            )
+            .await
         }
         BackupConfigCommands::Update {
             service_id,
@@ -203,7 +211,13 @@ pub async fn run_config(
                 backup_start_time,
                 clear_backup_start_time,
             };
-            backup_config_update(client, &service_id, options, json).await
+            backup_config_update(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                options,
+                json,
+            )
+            .await
         }
     }
 }
@@ -728,7 +742,7 @@ mod tests {
         else {
             panic!("expected backup-config update");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert_eq!(backup_period_hours, Some(48));
         assert_eq!(backup_retention_period_hours, Some(336));
         assert_eq!(backup_start_time.as_deref(), Some("03:00"));
@@ -765,7 +779,7 @@ mod tests {
         else {
             panic!("expected backup-config update");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert!(backup_period_hours.is_none());
         assert!(backup_retention_period_hours.is_none());
         assert!(backup_start_time.is_none());

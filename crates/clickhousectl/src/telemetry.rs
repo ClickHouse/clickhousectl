@@ -1582,7 +1582,14 @@ mod tests {
                 args.extend([flag.as_str(), "SECRET-PATH.json"]);
                 let inv = capture_from(&args);
                 assert_eq!(inv.flags, ["file"]);
-                assert_eq!(inv.positionals, ["service_id"]);
+                assert_eq!(
+                    inv.positionals,
+                    if command[0] == "backup" {
+                        vec!["service_id"]
+                    } else {
+                        vec!["resource_id"]
+                    }
+                );
                 let json =
                     serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
                 assert!(!json.contains("SECRET"), "file value leaked: {json}");
@@ -1602,6 +1609,49 @@ mod tests {
     }
 
     #[test]
+    fn cloud_resource_selectors_capture_names_only() {
+        for (tail, flags) in [
+            (
+                vec![
+                    "--org-name",
+                    "SECRET-ORG",
+                    "service",
+                    "update",
+                    "--name",
+                    "SECRET-TARGET",
+                    "--new-name",
+                    "SECRET-REPLACEMENT",
+                ],
+                vec!["name", "new-name", "org-name"],
+            ),
+            (
+                vec!["member", "get", "--email", "SECRET-EMAIL"],
+                vec!["email"],
+            ),
+            (
+                vec![
+                    "postgres",
+                    "restore",
+                    "--source-name",
+                    "SECRET-SOURCE",
+                    "--name",
+                    "SECRET-NEW",
+                    "--restore-target",
+                    "2026-09-01T12:00:00Z",
+                ],
+                vec!["name", "restore-target", "source-name"],
+            ),
+        ] {
+            let mut args = vec!["chctl", "cloud"];
+            args.extend(tail);
+            let inv = capture_from(&args);
+            assert_eq!(inv.flags, flags);
+            let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
+            assert!(!json.contains("SECRET"), "selector value leaked: {json}");
+        }
+    }
+
+    #[test]
     fn capture_reports_names_only_never_values_or_positionals() {
         for position in 3..=6 {
             let mut args = vec![
@@ -1617,7 +1667,7 @@ mod tests {
             assert_eq!(inv.command, "cloud service get");
             assert_eq!(inv.flags, ["json", "org-id"]);
             // The positional's definition id is recorded; its value is not (#480).
-            assert_eq!(inv.positionals, ["service_id"]);
+            assert_eq!(inv.positionals, ["resource_id"]);
             let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
             assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
         }

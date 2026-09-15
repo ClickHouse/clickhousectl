@@ -1,7 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value, read_typed_config};
 use crate::cloud::output::{or_absent, print_human};
-use crate::cloud::shared::resolve_org_id;
+use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use clap::Subcommand;
 use clickhouse_cloud_api::models::{
     ClickStackAlertChannelEmail, ClickStackAlertChannelWebhook, ClickStackAlertResponse,
@@ -17,6 +17,8 @@ use clickhouse_cloud_api::models::{
     ClickStackValidateDashboardResponse, ClickStackWebhook, ClickStackWebhookInput,
 };
 use serde_json::Value;
+use std::collections::HashSet;
+use std::future::Future;
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Subcommand)]
@@ -80,8 +82,8 @@ pub enum AlertCommands {
     Get {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Alert ID (from `cloud clickstack alert list`)
-        alert_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
     /// Create a ClickStack alert
     #[command(after_help = "\
@@ -108,8 +110,8 @@ CONTEXT FOR AGENTS:
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Alert ID (from `cloud clickstack alert list`)
-        alert_id: String,
+        #[command(flatten)]
+        target: NameSelector,
         /// Complete JSON request body path, or `-` for stdin
         #[arg(
             long = "file",
@@ -123,8 +125,8 @@ CONTEXT FOR AGENTS:
     Delete {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Alert ID (from `cloud clickstack alert list`)
-        alert_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
 }
 
@@ -161,8 +163,8 @@ pub enum WebhookCommands {
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Webhook ID (from `cloud clickstack webhook list`)
-        webhook_id: String,
+        #[command(flatten)]
+        target: NameSelector,
         /// Complete JSON request body path, or `-` for stdin
         #[arg(
             long = "file",
@@ -176,8 +178,8 @@ pub enum WebhookCommands {
     Delete {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Webhook ID (from `cloud clickstack webhook list`)
-        webhook_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
 }
 
@@ -201,8 +203,8 @@ pub enum DashboardCommands {
     Get {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Dashboard ID (from `cloud clickstack dashboard list`)
-        dashboard_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
     /// Create a ClickStack dashboard
     Create {
@@ -225,8 +227,8 @@ CONTEXT FOR AGENTS:
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Dashboard ID (from `cloud clickstack dashboard list`)
-        dashboard_id: String,
+        #[command(flatten)]
+        target: NameSelector,
         /// Complete update JSON body path, or `-` for stdin
         #[arg(
             long = "file",
@@ -240,8 +242,8 @@ CONTEXT FOR AGENTS:
     Delete {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Dashboard ID (from `cloud clickstack dashboard list`)
-        dashboard_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
     /// Validate a dashboard create body without saving it
     #[command(after_help = "\
@@ -288,8 +290,8 @@ pub enum SavedSearchCommands {
     Get {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Saved search ID (from `cloud clickstack saved-search list`)
-        saved_search_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
     /// Create a ClickStack saved search
     Create {
@@ -308,8 +310,8 @@ pub enum SavedSearchCommands {
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Saved search ID (from `cloud clickstack saved-search list`)
-        saved_search_id: String,
+        #[command(flatten)]
+        target: NameSelector,
         /// Complete JSON request body path, or `-` for stdin
         #[arg(
             long = "file",
@@ -323,8 +325,8 @@ pub enum SavedSearchCommands {
     Delete {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Saved search ID (from `cloud clickstack saved-search list`)
-        saved_search_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
 }
 
@@ -348,8 +350,8 @@ pub enum SourceCommands {
     Get {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Source ID (from `cloud clickstack source list`)
-        source_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
     /// Create a ClickStack source
     Create {
@@ -368,8 +370,8 @@ pub enum SourceCommands {
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Source ID (from `cloud clickstack source list`)
-        source_id: String,
+        #[command(flatten)]
+        target: NameSelector,
         /// Complete JSON request body path, or `-` for stdin
         #[arg(
             long = "file",
@@ -383,8 +385,8 @@ pub enum SourceCommands {
     Delete {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Source ID (from `cloud clickstack source list`)
-        source_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
 }
 
@@ -408,8 +410,8 @@ pub enum RoleCommands {
     Get {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Role ID (from `cloud clickstack role list`)
-        role_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
     /// Create a ClickStack role
     Create {
@@ -431,8 +433,8 @@ CONTEXT FOR AGENTS:
     Update {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Role ID (from `cloud clickstack role list`)
-        role_id: String,
+        #[command(flatten)]
+        target: NameSelector,
         /// Complete JSON request body path, or `-` for stdin
         #[arg(
             long = "file",
@@ -446,8 +448,8 @@ CONTEXT FOR AGENTS:
     Delete {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Role ID (from `cloud clickstack role list`)
-        role_id: String,
+        #[command(flatten)]
+        target: NameSelector,
     },
 }
 
@@ -1918,6 +1920,201 @@ fn validate_source_closed_enums(request: &ClickStackSource, source: &str) -> Clo
     }
 }
 
+#[derive(Clone, Copy)]
+enum ClickStackResource {
+    Source,
+    Role,
+    Dashboard,
+    Alert,
+    Webhook,
+    SavedSearch,
+}
+
+impl ClickStackResource {
+    fn kind(self) -> &'static str {
+        match self {
+            Self::Source => "ClickStack source",
+            Self::Role => "ClickStack role",
+            Self::Dashboard => "ClickStack dashboard",
+            Self::Alert => "ClickStack alert",
+            Self::Webhook => "ClickStack webhook",
+            Self::SavedSearch => "ClickStack saved search",
+        }
+    }
+}
+
+type NamedRecord = (Option<String>, Option<String>);
+const NAME_LOOKUP_PAGE_SIZE: i64 = 1_000;
+
+fn source_name_record(source: ClickStackSourceResponse) -> CloudResult<NamedRecord> {
+    Ok(match source {
+        ClickStackSourceResponse::ClickStackLogSource(source) => (source.name, source.id),
+        ClickStackSourceResponse::ClickStackTraceSource(source) => (source.name, source.id),
+        ClickStackSourceResponse::ClickStackMetricSource(source) => (source.name, source.id),
+        ClickStackSourceResponse::ClickStackSessionSource(source) => (source.name, source.id),
+        ClickStackSourceResponse::ClickStackPromqlSource(source) => (source.name, source.id),
+        ClickStackSourceResponse::Unknown(_) => {
+            return Err(CloudError::new(
+                "Cannot resolve a ClickStack source name from an unknown source variant; use its positional ID",
+            ));
+        }
+    })
+}
+
+fn webhook_name_record(webhook: ClickStackWebhook) -> CloudResult<NamedRecord> {
+    Ok(match webhook {
+        ClickStackWebhook::ClickStackSlackWebhook(webhook) => (webhook.name, webhook.id),
+        ClickStackWebhook::ClickStackIncidentIOWebhook(webhook) => (webhook.name, webhook.id),
+        ClickStackWebhook::ClickStackGenericWebhook(webhook) => (webhook.name, webhook.id),
+        ClickStackWebhook::ClickStackSlackAPIWebhook(webhook) => (webhook.name, webhook.id),
+        ClickStackWebhook::ClickStackPagerDutyAPIWebhook(webhook) => (webhook.name, webhook.id),
+        ClickStackWebhook::Unknown(_) => {
+            return Err(CloudError::new(
+                "Cannot resolve a ClickStack webhook name from an unknown webhook variant; use its positional ID",
+            ));
+        }
+    })
+}
+
+async fn collect_name_pages<F, Fut>(
+    kind: &'static str,
+    mut fetch_page: F,
+) -> CloudResult<Vec<NamedRecord>>
+where
+    F: FnMut(i64) -> Fut,
+    Fut: Future<Output = CloudResult<Vec<NamedRecord>>>,
+{
+    let mut records = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let mut offset = 0_i64;
+    loop {
+        let page = fetch_page(offset).await?;
+        if page.len() > NAME_LOOKUP_PAGE_SIZE as usize {
+            return Err(CloudError::new(format!(
+                "Cannot resolve a {kind} name: the list exceeded its requested page size; use its positional ID"
+            )));
+        }
+        // Repeated IDs can signal an ignored offset or a changing list. Neither
+        // permits a reliable uniqueness claim, even when the final page is short.
+        for (_, id) in &page {
+            let id = id.as_deref().filter(|id| !id.trim().is_empty()).ok_or_else(|| {
+                CloudError::new(format!(
+                    "Cannot resolve a {kind} name: the paginated list contains a missing ID; use its positional ID"
+                ))
+            })?;
+            if !seen_ids.insert(id.to_owned()) {
+                return Err(CloudError::new(format!(
+                    "Cannot resolve a {kind} name: pagination repeated a resource ID; use its positional ID"
+                )));
+            }
+        }
+        let complete = page.len() < NAME_LOOKUP_PAGE_SIZE as usize;
+        records.extend(page);
+        if complete {
+            return Ok(records);
+        }
+        offset = offset.checked_add(NAME_LOOKUP_PAGE_SIZE).ok_or_else(|| {
+            CloudError::new(format!(
+                "Cannot resolve a {kind} name: pagination offset overflow; use its positional ID"
+            ))
+        })?;
+    }
+}
+
+async fn resolve_clickstack_target(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+    target: NameSelector,
+    resource: ClickStackResource,
+) -> CloudResult<String> {
+    let name = match (target.id, target.name) {
+        (Some(id), None) => return Ok(id),
+        (None, Some(name)) => name,
+        _ => {
+            return Err(CloudError::new(
+                "Specify exactly one positional ID or --name",
+            ));
+        }
+    };
+    let kind = resource.kind();
+    let records = match resource {
+        ClickStackResource::Source => client
+            .click_stack_list_sources(org_id, service_id)
+            .await?
+            .into_iter()
+            .map(source_name_record)
+            .collect::<CloudResult<Vec<_>>>()?,
+        ClickStackResource::Role => client
+            .click_stack_list_roles(org_id, service_id)
+            .await?
+            .into_iter()
+            .map(|role| (role.name, role.id))
+            .collect(),
+        ClickStackResource::Dashboard => client
+            .click_stack_list_dashboards(org_id, service_id)
+            .await?
+            .into_iter()
+            .map(|dashboard| (dashboard.name, dashboard.id))
+            .collect(),
+        ClickStackResource::Alert => {
+            collect_name_pages(kind, |offset| async move {
+                Ok(client
+                    .click_stack_list_alerts_page(
+                        org_id,
+                        service_id,
+                        Some(NAME_LOOKUP_PAGE_SIZE),
+                        Some(offset),
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|alert| (alert.name, alert.id))
+                    .collect())
+            })
+            .await?
+        }
+        ClickStackResource::Webhook => {
+            collect_name_pages(kind, |offset| async move {
+                client
+                    .click_stack_list_webhooks_page(
+                        org_id,
+                        service_id,
+                        Some(NAME_LOOKUP_PAGE_SIZE),
+                        Some(offset),
+                    )
+                    .await?
+                    .into_iter()
+                    .map(webhook_name_record)
+                    .collect()
+            })
+            .await?
+        }
+        ClickStackResource::SavedSearch => {
+            collect_name_pages(kind, |offset| async move {
+                Ok(client
+                    .click_stack_list_saved_searches_page(
+                        org_id,
+                        service_id,
+                        Some(NAME_LOOKUP_PAGE_SIZE),
+                        Some(offset),
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|search| (search.name, search.id))
+                    .collect())
+            })
+            .await?
+        }
+    };
+    select_named_id(
+        kind,
+        &name,
+        records
+            .iter()
+            .map(|(name, id)| (name.as_deref(), id.as_deref())),
+    )
+}
+
 pub async fn run(client: &CloudClient, command: ClickStackCommands, json: bool) -> CloudResult<()> {
     match command {
         ClickStackCommands::Source { command } => run_source(client, command, json).await,
@@ -1938,11 +2135,16 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
             let alerts = client.click_stack_list_alerts(&org_id, &service_id).await?;
             print_alert_list(&alerts, json)
         }
-        AlertCommands::Get {
-            service_id,
-            alert_id,
-        } => {
+        AlertCommands::Get { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let alert_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Alert,
+            )
+            .await?;
             let alert = client
                 .click_stack_get_alert(&org_id, &service_id, &alert_id)
                 .await?;
@@ -1961,21 +2163,34 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
         }
         AlertCommands::Update {
             service_id,
-            alert_id,
+            target,
             config_file,
         } => {
             let request = build_update_alert_request(&config_file)?;
             let org_id = resolve_org_id(client).await?;
+            let alert_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Alert,
+            )
+            .await?;
             let alert = client
                 .click_stack_update_alert(&org_id, &service_id, &alert_id, &request)
                 .await?;
             print_detail(&alert, json)
         }
-        AlertCommands::Delete {
-            service_id,
-            alert_id,
-        } => {
+        AlertCommands::Delete { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let alert_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Alert,
+            )
+            .await?;
             client
                 .click_stack_delete_alert(&org_id, &service_id, &alert_id)
                 .await?;
@@ -2011,21 +2226,34 @@ async fn run_webhook(
         }
         WebhookCommands::Update {
             service_id,
-            webhook_id,
+            target,
             config_file,
         } => {
             let request = build_webhook_request(&config_file)?;
             let org_id = resolve_org_id(client).await?;
+            let webhook_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Webhook,
+            )
+            .await?;
             let webhook = client
                 .click_stack_update_webhook(&org_id, &service_id, &webhook_id, &request)
                 .await?;
             print_detail(&webhook, json)
         }
-        WebhookCommands::Delete {
-            service_id,
-            webhook_id,
-        } => {
+        WebhookCommands::Delete { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let webhook_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Webhook,
+            )
+            .await?;
             client
                 .click_stack_delete_webhook(&org_id, &service_id, &webhook_id)
                 .await?;
@@ -2048,11 +2276,16 @@ async fn run_dashboard(
                 .await?;
             print_dashboard_list(&dashboards, json)
         }
-        DashboardCommands::Get {
-            service_id,
-            dashboard_id,
-        } => {
+        DashboardCommands::Get { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let dashboard_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Dashboard,
+            )
+            .await?;
             let dashboard = client
                 .click_stack_get_dashboard(&org_id, &service_id, &dashboard_id)
                 .await?;
@@ -2071,21 +2304,34 @@ async fn run_dashboard(
         }
         DashboardCommands::Update {
             service_id,
-            dashboard_id,
+            target,
             config_file,
         } => {
             let request = build_update_dashboard_request(&config_file)?;
             let org_id = resolve_org_id(client).await?;
+            let dashboard_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Dashboard,
+            )
+            .await?;
             let dashboard = client
                 .click_stack_update_dashboard(&org_id, &service_id, &dashboard_id, &request)
                 .await?;
             print_detail(&dashboard, json)
         }
-        DashboardCommands::Delete {
-            service_id,
-            dashboard_id,
-        } => {
+        DashboardCommands::Delete { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let dashboard_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Dashboard,
+            )
+            .await?;
             client
                 .click_stack_delete_dashboard(&org_id, &service_id, &dashboard_id)
                 .await?;
@@ -2119,11 +2365,16 @@ async fn run_saved_search(
                 .await?;
             print_saved_search_list(&searches, json)
         }
-        SavedSearchCommands::Get {
-            service_id,
-            saved_search_id,
-        } => {
+        SavedSearchCommands::Get { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let saved_search_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::SavedSearch,
+            )
+            .await?;
             let search = client
                 .click_stack_get_saved_search(&org_id, &service_id, &saved_search_id)
                 .await?;
@@ -2142,21 +2393,34 @@ async fn run_saved_search(
         }
         SavedSearchCommands::Update {
             service_id,
-            saved_search_id,
+            target,
             config_file,
         } => {
             let request = build_saved_search_request(&config_file)?;
             let org_id = resolve_org_id(client).await?;
+            let saved_search_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::SavedSearch,
+            )
+            .await?;
             let search = client
                 .click_stack_update_saved_search(&org_id, &service_id, &saved_search_id, &request)
                 .await?;
             print_detail(&search, json)
         }
-        SavedSearchCommands::Delete {
-            service_id,
-            saved_search_id,
-        } => {
+        SavedSearchCommands::Delete { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let saved_search_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::SavedSearch,
+            )
+            .await?;
             client
                 .click_stack_delete_saved_search(&org_id, &service_id, &saved_search_id)
                 .await?;
@@ -2175,11 +2439,16 @@ async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -
                 .await?;
             print_source_list(&sources, json)
         }
-        SourceCommands::Get {
-            service_id,
-            source_id,
-        } => {
+        SourceCommands::Get { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let source_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Source,
+            )
+            .await?;
             let source = client
                 .click_stack_get_source(&org_id, &service_id, &source_id)
                 .await?;
@@ -2198,21 +2467,34 @@ async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -
         }
         SourceCommands::Update {
             service_id,
-            source_id,
+            target,
             config_file,
         } => {
             let request = build_source_request(&config_file)?;
             let org_id = resolve_org_id(client).await?;
+            let source_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Source,
+            )
+            .await?;
             let source = client
                 .click_stack_update_source(&org_id, &service_id, &source_id, &request)
                 .await?;
             print_detail(&source, json)
         }
-        SourceCommands::Delete {
-            service_id,
-            source_id,
-        } => {
+        SourceCommands::Delete { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let source_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Source,
+            )
+            .await?;
             client
                 .click_stack_delete_source(&org_id, &service_id, &source_id)
                 .await?;
@@ -2229,11 +2511,16 @@ async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> Cl
             let roles = client.click_stack_list_roles(&org_id, &service_id).await?;
             print_role_list(&roles, json)
         }
-        RoleCommands::Get {
-            service_id,
-            role_id,
-        } => {
+        RoleCommands::Get { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let role_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Role,
+            )
+            .await?;
             let role = client
                 .click_stack_get_role(&org_id, &service_id, &role_id)
                 .await?;
@@ -2252,21 +2539,34 @@ async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> Cl
         }
         RoleCommands::Update {
             service_id,
-            role_id,
+            target,
             config_file,
         } => {
             let request = build_update_role_request(&config_file)?;
             let org_id = resolve_org_id(client).await?;
+            let role_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Role,
+            )
+            .await?;
             let role = client
                 .click_stack_update_role(&org_id, &service_id, &role_id, &request)
                 .await?;
             print_detail(&role, json)
         }
-        RoleCommands::Delete {
-            service_id,
-            role_id,
-        } => {
+        RoleCommands::Delete { service_id, target } => {
             let org_id = resolve_org_id(client).await?;
+            let role_id = resolve_clickstack_target(
+                client,
+                &org_id,
+                &service_id,
+                target,
+                ClickStackResource::Role,
+            )
+            .await?;
             client
                 .click_stack_delete_role(&org_id, &service_id, &role_id)
                 .await?;
@@ -2540,9 +2840,20 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
     ) -> CloudResult<Vec<ClickStackAlertResponse>> {
+        self.click_stack_list_alerts_page(org_id, service_id, None, None)
+            .await
+    }
+
+    async fn click_stack_list_alerts_page(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> CloudResult<Vec<ClickStackAlertResponse>> {
         let response = self
             .api()
-            .click_stack_list_alerts(org_id, service_id, None, None)
+            .click_stack_list_alerts(org_id, service_id, limit, offset)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
@@ -2613,9 +2924,20 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
     ) -> CloudResult<Vec<ClickStackWebhook>> {
+        self.click_stack_list_webhooks_page(org_id, service_id, None, None)
+            .await
+    }
+
+    async fn click_stack_list_webhooks_page(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> CloudResult<Vec<ClickStackWebhook>> {
         let response = self
             .api()
-            .click_stack_list_webhooks(org_id, service_id, None, None)
+            .click_stack_list_webhooks(org_id, service_id, limit, offset)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
@@ -2759,9 +3081,20 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
     ) -> CloudResult<Vec<ClickStackSavedSearch>> {
+        self.click_stack_list_saved_searches_page(org_id, service_id, None, None)
+            .await
+    }
+
+    async fn click_stack_list_saved_searches_page(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
+    ) -> CloudResult<Vec<ClickStackSavedSearch>> {
         let response = self
             .api()
-            .click_stack_list_saved_searches(org_id, service_id, None, None)
+            .click_stack_list_saved_searches(org_id, service_id, limit, offset)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
@@ -3090,6 +3423,304 @@ mod tests {
     }
 
     #[test]
+    fn target_commands_require_service_and_one_child_selector() {
+        use clap::{CommandFactory, error::ErrorKind};
+        for family in [
+            "source",
+            "role",
+            "dashboard",
+            "alert",
+            "webhook",
+            "saved-search",
+        ] {
+            for operation in ["get", "update", "delete"] {
+                if family == "webhook" && operation == "get" {
+                    continue;
+                }
+                let mut base = vec!["clickhousectl", "cloud", "clickstack", family, operation];
+                if operation == "update" {
+                    base.extend(["--file", "-"]);
+                }
+                for selector in [vec!["opaque-child-id"], vec!["--name", "exact child name"]] {
+                    let mut args = base.clone();
+                    args.push("parent-service-id");
+                    args.extend(selector);
+                    let matches = Cli::command().try_get_matches_from(&args).unwrap();
+                    let (_, cloud) = matches.subcommand().unwrap();
+                    let (_, clickstack) = cloud.subcommand().unwrap();
+                    let (_, resource) = clickstack.subcommand().unwrap();
+                    let (_, target) = resource.subcommand().unwrap();
+                    assert_eq!(
+                        target.get_one::<String>("service_id").map(String::as_str),
+                        Some("parent-service-id")
+                    );
+                    let by_name = args.contains(&"--name");
+                    assert_eq!(
+                        target.get_one::<String>("resource_id").map(String::as_str),
+                        (!by_name).then_some("opaque-child-id")
+                    );
+                    assert_eq!(
+                        target.get_one::<String>("name").map(String::as_str),
+                        by_name.then_some("exact child name")
+                    );
+                    let parsed = parse_clickstack(&args);
+                    assert_eq!(parsed.is_write(), operation != "get");
+                }
+                for (suffix, expected) in [
+                    (
+                        vec!["parent-service-id"],
+                        ErrorKind::MissingRequiredArgument,
+                    ),
+                    (vec!["--name", "child"], ErrorKind::MissingRequiredArgument),
+                    (
+                        vec!["parent-service-id", "child-id", "--name", "child"],
+                        ErrorKind::ArgumentConflict,
+                    ),
+                ] {
+                    let mut args = base.clone();
+                    args.extend(suffix);
+                    assert_eq!(
+                        Cli::try_parse_from(args).err().unwrap().kind(),
+                        expected,
+                        "{family} {operation}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn untargeted_commands_do_not_accept_child_selectors() {
+        for family in [
+            "source",
+            "role",
+            "dashboard",
+            "alert",
+            "webhook",
+            "saved-search",
+        ] {
+            for operation in ["list", "create", "validate"] {
+                if operation == "validate" && family != "dashboard" {
+                    continue;
+                }
+                let mut args = vec![
+                    "clickhousectl",
+                    "cloud",
+                    "clickstack",
+                    family,
+                    operation,
+                    "service-id",
+                ];
+                if operation != "list" {
+                    args.extend(["--file", "-"]);
+                }
+                assert!(Cli::try_parse_from(&args).is_ok());
+                args.extend(["--name", "child"]);
+                assert_eq!(
+                    Cli::try_parse_from(args).err().unwrap().kind(),
+                    clap::error::ErrorKind::UnknownArgument,
+                    "{family} {operation}"
+                );
+            }
+        }
+    }
+
+    fn named_record(name: &str, id: &str) -> NamedRecord {
+        (Some(name.to_owned()), Some(id.to_owned()))
+    }
+
+    fn full_name_page() -> Vec<NamedRecord> {
+        (0..NAME_LOOKUP_PAGE_SIZE)
+            .map(|index| named_record(&format!("name-{index}"), &format!("id-{index}")))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn name_pagination_reads_every_page_before_selecting() {
+        let mut offsets = Vec::new();
+        let records = collect_name_pages("ClickStack alert", |offset| {
+            offsets.push(offset);
+            std::future::ready(Ok(if offset == 0 {
+                full_name_page()
+            } else {
+                vec![named_record("last-page-target", "last-id")]
+            }))
+        })
+        .await
+        .unwrap();
+        assert_eq!(offsets, [0, NAME_LOOKUP_PAGE_SIZE]);
+        assert_eq!(
+            select_named_id(
+                "ClickStack alert",
+                "last-page-target",
+                records
+                    .iter()
+                    .map(|(name, id)| (name.as_deref(), id.as_deref()))
+            )
+            .unwrap(),
+            "last-id"
+        );
+    }
+
+    #[tokio::test]
+    async fn name_pagination_rejects_duplicates_on_later_pages() {
+        let records = collect_name_pages("ClickStack alert", |offset| {
+            std::future::ready(Ok(if offset == 0 {
+                full_name_page()
+            } else {
+                vec![named_record("name-0", "another-id")]
+            }))
+        })
+        .await
+        .unwrap();
+        assert!(
+            select_named_id(
+                "ClickStack alert",
+                "name-0",
+                records
+                    .iter()
+                    .map(|(name, id)| (name.as_deref(), id.as_deref()))
+            )
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn name_pagination_checks_for_completion_after_full_page() {
+        let mut offsets = Vec::new();
+        let records = collect_name_pages("ClickStack alert", |offset| {
+            offsets.push(offset);
+            std::future::ready(Ok(if offset == 0 {
+                full_name_page()
+            } else {
+                Vec::new()
+            }))
+        })
+        .await
+        .unwrap();
+        assert_eq!(offsets, [0, NAME_LOOKUP_PAGE_SIZE]);
+        assert_eq!(records.len(), NAME_LOOKUP_PAGE_SIZE as usize);
+    }
+
+    #[tokio::test]
+    async fn name_pagination_rejects_repeated_missing_and_oversized_pages() {
+        let mut offsets = Vec::new();
+        let error = collect_name_pages("ClickStack alert", |offset| {
+            offsets.push(offset);
+            std::future::ready(Ok(full_name_page()))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(offsets, [0, NAME_LOOKUP_PAGE_SIZE]);
+        assert!(error.message.contains("repeated"));
+
+        for id in [None, Some(String::new()), Some(" ".to_owned())] {
+            let error = collect_name_pages("ClickStack alert", |_| {
+                std::future::ready(Ok(vec![(Some("target".to_owned()), id.clone())]))
+            })
+            .await
+            .unwrap_err();
+            assert!(error.message.contains("missing ID"));
+        }
+        let error = collect_name_pages("ClickStack alert", |_| {
+            let mut page = full_name_page();
+            page.push(named_record("extra", "extra-id"));
+            std::future::ready(Ok(page))
+        })
+        .await
+        .unwrap_err();
+        assert!(error.message.contains("page size"));
+    }
+
+    #[tokio::test]
+    async fn name_pagination_preserves_list_failures() {
+        let failure = crate::failure::ApiFailure::new(crate::failure::FailureKind::Http4xx);
+        let error = collect_name_pages("ClickStack alert", |offset| {
+            std::future::ready(if offset == 0 {
+                Ok(full_name_page())
+            } else {
+                Err(CloudError::auth("list denied").with_failure(failure))
+            })
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Auth);
+        assert_eq!(error.failure, Some(failure));
+        assert_eq!(error.message, "list denied");
+    }
+
+    #[test]
+    fn source_names_use_every_typed_variant_and_reject_unknown_variants() {
+        for kind in ["log", "trace", "metric", "session", "promql"] {
+            let source = serde_json::from_value(
+                serde_json::json!({"kind":kind,"name":"target","id":"source-id"}),
+            )
+            .unwrap();
+            assert_eq!(
+                source_name_record(source).unwrap(),
+                named_record("target", "source-id")
+            );
+        }
+        let unknown = serde_json::from_value(
+            serde_json::json!({"kind":"future-kind","name":"target","id":"source-id"}),
+        )
+        .unwrap();
+        assert!(source_name_record(unknown).is_err());
+    }
+
+    #[test]
+    fn webhook_names_use_every_typed_variant_and_reject_unknown_variants() {
+        for service in [
+            "slack",
+            "incidentio",
+            "generic",
+            "slack_api",
+            "pagerduty_api",
+        ] {
+            let webhook = serde_json::from_value(
+                serde_json::json!({"service":service,"name":"target","id":"webhook-id"}),
+            )
+            .unwrap();
+            assert_eq!(
+                webhook_name_record(webhook).unwrap(),
+                named_record("target", "webhook-id")
+            );
+        }
+        let unknown = serde_json::from_value(
+            serde_json::json!({"service":"future-service","name":"target","id":"webhook-id"}),
+        )
+        .unwrap();
+        assert!(webhook_name_record(unknown).is_err());
+    }
+
+    #[tokio::test]
+    async fn positional_clickstack_ids_skip_name_lookups() {
+        let client = CloudClient::for_tests("http://127.0.0.1:1", None);
+        for resource in [
+            ClickStackResource::Source,
+            ClickStackResource::Role,
+            ClickStackResource::Dashboard,
+            ClickStackResource::Alert,
+            ClickStackResource::Webhook,
+            ClickStackResource::SavedSearch,
+        ] {
+            let id = resolve_clickstack_target(
+                &client,
+                "org-id",
+                "service-id",
+                NameSelector {
+                    id: Some("opaque-id".to_owned()),
+                    name: None,
+                },
+                resource,
+            )
+            .await
+            .unwrap();
+            assert_eq!(id, "opaque-id");
+        }
+    }
+
+    #[test]
     fn parses_clickstack_config_commands() {
         let command = parse_clickstack(&[
             "clickhousectl",
@@ -3128,7 +3759,7 @@ mod tests {
             command:
                 RoleCommands::Update {
                     config_file,
-                    role_id,
+                    target,
                     ..
                 },
         } = command
@@ -3136,7 +3767,7 @@ mod tests {
             panic!("expected role update")
         };
         assert_eq!(config_file, "role.json");
-        assert_eq!(role_id, "role-1");
+        assert_eq!(target.id.as_deref(), Some("role-1"));
 
         let command = parse_clickstack(&[
             "clickhousectl",
@@ -3154,7 +3785,7 @@ mod tests {
         let ClickStackCommands::SavedSearch {
             command:
                 SavedSearchCommands::Update {
-                    saved_search_id,
+                    target,
                     config_file,
                     ..
                 },
@@ -3162,7 +3793,7 @@ mod tests {
         else {
             panic!("expected saved search update")
         };
-        assert_eq!(saved_search_id, "search-1");
+        assert_eq!(target.id.as_deref(), Some("search-1"));
         assert_eq!(config_file, "-");
     }
 
@@ -3202,7 +3833,7 @@ mod tests {
         let ClickStackCommands::Dashboard {
             command:
                 DashboardCommands::Update {
-                    dashboard_id,
+                    target,
                     config_file,
                     ..
                 },
@@ -3210,7 +3841,7 @@ mod tests {
         else {
             panic!("expected dashboard update")
         };
-        assert_eq!(dashboard_id, "dash-1");
+        assert_eq!(target.id.as_deref(), Some("dash-1"));
         assert_eq!(config_file, "dashboard.json");
     }
 
@@ -3250,7 +3881,7 @@ mod tests {
         let ClickStackCommands::Webhook {
             command:
                 WebhookCommands::Update {
-                    webhook_id,
+                    target,
                     config_file,
                     ..
                 },
@@ -3258,7 +3889,7 @@ mod tests {
         else {
             panic!("expected webhook update")
         };
-        assert_eq!(webhook_id, "webhook-1");
+        assert_eq!(target.id.as_deref(), Some("webhook-1"));
         assert_eq!(config_file, "webhook.json");
 
         assert!(
