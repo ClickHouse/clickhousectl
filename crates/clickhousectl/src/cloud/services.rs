@@ -488,12 +488,12 @@ CONTEXT FOR AGENTS:
         after_help = "\
 CONTEXT FOR AGENTS:
   One statement per request: a ';'-separated script is rejected. Run statements one call at a time.
-  Times out after about 30 seconds: the statement keeps running, the result is lost, and
-    the error prints a `clickhouse client` fallback.
+  A timeout may include wake delays; SQL may have executed. The CLI never retries a timeout.
+  For long statements on a running service, use the native `clickhouse client`.
   SQL is read from stdin unless --query or --queries-file is given; --query never reads stdin.
   This proxied path does not use the service IP access list; API key queries still use the key's access list.
   API key auth runs read+write SQL; OAuth is read-only SELECT.
-  An idle service wakes automatically; a stopped one needs `cloud service start <id>` first.
+  Queries request an idle service wake; a stopped one needs `cloud service start <id>` first.
   A stored query key rejected with 401/403 is never replaced automatically: `cloud service repair-query-key <id>`."
     )]
     Query {
@@ -3330,25 +3330,64 @@ async fn run_basic_service_query(
     format: &str,
     service_name: &str,
     confirmed_idle: bool,
-) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
-    let run = |wake: bool| {
+) -> Result<reqwest::Response, QueryRequestError> {
+    run_service_query_with_wake(service_name, confirmed_idle, |wake| {
         client
             .api()
             .run_query(service_id, key_id, key_secret, sql, database, format, wake)
+    })
+    .await
+}
+
+/// Preserve an explicit pre-execution idle response when the following wake
+/// attempt fails. A timeout alone never permits another SQL submission.
+struct QueryRequestError {
+    error: clickhouse_cloud_api::Error,
+    wake_requested: bool,
+}
+
+impl QueryRequestError {
+    fn into_cloud_error(self, client: &CloudClient, target: QueryTarget<'_>) -> CloudError {
+        convert_query_error(
+            client,
+            self.error,
+            QueryTarget {
+                may_be_waking: target.may_be_waking || self.wake_requested,
+                ..target
+            },
+        )
+    }
+}
+
+async fn run_service_query_with_wake<F, Fut>(
+    service_name: &str,
+    confirmed_idle: bool,
+    run: F,
+) -> Result<reqwest::Response, QueryRequestError>
+where
+    F: Fn(bool) -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, clickhouse_cloud_api::Error>>,
+{
+    let waking_error = |error| QueryRequestError {
+        error,
+        wake_requested: true,
     };
     if confirmed_idle {
         eprint_waking_service(service_name);
         failure::note_retry();
-        return run(true).await;
+        return run(true).await.map_err(waking_error);
     }
 
     match run(false).await {
         Err(clickhouse_cloud_api::Error::ServiceIdle) => {
             eprint_waking_service(service_name);
             failure::note_retry();
-            run(true).await
+            run(true).await.map_err(waking_error)
         }
-        other => other,
+        other => other.map_err(|error| QueryRequestError {
+            error,
+            wake_requested: false,
+        }),
     }
 }
 
@@ -3455,7 +3494,7 @@ async fn run_just_provisioned_service_query(
         confirmed_idle,
     )
     .await
-    .map_err(|error| convert_query_error(client, error, target))
+    .map_err(|error| error.into_cloud_error(client, target))
 }
 
 /// Whether an error means "the Query API endpoint is not (yet) usable by this
@@ -3538,6 +3577,12 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         service_id: &service_id,
         org_id: &org_id,
         native: native.as_ref(),
+        // Use the service lookup already required for this query. This is
+        // evidence of a possible wake delay, not proof the SQL never ran.
+        may_be_waking: matches!(
+            service.state,
+            Some(ServiceState::Idle | ServiceState::Awaking)
+        ),
     };
 
     let format = options.format.unwrap_or_else(|| {
@@ -3567,20 +3612,15 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 wake,
             )
         };
-        let result = match run(false).await {
-            Err(clickhouse_cloud_api::Error::ServiceIdle) => {
-                eprint_waking_service(&service_name);
-                failure::note_retry();
-                run(true).await
-            }
-            other => other,
-        };
-        result.map_err(|error| {
-            convert_query_error(client, error, target).at_stage(FailureStage::QueryRequest)
-        })?
+        run_service_query_with_wake(&service_name, false, run)
+            .await
+            .map_err(|error| {
+                error
+                    .into_cloud_error(client, target)
+                    .at_stage(FailureStage::QueryRequest)
+            })?
     } else {
-        let convert =
-            |error: clickhouse_cloud_api::Error| convert_query_error(client, error, target);
+        let convert = |error: QueryRequestError| error.into_cloud_error(client, target);
         let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)
             .map_err(|error| error.at_stage(FailureStage::QueryRequest))?
         {
@@ -3609,7 +3649,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             )
             .await
             {
-                Err(error) => match stored_query_key_rejection_status(&error) {
+                Err(error) => match stored_query_key_rejection_status(&error.error) {
                     // The 401/403 alone does not say whether the key is stale
                     // or was deliberately revoked; the management record
                     // decides, and nothing is replaced automatically (#528).
@@ -3649,10 +3689,10 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             )
             .await
             {
-                Err(error) if query_endpoint_readiness_error(&error) => {
+                Err(error) if query_endpoint_readiness_error(&error.error) => {
                     if options.no_auto_enable {
                         failure::set_provisioning_state(ProvisioningState::Refused);
-                        return Err(refused_query_provisioning_error(&service_id, &error)
+                        return Err(refused_query_provisioning_error(&service_id, &error.error)
                             .at_stage(FailureStage::QueryRequest));
                     }
                     eprint_line(format!(
@@ -3784,6 +3824,9 @@ struct QueryTarget<'a> {
     /// The service's `nativesecure` endpoint, when the `GET service`
     /// response carried a complete one.
     native: Option<&'a NativeEndpoint>,
+    /// An idle/awaking service lookup, or an explicit pre-execution idle
+    /// response followed by a wake request. Neither proves the SQL did not run.
+    may_be_waking: bool,
 }
 
 /// The service's `nativesecure` endpoint, when the API returned a complete
@@ -3828,43 +3871,50 @@ fn native_client_command(native: Option<&NativeEndpoint>) -> String {
     )
 }
 
-/// The Query API gateway stopped waiting for the statement (#644).
-///
-/// The statement itself is unaffected, so the message leads with that and
-/// points at `system.processes` *before* offering the native-protocol route:
-/// re-running an `INSERT` that is still executing loads the data twice. There
-/// is deliberately no retry anywhere on this path.
+/// Diagnose a typed gateway timeout using the state observed before the
+/// request (#826). A possible wake delay does not prove the statement was
+/// never executed, so neither diagnosis permits an automatic retry.
 fn query_timeout_error(target: QueryTarget<'_>) -> CloudError {
-    let command = native_client_command(target.native);
-    let endpoint_guidance = if target.native.is_some() {
-        String::new()
-    } else {
-        format!(
-            "\nThe API response carried no native endpoint for this service; read the host and \
-             port from `clickhousectl cloud service get {} --org-id {}`.",
+    let details = if target.may_be_waking {
+        let command = format!(
+            "clickhousectl cloud service get {} --org-id {}",
             target.service_id, target.org_id
-        )
-    };
-    let message = format!(
-        "the query timed out at the Query API gateway, which stops waiting after about 30 \
-         seconds.\nThe statement may still be running on the service; check `SELECT query_id, \
-         elapsed FROM system.processes` before running it again.\n\nHint: run long statements \
-         over the native protocol instead. Install the client with\n  clickhousectl local use \
-         latest\nthen rerun the query with\n  {command}{endpoint_guidance}\nThe password is the \
-         one shown when the service was created; `clickhousectl cloud service reset-password {}` \
-         issues a new one.",
-        target.service_id
-    );
-
-    CloudError::new(message.clone())
-        // Rewriting the message must not lose the classification the variant
-        // already established, and the classification still comes only from
-        // the variant (#450).
-        .with_failure(failure::classify_api_error(
-            &clickhouse_cloud_api::Error::QueryTimeout,
-        ))
-        // The same failure, machine-readable, for `--json` mode.
-        .with_details(CloudErrorDetail {
+        );
+        let message = format!(
+            "the query timed out and service '{}' may still be waking; it was idle or awaking \
+             before the query attempt.\nThe statement may already have executed or may still be \
+             running; it was not retried after the timeout.\nCheck the service state with \
+             `{command}`. Once it is running, verify the statement's outcome before deciding \
+             whether it is safe to run again.",
+            target.service_name
+        );
+        CloudErrorDetail {
+            command: Some(command),
+            ..CloudErrorDetail::new(CloudErrorCode::QueryTimeout, message)
+        }
+    } else {
+        let command = native_client_command(target.native);
+        let endpoint_guidance = if target.native.is_some() {
+            String::new()
+        } else {
+            format!(
+                "\nThe API response carried no native endpoint for this service; read the host and \
+                 port from `clickhousectl cloud service get {} --org-id {}`.",
+                target.service_id, target.org_id
+            )
+        };
+        let message = format!(
+            "the query timed out at the Query API gateway, which stops waiting after about 30 \
+             seconds.\nThe statement may still be running on the service or may already have \
+             completed; check `SELECT query_id, elapsed FROM system.processes` and verify its \
+             outcome before running it again.\n\nHint: run long statements over the native \
+             protocol instead. Install the client with\n  clickhousectl local use latest\nthen \
+             rerun the query with\n  {command}{endpoint_guidance}\nThe password is the one shown \
+             when the service was created; `clickhousectl cloud service reset-password {}` \
+             issues a new one.",
+            target.service_id
+        );
+        CloudErrorDetail {
             code: CloudErrorCode::QueryTimeout,
             message,
             host: target.native.map(|native| native.host.clone()),
@@ -3872,7 +3922,15 @@ fn query_timeout_error(target: QueryTarget<'_>) -> CloudError {
             command: Some(command),
             api_key_id: None,
             ip_access_list: None,
-        })
+        }
+    };
+
+    CloudError::new(details.message.clone())
+        // Both diagnoses retain the typed timeout classification (#450).
+        .with_failure(failure::classify_api_error(
+            &clickhouse_cloud_api::Error::QueryTimeout,
+        ))
+        .with_details(details)
 }
 
 fn convert_query_error(
@@ -7154,6 +7212,7 @@ mod tests {
             service_id: "svc-1",
             org_id: "org-1",
             native,
+            may_be_waking: false,
         }
     }
 
@@ -7297,6 +7356,52 @@ mod tests {
                  default --password '<password>' --query '<your SQL>'"
             )
         );
+    }
+
+    #[test]
+    fn query_timeout_after_wake_retains_structural_classification() {
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let error = QueryRequestError {
+            error: clickhouse_cloud_api::Error::QueryTimeout,
+            wake_requested: true,
+        }
+        .into_cloud_error(&client, test_query_target(None));
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure,
+            Some(ApiFailure::with_status(FailureKind::Timeout, 500))
+        );
+        let details = error.details.as_deref().unwrap();
+        assert_eq!(details.code, CloudErrorCode::QueryTimeout);
+        assert_eq!(details.message, error.message);
+        assert_eq!(
+            details.command.as_deref(),
+            Some("clickhousectl cloud service get svc-1 --org-id org-1")
+        );
+        assert!(details.host.is_none());
+        assert!(details.port.is_none());
+
+        for status in [401, 403, 500] {
+            let error = QueryRequestError {
+                error: clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "unrelated failure".into(),
+                },
+                wake_requested: true,
+            }
+            .into_cloud_error(&client, test_query_target(None));
+            assert!(!error.message.contains("waking"));
+            assert_eq!(error.failure.unwrap().http_status, Some(status));
+            assert_eq!(
+                error.kind == crate::cloud::client::CloudErrorKind::Auth,
+                status == 401 || status == 403
+            );
+        }
     }
 
     #[test]

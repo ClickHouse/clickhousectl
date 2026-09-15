@@ -1060,7 +1060,9 @@ printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
 
 Only real input counts as a conflict: an empty non-terminal stdin (a CI runner, a coding agent) leaves `--query` working, and a silent pipe is given 250 ms to produce a byte before stdin is treated as empty.
 
-The Query API gateway stops waiting after about 30 seconds. When it does, the request fails (exit code `1`) but **the statement keeps running on the service** — only the HTTP response is lost. The error says so, points at `SELECT query_id, elapsed FROM system.processes` so a still-running statement is not started a second time, and prints the `clickhouse client` command for the service's own native endpoint. Nothing is retried automatically: re-sending a large `INSERT` would load the data twice.
+The Query API gateway can stop waiting after about 30 seconds. A timeout fails with exit code `1`, but **the statement may still be running or may already have completed**. The CLI never retries a timed-out statement: re-sending an `INSERT` could load the data twice. For a service last observed running, or whose state is unavailable, the error points at `SELECT query_id, elapsed FROM system.processes` and the service's native client endpoint. Verify the statement's outcome before running it again; absence from `system.processes` alone does not prove it never ran.
+
+If the existing service lookup reported `idle` or `awaking`, or the Query API requested a wake confirmation before accepting SQL, the timeout instead explains that the service may still be waking and gives a `cloud service get` command to check its state. This is a possible wake delay, not proof the statement never executed. There is no additional polling or SQL replay after a timeout; once the service is running, verify the statement's outcome before deciding whether a retry is safe.
 
 For anything that may run longer than that — large `INSERT`s, backfills, `url()` loads — use the native protocol from the start:
 
@@ -1086,7 +1088,7 @@ Under `--json` (or when a coding agent is detected) that failure is emitted as o
 }
 ```
 
-`code` is a stable machine-readable identifier. `host` and `port` are omitted when the API response carried no native endpoint, in which case `command` names the `<host>` placeholder instead. The suggested command never contains your SQL or your password: both are placeholders. Cloud failures without a specific remedy use the same envelope with a general error code and the original message.
+`code` is a stable machine-readable identifier; both timeout diagnoses use `query_timeout`. For a possible wake delay, `command` checks the service state and `host` and `port` are omitted. Otherwise, `host` and `port` are omitted when the API response carried no native endpoint, in which case `command` names the `<host>` placeholder instead. The suggested command never contains your SQL or your password: both are placeholders. Cloud failures without a specific remedy use the same envelope with a general error code and the original message.
 
 Whatever the source, the SQL must be a single statement. The Query API runs exactly one statement per request, so a multi-statement `.sql` script is rejected by ClickHouse (error 62, `Multi-statements are not allowed`). Run statements one invocation at a time, or put a real client on PATH with `clickhousectl local use latest` and run the script through `clickhouse client` connected to the service.
 
@@ -1128,7 +1130,7 @@ A repair also retires the key it replaced and deletes it best-effort; a failed d
 
 Do not modify the same query endpoint concurrently with a repair, and let a first-use query finish provisioning before running one.
 
-Querying an **idled** service wakes it automatically in both auth modes — under OAuth the Query API first asks for a wake confirmation, which the CLI sends after printing a notice to stderr (the first query may take a minute while the service wakes). A **stopped** service is never woken: the query fails with a hint to run `cloud service start`.
+Querying an **idled** service requests a wake in both auth modes. If the Query API refuses execution and asks for a wake confirmation, the CLI prints a notice to stderr and resends with that confirmation. The request may succeed while the service wakes, or time out before a result arrives; a timeout is never retried automatically. A **stopped** service is never woken: the query fails with a hint to run `cloud service start`.
 
 The Query API host is derived from the API base URL per environment (`api.[control-plane.]<domain>` → `queries.<domain>`, e.g. `https://queries.clickhouse.cloud` for production). Set `CLICKHOUSE_CLOUD_QUERY_HOST` to override it.
 

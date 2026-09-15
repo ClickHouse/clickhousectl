@@ -16873,11 +16873,16 @@ const QUERY_TEST_NATIVE_HOST: &str = "demo.gcp.clickhouse.cloud";
 /// A control plane whose `GET service` response carries both endpoints, the
 /// shape a real service has.
 async fn start_mock_control_plane_with_native_endpoint() -> MockServer {
+    start_mock_control_plane_with_query_state(Some("running")).await
+}
+
+async fn start_mock_control_plane_with_query_state(state: Option<&str>) -> MockServer {
     let mock = MockServer::start().await;
     let stub_service = serde_json::json!({
         "result": {
             "id": QUERY_TEST_SERVICE_ID,
             "name": "demo",
+            "state": state,
             "endpoints": [
                 { "protocol": "https", "host": QUERY_TEST_NATIVE_HOST, "port": 8443 },
                 {
@@ -17074,6 +17079,253 @@ async fn query_gateway_timeout_json_omits_an_absent_endpoint() {
             .is_some_and(|command| command.contains("--host <host>")),
         "{stderr}"
     );
+}
+
+// ── Query timeout diagnosis after an idle/wake observation (#826) ─────────
+
+async fn invoke_service_query_for_timeout_test(
+    control: &MockServer,
+    query_host: &MockServer,
+    auth: &str,
+    json: bool,
+) -> std::process::Output {
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home/.clickhouse");
+    std::fs::create_dir_all(&home).unwrap();
+    let sql = if auth == "oauth" {
+        "SELECT 826"
+    } else {
+        "INSERT INTO events VALUES (826)"
+    };
+    let mut command = service_query_process_with_sql(project.path(), control, query_host, sql);
+    match auth {
+        "oauth" => {
+            write_oauth_tokens(&home, &control.uri());
+            command
+                .env_remove("CLICKHOUSE_CLOUD_API_KEY")
+                .env_remove("CLICKHOUSE_CLOUD_API_SECRET");
+        }
+        "stored" => {
+            write_repair_query_credentials(
+                project.path(),
+                Some("org-1"),
+                Some(QUERY_TEST_KEY_UUID),
+                Some("ep-1"),
+                &[],
+            );
+        }
+        "management" => {}
+        other => panic!("unexpected auth mode: {other}"),
+    }
+    if json {
+        command.arg("--json");
+    }
+    command
+        .output()
+        .await
+        .expect("failed to spawn clickhousectl")
+}
+
+fn assert_query_wake_timeout(output: &std::process::Output, json: bool) {
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let message = if json {
+        // An explicit wake confirmation retains its existing progress notice
+        // before the structured error; a pre-query state adds no notice.
+        let envelope: Value = serde_json::from_str(&stderr[stderr.find('{').unwrap()..]).unwrap();
+        let error = &envelope["error"];
+        assert_eq!(error["code"], "query_timeout");
+        assert_eq!(
+            error["command"],
+            format!("clickhousectl cloud service get {QUERY_TEST_SERVICE_ID} --org-id org-1")
+        );
+        assert!(error.get("host").is_none());
+        assert!(error.get("port").is_none());
+        error["message"].as_str().unwrap().to_string()
+    } else {
+        stderr.to_string()
+    };
+    assert!(message.contains("may still be waking"), "{message}");
+    assert!(message.contains("may already have executed"), "{message}");
+    assert!(
+        message.contains("verify the statement's outcome"),
+        "{message}"
+    );
+    assert!(!message.contains("30 seconds"), "{message}");
+    assert!(!message.contains("clickhouse client"), "{message}");
+    assert!(!message.contains("system.processes"), "{message}");
+    for sensitive in [
+        "SELECT 826",
+        "INSERT INTO",
+        "stored-key-secret",
+        "test-bearer-token",
+    ] {
+        assert!(!message.contains(sensitive), "{message}");
+    }
+}
+
+#[tokio::test]
+async fn query_timeout_uses_existing_idle_or_awaking_state_without_retry_or_preflight() {
+    for state in [
+        Some("idle"),
+        Some("awaking"),
+        Some("running"),
+        None,
+        Some("future-state"),
+    ] {
+        for auth in ["management", "stored", "oauth"] {
+            for json in [false, true] {
+                let control = start_mock_control_plane_with_query_state(state).await;
+                let query_host = MockServer::start().await;
+                Mock::given(method("POST"))
+                    .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+                    .respond_with(
+                        ResponseTemplate::new(500).set_body_string(QUERY_GATEWAY_TIMEOUT_BODY),
+                    )
+                    .expect(1)
+                    .mount(&query_host)
+                    .await;
+                let output =
+                    invoke_service_query_for_timeout_test(&control, &query_host, auth, json).await;
+                if matches!(state, Some("idle" | "awaking")) {
+                    assert_query_wake_timeout(&output, json);
+                } else {
+                    assert_eq!(output.status.code(), Some(1));
+                    assert!(output.stdout.is_empty());
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    assert!(stderr.contains("Query API gateway"), "{stderr}");
+                    assert!(!stderr.contains("may still be waking"), "{stderr}");
+                    if json {
+                        assert_eq!(cloud_runtime_error(&output)["code"], "query_timeout");
+                    }
+                }
+                let requests = query_host.received_requests().await.unwrap();
+                assert_eq!(requests.len(), 1, "no SQL replay after a timeout");
+                assert!(requests[0].headers.get("wake-service").is_none());
+                let expected_auth = match auth {
+                    "oauth" => "Bearer test-bearer-token".to_string(),
+                    "stored" => query_test_basic_auth("stored-key-id:stored-key-secret"),
+                    _ => query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests"),
+                };
+                assert_eq!(
+                    requests[0].headers.get("authorization").unwrap(),
+                    expected_auth.as_str()
+                );
+                assert_eq!(
+                    control.received_requests().await.unwrap().len(),
+                    1,
+                    "reuse the existing service lookup"
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn query_timeout_after_explicit_wake_preserves_context_and_never_replays_sql() {
+    for auth in ["management", "stored", "oauth"] {
+        for json in [false, true] {
+            // The newer pre-execution idle response overrides this earlier
+            // running snapshot for diagnosis, without another service GET.
+            let control = start_mock_control_plane_with_query_state(Some("running")).await;
+            let query_host = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+                .respond_with(|request: &wiremock::Request| {
+                    if request.headers.contains_key("wake-service") {
+                        ResponseTemplate::new(500).set_body_string(QUERY_GATEWAY_TIMEOUT_BODY)
+                    } else {
+                        ResponseTemplate::new(206)
+                            .set_body_string(r#"{"data":"Confirm wake service"}"#)
+                    }
+                })
+                .expect(2)
+                .mount(&query_host)
+                .await;
+            let output =
+                invoke_service_query_for_timeout_test(&control, &query_host, auth, json).await;
+            assert_query_wake_timeout(&output, json);
+            let requests = query_host.received_requests().await.unwrap();
+            assert_eq!(
+                requests.len(),
+                2,
+                "one rejected attempt and one accepted wake submission"
+            );
+            assert!(requests[0].headers.get("wake-service").is_none());
+            assert_eq!(requests[1].headers.get("wake-service").unwrap(), "true");
+            let first: Value = serde_json::from_slice(&requests[0].body).unwrap();
+            let second: Value = serde_json::from_slice(&requests[1].body).unwrap();
+            assert_eq!(first["sql"], second["sql"]);
+            assert_eq!(control.received_requests().await.unwrap().len(), 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn query_timeout_after_provisioning_idle_probe_submits_user_sql_once() {
+    let control = start_mock_control_plane_with_query_state(Some("running")).await;
+    mount_successful_query_provisioning(&control).await;
+    let query_host = MockServer::start().await;
+    let management_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(move |request: &wiremock::Request| {
+            if request.headers.get("authorization").unwrap() == management_auth.as_str() {
+                return ResponseTemplate::new(401).set_body_string("not authorized");
+            }
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["sql"] == "SELECT 1" {
+                ResponseTemplate::new(206).set_body_string(r#"{"data":"Confirm wake service"}"#)
+            } else {
+                ResponseTemplate::new(500).set_body_string(QUERY_GATEWAY_TIMEOUT_BODY)
+            }
+        })
+        .expect(3)
+        .mount(&query_host)
+        .await;
+    let output =
+        invoke_service_query_for_timeout_test(&control, &query_host, "management", true).await;
+    assert_query_wake_timeout(&output, true);
+    let requests = query_host.received_requests().await.unwrap();
+    assert_eq!(
+        requests.len(),
+        3,
+        "one auth rejection, one idle probe, one SQL submission"
+    );
+    let submitted = &requests[2];
+    assert_eq!(submitted.headers.get("wake-service").unwrap(), "true");
+    assert_eq!(
+        submitted.headers.get("authorization").unwrap(),
+        query_test_basic_auth("provisioned-key-id:provisioned-key-secret").as_str()
+    );
+    let submitted_body: Value = serde_json::from_slice(&submitted.body).unwrap();
+    assert_eq!(submitted_body["sql"], "INSERT INTO events VALUES (826)");
+    let service_reads = control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| {
+            request.url.path()
+                == format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}")
+        })
+        .count();
+    assert_eq!(service_reads, 1);
+}
+
+#[tokio::test]
+async fn query_on_idle_service_can_succeed_without_a_wake_confirmation() {
+    for auth in ["management", "stored", "oauth"] {
+        let control = start_mock_control_plane_with_query_state(Some("idle")).await;
+        let query_host = start_mock_query_host().await;
+        let output = invoke_service_query_for_timeout_test(&control, &query_host, auth, true).await;
+        assert_success(&output);
+        assert_eq!(output.stdout, b"1\n");
+        assert!(output.stderr.is_empty());
+        assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
+        assert_eq!(control.received_requests().await.unwrap().len(), 1);
+    }
 }
 
 /// The control case: a 500 that is *not* the gateway timeout keeps the

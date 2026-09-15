@@ -1756,6 +1756,68 @@ async fn a_sql_error_is_classified_without_the_sql_reaching_the_payload() {
 }
 
 #[tokio::test]
+async fn query_timeouts_retain_classification_with_or_without_wake_context() {
+    for (state, confirm_wake) in [("running", false), ("idle", false), ("running", true)] {
+        let control = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1/organizations/org-1/services/{QUERY_SERVICE_ID}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": QUERY_SERVICE_ID, "name": "demo", "state": state },
+                "status": 200,
+                "requestId": "stub-service-get"
+            })))
+            .expect(1)
+            .mount(&control)
+            .await;
+        let query_host = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/service/{QUERY_SERVICE_ID}/run")))
+            .respond_with(move |request: &wiremock::Request| {
+                if confirm_wake && !request.headers.contains_key("wake-service") {
+                    ResponseTemplate::new(206).set_body_string(r#"{"data":"Confirm wake service"}"#)
+                } else {
+                    ResponseTemplate::new(500).set_body_string(r#"{"error":"Timeout error."}"#)
+                }
+            })
+            .mount(&query_host)
+            .await;
+        let (sandbox, project) = query_sandbox(&control).await;
+        let output = run_query(
+            &sandbox,
+            project.path(),
+            &control,
+            Some(&query_host),
+            &["--query", "SELECT 'secret-timeout-test'"],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        let event = debug_payload(&output);
+        assert_eq!(event["failure_stage"], "query_request");
+        assert_eq!(event["failure_kind"], "timeout");
+        assert_eq!(event["http_status"], 500);
+        assert_eq!(event["retry_bucket"], if confirm_wake { "1" } else { "0" });
+        assert_eq!(event["provisioning_state"], "bearer");
+        assert_eq!(
+            query_host.received_requests().await.unwrap().len(),
+            if confirm_wake { 2 } else { 1 }
+        );
+        let raw = event.to_string();
+        for sensitive in [
+            "secret-timeout-test",
+            QUERY_SERVICE_ID,
+            "test-bearer-token",
+            "Timeout error.",
+        ] {
+            assert!(
+                !raw.contains(sensitive),
+                "telemetry leaked {sensitive}: {raw}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn a_rate_limited_query_is_distinguishable_from_a_stopped_service() {
     let control = start_control_plane(200).await;
     let query_host = start_query_host(
