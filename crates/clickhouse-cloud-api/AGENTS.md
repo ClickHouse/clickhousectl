@@ -164,6 +164,7 @@ backing constants. Introduce a named, documented constant when an empty policy l
 Rust type names but spec/wire field and enum values:
 
 - `non_openapi_client_methods` — intentional `Client` helpers with no operation, keyed by snake-case method name.
+  A removed helper or one that gains a matching operation is reported as stale.
 - `optionality_exemptions` — fields deliberately optional despite the resolved spec, keyed by
   `(RustStructName, specFieldName)`. Request-position only, so a response-only entry can never hit and surfaces as stale.
 - `fractional_response_exemptions` — verified fractional runtime measurements declared as integers by the spec,
@@ -174,12 +175,13 @@ Rust type names but spec/wire field and enum values:
 - `extra_enum_value_exemptions` — intentional Rust-only wire values, keyed by `(RustEnumName, wireValue)`.
 - `partial_required_schemas` — upstream schemas whose `required[]` is non-exhaustive, keyed by spec schema name.
   This changes requiredness resolution (request position only) and is not a shortcut for one optionality mismatch.
+  Entries are stale when the schema is gone, response-only, or the override no longer changes requiredness.
 - `acknowledged_unsupported_enum_pointers` — exact RFC 6901 pointers the analyzer inventories but cannot map to a
   concrete Rust value enum.
 
 Add an exemption only for intentional, verified runtime behavior, with a nearby comment stating why the spec cannot
 be followed. Never exempt missing API surface or ordinary model drift. Pair a new unsupported-enum acknowledgement
-with a tracking issue; do not acknowledge it merely to make CI green. Pair-keyed exemptions and acknowledgements
+with a tracking issue; do not acknowledge it merely to make CI green. Exemptions and acknowledgements
 produce actionable stale findings when no longer needed — remove them during remediation.
 
 ### Enum value coverage, `VALUES` consts, deprecated hiding

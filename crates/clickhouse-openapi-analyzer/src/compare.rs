@@ -27,6 +27,12 @@ pub(crate) fn compare(
         &fractional.response_only,
         &mut report,
     );
+    stale_strings(
+        "partial_required_schema",
+        &config.partial_required_schemas,
+        &spec.partial_required_hits,
+        &mut report,
+    );
     compare_snapshot(spec, snapshot, &mut report);
     report.finish();
     report
@@ -126,6 +132,37 @@ fn compare_operations(
                 .detail("method_name", name),
             );
         }
+    }
+    let helper_hits = rust
+        .client_methods
+        .keys()
+        .filter(|name| !spec.operations.contains_key(*name))
+        .cloned()
+        .collect();
+    stale_strings(
+        "non_openapi_client_method",
+        &config.non_openapi_client_methods,
+        &helper_hits,
+        report,
+    );
+}
+
+fn stale_strings(
+    kind: &str,
+    configured: &BTreeSet<String>,
+    hits: &BTreeSet<String>,
+    report: &mut DriftReport,
+) {
+    for key in configured.difference(hits) {
+        report.findings.push(
+            Finding::new(
+                FindingKind::StaleExemption,
+                format!("{kind} exemption {key} is stale"),
+            )
+            .at_rust(format!("analyzer_config::{kind}::{key}"))
+            .detail("exemption_kind", kind)
+            .detail("key", key),
+        );
     }
 }
 
@@ -1224,6 +1261,224 @@ mod tests {
     use crate::openapi::OpenApiInventory;
     use crate::rust_inventory::RustInventory;
 
+    #[test]
+    fn helper_exemptions_require_an_existing_unspecified_method() {
+        let config = AnalyzerConfig {
+            non_openapi_client_methods: BTreeSet::from(["query_helper".into()]),
+            ..AnalyzerConfig::default()
+        };
+        for (has_method, has_operation) in
+            [(true, false), (false, false), (true, true), (false, true)]
+        {
+            let rust = RustInventory::parse(
+                if has_method {
+                    "pub struct Client; impl Client { pub async fn query_helper(&self) {} }"
+                } else {
+                    "pub struct Client; impl Client {}"
+                },
+                "",
+                "",
+            )
+            .unwrap();
+            let paths = if has_operation {
+                serde_json::json!({"/helper": {"get": {"operationId": "queryHelper"}}})
+            } else {
+                serde_json::json!({})
+            };
+            let spec = OpenApiInventory::build(
+                &serde_json::json!({"paths": paths, "components": {"schemas": {}}}),
+                &config,
+            )
+            .unwrap();
+            let report = compare(&rust, &spec, &spec, &config);
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::StaleExemption),
+                !has_method || has_operation,
+            );
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::MissingClientMethod),
+                !has_method && has_operation,
+                "an obsolete exclusion must not suppress a missing operation",
+            );
+            assert!(
+                !report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::ExtraClientMethod)
+            );
+        }
+    }
+
+    #[test]
+    fn partial_required_exemptions_require_an_effective_override() {
+        let schema = serde_json::json!({
+            "properties": {"name": {"type": "string"}, "note": {"type": "string", "description": "Optional note"}},
+            "required": []
+        });
+        let mut completed = schema.clone();
+        completed["required"] = serde_json::json!(["name"]);
+        let mut implicit = schema.clone();
+        implicit.as_object_mut().unwrap().remove("required");
+        let mut optional = schema.clone();
+        optional["properties"]["name"]["description"] = serde_json::json!("Optional name");
+        let mut nullable = schema.clone();
+        nullable["properties"]["name"]["type"] = serde_json::json!(["string", "null"]);
+        for (case, name, schema, stale) in [
+            ("partial array", "Widget", schema.clone(), false),
+            ("complete array", "Widget", completed, true),
+            ("no array", "Widget", implicit, true),
+            ("optional descriptions", "Widget", optional, true),
+            ("nullable property", "Widget", nullable, true),
+            ("no properties", "Widget", serde_json::json!({}), true),
+            ("deleted schema", "Widget", serde_json::Value::Null, true),
+            ("PATCH policy", "WidgetPatchRequest", schema, true),
+        ] {
+            let config = AnalyzerConfig {
+                partial_required_schemas: BTreeSet::from([name.into()]),
+                ..AnalyzerConfig::default()
+            };
+            let schemas = if schema.is_null() {
+                serde_json::json!({})
+            } else {
+                serde_json::json!({name: schema})
+            };
+            let spec = OpenApiInventory::build(
+                &serde_json::json!({"paths": {}, "components": {"schemas": schemas}}),
+                &config,
+            )
+            .unwrap();
+            let rust = RustInventory::parse(
+                "",
+                &format!("pub struct {name} {{ pub name: String, pub note: Option<String> }}"),
+                "",
+            )
+            .unwrap();
+            let report = compare(&rust, &spec, &spec, &config);
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::StaleExemption),
+                stale,
+                "{case}: {}",
+                report.render_text(),
+            );
+        }
+    }
+
+    #[test]
+    fn partial_required_exemptions_follow_request_position_including_orphans() {
+        let config = AnalyzerConfig {
+            partial_required_schemas: BTreeSet::from(["Widget".into()]),
+            ..AnalyzerConfig::default()
+        };
+        let rust = RustInventory::parse(
+            "pub struct Client; impl Client { pub async fn use_widget(&self) {} }",
+            "pub struct Widget { pub name: String } pub struct WidgetResponse { pub name: Option<String> }",
+            "",
+        ).unwrap();
+        for (request, response) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut operation = serde_json::json!({"operationId": "useWidget"});
+            let content = serde_json::json!({"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Widget"}}}});
+            if request {
+                operation["requestBody"] = content.clone();
+            }
+            if response {
+                operation["responses"] = serde_json::json!({"200": content});
+            }
+            let spec = OpenApiInventory::build(&serde_json::json!({
+                "paths": {"/widgets": {"post": operation}},
+                "components": {"schemas": {"Widget": {"properties": {"name": {"type": "string"}}, "required": []}}}
+            }), &config).unwrap();
+            let report = compare(&rust, &spec, &spec, &config);
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::StaleExemption),
+                response && !request,
+                "request={request}, response={response}: {}",
+                report.render_text(),
+            );
+        }
+    }
+
+    #[test]
+    fn partial_required_exemptions_cover_inline_union_branches() {
+        let config = AnalyzerConfig {
+            partial_required_schemas: BTreeSet::from(["Widget".into()]),
+            ..AnalyzerConfig::default()
+        };
+        let models = r#"
+            pub enum Widget { A(Payload) }
+            pub struct Payload { pub kind: Kind, pub name: String }
+            pub enum Kind { #[serde(rename = "a")] A }
+        "#;
+        let schema = serde_json::json!({"oneOf": [{
+            "properties": {"kind": {"type": "string", "const": "a"}, "name": {"type": "string"}},
+            "required": ["kind"]
+        }]});
+        let report = analyze_fixture(models, schema.clone(), config.clone());
+        assert!(!report.has_drift(), "{}", report.render_text());
+        let mut completed = schema;
+        completed["oneOf"][0]["required"] = serde_json::json!(["kind", "name"]);
+        let report = analyze_fixture(models, completed, config);
+        assert_eq!(report.findings.len(), 1, "{}", report.render_text());
+        assert_eq!(report.findings[0].kind, FindingKind::StaleExemption);
+    }
+
+    #[test]
+    fn stale_string_exemptions_have_stable_actionable_reports() {
+        let config = AnalyzerConfig {
+            non_openapi_client_methods: BTreeSet::from(["query_helper".into()]),
+            partial_required_schemas: BTreeSet::from(["Widget".into()]),
+            ..AnalyzerConfig::default()
+        };
+        let rust = RustInventory::parse("", "", "").unwrap();
+        let spec = OpenApiInventory::build(
+            &serde_json::json!({"paths": {}, "components": {"schemas": {}}}),
+            &config,
+        )
+        .unwrap();
+        let report = compare(&rust, &spec, &spec, &config);
+        assert!(report.has_drift());
+        assert_eq!(report.actionable_count(), 2);
+        let expected_findings: Vec<_> = [
+            ("non_openapi_client_method", "query_helper"),
+            ("partial_required_schema", "Widget"),
+        ]
+        .into_iter()
+        .map(|(kind, key)| {
+            serde_json::json!({
+                "kind": "stale_exemption",
+                "message": format!("{kind} exemption {key} is stale"),
+                "rust_item": format!("analyzer_config::{kind}::{key}"),
+                "details": {"exemption_kind": kind, "key": key},
+            })
+        })
+        .collect();
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::json!({
+                "schema_version": 7,
+                "findings": expected_findings,
+                "unsupported_enum_constraints": [],
+            })
+        );
+        assert_eq!(report.render_text(), [
+            "2 actionable OpenAPI drift finding(s):",
+            "- StaleExemption [analyzer_config::non_openapi_client_method::query_helper]: non_openapi_client_method exemption query_helper is stale",
+            "- StaleExemption [analyzer_config::partial_required_schema::Widget]: partial_required_schema exemption Widget is stale",
+        ].join("\n"));
+        assert_eq!(report, compare(&rust, &spec, &spec, &config));
+    }
+
     fn analyze_fixture(
         models: &str,
         schema: serde_json::Value,
@@ -1409,7 +1664,7 @@ mod tests {
             Some("models.rs::WidgetResponse")
         );
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 6);
+        assert_eq!(json["schema_version"], 7);
         assert_eq!(
             json["findings"][0]["kind"],
             "additional_properties_mismatch"

@@ -18,9 +18,31 @@ def generated_issue_body(body):
 
 
 class DriftScriptTests(unittest.TestCase):
+    def test_renders_obsolete_helper_and_requiredness_exemptions(self):
+        findings = [
+            {
+                "kind": "stale_exemption",
+                "message": f"{kind} exemption {key} is stale",
+                "rust_item": f"analyzer_config::{kind}::{key}",
+                "details": {"exemption_kind": kind, "key": key},
+            }
+            for kind, key in [
+                ("non_openapi_client_method", "query_helper"),
+                ("partial_required_schema", "Widget"),
+            ]
+        ]
+        report = {"schema_version": 7, "findings": findings}
+        self.assertEqual(drift.findings_by_kind(report)["stale_exemption"], findings)
+        body = drift.build_issue_body(report, {})
+        self.assertIn("| Stale exemptions | 2 |", body)
+        self.assertIn("## Stale Exemptions", body)
+        for finding in findings:
+            self.assertIn(f"- `{finding['rust_item']}` — {finding['message']}", body)
+        self.assertNotIn("`unknown`", body)
+
     def test_groups_findings_and_renders_spec_snippets(self):
         report = {
-            "schema_version": 6,
+            "schema_version": 7,
             "findings": [
                 {
                     "kind": "missing_client_method",
@@ -73,7 +95,7 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn("## Enum VALUES Const Mismatches", body)
 
     def test_renders_additional_properties_mismatches(self):
-        report = {"schema_version": 6, "findings": [{
+        report = {"schema_version": 7, "findings": [{
             "kind": "additional_properties_mismatch",
             "message": "PgBouncerConfig must preserve additionalProperties in a typed string-keyed map",
             "spec_pointer": "/components/schemas/pgBouncerConfig/additionalProperties",
@@ -394,8 +416,8 @@ class DriftScriptTests(unittest.TestCase):
 
     def test_dry_run_never_queries_or_mutates_github(self):
         reports = [
-            {"schema_version": 6, "findings": []},
-            {"schema_version": 6, "findings": [{"kind": "missing_struct_field"}]},
+            {"schema_version": 7, "findings": []},
+            {"schema_version": 7, "findings": [{"kind": "missing_struct_field"}]},
         ]
         for report in reports:
             with self.subTest(findings=len(report["findings"])):
@@ -412,7 +434,7 @@ class DriftScriptTests(unittest.TestCase):
                 sync_issue.assert_not_called()
 
     def test_main_exits_nonzero_when_synchronization_fails(self):
-        report = {"schema_version": 6, "findings": []}
+        report = {"schema_version": 7, "findings": []}
         with (
             mock.patch.object(sys, "argv", [str(SCRIPT)]),
             mock.patch.object(drift, "fetch_live_spec", return_value={}),
@@ -616,7 +638,7 @@ class DriftScriptTests(unittest.TestCase):
     def test_analyzer_receives_the_rust_source_tree(self, run):
         run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"schema_version": 6, "findings": []}),
+            stdout=json.dumps({"schema_version": 7, "findings": []}),
             stderr="",
         )
 

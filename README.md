@@ -2979,7 +2979,7 @@ All three list commands expose `--cursor` and `--limit` (1–100). JSON output r
 
 The UDF API request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation. Rust callers receive `Error::UdfAttachmentUnavailable` for a structured attachment failure (HTTP 424); its `UdfAttachResponse424` payload preserves the error code, service state, wake eligibility, and request ID. Fields tolerate absence and null, and enums retain unknown values. Malformed responses remain `Error::Api` with the original error message.
 
-The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. Its report format is version 6.
+The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Its report format is version 7.
 
 ## CLI help checks
 

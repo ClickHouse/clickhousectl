@@ -101,7 +101,7 @@ def run_analyzer(spec: dict) -> dict:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError("OpenAPI analyzer emitted invalid JSON") from error
-    if report.get("schema_version") != 6:
+    if report.get("schema_version") != 7:
         raise RuntimeError(
             f"Unsupported DriftReport schema version: {report.get('schema_version')!r}"
         )

@@ -86,6 +86,8 @@ pub(crate) struct OpenApiInventory {
     /// Inline JSON responses, keyed by the conventional Rust model name
     /// `{PascalizedOperationId}Response{Status}`. Only wired models opt in.
     pub(crate) inline_responses: BTreeMap<String, (String, Value)>,
+    /// Configured overrides that change resolved request-position requiredness.
+    pub(crate) partial_required_hits: BTreeSet<String>,
     pub(crate) schemas: BTreeMap<String, String>,
     /// Pascalized Rust type names of every named spec schema. Used to
     /// distinguish a split `{Name}Response` Rust variant from a Rust type that
@@ -113,6 +115,25 @@ impl OpenApiInventory {
         inventory.collect_operations(spec)?;
         inventory.collect_schemas(spec, config)?;
         inventory.collect_schema_positions(spec);
+        let default_config = AnalyzerConfig::default();
+        for name in &config.partial_required_schemas {
+            let changes_requiredness = |schema: &Value| {
+                required_fields(name, schema, config)
+                    != required_fields(name, schema, &default_config)
+            };
+            if let Some(schema) = spec
+                .pointer("/components/schemas")
+                .and_then(|schemas| schemas.get(name))
+                && inventory.is_request_position(name)
+                && (changes_requiredness(schema)
+                    || inventory
+                        .inline_union_objects
+                        .iter()
+                        .any(|(parent, _, branch)| parent == name && changes_requiredness(branch)))
+            {
+                inventory.partial_required_hits.insert(name.clone());
+            }
+        }
         collect_refs(spec, &mut Vec::new(), &mut inventory.referenced_schemas);
         collect_enums(spec, &mut inventory.enum_constraints);
         inventory
