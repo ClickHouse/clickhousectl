@@ -4402,6 +4402,149 @@ async fn postgres_list_shows_provider_in_human_output_and_preserves_json() {
 
 const ROLE_TEST_POSTGRES_ID: &str = "11111111-2222-3333-4444-555555555555";
 
+async fn mount_postgres_service_response(
+    mock: &MockServer,
+    method_name: &str,
+    endpoint: &str,
+    service: Value,
+) {
+    Mock::given(method(method_name))
+        .and(path(endpoint))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": service,
+            "status": 200,
+            "requestId": "stub-postgres-connection",
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+#[tokio::test]
+async fn issue_836_postgres_get_human_guidance_handles_sparse_endpoint_fields() {
+    let mock = MockServer::start().await;
+    mount_postgres_service_response(
+        &mock,
+        "GET",
+        &format!("/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}"),
+        serde_json::json!({"id": ROLE_TEST_POSTGRES_ID}),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "postgres",
+            "get",
+            ROLE_TEST_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("host=<host-from-get>"), "{stdout}");
+    assert!(stdout.contains("user=<username-from-get>"), "{stdout}");
+    assert!(stdout.contains(ROLE_TEST_POSTGRES_ID), "{stdout}");
+    assert!(stdout.contains("certs get"), "{stdout}");
+    assert!(!stdout.contains("password="), "{stdout}");
+}
+
+#[tokio::test]
+async fn issue_836_postgres_get_json_keeps_the_api_shape_without_connection_defaults() {
+    let mock = MockServer::start().await;
+    let service = serde_json::json!({
+        "id": ROLE_TEST_POSTGRES_ID,
+        "hostname": "example.pg.clickhouse.cloud",
+        "username": "postgres"
+    });
+    mount_postgres_service_response(
+        &mock,
+        "GET",
+        &format!("/v1/organizations/org-1/postgres/{ROLE_TEST_POSTGRES_ID}"),
+        service.clone(),
+    )
+    .await;
+
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "postgres",
+            "get",
+            ROLE_TEST_POSTGRES_ID,
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    let stdout: Value = serde_json::from_slice(&output.stdout).expect("valid JSON response");
+    assert_eq!(stdout, service);
+}
+
+#[tokio::test]
+async fn issue_836_replica_and_restore_human_outputs_point_sparse_results_to_get() {
+    for (endpoint, mut args) in [
+        (
+            "readReplica",
+            vec![
+                "postgres",
+                "read-replica",
+                "create",
+                "source-id",
+                "--name",
+                "replica",
+            ],
+        ),
+        (
+            "restoredService",
+            vec![
+                "postgres",
+                "restore",
+                "source-id",
+                "--name",
+                "restored",
+                "--restore-target",
+                "2026-09-01T12:00:00Z",
+            ],
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        mount_postgres_service_response(
+            &mock,
+            "POST",
+            &format!("/v1/organizations/org-1/postgres/source-id/{endpoint}"),
+            serde_json::json!({"id": ROLE_TEST_POSTGRES_ID}),
+        )
+        .await;
+        args.extend(["--org-id", "org-1"]);
+
+        let output = invoke_cli_with_cloud_credentials_human(&mock, &args);
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("host=<host-from-get>"), "{stdout}");
+        assert!(stdout.contains("user=<username-from-get>"), "{stdout}");
+        assert!(
+            stdout.contains(&format!("postgres get {ROLE_TEST_POSTGRES_ID}")),
+            "{stdout}"
+        );
+        assert!(!stdout.contains("reset-password"), "{stdout}");
+
+        let json_mock = MockServer::start().await;
+        let service = serde_json::json!({"id": ROLE_TEST_POSTGRES_ID});
+        mount_postgres_service_response(
+            &json_mock,
+            "POST",
+            &format!("/v1/organizations/org-1/postgres/source-id/{endpoint}"),
+            service.clone(),
+        )
+        .await;
+        let json_output = invoke_cli_with_cloud_credentials(&json_mock, &args);
+        assert_success(&json_output);
+        let json: Value = serde_json::from_slice(&json_output.stdout).expect("valid JSON response");
+        assert_eq!(json, service);
+    }
+}
+
 fn postgres_role_service(ha_type: &str, is_primary: Option<bool>) -> serde_json::Value {
     let mut service = serde_json::json!({
         "id": ROLE_TEST_POSTGRES_ID,

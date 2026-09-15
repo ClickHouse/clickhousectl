@@ -1295,6 +1295,11 @@ psql "$POSTGRES_CONNECTION_STRING" --command 'SHOW max_connections'
 clickhousectl cloud postgres reset-password <pg-id> --generate
 clickhousectl cloud postgres reset-password <pg-id> --password '<min-12-upper-lower-digit>'
 
+# Connect with verified TLS without putting the password in shell history
+clickhousectl cloud postgres certs get <pg-id> --output ca.pem
+PGSSLMODE=verify-full PGSSLROOTCERT=ca.pem psql --host <host-from-get> --port 5432 \
+  --username <username-from-get> --dbname postgres
+
 # Read replica and PITR restore
 clickhousectl cloud postgres read-replica create --source-name primary --name replica-1
 clickhousectl cloud postgres read-replica create <pg-id> --name replica-2 \
@@ -1342,6 +1347,10 @@ Human detail output preserves explicit empty values: configuration sections show
 `postgres restart` likewise returns after the API accepts the request. Service state and readiness do not confirm a restart; a successful readiness check establishes only that the database accepts connections. Record `SELECT pg_postmaster_start_time()` immediately before the request and run it again after connections recover; a later timestamp confirms the server restarted after that baseline. PostgreSQL documents [`pg_postmaster_start_time()`](https://www.postgresql.org/docs/current/functions-info.html) as the time the server started.
 
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
+
+`postgres get` supplies the service host and username. The documented connection examples use port `5432`, database `postgres`, and TLS. Export the service-specific CA with `certs get --output` and use `sslmode=verify-full`, as recommended for production in the [Managed Postgres connection guide](https://clickhouse.com/docs/products/managed-postgres/connection). The example above omits the password so `psql` can prompt for it when needed. A passwordless URI is also valid: `postgresql://<username>@<host>:5432/postgres?sslmode=verify-full&sslrootcert=ca.pem`. If an application requires a password in that URI, percent-encode the username and password as URI components first; shell quoting does not replace percent-encoding.
+
+Read-replica creation and point-in-time restore return the new service details without a password. Use the returned service ID with `postgres get` and wait for `state=running`. Do not infer that a replica shares its source's current password. For a restore, reset the restored service's password when no valid credential is known; do not assume a historical restore accepts the source's present-day password.
 
 `postgres metrics` requires an RFC 3339 start and end time, with the start no later than the end. Whole seconds, fractional seconds, and UTC offsets are normalized to UTC with three fractional digits (for example, `2026-04-16T13:00:00+01:00` becomes `2026-04-16T12:00:00.000Z`). The endpoint supports millisecond precision; finer nonzero fractional digits are rejected before any request instead of rounding or truncating the interval. Human output keeps every metric, series and data point in API order, renders point timestamps as RFC 3339, and shows each value with the metric's unit when supplied. Numbered point lines keep duplicates and sparse points visible; `-` marks an omitted timestamp, value or collection, while `[]` marks an empty collection. JSON preserves the complete API-shaped metric metadata, labels, epoch timestamps and values. `--bucket-size-seconds` must be positive and is omitted from the API request when not supplied.
 

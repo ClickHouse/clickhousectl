@@ -178,7 +178,11 @@ CONTEXT FOR AGENTS:
 
     /// Reset the Postgres service password
     #[command(
-        group(ArgGroup::new("password_source").required(true).args(["password", "generate"]))
+        group(ArgGroup::new("password_source").required(true).args(["password", "generate"])),
+        after_help = "\
+CONTEXT FOR AGENTS:
+  The response contains no endpoint; use `cloud postgres get <id>` for host and username.
+  Prefer a psql password prompt; if a URI embeds the password, percent-encode it first."
     )]
     ResetPassword {
         /// Postgres service ID (from `cloud postgres list`)
@@ -230,7 +234,9 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Creates a NEW service from the source's backups; the source is untouched.
-  --restore-target must fall inside the source's backup retention window.")]
+  --restore-target must fall inside the source's backup retention window.
+  The response has no password; use its ID with `get`, then reset it if no valid password is known.
+  Do not assume the source's current password matches the historical restore.")]
     Restore {
         /// Source Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
@@ -364,6 +370,8 @@ pub enum ReadReplicaCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   The replica inherits the source's provider, region, size and version.
+  The response has no password; use its ID with `get` for the replica endpoint.
+  Do not assume the source's password works on the replica.
   Next: `cloud postgres promote <replica-id>` to make it primary.")]
     Create {
         /// Source Postgres service ID (from `cloud postgres list`)
@@ -1174,6 +1182,41 @@ fn render_postgres_service(svc: &PostgresService) {
     }
 }
 
+/// Print a short connection handoff without putting a password in argv or a URI.
+///
+/// The API does not expose port or database fields. They are stable service
+/// defaults documented by ClickHouse Managed Postgres. Sparse asynchronous
+/// responses can also omit host and username, so those fields retain explicit
+/// placeholders until `get` supplies them.
+fn render_postgres_connection_guidance(svc: &PostgresService) {
+    let postgres_id = svc
+        .id
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "<postgres-id>".to_string());
+    let host = svc
+        .hostname
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<host-from-get>");
+    let username = svc
+        .username
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<username-from-get>");
+
+    print_line("");
+    print_line(format!(
+        "Connection: host={host} port=5432 database=postgres user={username}; TLS required"
+    ));
+    print_line(format!(
+        "Next: clickhousectl cloud postgres get {postgres_id} (wait for state=running and fill any placeholders)"
+    ));
+    print_line(format!(
+        "Verified TLS: clickhousectl cloud postgres certs get {postgres_id} --output ca.pem; see README for psql"
+    ));
+}
+
 fn merge_tags(
     existing: &[ResourceTagsV1],
     add: &[ResourceTagsV1],
@@ -1439,6 +1482,7 @@ pub async fn postgres_get(client: &CloudClient, postgres_id: &str, json: bool) -
         // credentials on July 31, 2026 — they are only available from
         // `postgres create` and `postgres reset-password`.
         render_postgres_service(&svc);
+        render_postgres_connection_guidance(&svc);
     }
     Ok(())
 }
@@ -1906,6 +1950,8 @@ pub async fn postgres_reset_password(
             println!("Generated password (save this — not recoverable):");
             println!("  {}", password);
         }
+        println!();
+        println!("Connection details: clickhousectl cloud postgres get {postgres_id}");
     }
     Ok(())
 }
@@ -1944,6 +1990,7 @@ pub async fn postgres_read_replica_create(
         println!("Read replica created");
         println!();
         render_postgres_service(&svc);
+        render_postgres_connection_guidance(&svc);
     }
     Ok(())
 }
@@ -1986,6 +2033,7 @@ pub async fn postgres_restore(
         println!("Postgres service restore initiated");
         println!();
         render_postgres_service(&svc);
+        render_postgres_connection_guidance(&svc);
     }
     Ok(())
 }
