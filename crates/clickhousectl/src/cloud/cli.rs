@@ -235,7 +235,7 @@ CONTEXT FOR AGENTS:
   Write commands need API key auth.
   Service IDs: `cloud postgres list`.
   Credentials come only from `create` and `reset-password`; treat `get` as never returning them.
-  promote/switchover are eventually consistent: pass --wait to confirm the new role.
+  promote/switchover are eventually consistent: verify roles with `get` or filtered `list`.
   Typical flow: `create` -> `get <id>` until state is running -> `certs get` -> `config patch`.")]
     Postgres {
         #[command(subcommand)]

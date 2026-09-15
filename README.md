@@ -1246,9 +1246,7 @@ clickhousectl cloud postgres restore <pg-id> \
 # Lifecycle
 clickhousectl cloud postgres restart <pg-id>
 clickhousectl cloud postgres promote <replica-id>
-clickhousectl cloud postgres promote <replica-id> --wait                    # poll until isPrimary=true
 clickhousectl cloud postgres switchover <primary-id>
-clickhousectl cloud postgres switchover <primary-id> --wait --wait-timeout 600
 ```
 
 PgBouncer files passed to `--pg-bouncer-config-file` on create, read-replica create, and restore are JSON objects with string values, for example:
@@ -1283,8 +1281,8 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 
 `postgres promote` and `postgres switchover` change which service is primary. Both are issued as-is, and the API acknowledges them before (or without) applying them, so exit 0 on its own means accepted, not applied:
 
-- `--wait` (optionally `--wait-timeout SECONDS`, default 300) is how you confirm the roles actually changed. It polls the target every 5s until it reports the expected `isPrimary` — `true` for `promote`, the opposite of the value read just before the command for `switchover` — and exits 1 with the last observed role if it never does. stdout then carries the polled state rather than the state-change response, which for `promote` omits `isPrimary` entirely. Without `--wait` neither command reads the service. A `switchover --wait` whose pre-command read omits `isPrimary` is refused before the command is issued, because there is no prior role to compare a swap against.
-- The previous primary is demoted asynchronously and can keep reporting `isPrimary=true` for minutes afterwards. No client can see that pair from one service, so `promote` always reports the dual-primary window on stderr; verify with `clickhousectl cloud postgres list --filter isPrimary=true` that exactly one service is primary.
+- After `promote`, verify the promoted replica with `clickhousectl cloud postgres get <replica-id>` and confirm the final primary set with `clickhousectl cloud postgres list --filter isPrimary=true`. The previous primary is demoted asynchronously and can keep reporting `isPrimary=true` for minutes afterwards. A promoted read replica becomes an independent primary; this is different from an HA-node switchover.
+- After `switchover`, verify the HA roles with `clickhousectl cloud postgres get <primary-id>` or `clickhousectl cloud postgres list --filter isPrimary=true`. A service-level `isPrimary` value alone does not prove an internal HA node switchover completed; use the operation-specific Cloud status and follow-up checks for your environment.
 
 ### Backups
 
