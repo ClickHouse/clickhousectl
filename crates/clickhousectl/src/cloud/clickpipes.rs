@@ -271,7 +271,12 @@ CONTEXT FOR AGENTS:
         clickpipe_id: String,
 
         /// JSON PATCH body path, or `-` for stdin
-        #[arg(long, value_name = "FILE|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
 
@@ -5635,6 +5640,15 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickpipe", "update", "svc-1", "pipe-1"],
+            "config_file",
+            &["config-file"],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
@@ -9682,10 +9696,7 @@ mod tests {
     fn clickpipe_write_classification_delegates_from_cloud_commands() {
         assert_write(&["list", "svc-1"], false);
         assert_write(&["get", "svc-1", "pipe-1"], false);
-        assert_write(
-            &["update", "svc-1", "pipe-1", "--config-file", "patch.json"],
-            true,
-        );
+        assert_write(&["update", "svc-1", "pipe-1", "--file", "patch.json"], true);
         assert_write(&["delete", "svc-1", "pipe-1"], true);
         assert_write(&["start", "svc-1", "pipe-1"], true);
         assert_write(&["stop", "svc-1", "pipe-1"], true);
@@ -9795,7 +9806,7 @@ mod tests {
                 "update",
                 "svc-1",
                 "pipe-1",
-                "--config-file",
+                "--file",
                 config_file,
                 "--org-id",
                 "org-1",

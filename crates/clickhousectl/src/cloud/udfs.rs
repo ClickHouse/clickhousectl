@@ -127,7 +127,7 @@ pub struct UdfPageArgs {
 #[derive(Args)]
 pub struct UdfCreateArgs {
     /// Complete JSON definition without uploadId (file path or - for stdin)
-    #[arg(long = "config-file", alias = "config")]
+    #[arg(long = "file", value_name = "PATH", aliases = ["config-file", "config"])]
     config: String,
     /// Source archive path in ZIP format
     #[arg(long)]
@@ -791,6 +791,28 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "udf", "create", "--artifact", "source.zip"],
+            "config",
+            &["config-file", "config"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &[
+                "cloud",
+                "udf",
+                "version",
+                "create",
+                "my_udf",
+                "--artifact",
+                "source.zip",
+            ],
+            "config",
+            &["config-file", "config"],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
@@ -910,7 +932,7 @@ mod tests {
             (vec!["get", "my_udf"], false),
             (vec!["delete", "my_udf"], true),
             (
-                vec!["create", "--config-file", "-", "--artifact", "code.zip"],
+                vec!["create", "--file", "-", "--artifact", "code.zip"],
                 true,
             ),
             (vec!["attach", "my_udf", "svc-1", "--version", "2"], true),
@@ -934,7 +956,7 @@ mod tests {
                     "version",
                     "create",
                     "my_udf",
-                    "--config-file",
+                    "--file",
                     "file.json",
                     "--artifact",
                     "code.zip",
@@ -981,7 +1003,7 @@ mod tests {
             vec!["attach", "my_udf", "svc-1", "--version", "0"],
             vec!["version", "delete", "my_udf", "0"],
             vec!["get", "../oops"],
-            vec!["create", "--config-file", "config.json"],
+            vec!["create", "--file", "config.json"],
         ] {
             assert!(
                 Cli::try_parse_from(["chctl", "cloud", "udf"].into_iter().chain(args)).is_err()

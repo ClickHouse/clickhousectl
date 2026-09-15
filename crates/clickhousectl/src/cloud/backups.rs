@@ -59,7 +59,7 @@ pub enum BackupBucketCommands {
         service_id: String,
 
         /// Provider-specific JSON file, or - to read from stdin
-        #[arg(long, value_name = "PATH", alias = "config")]
+        #[arg(long = "file", value_name = "PATH", aliases = ["config-file", "config"])]
         config_file: String,
     },
 
@@ -69,7 +69,7 @@ pub enum BackupBucketCommands {
         service_id: String,
 
         /// Provider-specific update JSON file, or - to read from stdin
-        #[arg(long, value_name = "PATH", alias = "config")]
+        #[arg(long = "file", value_name = "PATH", aliases = ["config-file", "config"])]
         config_file: String,
     },
 
@@ -647,6 +647,20 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "backup", "bucket", "create", "svc-1"],
+            "config_file",
+            &["config-file", "config"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "backup", "bucket", "update", "svc-1"],
+            "config_file",
+            &["config-file", "config"],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
@@ -854,7 +868,7 @@ mod tests {
                     "bucket",
                     action,
                     "svc-1",
-                    "--config-file",
+                    "--file",
                     "bucket.json",
                 ])
                 .is_write()
@@ -882,7 +896,7 @@ mod tests {
             "bucket",
             "create",
             "svc-1",
-            "--config-file",
+            "--file",
             "-",
             "--org-id",
             "org-1",

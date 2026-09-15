@@ -41,7 +41,7 @@ pub enum OrgCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Role IDs from `list` can be used with member, invitation, and API key commands.
-  Create/update read JSON request bodies from --config-file; `-` reads stdin.
+  Create/update read JSON request bodies from --file; `-` reads stdin.
   Only custom roles can be updated or deleted.")]
     Role {
         #[command(subcommand)]
@@ -136,7 +136,12 @@ pub enum RoleCommands {
     /// Create a custom organization role
     Create {
         /// JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
 
@@ -149,7 +154,12 @@ CONTEXT FOR AGENTS:
         role_id: String,
 
         /// JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
 
@@ -1651,6 +1661,20 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "org", "role", "create"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "org", "role", "update", "role-1"],
+            "config_file",
+            &["config-file"],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
@@ -2630,7 +2654,7 @@ mod tests {
             "org",
             "role",
             "create",
-            "--config-file",
+            "--file",
             "role.json",
             "--org-id",
             "org-1",
@@ -2656,7 +2680,7 @@ mod tests {
                 args.push("role-1");
             }
             if verb != "delete" {
-                args.extend(["--config-file", "role.json"]);
+                args.extend(["--file", "role.json"]);
             }
             assert_write(&args, true);
         }

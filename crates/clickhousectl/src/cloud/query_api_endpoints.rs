@@ -59,7 +59,7 @@ pub struct QueryApiEndpointTarget {
 #[derive(Args)]
 pub struct QueryApiEndpointConfigArgs {
     /// Complete JSON definition (file path or - for stdin)
-    #[arg(long = "config-file")]
+    #[arg(long = "file", alias = "config-file", value_name = "PATH")]
     config_file: String,
 }
 
@@ -300,6 +300,26 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "query-api-endpoint", "create", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &[
+                "cloud",
+                "query-api-endpoint",
+                "update",
+                "svc-1",
+                "endpoint-1",
+            ],
+            "config_file",
+            &["config-file"],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
@@ -414,14 +434,8 @@ mod tests {
         for (args, write) in [
             (vec!["list", "svc"], false),
             (vec!["get", "svc", "endpoint"], false),
-            (
-                vec!["create", "svc", "--config-file", "definition.json"],
-                true,
-            ),
-            (
-                vec!["update", "svc", "endpoint", "--config-file", "-"],
-                true,
-            ),
+            (vec!["create", "svc", "--file", "definition.json"], true),
+            (vec!["update", "svc", "endpoint", "--file", "-"], true),
             (vec!["delete", "svc", "endpoint"], true),
         ] {
             assert_eq!(parse(&args).is_write(), write);
@@ -435,7 +449,7 @@ mod tests {
             "org",
             "create",
             "svc",
-            "--config-file",
+            "--file",
             "definition.json",
         ]);
 
@@ -445,13 +459,7 @@ mod tests {
         assert_eq!(input.service_id, "svc");
         assert_eq!(input.input.config_file, "definition.json");
         let args = parse(&[
-            "update",
-            "svc",
-            "endpoint",
-            "--config-file",
-            "-",
-            "--org-id",
-            "org",
+            "update", "svc", "endpoint", "--file", "-", "--org-id", "org",
         ]);
 
         let QueryApiEndpointCommands::Update { target, input } = args.command else {

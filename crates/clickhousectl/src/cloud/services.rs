@@ -638,7 +638,7 @@ pub enum ServiceSettingsCommands {
 CONTEXT FOR AGENTS:
   Discover supported names and types with `settings schema <service-id>`.
   --setting values are JSON literals; quote string values inside the argument.
-  --settings-file reads a JSON settings map; `-` reads stdin. Only named settings change."
+  --file reads a JSON settings map; `-` reads stdin. Only named settings change."
     )]
     Set {
         /// Service ID
@@ -649,7 +649,7 @@ CONTEXT FOR AGENTS:
         setting: Vec<String>,
 
         /// JSON settings map file (`-` reads stdin)
-        #[arg(long, value_name = "PATH")]
+        #[arg(long = "file", alias = "settings-file", value_name = "PATH")]
         settings_file: Option<String>,
     },
 
@@ -683,7 +683,7 @@ CONTEXT FOR AGENTS:
         service_id: String,
 
         /// JSON request file (use "-" for stdin)
-        #[arg(long)]
+        #[arg(long, value_name = "PATH")]
         file: String,
     },
 
@@ -4316,6 +4316,20 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "service", "settings", "set", "svc-1"],
+            "settings_file",
+            &["settings-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "service", "scaling-schedule", "set", "svc-1"],
+            "file",
+            &[],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
@@ -8368,7 +8382,7 @@ mod tests {
             "settings",
             "set",
             "svc-1",
-            "--settings-file",
+            "--file",
             "-",
         ]);
         let ServiceCommands::Settings {
@@ -8406,7 +8420,7 @@ mod tests {
             "svc-1",
             "--setting",
             "compatibility=\"24.8\"",
-            "--settings-file",
+            "--file",
             "settings.json",
         ])
         .err()

@@ -149,7 +149,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Service IDs come from `cloud service list`; backup IDs from `cloud backup list <service-id>`.
   Backup list/get and bucket get support OAuth; bucket writes require API key auth.
-  Bucket create/update read strict provider JSON from `--config-file`, with `-` for stdin.
+  Bucket create/update read strict provider JSON from `--file`, with `-` for stdin.
   Restore a backup into a new service: `cloud service create --backup-id <backup-id>`.
   Change schedule or retention with `cloud service backup-config update`, not here.")]
     Backup {
@@ -181,7 +181,7 @@ CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`.
   Resource IDs come from their respective `list` commands.
   Everything except list/get is a write and needs API key auth.
-  Create/update read complete JSON bodies from --config-file; `-` reads stdin."
+  Create/update read complete JSON bodies from --file; `-` reads stdin."
     )]
     ClickStack {
         #[command(subcommand)]

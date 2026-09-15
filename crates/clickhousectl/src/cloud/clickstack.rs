@@ -92,7 +92,12 @@ CONTEXT FOR AGENTS:
         /// Service ID (from `cloud service list`)
         service_id: String,
         /// JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Replace a ClickStack alert
@@ -107,7 +112,12 @@ CONTEXT FOR AGENTS:
         /// Alert ID (from `cloud clickstack alert list`)
         alert_id: String,
         /// Complete JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Delete a ClickStack alert
@@ -140,7 +150,12 @@ pub enum WebhookCommands {
         /// Service ID (from `cloud service list`)
         service_id: String,
         /// JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Replace a ClickStack webhook
@@ -153,7 +168,12 @@ CONTEXT FOR AGENTS:
         /// Webhook ID (from `cloud clickstack webhook list`)
         webhook_id: String,
         /// Complete JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Delete a ClickStack webhook
@@ -193,7 +213,12 @@ pub enum DashboardCommands {
         /// Service ID (from `cloud service list`)
         service_id: String,
         /// JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Replace a ClickStack dashboard
@@ -208,7 +233,12 @@ CONTEXT FOR AGENTS:
         /// Dashboard ID (from `cloud clickstack dashboard list`)
         dashboard_id: String,
         /// Complete update JSON body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Delete a ClickStack dashboard
@@ -228,7 +258,12 @@ CONTEXT FOR AGENTS:
         /// Service ID (from `cloud service list`)
         service_id: String,
         /// Dashboard create JSON body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
 }
@@ -266,7 +301,12 @@ pub enum SavedSearchCommands {
         /// Service ID (from `cloud service list`)
         service_id: String,
         /// JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Replace a ClickStack saved search
@@ -279,7 +319,12 @@ CONTEXT FOR AGENTS:
         /// Saved search ID (from `cloud clickstack saved-search list`)
         saved_search_id: String,
         /// Complete JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Delete a ClickStack saved search
@@ -319,7 +364,12 @@ pub enum SourceCommands {
         /// Service ID (from `cloud service list`)
         service_id: String,
         /// JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Replace a ClickStack source
@@ -332,7 +382,12 @@ CONTEXT FOR AGENTS:
         /// Source ID (from `cloud clickstack source list`)
         source_id: String,
         /// Complete JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Delete a ClickStack source
@@ -372,7 +427,12 @@ pub enum RoleCommands {
         /// Service ID (from `cloud service list`)
         service_id: String,
         /// JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Replace a ClickStack role
@@ -385,7 +445,12 @@ CONTEXT FOR AGENTS:
         /// Role ID (from `cloud clickstack role list`)
         role_id: String,
         /// Complete JSON request body path, or `-` for stdin
-        #[arg(long, value_name = "PATH|-", required = true)]
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
         config_file: String,
     },
     /// Delete a ClickStack role
@@ -2922,6 +2987,103 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "source", "create", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &[
+                "cloud",
+                "clickstack",
+                "source",
+                "update",
+                "svc-1",
+                "source-1",
+            ],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "role", "create", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "role", "update", "svc-1", "role-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "dashboard", "create", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &[
+                "cloud",
+                "clickstack",
+                "dashboard",
+                "update",
+                "svc-1",
+                "dashboard-1",
+            ],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "alert", "create", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "alert", "update", "svc-1", "alert-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "webhook", "create", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &[
+                "cloud",
+                "clickstack",
+                "webhook",
+                "update",
+                "svc-1",
+                "webhook-1",
+            ],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "saved-search", "create", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &[
+                "cloud",
+                "clickstack",
+                "saved-search",
+                "update",
+                "svc-1",
+                "saved-search-1",
+            ],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickstack", "dashboard", "validate", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
@@ -2947,7 +3109,7 @@ mod tests {
             "source",
             "create",
             "svc-1",
-            "--config-file",
+            "--file",
             "-",
             "--org-id",
             "org-1",
@@ -2968,7 +3130,7 @@ mod tests {
             "update",
             "svc-1",
             "role-1",
-            "--config-file",
+            "--file",
             "role.json",
             "--org-id",
             "org-1",
@@ -2995,7 +3157,7 @@ mod tests {
             "update",
             "svc-1",
             "search-1",
-            "--config-file",
+            "--file",
             "-",
             "--org-id",
             "org-1",
@@ -3024,7 +3186,7 @@ mod tests {
             "dashboard",
             "validate",
             "svc-1",
-            "--config-file",
+            "--file",
             "-",
             "--org-id",
             "org-1",
@@ -3045,7 +3207,7 @@ mod tests {
             "update",
             "svc-1",
             "dash-1",
-            "--config-file",
+            "--file",
             "dashboard.json",
         ]);
         let ClickStackCommands::Dashboard {
@@ -3072,7 +3234,7 @@ mod tests {
             "alert",
             "create",
             "svc-1",
-            "--config-file",
+            "--file",
             "-",
             "--org-id",
             "org-1",
@@ -3093,7 +3255,7 @@ mod tests {
             "update",
             "svc-1",
             "webhook-1",
-            "--config-file",
+            "--file",
             "webhook.json",
         ]);
         let ClickStackCommands::Webhook {
@@ -3152,7 +3314,7 @@ mod tests {
                 args.push("resource-1");
             }
             if matches!(operation, "create" | "update") {
-                args.extend(["--config-file", "body.json"]);
+                args.extend(["--file", "body.json"]);
             }
             assert_eq!(
                 parse_clickstack(&args).is_write(),
@@ -3350,7 +3512,7 @@ mod tests {
                 args.push("resource-1");
             }
             if matches!(operation, "create" | "update") {
-                args.extend(["--config-file", "body.json"]);
+                args.extend(["--file", "body.json"]);
             }
             let command = parse_clickstack(&args);
             assert_eq!(command.is_write(), expected, "{resource} {operation}");
@@ -3379,7 +3541,7 @@ mod tests {
                 args.push("dash-1");
             }
             if matches!(operation, "create" | "update" | "validate") {
-                args.extend(["--config-file", "dashboard.json"]);
+                args.extend(["--file", "dashboard.json"]);
             }
             let command = parse_clickstack(&args);
             assert_eq!(command.is_write(), expected, "dashboard {operation}");

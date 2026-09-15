@@ -476,6 +476,15 @@ fn organization_role_envelope(result: Value) -> ResponseTemplate {
 
 #[tokio::test]
 async fn organization_role_writes_use_expected_routes_auth_and_bodies() {
+    for file_flag in ["--file", "--config-file"] {
+        organization_role_writes_use_expected_routes_auth_and_bodies_with_file_flag(file_flag)
+            .await;
+    }
+}
+
+async fn organization_role_writes_use_expected_routes_auth_and_bodies_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     let create_body = serde_json::json!({
         "name": "auditor",
@@ -511,7 +520,7 @@ async fn organization_role_writes_use_expected_routes_auth_and_bodies() {
             "org",
             "role",
             "create",
-            "--config-file",
+            file_flag,
             config_file.to_str().unwrap(),
             "--org-id",
             "org-1",
@@ -535,14 +544,7 @@ async fn organization_role_writes_use_expected_routes_auth_and_bodies() {
     let update = invoke_cli_with_cloud_credentials_and_stdin(
         &mock,
         &[
-            "org",
-            "role",
-            "update",
-            "role-1",
-            "--config-file",
-            "-",
-            "--org-id",
-            "org-1",
+            "org", "role", "update", "role-1", file_flag, "-", "--org-id", "org-1",
         ],
         &update_body.to_string(),
     );
@@ -633,15 +635,7 @@ async fn organization_role_reads_support_oauth_and_writes_fail_before_http() {
         None,
     ));
     let write = invoke(
-        &[
-            "org",
-            "role",
-            "create",
-            "--config-file",
-            "-",
-            "--org-id",
-            "org-1",
-        ],
+        &["org", "role", "create", "--file", "-", "--org-id", "org-1"],
         Some(r#"{"name":"x","actors":[],"policies":[]}"#),
     );
     assert_eq!(write.status.code(), Some(4));
@@ -720,15 +714,7 @@ async fn organization_role_create_rejects_invalid_nested_config_before_http() {
     let mock = MockServer::start().await;
     let output = invoke_cli_with_cloud_credentials_and_stdin(
         &mock,
-        &[
-            "org",
-            "role",
-            "create",
-            "--config-file",
-            "-",
-            "--org-id",
-            "org-1",
-        ],
+        &["org", "role", "create", "--file", "-", "--org-id", "org-1"],
         r#"{"name":"bad","actors":[],"policies":[{"allowDeny":"AUDIT","permissions":[],"resources":[],"tagz":{}}]}"#,
     );
     assert_eq!(output.status.code(), Some(1));
@@ -1161,6 +1147,17 @@ async fn backup_bucket_get_uses_oauth_and_preserves_sparse_output() {
 
 #[tokio::test]
 async fn backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body() {
+    for file_flag in ["--file", "--config-file", "--config"] {
+        backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body_with_file_flag(
+            file_flag,
+        )
+        .await;
+    }
+}
+
+async fn backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     let expected = serde_json::json!({
         "bucketProvider": "GCP",
@@ -1187,14 +1184,7 @@ async fn backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body()
     let body = invoke_cli_capture_body_with_stdin(
         &mock,
         &[
-            "backup",
-            "bucket",
-            "create",
-            "svc-1",
-            "--org-id",
-            "org-1",
-            "--config-file",
-            "-",
+            "backup", "bucket", "create", "svc-1", "--org-id", "org-1", file_flag, "-",
         ],
         serde_json::to_string(&expected).unwrap().as_bytes(),
     )
@@ -1204,6 +1194,17 @@ async fn backup_bucket_create_reads_secret_from_stdin_and_sends_exact_gcp_body()
 
 #[tokio::test]
 async fn backup_bucket_update_reads_file_and_delete_use_the_service_resource_path() {
+    for file_flag in ["--file", "--config-file", "--config"] {
+        backup_bucket_update_reads_file_and_delete_use_the_service_resource_path_with_file_flag(
+            file_flag,
+        )
+        .await;
+    }
+}
+
+async fn backup_bucket_update_reads_file_and_delete_use_the_service_resource_path_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     let expected = serde_json::json!({
         "bucketProvider": "AZURE",
@@ -1244,7 +1245,7 @@ async fn backup_bucket_update_reads_file_and_delete_use_the_service_resource_pat
             "svc-1",
             "--org-id",
             "org-1",
-            "--config-file",
+            file_flag,
             config.to_str().unwrap(),
         ],
     );
@@ -1294,7 +1295,7 @@ async fn backup_bucket_invalid_stdin_unknown_provider_and_field_fail_before_http
                 "svc-1",
                 "--org-id",
                 "org-1",
-                "--config-file",
+                "--file",
                 "-",
             ])
             .stdin(Stdio::piped())
@@ -1366,7 +1367,7 @@ async fn backup_bucket_writes_reject_oauth_before_http() {
             "svc-1",
             "--org-id",
             "org-1",
-            "--config-file",
+            "--file",
             config.to_str().unwrap(),
         ])
         .output()
@@ -18854,6 +18855,73 @@ async fn postgres_config_files_reject_missing_or_malformed_sections_before_http(
 }
 
 #[tokio::test]
+async fn postgres_config_file_dash_remains_a_literal_filename() {
+    for (action, verb) in [("patch", "PATCH"), ("replace", "POST")] {
+        let directory = tempfile::tempdir().unwrap();
+        let home = directory.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        let mock = MockServer::start().await;
+        let document = serde_json::json!({
+            "pgConfig": {"max_connections": 300}, "pgBouncerConfig": {}
+        });
+        Mock::given(method(verb))
+            .and(path("/v1/organizations/org-1/postgres/pg-1/config"))
+            .and(body_json(document.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": document, "status": 200
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        for exists in [false, true] {
+            if exists {
+                std::fs::write(directory.path().join("-"), document.to_string()).unwrap();
+            }
+            let mut child = Command::new(clickhousectl_binary())
+                .env_clear()
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", &home)
+                .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+                .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+                .current_dir(directory.path())
+                .args([
+                    "cloud",
+                    "--url",
+                    &mock.uri(),
+                    "--json",
+                    "postgres",
+                    "config",
+                    action,
+                    "pg-1",
+                    "--file",
+                    "-",
+                    "--org-id",
+                    "org-1",
+                ])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            // A distinct, valid stdin document must never replace the file input.
+            child
+                .stdin
+                .take()
+                .unwrap()
+                .write_all(br#"{"pgConfig":{"max_connections":999},"pgBouncerConfig":{}}"#)
+                .unwrap();
+            let output = child.wait_with_output().unwrap();
+            if exists {
+                assert_success(&output);
+            } else {
+                assert_eq!(output.status.code(), Some(1));
+                assert!(mock.received_requests().await.unwrap().is_empty());
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn postgres_config_files_preserve_explicit_empty_sections() {
     let directory = tempfile::tempdir().unwrap();
     let file = directory.path().join("config.json");
@@ -19018,6 +19086,15 @@ async fn mount_clickstack_success_routes(mock: &MockServer) {
 
 #[tokio::test]
 async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies() {
+    for file_flag in ["--file", "--config-file"] {
+        clickstack_all_ten_routes_use_service_org_auth_and_full_bodies_with_file_flag(file_flag)
+            .await;
+    }
+}
+
+async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     mount_clickstack_success_routes(&mock).await;
     let directory = tempfile::tempdir().unwrap();
@@ -19072,7 +19149,7 @@ async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies() {
                 "source",
                 "create",
                 "svc-1",
-                "--config-file",
+                file_flag,
                 source_path,
                 "--org-id",
                 "org-1",
@@ -19086,7 +19163,7 @@ async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies() {
                 "update",
                 "svc-1",
                 "source-update",
-                "--config-file",
+                file_flag,
                 source_path,
                 "--org-id",
                 "org-1",
@@ -19127,7 +19204,7 @@ async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies() {
                 "role",
                 "create",
                 "svc-1",
-                "--config-file",
+                file_flag,
                 role_path,
                 "--org-id",
                 "org-1",
@@ -19141,7 +19218,7 @@ async fn clickstack_all_ten_routes_use_service_org_auth_and_full_bodies() {
                 "update",
                 "svc-1",
                 "role-update",
-                "--config-file",
+                file_flag,
                 "-",
                 "--org-id",
                 "org-1",
@@ -19246,7 +19323,7 @@ async fn clickstack_source_create_accepts_all_variants_and_nested_log_fields() {
                 "source",
                 "create",
                 "svc-1",
-                "--config-file",
+                "--file",
                 file.to_str().unwrap(),
                 "--org-id",
                 "org-1",
@@ -19298,7 +19375,7 @@ async fn clickstack_invalid_config_fails_before_org_discovery_or_resource_reques
                 "source",
                 "create",
                 "svc-1",
-                "--config-file",
+                "--file",
                 file.to_str().unwrap(),
             ],
             None,
@@ -19316,14 +19393,7 @@ async fn clickstack_invalid_config_fails_before_org_discovery_or_resource_reques
     let mock = MockServer::start().await;
     let output = invoke_clickstack_cli(
         &mock,
-        &[
-            "clickstack",
-            "role",
-            "create",
-            "svc-1",
-            "--config-file",
-            "-",
-        ],
+        &["clickstack", "role", "create", "svc-1", "--file", "-"],
         Some(
             r#"{"name":"reader","permissions":[{"action":"read","subject":"Dashboard","conditons":null}]}"#,
         ),
@@ -19643,6 +19713,20 @@ async fn udf_empty_lists_have_named_empty_states_and_readable_pagination() {
 
 #[tokio::test]
 async fn udf_create_and_version_upload_full_definitions_without_auth_leakage() {
+    for file_flag in ["--file", "--config-file", "--config"] {
+        // Replenish Tokio's cooperative budget between pooled mock-server batches.
+        // MockServer drops synchronously wait for an async verification lock.
+        tokio::task::yield_now().await;
+        udf_create_and_version_upload_full_definitions_without_auth_leakage_with_file_flag(
+            file_flag,
+        )
+        .await;
+    }
+}
+
+async fn udf_create_and_version_upload_full_definitions_without_auth_leakage_with_file_flag(
+    file_flag: &str,
+) {
     for create in [true, false] {
         for kind in ["executable", "executable_pool"] {
             let server = MockServer::start().await;
@@ -19691,7 +19775,7 @@ async fn udf_create_and_version_upload_full_definitions_without_auth_leakage() {
                 vec!["version", "create", "my_udf"]
             };
             args.extend([
-                "--config-file",
+                file_flag,
                 "definition.json",
                 "--artifact",
                 "code.zip",
@@ -19792,7 +19876,7 @@ async fn udf_upload_failures_never_create_or_leak_presigned_url() {
             true,
             &[
                 "create",
-                "--config-file",
+                "--file",
                 "definition.json",
                 "--artifact",
                 "code.zip",
@@ -19836,7 +19920,7 @@ async fn udf_invalid_definition_and_artifact_fail_before_api() {
             true,
             &[
                 "create",
-                "--config-file",
+                "--file",
                 "definition.json",
                 "--artifact",
                 "code.zip",
@@ -19858,7 +19942,7 @@ async fn udf_invalid_definition_and_artifact_fail_before_api() {
         true,
         &[
             "create",
-            "--config-file",
+            "--file",
             "definition.json",
             "--artifact",
             "missing.zip",
@@ -19878,18 +19962,12 @@ async fn udf_every_write_rejects_oauth_before_api() {
         vec!["detach", "my_udf", "svc-1"],
         vec!["attach", "my_udf", "svc-1"],
         vec!["version", "delete", "my_udf", "2"],
-        vec![
-            "create",
-            "--config-file",
-            "missing",
-            "--artifact",
-            "missing",
-        ],
+        vec!["create", "--file", "missing", "--artifact", "missing"],
         vec![
             "version",
             "create",
             "my_udf",
-            "--config-file",
+            "--file",
             "missing",
             "--artifact",
             "missing",
@@ -20002,7 +20080,7 @@ async fn udf_create_api_failures_consume_one_upload_attempt() {
         } else {
             vec!["version", "create", "my_udf"]
         };
-        args.extend(["--config-file", "definition.json", "--artifact", "code.zip"]);
+        args.extend(["--file", "definition.json", "--artifact", "code.zip"]);
         let output = udf_test_command(&server, project.path(), false, true, &args)
             .output()
             .unwrap();
@@ -20048,7 +20126,7 @@ async fn udf_stdin_minimal_definition_and_sparse_human_output() {
         project.path(),
         false,
         false,
-        &["create", "--config-file", "-", "--artifact", "code.zip"],
+        &["create", "--file", "-", "--artifact", "code.zip"],
     );
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -20368,6 +20446,17 @@ async fn reverse_private_endpoint_update_rejects_noop_and_conflict_without_http(
 
 #[tokio::test]
 async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output() {
+    for file_flag in ["--file", "--config-file"] {
+        clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output_with_file_flag(
+            file_flag,
+        )
+        .await;
+    }
+}
+
+async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     let searches = "/v1/organizations/org-1/services/svc-1/clickstack/saved-searches";
     Mock::given(method("GET"))
@@ -20453,7 +20542,7 @@ async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output
                 "saved-search",
                 "create",
                 "svc-1",
-                "--config-file",
+                file_flag,
                 file.to_str().unwrap(),
                 "--org-id",
                 "org-1",
@@ -20467,7 +20556,7 @@ async fn clickstack_saved_search_all_five_routes_preserve_bodies_and_json_output
                 "update",
                 "svc-1",
                 "search-update",
-                "--config-file",
+                file_flag,
                 "-",
                 "--org-id",
                 "org-1",
@@ -20563,7 +20652,7 @@ async fn clickstack_saved_search_rejects_invalid_file_and_stdin_before_http() {
                 "saved-search",
                 "create",
                 "svc-1",
-                "--config-file",
+                "--file",
                 config_file,
             ],
             stdin,
@@ -20727,7 +20816,7 @@ async fn clickstack_saved_search_oauth_reads_and_rejects_writes_before_http() {
             "saved-search",
             "create",
             "svc-1",
-            "--config-file",
+            "--file",
             "-",
             "--org-id",
             "org-1",
@@ -20742,6 +20831,17 @@ async fn clickstack_saved_search_oauth_reads_and_rejects_writes_before_http() {
 
 #[tokio::test]
 async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth() {
+    for file_flag in ["--file", "--config-file"] {
+        clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth_with_file_flag(
+            file_flag,
+        )
+        .await;
+    }
+}
+
+async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     let dashboards = "/v1/organizations/org-1/services/svc-1/clickstack/dashboards";
     Mock::given(method("GET"))
@@ -20831,7 +20931,7 @@ async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth() {
                 "dashboard",
                 "create",
                 "svc-1",
-                "--config-file",
+                file_flag,
                 create_path,
                 "--org-id",
                 "org-1",
@@ -20845,7 +20945,7 @@ async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth() {
                 "update",
                 "svc-1",
                 "dash-update",
-                "--config-file",
+                file_flag,
                 "-",
                 "--org-id",
                 "org-1",
@@ -20870,7 +20970,7 @@ async fn clickstack_dashboard_all_six_routes_preserve_typed_bodies_and_auth() {
                 "dashboard",
                 "validate",
                 "svc-1",
-                "--config-file",
+                file_flag,
                 create_path,
                 "--org-id",
                 "org-1",
@@ -20951,7 +21051,7 @@ async fn clickstack_dashboard_validation_surfaces_invalid_and_sparse_results() {
                 "dashboard",
                 "validate",
                 "svc-1",
-                "--config-file",
+                "--file",
                 "-",
                 "--org-id",
                 "org-1",
@@ -21049,7 +21149,7 @@ async fn clickstack_dashboard_validate_fails_fast_for_oauth() {
             "dashboard",
             "validate",
             "svc-1",
-            "--config-file",
+            "--file",
             config.to_str().unwrap(),
             "--org-id",
             "org-1",
@@ -21065,6 +21165,17 @@ async fn clickstack_dashboard_validate_fails_fast_for_oauth() {
 
 #[tokio::test]
 async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth() {
+    for file_flag in ["--file", "--config-file"] {
+        clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth_with_file_flag(
+            file_flag,
+        )
+        .await;
+    }
+}
+
+async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     let alerts = "/v1/organizations/org-1/services/svc-1/clickstack/alerts";
     let webhooks = "/v1/organizations/org-1/services/svc-1/clickstack/webhooks";
@@ -21169,7 +21280,7 @@ async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth()
                 "alert",
                 "create",
                 "svc-1",
-                "--config-file",
+                file_flag,
                 alert_path,
                 "--org-id",
                 "org-1",
@@ -21183,7 +21294,7 @@ async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth()
                 "update",
                 "svc-1",
                 "alert-update",
-                "--config-file",
+                file_flag,
                 "-",
                 "--org-id",
                 "org-1",
@@ -21219,7 +21330,7 @@ async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth()
                 "webhook",
                 "create",
                 "svc-1",
-                "--config-file",
+                file_flag,
                 webhook_path,
                 "--org-id",
                 "org-1",
@@ -21233,7 +21344,7 @@ async fn clickstack_alert_and_webhook_all_nine_routes_preserve_bodies_and_auth()
                 "update",
                 "svc-1",
                 "hook-update",
-                "--config-file",
+                file_flag,
                 "-",
                 "--org-id",
                 "org-1",
@@ -21303,14 +21414,7 @@ async fn clickstack_alert_and_webhook_invalid_inputs_fail_before_http() {
         let body = body.to_string();
         let output = invoke_clickstack_cli(
             &mock,
-            &[
-                "clickstack",
-                resource,
-                "create",
-                "svc-1",
-                "--config-file",
-                "-",
-            ],
+            &["clickstack", resource, "create", "svc-1", "--file", "-"],
             Some(body.as_str()),
             false,
         );
@@ -21346,7 +21450,7 @@ async fn clickstack_webhook_create_sends_every_supported_provider_shape() {
                 "webhook",
                 "create",
                 "svc-1",
-                "--config-file",
+                "--file",
                 "-",
                 "--org-id",
                 "org-1",
@@ -21500,7 +21604,7 @@ async fn clickstack_alert_and_webhook_writes_fail_fast_for_oauth() {
                 resource,
                 "create",
                 "svc-1",
-                "--config-file",
+                "--file",
                 config.to_str().unwrap(),
                 "--org-id",
                 "org-1",
@@ -22194,6 +22298,14 @@ async fn service_settings_set_and_unset_send_exact_requests_with_api_key_auth() 
 
 #[tokio::test]
 async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before_http() {
+    for file_flag in ["--file", "--settings-file"] {
+        service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before_http_with_file_flag(file_flag).await;
+    }
+}
+
+async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before_http_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     let collection = "/v1/organizations/org-1/services/svc-1/clickhouseSettings";
     Mock::given(method("PATCH"))
@@ -22217,18 +22329,8 @@ async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .args([
-            "cloud",
-            "--url",
-            &url,
-            "--json",
-            "service",
-            "settings",
-            "set",
-            "svc-1",
-            "--settings-file",
-            "-",
-            "--org-id",
-            "org-1",
+            "cloud", "--url", &url, "--json", "service", "settings", "set", "svc-1", file_flag,
+            "-", "--org-id", "org-1",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -22251,17 +22353,8 @@ async fn service_settings_set_reads_a_map_from_stdin_and_rejects_bad_json_before
         .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .args([
-            "cloud",
-            "--url",
-            &url,
-            "service",
-            "settings",
-            "set",
-            "svc-1",
-            "--settings-file",
-            "-",
-            "--org-id",
-            "org-1",
+            "cloud", "--url", &url, "service", "settings", "set", "svc-1", file_flag, "-",
+            "--org-id", "org-1",
         ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -22536,7 +22629,7 @@ fn invoke_clickpipe_update_file(mock: &MockServer, patch: &Value) -> std::proces
             "update",
             "svc-1",
             "pipe-1",
-            "--config-file",
+            "--file",
             config_path,
             "--org-id",
             "org-1",
@@ -22713,6 +22806,15 @@ async fn clickpipe_update_sends_patch_source_variants_and_partial_auth_exactly()
 
 #[tokio::test]
 async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values() {
+    for file_flag in ["--file", "--config-file"] {
+        clickpipe_update_reads_stdin_and_preserves_explicit_empty_values_with_file_flag(file_flag)
+            .await;
+    }
+}
+
+async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     let patch = serde_json::json!({"fieldMappings": []});
     mount_clickpipe_update(&mock, patch.clone()).await;
@@ -22731,7 +22833,7 @@ async fn clickpipe_update_reads_stdin_and_preserves_explicit_empty_values() {
             "update",
             "svc-1",
             "pipe-1",
-            "--config-file",
+            file_flag,
             "-",
             "--org-id",
             "org-1",
@@ -22774,7 +22876,7 @@ async fn clickpipe_update_reports_clean_unknown_paths_and_names_stdin() {
             "update",
             "svc-1",
             "pipe-1",
-            "--config-file",
+            "--file",
             "-",
             "--org-id",
             "org-1",
@@ -22819,7 +22921,7 @@ async fn clickpipe_update_rejects_mysql_port_zero_from_file_and_stdin_before_htt
             "update",
             "svc-1",
             "pipe-1",
-            "--config-file",
+            "--file",
             "-",
             "--org-id",
             "org-1",
@@ -22967,7 +23069,7 @@ async fn clickpipe_update_propagates_api_errors_and_rejects_oauth_before_http() 
             "update",
             "svc-1",
             "pipe-1",
-            "--config-file",
+            "--file",
             config_path.to_str().unwrap(),
             "--org-id",
             "org-1",
@@ -22982,6 +23084,15 @@ async fn clickpipe_update_propagates_api_errors_and_rejects_oauth_before_http() 
 
 #[tokio::test]
 async fn service_settings_set_file_preserves_json_types_in_object_body() {
+    for file_flag in ["--file", "--settings-file"] {
+        service_settings_set_file_preserves_json_types_in_object_body_with_file_flag(file_flag)
+            .await;
+    }
+}
+
+async fn service_settings_set_file_preserves_json_types_in_object_body_with_file_flag(
+    file_flag: &str,
+) {
     let mock = MockServer::start().await;
     let directory = tempfile::tempdir().unwrap();
     let settings_file = directory.path().join("settings.json");
@@ -23012,7 +23123,7 @@ async fn service_settings_set_file_preserves_json_types_in_object_body() {
             "settings",
             "set",
             "svc-1",
-            "--settings-file",
+            file_flag,
             settings_file.to_str().unwrap(),
             "--org-id",
             "org-1",
@@ -23046,7 +23157,7 @@ async fn service_settings_set_rejects_malformed_inputs_before_organization_disco
                 "settings",
                 "set",
                 "svc-1",
-                "--settings-file",
+                "--file",
                 settings_file.to_str().unwrap(),
             ],
         );
@@ -23111,10 +23222,10 @@ async fn service_settings_set_preserves_integer_boundaries_on_the_wire() {
     ]);
     assert_success(&invoke_cli_with_cloud_credentials(&mock, &arguments));
     let mut arguments = base.to_vec();
-    arguments.extend(["--settings-file", settings_file.to_str().unwrap()]);
+    arguments.extend(["--file", settings_file.to_str().unwrap()]);
     assert_success(&invoke_cli_with_cloud_credentials(&mock, &arguments));
     let mut arguments = base.to_vec();
-    arguments.extend(["--settings-file", "-"]);
+    arguments.extend(["--file", "-"]);
     assert_success(&invoke_cli_with_cloud_credentials_and_stdin(
         &mock, &arguments, document,
     ));
@@ -23167,20 +23278,13 @@ async fn service_settings_set_rejects_inexact_numbers_before_organization_discov
                     "settings",
                     "set",
                     "svc-1",
-                    "--settings-file",
+                    "--file",
                     settings_file.to_str().unwrap(),
                 ],
             ),
             invoke_cli_with_cloud_credentials_and_stdin(
                 &mock,
-                &[
-                    "service",
-                    "settings",
-                    "set",
-                    "svc-1",
-                    "--settings-file",
-                    "-",
-                ],
+                &["service", "settings", "set", "svc-1", "--file", "-"],
                 &document,
             ),
         ];
@@ -23213,7 +23317,7 @@ async fn service_settings_set_names_unreadable_files_before_organization_discove
                 "settings",
                 "set",
                 "svc-1",
-                "--settings-file",
+                "--file",
                 settings_file.to_str().unwrap(),
             ],
         );
@@ -23580,6 +23684,17 @@ fn query_api_endpoint_envelope(status: u16, result: Value) -> ResponseTemplate {
 
 #[tokio::test]
 async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies() {
+    for file_flag in ["--file", "--config-file"] {
+        query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies_with_file_flag(
+            file_flag,
+        )
+        .await;
+    }
+}
+
+async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies_with_file_flag(
+    file_flag: &str,
+) {
     let server = MockServer::start().await;
     let endpoint = query_api_endpoint_response();
     let list = serde_json::json!({
@@ -23661,7 +23776,7 @@ async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies(
             "org-1",
             "create",
             "svc-1",
-            "--config-file",
+            file_flag,
             config_path.to_str().unwrap(),
         ],
         None,
@@ -23682,7 +23797,7 @@ async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies(
             "update",
             "svc-1",
             QUERY_API_ENDPOINT_ID,
-            "--config-file",
+            file_flag,
             "-",
             "--org-id",
             "org-1",
@@ -24007,7 +24122,7 @@ async fn query_api_endpoint_invalid_configs_fail_before_org_discovery() {
             project.path(),
             false,
             true,
-            &["create", "svc-1", "--config-file", file.to_str().unwrap()],
+            &["create", "svc-1", "--file", file.to_str().unwrap()],
             None,
         );
         assert_eq!(output.status.code(), Some(1), "{file_name}");
@@ -24025,7 +24140,7 @@ async fn query_api_endpoint_invalid_configs_fail_before_org_discovery() {
             "update",
             "svc-1",
             QUERY_API_ENDPOINT_ID,
-            "--config-file",
+            "--file",
             missing_file.to_str().unwrap(),
         ],
         None,
@@ -24043,12 +24158,12 @@ async fn query_api_endpoint_invalid_configs_fail_before_org_discovery() {
 async fn query_api_endpoint_writes_reject_oauth_before_config_or_http() {
     let server = MockServer::start().await;
     for args in [
-        vec!["create", "svc-1", "--config-file", "does-not-exist.json"],
+        vec!["create", "svc-1", "--file", "does-not-exist.json"],
         vec![
             "update",
             "svc-1",
             QUERY_API_ENDPOINT_ID,
-            "--config-file",
+            "--file",
             "does-not-exist.json",
         ],
         vec!["delete", "svc-1", QUERY_API_ENDPOINT_ID],
@@ -24117,7 +24232,7 @@ async fn query_api_endpoint_api_errors_preserve_auth_and_generic_exit_codes() {
                 "update",
                 "svc-1",
                 QUERY_API_ENDPOINT_ID,
-                "--config-file",
+                "--file",
                 config_path.to_str().unwrap(),
                 "--org-id",
                 "org-1",

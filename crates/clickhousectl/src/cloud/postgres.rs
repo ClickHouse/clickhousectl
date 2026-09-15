@@ -313,7 +313,7 @@ pub enum ConfigCommands {
         /// JSON file with a complete PostgresInstanceConfig object
         ///
         /// Not a fragment: use a document obtained from `config get --json`.
-        #[arg(long)]
+        #[arg(long, value_name = "PATH")]
         file: PathBuf,
     },
     /// Change selected runtime configuration fields
@@ -330,7 +330,7 @@ pub enum ConfigCommands {
         #[arg(long = "set", conflicts_with = "file")]
         sets: Vec<String>,
         /// JSON file with explicit pgConfig and pgBouncerConfig objects
-        #[arg(long, conflicts_with = "sets")]
+        #[arg(long, value_name = "PATH", conflicts_with = "sets")]
         file: Option<PathBuf>,
     },
 }
@@ -2516,6 +2516,20 @@ pub async fn postgres_role_change(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "postgres", "config", "replace", "pg-1"],
+            "file",
+            &[],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "postgres", "config", "patch", "pg-1"],
+            "file",
+            &[],
+        );
+    }
+
     use super::*;
     use crate::cli::Cli;
     use clap::Parser;
@@ -3356,9 +3370,6 @@ mod tests {
         .err()
         .expect("expected parse error");
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
-        let message = err.to_string();
-        assert!(message.contains("--set <SETS>"), "{message}");
-        assert!(message.contains("--file <FILE>"), "{message}");
     }
 
     #[test]

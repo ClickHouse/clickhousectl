@@ -86,6 +86,14 @@ cargo install --path crates/clickhousectl
 
 Prebuilt archives for each release are hosted at `https://builds.clickhouse.com/clickhousectl/`. Archives are named `clickhousectl-{target}-v{version}.tar.gz` and contain a single directory of the same name with the `clickhousectl` binary inside. Supported targets: `x86_64-unknown-linux-musl`, `aarch64-unknown-linux-musl`, `x86_64-apple-darwin`, `aarch64-apple-darwin`.
 
+## Upgrading to 0.5.0
+
+Primary Cloud JSON document inputs use `--file <PATH>`. This covers UDF and version creation, organization role create/update, service settings and scaling schedules, Query API endpoint and backup bucket create/update, ClickPipe update, ClickStack resource create/update and dashboard validation, and Postgres config replace/patch.
+
+The previous `--config-file`, `--settings-file`, and existing Cloud `--config` spellings remain hidden compatibility aliases on the commands that accepted them. Use only one spelling per invocation; mixing aliases or repeating `--file` is an error.
+
+All of these inputs accept `--file -` for stdin except Postgres config replace/patch, which read filesystem paths only: `-` is a literal filename there. Local server `--config <NAME>`, ancillary inputs such as `--artifact` and `--pg-config-file`, and SQL `--queries-file` keep their existing meaning.
+
 ## Common workflows
 
 This README focuses on common tasks and representative examples. The CLI help is the complete, version-matched command reference: start with `clickhousectl --help`, then use help at any level, such as `clickhousectl cloud postgres --help` or `clickhousectl local server start --help`.
@@ -167,22 +175,22 @@ Manage ClickStack data sources, roles, dashboards, alerts, and webhooks for an e
 ```bash
 clickhousectl cloud clickstack source list <service-id> --org-id <org-id>
 clickhousectl cloud clickstack source create <service-id> \
-  --config-file source.json --org-id <org-id>
+  --file source.json --org-id <org-id>
 clickhousectl cloud clickstack role create <service-id> \
-  --config-file role.json --org-id <org-id>
+  --file role.json --org-id <org-id>
 clickhousectl cloud clickstack saved-search create <service-id> \
-  --config-file saved-search.json --org-id <org-id>
+  --file saved-search.json --org-id <org-id>
 clickhousectl cloud clickstack saved-search get <service-id> <saved-search-id> \
   --org-id <org-id>
 clickhousectl cloud clickstack saved-search update <service-id> <saved-search-id> \
-  --config-file saved-search.json --org-id <org-id>
+  --file saved-search.json --org-id <org-id>
 clickhousectl cloud clickstack dashboard validate <service-id> \
-  --config-file dashboard.json --org-id <org-id>
+  --file dashboard.json --org-id <org-id>
 clickhousectl cloud clickstack dashboard create <service-id> \
-  --config-file dashboard.json --org-id <org-id>
+  --file dashboard.json --org-id <org-id>
 ```
 
-Pass `--config-file -` to read the JSON body from stdin. Resource IDs come from the respective
+Pass `--file -` to read the JSON body from stdin. Resource IDs come from the respective
 `list` command. A saved search configuration contains `name` and `sourceId`, plus optional `select`,
 `where`, `whereLanguage`, `orderBy`, `tags`, and structured `filters`; obtain `sourceId` with
 `cloud clickstack source list`. All ClickStack `update` commands use PUT replacement semantics, so
@@ -244,7 +252,7 @@ should remain. For example, an existing filter entry in `dashboard-update.json` 
 
 ```bash
 clickhousectl cloud clickstack dashboard update <service-id> <dashboard-id> \
-  --config-file dashboard-update.json --org-id <org-id>
+  --file dashboard-update.json --org-id <org-id>
 ```
 
 Create a notification destination first, then reference its ID from an alert. For example,
@@ -264,7 +272,7 @@ Create a notification destination first, then reference its ID from an alert. Fo
 
 ```bash
 clickhousectl cloud clickstack webhook create <service-id> \
-  --config-file webhook.json --org-id <org-id>
+  --file webhook.json --org-id <org-id>
 clickhousectl cloud clickstack webhook list <service-id> --org-id <org-id>
 ```
 
@@ -305,11 +313,11 @@ array. An alert sourced from a dashboard tile can use this complete `alert.json`
 
 ```bash
 clickhousectl cloud clickstack alert create <service-id> \
-  --config-file alert.json --org-id <org-id>
+  --file alert.json --org-id <org-id>
 clickhousectl cloud clickstack alert get <service-id> <alert-id> --org-id <org-id>
 # The detail output includes state, executionErrors, and all notification channels.
 clickhousectl cloud clickstack alert update <service-id> <alert-id> \
-  --config-file alert.json --org-id <org-id>
+  --file alert.json --org-id <org-id>
 ```
 
 Alert and webhook updates are full PUT replacements. A `saved_search` alert uses `savedSearchId`
@@ -930,7 +938,7 @@ clickhousectl cloud service settings list <service-id>
 clickhousectl cloud service settings get <service-id> compatibility
 clickhousectl cloud service settings set <service-id> \
   --setting 'compatibility="24.8"' --setting enable_analyzer=1
-clickhousectl cloud service settings set <service-id> --settings-file settings.json
+clickhousectl cloud service settings set <service-id> --file settings.json
 clickhousectl cloud service settings unset <service-id> compatibility
 
 # Query endpoint management (manual, for sharing keys with other tools)
@@ -1018,7 +1026,7 @@ The Rust API client's `ServiceClickhouseSettingsPatchRequest` uses a map of sett
 
 `ServiceClickhouseSetting.value` is `Option<serde_json::Value>`: the published contract permits strings and integers. The response aliases `ServiceClickhouseSettingValueResponse` and `ServiceClickhouseSettingsMapResponse` retain arbitrary JSON to tolerate future response types. Values retain their JSON types; missing and null values remain absent. `cloud service settings get` and `list` preserve these types in `--json` output; human output displays string values without JSON quotes and numeric values as numbers.
 
-`service settings schema` discovers the setting names and accepted types for a service. `settings set` changes only the names supplied: repeat `--setting NAME=JSON_VALUE`, or pass a JSON object such as `{"compatibility":"24.8","enable_analyzer":1}` with `--settings-file` (`-` reads stdin). String values in `--setting` must retain their JSON quotes. The CLI sends settings as a JSON object and preserves each accepted value's JSON type. Numeric literals must be integers from -9223372036854775808 to 18446744073709551615; overflow, decimal and exponent literals are rejected before networking to prevent rounding. Use JSON strings for decimal or exponent values when the setting accepts them. A settings file contains the map itself, not a `{ "settings": ... }` request wrapper; malformed or empty input fails before any network request. Unknown setting names are sent to the API for validation. `settings unset` is idempotent and resets one setting to its platform default; it does not assign JSON `null`.
+`service settings schema` discovers the setting names and accepted types for a service. `settings set` changes only the names supplied: repeat `--setting NAME=JSON_VALUE`, or pass a JSON object such as `{"compatibility":"24.8","enable_analyzer":1}` with `--file` (`-` reads stdin). String values in `--setting` must retain their JSON quotes. The CLI sends settings as a JSON object and preserves each accepted value's JSON type. Numeric literals must be integers from -9223372036854775808 to 18446744073709551615; overflow, decimal and exponent literals are rejected before networking to prevent rounding. Use JSON strings for decimal or exponent values when the setting accepts them. A settings file contains the map itself, not a `{ "settings": ... }` request wrapper; malformed or empty input fails before any network request. Unknown setting names are sent to the API for validation. `settings unset` is idempotent and resets one setting to its platform default; it does not assign JSON `null`.
 
 `--backup-start-time` requires the backup period to be 24 or 48 hours. Nothing is defaulted when the period is omitted: the API validates the new start time against the period already stored on the service, so either pass `--backup-period-hours 24` or `--backup-period-hours 48` in the same call, or leave the stored period at one of those. When a start time is given without a period, the CLI reads the current configuration first and fails before sending the update if the stored period is something else.
 
@@ -1130,14 +1138,14 @@ Create an endpoint from a complete JSON definition:
 Save this as `endpoint.json` and replace the example key ID with one from `cloud key list`. `roles` contains database role names, not organization role IDs. `name`, `sql`, `database`, `apiKeyIds`, and `roles` are required; `parameters` and `allowedOrigins` are optional.
 
 ```bash
-clickhousectl cloud query-api-endpoint create <service-id> --config-file endpoint.json
+clickhousectl cloud query-api-endpoint create <service-id> --file endpoint.json
 clickhousectl cloud query-api-endpoint list <service-id> --limit 10 --json
 clickhousectl cloud query-api-endpoint get <service-id> <endpoint-id>
-clickhousectl cloud query-api-endpoint update <service-id> <endpoint-id> --config-file endpoint.json
+clickhousectl cloud query-api-endpoint update <service-id> <endpoint-id> --file endpoint.json
 clickhousectl cloud query-api-endpoint delete <service-id> <endpoint-id>
 ```
 
-Create and update also accept `--config-file -` to read JSON from stdin. Unknown fields and incomplete definitions are rejected before organization discovery. Update replaces the complete definition: omitted `parameters` and `allowedOrigins` use empty defaults, so include any values you want to retain. A GET response includes response-only fields; construct an update definition from the writable fields shown above.
+Create and update also accept `--file -` to read JSON from stdin. Unknown fields and incomplete definitions are rejected before organization discovery. Update replaces the complete definition: omitted `parameters` and `allowedOrigins` use empty defaults, so include any values you want to retain. A GET response includes response-only fields; construct an update definition from the writable fields shown above.
 
 List returns one page; pass `pagination.nextCursor` from JSON output to `--cursor` to continue. Human output also displays the next cursor when present. `--limit` accepts 1–100. `--org-id` works before or after the subcommand. List/get support OAuth; create/update/delete require API key authentication. User-owned endpoints can be listed and read, but cannot be updated or deleted through these commands.
 
@@ -1314,7 +1322,7 @@ clickhousectl cloud backup bucket get <service-id>
 clickhousectl cloud backup bucket delete <service-id>
 ```
 
-The backup-bucket commands use the beta Cloud API. Create and update a bucket from a strict provider-specific JSON document. Pass a file path to `--config-file`, or `-` to read JSON from stdin so credentials do not appear in the process arguments. The provider must be exactly `AWS`, `GCP`, or `AZURE`; unknown and cross-provider fields are rejected before the request is sent.
+The backup-bucket commands use the beta Cloud API. Create and update a bucket from a strict provider-specific JSON document. Pass a file path to `--file`, or `-` to read JSON from stdin so credentials do not appear in the process arguments. The provider must be exactly `AWS`, `GCP`, or `AZURE`; unknown and cross-provider fields are rejected before the request is sent.
 
 ```json
 {
@@ -1346,11 +1354,11 @@ Save one object as a permissions-restricted file, then use it for the matching o
 
 ```bash
 chmod 600 backup-bucket.json
-clickhousectl cloud backup bucket create <service-id> --config-file backup-bucket.json
-clickhousectl cloud backup bucket update <service-id> --config-file backup-bucket.json
+clickhousectl cloud backup bucket create <service-id> --file backup-bucket.json
+clickhousectl cloud backup bucket update <service-id> --file backup-bucket.json
 
 # Or keep the document out of a named file
-generate-backup-bucket-json | clickhousectl cloud backup bucket create <service-id> --config-file -
+generate-backup-bucket-json | clickhousectl cloud backup bucket create <service-id> --file -
 ```
 
 `update` calls the API's PATCH operation, but its provider schema still requires every field shown above except AWS `iamRoleSessionName`, which is optional on update. AWS create requires that session name. GCP and Azure credentials must be supplied again on every update; no bucket ID argument is used because each service has one backup-bucket resource.
@@ -1471,11 +1479,11 @@ TLS fields are `tlsHost`, `caCertificate`, `disableTls`, and
 
 ```bash
 clickhousectl cloud clickpipe update <service-id> <clickpipe-id> \
-  --config-file patch.json
+  --file patch.json
 
 # Read a generated JSON PATCH body from stdin.
 jq '.source.postgres.credentials.password = env.CLICKPIPE_PASSWORD' patch-template.json |
-  clickhousectl cloud clickpipe update <service-id> <clickpipe-id> --config-file -
+  clickhousectl cloud clickpipe update <service-id> <clickpipe-id> --file -
 ```
 
 Root fields can rename a pipe, replace destination columns or field mappings,
@@ -1510,7 +1518,7 @@ its complete destination column list; only `columns` belongs in the destination
 patch, so leave out `database`, `table`, `managedTable`, and `tableDefinition`.
 
 ```bash
-clickhousectl cloud clickpipe update "$SERVICE_ID" "$PIPE_ID" --config-file - <<'JSON'
+clickhousectl cloud clickpipe update "$SERVICE_ID" "$PIPE_ID" --file - <<'JSON'
 {
   "destination": {
     "columns": [
@@ -1527,7 +1535,7 @@ JSON
 
 # Rename while preserving the existing mappings, source, destination and settings.
 printf '%s\n' '{"name":"stations-v2"}' |
-  clickhousectl cloud clickpipe update "$SERVICE_ID" "$PIPE_ID" --config-file -
+  clickhousectl cloud clickpipe update "$SERVICE_ID" "$PIPE_ID" --file -
 ```
 
 Omitting `fieldMappings` preserves saved mappings, including when resending
@@ -1541,7 +1549,7 @@ These observations concern root object-storage field mappings, not CDC
 A source patch selects at most one of the seven supported arms.
 BigQuery sources cannot be updated by this API. `validateSamples` is optional.
 Unknown PATCH fields are rejected before a request is sent; diagnostics use the
-JSON field path and identify `--config-file -` as stdin.
+JSON field path and identify `--file -` as stdin.
 Kafka credentials must match the selected
 authentication: username and password for PLAIN/SCRAM, access key and secret
 for IAM user, or certificate and private key for mutual TLS. Event Hubs
@@ -2532,7 +2540,7 @@ Add `--json` (or run as a coding agent) for machine-readable output.
 
 List system and custom roles to discover the role IDs used by member, invitation,
 and API-key commands. Custom roles are created and updated from strict JSON files;
-pass `--config-file -` to read the body from stdin.
+pass `--file -` to read the body from stdin.
 
 ```bash
 clickhousectl cloud org role list
@@ -2555,11 +2563,11 @@ cat > role.json <<'JSON'
   ]
 }
 JSON
-clickhousectl cloud org role create --config-file role.json
+clickhousectl cloud org role create --file role.json
 
 # Updates are partial; actors and policies replace their complete lists when present.
 printf '%s\n' '{"name":"renamed-auditor"}' | \
-  clickhousectl cloud org role update <role-id> --config-file -
+  clickhousectl cloud org role update <role-id> --file -
 clickhousectl cloud org role delete <role-id>
 ```
 
@@ -2901,7 +2909,7 @@ Distribution packagers can compile telemetry out entirely (including the `teleme
 
 `cloud udf` manages organization-scoped executable UDFs, versions, and service attachments. All UDF operations are beta. Reads support OAuth; writes require API key authentication.
 
-Create a JSON definition and a [source ZIP archive](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions#manage-udfs-with-the-cloud-api). `--config-file` accepts a file or `-` for stdin. The definition uses the API's field names and excludes `uploadId`, which the CLI obtains from a fresh upload session:
+Create a JSON definition and a [source ZIP archive](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions#manage-udfs-with-the-cloud-api). `--file` accepts a file or `-` for stdin. The definition uses the API's field names and excludes `uploadId`, which the CLI obtains from a fresh upload session:
 
 ```json
 {
@@ -2916,7 +2924,7 @@ Create a JSON definition and a [source ZIP archive](https://clickhouse.com/docs/
 ```
 
 ```bash
-clickhousectl cloud udf create --config-file udf.json --artifact source.zip
+clickhousectl cloud udf create --file udf.json --artifact source.zip
 clickhousectl cloud udf get my_udf
 # Wait for status ready, then attach the latest ready version (or --version 2)
 clickhousectl cloud udf attach my_udf <service-id>
@@ -2928,7 +2936,7 @@ clickhousectl cloud udf list --limit 20 --cursor '<nextCursor>'
 clickhousectl cloud udf version list my_udf
 
 # version.json contains the complete definition without functionName or uploadId
-clickhousectl cloud udf version create my_udf --config-file version.json --artifact source-v2.zip
+clickhousectl cloud udf version create my_udf --file version.json --artifact source-v2.zip
 clickhousectl cloud udf attach my_udf <service-id> --version 2
 clickhousectl cloud udf detach my_udf <service-id>
 # Detach from every service before deleting an individual version

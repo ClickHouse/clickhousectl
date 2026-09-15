@@ -1564,6 +1564,44 @@ mod tests {
     }
 
     #[test]
+    fn primary_json_file_aliases_capture_only_canonical_argument_names() {
+        for (command, aliases) in [
+            (
+                vec!["backup", "bucket", "create", "SECRET-SERVICE"],
+                vec!["file", "config-file", "config"],
+            ),
+            (
+                vec!["service", "settings", "set", "SECRET-SERVICE"],
+                vec!["file", "settings-file"],
+            ),
+        ] {
+            for alias in aliases {
+                let flag = format!("--{alias}");
+                let mut args = vec!["chctl", "cloud"];
+                args.extend(command.iter().copied());
+                args.extend([flag.as_str(), "SECRET-PATH.json"]);
+                let inv = capture_from(&args);
+                assert_eq!(inv.flags, ["file"]);
+                assert_eq!(inv.positionals, ["service_id"]);
+                let json =
+                    serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
+                assert!(!json.contains("SECRET"), "file value leaked: {json}");
+
+                args.extend(["--file", "SECRET-OTHER.json"]);
+                let lossy = capture_lossy_from(&args);
+                assert_eq!(lossy.flags, ["file"]);
+                assert_eq!(lossy.outcome, "other_parse_error");
+                let json =
+                    serde_json::to_string(&build_payload(&lossy, 2, &env_of(&[]), None)).unwrap();
+                assert!(
+                    !json.contains("SECRET"),
+                    "conflicting file value leaked: {json}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn capture_reports_names_only_never_values_or_positionals() {
         for position in 3..=6 {
             let mut args = vec![
