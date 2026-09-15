@@ -1099,7 +1099,7 @@ async fn failed_parse_after_positional_captures_later_flags_without_values() {
         serde_json::json!(["from-date", "org-id", "to-date"])
     );
     // Only the positional definition is recorded; the ID stays off the wire.
-    assert_eq!(event["positionals"], serde_json::json!(["postgres_id"]));
+    assert_eq!(event["positionals"], serde_json::json!(["resource_id"]));
     assert_eq!(event["exit_code"], 2);
     assert_eq!(event["outcome"], "invalid_value");
     let raw = serde_json::to_string(event).unwrap();
