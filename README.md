@@ -2485,41 +2485,47 @@ connection flags as the corresponding `create` subcommand (minus the
 destination `--name`/`--database`/`--table`/`--column` options). Object-storage
 discovery runs on the destination service, so that service must be running.
 Schema discovery requires API-key authentication. For multi-organization
-accounts, `--org-id <org-id>` can appear before the service ID, between the
-service ID and source, or after the source options:
+accounts, `--org-id <org-id>` can appear anywhere after `cloud`, including before
+or after the source and service ID. Source flags can precede or follow the service ID.
+
+**Breaking change in 0.5.0:** use `schema-discover <source> <service-id>`, matching
+`create <source> <service-id>`. The previous service-before-source order is rejected
+with a usage error (exit code 2).
+
+Examples:
 
 ```bash
 # Discover schema from Kafka
-clickhousectl cloud clickpipe schema-discover <service-id> kafka \
+clickhousectl cloud clickpipe schema-discover kafka <service-id> \
   --brokers 'broker:9092' --topics events \
   --format JSONEachRow \
   --auth SCRAM-SHA-256 \
   --username "$KAFKA_USERNAME" --password "$KAFKA_PASSWORD"
 
 # Discover schema from a Kafka broker that requires no authentication
-clickhousectl cloud clickpipe schema-discover <service-id> kafka \
+clickhousectl cloud clickpipe schema-discover kafka <service-id> \
   --brokers 'broker:9092' --topics events \
   --format JSONEachRow
 
 # Discover a Protobuf schema, reading the source from stdin
-clickhousectl cloud clickpipe schema-discover <service-id> kafka \
+clickhousectl cloud clickpipe schema-discover kafka <service-id> \
   --brokers 'broker:9092' --topics events \
   --format Protobuf --protobuf-schema-file - < events.proto
 
 # Discover schema from Kinesis
-clickhousectl cloud clickpipe schema-discover <service-id> kinesis \
+clickhousectl cloud clickpipe schema-discover kinesis <service-id> \
   --stream-name events --region us-east-1 \
   --format JSONEachRow \
   --auth IAM_ROLE --iam-role "$KINESIS_IAM_ROLE_ARN"
 
 # Discover schema from object storage (S3, GCS, Azure Blob Storage)
-clickhousectl cloud clickpipe schema-discover <service-id> object-storage \
+clickhousectl cloud clickpipe schema-discover object-storage <service-id> \
   --source-url 'https://bucket.s3.us-east-1.amazonaws.com/data/*.json' \
   --format JSONEachRow \
   --iam-role "$S3_IAM_ROLE_ARN"
 
 # Discover schema from Google Cloud Pub/Sub (limited preview)
-clickhousectl cloud clickpipe schema-discover <service-id> pubsub \
+clickhousectl cloud clickpipe schema-discover pubsub <service-id> \
   --topic events --project-id my-gcp-project \
   --format JSONEachRow \
   --seek-type earliest \

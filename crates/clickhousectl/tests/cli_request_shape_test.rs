@@ -6704,10 +6704,10 @@ async fn schema_discover_kafka_without_auth_flags_sends_no_authentication() {
         &[
             "clickpipe",
             "schema-discover",
-            "svc-id",
+            "kafka",
             "--org-id",
             "org",
-            "kafka",
+            "svc-id",
             "--brokers",
             "broker:9092",
             "--topics",
@@ -14638,9 +14638,9 @@ async fn clickpipe_settings_get_reads_settings_for_pipes_that_have_them() {
 // ── ClickPipe schema discovery (#289, beta) ────────────────────────────────
 //
 // `clickpipe schema-discover` POSTs to .../clickpipes/schemaDiscovery with a
-// `source` containing the kafka/kinesis source built from the CLI args. The
-// request body shape is asserted; the stubbed response is rendered as a table
-// (or JSON with --json).
+// `source` containing the selected source built from the CLI args. The
+// organization/service path and request body shape are asserted; the stubbed
+// response is rendered as a table (or JSON with --json).
 
 /// Start a wiremock server that accepts a schema-discovery POST and records
 /// the request body. Returns inferred fields the CLI renders.
@@ -14657,13 +14657,34 @@ async fn start_mock_schema_discovery_api() -> MockServer {
         "requestId": "stub-schema-discovery",
     });
     Mock::given(method("POST"))
-        .and(path_regex(
-            r"^/v1/organizations/[^/]+/services/[^/]+/clickpipes/schemaDiscovery$",
+        .and(path(
+            "/v1/organizations/org/services/svc-id/clickpipes/schemaDiscovery",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(stub_response))
+        .expect(1)
         .mount(&mock)
         .await;
     mock
+}
+
+#[tokio::test]
+async fn schema_discover_old_service_before_source_order_is_usage_error_without_http() {
+    let mock = MockServer::start().await;
+    for source in ["kafka", "kinesis", "object-storage", "pubsub"] {
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "clickpipe",
+                "schema-discover",
+                "svc-id",
+                source,
+                "--org-id",
+                "org",
+            ],
+        );
+        assert_eq!(output.status.code(), Some(2), "{source}: {output:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -14672,12 +14693,12 @@ async fn schema_discover_kafka_posts_source_body() {
     let body = invoke_cli_capture_body(
         &mock,
         &[
-            "clickpipe",
-            "schema-discover",
-            "svc-id",
             "--org-id",
             "org",
+            "clickpipe",
+            "schema-discover",
             "kafka",
+            "svc-id",
             "--brokers",
             "broker:9092",
             "--topics",
@@ -14711,10 +14732,10 @@ async fn issue_593_schema_discover_kafka_sends_base64_protobuf_schema() {
         &[
             "clickpipe",
             "schema-discover",
-            "svc-id",
+            "kafka",
             "--org-id",
             "org",
-            "kafka",
+            "svc-id",
             "--brokers",
             "broker:9092",
             "--topics",
@@ -14752,10 +14773,10 @@ async fn schema_discover_kinesis_posts_source_body() {
         &[
             "clickpipe",
             "schema-discover",
-            "svc-id",
             "--org-id",
             "org",
             "kinesis",
+            "svc-id",
             "--stream-name",
             "mystream",
             "--region",
@@ -14785,12 +14806,12 @@ async fn schema_discover_object_storage_posts_source_body() {
         &[
             "clickpipe",
             "schema-discover",
-            "svc-id",
-            "--org-id",
-            "org",
             "object-storage",
             "--source-url",
             "https://bucket.s3.us-east-1.amazonaws.com/data/*.csv",
+            "svc-id",
+            "--org-id",
+            "org",
             "--format",
             "CSV",
             "--compression",
@@ -14829,7 +14850,7 @@ async fn schema_discover_object_storage_posts_source_body() {
 
 // ── Google Cloud Pub/Sub source (issue #587) ───────────────────────────────
 //
-// `clickpipe create pubsub` and `clickpipe schema-discover <SERVICE_ID> pubsub`
+// `clickpipe create pubsub` and `clickpipe schema-discover pubsub <SERVICE_ID>`
 // build the same `source.pubsub` object. The service account key is read from a
 // file (or from stdin for `-`) and sent base64-encoded under
 // `serviceAccountKey.serviceAccountFile`, so the path never goes on the wire —
@@ -15158,10 +15179,8 @@ async fn schema_discover_pubsub_posts_source_body() {
         &[
             "clickpipe",
             "schema-discover",
-            "svc-id",
-            "--org-id",
-            "org",
             "pubsub",
+            "svc-id",
             "--topic",
             "events",
             "--project-id",
@@ -15174,6 +15193,8 @@ async fn schema_discover_pubsub_posts_source_body() {
             key_path.to_str().expect("utf-8 temp path"),
             "--ack-deadline",
             "30",
+            "--org-id",
+            "org",
         ],
     )
     .await;
@@ -15357,10 +15378,10 @@ async fn workload_identity_schema_discovery_covers_every_supported_arm() {
             vec![
                 "clickpipe",
                 "schema-discover",
-                "svc-id",
+                "kafka",
                 "--org-id",
                 "org",
-                "kafka",
+                "svc-id",
                 "--brokers",
                 "broker:9092",
                 "--topics",
@@ -15378,10 +15399,10 @@ async fn workload_identity_schema_discovery_covers_every_supported_arm() {
             vec![
                 "clickpipe",
                 "schema-discover",
-                "svc-id",
+                "object-storage",
                 "--org-id",
                 "org",
-                "object-storage",
+                "svc-id",
                 "--source-url",
                 "gs://bucket/events/*.json",
                 "--format",
@@ -15397,10 +15418,10 @@ async fn workload_identity_schema_discovery_covers_every_supported_arm() {
             vec![
                 "clickpipe",
                 "schema-discover",
-                "svc-id",
+                "pubsub",
                 "--org-id",
                 "org",
-                "pubsub",
+                "svc-id",
                 "--topic",
                 "events",
                 "--project-id",

@@ -165,7 +165,7 @@ CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`. ClickPipe ID: `clickpipe list <SERVICE_ID>`.
   Everything except list/get is a write and needs API key auth, schema-discover included.
   `start` only works on a Stopped or Failed pipe; `stop` works from any state.
-  Typical flow: `clickpipe schema-discover <service-id> <source>` -> `clickpipe create <source>`
+  Typical flow: `clickpipe schema-discover <source> <service-id>` -> `clickpipe create <source>`
     -> `clickpipe get`."
     )]
     ClickPipe {
@@ -378,8 +378,8 @@ pub(crate) mod tests {
             &[
                 "clickpipe",
                 "schema-discover",
-                "svc-1",
                 "kafka",
+                "svc-1",
                 "--brokers",
                 "broker:9092",
                 "--topics",
@@ -390,8 +390,8 @@ pub(crate) mod tests {
             &[
                 "clickpipe",
                 "schema-discover",
-                "svc-1",
                 "kinesis",
+                "svc-1",
                 "--stream-name",
                 "events",
                 "--region",
@@ -402,8 +402,8 @@ pub(crate) mod tests {
             &[
                 "clickpipe",
                 "schema-discover",
-                "svc-1",
                 "object-storage",
+                "svc-1",
                 "--source-url",
                 "https://bucket.example/data",
                 "--format",
@@ -412,8 +412,8 @@ pub(crate) mod tests {
             &[
                 "clickpipe",
                 "schema-discover",
-                "svc-1",
                 "pubsub",
+                "svc-1",
                 "--project-id",
                 "project",
                 "--topic",

@@ -374,11 +374,8 @@ CONTEXT FOR AGENTS:
   Output is one inferred name/type per field — pass them to `--column name:type` on
   `clickhousectl cloud clickpipe create <source>`, which takes the same source flags.
   GCP workload identity uses the principal from `clickpipe context get`.
-  object-storage discovery runs on the destination service, which must be running.")]
+  Typical flow: `schema-discover <source> <service-id>` -> `create <source> <service-id>`.")]
     SchemaDiscover {
-        /// Service ID
-        service_id: String,
-
         #[command(subcommand)]
         command: ClickPipeSchemaDiscoverCommands,
     },
@@ -403,7 +400,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   For kafka, kinesis, object-storage and pubsub, get --column from
-  `clickhousectl cloud clickpipe schema-discover <service-id> <source>`.
+  `clickhousectl cloud clickpipe schema-discover <source> <service-id>`.
   GCP workload identity is private preview: run `clickpipe context get`, grant
   its principal source access, then pass --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY.
   The source must be reachable from ClickPipes; allow the static egress IPs:
@@ -542,18 +539,59 @@ impl ClickPipeCdcScalingCommands {
 #[derive(Subcommand)]
 pub enum ClickPipeSchemaDiscoverCommands {
     /// Discover schema from a Kafka or Kafka-compatible source
-    Kafka(Box<KafkaSourceFields>),
+    Kafka(Box<KafkaSchemaDiscoverArgs>),
 
     /// Discover schema from an Amazon Kinesis stream
-    Kinesis(Box<KinesisSourceFields>),
+    Kinesis(Box<KinesisSchemaDiscoverArgs>),
 
     /// Discover schema from an object-storage source (S3, GCS, Azure Blob Storage)
-    #[command(name = "object-storage")]
-    ObjectStorage(Box<ObjectStorageSourceFields>),
+    #[command(
+        name = "object-storage",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Discovery runs on the destination service, which must be running."
+    )]
+    ObjectStorage(Box<ObjectStorageSchemaDiscoverArgs>),
 
     /// Discover schema from a Google Cloud Pub/Sub topic (limited preview)
     #[command(name = "pubsub")]
-    PubSub(Box<PubSubSourceFields>),
+    PubSub(Box<PubSubSchemaDiscoverArgs>),
+}
+
+#[derive(Args)]
+pub struct KafkaSchemaDiscoverArgs {
+    /// Service ID
+    pub service_id: String,
+
+    #[command(flatten)]
+    pub source: KafkaSourceFields,
+}
+
+#[derive(Args)]
+pub struct KinesisSchemaDiscoverArgs {
+    /// Service ID
+    pub service_id: String,
+
+    #[command(flatten)]
+    pub source: KinesisSourceFields,
+}
+
+#[derive(Args)]
+pub struct ObjectStorageSchemaDiscoverArgs {
+    /// Service ID
+    pub service_id: String,
+
+    #[command(flatten)]
+    pub source: ObjectStorageSourceFields,
+}
+
+#[derive(Args)]
+pub struct PubSubSchemaDiscoverArgs {
+    /// Service ID
+    pub service_id: String,
+
+    #[command(flatten)]
+    pub source: PubSubSourceFields,
 }
 
 #[derive(Subcommand)]
@@ -1909,10 +1947,9 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                 clickpipe_context_get(client, &service_id, json).await
             }
         },
-        ClickPipeCommands::SchemaDiscover {
-            service_id,
-            command,
-        } => clickpipe_schema_discover(client, &service_id, &command, json).await,
+        ClickPipeCommands::SchemaDiscover { command } => {
+            clickpipe_schema_discover(client, &command, json).await
+        }
         ClickPipeCommands::ReversePrivateEndpoint { command } => {
             crate::cloud::clickpipe_endpoints::run(client, command, json).await
         }
@@ -2021,7 +2058,7 @@ async fn clickpipe_list(client: &CloudClient, service_id: &str, json: bool) -> C
 /// authentication mechanism from the credential flags and reading any GCP
 /// service-account file up front so bad invocations fail fast before any
 /// network call. Shared by the `clickpipe create object-storage` and
-/// `clickpipe schema-discover <SERVICE_ID> object-storage` handlers.
+/// `clickpipe schema-discover object-storage <SERVICE_ID>` handlers.
 fn build_object_storage_source(
     args: &ObjectStorageSourceFields,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostObjectStorageSource> {
@@ -2506,7 +2543,7 @@ fn read_protobuf_schema_file(path: &str) -> CloudResult<String> {
 /// Build a `ClickPipePostKafkaSource` from the CLI args, performing all
 /// authentication/credential/schema-registry/CA validation up front so bad
 /// invocations fail fast before any network call. Shared by the
-/// `clickpipe create kafka` and `clickpipe schema-discover <SERVICE_ID> kafka`
+/// `clickpipe create kafka` and `clickpipe schema-discover kafka <SERVICE_ID>`
 /// handlers.
 fn build_kafka_source_with_exactly_once(
     args: &KafkaSourceFields,
@@ -2623,7 +2660,7 @@ fn build_kafka_source(
 }
 
 /// Build a `ClickPipePostKinesisSource` from the CLI args. Shared by the
-/// `clickpipe create kinesis` and `clickpipe schema-discover <SERVICE_ID> kinesis`
+/// `clickpipe create kinesis` and `clickpipe schema-discover kinesis <SERVICE_ID>`
 /// handlers.
 fn build_kinesis_source(
     args: &KinesisSourceFields,
@@ -2778,7 +2815,7 @@ fn parse_pubsub_seek_timestamp(value: &str) -> CloudResult<chrono::DateTime<chro
 /// Build a `ClickPipePostPubSubSource` from the CLI args, reading the GCP
 /// service-account key up front so a bad path or an unreadable key fails
 /// before any network call. Shared by the `clickpipe create pubsub` and
-/// `clickpipe schema-discover <SERVICE_ID> pubsub` handlers, so discovery and
+/// `clickpipe schema-discover pubsub <SERVICE_ID>` handlers, so discovery and
 /// creation send an identical `pubsub` source.
 fn build_pubsub_source(
     args: &PubSubSourceFields,
@@ -2935,7 +2972,6 @@ fn build_object_storage_schema_discovery_request(
 /// classified as a write command and requires API key auth.
 async fn clickpipe_schema_discover(
     client: &CloudClient,
-    service_id: &str,
     command: &ClickPipeSchemaDiscoverCommands,
     json: bool,
 ) -> CloudResult<()> {
@@ -2943,29 +2979,37 @@ async fn clickpipe_schema_discover(
         ClickPipeSchemaDiscoveryRequest, ClickPipeSchemaDiscoverySource,
     };
 
-    let request = match command {
-        ClickPipeSchemaDiscoverCommands::Kafka(args) => ClickPipeSchemaDiscoveryRequest {
-            source: ClickPipeSchemaDiscoverySource {
-                kafka: Some(build_kafka_source(args)?),
-                kinesis: None,
-                object_storage: None,
-                pubsub: None,
+    let (service_id, request) = match command {
+        ClickPipeSchemaDiscoverCommands::Kafka(args) => (
+            &args.service_id,
+            ClickPipeSchemaDiscoveryRequest {
+                source: ClickPipeSchemaDiscoverySource {
+                    kafka: Some(build_kafka_source(&args.source)?),
+                    kinesis: None,
+                    object_storage: None,
+                    pubsub: None,
+                },
             },
-        },
-        ClickPipeSchemaDiscoverCommands::Kinesis(args) => ClickPipeSchemaDiscoveryRequest {
-            source: ClickPipeSchemaDiscoverySource {
-                kafka: None,
-                kinesis: Some(build_kinesis_source(args)?),
-                object_storage: None,
-                pubsub: None,
+        ),
+        ClickPipeSchemaDiscoverCommands::Kinesis(args) => (
+            &args.service_id,
+            ClickPipeSchemaDiscoveryRequest {
+                source: ClickPipeSchemaDiscoverySource {
+                    kafka: None,
+                    kinesis: Some(build_kinesis_source(&args.source)?),
+                    object_storage: None,
+                    pubsub: None,
+                },
             },
-        },
-        ClickPipeSchemaDiscoverCommands::ObjectStorage(args) => {
-            build_object_storage_schema_discovery_request(args)?
-        }
-        ClickPipeSchemaDiscoverCommands::PubSub(args) => {
-            build_pubsub_schema_discovery_request(args)?
-        }
+        ),
+        ClickPipeSchemaDiscoverCommands::ObjectStorage(args) => (
+            &args.service_id,
+            build_object_storage_schema_discovery_request(&args.source)?,
+        ),
+        ClickPipeSchemaDiscoverCommands::PubSub(args) => (
+            &args.service_id,
+            build_pubsub_schema_discovery_request(&args.source)?,
+        ),
     };
     let org_id = resolve_org_id(client).await?;
     let response = client
@@ -5727,14 +5771,14 @@ mod tests {
         ]
     }
 
-    /// Minimal `clickpipe schema-discover <SERVICE_ID> kafka` invocation, before
+    /// Minimal `clickpipe schema-discover kafka <SERVICE_ID>` invocation, before
     /// any auth flags. `KafkaSourceFields` is flattened into both commands, so
     /// credential-pairing rules must hold for each.
     fn kafka_discover_cli_args() -> Vec<&'static str> {
         vec![
             "schema-discover",
-            "svc-1",
             "kafka",
+            "svc-1",
             "--brokers",
             "broker:9092",
             "--topics",
@@ -5837,7 +5881,7 @@ mod tests {
 
     /// Parse `schema-discover pubsub` args and return the source fields.
     fn parse_pubsub_discovery(flags: &[&str]) -> Box<PubSubSourceFields> {
-        let mut args = vec!["schema-discover", "svc-1", "pubsub"];
+        let mut args = vec!["schema-discover", "pubsub", "svc-1"];
         args.extend(flags.iter().copied());
         let ClickPipeCommands::SchemaDiscover {
             command: ClickPipeSchemaDiscoverCommands::PubSub(source),
@@ -5846,7 +5890,7 @@ mod tests {
         else {
             panic!("expected pubsub schema discovery");
         };
-        source
+        Box::new(source.source)
     }
 
     fn assert_pubsub_value(flag: &str, value: &str) {
@@ -7434,7 +7478,7 @@ mod tests {
                     command: ClickPipeSchemaDiscoverCommands::Kafka(parsed),
                     ..
                 } => assert_eq!(
-                    parsed.protobuf_schema_file.as_deref(),
+                    parsed.source.protobuf_schema_file.as_deref(),
                     Some("/tmp/events.proto")
                 ),
                 _ => panic!("expected a Kafka command"),
@@ -7634,14 +7678,13 @@ mod tests {
     #[test]
     fn parses_schema_discovery_commands_and_flags() {
         let ClickPipeCommands::SchemaDiscover {
-            service_id,
             command: ClickPipeSchemaDiscoverCommands::Kafka(args),
         } = parse_clickpipe(&[
             "schema-discover",
-            "svc-kafka",
+            "kafka",
             "--org-id",
             "org-kafka",
-            "kafka",
+            "svc-kafka",
             "--brokers",
             "broker:9092",
             "--topics",
@@ -7652,7 +7695,8 @@ mod tests {
         else {
             panic!("expected kafka schema discovery");
         };
-        assert_eq!(service_id, "svc-kafka");
+        assert_eq!(args.service_id, "svc-kafka");
+        let args = args.source;
         assert_eq!(args.brokers, "broker:9092");
         assert_eq!(args.kafka_type, "kafka");
         assert_eq!(args.offset, "from_beginning");
@@ -7667,14 +7711,13 @@ mod tests {
         assert!(discovery_source.credentials.is_null());
 
         let ClickPipeCommands::SchemaDiscover {
-            service_id,
             command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
         } = parse_clickpipe(&[
             "schema-discover",
-            "svc-kinesis",
+            "kinesis",
             "--org-id",
             "org-kinesis",
-            "kinesis",
+            "svc-kinesis",
             "--stream-name",
             "stream-1",
             "--region",
@@ -7685,15 +7728,15 @@ mod tests {
         else {
             panic!("expected kinesis schema discovery");
         };
-        assert_eq!(service_id, "svc-kinesis");
+        assert_eq!(args.service_id, "svc-kinesis");
+        let args = args.source;
         assert_eq!(args.stream_name, "stream-1");
         assert_eq!(args.auth, "IAM_ROLE");
         assert_eq!(args.iterator_type, "TRIM_HORIZON");
     }
 
-    #[test]
-    fn every_schema_discovery_source_accepts_org_id_at_each_level() {
-        let sources: [(&str, &[&str]); 4] = [
+    fn schema_discovery_sources() -> [(&'static str, &'static [&'static str]); 4] {
+        [
             (
                 "kafka",
                 &[
@@ -7740,28 +7783,82 @@ mod tests {
                     "./sa-key.json",
                 ],
             ),
-        ];
+        ]
+    }
 
-        for (source, source_args) in sources {
-            for placement in ["before-service", "before-source", "after-source-options"] {
-                let mut args = vec!["schema-discover"];
-                if placement == "before-service" {
-                    args.extend(["--org-id", "org-1"]);
-                }
-                args.push("svc-1");
-                if placement == "before-source" {
-                    args.extend(["--org-id", "org-1"]);
-                }
-                args.push(source);
-                args.extend(source_args.iter().copied());
-                if placement == "after-source-options" {
-                    args.extend(["--org-id", "org-1"]);
-                }
+    #[test]
+    fn every_schema_discovery_source_accepts_flags_around_service_id() {
+        for (source, source_args) in schema_discovery_sources() {
+            for service_position in (0..=source_args.len()).step_by(2) {
+                for org_position in [
+                    "before-source",
+                    "before-service",
+                    "after-service",
+                    "after-options",
+                ] {
+                    let mut args = vec!["schema-discover"];
+                    if org_position == "before-source" {
+                        args.extend(["--org-id", "org-1"]);
+                    }
+                    args.push(source);
+                    args.extend_from_slice(&source_args[..service_position]);
+                    if org_position == "before-service" {
+                        args.extend(["--org-id", "org-1"]);
+                    }
+                    args.push("svc-1");
+                    if org_position == "after-service" {
+                        args.extend(["--org-id", "org-1"]);
+                    }
+                    args.extend_from_slice(&source_args[service_position..]);
+                    if org_position == "after-options" {
+                        args.extend(["--org-id", "org-1"]);
+                    }
 
-                let ClickPipeCommands::SchemaDiscover { .. } = parse_clickpipe(&args) else {
-                    panic!("expected {source} schema discovery");
-                };
+                    let ClickPipeCommands::SchemaDiscover { command } = parse_clickpipe(&args)
+                    else {
+                        panic!("expected {source} schema discovery");
+                    };
+                    let (parsed_source, service_id) = match command {
+                        ClickPipeSchemaDiscoverCommands::Kafka(args) => ("kafka", args.service_id),
+                        ClickPipeSchemaDiscoverCommands::Kinesis(args) => {
+                            ("kinesis", args.service_id)
+                        }
+                        ClickPipeSchemaDiscoverCommands::ObjectStorage(args) => {
+                            ("object-storage", args.service_id)
+                        }
+                        ClickPipeSchemaDiscoverCommands::PubSub(args) => {
+                            ("pubsub", args.service_id)
+                        }
+                    };
+                    assert_eq!(parsed_source, source, "{args:?}");
+                    assert_eq!(service_id, "svc-1", "{args:?}");
+                }
             }
+        }
+    }
+
+    #[test]
+    fn every_schema_discovery_source_rejects_service_before_source() {
+        for (source, source_args) in schema_discovery_sources() {
+            let mut args = vec!["schema-discover", "svc-1", source];
+            args.extend_from_slice(source_args);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::InvalidSubcommand,
+                "{args:?}: {error}"
+            );
+            assert_eq!(error.exit_code(), 2, "{args:?}: {error}");
+
+            let mut missing_id = vec!["schema-discover", source];
+            missing_id.extend_from_slice(source_args);
+            let error = clickpipe_parse_error(&missing_id);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{missing_id:?}: {error}"
+            );
+            assert_eq!(error.exit_code(), 2, "{missing_id:?}: {error}");
         }
     }
 
@@ -7776,6 +7873,7 @@ mod tests {
             .and_then(|cloud| cloud.find_subcommand("clickpipe"))
             .and_then(|clickpipe| clickpipe.find_subcommand("schema-discover"))
             .expect("clickpipe schema-discover command");
+        assert_eq!(schema_discover.get_positionals().count(), 0);
         for source in ["kafka", "kinesis", "object-storage", "pubsub"] {
             let command = schema_discover
                 .find_subcommand(source)
@@ -7783,9 +7881,13 @@ mod tests {
             assert!(
                 command
                     .get_arguments()
-                    .any(|argument| argument.get_id() == "org_id"),
-                "clickpipe schema-discover {source} is missing --org-id"
+                    .any(|argument| argument.get_id() == "org_id" && argument.is_global_set()),
+                "clickpipe schema-discover {source} is missing global --org-id"
             );
+            let positionals: Vec<_> = command.get_positionals().collect();
+            assert_eq!(positionals.len(), 1, "{source}");
+            assert_eq!(positionals[0].get_id(), "service_id", "{source}");
+            assert!(positionals[0].is_required_set(), "{source}");
         }
     }
 
@@ -7795,14 +7897,13 @@ mod tests {
     #[test]
     fn parses_object_storage_schema_discovery_flags() {
         let ClickPipeCommands::SchemaDiscover {
-            service_id,
             command: ClickPipeSchemaDiscoverCommands::ObjectStorage(args),
         } = parse_clickpipe(&[
             "schema-discover",
-            "svc-object-storage",
+            "object-storage",
             "--org-id",
             "org-object-storage",
-            "object-storage",
+            "svc-object-storage",
             "--source-url",
             "https://bucket.example/data/*.csv",
             "--format",
@@ -7836,7 +7937,8 @@ mod tests {
         else {
             panic!("expected object-storage schema discovery");
         };
-        assert_eq!(service_id, "svc-object-storage");
+        assert_eq!(args.service_id, "svc-object-storage");
+        let args = args.source;
 
         assert_eq!(args.source_url, "https://bucket.example/data/*.csv");
         assert_eq!(args.format, "CSV");
@@ -7864,8 +7966,8 @@ mod tests {
             ..
         } = parse_clickpipe(&[
             "schema-discover",
-            "svc-object-storage",
             "object-storage",
+            "svc-object-storage",
             "--source-url",
             "https://bucket.example/data/*.json",
             "--format",
@@ -7874,6 +7976,7 @@ mod tests {
         else {
             panic!("expected object-storage schema discovery");
         };
+        let args = args.source;
         assert_eq!(args.storage_type, "s3");
         assert_eq!(args.compression, "auto");
         assert!(!args.continuous);
@@ -7893,8 +7996,8 @@ mod tests {
         // with --start-after, exactly as on `create object-storage`.
         let base = [
             "schema-discover",
-            "svc-object-storage",
             "object-storage",
+            "svc-object-storage",
             "--source-url",
             "https://bucket.example/data/*.json",
             "--format",
@@ -9722,8 +9825,8 @@ mod tests {
         assert_write(
             &[
                 "schema-discover",
-                "svc-1",
                 "kafka",
+                "svc-1",
                 "--brokers",
                 "broker:9092",
                 "--topics",
@@ -9736,8 +9839,8 @@ mod tests {
         assert_write(
             &[
                 "schema-discover",
-                "svc-1",
                 "kinesis",
+                "svc-1",
                 "--stream-name",
                 "stream-1",
                 "--region",
@@ -9750,8 +9853,8 @@ mod tests {
         assert_write(
             &[
                 "schema-discover",
-                "svc-1",
                 "object-storage",
+                "svc-1",
                 "--source-url",
                 "https://bucket.example/data/*.json",
                 "--format",
@@ -9759,7 +9862,7 @@ mod tests {
             ],
             true,
         );
-        let mut pubsub_discover = vec!["schema-discover", "svc-1", "pubsub"];
+        let mut pubsub_discover = vec!["schema-discover", "pubsub", "svc-1"];
         pubsub_discover.extend(pubsub_source_flags("./sa-key.json"));
         assert_write(&pubsub_discover, true);
         let mut pubsub_create = vec![
@@ -10027,7 +10130,7 @@ mod tests {
     /// Parse `schema-discover object-storage` args and return the source
     /// fields, so the builder tests exercise the real clap defaults.
     fn parse_object_storage_discovery(flags: &[&str]) -> Box<ObjectStorageSourceFields> {
-        let mut args = vec!["schema-discover", "svc-1", "object-storage"];
+        let mut args = vec!["schema-discover", "object-storage", "svc-1"];
         args.extend(flags.iter().copied());
         let ClickPipeCommands::SchemaDiscover {
             command: ClickPipeSchemaDiscoverCommands::ObjectStorage(source),
@@ -10036,7 +10139,7 @@ mod tests {
         else {
             panic!("expected object-storage schema discovery");
         };
-        source
+        Box::new(source.source)
     }
 
     #[test]
@@ -10437,14 +10540,13 @@ mod tests {
     #[test]
     fn parses_pubsub_schema_discovery_flags() {
         let ClickPipeCommands::SchemaDiscover {
-            service_id,
             command: ClickPipeSchemaDiscoverCommands::PubSub(args),
         } = parse_clickpipe(&[
             "schema-discover",
-            "svc-pubsub",
+            "pubsub",
             "--org-id",
             "org-pubsub",
-            "pubsub",
+            "svc-pubsub",
             "--topic",
             "events",
             "--project-id",
@@ -10464,7 +10566,8 @@ mod tests {
         else {
             panic!("expected pubsub schema discovery");
         };
-        assert_eq!(service_id, "svc-pubsub");
+        assert_eq!(args.service_id, "svc-pubsub");
+        let args = args.source;
 
         assert_eq!(args.topic, "events");
         assert_eq!(args.project_id, "my-gcp-project");
