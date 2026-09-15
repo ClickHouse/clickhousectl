@@ -380,7 +380,7 @@ CONTEXT FOR AGENTS:
         command: ClickPipeSchemaDiscoverCommands,
     },
 
-    /// Manage reverse private endpoints (PrivateLink, Private Service Connect)
+    /// Manage reverse private endpoints
     #[command(
         name = "reverse-private-endpoint",
         after_help = "\
@@ -544,7 +544,7 @@ pub enum ClickPipeSchemaDiscoverCommands {
     /// Discover schema from an Amazon Kinesis stream
     Kinesis(Box<KinesisSchemaDiscoverArgs>),
 
-    /// Discover schema from an object-storage source (S3, GCS, Azure Blob Storage)
+    /// Discover schema from object storage
     #[command(
         name = "object-storage",
         after_help = "\
@@ -553,7 +553,7 @@ CONTEXT FOR AGENTS:
     )]
     ObjectStorage(Box<ObjectStorageSchemaDiscoverArgs>),
 
-    /// Discover schema from a Google Cloud Pub/Sub topic (limited preview)
+    /// Discover schema from Pub/Sub (limited preview)
     #[command(name = "pubsub")]
     PubSub(Box<PubSubSchemaDiscoverArgs>),
 }
@@ -713,7 +713,7 @@ impl ClickPipeSettingsCommands {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub enum ClickPipeCreateCommands {
-    /// Create a ClickPipe from S3, GCS, Azure Blob, or other object storage
+    /// Create a ClickPipe from object storage
     #[command(
         name = "object-storage",
         after_help = "\

@@ -46,7 +46,7 @@ pub enum ReversePrivateEndpointCommands {
     /// Create a reverse private endpoint
     Create(Box<ReversePrivateEndpointCreateArgs>),
 
-    /// Replace the custom private DNS mappings of a reverse private endpoint
+    /// Replace a reverse private endpoint's DNS mappings
     #[command(group(
         ArgGroup::new("mapping_change")
             .required(true)
