@@ -21,6 +21,16 @@ pub enum Error {
     #[error("API error (status {status}): {message}")]
     Api { status: u16, message: String },
 
+    /// Attaching a UDF failed because the service is unavailable (HTTP 424).
+    /// Inspect `response.code`, `response.service_state`, and `response.can_wake`
+    /// before deciding how to retry. Unknown enum values are preserved.
+    #[error("API error (status {status}): {message}")]
+    UdfAttachmentUnavailable {
+        status: u16,
+        message: String,
+        response: Box<crate::models::UdfAttachResponse424>,
+    },
+
     /// The Query API reported a ClickHouse SQL-level error: the request
     /// reached the service, which rejected the statement itself and answered
     /// with a `{"error": {"code": …, "details": …}}` body.

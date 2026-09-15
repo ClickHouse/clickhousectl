@@ -18,9 +18,24 @@ def generated_issue_body(body):
 
 
 class DriftScriptTests(unittest.TestCase):
+    def test_changed_acknowledgment_is_rendered_as_actionable(self):
+        pointer = "/components/schemas/ApiKey/properties/roles/items"
+        finding = {
+            "kind": "acknowledged_enum_constraint_changed",
+            "message": "acknowledged values changed",
+            "spec_pointer": pointer,
+            "details": {"previous_values": '"admin"', "current_values": '"admin", "developer"'},
+        }
+        report = {"schema_version": 6, "findings": [finding]}
+        self.assertEqual(drift.findings_by_kind(report)[finding["kind"]], [finding])
+        body = drift.build_issue_body(report, {})
+        self.assertIn("| Changed acknowledged enum constraints | 1 |", body)
+        self.assertIn(f"- `{pointer}` — {finding['message']}", body)
+        self.assertIn('Snapshot values: `"admin"`; live values: `"admin", "developer"`.', body)
+
     def test_groups_findings_and_renders_spec_snippets(self):
         report = {
-            "schema_version": 5,
+            "schema_version": 6,
             "findings": [
                 {
                     "kind": "missing_client_method",
@@ -73,7 +88,7 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn("## Enum VALUES Const Mismatches", body)
 
     def test_renders_additional_properties_mismatches(self):
-        report = {"schema_version": 5, "findings": [{
+        report = {"schema_version": 6, "findings": [{
             "kind": "additional_properties_mismatch",
             "message": "PgBouncerConfig must preserve additionalProperties in a typed string-keyed map",
             "spec_pointer": "/components/schemas/pgBouncerConfig/additionalProperties",
@@ -394,8 +409,8 @@ class DriftScriptTests(unittest.TestCase):
 
     def test_dry_run_never_queries_or_mutates_github(self):
         reports = [
-            {"schema_version": 5, "findings": []},
-            {"schema_version": 5, "findings": [{"kind": "missing_struct_field"}]},
+            {"schema_version": 6, "findings": []},
+            {"schema_version": 6, "findings": [{"kind": "missing_struct_field"}]},
         ]
         for report in reports:
             with self.subTest(findings=len(report["findings"])):
@@ -412,7 +427,7 @@ class DriftScriptTests(unittest.TestCase):
                 sync_issue.assert_not_called()
 
     def test_main_exits_nonzero_when_synchronization_fails(self):
-        report = {"schema_version": 5, "findings": []}
+        report = {"schema_version": 6, "findings": []}
         with (
             mock.patch.object(sys, "argv", [str(SCRIPT)]),
             mock.patch.object(drift, "fetch_live_spec", return_value={}),
@@ -616,7 +631,7 @@ class DriftScriptTests(unittest.TestCase):
     def test_analyzer_receives_the_rust_source_tree(self, run):
         run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"schema_version": 5, "findings": []}),
+            stdout=json.dumps({"schema_version": 6, "findings": []}),
             stderr="",
         )
 

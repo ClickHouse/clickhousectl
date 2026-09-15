@@ -17,7 +17,7 @@ and the private drift analyzer, which are always edited together.
 - `crates/clickhouse-openapi-analyzer/` — OpenAPI and Rust inventory, direction-aware comparison, policy config, and
   stable drift reports. Private (`publish = false`), a dev-dependency of this crate. Parser/tooling deps such as
   `syn` must not enter either published crate's normal dependency graph. It recursively traverses the private module
-  trees rooted at `client.rs`, `models.rs`, `meta.rs`; model declarations must remain literal source in that tree,
+  trees rooted at `client.rs`, `models.rs`, `meta.rs`, and (when present) `error.rs`; model declarations must remain literal source in the model tree,
   and declarations in conversion files do not count as models.
 
 ## Request and response models
@@ -39,6 +39,11 @@ outage. Tolerance lives in the **type system**, not in serde attributes:
   empty structs; keep parent response fields optional. The analyzer checks named map schemas in both directions.
 
 ### Naming and the split
+
+- Inline JSON response objects use `{PascalizedOperationId}Response{Status}` (for example,
+  `UdfAttachResponse424`). The analyzer checks their fields and enum values when the model is reachable from a
+  `Client` return type, including payloads carried through the `error.rs` module tree. Error containers are
+  traversal edges, not wire models; their response payload structs follow the all-`Option` policy.
 
 - A schema used in one direction keeps its Rust name — most schemas are one-directional, so most models are
   simply all-`Option` in place (response) or strict in place (request body, orphan schema).
@@ -159,6 +164,7 @@ backing constants. Introduce a named, documented constant when an empty policy l
 Rust type names but spec/wire field and enum values:
 
 - `non_openapi_client_methods` — intentional `Client` helpers with no operation, keyed by snake-case method name.
+  A removed helper or one that gains a matching operation is reported as stale.
 - `optionality_exemptions` — fields deliberately optional despite the resolved spec, keyed by
   `(RustStructName, specFieldName)`. Request-position only, so a response-only entry can never hit and surfaces as stale.
 - `fractional_response_exemptions` — verified fractional runtime measurements declared as integers by the spec,
@@ -169,8 +175,11 @@ Rust type names but spec/wire field and enum values:
 - `extra_enum_value_exemptions` — intentional Rust-only wire values, keyed by `(RustEnumName, wireValue)`.
 - `partial_required_schemas` — upstream schemas whose `required[]` is non-exhaustive, keyed by spec schema name.
   This changes requiredness resolution (request position only) and is not a shortcut for one optionality mismatch.
+  Entries are stale when the schema is gone, response-only, or the override no longer changes requiredness.
 - `acknowledged_unsupported_enum_pointers` — exact RFC 6901 pointers the analyzer inventories but cannot map to a
   concrete Rust value enum.
+  Changed enum values still produce actionable drift against the vendored snapshot, including numeric and mixed
+  constraints. Refreshing that snapshot accepts a new baseline, so review acknowledged value changes first.
 
 Add an exemption only for intentional, verified runtime behavior, with a nearby comment stating why the spec cannot
 be followed. Never exempt missing API surface or ordinary model drift. Pair a new unsupported-enum acknowledgement

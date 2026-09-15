@@ -43,19 +43,14 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
         extra_field_exemptions: BTreeSet::new(),
         deprecated_field_exemptions: BTreeSet::new(),
         extra_enum_value_exemptions: BTreeSet::new(),
-        // Request-position-only semantics. Both entries currently sit in
-        // response position (their required[] arrays are non-exhaustive
-        // upstream); they are retained so the resolved requiredness inventory
-        // stays faithful to runtime behaviour, but under direction-aware
-        // checking they no longer influence any finding.
-        partial_required_schemas: strings(&["Service", "ServiceScalingPatchResponse"]),
+        partial_required_schemas: BTreeSet::new(),
         acknowledged_unsupported_enum_pointers: strings(ACKNOWLEDGED_UNSUPPORTED_ENUM_POINTERS),
     }
 }
 
 // Live slow-query list/detail responses contain fractional microsecond durations,
 // including avgDurationUs = 1190.8419405320817. The public spec still declares
-// integers (verified 2026-09-08); rounding would destroy valid response data.
+// integers (spec rechecked 2026-09-15); rounding would destroy valid response data.
 // https://github.com/ClickHouse/clickhousectl/issues/758
 // Only duration measurements are widened; counts and CPU/JIT counters stay i64.
 const FRACTIONAL_RESPONSE_EXEMPTIONS: &[(&str, &str)] = &[
@@ -225,13 +220,12 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
 
 // The deprecated API-key `roles` fields are feature-gated, frozen legacy API
 // replaced by assigned role IDs. They deliberately remain strings to avoid a
-// source-breaking change for deprecated-fields consumers. The inline
-// UDF-attach 424 error response has no public client/model type, so its enum
-// constraints remain acknowledged until typed error responses are supported.
+// source-breaking change for deprecated-fields consumers.
+// Audited against the live spec on 2026-09-15; all three value sets are unchanged.
+// Changes to their enum values still produce drift against the vendored snapshot.
+// https://github.com/ClickHouse/clickhousectl/issues/908
 const ACKNOWLEDGED_UNSUPPORTED_ENUM_POINTERS: &[&str] = &[
     "/components/schemas/ApiKey/properties/roles/items",
     "/components/schemas/ApiKeyPatchRequest/properties/roles/items",
     "/components/schemas/ApiKeyPostRequest/properties/roles/items",
-    "/paths/~1v1~1organizations~1{organizationId}~1udfs~1{functionName}~1attachments~1{serviceId}/put/responses/424/content/application~1json/schema/properties/code",
-    "/paths/~1v1~1organizations~1{organizationId}~1udfs~1{functionName}~1attachments~1{serviceId}/put/responses/424/content/application~1json/schema/properties/serviceState",
 ];

@@ -56,6 +56,10 @@ pub(crate) enum EnumContext {
         operation_id: String,
         parameter: String,
     },
+    InlineResponse {
+        model: String,
+        steps: Vec<PropertyStep>,
+    },
     Unknown,
 }
 
@@ -72,6 +76,10 @@ pub(crate) struct EnumConstraint {
     pub(crate) pointer: String,
     pub(crate) context: EnumContext,
     pub(crate) values: EnumValues,
+    /// Canonical JSON values, including unsupported numeric/mixed constraints.
+    /// Order does not change the contract; value changes must remain visible
+    /// even while the Rust representation is acknowledged as unsupported.
+    pub(crate) wire_values: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -79,6 +87,10 @@ pub(crate) struct OpenApiInventory {
     pub(crate) operations: BTreeMap<String, OperationInfo>,
     /// Inline object branches retain their parent direction and exact spec pointer.
     pub(crate) inline_union_objects: Vec<(String, String, Value)>,
+    /// Inline JSON responses, keyed by the conventional Rust model name
+    /// `{PascalizedOperationId}Response{Status}`. Only wired models opt in.
+    pub(crate) inline_responses: BTreeMap<String, (String, Value)>,
+    pub(crate) partial_required_hits: BTreeSet<String>,
     pub(crate) schemas: BTreeMap<String, String>,
     /// Pascalized Rust type names of every named spec schema. Used to
     /// distinguish a split `{Name}Response` Rust variant from a Rust type that
@@ -106,6 +118,17 @@ impl OpenApiInventory {
         inventory.collect_operations(spec)?;
         inventory.collect_schemas(spec, config)?;
         inventory.collect_schema_positions(spec);
+        for name in &config.partial_required_schemas {
+            if let Some(schema) = spec
+                .pointer("/components/schemas")
+                .and_then(|schemas| schemas.get(name))
+                && inventory.is_request_position(name)
+                && required_fields(name, schema, config)
+                    != required_fields(name, schema, &AnalyzerConfig::default())
+            {
+                inventory.partial_required_hits.insert(name.clone());
+            }
+        }
         collect_refs(spec, &mut Vec::new(), &mut inventory.referenced_schemas);
         collect_enums(spec, &mut inventory.enum_constraints);
         inventory
@@ -146,6 +169,24 @@ impl OpenApiInventory {
                     .ok_or_else(|| format!("{method} {path} has no operationId"))?;
                 let rust_name = camel_to_snake(operation_id);
                 let pointer = json_pointer(&["paths".to_string(), path.clone(), method.clone()]);
+                if let Some(responses) = operation.get("responses").and_then(Value::as_object) {
+                    for (status, response) in responses {
+                        if let Some(schema) = response.pointer("/content/application~1json/schema")
+                            && schema.get("$ref").is_none()
+                        {
+                            self.inline_responses.insert(
+                                inline_response_name(operation_id, status),
+                                (
+                                    format!(
+                                        "{pointer}/responses/{}/content/application~1json/schema",
+                                        escape_pointer(status)
+                                    ),
+                                    schema.clone(),
+                                ),
+                            );
+                        }
+                    }
+                }
                 let badges = operation
                     .get("x-badges")
                     .and_then(Value::as_array)
@@ -797,6 +838,7 @@ fn walk_schema(
             pointer: json_pointer(path),
             context: enum_context(root, path),
             values: enum_values,
+            wire_values: values.iter().map(Value::to_string).collect(),
         });
     }
     if let Some(properties) = object.get("properties").and_then(Value::as_object) {
@@ -911,7 +953,29 @@ fn enum_context(root: &Value, path: &[String]) -> EnumContext {
             };
         }
     }
+    if path.len() >= 8
+        && path[0] == "paths"
+        && path[3] == "responses"
+        && path[5] == "content"
+        && path[6] == "application/json"
+        && path[7] == "schema"
+        && let Some(operation_id) = root
+            .get("paths")
+            .and_then(|paths| paths.get(&path[1]))
+            .and_then(|item| item.get(&path[2]))
+            .and_then(|operation| operation.get("operationId"))
+            .and_then(Value::as_str)
+    {
+        return EnumContext::InlineResponse {
+            model: inline_response_name(operation_id, &path[4]),
+            steps: property_steps(&path[8..]),
+        };
+    }
     EnumContext::Unknown
+}
+
+fn inline_response_name(operation_id: &str, status: &str) -> String {
+    format!("{}Response{}", pascalize(operation_id), pascalize(status))
 }
 
 /// Derives the property chain from schema-relative pointer segments.

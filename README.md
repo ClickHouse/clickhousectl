@@ -2895,7 +2895,9 @@ Creation and version creation each request a new upload URL, stream the ZIP arch
 
 All three list commands expose `--cursor` and `--limit` (1–100) and retain pagination in JSON output. Detail and list output tolerate missing fields and new response status values.
 
-The UDF API request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation. The OpenAPI analyzer checks inline union payload fields and request requiredness; its report format is version 5.
+The UDF API request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation. Rust callers receive `Error::UdfAttachmentUnavailable` for a structured attachment failure (HTTP 424); its `UdfAttachResponse424` payload preserves the error code, service state, wake eligibility, and request ID. Fields tolerate absence and null, and enums retain unknown values. Malformed responses remain `Error::Api` with the original error message.
+
+The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. Report format version 6 also flags ineffective requiredness overrides, obsolete non-OpenAPI helper exclusions, and changed enum values at acknowledged locations. Acknowledgments are compared with the vendored snapshot; review their changes before refreshing that baseline.
 
 ## CLI help checks
 
