@@ -1060,6 +1060,17 @@ printf 'INSERT INTO trips FORMAT CSV\n' | cat - data.csv | \
 
 Only real input counts as a conflict: an empty non-terminal stdin (a CI runner, a coding agent) leaves `--query` working, and a silent pipe is given 250 ms to produce a byte before stdin is treated as empty.
 
+Query API SQL and any data combined with it must be valid UTF-8. It does not silently replace invalid bytes. For binary formats such as `RowBinary` or `Native`, and for bulk input, use the native protocol instead:
+
+```bash
+clickhousectl local use latest
+printf 'INSERT INTO <table> FORMAT RowBinary\n' | cat - <data-file> | \
+  clickhousectl local client --host <nativesecure-host> --port 9440 -- \
+    --secure --user default --password '<password>'
+```
+
+`clickhousectl cloud service get <service-id>` lists the `nativesecure` host and port. The password is the one shown when the service was created; `clickhousectl cloud service reset-password <service-id>` issues a new one.
+
 The Query API gateway can stop waiting after about 30 seconds. A timeout fails with exit code `1`, but **the statement may still be running or may already have completed**. The CLI never retries a timed-out statement: re-sending an `INSERT` could load the data twice. For a service last observed running, or whose state is unavailable, the error points at `SELECT query_id, elapsed FROM system.processes` and the service's native client endpoint. Verify the statement's outcome before running it again; absence from `system.processes` alone does not prove it never ran.
 
 If the existing service lookup reported `idle` or `awaking`, or the Query API requested a wake confirmation before accepting SQL, the timeout instead explains that the service may still be waking and gives a `cloud service get` command to check its state. This is a possible wake delay, not proof the statement never executed. There is no additional polling or SQL replay after a timeout; once the service is running, verify the statement's outcome before deciding whether a retry is safe.

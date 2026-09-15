@@ -9403,6 +9403,93 @@ async fn service_query_still_reads_sql_from_queries_file_dash() {
     assert_eq!(query_sql_of(&requests[0]), "SELECT 1\n");
 }
 
+fn assert_invalid_utf8_query_input(output: &std::process::Output) {
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for expected in [
+        "not valid UTF-8",
+        "Query API accepts only UTF-8 SQL and text-format data",
+        "binary formats such as RowBinary or Native",
+        "clickhousectl local use latest",
+        "clickhousectl local client --host <nativesecure-host> --port 9440 -- --secure",
+        "clickhousectl cloud service get <service-id>",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "missing {expected:?} in {stderr}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn service_query_rejects_non_utf8_on_bare_stdin_before_any_request() {
+    let (output, control, query_host) =
+        invoke_oauth_service_query_with_stdin(&[], StdinPlan::Write(b"SELECT '\xff'\n")).await;
+
+    assert_invalid_utf8_query_input(&output);
+    assert!(control.received_requests().await.unwrap().is_empty());
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_query_rejects_non_utf8_from_queries_file_dash_before_any_request() {
+    let (output, control, query_host) = invoke_oauth_service_query_with_stdin(
+        &["--queries-file", "-"],
+        StdinPlan::Write(b"SELECT '\xff'\n"),
+    )
+    .await;
+
+    assert_invalid_utf8_query_input(&output);
+    assert!(control.received_requests().await.unwrap().is_empty());
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_query_reports_non_utf8_as_structured_io_without_echoing_input() {
+    const PRIVATE_INPUT: &[u8] = b"private-query-fragment-\xff";
+    let (output, control, query_host) = invoke_oauth_service_query_with_stdin(
+        &["--json", "--queries-file", "-"],
+        StdinPlan::Write(PRIVATE_INPUT),
+    )
+    .await;
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let stderr = std::str::from_utf8(&output.stderr).expect("JSON error output is valid UTF-8");
+    let json: Value = serde_json::from_str(stderr).expect("stderr is one JSON error object");
+    assert_eq!(json["error"]["code"], "io");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("not valid UTF-8")),
+        "{json}"
+    );
+    assert!(!stderr.contains("private-query-fragment"), "{stderr}");
+    assert!(control.received_requests().await.unwrap().is_empty());
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_query_rejects_non_utf8_from_query_file_before_any_request() {
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), b"SELECT '\xff'\n").unwrap();
+    let query_path = file.path().to_str().unwrap();
+
+    let (output, control, query_host) =
+        invoke_oauth_service_query_with_stdin(&["--queries-file", query_path], StdinPlan::Null)
+            .await;
+
+    assert_invalid_utf8_query_input(&output);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains(query_path),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(control.received_requests().await.unwrap().is_empty());
+    assert!(query_host.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn service_query_completes_a_text_response_line_without_duplication() {
     let (output, _) = invoke_oauth_service_query_response(b"OK".to_vec(), &[], false).await;

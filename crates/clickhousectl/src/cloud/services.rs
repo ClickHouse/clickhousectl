@@ -4042,6 +4042,29 @@ fn fd_becomes_readable(fd: libc::c_int, timeout_ms: libc::c_int) -> bool {
     ready > 0 && poll_fd.revents & libc::POLLIN != 0
 }
 
+/// Decode SQL at the Query API boundary without replacing invalid bytes.
+///
+/// This happens before service lookup, so the native fallback deliberately
+/// uses placeholders instead of guessing an endpoint or handling credentials.
+fn decode_query_sql(bytes: Vec<u8>, source: &str) -> CloudResult<String> {
+    String::from_utf8(bytes).map_err(|_| {
+        CloudError::new(format!(
+            concat!(
+                "SQL from {} is not valid UTF-8. The Query API accepts only UTF-8 SQL ",
+                "and text-format data; use the native protocol for binary formats such as ",
+                "RowBinary or Native, and for bulk input. Install the client with ",
+                "`clickhousectl local use latest`, then stream the statement and data with:\n  ",
+                "printf 'INSERT INTO <table> FORMAT RowBinary\\n' | cat - <data-file> | ",
+                "clickhousectl local client --host <nativesecure-host> --port 9440 -- --secure ",
+                "--user default --password '<password>'\nFind the native host and port with ",
+                "`clickhousectl cloud service get <service-id>`."
+            ),
+            source
+        ))
+        .with_failure(ApiFailure::new(FailureKind::Io))
+    })
+}
+
 fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResult<String> {
     use std::io::Read as _;
 
@@ -4056,12 +4079,14 @@ fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResu
     }
 
     if let Some(path) = queries_file {
-        let mut content = String::new();
-        if path == "-" {
-            std::io::stdin().read_to_string(&mut content)?;
+        let (bytes, source) = if path == "-" {
+            let mut bytes = Vec::new();
+            std::io::stdin().read_to_end(&mut bytes)?;
+            (bytes, "stdin".to_string())
         } else {
-            content = std::fs::read_to_string(path)?;
-        }
+            (std::fs::read(path)?, format!("queries file '{}'", path))
+        };
+        let content = decode_query_sql(bytes, &source)?;
         if content.trim().is_empty() {
             return Err(CloudError::new("queries file was empty"));
         }
@@ -4074,8 +4099,9 @@ fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResu
         ));
     }
 
-    let mut content = String::new();
-    std::io::stdin().read_to_string(&mut content)?;
+    let mut bytes = Vec::new();
+    std::io::stdin().read_to_end(&mut bytes)?;
+    let content = decode_query_sql(bytes, "stdin")?;
     if content.trim().is_empty() {
         return Err(CloudError::new("no SQL received on stdin"));
     }
