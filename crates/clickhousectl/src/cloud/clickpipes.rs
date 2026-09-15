@@ -261,6 +261,8 @@ CONTEXT FOR AGENTS:
   The file is a typed PATCH body; omitted top-level fields remain unchanged.
   Source updates support kafka, kinesis, objectStorage, pubsub, postgres, mysql,
   and mongodb. BigQuery sources cannot be updated by this API.
+  For Postgres, MySQL, and MongoDB: stop -> get until Paused -> update --file.
+  Update does not stop or restart the pipe; run start after a successful update.
   For object-storage, fieldMappings (including []) requires destination.columns.
   Use `-` to read the JSON body from stdin.")]
     Update {

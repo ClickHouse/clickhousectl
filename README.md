@@ -1522,6 +1522,24 @@ and `null` top-level fields are not sent. Explicit `false`, `0`, empty strings,
 and empty arrays are preserved; an empty `{}` is refused. Unknown fields and
 enum values are rejected before a request is made.
 
+Postgres, MySQL, and MongoDB CDC ClickPipes must reach the `Paused` state before
+they can be updated. Stop the pipe, use `get` to verify that the transition from
+`Pausing` has completed, apply the update with the `--file` input, and
+restart the pipe explicitly after a successful update:
+
+```bash
+clickhousectl cloud clickpipe stop <service-id> <clickpipe-id>
+clickhousectl cloud clickpipe get <service-id> <clickpipe-id> --json
+# Continue only after the returned state is Paused.
+clickhousectl cloud clickpipe update <service-id> <clickpipe-id> \
+  --file patch.json
+clickhousectl cloud clickpipe start <service-id> <clickpipe-id>
+```
+
+`clickpipe update` does not stop, wait for, or restart the pipe automatically.
+If the update fails, inspect the error and leave the pipe paused until it is safe
+to retry or restart it.
+
 The file surface matches the current PATCH request models:
 
 | Object | Writable fields |
