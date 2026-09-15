@@ -24925,6 +24925,75 @@ async fn clickpipe_list_empty_results_keep_human_message_and_json_array() {
     );
 }
 
+async fn invoke_clickpipe_delete(result: Value, json: bool) -> std::process::Output {
+    let mock = MockServer::start().await;
+    Mock::given(method("DELETE"))
+        .and(path(CLICKPIPE_PATH))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-clickpipe-delete",
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let args = [
+        "clickpipe",
+        "delete",
+        "svc-id",
+        "pipe-id",
+        "--org-id",
+        "org",
+    ];
+    let output = if json {
+        invoke_cli_with_cloud_credentials(&mock, &args)
+    } else {
+        invoke_cli_human(&mock, &args)
+    };
+    assert_success(&output);
+    assert_eq!(
+        recorded_request_shape(&mock).await,
+        [("DELETE".to_string(), CLICKPIPE_PATH.to_string())],
+    );
+    output
+}
+
+#[tokio::test]
+async fn clickpipe_delete_human_output_uses_the_returned_name() {
+    let output = invoke_clickpipe_delete(serde_json::json!({"name": "events-pipe"}), false).await;
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "ClickPipe events-pipe deleted\n"
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_delete_human_output_uses_the_requested_id_when_name_is_missing() {
+    let output = invoke_clickpipe_delete(serde_json::json!({}), false).await;
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "ClickPipe pipe-id deleted\n"
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_delete_human_output_uses_the_requested_id_when_name_is_empty() {
+    let output = invoke_clickpipe_delete(serde_json::json!({"name": ""}), false).await;
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "ClickPipe pipe-id deleted\n"
+    );
+}
+
+#[tokio::test]
+async fn clickpipe_delete_json_output_keeps_the_requested_id() {
+    let output = invoke_clickpipe_delete(serde_json::json!({"name": "events-pipe"}), true).await;
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({"deleted": "pipe-id"}),
+    );
+}
+
 // Deleted resources return 404, while never-existing UUIDs may return 400 (#831).
 fn deleted_resource_404_response() -> ResponseTemplate {
     ResponseTemplate::new(404).set_body_json(serde_json::json!({

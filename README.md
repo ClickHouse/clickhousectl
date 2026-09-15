@@ -1410,6 +1410,8 @@ clickhousectl cloud clickpipe stop <service-id> <clickpipe-id>
 clickhousectl cloud clickpipe resync <service-id> <clickpipe-id>   # Postgres and MySQL pipes only
 
 # Delete a ClickPipe
+# Confirms the returned name, or the requested ID if no name is returned.
+# JSON keeps {"deleted":"<clickpipe-id>"}.
 clickhousectl cloud clickpipe delete <service-id> <clickpipe-id>
 
 # Update scaling (at least one of --replicas/--cpu-millicores/--memory-gb is required)

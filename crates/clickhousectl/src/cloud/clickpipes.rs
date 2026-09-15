@@ -3646,14 +3646,17 @@ async fn clickpipe_delete(
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
-    client
+    let deleted_name = client
         .delete_clickpipe(&org_id, service_id, clickpipe_id)
         .await?;
 
     if json {
         println!("{}", serde_json::json!({ "deleted": clickpipe_id }));
     } else {
-        println!("ClickPipe {} deleted", clickpipe_id);
+        println!(
+            "ClickPipe {} deleted",
+            deleted_name.as_deref().unwrap_or(clickpipe_id)
+        );
     }
     Ok(())
 }
@@ -5729,16 +5732,19 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
         clickpipe_id: &str,
-    ) -> crate::cloud::client::Result<crate::cloud::types::DeleteResponse> {
+    ) -> crate::cloud::client::Result<Option<String>> {
         let response = self
             .api()
             .click_pipe_delete(org_id, service_id, clickpipe_id)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
-        Ok(crate::cloud::types::DeleteResponse {
-            status: response.status,
-            request_id: response.request_id,
-        })
+        Ok(response.result.and_then(|result| {
+            result
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        }))
     }
 
     pub async fn change_clickpipe_state(
