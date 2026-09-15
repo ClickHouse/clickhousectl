@@ -2059,6 +2059,16 @@ clickhousectl cloud clickpipe create postgres <service-id> \
   --table-mapping "public.users:public_users" \
   --table-mapping "public.orders:public_orders"
 
+# From Postgres managed by ClickHouse: save its CA before creating the pipe
+clickhousectl cloud postgres certs get <postgres-id> --output managed-pg-ca.pem
+clickhousectl cloud clickpipe create postgres <service-id> \
+  --name my-managed-pg-pipe \
+  --host <managed-postgres-host> --pg-database mydb \
+  --username "$POSTGRES_USERNAME" --password "$POSTGRES_PASSWORD" \
+  --ca-certificate ./managed-pg-ca.pem \
+  --publication-name clickpipes \
+  --table-mapping "public.users:public_users"
+
 # From an RDS or Aurora PostgreSQL with IAM role authentication (CDC)
 # IAM_ROLE auth takes no --username/--password: the role ARN is the credential
 clickhousectl cloud clickpipe create postgres <service-id> \
@@ -2234,6 +2244,24 @@ order given. The names `clickpipes` and `clickpipes_system` are reserved by
 ClickPipes: the CLI rejects them as usage errors (exit code 2) before making
 any request.
 
+#### Kafka and Kinesis ClickPipe prerequisites
+
+Kafka brokers must be reachable from ClickPipes. Allow the
+[ClickPipes static egress IPs](https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips),
+or configure a supported private connection, and make sure the selected
+authentication can read the requested topics. Avro and Protobuf sources need a
+schema registry; Protobuf can instead use `--protobuf-schema-file <PATH|->`.
+See the [Kafka creation guide](https://clickhouse.com/docs/integrations/clickpipes/kafka/create-kafka-clickpipe)
+for the full connection flow.
+
+For Kinesis, grant the IAM role or user permission to list streams and read the
+selected stream. Enhanced fan-out also needs consumer registration and shard
+subscription permissions. Role-based authentication requires a role whose name
+starts with `ClickHouseAccessRole-`, and its trust policy must permit the
+ClickHouse service IAM role to assume it. The
+[Kinesis role guide](https://clickhouse.com/docs/integrations/clickpipes/kinesis/auth)
+contains the complete trust and permission policies.
+
 #### PostgreSQL ClickPipe prerequisites
 
 TLS and certificate verification are enabled by default. The private-CA example
@@ -2266,6 +2294,10 @@ See the [PostgreSQL ClickPipes setup guide](https://clickhouse.com/docs/integrat
 the [generic PostgreSQL source setup guide](https://clickhouse.com/docs/integrations/clickpipes/postgres/source/generic),
 and the [ClickPipes networking and static IP documentation](https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips).
 
+For Postgres managed by ClickHouse, first save its CA bundle with
+`cloud postgres certs get <postgres-id> --output <path>`, then pass that path to
+`clickpipe create postgres --ca-certificate <path>`, as shown above.
+
 PostgreSQL ClickPipes require at least one table mapping, from either
 `--table-mapping schema.table:target_table` or `--table-mapping-json <JSON>`
 (see [PostgreSQL table mappings](#postgresql-table-mappings)). Ports must be in
@@ -2276,6 +2308,32 @@ they are required for the default `--auth basic`, and rejected with
 `--auth IAM_ROLE`, where the role ARN is the whole credential and
 no `credentials` object is sent.
 `--replication-slot-name` is valid only with `--replication-mode cdc_only`.
+
+#### MySQL, MongoDB, and BigQuery ClickPipe prerequisites
+
+For MySQL CDC, enable binary logging in `ROW` format with `FULL` row images and
+retain binlogs for at least 72 hours. The default `GTID` mechanism requires GTID
+replication; select `--replication-mechanism FILE_POS` only for a matching
+legacy file/position setup. Grant the source user
+`SELECT` on every replicated database plus `REPLICATION CLIENT` and
+`REPLICATION SLAVE`. Provider-specific setup guides and the complete generic
+configuration are linked from the
+[MySQL ClickPipes guide](https://clickhouse.com/docs/integrations/clickpipes/mysql).
+
+MongoDB CDC requires MongoDB 5.1 or newer in a replica set or sharded cluster,
+because it reads native Change Streams backed by the oplog. Retain at least 24
+hours of oplog history; 72 hours or more is recommended so the oplog survives a
+long initial snapshot. For a generic deployment, grant the source user
+`readAnyDatabase` and `clusterMonitor`. See the
+[MongoDB source setup guide](https://clickhouse.com/docs/integrations/clickpipes/mongodb/source/generic).
+
+BigQuery ClickPipes perform snapshot loads through a GCS staging bucket. The
+selected service account or workload identity needs access to read the source
+tables, run BigQuery export jobs, and read and write the staging objects. Create
+the bucket before the pipe and pass its `gs://` path with `--staging-path`. The
+[BigQuery connector overview](https://clickhouse.com/blog/bigquery-clickpipe-private-preview)
+lists the corresponding BigQuery and Cloud Storage roles. `snapshot` is the
+only supported `--replication-mode` value.
 
 #### PostgreSQL table mappings
 
@@ -2424,8 +2482,8 @@ left out of the request:
 | `--enable-failover-slots <true\|false>` | Enable failover support for the replication slot on PG17 and newer. Applies only when ClickPipes creates the slot, so not with `--replication-slot-name`. |
 | `--delete-on-merge <true\|false>` | Enable hard delete behaviour in `ReplacingMergeTree` for PostgreSQL `DELETE` operations. |
 
-The three boolean flags take an explicit `true` or `false` value; when omitted
-they send `false`, which is the API default.
+`--allow-nullable-columns`, `--enable-failover-slots`, and `--delete-on-merge`
+take an explicit `true` or `false` value and default to `false` when omitted.
 
 These are create-time decisions. The Cloud API can patch only
 `syncIntervalSeconds` and `pullBatchSize` after the pipe exists, so the

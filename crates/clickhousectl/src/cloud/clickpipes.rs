@@ -739,9 +739,21 @@ CONTEXT FOR AGENTS:
     ObjectStorage(ObjectStorageCreateArgs),
 
     /// Create a ClickPipe from Kafka or Kafka-compatible source
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The selected broker credentials must allow topic discovery and consumption.
+  Avro and Protobuf need a schema registry; Protobuf can instead use
+  --protobuf-schema-file.
+  https://clickhouse.com/docs/integrations/clickpipes/kafka/create-kafka-clickpipe")]
     Kafka(KafkaCreateArgs),
 
     /// Create a ClickPipe from Amazon Kinesis
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The IAM role or access keys must allow ClickPipes to read the selected stream.
+  IAM role names must start with ClickHouseAccessRole- and trust the ClickHouse
+  service IAM role:
+  https://clickhouse.com/docs/integrations/clickpipes/kinesis/auth")]
     Kinesis(KinesisCreateArgs),
 
     /// Create a ClickPipe from PostgreSQL
@@ -752,20 +764,45 @@ CONTEXT FOR AGENTS:
   https://clickhouse.com/docs/integrations/clickpipes/postgres
   TLS and certificate verification are on by default; prefer --ca-certificate
   over either security opt-out for a private source CA.
-  Only --sync-interval-seconds and --pull-batch-size can change after creation; the
-  three <true|false> settings send false when omitted.")]
+  Managed Postgres: save its CA with `cloud postgres certs get <pg-id> --output ca.pem`,
+  then pass ca.pem to --ca-certificate.
+  Only --sync-interval-seconds and --pull-batch-size can change after creation.")]
     Postgres(PostgresCreateArgs),
 
     /// Create a ClickPipe from MySQL
-    #[command(name = "mysql")]
+    #[command(
+        name = "mysql",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  For CDC enable ROW/FULL binlogs and retain them for at least 72 hours.
+  GTID is the default; use FILE_POS only for matching legacy replication.
+  Grant SELECT, REPLICATION CLIENT and REPLICATION SLAVE to the source user:
+  https://clickhouse.com/docs/integrations/clickpipes/mysql/source/generic"
+    )]
     MySQL(MySqlCreateArgs),
 
     /// Create a ClickPipe from MongoDB
-    #[command(name = "mongodb")]
+    #[command(
+        name = "mongodb",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  CDC requires MongoDB 5.1+ in a replica set or sharded cluster.
+  Keep at least 24 hours of oplog history; 72 hours or more is recommended.
+  Grant the source user readAnyDatabase and clusterMonitor:
+  https://clickhouse.com/docs/integrations/clickpipes/mongodb/source/generic"
+    )]
     MongoDB(MongoDbCreateArgs),
 
     /// Create a ClickPipe from BigQuery
-    #[command(name = "bigquery")]
+    #[command(
+        name = "bigquery",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Provision the GCS staging bucket before creating a BigQuery pipe.
+  The selected identity needs BigQuery table and export-job access plus read/write
+  access to staging objects:
+  https://clickhouse.com/blog/bigquery-clickpipe-private-preview"
+    )]
     BigQuery(BigQueryCreateArgs),
 
     /// Create a ClickPipe from Google Cloud Pub/Sub
@@ -808,14 +845,20 @@ pub struct ClickPipeCreateRequestArgs {
     pub validation: ClickPipeCreateValidationArgs,
 
     /// Initial number of replicas (1-40)
+    ///
+    /// Requires --cpu-millicores and --memory-gb.
     #[arg(long, value_parser = clap::value_parser!(u32).range(1..=40))]
     pub replicas: Option<u32>,
 
     /// Initial CPU millicores per replica (125-2000)
+    ///
+    /// Requires --replicas and --memory-gb.
     #[arg(long, value_parser = clap::value_parser!(u32).range(125..=2000))]
     pub cpu_millicores: Option<u32>,
 
     /// Initial memory GB per replica (0.5-8)
+    ///
+    /// Requires --replicas and --cpu-millicores.
     #[arg(long, value_parser = parse_streaming_memory_gb)]
     pub memory_gb: Option<f64>,
 
@@ -1387,17 +1430,17 @@ pub struct PostgresCreateArgs {
     #[arg(long, value_name = "TABLES")]
     pub snapshot_parallel_tables: Option<i64>,
 
-    /// Preserve Postgres nullability in the destination table (create-time only)
+    /// Preserve Postgres nullability; defaults to false (create-time only)
     #[arg(long, value_name = "true|false")]
     pub allow_nullable_columns: Option<bool>,
 
-    /// Enable failover for the replication slot on PG17 and newer, when
-    /// ClickPipes creates the slot (create-time only)
+    /// Enable PG17+ slot failover; defaults to false (create-time only)
+    ///
+    /// Applies only when ClickPipes creates the slot.
     #[arg(long, value_name = "true|false")]
     pub enable_failover_slots: Option<bool>,
 
-    /// Enable hard deletes in ReplacingMergeTree for Postgres DELETEs
-    /// (create-time only)
+    /// Hard-delete Postgres DELETEs; defaults to false (create-time only)
     #[arg(long, value_name = "true|false")]
     pub delete_on_merge: Option<bool>,
 
