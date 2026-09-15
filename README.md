@@ -90,8 +90,6 @@ Prebuilt archives for each release are hosted at `https://builds.clickhouse.com/
 
 This README focuses on common tasks and representative examples. The CLI help is the complete, version-matched command reference: start with `clickhousectl --help`, then use help at any level, such as `clickhousectl cloud postgres --help` or `clickhousectl local server start --help`.
 
-Help lists command-specific options first, followed by shared options in a consistent order: organization selectors, API key and secret, API URL (development builds), JSON output, debug, and help. Optional local instance names appear under Arguments; both local clients order their connection and query options consistently.
-
 ### Local ClickHouse
 
 A bare start bootstraps the local environment, including installing ClickHouse if needed:
