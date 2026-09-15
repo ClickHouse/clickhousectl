@@ -175,6 +175,8 @@ CONTEXT FOR AGENTS:
   Service ID: `clickhousectl cloud service list`. ClickPipe ID: `clickpipe list <SERVICE_ID>`.
   Everything except list/get is a write and needs API key auth, schema-discover included.
   `start` only works on a Stopped or Failed pipe; `stop` works from any state.
+  Metrics: `cloud service prometheus <SERVICE_ID>`; filter samples by `clickpipe_id`.
+  Streaming/object-storage errors: query `system.clickpipes_log` with `cloud service query`.
   Typical flow: `clickpipe schema-discover <source> <service-id>` -> `clickpipe create <source>`
     -> `clickpipe get`."
     )]

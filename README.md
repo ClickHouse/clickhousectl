@@ -1445,6 +1445,47 @@ clickhousectl cloud clickpipe settings update <service-id> <clickpipe-id> \
 clickhousectl cloud clickpipe reverse-private-endpoint list <service-id>
 ```
 
+#### Monitoring and diagnostics
+
+ClickPipes metrics are included in the destination service's Prometheus output.
+Use the service ID from `cloud service list` and the ClickPipe ID from
+`clickpipe list <service-id>` to select one pipe's samples:
+
+```bash
+clickhousectl cloud service prometheus <service-id> --filtered-metrics true | \
+  grep 'clickpipe_id="<clickpipe-id>"'
+```
+
+The command emits raw Prometheus exposition text. Metric availability varies by
+pipe type; see [Monitoring ClickPipes](https://clickhouse.com/docs/integrations/clickpipes/monitoring)
+for the current metrics and labels.
+
+For streaming and object-storage ClickPipes, inspect recent operational errors
+through the existing SQL command:
+
+```bash
+clickhousectl cloud service query <service-id> --query "
+SELECT *
+FROM system.clickpipes_log
+WHERE event_time >= now() - INTERVAL 1 HOUR
+ORDER BY event_time DESC
+LIMIT 100
+SETTINGS max_execution_time = 30,
+         max_rows_to_read = 1000000"
+```
+
+`system.clickpipes_log` retains seven days of network, connectivity, and other
+operational errors. It does not currently cover CDC pipes (Postgres, MySQL, or
+MongoDB); use the ClickHouse Cloud console for their operational and error logs.
+Malformed-record and schema errors are stored separately in the destination
+table's `<destination_table_name>_clickpipes_error` table. See the official
+[ClickPipes error-reporting guide](https://clickhouse.com/docs/integrations/clickpipes/home#error-reporting).
+
+Both routes use the current Cloud login. Under OAuth, `service query` is
+read-only. Under API key authentication, its first use may provision and bind a
+per-service Query API key; pass `--no-auto-enable` to require an existing usable
+binding. See [Query API auth modes](#query-api-auth-modes).
+
 `clickpipe scale` accepts replicas 1–40, CPU 125–2000 millicores, and memory
 0.5–8 GB. Out-of-range and non-finite values fail with usage exit 2 before any
 API request.
