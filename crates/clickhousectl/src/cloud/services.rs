@@ -6529,6 +6529,8 @@ mod tests {
                 "backup-config",
                 "update",
                 "svc-1",
+                "--backup-period-hours",
+                "24",
             ],
             true,
         );

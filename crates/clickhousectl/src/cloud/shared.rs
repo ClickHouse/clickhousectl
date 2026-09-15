@@ -468,7 +468,10 @@ mod selector_tests {
                 &["--endpoint-id", "endpoint"],
             ),
             (&["service", "backup-config", "get"], &[]),
-            (&["service", "backup-config", "update"], &[]),
+            (
+                &["service", "backup-config", "update"],
+                &["--backup-period-hours", "24"],
+            ),
             (&["service", "upgrade-window", "get"], &[]),
             (
                 &["service", "upgrade-window", "set"],
