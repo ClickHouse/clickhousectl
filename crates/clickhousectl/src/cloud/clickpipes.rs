@@ -367,7 +367,7 @@ CONTEXT FOR AGENTS:
         command: ClickPipeContextCommands,
     },
 
-    /// Discover a source schema without creating a pipe (beta)
+    /// Discover a source schema without creating a pipe (Beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Needs API key auth even though it only reads; OAuth is rejected here.

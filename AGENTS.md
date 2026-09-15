@@ -104,6 +104,7 @@ module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new l
 - `about`: imperative verb phrase, ≤ ~60 chars, no trailing period, no implementation detail; keep siblings parallel
   ("List X", "Get X details", "Create X", "Delete X"). Flag help: one line, ≤ ~70 chars, include units/format
   ("Interval in seconds"), and never repeat clap's `[default: …]` or `[possible values: …]` in prose.
+- Use `(Beta)` for beta markers; keep `(limited preview)` distinct.
 - State cross-flag constraints on the flag itself ("only with `--replication-mode cdc_only`"). Add a second
   doc-comment paragraph (≤ ~3 lines) only for a constraint the flag's name and type cannot convey.
 - Shared flags (`--api-key`, `--api-secret`, `--url`, `--org-id`, `--json`, `--debug`) read identically everywhere.

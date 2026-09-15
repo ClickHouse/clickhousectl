@@ -233,7 +233,7 @@ CONTEXT FOR AGENTS:
         command: ActivityCommands,
     },
 
-    /// Manage ClickHouse Cloud Postgres services (beta)
+    /// Manage ClickHouse Cloud Postgres services (Beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Write commands need API key auth.
