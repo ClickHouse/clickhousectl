@@ -2716,7 +2716,7 @@ async fn service_start(client: &CloudClient, service_id: &str, json: bool) -> Cl
         println!("{}", serde_json::to_string_pretty(&service)?);
     } else {
         println!(
-            "Service {} starting (state: {})",
+            "Service {} start request accepted (returned state: {})",
             or_absent(service.name.as_deref()),
             or_absent(service.state.as_ref())
         );
@@ -2734,7 +2734,7 @@ async fn service_stop(client: &CloudClient, service_id: &str, json: bool) -> Clo
         println!("{}", serde_json::to_string_pretty(&service)?);
     } else {
         println!(
-            "Service {} stopping (state: {})",
+            "Service {} stop request accepted (returned state: {})",
             or_absent(service.name.as_deref()),
             or_absent(service.state.as_ref())
         );

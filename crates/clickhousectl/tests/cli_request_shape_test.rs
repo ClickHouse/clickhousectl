@@ -2131,6 +2131,81 @@ async fn service_wake_preserves_api_errors() {
 }
 
 #[tokio::test]
+async fn service_start_and_stop_human_output_reports_acceptance_and_returned_state() {
+    for (command, request_command, returned_state) in [
+        ("start", "start", Some("running")),
+        ("start", "start", Some("starting")),
+        ("start", "start", None),
+        ("stop", "stop", Some("stopped")),
+        ("stop", "stop", Some("stopping")),
+        ("stop", "stop", None),
+    ] {
+        let mock = MockServer::start().await;
+        let mut result = serde_json::json!({"name": "demo"});
+        if let Some(state) = returned_state {
+            result["state"] = serde_json::json!(state);
+        }
+        Mock::given(method("PATCH"))
+            .and(path("/v1/organizations/org-1/services/svc-1/state"))
+            .and(body_json(serde_json::json!({"command": request_command})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": result,
+                "status": 200,
+                "requestId": "stub-service-state-change",
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let output = invoke_cli_with_cloud_credentials_human(
+            &mock,
+            &["service", command, "svc-1", "--org-id", "org-1"],
+        );
+
+        assert_success(&output);
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout),
+            format!(
+                "Service demo {command} request accepted (returned state: {})\n",
+                returned_state.unwrap_or("-")
+            )
+        );
+    }
+}
+
+#[tokio::test]
+async fn service_start_and_stop_preserve_json_responses() {
+    for (command, returned_state) in [("start", "running"), ("stop", "stopped")] {
+        let mock = MockServer::start().await;
+        let result = serde_json::json!({"name": "demo", "state": returned_state});
+        Mock::given(method("PATCH"))
+            .and(path("/v1/organizations/org-1/services/svc-1/state"))
+            .and(body_json(serde_json::json!({"command": command})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": result,
+                "status": 200,
+                "requestId": "stub-service-state-change-json",
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &["service", command, "svc-1", "--org-id", "org-1"],
+        );
+
+        assert_success(&output);
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            result
+        );
+    }
+}
+
+#[tokio::test]
 async fn service_wake_rejects_oauth_before_http() {
     let mock = MockServer::start().await;
     let project = tempfile::tempdir().unwrap();

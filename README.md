@@ -978,6 +978,8 @@ clickhousectl cloud service delete <service-id>
 clickhousectl cloud service delete <service-id> --force
 ```
 
+`service start` and `service stop` return as soon as the API accepts the request. Human output reports the state returned with that acknowledgment; even when it already matches the requested state, use `service get` to confirm the service's current state.
+
 `backup-config update` requires at least one backup configuration flag.
 
 If deletion returns a conflict, the CLI includes the API response and suggests `--force` only
