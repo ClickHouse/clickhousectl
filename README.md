@@ -354,7 +354,7 @@ clickhousectl local remove 26.8.1.1760 --force   # Stop running servers on this 
 
 `local use` also creates a symlink at `~/.local/bin/clickhouse` pointing to the selected version's binary, so the plain `clickhouse` command (e.g. `clickhouse local`, `clickhouse client`) is on PATH. Pass `--no-global` to skip. If a regular file already exists at that path it is left alone with a warning.
 
-`local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with exit `1` and JSON error code `server_running`. Because versions are shared between projects, the check spans **every** project, not just the current directory: the error names each blocking server with the project root it was started from and its PID, so a server found by `clickhousectl local server list --global` is identifiable. Stop those servers first (`clickhousectl local server stop --global <name>`), or pass `--force` to stop them — in whichever project they run — and then remove the version.
+`local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with exit `1` and JSON error code `server_running`. Because versions are shared between projects, the check spans **every** project, not just the current directory: the error names each blocking server with the project root it was started from and its PID, so a server found by `clickhousectl local server list --global` is identifiable. Stop those servers first (`clickhousectl local server stop <name> --global`), or pass `--force` to stop them — in whichever project they run — and then remove the version.
 
 `local remove` also refuses the **current default version** (exit `1`, JSON error code `version_is_default`); `--force` removes it anyway and reports `was_default: true`. See `local remove --help`.
 
@@ -411,9 +411,9 @@ clickhousectl local client --host remote-host --version 26.8.1.1760  # Use an in
 clickhousectl local client -- --format Pretty        # Extra clickhouse-client args after --
 ```
 
-Local ClickHouse and Postgres `start`, `stop`, `remove`, `dotenv`, and client commands accept an optional positional `NAME`, for example `local client dev` or `local postgres start dev`. Existing `--name NAME` forms and client `-n NAME` remain accepted but are hidden from help; use one name form per command. Omitting the name keeps the existing defaults and selection rules.
+Local ClickHouse and Postgres `start`, `stop`, `remove`, `dotenv`, and client commands accept an optional positional `NAME`, for example `local client dev` or `local postgres start dev`. The hidden `--name NAME` and client `-n NAME` forms are also accepted; use one name form per command. Omitting `NAME` uses the defaults and selection rules described below.
 
-`local client` and `local postgres client` now require `--` before native arguments. Put the instance name and wrapper options such as `--host`, `--port`, and `--query` before it; unknown options there produce a usage error (exit 2). Existing commands that passed native options without the separator must add it, for example `local client dev -- --format CSV`. Everything after `--` is passed literally to the native client, including options that share wrapper names.
+`local client` and `local postgres client` require `--` before native arguments. Put the instance name and wrapper options such as `--host`, `--port`, and `--query` before it; unknown options there produce a usage error (exit 2). For example, `local client dev -- --format CSV`. Everything after `--` is passed literally to the native client, including options that share wrapper names.
 
 The positional `NAME` selects the connection and local client binary from managed server metadata, so named mode does not need a global default. It cannot be combined with direct `--host` or `--port` selectors, and named mode does not accept `--version`.
 
