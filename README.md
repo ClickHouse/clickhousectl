@@ -1283,6 +1283,14 @@ clickhousectl cloud postgres config patch <pg-id> --file patch.json
 # Replace the entire configuration only with a complete object obtained from `config get --json`
 clickhousectl cloud postgres config replace <pg-id> --file complete-config.json
 
+# Confirm the requested values were stored; if the response requires a restart, restart explicitly
+clickhousectl cloud postgres config get <pg-id>
+clickhousectl cloud postgres restart <pg-id>
+
+# After the database accepts connections again, confirm a Postgres setting is active
+pg_isready --dbname "$POSTGRES_CONNECTION_STRING"
+psql "$POSTGRES_CONNECTION_STRING" --command 'SHOW max_connections'
+
 # Password
 clickhousectl cloud postgres reset-password <pg-id> --generate
 clickhousectl cloud postgres reset-password <pg-id> --password '<min-12-upper-lower-digit>'
@@ -1296,8 +1304,15 @@ clickhousectl cloud postgres restore --source-name primary \
   --restore-target <recent-RFC3339-time-within-retention> \
   --tag env=prod --pg-bouncer-config-file ./pgbouncer.json
 
-# Lifecycle
+# Lifecycle: record the server start time before requesting a restart
+psql "$POSTGRES_CONNECTION_STRING" --tuples-only --no-align \
+  --command 'SELECT pg_postmaster_start_time()'
+# Restart by ID; use `restart --name my-pg` to select by exact name instead
 clickhousectl cloud postgres restart <pg-id>
+# Readiness allows the after-check; only a later start time confirms a restart
+pg_isready --dbname "$POSTGRES_CONNECTION_STRING"
+psql "$POSTGRES_CONNECTION_STRING" --tuples-only --no-align \
+  --command 'SELECT pg_postmaster_start_time()'
 clickhousectl cloud postgres promote <replica-id>
 clickhousectl cloud postgres promote <replica-id> --wait                    # poll until isPrimary=true
 clickhousectl cloud postgres switchover <primary-id>
@@ -1321,6 +1336,10 @@ PgBouncer parameter names are open-ended; values must be quoted strings, includi
 Human detail output preserves explicit empty values: configuration sections show as `pgConfig: {}` and `pgBouncerConfig: {}`, empty lists as `[]`, and empty strings as `""`. JSON retains the original values.
 
 `pgConfig` uses the closed set of GUC names supported by the Cloud API. Unknown names and `null` values are rejected locally on `--set` and every PgConfig file path, and the enum-valued settings accept only `default_transaction_isolation` (`read committed`, `repeatable read`, `serializable`), `ssl_min_protocol_version` (`TLSv1` through `TLSv1.3`), and `wal_compression` (`off`, `on`, `lz4`, `zstd`). Files for `config patch` and `config replace` must contain both `pgConfig` and `pgBouncerConfig`; use an explicit `{}` when a section is intentionally empty rather than omitting it.
+
+`postgres config patch` and `postgres config replace` exit successfully when the API accepts the change; acceptance does not mean the setting is already active. Re-read the stored configuration with `postgres config get`. If the response says a restart is required, run `postgres restart` with the same positional ID or `--name` selector, wait until the database accepts connections, then use [`SHOW <setting>`](https://www.postgresql.org/docs/current/sql-show.html) to confirm each changed Postgres setting is active.
+
+`postgres restart` likewise returns after the API accepts the request. Service state and readiness do not confirm a restart; a successful readiness check establishes only that the database accepts connections. Record `SELECT pg_postmaster_start_time()` immediately before the request and run it again after connections recover; a later timestamp confirms the server restarted after that baseline. PostgreSQL documents [`pg_postmaster_start_time()`](https://www.postgresql.org/docs/current/functions-info.html) as the time the server started.
 
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
 

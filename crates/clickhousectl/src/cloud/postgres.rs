@@ -169,7 +169,10 @@ CONTEXT FOR AGENTS:
         after_help = "\
 CONTEXT FOR AGENTS:
   `replace` sends the whole object — start from `config get --json` output, not a fragment.
-  `patch --set` only touches pgConfig; use --file to patch pgBouncerConfig."
+  `patch --set` only touches pgConfig; use --file to patch pgBouncerConfig.
+  Exit 0 from `patch` or `replace` means accepted; confirm stored values with `config get`.
+  If the response requires a restart, run `cloud postgres restart <id>` (or --name <name>),
+  then reconnect and use `SHOW <setting>` to confirm a Postgres setting is active."
     )]
     Config(ConfigCommands),
 
@@ -250,6 +253,11 @@ CONTEXT FOR AGENTS:
     },
 
     /// Restart a Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Before restarting, record `SELECT pg_postmaster_start_time()` through psql.
+  Exit 0 means accepted, not completed; state=running or readiness alone does not prove a restart.
+  After connections recover, run it again; a later timestamp confirms a restart after the baseline.")]
     Restart {
         /// Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
