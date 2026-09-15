@@ -475,6 +475,8 @@ clickhousectl local server dotenv --local --user default --database mydb  # Incl
 clickhousectl local server dotenv --local --user default --password secret  # Include CLICKHOUSE_PASSWORD
 ```
 
+`server dotenv` writes `.env` in the current directory, or `.env.local` with `--local`, and prints the file name followed by a value preview. Prefer your application's dotenv loader. If you have reviewed the actual file and its values for shell compatibility, load it in bash or zsh with `set -a; source .env; set +a` (substitute `.env.local` after `--local`). Never use `eval "$(clickhousectl local server dotenv ...)"`: the preview is informational, and dotenv quoting and preserved file lines are not guaranteed to be shell-safe.
+
 Stopping a server preserves its data and identity metadata, so it remains visible in `server list` with a `stopped` status. Version and ports are shown only while running because they are resolved again on each start. Human-readable server tables show unavailable values as `-`; JSON continues to omit unavailable optional fields. Starting the same name resumes the existing data directory.
 
 Project-local server commands select `.clickhouse` under the exact current working directory. They do not search parent directories, so running `list`, `stop`, or `remove` from a child directory selects a different project scope. Change to the local project root where the server was started first; this is where `.clickhouse` typically lives. There is intentionally no project-path override for project-local commands; `server stop --global --project <project-root>` is only for an explicitly confirmed server found with `server list --global`.

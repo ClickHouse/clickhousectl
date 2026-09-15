@@ -461,6 +461,9 @@ CONTEXT FOR AGENTS:
   Requires a running server; reads its actual ports.
   Writes CLICKHOUSE_HOST, CLICKHOUSE_PORT and CLICKHOUSE_HTTP_PORT, plus CLICKHOUSE_USER,
   CLICKHOUSE_PASSWORD and CLICKHOUSE_DATABASE only when their flags are given.
+  Writes .env in the current directory (.env.local with --local), then prints its name and a
+  value preview. Prefer your application's dotenv loader. Only source a reviewed, shell-compatible
+  file with `set -a; source .env; set +a` (use .env.local after --local); never eval the preview.
   An existing file is edited in place: only the keys written here are replaced, other
   CLICKHOUSE_* lines are kept.")]
     Dotenv {
