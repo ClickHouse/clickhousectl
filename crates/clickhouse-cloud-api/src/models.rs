@@ -256,10 +256,11 @@ pub use shared::{
     IpAccessListPatch, License, ResourceTagsV1, ResourceTagsV1Response,
 };
 pub use udfs::{
-    Pagination, Udf, UdfArgument, UdfArgumentOutput, UdfArgumentResponse, UdfAttachment,
-    UdfAttachmentListResponse, UdfAttachmentStatus, UdfCreateRequest, UdfCreateRequestV1,
-    UdfCreateRequestV1Type, UdfCreateRequestV2, UdfCreateRequestV2Type, UdfListResponse,
-    UdfRuntime, UdfSandboxType, UdfSandboxVersion, UdfStatus, UdfType, UdfUploadSession,
-    UdfVersionCreateRequest, UdfVersionCreateRequestV1, UdfVersionCreateRequestV1Type,
-    UdfVersionCreateRequestV2, UdfVersionCreateRequestV2Type, UdfVersionListResponse,
+    Pagination, Udf, UdfArgument, UdfArgumentOutput, UdfArgumentResponse, UdfAttachErrorCode,
+    UdfAttachResponse424, UdfAttachment, UdfAttachmentListResponse, UdfAttachmentStatus,
+    UdfCreateRequest, UdfCreateRequestV1, UdfCreateRequestV1Type, UdfCreateRequestV2,
+    UdfCreateRequestV2Type, UdfListResponse, UdfRuntime, UdfSandboxType, UdfSandboxVersion,
+    UdfStatus, UdfType, UdfUploadSession, UdfVersionCreateRequest, UdfVersionCreateRequestV1,
+    UdfVersionCreateRequestV1Type, UdfVersionCreateRequestV2, UdfVersionCreateRequestV2Type,
+    UdfVersionListResponse,
 };

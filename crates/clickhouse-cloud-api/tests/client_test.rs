@@ -2899,6 +2899,140 @@ async fn attach_udf_encodes_optional_version() {
     );
 }
 
+#[tokio::test]
+async fn attach_udf_preserves_structured_dependency_errors() {
+    for (wire_code, expected_code, state, can_wake) in [
+        (
+            "SERVICE_IDLE",
+            UdfAttachErrorCode::ServiceIdle,
+            "idle",
+            true,
+        ),
+        (
+            "SERVICE_STOPPED",
+            UdfAttachErrorCode::ServiceStopped,
+            "stopped",
+            false,
+        ),
+        (
+            "SERVICE_NOT_RUNNING",
+            UdfAttachErrorCode::ServiceNotRunning,
+            "starting",
+            false,
+        ),
+        (
+            "FUTURE_CODE",
+            UdfAttachErrorCode::Unknown("FUTURE_CODE".into()),
+            "future_state",
+            false,
+        ),
+    ] {
+        let (server, client) = setup().await;
+        let body = serde_json::json!({
+            "error": "service unavailable", "code": wire_code, "serviceState": state,
+            "canWake": can_wake, "status": 424,
+            "requestId": "00000000-0000-0000-0000-000000000001", "futureField": 1
+        });
+        Mock::given(method("PUT"))
+            .and(path(
+                "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+            ))
+            .and(basic_auth("key", "secret"))
+            .respond_with(ResponseTemplate::new(424).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = client
+            .udf_attach("org-1", "my_udf", "svc-1", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "API error (status 424): service unavailable"
+        );
+        let clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+            status,
+            message,
+            response,
+        } = error
+        else {
+            panic!("expected typed UDF dependency error");
+        };
+        assert_eq!(status, 424);
+        assert_eq!(message, "service unavailable");
+        assert_eq!(response.code, Some(expected_code));
+        assert_eq!(response.service_state.as_ref().unwrap().to_string(), state);
+        assert_eq!(response.can_wake, Some(can_wake));
+        let mut expected = body;
+        expected.as_object_mut().unwrap().remove("futureField");
+        assert_eq!(serde_json::to_value(response).unwrap(), expected);
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn attach_udf_dependency_errors_tolerate_absent_and_null_fields() {
+    for body in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "error": null, "code": null, "serviceState": null, "canWake": null,
+            "status": null, "requestId": null
+        }),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(424).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = client
+            .udf_attach("org-1", "my_udf", "svc-1", None)
+            .await
+            .unwrap_err();
+        let clickhouse_cloud_api::Error::UdfAttachmentUnavailable { response, .. } = error else {
+            panic!("expected tolerant UDF dependency error");
+        };
+        assert_eq!(*response, UdfAttachResponse424::default());
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[tokio::test]
+async fn attach_udf_keeps_generic_errors_for_other_statuses_and_invalid_bodies() {
+    for (status, body, expected_message) in [
+        (424, "upstream unavailable", "upstream unavailable"),
+        (424, r#"{"error":"bad response","code":42}"#, "bad response"),
+        (
+            403,
+            r#"{"error":"forbidden","code":"SERVICE_IDLE"}"#,
+            "forbidden",
+        ),
+        (
+            500,
+            r#"{"error":"failed","code":"SERVICE_STOPPED"}"#,
+            "failed",
+        ),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = client
+            .udf_attach("org-1", "my_udf", "svc-1", None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, clickhouse_cloud_api::Error::Api { status: actual, message }
+            if actual == status && message == expected_message)
+        );
+    }
+}
+
 // ===========================================================================
 // ClickStack: Roles
 // ===========================================================================

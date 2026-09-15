@@ -252,7 +252,9 @@ impl ApiFailure {
 pub fn classify_api_error(error: &clickhouse_cloud_api::Error) -> ApiFailure {
     use clickhouse_cloud_api::Error as E;
     match error {
-        E::Api { status, .. } => ApiFailure::with_status(status_kind(*status), *status),
+        E::Api { status, .. } | E::UdfAttachmentUnavailable { status, .. } => {
+            ApiFailure::with_status(status_kind(*status), *status)
+        }
         E::Sql { status, .. } => ApiFailure::with_status(FailureKind::SqlError, *status),
         E::Http(error) => ApiFailure::new(if error.is_timeout() {
             FailureKind::Timeout
@@ -565,6 +567,15 @@ mod tests {
                 Some(400),
             ),
             (E::ServiceStopped, FailureKind::ServiceStopped, None),
+            (
+                E::UdfAttachmentUnavailable {
+                    status: 424,
+                    message: "service unavailable".into(),
+                    response: Box::default(),
+                },
+                FailureKind::Http4xx,
+                bounded_status(424),
+            ),
             (E::ServiceIdle, FailureKind::Other, None),
             // The gateway timeout is a timeout, classified from the variant
             // and not from the 500 status it arrives with (#644).

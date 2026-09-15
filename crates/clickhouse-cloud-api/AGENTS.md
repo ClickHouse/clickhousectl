@@ -17,7 +17,7 @@ and the private drift analyzer, which are always edited together.
 - `crates/clickhouse-openapi-analyzer/` — OpenAPI and Rust inventory, direction-aware comparison, policy config, and
   stable drift reports. Private (`publish = false`), a dev-dependency of this crate. Parser/tooling deps such as
   `syn` must not enter either published crate's normal dependency graph. It recursively traverses the private module
-  trees rooted at `client.rs`, `models.rs`, `meta.rs`; model declarations must remain literal source in that tree,
+  trees rooted at `client.rs`, `models.rs`, `meta.rs`, and (when present) `error.rs`; model declarations must remain literal source in the model tree,
   and declarations in conversion files do not count as models.
 
 ## Request and response models
@@ -39,6 +39,11 @@ outage. Tolerance lives in the **type system**, not in serde attributes:
   empty structs; keep parent response fields optional. The analyzer checks named map schemas in both directions.
 
 ### Naming and the split
+
+- Inline JSON response objects use `{PascalizedOperationId}Response{Status}` (for example,
+  `UdfAttachResponse424`). The analyzer checks their fields and enum values when the model is reachable from a
+  `Client` return type, including payloads carried through the `error.rs` module tree. Error containers are
+  traversal edges, not wire models; their response payload structs follow the all-`Option` policy.
 
 - A schema used in one direction keeps its Rust name — most schemas are one-directional, so most models are
   simply all-`Option` in place (response) or strict in place (request body, orphan schema).

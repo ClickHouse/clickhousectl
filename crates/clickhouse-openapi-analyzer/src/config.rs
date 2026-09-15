@@ -225,13 +225,9 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
 
 // The deprecated API-key `roles` fields are feature-gated, frozen legacy API
 // replaced by assigned role IDs. They deliberately remain strings to avoid a
-// source-breaking change for deprecated-fields consumers. The inline
-// UDF-attach 424 error response has no public client/model type, so its enum
-// constraints remain acknowledged until typed error responses are supported.
+// source-breaking change for deprecated-fields consumers.
 const ACKNOWLEDGED_UNSUPPORTED_ENUM_POINTERS: &[&str] = &[
     "/components/schemas/ApiKey/properties/roles/items",
     "/components/schemas/ApiKeyPatchRequest/properties/roles/items",
     "/components/schemas/ApiKeyPostRequest/properties/roles/items",
-    "/paths/~1v1~1organizations~1{organizationId}~1udfs~1{functionName}~1attachments~1{serviceId}/put/responses/424/content/application~1json/schema/properties/code",
-    "/paths/~1v1~1organizations~1{organizationId}~1udfs~1{functionName}~1attachments~1{serviceId}/put/responses/424/content/application~1json/schema/properties/serviceState",
 ];

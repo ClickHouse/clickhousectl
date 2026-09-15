@@ -1,4 +1,51 @@
 use serde::{Deserialize, Serialize};
+
+/// Structured HTTP 424 response from `Client::udf_attach`.
+///
+/// Every field is optional, including spec-required fields. The name follows
+/// the analyzer's `{OperationId}Response{Status}` convention for inline JSON
+/// responses, so both fields and enum values are checked against the spec.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct UdfAttachResponse424 {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<UdfAttachErrorCode>,
+    #[serde(rename = "serviceState", skip_serializing_if = "Option::is_none")]
+    pub service_state: Option<super::ServiceState>,
+    #[serde(rename = "canWake", skip_serializing_if = "Option::is_none")]
+    pub can_wake: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<i64>,
+    #[serde(rename = "requestId", skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<uuid::Uuid>,
+}
+
+/// Reason a UDF attachment could not be started.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum UdfAttachErrorCode {
+    #[serde(rename = "SERVICE_IDLE")]
+    ServiceIdle,
+    #[serde(rename = "SERVICE_NOT_RUNNING")]
+    ServiceNotRunning,
+    #[serde(rename = "SERVICE_STOPPED")]
+    ServiceStopped,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for UdfAttachErrorCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::ServiceIdle => "SERVICE_IDLE",
+            Self::ServiceNotRunning => "SERVICE_NOT_RUNNING",
+            Self::ServiceStopped => "SERVICE_STOPPED",
+            Self::Unknown(value) => value,
+        })
+    }
+}
+
 /// `Pagination` from the ClickHouse Cloud API.
 ///
 /// Used in response position only: every field is `Option<T>`, so a field the

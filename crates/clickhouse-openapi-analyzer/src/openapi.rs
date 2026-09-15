@@ -56,6 +56,10 @@ pub(crate) enum EnumContext {
         operation_id: String,
         parameter: String,
     },
+    InlineResponse {
+        model: String,
+        steps: Vec<PropertyStep>,
+    },
     Unknown,
 }
 
@@ -79,6 +83,9 @@ pub(crate) struct OpenApiInventory {
     pub(crate) operations: BTreeMap<String, OperationInfo>,
     /// Inline object branches retain their parent direction and exact spec pointer.
     pub(crate) inline_union_objects: Vec<(String, String, Value)>,
+    /// Inline JSON responses, keyed by the conventional Rust model name
+    /// `{PascalizedOperationId}Response{Status}`. Only wired models opt in.
+    pub(crate) inline_responses: BTreeMap<String, (String, Value)>,
     pub(crate) schemas: BTreeMap<String, String>,
     /// Pascalized Rust type names of every named spec schema. Used to
     /// distinguish a split `{Name}Response` Rust variant from a Rust type that
@@ -146,6 +153,24 @@ impl OpenApiInventory {
                     .ok_or_else(|| format!("{method} {path} has no operationId"))?;
                 let rust_name = camel_to_snake(operation_id);
                 let pointer = json_pointer(&["paths".to_string(), path.clone(), method.clone()]);
+                if let Some(responses) = operation.get("responses").and_then(Value::as_object) {
+                    for (status, response) in responses {
+                        if let Some(schema) = response.pointer("/content/application~1json/schema")
+                            && schema.get("$ref").is_none()
+                        {
+                            self.inline_responses.insert(
+                                inline_response_name(operation_id, status),
+                                (
+                                    format!(
+                                        "{pointer}/responses/{}/content/application~1json/schema",
+                                        escape_pointer(status)
+                                    ),
+                                    schema.clone(),
+                                ),
+                            );
+                        }
+                    }
+                }
                 let badges = operation
                     .get("x-badges")
                     .and_then(Value::as_array)
@@ -911,7 +936,29 @@ fn enum_context(root: &Value, path: &[String]) -> EnumContext {
             };
         }
     }
+    if path.len() >= 8
+        && path[0] == "paths"
+        && path[3] == "responses"
+        && path[5] == "content"
+        && path[6] == "application/json"
+        && path[7] == "schema"
+        && let Some(operation_id) = root
+            .get("paths")
+            .and_then(|paths| paths.get(&path[1]))
+            .and_then(|item| item.get(&path[2]))
+            .and_then(|operation| operation.get("operationId"))
+            .and_then(Value::as_str)
+    {
+        return EnumContext::InlineResponse {
+            model: inline_response_name(operation_id, &path[4]),
+            steps: property_steps(&path[8..]),
+        };
+    }
     EnumContext::Unknown
+}
+
+fn inline_response_name(operation_id: &str, status: &str) -> String {
+    format!("{}Response{}", pascalize(operation_id), pascalize(status))
 }
 
 /// Derives the property chain from schema-relative pointer segments.

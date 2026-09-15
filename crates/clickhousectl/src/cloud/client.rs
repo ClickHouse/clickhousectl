@@ -735,7 +735,10 @@ impl CloudClient {
         org_id: Option<&str>,
     ) -> CloudError {
         match &err {
-            clickhouse_cloud_api::Error::Api { status, message } => {
+            clickhouse_cloud_api::Error::Api { status, message }
+            | clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+                status, message, ..
+            } => {
                 let mut msg = message.clone();
                 let trimmed_message = message.trim();
                 if *status == 404
@@ -772,6 +775,21 @@ mod tests {
     use super::*;
 
     const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
+
+    #[test]
+    fn typed_udf_dependency_error_keeps_message_and_http_classification() {
+        let error =
+            test_client().convert_error(clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+                status: 424,
+                message: "service unavailable".into(),
+                response: Box::default(),
+            });
+        assert_eq!(error.to_string(), "service unavailable");
+        assert_eq!(
+            error.failure.unwrap().kind,
+            crate::failure::FailureKind::Http4xx
+        );
+    }
 
     fn test_client() -> CloudClient {
         let http = reqwest::Client::builder().build().unwrap();

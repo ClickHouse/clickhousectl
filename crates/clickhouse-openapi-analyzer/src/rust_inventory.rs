@@ -503,6 +503,9 @@ pub(crate) struct RustInventory {
     /// Named types mentioned anywhere in each alias's target type, for
     /// response-tree reachability (parallel to `aliases`).
     pub(crate) alias_type_names: BTreeMap<String, BTreeSet<String>>,
+    /// Types carried by errors returned from Client methods. Error containers
+    /// are traversal edges, not wire models subject to model-field policy.
+    error_type_names: BTreeMap<String, BTreeSet<String>>,
     pub(crate) manual_default_impls: BTreeSet<String>,
     pub(crate) metadata: MetadataInventory,
 }
@@ -512,7 +515,12 @@ impl RustInventory {
         let client = ModuleTree::load(source_root, "client")?;
         let models = ModuleTree::load(source_root, "models")?;
         let meta = ModuleTree::load(source_root, "meta")?;
-        Self::from_trees(&client, &models, &meta)
+        let mut inventory = Self::from_trees(&client, &models, &meta)?;
+        if source_root.join("error.rs").is_file() || source_root.join("error/mod.rs").is_file() {
+            let errors = ModuleTree::load(source_root, "error")?;
+            inventory.collect_error_types(&errors.items);
+        }
+        Ok(inventory)
     }
 
     #[cfg(test)]
@@ -752,6 +760,32 @@ impl RustInventory {
         }
     }
 
+    fn collect_error_types(&mut self, items: &[Item]) {
+        for item in items {
+            let (name, types) = match item {
+                Item::Enum(item) => (
+                    item.ident.unraw().to_string(),
+                    item.variants
+                        .iter()
+                        .flat_map(|variant| variant.fields.iter())
+                        .map(|field| &field.ty)
+                        .collect::<Vec<_>>(),
+                ),
+                Item::Struct(item) => (
+                    item.ident.unraw().to_string(),
+                    item.fields.iter().map(|field| &field.ty).collect(),
+                ),
+                Item::Type(item) => (item.ident.unraw().to_string(), vec![item.ty.as_ref()]),
+                _ => continue,
+            };
+            let mut names = BTreeSet::new();
+            for ty in types {
+                collect_type_names(ty, &mut names);
+            }
+            self.error_type_names.insert(name, names);
+        }
+    }
+
     /// The set of model types transitively reachable from `Client` method
     /// return types, traversing struct fields, enum variant payloads, and
     /// type aliases. This is the "response tree": the types the library
@@ -762,7 +796,9 @@ impl RustInventory {
             .client_methods
             .values()
             .flat_map(|method| method.return_type_names.iter())
-            .filter(|name| self.model_types.contains(*name))
+            .filter(|name| {
+                self.model_types.contains(*name) || self.error_type_names.contains_key(*name)
+            })
             .cloned()
             .collect();
         while let Some(name) = stack.pop() {
@@ -781,12 +817,19 @@ impl RustInventory {
             if let Some(alias_names) = self.alias_type_names.get(&name) {
                 neighbours.extend(alias_names.iter().cloned());
             }
+            if let Some(error_names) = self.error_type_names.get(&name) {
+                neighbours.extend(error_names.iter().cloned());
+            }
             for neighbour in neighbours {
-                if self.model_types.contains(&neighbour) && !seen.contains(&neighbour) {
+                if (self.model_types.contains(&neighbour)
+                    || self.error_type_names.contains_key(&neighbour))
+                    && !seen.contains(&neighbour)
+                {
                     stack.push(neighbour);
                 }
             }
         }
+        seen.retain(|name| self.model_types.contains(name));
         seen
     }
 

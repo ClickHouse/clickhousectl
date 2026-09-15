@@ -307,12 +307,22 @@ impl Client {
         let status = resp.status();
         let body_text = resp.text().await?;
         if !status.is_success() {
+            let message = serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                .ok()
+                .and_then(|r| r.error)
+                .unwrap_or_else(|| body_text.clone());
+            if status == reqwest::StatusCode::FAILED_DEPENDENCY
+                && let Ok(response) = serde_json::from_str::<UdfAttachResponse424>(&body_text)
+            {
+                return Err(Error::UdfAttachmentUnavailable {
+                    status: status.as_u16(),
+                    message,
+                    response: Box::new(response),
+                });
+            }
             return Err(Error::Api {
                 status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
+                message,
             });
         }
         Ok(serde_json::from_str(&body_text)?)

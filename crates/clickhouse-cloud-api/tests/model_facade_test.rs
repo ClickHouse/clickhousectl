@@ -14,6 +14,14 @@ fn assert_same_type<T>(_: T, _: T) {}
 #[test]
 fn extracted_models_keep_root_and_models_paths() {
     assert_same_type(
+        api::UdfAttachResponse424::default(),
+        api::models::UdfAttachResponse424::default(),
+    );
+    assert_same_type(
+        api::UdfAttachErrorCode::ServiceIdle,
+        api::models::UdfAttachErrorCode::ServiceIdle,
+    );
+    assert_same_type(
         api::ActiveBalances::default(),
         api::models::ActiveBalances::default(),
     );
