@@ -1383,6 +1383,8 @@ pub async fn postgres_list(
         id: String,
         #[tabled(rename = "State")]
         state: String,
+        #[tabled(rename = "Provider")]
+        provider: String,
         #[tabled(rename = "Region")]
         region: String,
         #[tabled(rename = "Size")]
@@ -1401,6 +1403,7 @@ pub async fn postgres_list(
             name: or_absent(i.name.as_deref()),
             id: or_absent(i.id.as_ref()),
             state: state_label(i.state.as_ref()),
+            provider: enum_label(i.provider.as_ref()),
             region: or_absent(i.region.as_deref()),
             size: enum_label(i.size.as_ref()),
             pg: enum_label(i.postgres_version.as_ref()),

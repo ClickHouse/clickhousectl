@@ -4335,6 +4335,69 @@ async fn postgres_list_applies_supported_filters_client_side() {
     assert_eq!(names("name=nope"), Vec::<String>::new());
 }
 
+#[tokio::test]
+async fn postgres_list_shows_provider_in_human_output_and_preserves_json() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres"))
+        .respond_with(postgres_list_response())
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let human =
+        invoke_cli_with_cloud_credentials_human(&mock, &["postgres", "list", "--org-id", "org-1"]);
+    assert_success(&human);
+    let human = String::from_utf8(human.stdout).expect("human output should be UTF-8");
+    let row_cells = |name: &str| -> Vec<&str> {
+        human
+            .lines()
+            .find(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("missing row for {name}:\n{human}"))
+            .split('|')
+            .map(str::trim)
+            .filter(|cell| !cell.is_empty())
+            .collect()
+    };
+    assert_eq!(
+        row_cells("Name"),
+        [
+            "Name", "ID", "State", "Provider", "Region", "Size", "PG", "HA", "Primary"
+        ]
+    );
+    assert_eq!(row_cells("primary-pg")[3], "aws");
+    assert_eq!(row_cells("unknown-pg")[3], "-");
+
+    let json = invoke_cli_with_cloud_credentials(&mock, &["postgres", "list", "--org-id", "org-1"]);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).expect("JSON output should be valid"),
+        serde_json::json!([
+            {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "name": "primary-pg",
+                "state": "running",
+                "region": "us-east-1",
+                "provider": "aws",
+                "isPrimary": true,
+            },
+            {
+                "id": "66666666-7777-8888-9999-000000000000",
+                "name": "replica-pg",
+                "state": "restoring_backup",
+                "region": "us-east-1",
+                "provider": "aws",
+                "isPrimary": false,
+            },
+            {
+                "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                "name": "unknown-pg",
+                "region": "us-east-1",
+            },
+        ])
+    );
+}
+
 // ── Postgres promote / switchover role changes (issue #604) ───────────────
 
 const ROLE_TEST_POSTGRES_ID: &str = "11111111-2222-3333-4444-555555555555";
