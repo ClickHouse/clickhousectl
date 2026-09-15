@@ -2488,10 +2488,6 @@ Schema discovery requires API-key authentication. For multi-organization
 accounts, `--org-id <org-id>` can appear anywhere after `cloud`, including before
 or after the source and service ID. Source flags can precede or follow the service ID.
 
-**Breaking change in 0.5.0:** use `schema-discover <source> <service-id>`, matching
-`create <source> <service-id>`. The previous service-before-source order is rejected
-with a usage error (exit code 2).
-
 Examples:
 
 ```bash
