@@ -377,8 +377,11 @@ impl LocalErrorOutput {
             // `server list` nor the caller's own state can find them.
             Error::VersionInUse { .. } => Mapping::parity(LocalErrorCode::ServerRunning)
                 .command("clickhousectl local server list --global"),
-            Error::VersionIsDefault { .. } => Mapping::parity(LocalErrorCode::VersionIsDefault)
-                .command("clickhousectl local use latest"),
+            Error::VersionIsDefault {
+                recovery_command, ..
+            } => {
+                Mapping::parity(LocalErrorCode::VersionIsDefault).command(recovery_command.clone())
+            }
             // Could not be resolved or downloaded, so the remote list is the
             // next step.
             Error::NoMatchingVersion(_)
@@ -1482,6 +1485,7 @@ mod tests {
             (
                 Error::VersionIsDefault {
                     version: "25.12.9.61".into(),
+                    recovery_command: "clickhousectl local use latest".into(),
                 },
                 "version_is_default",
             ),
@@ -1679,6 +1683,7 @@ mod tests {
     fn version_is_default_json_error_explains_both_the_refusal_and_the_way_forward() {
         let json = error_json(&Error::VersionIsDefault {
             version: "25.12.9.61".into(),
+            recovery_command: "clickhousectl local use 24.8.14.39".into(),
         });
         let message = json["error"]["message"].as_str().expect("message");
 
@@ -1694,7 +1699,7 @@ mod tests {
             );
         }
         assert_eq!(
-            json["error"]["command"], "clickhousectl local use latest",
+            json["error"]["command"], "clickhousectl local use 24.8.14.39",
             "the JSON error must name the recovery command"
         );
     }
@@ -1836,6 +1841,7 @@ mod tests {
             },
             Error::VersionIsDefault {
                 version: "25.12.9.61".into(),
+                recovery_command: "clickhousectl local use latest".into(),
             },
             Error::NoMatchingVersion("99.99".into()),
             Error::ExactVersionUnavailable {

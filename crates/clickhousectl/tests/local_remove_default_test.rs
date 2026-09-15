@@ -1,6 +1,6 @@
-//! Subprocess coverage for the `local remove` default-version guard (issue #599).
+//! Subprocess coverage for the `local remove` default-version guard (issues #599 and #860).
 //!
-//! Strategy: spawn the binary with `HOME=<tempdir>`, pre-seed two fake installed
+//! Strategy: spawn the binary with `HOME=<tempdir>`, pre-seed three fake installed
 //! versions plus the `~/.clickhouse/default` marker and the global
 //! `~/.local/bin/clickhouse` symlink, then assert that removing the default is
 //! refused (exit 1, nothing deleted) unless `--force` is passed, and that both
@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 
 const DEFAULT_VERSION: &str = "26.9.1.217";
 const OTHER_VERSION: &str = "25.12.9.61";
+const OLDER_VERSION: &str = "24.8.14.39";
 
 fn clickhousectl_binary() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_clickhousectl"))
@@ -24,14 +25,14 @@ struct Home {
 }
 
 impl Home {
-    /// Two installed versions, `DEFAULT_VERSION` marked default and linked from
+    /// Three installed versions, `DEFAULT_VERSION` marked default and linked from
     /// `~/.local/bin/clickhouse`.
     fn with_default_version() -> Self {
         let home = tempfile::tempdir().expect("create home");
         let project = tempfile::tempdir().expect("create project");
         let this = Self { home, project };
 
-        for version in [DEFAULT_VERSION, OTHER_VERSION] {
+        for version in [DEFAULT_VERSION, OTHER_VERSION, OLDER_VERSION] {
             let binary = this.binary(version);
             std::fs::create_dir_all(binary.parent().unwrap()).expect("create version dir");
             std::fs::write(&binary, b"#!/bin/sh\necho stub\n").expect("write fake binary");
@@ -172,7 +173,7 @@ fn removing_the_default_version_is_refused_and_changes_nothing() {
         named_default.as_str(),
         "~/.clickhouse/default",
         "~/.local/bin/clickhouse",
-        "clickhousectl local use <other-version>",
+        concat!("clickhousectl local use ", "25.12.9.61"),
         "--force",
     ] {
         assert!(stderr.contains(required), "missing {required:?}: {stderr}");
@@ -208,6 +209,45 @@ fn refusing_to_remove_the_default_version_emits_the_structured_error() {
             "missing {required:?}: {message}"
         );
     }
+    assert_eq!(
+        error["error"]["command"],
+        format!("clickhousectl local use {OTHER_VERSION}")
+    );
+    home.assert_default_state_intact();
+}
+
+#[test]
+fn default_removal_hint_skips_an_unlaunchable_installed_version() {
+    let home = Home::with_default_version();
+    std::fs::set_permissions(
+        home.binary(OTHER_VERSION),
+        std::fs::Permissions::from_mode(0o644),
+    )
+    .expect("make newest alternative unlaunchable");
+
+    let output = home.run(&["local", "--json", "remove", DEFAULT_VERSION]);
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    let error: serde_json::Value = serde_json::from_str(&stderr).expect("JSON error");
+    assert_eq!(
+        error["error"]["command"],
+        format!("clickhousectl local use {OLDER_VERSION}")
+    );
+    home.assert_default_state_intact();
+}
+
+#[test]
+fn default_removal_hint_falls_back_to_latest_without_a_usable_alternative() {
+    let home = Home::with_default_version();
+    std::fs::remove_dir_all(home.version_dir(OTHER_VERSION)).expect("remove other version");
+    std::fs::remove_dir_all(home.version_dir(OLDER_VERSION)).expect("remove older version");
+
+    let output = home.run(&["local", "--json", "remove", DEFAULT_VERSION]);
+
+    let stderr = stderr_of(&output);
+    assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
+    let error: serde_json::Value = serde_json::from_str(&stderr).expect("JSON error");
     assert_eq!(error["error"]["command"], "clickhousectl local use latest");
     home.assert_default_state_intact();
 }

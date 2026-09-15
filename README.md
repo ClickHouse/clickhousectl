@@ -355,7 +355,7 @@ clickhousectl local remove 26.8.1.1760 --force   # Stop running servers on this 
 
 `local remove` refuses to delete a version while a local server is running on it (it would leave the server pointing at a deleted binary), failing with exit `1` and JSON error code `server_running`. Because versions are shared between projects, the check spans **every** project, not just the current directory: the error names each blocking server with the project root it was started from and its PID, so a server found by `clickhousectl local server list --global` is identifiable. Stop those servers first (`clickhousectl local server stop <name> --global`), or pass `--force` to stop them — in whichever project they run — and then remove the version.
 
-`local remove` also refuses the **current default version** (exit `1`, JSON error code `version_is_default`); `--force` removes it anyway and reports `was_default: true`. See `local remove --help`.
+`local remove` also refuses the **current default version** (exit `1`, JSON error code `version_is_default`). Its recovery hint selects the newest other installed, launchable version when one is available, avoiding a download; otherwise it falls back to `local use latest`. `--force` removes the default anyway and reports `was_default: true`. See `local remove --help`.
 
 #### ClickHouse binary storage
 
