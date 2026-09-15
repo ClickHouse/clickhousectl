@@ -395,7 +395,7 @@ async fn backup_list(client: &CloudClient, service_id: &str, json: bool) -> Clou
                 id: or_absent(backup.id),
                 status: or_absent(backup.status.as_ref()),
                 size: or_absent(backup.size_in_bytes.map(format_bytes)),
-                created: or_absent(backup.started_at.map(|at| at.to_rfc3339())),
+                created: format_backup_created(backup.started_at),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -555,6 +555,10 @@ fn format_bytes(bytes: f64) -> String {
     } else {
         format!("{} B", bytes)
     }
+}
+
+fn format_backup_created(value: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    or_absent(value.map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)))
 }
 
 impl CloudClient {
@@ -820,6 +824,23 @@ mod tests {
             panic!("expected backup list");
         };
         assert_eq!(service_id, "svc-1");
+    }
+
+    #[test]
+    fn formats_backup_created_as_utc_with_subseconds_and_missing_values() {
+        let offset = chrono::DateTime::parse_from_rfc3339("2026-09-15T10:34:56+02:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(format_backup_created(Some(offset)), "2026-09-15T08:34:56Z");
+
+        let subsecond = chrono::DateTime::parse_from_rfc3339("2026-09-15T08:34:56.123Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            format_backup_created(Some(subsecond)),
+            "2026-09-15T08:34:56.123Z"
+        );
+        assert_eq!(format_backup_created(None), "-");
     }
 
     #[test]

@@ -1337,6 +1337,8 @@ clickhousectl cloud backup bucket get <service-id>
 clickhousectl cloud backup bucket delete <service-id>
 ```
 
+In the human backup list, `Created` timestamps use UTC with a trailing `Z`; missing values display as `-`. JSON output keeps the API-shaped timestamp data.
+
 The backup-bucket commands use the beta Cloud API. Create and update a bucket from a strict provider-specific JSON document. Pass a file path to `--file`, or `-` to read JSON from stdin so credentials do not appear in the process arguments. The provider must be exactly `AWS`, `GCP`, or `AZURE`; unknown and cross-provider fields are rejected before the request is sent.
 
 ```json

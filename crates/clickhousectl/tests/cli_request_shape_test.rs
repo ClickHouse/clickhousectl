@@ -1095,6 +1095,57 @@ fn logout_does_not_report_success_when_credentials_removal_fails() {
 // ── Backup configuration validation (issue #425) ────────────────────────────
 
 #[tokio::test]
+async fn backup_list_uses_utc_created_times_only_in_human_output() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([
+        {
+            "id": "11111111-2222-3333-4444-555555555555",
+            "sizeInBytes": 1024,
+            "startedAt": "2026-09-15T08:34:56.123Z"
+        },
+        {}
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1/backups"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": result,
+            "status": 200,
+            "requestId": "stub-backup-list"
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let args = ["backup", "list", "svc-1", "--org-id", "org-1"];
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(stdout.contains("| Created"), "{stdout}");
+    assert!(stdout.contains("2026-09-15T08:34:56.123Z"), "{stdout}");
+    assert!(!stdout.contains("+00:00"), "{stdout}");
+    assert!(
+        stdout.lines().any(|line| {
+            line.split('|').map(str::trim).collect::<Vec<_>>() == ["", "-", "-", "-", "-", ""]
+        }),
+        "{stdout}"
+    );
+
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!([
+            {
+                "id": "11111111-2222-3333-4444-555555555555",
+                "sizeInBytes": 1024.0,
+                "startedAt": "2026-09-15T08:34:56.123Z"
+            },
+            {}
+        ])
+    );
+}
+
+#[tokio::test]
 async fn backup_config_rejects_incompatible_period_before_any_request() {
     let mock = MockServer::start().await;
     let output = invoke_cli_with_cloud_credentials(
