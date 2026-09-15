@@ -2139,9 +2139,36 @@ async fn postgres_slow_queries_list(
         .await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&patterns)?);
-    } else {
-        print_human(&patterns)?;
+        return Ok(());
     }
+
+    if patterns.is_empty() {
+        println!("No Postgres slow query patterns found");
+        return Ok(());
+    }
+
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Query ID")]
+        query_id: String,
+        #[tabled(rename = "Query")]
+        query: String,
+        #[tabled(rename = "Calls")]
+        calls: String,
+        #[tabled(rename = "Avg duration (µs)")]
+        avg_duration_us: String,
+        #[tabled(rename = "Total duration (µs)")]
+        total_duration_us: String,
+    }
+
+    let rows = patterns.into_iter().map(|pattern| Row {
+        query_id: or_absent(pattern.query_id),
+        query: or_absent(pattern.query_text),
+        calls: or_absent(pattern.call_count),
+        avg_duration_us: or_absent(pattern.avg_duration_us),
+        total_duration_us: or_absent(pattern.total_duration_us),
+    });
+    println!("{}", Table::new(rows).with(Style::markdown()));
     Ok(())
 }
 

@@ -3429,7 +3429,20 @@ async fn postgres_slow_query_list_omits_filters_and_renders_sparse_human_output(
             "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": [{ "queryId": "query-1", "callCount": 2, "avgDurationUs": 1190.8419405320817, "p95DurationUs": 2000.25 }],
+            "result": [
+                {
+                    "queryId": "query-1",
+                    "queryText": "SELECT * FROM events WHERE id = $1",
+                    "callCount": 2,
+                    "avgDurationUs": 1190.8419405320817,
+                    "totalDurationUs": 2381.6838810641634,
+                    "p95DurationUs": 2000.25
+                },
+                {
+                    "queryId": "query-2",
+                    "totalDurationUs": 0.125
+                }
+            ],
             "status": 200
         })))
         .expect(1)
@@ -3452,16 +3465,72 @@ async fn postgres_slow_query_list_omits_filters_and_renders_sparse_human_output(
     );
     assert_success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("queryId: query-1"), "{stdout}");
-    assert!(stdout.contains("callCount: 2"), "{stdout}");
-    assert!(
-        stdout.contains("avgDurationUs: 1190.8419405320817"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("p95DurationUs: 2000.25"), "{stdout}");
+    for heading in [
+        "Query ID",
+        "Query",
+        "Calls",
+        "Avg duration (µs)",
+        "Total duration (µs)",
+    ] {
+        assert!(
+            stdout.contains(heading),
+            "missing {heading:?} from:\n{stdout}"
+        );
+    }
+    for value in [
+        "query-1",
+        "SELECT * FROM events WHERE id = $1",
+        "1190.8419405320817",
+        "2381.6838810641634",
+        "query-2",
+        "0.125",
+    ] {
+        assert!(stdout.contains(value), "missing {value:?} from:\n{stdout}");
+    }
+    let second_row = stdout
+        .lines()
+        .find(|line| line.contains("query-2"))
+        .expect("second slow-query row");
+    assert_eq!(second_row.matches(" - ").count(), 3, "{stdout}");
+    assert!(!stdout.contains("p95DurationUs"), "{stdout}");
     let requests = mock.received_requests().await.unwrap();
     let query: Vec<_> = requests[0].url.query_pairs().collect();
     assert_eq!(query.len(), 2, "unexpected query parameters: {query:?}");
+}
+
+#[tokio::test]
+async fn postgres_slow_query_list_renders_useful_empty_human_output() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": [],
+            "status": 200
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+            "--to-date",
+            "2026-04-16T13:00:00Z",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    assert_eq!(output.stdout, b"No Postgres slow query patterns found\n");
 }
 
 #[tokio::test]
