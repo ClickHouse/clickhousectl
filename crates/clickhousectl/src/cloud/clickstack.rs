@@ -75,9 +75,6 @@ pub enum AlertCommands {
     List {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Get ClickStack alert details
     Get {
@@ -85,9 +82,6 @@ pub enum AlertCommands {
         service_id: String,
         /// Alert ID (from `cloud clickstack alert list`)
         alert_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Create a ClickStack alert
     #[command(after_help = "\
@@ -100,9 +94,6 @@ CONTEXT FOR AGENTS:
         /// JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Replace a ClickStack alert
     #[command(after_help = "\
@@ -118,9 +109,6 @@ CONTEXT FOR AGENTS:
         /// Complete JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Delete a ClickStack alert
     Delete {
@@ -128,9 +116,6 @@ CONTEXT FOR AGENTS:
         service_id: String,
         /// Alert ID (from `cloud clickstack alert list`)
         alert_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -149,9 +134,6 @@ pub enum WebhookCommands {
     List {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Create a ClickStack webhook
     Create {
@@ -160,9 +142,6 @@ pub enum WebhookCommands {
         /// JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Replace a ClickStack webhook
     #[command(after_help = "\
@@ -176,9 +155,6 @@ CONTEXT FOR AGENTS:
         /// Complete JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Delete a ClickStack webhook
     Delete {
@@ -186,9 +162,6 @@ CONTEXT FOR AGENTS:
         service_id: String,
         /// Webhook ID (from `cloud clickstack webhook list`)
         webhook_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -207,9 +180,6 @@ pub enum DashboardCommands {
     List {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Get ClickStack dashboard details
     Get {
@@ -217,9 +187,6 @@ pub enum DashboardCommands {
         service_id: String,
         /// Dashboard ID (from `cloud clickstack dashboard list`)
         dashboard_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Create a ClickStack dashboard
     Create {
@@ -228,9 +195,6 @@ pub enum DashboardCommands {
         /// JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Replace a ClickStack dashboard
     #[command(after_help = "\
@@ -246,9 +210,6 @@ CONTEXT FOR AGENTS:
         /// Complete update JSON body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Delete a ClickStack dashboard
     Delete {
@@ -256,9 +217,6 @@ CONTEXT FOR AGENTS:
         service_id: String,
         /// Dashboard ID (from `cloud clickstack dashboard list`)
         dashboard_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Validate a dashboard create body without saving it
     #[command(after_help = "\
@@ -272,9 +230,6 @@ CONTEXT FOR AGENTS:
         /// Dashboard create JSON body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -298,9 +253,6 @@ pub enum SavedSearchCommands {
     List {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Get ClickStack saved search details
     Get {
@@ -308,9 +260,6 @@ pub enum SavedSearchCommands {
         service_id: String,
         /// Saved search ID (from `cloud clickstack saved-search list`)
         saved_search_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Create a ClickStack saved search
     Create {
@@ -319,9 +268,6 @@ pub enum SavedSearchCommands {
         /// JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Replace a ClickStack saved search
     #[command(after_help = "\
@@ -335,9 +281,6 @@ CONTEXT FOR AGENTS:
         /// Complete JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Delete a ClickStack saved search
     Delete {
@@ -345,9 +288,6 @@ CONTEXT FOR AGENTS:
         service_id: String,
         /// Saved search ID (from `cloud clickstack saved-search list`)
         saved_search_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -366,9 +306,6 @@ pub enum SourceCommands {
     List {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Get ClickStack source details
     Get {
@@ -376,9 +313,6 @@ pub enum SourceCommands {
         service_id: String,
         /// Source ID (from `cloud clickstack source list`)
         source_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Create a ClickStack source
     Create {
@@ -387,9 +321,6 @@ pub enum SourceCommands {
         /// JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Replace a ClickStack source
     #[command(after_help = "\
@@ -403,9 +334,6 @@ CONTEXT FOR AGENTS:
         /// Complete JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Delete a ClickStack source
     Delete {
@@ -413,9 +341,6 @@ CONTEXT FOR AGENTS:
         service_id: String,
         /// Source ID (from `cloud clickstack source list`)
         source_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -434,9 +359,6 @@ pub enum RoleCommands {
     List {
         /// Service ID (from `cloud service list`)
         service_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Get ClickStack role details
     Get {
@@ -444,9 +366,6 @@ pub enum RoleCommands {
         service_id: String,
         /// Role ID (from `cloud clickstack role list`)
         role_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Create a ClickStack role
     Create {
@@ -455,9 +374,6 @@ pub enum RoleCommands {
         /// JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Replace a ClickStack role
     #[command(after_help = "\
@@ -471,9 +387,6 @@ CONTEXT FOR AGENTS:
         /// Complete JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Delete a ClickStack role
     Delete {
@@ -481,9 +394,6 @@ CONTEXT FOR AGENTS:
         service_id: String,
         /// Role ID (from `cloud clickstack role list`)
         role_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -1969,17 +1879,16 @@ pub async fn run(client: &CloudClient, command: ClickStackCommands, json: bool) 
 
 async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> CloudResult<()> {
     match command {
-        AlertCommands::List { service_id, org_id } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+        AlertCommands::List { service_id } => {
+            let org_id = resolve_org_id(client).await?;
             let alerts = client.click_stack_list_alerts(&org_id, &service_id).await?;
             print_alert_list(&alerts, json)
         }
         AlertCommands::Get {
             service_id,
             alert_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let alert = client
                 .click_stack_get_alert(&org_id, &service_id, &alert_id)
                 .await?;
@@ -1988,10 +1897,9 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
         AlertCommands::Create {
             service_id,
             config_file,
-            org_id,
         } => {
             let request = build_create_alert_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let alert = client
                 .click_stack_create_alert(&org_id, &service_id, &request)
                 .await?;
@@ -2001,10 +1909,9 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
             service_id,
             alert_id,
             config_file,
-            org_id,
         } => {
             let request = build_update_alert_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let alert = client
                 .click_stack_update_alert(&org_id, &service_id, &alert_id, &request)
                 .await?;
@@ -2013,9 +1920,8 @@ async fn run_alert(client: &CloudClient, command: AlertCommands, json: bool) -> 
         AlertCommands::Delete {
             service_id,
             alert_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             client
                 .click_stack_delete_alert(&org_id, &service_id, &alert_id)
                 .await?;
@@ -2031,8 +1937,8 @@ async fn run_webhook(
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        WebhookCommands::List { service_id, org_id } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+        WebhookCommands::List { service_id } => {
+            let org_id = resolve_org_id(client).await?;
             let webhooks = client
                 .click_stack_list_webhooks(&org_id, &service_id)
                 .await?;
@@ -2041,10 +1947,9 @@ async fn run_webhook(
         WebhookCommands::Create {
             service_id,
             config_file,
-            org_id,
         } => {
             let request = build_webhook_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let webhook = client
                 .click_stack_create_webhook(&org_id, &service_id, &request)
                 .await?;
@@ -2054,10 +1959,9 @@ async fn run_webhook(
             service_id,
             webhook_id,
             config_file,
-            org_id,
         } => {
             let request = build_webhook_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let webhook = client
                 .click_stack_update_webhook(&org_id, &service_id, &webhook_id, &request)
                 .await?;
@@ -2066,9 +1970,8 @@ async fn run_webhook(
         WebhookCommands::Delete {
             service_id,
             webhook_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             client
                 .click_stack_delete_webhook(&org_id, &service_id, &webhook_id)
                 .await?;
@@ -2084,8 +1987,8 @@ async fn run_dashboard(
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        DashboardCommands::List { service_id, org_id } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+        DashboardCommands::List { service_id } => {
+            let org_id = resolve_org_id(client).await?;
             let dashboards = client
                 .click_stack_list_dashboards(&org_id, &service_id)
                 .await?;
@@ -2094,9 +1997,8 @@ async fn run_dashboard(
         DashboardCommands::Get {
             service_id,
             dashboard_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let dashboard = client
                 .click_stack_get_dashboard(&org_id, &service_id, &dashboard_id)
                 .await?;
@@ -2105,10 +2007,9 @@ async fn run_dashboard(
         DashboardCommands::Create {
             service_id,
             config_file,
-            org_id,
         } => {
             let request = build_create_dashboard_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let dashboard = client
                 .click_stack_create_dashboard(&org_id, &service_id, &request)
                 .await?;
@@ -2118,10 +2019,9 @@ async fn run_dashboard(
             service_id,
             dashboard_id,
             config_file,
-            org_id,
         } => {
             let request = build_update_dashboard_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let dashboard = client
                 .click_stack_update_dashboard(&org_id, &service_id, &dashboard_id, &request)
                 .await?;
@@ -2130,9 +2030,8 @@ async fn run_dashboard(
         DashboardCommands::Delete {
             service_id,
             dashboard_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             client
                 .click_stack_delete_dashboard(&org_id, &service_id, &dashboard_id)
                 .await?;
@@ -2142,10 +2041,9 @@ async fn run_dashboard(
         DashboardCommands::Validate {
             service_id,
             config_file,
-            org_id,
         } => {
             let request = build_create_dashboard_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let validation = client
                 .click_stack_validate_dashboard(&org_id, &service_id, &request)
                 .await?;
@@ -2160,8 +2058,8 @@ async fn run_saved_search(
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        SavedSearchCommands::List { service_id, org_id } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+        SavedSearchCommands::List { service_id } => {
+            let org_id = resolve_org_id(client).await?;
             let searches = client
                 .click_stack_list_saved_searches(&org_id, &service_id)
                 .await?;
@@ -2170,9 +2068,8 @@ async fn run_saved_search(
         SavedSearchCommands::Get {
             service_id,
             saved_search_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let search = client
                 .click_stack_get_saved_search(&org_id, &service_id, &saved_search_id)
                 .await?;
@@ -2181,10 +2078,9 @@ async fn run_saved_search(
         SavedSearchCommands::Create {
             service_id,
             config_file,
-            org_id,
         } => {
             let request = build_saved_search_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let search = client
                 .click_stack_create_saved_search(&org_id, &service_id, &request)
                 .await?;
@@ -2194,10 +2090,9 @@ async fn run_saved_search(
             service_id,
             saved_search_id,
             config_file,
-            org_id,
         } => {
             let request = build_saved_search_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let search = client
                 .click_stack_update_saved_search(&org_id, &service_id, &saved_search_id, &request)
                 .await?;
@@ -2206,9 +2101,8 @@ async fn run_saved_search(
         SavedSearchCommands::Delete {
             service_id,
             saved_search_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             client
                 .click_stack_delete_saved_search(&org_id, &service_id, &saved_search_id)
                 .await?;
@@ -2220,8 +2114,8 @@ async fn run_saved_search(
 
 async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -> CloudResult<()> {
     match command {
-        SourceCommands::List { service_id, org_id } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+        SourceCommands::List { service_id } => {
+            let org_id = resolve_org_id(client).await?;
             let sources = client
                 .click_stack_list_sources(&org_id, &service_id)
                 .await?;
@@ -2230,9 +2124,8 @@ async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -
         SourceCommands::Get {
             service_id,
             source_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let source = client
                 .click_stack_get_source(&org_id, &service_id, &source_id)
                 .await?;
@@ -2241,10 +2134,9 @@ async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -
         SourceCommands::Create {
             service_id,
             config_file,
-            org_id,
         } => {
             let request = build_source_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let source = client
                 .click_stack_create_source(&org_id, &service_id, &request)
                 .await?;
@@ -2254,10 +2146,9 @@ async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -
             service_id,
             source_id,
             config_file,
-            org_id,
         } => {
             let request = build_source_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let source = client
                 .click_stack_update_source(&org_id, &service_id, &source_id, &request)
                 .await?;
@@ -2266,9 +2157,8 @@ async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -
         SourceCommands::Delete {
             service_id,
             source_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             client
                 .click_stack_delete_source(&org_id, &service_id, &source_id)
                 .await?;
@@ -2280,17 +2170,16 @@ async fn run_source(client: &CloudClient, command: SourceCommands, json: bool) -
 
 async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> CloudResult<()> {
     match command {
-        RoleCommands::List { service_id, org_id } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+        RoleCommands::List { service_id } => {
+            let org_id = resolve_org_id(client).await?;
             let roles = client.click_stack_list_roles(&org_id, &service_id).await?;
             print_role_list(&roles, json)
         }
         RoleCommands::Get {
             service_id,
             role_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let role = client
                 .click_stack_get_role(&org_id, &service_id, &role_id)
                 .await?;
@@ -2299,10 +2188,9 @@ async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> Cl
         RoleCommands::Create {
             service_id,
             config_file,
-            org_id,
         } => {
             let request = build_create_role_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let role = client
                 .click_stack_create_role(&org_id, &service_id, &request)
                 .await?;
@@ -2312,10 +2200,9 @@ async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> Cl
             service_id,
             role_id,
             config_file,
-            org_id,
         } => {
             let request = build_update_role_request(&config_file)?;
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             let role = client
                 .click_stack_update_role(&org_id, &service_id, &role_id, &request)
                 .await?;
@@ -2324,9 +2211,8 @@ async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> Cl
         RoleCommands::Delete {
             service_id,
             role_id,
-            org_id,
         } => {
-            let org_id = resolve_org_id(client, org_id.as_deref()).await?;
+            let org_id = resolve_org_id(client).await?;
             client
                 .click_stack_delete_role(&org_id, &service_id, &role_id)
                 .await?;
@@ -3045,6 +2931,7 @@ mod tests {
         let Commands::Cloud(cloud) = cli.command else {
             panic!("expected cloud command")
         };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
         let crate::cloud::cli::CloudCommands::ClickStack { command } = cloud.command else {
             panic!("expected clickstack command")
         };
@@ -3066,18 +2953,12 @@ mod tests {
             "org-1",
         ]);
         let ClickStackCommands::Source {
-            command:
-                SourceCommands::Create {
-                    config_file,
-                    org_id,
-                    ..
-                },
+            command: SourceCommands::Create { config_file, .. },
         } = command
         else {
             panic!("expected source create")
         };
         assert_eq!(config_file, "-");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let command = parse_clickstack(&[
             "clickhousectl",
@@ -3124,7 +3005,6 @@ mod tests {
                 SavedSearchCommands::Update {
                     saved_search_id,
                     config_file,
-                    org_id,
                     ..
                 },
         } = command
@@ -3133,7 +3013,6 @@ mod tests {
         };
         assert_eq!(saved_search_id, "search-1");
         assert_eq!(config_file, "-");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -3151,18 +3030,12 @@ mod tests {
             "org-1",
         ]);
         let ClickStackCommands::Dashboard {
-            command:
-                DashboardCommands::Validate {
-                    config_file,
-                    org_id,
-                    ..
-                },
+            command: DashboardCommands::Validate { config_file, .. },
         } = command
         else {
             panic!("expected dashboard validate")
         };
         assert_eq!(config_file, "-");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let command = parse_clickstack(&[
             "clickhousectl",
@@ -3205,18 +3078,12 @@ mod tests {
             "org-1",
         ]);
         let ClickStackCommands::Alert {
-            command:
-                AlertCommands::Create {
-                    config_file,
-                    org_id,
-                    ..
-                },
+            command: AlertCommands::Create { config_file, .. },
         } = command
         else {
             panic!("expected alert create")
         };
         assert_eq!(config_file, "-");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let command = parse_clickstack(&[
             "clickhousectl",

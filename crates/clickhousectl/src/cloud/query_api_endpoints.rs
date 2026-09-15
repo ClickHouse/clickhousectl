@@ -13,9 +13,6 @@ use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Args)]
 pub struct QueryApiEndpointArgs {
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long, global = true)]
-    org_id: Option<String>,
     #[command(subcommand)]
     command: QueryApiEndpointCommands,
 }
@@ -90,7 +87,7 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
         QueryApiEndpointCommands::Create(input) => {
             let request =
                 build_query_api_endpoint_request(read_config_value(&input.input.config_file)?)?;
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             output(
                 &client
                     .create_query_api_endpoint(&org, &input.service_id, &request)
@@ -100,7 +97,7 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
         }
         QueryApiEndpointCommands::Update { target, input } => {
             let request = build_query_api_endpoint_request(read_config_value(&input.config_file)?)?;
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             output(
                 &client
                     .update_query_api_endpoint(
@@ -118,7 +115,7 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
             cursor,
             limit,
         } => {
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             let data = client
                 .list_query_api_endpoints(&org, &service_id, cursor.as_deref(), limit)
                 .await?;
@@ -130,7 +127,7 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
             }
         }
         QueryApiEndpointCommands::Get(target) => {
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             output(
                 &client
                     .get_query_api_endpoint(&org, &target.service_id, &target.endpoint_id)
@@ -139,7 +136,7 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
             )
         }
         QueryApiEndpointCommands::Delete(target) => {
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             let data = client
                 .delete_query_api_endpoint(&org, &target.service_id, &target.endpoint_id)
                 .await?;
@@ -405,6 +402,7 @@ mod tests {
         let Commands::Cloud(cloud) = cli.command else {
             panic!("cloud command")
         };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, extra);
         let CloudCommands::QueryApiEndpoint(args) = cloud.command else {
             panic!("endpoint command")
         };
@@ -440,7 +438,7 @@ mod tests {
             "--config-file",
             "definition.json",
         ]);
-        assert_eq!(args.org_id.as_deref(), Some("org"));
+
         let QueryApiEndpointCommands::Create(input) = args.command else {
             panic!("create")
         };
@@ -455,7 +453,7 @@ mod tests {
             "--org-id",
             "org",
         ]);
-        assert_eq!(args.org_id.as_deref(), Some("org"));
+
         let QueryApiEndpointCommands::Update { target, input } = args.command else {
             panic!("update")
         };

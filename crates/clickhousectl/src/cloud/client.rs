@@ -494,6 +494,8 @@ impl<'a> ResourceLookup<'a> {
 }
 
 pub struct CloudClient {
+    organization_id: Option<String>,
+    resolved_organization_id: tokio::sync::OnceCell<String>,
     lib_client: clickhouse_cloud_api::Client,
     auth_mode: AuthMode,
     auth_source: AuthSource,
@@ -510,6 +512,26 @@ fn lib_base_url(cli_base_url: &str) -> String {
 }
 
 impl CloudClient {
+    /// Set the shared cloud organization scope without performing a lookup.
+    pub(super) fn with_organization_id(mut self, organization_id: Option<String>) -> Self {
+        self.organization_id = organization_id;
+        self.resolved_organization_id = tokio::sync::OnceCell::new();
+        self
+    }
+
+    /// Resolve organization scope only when needed, caching successful detection.
+    pub(super) async fn resolve_organization_id(&self) -> Result<String> {
+        self.resolved_organization_id
+            .get_or_try_init(|| async {
+                match &self.organization_id {
+                    Some(id) => Ok(id.clone()),
+                    None => self.get_default_org_id().await,
+                }
+            })
+            .await
+            .cloned()
+    }
+
     pub fn new(
         api_key: Option<&str>,
         api_secret: Option<&str>,
@@ -539,6 +561,8 @@ impl CloudClient {
 
         Ok(Self {
             lib_client,
+            organization_id: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode,
             auth_source: resolved.source,
             base_url: resolved.base_url,
@@ -561,6 +585,8 @@ impl CloudClient {
         }
         Self {
             lib_client,
+            organization_id: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Basic {
                 key: "test_key".into(),
                 secret: "test_secret".into(),
@@ -737,6 +763,8 @@ mod tests {
         );
         CloudClient {
             lib_client,
+            organization_id: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Basic {
                 key: "test_key".into(),
                 secret: "test_secret".into(),
@@ -744,6 +772,36 @@ mod tests {
             auth_source: AuthSource::CliFlags,
             base_url: DEFAULT_BASE_URL.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn shared_organization_scope_is_lazy_and_caches_detection() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let client = CloudClient::for_tests(&server.uri(), None);
+        assert!(server.received_requests().await.unwrap().is_empty());
+        let organization = "00000000-0000-0000-0000-000000000001";
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"id": organization}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for _ in 0..2 {
+            assert_eq!(
+                client.resolve_organization_id().await.unwrap(),
+                organization
+            );
+        }
+        let client = client.with_organization_id(Some("explicit-org".into()));
+        assert_eq!(
+            client.resolve_organization_id().await.unwrap(),
+            "explicit-org"
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[test]
@@ -756,6 +814,8 @@ mod tests {
         );
         let client = CloudClient {
             lib_client,
+            organization_id: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
@@ -844,6 +904,8 @@ mod tests {
         );
         let client = CloudClient {
             lib_client,
+            organization_id: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),

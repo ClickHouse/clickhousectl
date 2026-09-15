@@ -73,7 +73,8 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         args.api_secret.as_deref(),
         args.url.as_deref(),
     )
-    .map_err(cloud_error_to_top_level)?;
+    .map_err(cloud_error_to_top_level)?
+    .with_organization_id(args.org_id);
 
     if let Some(notice) = ignored_env_credentials_notice(client.auth_source(), env_cred_presence())
     {

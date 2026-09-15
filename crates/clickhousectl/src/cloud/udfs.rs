@@ -12,9 +12,6 @@ use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Args)]
 pub struct UdfArgs {
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long, global = true)]
-    org_id: Option<String>,
     #[command(subcommand)]
     command: UdfCommands,
 }
@@ -173,7 +170,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
             let mut request =
                 build_udf_create_request(read_config_value(&input.config)?, "pending")?;
             let file = open_artifact(&input.artifact).await?;
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             let upload_id = upload_artifact(client, &org, file).await?;
             match &mut request {
                 UdfCreateRequest::UdfCreateRequestV1(body) => body.upload_id = upload_id,
@@ -188,7 +185,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
             let mut request =
                 build_udf_version_create_request(read_config_value(&input.config)?, "pending")?;
             let file = open_artifact(&input.artifact).await?;
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             let upload_id = upload_artifact(client, &org, file).await?;
             match &mut request {
                 UdfVersionCreateRequest::UdfVersionCreateRequestV1(body) => {
@@ -209,7 +206,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
             )
         }
         command => {
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             match command {
                 UdfCommands::List(page) => {
                     let data = client
@@ -953,11 +950,12 @@ mod tests {
             let Commands::Cloud(cloud) = cli.command else {
                 panic!("cloud");
             };
+            assert_eq!(cloud.org_id.as_deref(), Some("org-1"));
             assert_eq!(cloud.command.is_write_command(), write);
             let CloudCommands::Udf(udf) = cloud.command else {
                 panic!("udf");
             };
-            assert_eq!(udf.org_id.as_deref(), Some("org-1"));
+
             match udf.command {
                 UdfCommands::List(page) => {
                     assert_eq!(page.cursor.as_deref(), Some("next"));

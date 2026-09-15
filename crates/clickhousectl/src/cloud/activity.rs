@@ -8,10 +8,6 @@ use tabled::{Table, Tabled, settings::Style};
 pub enum ActivityCommands {
     /// List activity log entries
     List {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-
         /// Start date in UTC (YYYY-MM-DD)
         #[arg(long, value_parser = parse_date_only)]
         from_date: Option<String>,
@@ -25,10 +21,6 @@ pub enum ActivityCommands {
     Get {
         /// Activity ID
         activity_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -43,35 +35,20 @@ impl ActivityCommands {
 
 pub async fn run(client: &CloudClient, command: ActivityCommands, json: bool) -> CloudResult<()> {
     match command {
-        ActivityCommands::List {
-            org_id,
-            from_date,
-            to_date,
-        } => {
-            activity_list(
-                client,
-                org_id.as_deref(),
-                from_date.as_deref(),
-                to_date.as_deref(),
-                json,
-            )
-            .await
+        ActivityCommands::List { from_date, to_date } => {
+            activity_list(client, from_date.as_deref(), to_date.as_deref(), json).await
         }
-        ActivityCommands::Get {
-            activity_id,
-            org_id,
-        } => activity_get(client, &activity_id, org_id.as_deref(), json).await,
+        ActivityCommands::Get { activity_id } => activity_get(client, &activity_id, json).await,
     }
 }
 
 async fn activity_list(
     client: &CloudClient,
-    org_id: Option<&str>,
     from_date: Option<&str>,
     to_date: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let activities = client.list_activities(&org_id, from_date, to_date).await?;
 
     if json {
@@ -103,13 +80,8 @@ async fn activity_list(
     Ok(())
 }
 
-async fn activity_get(
-    client: &CloudClient,
-    activity_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn activity_get(client: &CloudClient, activity_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let activity = client.get_activity(&org_id, activity_id).await?;
 
     if json {
@@ -155,18 +127,16 @@ mod tests {
     use crate::cli::{Cli, Commands};
     use clap::Parser;
 
-    #[derive(Parser)]
-    struct ActivityCli {
-        #[command(subcommand)]
-        command: ActivityCommands,
-    }
-
     fn parse_activity(args: &[&str]) -> ActivityCommands {
-        assert_eq!(args.get(1), Some(&"cloud"));
-        assert_eq!(args.get(2), Some(&"activity"));
-        ActivityCli::try_parse_from(std::iter::once(args[0]).chain(args.iter().skip(3).copied()))
-            .expect("parse")
-            .command
+        let cli = Cli::try_parse_from(args).expect("parse");
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
+        let crate::cloud::cli::CloudCommands::Activity { command } = cloud.command else {
+            panic!("expected activity command");
+        };
+        command
     }
 
     #[test]
@@ -189,15 +159,10 @@ mod tests {
         let crate::cloud::cli::CloudCommands::Activity { command } = args.command else {
             panic!("expected activity command");
         };
-        let crate::cloud::cli::ActivityCommands::List {
-            org_id,
-            from_date,
-            to_date,
-        } = command
-        else {
+        let crate::cloud::cli::ActivityCommands::List { from_date, to_date } = command else {
             panic!("expected activity list");
         };
-        assert!(org_id.is_none());
+
         assert_eq!(from_date.as_deref(), Some("2025-01-01"));
         assert_eq!(to_date.as_deref(), Some("2025-01-31"));
     }

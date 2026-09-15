@@ -753,8 +753,17 @@ clickhousectl cloud org usage \
 # Organization quota and balance commands are beta and read-only, so they support OAuth.
 ```
 
-`org get` and `org update` still accept the legacy positional organization ID.
-Prefer `--org-id` in new commands; supplying both forms is a usage error (exit 2).
+`--org-id` is shared across all cloud commands and may appear anywhere after
+`cloud`, including after nested subcommands and positional resource IDs. Without
+it, org-scoped operations auto-detect the organization only when exactly one is available.
+
+For 0.5.0, migrate the former positional organization IDs on `org get`, `org update`,
+`org usage`, and `org prometheus` to `--org-id ORG`; positional org IDs are now usage
+errors (exit 2). For example, use `cloud --org-id ORG org get` or `cloud org get --org-id ORG`.
+
+Supplying a value option twice at the same command depth is a usage error. As with
+other cloud-wide value options, a value supplied at a deeper subcommand takes
+precedence over an ancestor's value.
 
 `cloud service list` and `cloud org usage` accept repeatable `--filter tag:KEY=VALUE`
 or `--filter tag:KEY` (tag existence). A missing `tag:` prefix or empty key is a

@@ -3,15 +3,9 @@ use chrono::{DateTime, FixedOffset, NaiveDate};
 use clickhouse_cloud_api::models::{IpAccessListEntry, ResourceTagsV1};
 use std::net::IpAddr;
 
-/// Resolve an organization ID from an explicit argument or auto-detection.
-pub(super) async fn resolve_org_id(
-    client: &CloudClient,
-    org_id: Option<&str>,
-) -> CloudResult<String> {
-    match org_id {
-        Some(id) => Ok(id.to_string()),
-        None => Ok(client.get_default_org_id().await?),
-    }
+/// Resolve the shared cloud organization scope lazily.
+pub(super) async fn resolve_org_id(client: &CloudClient) -> CloudResult<String> {
+    client.resolve_organization_id().await
 }
 
 /// Parse a string into a library enum after validating its known wire values.

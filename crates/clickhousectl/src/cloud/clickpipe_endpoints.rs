@@ -32,10 +32,6 @@ pub enum ReversePrivateEndpointCommands {
     List {
         /// Service ID
         service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Get reverse private endpoint details
@@ -45,10 +41,6 @@ pub enum ReversePrivateEndpointCommands {
 
         /// Reverse private endpoint ID
         endpoint_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Create a reverse private endpoint
@@ -74,10 +66,6 @@ pub enum ReversePrivateEndpointCommands {
         /// Remove all custom private DNS mappings
         #[arg(long)]
         clear_custom_private_dns_mappings: bool,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete a reverse private endpoint
@@ -87,10 +75,6 @@ pub enum ReversePrivateEndpointCommands {
 
         /// Reverse private endpoint ID
         endpoint_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -141,10 +125,6 @@ pub struct ReversePrivateEndpointCreateArgs {
     /// support must enable it for the service first.
     #[arg(long = "custom-private-dns-mapping")]
     pub custom_private_dns_mappings: Vec<String>,
-
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 impl ReversePrivateEndpointCommands {
@@ -175,21 +155,19 @@ pub async fn run(
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        ReversePrivateEndpointCommands::List { service_id, org_id } => {
-            endpoint_list(client, &service_id, org_id.as_deref(), json).await
+        ReversePrivateEndpointCommands::List { service_id } => {
+            endpoint_list(client, &service_id, json).await
         }
         ReversePrivateEndpointCommands::Get {
             service_id,
             endpoint_id,
-            org_id,
-        } => endpoint_get(client, &service_id, &endpoint_id, org_id.as_deref(), json).await,
+        } => endpoint_get(client, &service_id, &endpoint_id, json).await,
         ReversePrivateEndpointCommands::Create(args) => endpoint_create(client, &args, json).await,
         ReversePrivateEndpointCommands::Update {
             service_id,
             endpoint_id,
             custom_private_dns_mappings,
             clear_custom_private_dns_mappings,
-            org_id,
         } => {
             endpoint_update(
                 client,
@@ -197,7 +175,6 @@ pub async fn run(
                 &endpoint_id,
                 &custom_private_dns_mappings,
                 clear_custom_private_dns_mappings,
-                org_id.as_deref(),
                 json,
             )
             .await
@@ -205,8 +182,7 @@ pub async fn run(
         ReversePrivateEndpointCommands::Delete {
             service_id,
             endpoint_id,
-            org_id,
-        } => endpoint_delete(client, &service_id, &endpoint_id, org_id.as_deref(), json).await,
+        } => endpoint_delete(client, &service_id, &endpoint_id, json).await,
     }
 }
 
@@ -219,13 +195,8 @@ fn join_names(names: Option<&Vec<String>>) -> String {
     }
 }
 
-async fn endpoint_list(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn endpoint_list(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let endpoints = client
         .list_clickpipe_reverse_private_endpoints(&org_id, service_id)
         .await?;
@@ -269,10 +240,9 @@ async fn endpoint_get(
     client: &CloudClient,
     service_id: &str,
     endpoint_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let endpoint = client
         .get_clickpipe_reverse_private_endpoint(&org_id, service_id, endpoint_id)
         .await?;
@@ -293,7 +263,7 @@ async fn endpoint_create(
     // Built before the org is resolved so an invalid flag combination costs no
     // request at all, even when --org-id was omitted.
     let request = build_create_reverse_private_endpoint_request(args)?;
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     let endpoint = client
         .create_clickpipe_reverse_private_endpoint(&org_id, &args.service_id, &request)
         .await?;
@@ -316,10 +286,9 @@ async fn endpoint_update(
     endpoint_id: &str,
     custom_private_dns_mappings: &[String],
     clear_custom_private_dns_mappings: bool,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let request = build_update_reverse_private_endpoint_request(
         custom_private_dns_mappings,
         clear_custom_private_dns_mappings,
@@ -340,10 +309,9 @@ async fn endpoint_delete(
     client: &CloudClient,
     service_id: &str,
     endpoint_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     client
         .delete_clickpipe_reverse_private_endpoint(&org_id, service_id, endpoint_id)
         .await?;
@@ -603,6 +571,7 @@ mod tests {
         let Commands::Cloud(cloud) = cli.command else {
             panic!("expected cloud command");
         };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
         let CloudCommands::ClickPipe { command } = cloud.command else {
             panic!("expected clickpipe command");
         };
@@ -650,25 +619,22 @@ mod tests {
 
     #[test]
     fn parses_list_and_get() {
-        let ReversePrivateEndpointCommands::List { service_id, org_id } =
+        let ReversePrivateEndpointCommands::List { service_id } =
             parse_endpoint_command(&["list", "svc-1"])
         else {
             panic!("expected list command");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(org_id, None);
 
         let ReversePrivateEndpointCommands::Get {
             service_id,
             endpoint_id,
-            org_id,
         } = parse_endpoint_command(&["get", "svc-1", "rpe-1", "--org-id", "org-1"])
         else {
             panic!("expected get command");
         };
         assert_eq!(service_id, "svc-1");
         assert_eq!(endpoint_id, "rpe-1");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -676,14 +642,12 @@ mod tests {
         let ReversePrivateEndpointCommands::Delete {
             service_id,
             endpoint_id,
-            org_id,
         } = parse_endpoint_command(&["delete", "svc-1", "rpe-1"])
         else {
             panic!("expected delete command");
         };
         assert_eq!(service_id, "svc-1");
         assert_eq!(endpoint_id, "rpe-1");
-        assert_eq!(org_id, None);
     }
 
     #[test]
@@ -693,7 +657,6 @@ mod tests {
             endpoint_id,
             custom_private_dns_mappings,
             clear_custom_private_dns_mappings,
-            org_id,
         } = parse_endpoint_command(&[
             "update",
             "svc-1",
@@ -715,7 +678,6 @@ mod tests {
             vec!["db.example.com".to_string(), "*.example.com".to_string()]
         );
         assert!(!clear_custom_private_dns_mappings);
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -828,7 +790,6 @@ mod tests {
             args.custom_private_dns_mappings,
             vec!["db.example.com".to_string(), "*.example.com".to_string()]
         );
-        assert_eq!(args.org_id.as_deref(), Some("org-1"));
     }
 
     #[test]

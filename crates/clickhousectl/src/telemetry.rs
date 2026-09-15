@@ -1565,22 +1565,24 @@ mod tests {
 
     #[test]
     fn capture_reports_names_only_never_values_or_positionals() {
-        let inv = capture_from(&[
-            "clickhousectl",
-            "cloud",
-            "--json",
-            "service",
-            "get",
-            "SECRET-SERVICE-ID",
-            "--org-id",
-            "SECRET-ORG",
-        ]);
-        assert_eq!(inv.command, "cloud service get");
-        assert_eq!(inv.flags, ["json", "org-id"]);
-        // The positional's definition id is recorded; its value is not (#480).
-        assert_eq!(inv.positionals, ["service_id"]);
-        let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
-        assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+        for position in 3..=6 {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "--json",
+                "service",
+                "get",
+                "SECRET-SERVICE-ID",
+            ];
+            args.splice(position..position, ["--org-id", "SECRET-ORG"]);
+            let inv = capture_from(&args);
+            assert_eq!(inv.command, "cloud service get");
+            assert_eq!(inv.flags, ["json", "org-id"]);
+            // The positional's definition id is recorded; its value is not (#480).
+            assert_eq!(inv.positionals, ["service_id"]);
+            let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
+            assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+        }
     }
 
     /// The three lifecycle shapes issue #480 could not tell apart.

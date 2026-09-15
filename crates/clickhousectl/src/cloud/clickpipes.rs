@@ -244,10 +244,6 @@ pub enum ClickPipeCommands {
     List {
         /// Service ID
         service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Get ClickPipe details
@@ -257,10 +253,6 @@ pub enum ClickPipeCommands {
 
         /// ClickPipe ID
         clickpipe_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update a ClickPipe
@@ -281,10 +273,6 @@ CONTEXT FOR AGENTS:
         /// JSON PATCH body path, or `-` for stdin
         #[arg(long, value_name = "FILE|-", required = true)]
         config_file: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete a ClickPipe
@@ -294,10 +282,6 @@ CONTEXT FOR AGENTS:
 
         /// ClickPipe ID
         clickpipe_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Start a ClickPipe
@@ -307,10 +291,6 @@ CONTEXT FOR AGENTS:
 
         /// ClickPipe ID
         clickpipe_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Stop a ClickPipe
@@ -320,10 +300,6 @@ CONTEXT FOR AGENTS:
 
         /// ClickPipe ID
         clickpipe_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Resync a ClickPipe (Postgres and MySQL pipes only)
@@ -333,10 +309,6 @@ CONTEXT FOR AGENTS:
 
         /// ClickPipe ID
         clickpipe_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update ClickPipe scaling
@@ -361,10 +333,6 @@ CONTEXT FOR AGENTS:
         /// Memory GB per replica (0.5-8, streaming pipes)
         #[arg(long, value_parser = parse_streaming_memory_gb)]
         memory_gb: Option<f64>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Manage service-wide CDC scaling
@@ -408,10 +376,6 @@ CONTEXT FOR AGENTS:
 
         #[command(subcommand)]
         command: ClickPipeSchemaDiscoverCommands,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long, global = true)]
-        org_id: Option<String>,
     },
 
     /// Manage reverse private endpoints (PrivateLink, Private Service Connect)
@@ -532,10 +496,6 @@ pub enum ClickPipeContextCommands {
     Get {
         /// Service ID
         service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -545,10 +505,6 @@ pub enum ClickPipeCdcScalingCommands {
     Get {
         /// Service ID
         service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update CDC scaling
@@ -566,10 +522,6 @@ pub enum ClickPipeCdcScalingCommands {
         /// Memory GiB per replica (4-128, in increments of 4)
         #[arg(long, value_parser = parse_cdc_memory_gb)]
         memory_gb: Option<f64>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -608,10 +560,6 @@ pub enum ClickPipeSettingsCommands {
 
         /// ClickPipe ID
         clickpipe_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update ingestion settings (streaming, object-storage pipes)
@@ -647,10 +595,6 @@ CONTEXT FOR AGENTS:
 
         #[command(flatten)]
         settings: ClickPipeSettingsValues,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -984,10 +928,6 @@ pub struct ObjectStorageCreateArgs {
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
-
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 /// Source-connection fields for a Kafka / Kafka-compatible ClickPipe source.
@@ -1159,10 +1099,6 @@ pub struct KafkaCreateArgs {
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
-
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 /// Source-connection fields for an Amazon Kinesis ClickPipe source.
@@ -1251,10 +1187,6 @@ pub struct KinesisCreateArgs {
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
-
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 /// The two table-mapping flags are one required "at least one of" group, so
@@ -1414,10 +1346,6 @@ pub struct PostgresCreateArgs {
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
-
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1577,10 +1505,6 @@ pub struct MySqlCreateArgs {
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
-
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1692,10 +1616,6 @@ pub struct MongoDbCreateArgs {
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
-
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -1802,10 +1722,6 @@ pub struct BigQueryCreateArgs {
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
-
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 /// Source-connection fields for a Google Cloud Pub/Sub ClickPipe source.
@@ -1906,95 +1822,42 @@ pub struct PubSubCreateArgs {
 
     #[command(flatten)]
     pub destination_roles: DestinationRoleArgs,
-
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long)]
-    pub org_id: Option<String>,
 }
 
 pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -> CloudResult<()> {
     match command {
-        ClickPipeCommands::List { service_id, org_id } => {
-            clickpipe_list(client, &service_id, org_id.as_deref(), json).await
-        }
+        ClickPipeCommands::List { service_id } => clickpipe_list(client, &service_id, json).await,
         ClickPipeCommands::Get {
             service_id,
             clickpipe_id,
-            org_id,
-        } => clickpipe_get(client, &service_id, &clickpipe_id, org_id.as_deref(), json).await,
+        } => clickpipe_get(client, &service_id, &clickpipe_id, json).await,
         ClickPipeCommands::Update {
             service_id,
             clickpipe_id,
             config_file,
-            org_id,
-        } => {
-            clickpipe_update(
-                client,
-                &service_id,
-                &clickpipe_id,
-                &config_file,
-                org_id.as_deref(),
-                json,
-            )
-            .await
-        }
+        } => clickpipe_update(client, &service_id, &clickpipe_id, &config_file, json).await,
         ClickPipeCommands::Delete {
             service_id,
             clickpipe_id,
-            org_id,
-        } => clickpipe_delete(client, &service_id, &clickpipe_id, org_id.as_deref(), json).await,
+        } => clickpipe_delete(client, &service_id, &clickpipe_id, json).await,
         ClickPipeCommands::Start {
             service_id,
             clickpipe_id,
-            org_id,
-        } => {
-            clickpipe_state(
-                client,
-                &service_id,
-                &clickpipe_id,
-                "start",
-                org_id.as_deref(),
-                json,
-            )
-            .await
-        }
+        } => clickpipe_state(client, &service_id, &clickpipe_id, "start", json).await,
         ClickPipeCommands::Stop {
             service_id,
             clickpipe_id,
-            org_id,
-        } => {
-            clickpipe_state(
-                client,
-                &service_id,
-                &clickpipe_id,
-                "stop",
-                org_id.as_deref(),
-                json,
-            )
-            .await
-        }
+        } => clickpipe_state(client, &service_id, &clickpipe_id, "stop", json).await,
         ClickPipeCommands::Resync {
             service_id,
             clickpipe_id,
-            org_id,
-        } => {
-            clickpipe_state(
-                client,
-                &service_id,
-                &clickpipe_id,
-                "resync",
-                org_id.as_deref(),
-                json,
-            )
-            .await
-        }
+        } => clickpipe_state(client, &service_id, &clickpipe_id, "resync", json).await,
         ClickPipeCommands::Scale {
             service_id,
             clickpipe_id,
             replicas,
             cpu_millicores,
             memory_gb,
-            org_id,
         } => {
             clickpipe_scale(
                 client,
@@ -2003,67 +1866,48 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
                 replicas,
                 cpu_millicores,
                 memory_gb,
-                org_id.as_deref(),
                 json,
             )
             .await
         }
         ClickPipeCommands::CdcScaling { command } => match command {
-            ClickPipeCdcScalingCommands::Get { service_id, org_id } => {
-                clickpipe_cdc_scaling_get(client, &service_id, org_id.as_deref(), json).await
+            ClickPipeCdcScalingCommands::Get { service_id } => {
+                clickpipe_cdc_scaling_get(client, &service_id, json).await
             }
             ClickPipeCdcScalingCommands::Update {
                 service_id,
                 cpu_millicores,
                 memory_gb,
-                org_id,
             } => {
                 let values = CdcScalingValues {
                     cpu_millicores,
                     memory_gb,
                 };
-                clickpipe_cdc_scaling_update(client, &service_id, &values, org_id.as_deref(), json)
-                    .await
+                clickpipe_cdc_scaling_update(client, &service_id, &values, json).await
             }
         },
         ClickPipeCommands::Settings { command } => match command {
             ClickPipeSettingsCommands::Get {
                 service_id,
                 clickpipe_id,
-                org_id,
-            } => {
-                clickpipe_settings_get(client, &service_id, &clickpipe_id, org_id.as_deref(), json)
-                    .await
-            }
+            } => clickpipe_settings_get(client, &service_id, &clickpipe_id, json).await,
             ClickPipeSettingsCommands::Update {
                 service_id,
                 clickpipe_id,
                 settings,
-                org_id,
             } => {
-                clickpipe_settings_update(
-                    client,
-                    &service_id,
-                    &clickpipe_id,
-                    &settings,
-                    org_id.as_deref(),
-                    json,
-                )
-                .await
+                clickpipe_settings_update(client, &service_id, &clickpipe_id, &settings, json).await
             }
         },
         ClickPipeCommands::Context { command } => match command {
-            ClickPipeContextCommands::Get { service_id, org_id } => {
-                clickpipe_context_get(client, &service_id, org_id.as_deref(), json).await
+            ClickPipeContextCommands::Get { service_id } => {
+                clickpipe_context_get(client, &service_id, json).await
             }
         },
         ClickPipeCommands::SchemaDiscover {
             service_id,
             command,
-            org_id,
-        } => {
-            clickpipe_schema_discover(client, &service_id, &command, org_id.as_deref(), json).await
-        }
+        } => clickpipe_schema_discover(client, &service_id, &command, json).await,
         ClickPipeCommands::ReversePrivateEndpoint { command } => {
             crate::cloud::clickpipe_endpoints::run(client, command, json).await
         }
@@ -2099,10 +1943,9 @@ pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -
 async fn clickpipe_context_get(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let context = client
         .get_clickpipe_service_context(&org_id, service_id)
         .await?;
@@ -2115,13 +1958,8 @@ async fn clickpipe_context_get(
     Ok(())
 }
 
-async fn clickpipe_list(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn clickpipe_list(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let clickpipes = client.list_clickpipes(&org_id, service_id).await?;
 
     if json {
@@ -2384,7 +2222,7 @@ async fn clickpipe_create_object_storage(
         build_destination_roles(&args.destination_roles.roles),
         &args.destination_table,
     )?;
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let mut request = ClickPipePostRequest {
         name: args.name.clone(),
@@ -2850,7 +2688,7 @@ async fn clickpipe_create_kafka(
     };
     apply_create_request_args(&mut request, request_args);
 
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
@@ -2886,7 +2724,7 @@ async fn clickpipe_create_kinesis(
     };
     apply_create_request_args(&mut request, request_args);
 
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
@@ -3057,7 +2895,7 @@ async fn clickpipe_create_pubsub(
     };
     apply_create_request_args(&mut request, request_args);
 
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
         .await?;
@@ -3094,7 +2932,6 @@ async fn clickpipe_schema_discover(
     client: &CloudClient,
     service_id: &str,
     command: &ClickPipeSchemaDiscoverCommands,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     use clickhouse_cloud_api::models::{
@@ -3125,7 +2962,7 @@ async fn clickpipe_schema_discover(
             build_pubsub_schema_discovery_request(args)?
         }
     };
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client
         .click_pipe_schema_discovery(&org_id, service_id, &request)
         .await?;
@@ -3169,10 +3006,9 @@ async fn clickpipe_get(
     client: &CloudClient,
     service_id: &str,
     clickpipe_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let clickpipe = client
         .get_clickpipe(&org_id, service_id, clickpipe_id)
         .await?;
@@ -3582,12 +3418,11 @@ async fn clickpipe_update(
     service_id: &str,
     clickpipe_id: &str,
     config_file: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let config_source = config_source_label(config_file);
     let request = build_clickpipe_update_request(read_config_value(config_file)?, config_source)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let clickpipe = client
         .update_clickpipe(&org_id, service_id, clickpipe_id, &request)
         .await?;
@@ -3604,10 +3439,9 @@ async fn clickpipe_delete(
     client: &CloudClient,
     service_id: &str,
     clickpipe_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     client
         .delete_clickpipe(&org_id, service_id, clickpipe_id)
         .await?;
@@ -3625,7 +3459,6 @@ async fn clickpipe_state(
     service_id: &str,
     clickpipe_id: &str,
     command: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     use clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand;
@@ -3637,7 +3470,7 @@ async fn clickpipe_state(
             return Err(CloudError::new(format!("Unknown state command: {}", other)));
         }
     };
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let clickpipe = client
         .change_clickpipe_state(&org_id, service_id, clickpipe_id, command_value)
         .await?;
@@ -3663,10 +3496,9 @@ async fn clickpipe_scale(
     replicas: Option<u32>,
     cpu_millicores: Option<u32>,
     memory_gb: Option<f64>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let request = clickhouse_cloud_api::models::ClickPipeScalingPatchRequest {
         replicas: replicas.map(i64::from),
         replica_cpu_millicores: cpu_millicores.map(i64::from),
@@ -3722,10 +3554,9 @@ fn build_cdc_scaling_request(
 async fn clickpipe_cdc_scaling_get(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let scaling = client
         .get_clickpipe_cdc_scaling(&org_id, service_id)
         .await?;
@@ -3742,11 +3573,10 @@ async fn clickpipe_cdc_scaling_update(
     client: &CloudClient,
     service_id: &str,
     values: &CdcScalingValues,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let request = build_cdc_scaling_request(values)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let scaling = client
         .update_clickpipe_cdc_scaling(&org_id, service_id, &request)
         .await?;
@@ -3763,10 +3593,9 @@ async fn clickpipe_settings_get(
     client: &CloudClient,
     service_id: &str,
     clickpipe_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     // The settings endpoint only exists for streaming and object-storage pipes,
     // so the pipe is fetched first to classify its source and refuse a database
     // CDC pipe with an applicability error rather than the API's NOT_FOUND.
@@ -4129,10 +3958,9 @@ async fn clickpipe_settings_update(
     service_id: &str,
     clickpipe_id: &str,
     values: &ClickPipeSettingsValues,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     // Live verification for #682 showed that object-storage PUT merges omitted
     // keys, including nondefault values of the three previously hidden settings.
     // Kafka-specific omission was not live-verified, so retain read-before-write
@@ -5070,7 +4898,7 @@ async fn clickpipe_create_postgres(
     json: bool,
 ) -> CloudResult<()> {
     let request = build_postgres_request(args)?;
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
@@ -5292,7 +5120,7 @@ async fn clickpipe_create_mysql(
     json: bool,
 ) -> CloudResult<()> {
     let request = build_mysql_request(args)?;
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
@@ -5442,7 +5270,7 @@ async fn clickpipe_create_mongodb(
     json: bool,
 ) -> CloudResult<()> {
     let request = build_mongodb_request(args)?;
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
@@ -5603,7 +5431,7 @@ async fn clickpipe_create_bigquery(
     json: bool,
 ) -> CloudResult<()> {
     let request = build_bigquery_request(args)?;
-    let org_id = resolve_org_id(client, args.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let clickpipe = client
         .create_clickpipe(&org_id, &args.service_id, &request)
@@ -5822,6 +5650,7 @@ mod tests {
         let Commands::Cloud(cloud) = cli.command else {
             panic!("expected cloud command");
         };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
         cloud.command
     }
 
@@ -6231,30 +6060,26 @@ mod tests {
 
     #[test]
     fn parses_lifecycle_commands_and_flags() {
-        let ClickPipeCommands::List { service_id, org_id } =
+        let ClickPipeCommands::List { service_id } =
             parse_clickpipe(&["list", "svc-list", "--org-id", "org-list"])
         else {
             panic!("expected list");
         };
         assert_eq!(service_id, "svc-list");
-        assert_eq!(org_id.as_deref(), Some("org-list"));
 
         let ClickPipeCommands::Get {
             service_id,
             clickpipe_id,
-            org_id,
         } = parse_clickpipe(&["get", "svc-get", "pipe-get", "--org-id", "org-get"])
         else {
             panic!("expected get");
         };
         assert_eq!(service_id, "svc-get");
         assert_eq!(clickpipe_id, "pipe-get");
-        assert_eq!(org_id.as_deref(), Some("org-get"));
 
         let ClickPipeCommands::Delete {
             service_id,
             clickpipe_id,
-            org_id,
         } = parse_clickpipe(&[
             "delete",
             "svc-delete",
@@ -6267,36 +6092,30 @@ mod tests {
         };
         assert_eq!(service_id, "svc-delete");
         assert_eq!(clickpipe_id, "pipe-delete");
-        assert_eq!(org_id.as_deref(), Some("org-delete"));
 
         let ClickPipeCommands::Start {
             service_id,
             clickpipe_id,
-            org_id,
         } = parse_clickpipe(&["start", "svc-start", "pipe-start", "--org-id", "org-start"])
         else {
             panic!("expected start");
         };
         assert_eq!(service_id, "svc-start");
         assert_eq!(clickpipe_id, "pipe-start");
-        assert_eq!(org_id.as_deref(), Some("org-start"));
 
         let ClickPipeCommands::Stop {
             service_id,
             clickpipe_id,
-            org_id,
         } = parse_clickpipe(&["stop", "svc-stop", "pipe-stop", "--org-id", "org-stop"])
         else {
             panic!("expected stop");
         };
         assert_eq!(service_id, "svc-stop");
         assert_eq!(clickpipe_id, "pipe-stop");
-        assert_eq!(org_id.as_deref(), Some("org-stop"));
 
         let ClickPipeCommands::Resync {
             service_id,
             clickpipe_id,
-            org_id,
         } = parse_clickpipe(&[
             "resync",
             "svc-resync",
@@ -6309,7 +6128,6 @@ mod tests {
         };
         assert_eq!(service_id, "svc-resync");
         assert_eq!(clickpipe_id, "pipe-resync");
-        assert_eq!(org_id.as_deref(), Some("org-resync"));
     }
 
     #[test]
@@ -6320,7 +6138,6 @@ mod tests {
             replicas,
             cpu_millicores,
             memory_gb,
-            org_id,
         } = parse_clickpipe(&[
             "scale",
             "svc-1",
@@ -6342,7 +6159,6 @@ mod tests {
         assert_eq!(replicas, Some(4));
         assert_eq!(cpu_millicores, Some(500));
         assert_eq!(memory_gb, Some(1.5));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -6482,13 +6298,12 @@ mod tests {
     #[test]
     fn parses_cdc_scaling_get_and_update_flags() {
         let ClickPipeCommands::CdcScaling {
-            command: ClickPipeCdcScalingCommands::Get { service_id, org_id },
+            command: ClickPipeCdcScalingCommands::Get { service_id },
         } = parse_clickpipe(&["cdc-scaling", "get", "svc-get", "--org-id", "org-get"])
         else {
             panic!("expected CDC scaling get");
         };
         assert_eq!(service_id, "svc-get");
-        assert_eq!(org_id.as_deref(), Some("org-get"));
 
         let ClickPipeCommands::CdcScaling {
             command:
@@ -6496,7 +6311,6 @@ mod tests {
                     service_id,
                     cpu_millicores,
                     memory_gb,
-                    org_id,
                 },
         } = parse_clickpipe(&[
             "cdc-scaling",
@@ -6515,7 +6329,6 @@ mod tests {
         assert_eq!(service_id, "svc-update");
         assert_eq!(cpu_millicores, Some(32000));
         assert_eq!(memory_gb, Some(128.0));
-        assert_eq!(org_id.as_deref(), Some("org-update"));
     }
 
     #[test]
@@ -6632,7 +6445,6 @@ mod tests {
                 ClickPipeSettingsCommands::Get {
                     service_id,
                     clickpipe_id,
-                    org_id,
                 },
         } = parse_clickpipe(&["settings", "get", "svc-1", "pipe-1", "--org-id", "org-1"])
         else {
@@ -6640,7 +6452,6 @@ mod tests {
         };
         assert_eq!(service_id, "svc-1");
         assert_eq!(clickpipe_id, "pipe-1");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Settings {
             command:
@@ -6648,7 +6459,6 @@ mod tests {
                     service_id,
                     clickpipe_id,
                     settings,
-                    org_id,
                 },
         } = parse_clickpipe(&[
             "settings",
@@ -6708,13 +6518,9 @@ mod tests {
         assert_eq!(settings.kafka_read_committed, Some(false));
         assert_eq!(settings.object_storage_use_cluster_function, Some(true));
         assert_eq!(settings.clickhouse_parallel_view_processing, Some(false));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Settings {
-            command:
-                ClickPipeSettingsCommands::Update {
-                    settings, org_id, ..
-                },
+            command: ClickPipeSettingsCommands::Update { settings, .. },
         } = parse_clickpipe(&[
             "settings",
             "update",
@@ -6739,7 +6545,6 @@ mod tests {
         assert_eq!(settings.kafka_read_committed, None);
         assert_eq!(settings.object_storage_use_cluster_function, None);
         assert_eq!(settings.clickhouse_parallel_view_processing, None);
-        assert_eq!(org_id, None);
     }
 
     #[test]
@@ -7327,7 +7132,6 @@ mod tests {
             args.source.service_account_file.as_deref(),
             Some("/tmp/account.json")
         );
-        assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::ObjectStorage(args),
@@ -7365,7 +7169,6 @@ mod tests {
         assert_eq!(args.source.azure_container_name, None);
         assert_eq!(args.source.path, None);
         assert_eq!(args.source.service_account_file, None);
-        assert_eq!(args.org_id, None);
     }
 
     #[test]
@@ -7548,7 +7351,6 @@ mod tests {
         assert_eq!(args.database, "db");
         assert_eq!(args.table, "events");
         assert_eq!(args.columns, ["id:UInt64", "name:String"]);
-        assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::Kafka(args),
@@ -7594,7 +7396,6 @@ mod tests {
         assert!(args.source.reverse_private_endpoint_ids.is_empty());
         assert_eq!(args.exactly_once, None);
         assert!(args.columns.is_empty());
-        assert_eq!(args.org_id, None);
     }
 
     #[test]
@@ -7783,7 +7584,6 @@ mod tests {
         assert_eq!(args.database, "db");
         assert_eq!(args.table, "events");
         assert_eq!(args.columns, ["id:UInt64", "name:String"]);
-        assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::Kinesis(args),
@@ -7815,7 +7615,6 @@ mod tests {
         assert_eq!(args.source.iterator_timestamp, None);
         assert!(!args.source.enhanced_fan_out);
         assert!(args.columns.is_empty());
-        assert_eq!(args.org_id, None);
     }
 
     #[test]
@@ -7823,7 +7622,6 @@ mod tests {
         let ClickPipeCommands::SchemaDiscover {
             service_id,
             command: ClickPipeSchemaDiscoverCommands::Kafka(args),
-            org_id,
         } = parse_clickpipe(&[
             "schema-discover",
             "svc-kafka",
@@ -7844,7 +7642,7 @@ mod tests {
         assert_eq!(args.brokers, "broker:9092");
         assert_eq!(args.kafka_type, "kafka");
         assert_eq!(args.offset, "from_beginning");
-        assert_eq!(org_id.as_deref(), Some("org-kafka"));
+
         // Auth flags are all optional for discovery too, and an unauthenticated
         // broker builds a source with no authentication at all (issue #606).
         assert_eq!(args.auth, None);
@@ -7857,7 +7655,6 @@ mod tests {
         let ClickPipeCommands::SchemaDiscover {
             service_id,
             command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
-            org_id,
         } = parse_clickpipe(&[
             "schema-discover",
             "svc-kinesis",
@@ -7878,7 +7675,6 @@ mod tests {
         assert_eq!(args.stream_name, "stream-1");
         assert_eq!(args.auth, "IAM_ROLE");
         assert_eq!(args.iterator_type, "TRIM_HORIZON");
-        assert_eq!(org_id.as_deref(), Some("org-kinesis"));
     }
 
     #[test]
@@ -7948,15 +7744,9 @@ mod tests {
                     args.extend(["--org-id", "org-1"]);
                 }
 
-                let ClickPipeCommands::SchemaDiscover { org_id, .. } = parse_clickpipe(&args)
-                else {
+                let ClickPipeCommands::SchemaDiscover { .. } = parse_clickpipe(&args) else {
                     panic!("expected {source} schema discovery");
                 };
-                assert_eq!(
-                    org_id.as_deref(),
-                    Some("org-1"),
-                    "{source} did not inherit --org-id at {placement}"
-                );
             }
         }
     }
@@ -7993,7 +7783,6 @@ mod tests {
         let ClickPipeCommands::SchemaDiscover {
             service_id,
             command: ClickPipeSchemaDiscoverCommands::ObjectStorage(args),
-            org_id,
         } = parse_clickpipe(&[
             "schema-discover",
             "svc-object-storage",
@@ -8034,7 +7823,7 @@ mod tests {
             panic!("expected object-storage schema discovery");
         };
         assert_eq!(service_id, "svc-object-storage");
-        assert_eq!(org_id.as_deref(), Some("org-object-storage"));
+
         assert_eq!(args.source_url, "https://bucket.example/data/*.csv");
         assert_eq!(args.format, "CSV");
         assert_eq!(args.storage_type, "gcs");
@@ -8058,7 +7847,6 @@ mod tests {
         // Only the source connection is required: no --name/--database/--table.
         let ClickPipeCommands::SchemaDiscover {
             command: ClickPipeSchemaDiscoverCommands::ObjectStorage(args),
-            org_id,
             ..
         } = parse_clickpipe(&[
             "schema-discover",
@@ -8086,7 +7874,6 @@ mod tests {
         assert_eq!(args.azure_container_name, None);
         assert_eq!(args.path, None);
         assert_eq!(args.service_account_file, None);
-        assert_eq!(org_id, None);
 
         // --skip-initial-load still requires --queue-url and still conflicts
         // with --start-after, exactly as on `create object-storage`.
@@ -8181,7 +7968,6 @@ mod tests {
         assert_eq!(args.publication_name.as_deref(), Some("publication"));
         assert_eq!(args.replication_slot_name.as_deref(), Some("slot"));
         assert_eq!(args.destination.destination_database, "analytics");
-        assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::Postgres(args),
@@ -8226,7 +8012,6 @@ mod tests {
         assert_eq!(args.enable_failover_slots, None);
         assert_eq!(args.delete_on_merge, None);
         assert_eq!(args.destination.destination_database, "default");
-        assert_eq!(args.org_id, None);
     }
 
     #[test]
@@ -8834,7 +8619,6 @@ mod tests {
         assert_eq!(args.delete_on_merge, Some(true));
         assert_eq!(args.use_compression, Some(false));
         assert_eq!(args.destination.destination_database, "analytics");
-        assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::MySQL(args),
@@ -8882,7 +8666,6 @@ mod tests {
         assert_eq!(args.delete_on_merge, None);
         assert_eq!(args.use_compression, None);
         assert_eq!(args.destination.destination_database, "default");
-        assert_eq!(args.org_id, None);
 
         for invalid in ["0", "4294967296"] {
             assert_rejected(&[
@@ -9160,7 +8943,6 @@ mod tests {
         assert_eq!(args.delete_on_merge, Some(false));
         assert_eq!(args.use_json_native_format, Some(true));
         assert_eq!(args.destination.destination_database, "analytics");
-        assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::MongoDB(args),
@@ -9197,7 +8979,6 @@ mod tests {
         assert_eq!(args.delete_on_merge, None);
         assert_eq!(args.use_json_native_format, None);
         assert_eq!(args.destination.destination_database, "default");
-        assert_eq!(args.org_id, None);
 
         for (flag, invalid) in [
             ("--sync-interval-seconds", "0"),
@@ -9280,7 +9061,6 @@ mod tests {
         assert_eq!(args.snapshot_rows_per_partition, Some(1_000_000.0));
         assert_eq!(args.snapshot_parallel_tables, Some(3.0));
         assert_eq!(args.destination.destination_database, "analytics");
-        assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         let ClickPipeCommands::Create {
             command: ClickPipeCreateCommands::BigQuery(args),
@@ -9308,7 +9088,6 @@ mod tests {
         assert_eq!(args.snapshot_rows_per_partition, None);
         assert_eq!(args.snapshot_parallel_tables, None);
         assert_eq!(args.destination.destination_database, "default");
-        assert_eq!(args.org_id, None);
     }
 
     #[test]
@@ -10012,7 +9791,6 @@ mod tests {
                 service_id,
                 clickpipe_id,
                 config_file: parsed_file,
-                org_id,
             } = parse_clickpipe(&[
                 "update",
                 "svc-1",
@@ -10028,7 +9806,6 @@ mod tests {
             assert_eq!(service_id, "svc-1");
             assert_eq!(clickpipe_id, "pipe-1");
             assert_eq!(parsed_file, config_file);
-            assert_eq!(org_id.as_deref(), Some("org-1"));
         }
         assert_rejected(&["update", "svc-1", "pipe-1"]);
     }
@@ -10467,7 +10244,6 @@ mod tests {
         assert_eq!(args.table, "events");
         assert_eq!(args.columns, vec!["event_id:Int64", "name:String"]);
         assert_eq!(args.destination_roles.roles, vec!["analytics_reader"]);
-        assert_eq!(args.org_id.as_deref(), Some("org-1"));
 
         // Defaults: only --auth has one, and the optional fields stay unset.
         let args = parse_pubsub_create(&pubsub_source_flags("./sa-key.json"));
@@ -10478,7 +10254,6 @@ mod tests {
         assert_eq!(args.source.ack_deadline, None);
         assert!(args.columns.is_empty());
         assert!(args.destination_roles.roles.is_empty());
-        assert_eq!(args.org_id, None);
     }
 
     #[test]
@@ -10653,7 +10428,6 @@ mod tests {
         let ClickPipeCommands::SchemaDiscover {
             service_id,
             command: ClickPipeSchemaDiscoverCommands::PubSub(args),
-            org_id,
         } = parse_clickpipe(&[
             "schema-discover",
             "svc-pubsub",
@@ -10680,7 +10454,7 @@ mod tests {
             panic!("expected pubsub schema discovery");
         };
         assert_eq!(service_id, "svc-pubsub");
-        assert_eq!(org_id.as_deref(), Some("org-pubsub"));
+
         assert_eq!(args.topic, "events");
         assert_eq!(args.project_id, "my-gcp-project");
         assert_eq!(args.format, "Protobuf");
@@ -10966,7 +10740,6 @@ mod tests {
                 destination_database: "default".into(),
             },
             destination_roles: DestinationRoleArgs::default(),
-            org_id: None,
         }
     }
 
@@ -11069,7 +10842,6 @@ mod tests {
         args.destination_roles = DestinationRoleArgs {
             roles: vec!["analytics_reader".into(), "analytics_writer".into()],
         };
-        args.org_id = Some("org-1".into());
 
         let request = build_postgres_request(&args).unwrap();
         assert_eq!(request.name, "maximal-pipe");
@@ -11752,7 +11524,6 @@ mod tests {
                 destination_database: "default".into(),
             },
             destination_roles: DestinationRoleArgs::default(),
-            org_id: None,
         }
     }
 
@@ -11842,7 +11613,6 @@ mod tests {
         args.destination_roles = DestinationRoleArgs {
             roles: vec!["analytics_reader".into()],
         };
-        args.org_id = Some("org-1".into());
 
         let request = build_mysql_request(&args).unwrap();
         assert_eq!(request.name, "maximal-pipe");
@@ -11995,7 +11765,6 @@ mod tests {
                 destination_database: "default".into(),
             },
             destination_roles: DestinationRoleArgs::default(),
-            org_id: None,
         }
     }
 
@@ -12112,7 +11881,6 @@ mod tests {
                 destination_database: "default".into(),
             },
             destination_roles: DestinationRoleArgs::default(),
-            org_id: None,
         }
     }
 
@@ -12910,7 +12678,6 @@ mod tests {
             columns: vec![],
             destination_table: StreamingDestinationTableArgs::default(),
             destination_roles: DestinationRoleArgs::default(),
-            org_id: None,
         }
     }
 
@@ -13368,13 +13135,12 @@ mod tests {
         let command = parse_clickpipe(&["context", "get", "svc-1", "--org-id", "org-1"]);
         assert!(!command.is_write());
         let ClickPipeCommands::Context {
-            command: ClickPipeContextCommands::Get { service_id, org_id },
+            command: ClickPipeContextCommands::Get { service_id },
         } = command
         else {
             panic!("expected context get");
         };
         assert_eq!(service_id, "svc-1");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]

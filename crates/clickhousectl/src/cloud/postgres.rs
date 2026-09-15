@@ -26,9 +26,6 @@ const POSTGRES_LOG_SORT_ORDERS: &[&str] = &["asc", "desc"];
 pub enum PostgresCommands {
     /// List Postgres services in the organization
     List {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
         /// Filter results client-side, repeatable (KEY=VALUE)
         ///
         /// Keys: state, region, name, provider, isPrimary. Every filter must
@@ -41,9 +38,6 @@ pub enum PostgresCommands {
     Get {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// List Postgres server logs
@@ -80,9 +74,6 @@ pub enum PostgresCommands {
             value_parser = clap::value_parser!(i64).range(0..)
         )]
         offset: Option<i64>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Create a Postgres service
@@ -123,9 +114,6 @@ CONTEXT FOR AGENTS:
         /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update a Postgres service's name, size, HA type or tags
@@ -154,9 +142,6 @@ CONTEXT FOR AGENTS:
         /// Remove all tags; conflicts with --add-tag and --remove-tag
         #[arg(long, conflicts_with_all = ["add_tag", "remove_tag"])]
         clear_tags: bool,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete a Postgres service
@@ -167,9 +152,6 @@ CONTEXT FOR AGENTS:
     Delete {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Manage Postgres CA certificates
@@ -199,9 +181,6 @@ CONTEXT FOR AGENTS:
         /// Generate a random compliant password and print it once
         #[arg(long, conflicts_with = "password")]
         generate: bool,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Manage Postgres read replicas
@@ -221,9 +200,6 @@ CONTEXT FOR AGENTS:
         /// Time bucket size in seconds
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
         bucket_size_seconds: Option<i64>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Inspect Postgres slow query patterns
@@ -263,18 +239,12 @@ CONTEXT FOR AGENTS:
         /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Restart a Postgres service
     Restart {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Promote a read replica to primary
@@ -293,9 +263,6 @@ CONTEXT FOR AGENTS:
         /// Seconds to poll for with --wait (default: 300)
         #[arg(long, requires = "wait", value_name = "SECONDS")]
         wait_timeout: Option<u16>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Switch over the primary and replica roles
@@ -313,9 +280,6 @@ CONTEXT FOR AGENTS:
         /// Seconds to poll for with --wait (default: 300)
         #[arg(long, requires = "wait", value_name = "SECONDS")]
         wait_timeout: Option<u16>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -332,9 +296,6 @@ CONTEXT FOR AGENTS:
         /// Write PEM to the given file (mode 0600 on unix) instead of stdout
         #[arg(long)]
         output: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -344,9 +305,6 @@ pub enum ConfigCommands {
     Get {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Replace the whole runtime configuration from a file
     Replace {
@@ -357,9 +315,6 @@ pub enum ConfigCommands {
         /// Not a fragment: use a document obtained from `config get --json`.
         #[arg(long)]
         file: PathBuf,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Change selected runtime configuration fields
     #[command(
@@ -377,9 +332,6 @@ pub enum ConfigCommands {
         /// JSON file with explicit pgConfig and pgBouncerConfig objects
         #[arg(long, conflicts_with = "sets")]
         file: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -405,9 +357,6 @@ CONTEXT FOR AGENTS:
         /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -417,16 +366,9 @@ pub enum PrometheusCommands {
     Service {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Get metrics for all Postgres services in an organization
-    Org {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    Org,
 }
 
 #[derive(Subcommand)]
@@ -479,9 +421,6 @@ pub enum SlowQueryCommands {
             value_parser = clap::value_parser!(i64).range(0..)
         )]
         offset: Option<i64>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Get a slow query pattern with recent executions
     Get {
@@ -504,9 +443,6 @@ pub enum SlowQueryCommands {
         /// Timestamp of a specific execution (ISO 8601 / RFC 3339)
         #[arg(long, value_parser = parse_datetime)]
         timestamp: Option<String>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -539,13 +475,8 @@ impl PostgresCommands {
 
 pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) -> CloudResult<()> {
     match command {
-        PostgresCommands::List { org_id, filter } => {
-            postgres_list(client, org_id.as_deref(), &filter, json).await
-        }
-        PostgresCommands::Get {
-            postgres_id,
-            org_id,
-        } => postgres_get(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::List { filter } => postgres_list(client, &filter, json).await,
+        PostgresCommands::Get { postgres_id } => postgres_get(client, &postgres_id, json).await,
         PostgresCommands::Logs {
             postgres_id,
             from_date,
@@ -555,7 +486,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             sort_order,
             limit,
             offset,
-            org_id,
         } => {
             let query = build_postgres_logs_query(
                 &from_date,
@@ -566,7 +496,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 limit,
                 offset,
             )?;
-            postgres_logs(client, &postgres_id, &query, org_id.as_deref(), json).await
+            postgres_logs(client, &postgres_id, &query, json).await
         }
         PostgresCommands::Create {
             name,
@@ -578,7 +508,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             tag,
             pg_config_file,
             pg_bouncer_config_file,
-            org_id,
         } => {
             let opts = PostgresCreateOptions {
                 name: &name,
@@ -590,7 +519,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 tags: &tag,
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
-                org_id: org_id.as_deref(),
             };
             postgres_create(client, opts, json).await
         }
@@ -602,7 +530,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             add_tag,
             remove_tag,
             clear_tags,
-            org_id,
         } => {
             let opts = PostgresUpdateOptions {
                 name: name.as_deref(),
@@ -611,68 +538,33 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 add_tag: &add_tag,
                 remove_tag: &remove_tag,
                 clear_tags,
-                org_id: org_id.as_deref(),
             };
             postgres_update(client, &postgres_id, opts, json).await
         }
-        PostgresCommands::Delete {
-            postgres_id,
-            org_id,
-        } => postgres_delete(client, &postgres_id, org_id.as_deref(), json).await,
+        PostgresCommands::Delete { postgres_id } => {
+            postgres_delete(client, &postgres_id, json).await
+        }
         PostgresCommands::Certs(CertsCommands::Get {
             postgres_id,
             output,
-            org_id,
-        }) => {
-            postgres_certs_get(
-                client,
-                &postgres_id,
-                output.as_deref(),
-                org_id.as_deref(),
-                json,
-            )
-            .await
+        }) => postgres_certs_get(client, &postgres_id, output.as_deref(), json).await,
+        PostgresCommands::Config(ConfigCommands::Get { postgres_id }) => {
+            postgres_config_get(client, &postgres_id, json).await
         }
-        PostgresCommands::Config(ConfigCommands::Get {
-            postgres_id,
-            org_id,
-        }) => postgres_config_get(client, &postgres_id, org_id.as_deref(), json).await,
-        PostgresCommands::Config(ConfigCommands::Replace {
-            postgres_id,
-            file,
-            org_id,
-        }) => postgres_config_replace(client, &postgres_id, &file, org_id.as_deref(), json).await,
+        PostgresCommands::Config(ConfigCommands::Replace { postgres_id, file }) => {
+            postgres_config_replace(client, &postgres_id, &file, json).await
+        }
         PostgresCommands::Config(ConfigCommands::Patch {
             postgres_id,
             sets,
             file,
-            org_id,
-        }) => {
-            postgres_config_patch(
-                client,
-                &postgres_id,
-                &sets,
-                file.as_deref(),
-                org_id.as_deref(),
-                json,
-            )
-            .await
-        }
+        }) => postgres_config_patch(client, &postgres_id, &sets, file.as_deref(), json).await,
         PostgresCommands::ResetPassword {
             postgres_id,
             password,
             generate,
-            org_id,
         } => {
-            postgres_reset_password(
-                client,
-                &postgres_id,
-                password.as_deref(),
-                generate,
-                org_id.as_deref(),
-                json,
-            )
-            .await
+            postgres_reset_password(client, &postgres_id, password.as_deref(), generate, json).await
         }
         PostgresCommands::ReadReplica(ReadReplicaCommands::Create {
             postgres_id,
@@ -680,14 +572,12 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             tag,
             pg_config_file,
             pg_bouncer_config_file,
-            org_id,
         }) => {
             let opts = PostgresReadReplicaOptions {
                 name: &name,
                 tags: &tag,
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
-                org_id: org_id.as_deref(),
             };
             postgres_read_replica_create(client, &postgres_id, opts, json).await
         }
@@ -696,7 +586,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             from_date,
             to_date,
             bucket_size_seconds,
-            org_id,
         } => {
             postgres_metrics(
                 client,
@@ -704,7 +593,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 &from_date,
                 &to_date,
                 bucket_size_seconds,
-                org_id.as_deref(),
                 json,
             )
             .await
@@ -721,7 +609,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             sort_order,
             limit,
             offset,
-            org_id,
         }) => {
             let input = SlowQueryListInput {
                 from_date: &from_date,
@@ -735,7 +622,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 limit,
                 offset,
             };
-            postgres_slow_queries_list(client, &postgres_id, input, org_id.as_deref(), json).await
+            postgres_slow_queries_list(client, &postgres_id, input, json).await
         }
         PostgresCommands::SlowQueries(SlowQueryCommands::Get {
             postgres_id,
@@ -745,7 +632,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             db_operation,
             app,
             timestamp,
-            org_id,
         }) => {
             let input = SlowQueryDetailInput {
                 db_name: &db_name,
@@ -754,22 +640,13 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 app: app.as_deref(),
                 timestamp: timestamp.as_deref(),
             };
-            postgres_slow_query_get(
-                client,
-                &postgres_id,
-                &query_id,
-                input,
-                org_id.as_deref(),
-                json,
-            )
-            .await
+            postgres_slow_query_get(client, &postgres_id, &query_id, input, json).await
         }
-        PostgresCommands::Prometheus(PrometheusCommands::Service {
-            postgres_id,
-            org_id,
-        }) => postgres_prometheus_service(client, &postgres_id, org_id.as_deref(), json).await,
-        PostgresCommands::Prometheus(PrometheusCommands::Org { org_id }) => {
-            postgres_prometheus_org(client, org_id.as_deref(), json).await
+        PostgresCommands::Prometheus(PrometheusCommands::Service { postgres_id }) => {
+            postgres_prometheus_service(client, &postgres_id, json).await
+        }
+        PostgresCommands::Prometheus(PrometheusCommands::Org) => {
+            postgres_prometheus_org(client, json).await
         }
         PostgresCommands::Restore {
             postgres_id,
@@ -778,7 +655,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             tag,
             pg_config_file,
             pg_bouncer_config_file,
-            org_id,
         } => {
             let opts = PostgresRestoreOptions {
                 name: &name,
@@ -786,19 +662,14 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 tags: &tag,
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
-                org_id: org_id.as_deref(),
             };
             postgres_restore(client, &postgres_id, opts, json).await
         }
-        PostgresCommands::Restart {
-            postgres_id,
-            org_id,
-        } => {
+        PostgresCommands::Restart { postgres_id } => {
             postgres_state_change(
                 client,
                 &postgres_id,
                 PostgresServiceSetStateCommand::Restart,
-                org_id.as_deref(),
                 json,
             )
             .await
@@ -807,7 +678,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             postgres_id,
             wait,
             wait_timeout,
-            org_id,
         } => {
             postgres_role_change(
                 client,
@@ -815,7 +685,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 PostgresRoleCommand::Promote,
                 RoleChangeOptions {
                     wait: wait_duration(wait, wait_timeout),
-                    org_id: org_id.as_deref(),
                 },
                 json,
             )
@@ -825,7 +694,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             postgres_id,
             wait,
             wait_timeout,
-            org_id,
         } => {
             postgres_role_change(
                 client,
@@ -833,7 +701,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 PostgresRoleCommand::Switchover,
                 RoleChangeOptions {
                     wait: wait_duration(wait, wait_timeout),
-                    org_id: org_id.as_deref(),
                 },
                 json,
             )
@@ -1275,7 +1142,6 @@ pub struct PostgresCreateOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
-    pub org_id: Option<&'a str>,
 }
 
 pub struct PostgresUpdateOptions<'a> {
@@ -1285,7 +1151,6 @@ pub struct PostgresUpdateOptions<'a> {
     pub add_tag: &'a [String],
     pub remove_tag: &'a [String],
     pub clear_tags: bool,
-    pub org_id: Option<&'a str>,
 }
 
 pub struct PostgresReadReplicaOptions<'a> {
@@ -1293,7 +1158,6 @@ pub struct PostgresReadReplicaOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
-    pub org_id: Option<&'a str>,
 }
 
 pub struct PostgresRestoreOptions<'a> {
@@ -1302,7 +1166,6 @@ pub struct PostgresRestoreOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
-    pub org_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1391,11 +1254,10 @@ fn validate_postgres_logs_sort_order(
 
 pub async fn postgres_list(
     client: &CloudClient,
-    org_id: Option<&str>,
     filters: &[PostgresListFilter],
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_service_get_list(&org_id)
@@ -1459,13 +1321,8 @@ pub async fn postgres_list(
     Ok(())
 }
 
-pub async fn postgres_get(
-    client: &CloudClient,
-    postgres_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+pub async fn postgres_get(client: &CloudClient, postgres_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let svc = client.get_postgres_service(&org_id, postgres_id).await?;
 
     if json {
@@ -1483,10 +1340,9 @@ async fn postgres_logs(
     client: &CloudClient,
     postgres_id: &str,
     query: &PostgresLogsQuery,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let logs = client
         .list_postgres_logs(&org_id, postgres_id, query)
         .await?;
@@ -1577,7 +1433,7 @@ pub async fn postgres_create(
         pg_bouncer_config,
     };
 
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_service_create(&org_id, &req)
@@ -1635,7 +1491,7 @@ pub async fn postgres_update(
     opts: PostgresUpdateOptions<'_>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let size = opts.size.map(parse_pg_size).transpose()?;
     let ha_type = opts
@@ -1681,10 +1537,9 @@ pub async fn postgres_update(
 pub async fn postgres_delete(
     client: &CloudClient,
     postgres_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
 
     // The delete endpoint itself only ever returns the raw API envelope
     // (`ApiResponse<serde_json::Value>`, no resource in `result`), so fetch the
@@ -1721,10 +1576,9 @@ pub async fn postgres_certs_get(
     client: &CloudClient,
     postgres_id: &str,
     output: Option<&Path>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let pem = client
         .api()
         .postgres_service_certs_get(&org_id, postgres_id)
@@ -1763,10 +1617,9 @@ pub async fn postgres_certs_get(
 pub async fn postgres_config_get(
     client: &CloudClient,
     postgres_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_config_get(&org_id, postgres_id)
@@ -1785,11 +1638,10 @@ pub async fn postgres_config_replace(
     client: &CloudClient,
     postgres_id: &str,
     file: &Path,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let cfg = instance_config_from_json(&load_json_file::<serde_json::Value>(file)?)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_config_post(&org_id, postgres_id, &cfg)
@@ -1813,7 +1665,6 @@ pub async fn postgres_config_patch(
     postgres_id: &str,
     sets: &[String],
     file: Option<&Path>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     debug_assert!(
@@ -1834,7 +1685,7 @@ pub async fn postgres_config_patch(
         .map_err(|e| CloudError::new(format!("failed to build config from --set entries: {}", e)))?
     };
 
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_config_patch(&org_id, postgres_id, &cfg)
@@ -1858,10 +1709,9 @@ pub async fn postgres_reset_password(
     postgres_id: &str,
     password: Option<&str>,
     generate: bool,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let pw = match (password, generate) {
         (Some(p), false) => {
@@ -1926,7 +1776,7 @@ pub async fn postgres_read_replica_create(
         pg_bouncer_config,
     };
 
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_create_read_replica(&org_id, postgres_id, &req)
@@ -1968,7 +1818,7 @@ pub async fn postgres_restore(
         pg_bouncer_config,
     };
 
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_restore(&org_id, postgres_id, &req)
@@ -1994,10 +1844,9 @@ pub async fn postgres_state_change(
     client: &CloudClient,
     postgres_id: &str,
     cmd: PostgresServiceSetStateCommand,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let req = PostgresServiceSetState { command: cmd };
     let resp = client
         .api()
@@ -2056,11 +1905,10 @@ pub async fn postgres_metrics(
     from_date: &str,
     to_date: &str,
     bucket_size_seconds: Option<i64>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     validate_datetime_range(from_date, to_date)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let metrics = client
         .get_postgres_metrics(
             &org_id,
@@ -2186,11 +2034,10 @@ async fn postgres_slow_queries_list(
     client: &CloudClient,
     postgres_id: &str,
     input: SlowQueryListInput<'_>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let query = build_slow_query_list_query(input)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let patterns = client
         .list_postgres_slow_query_patterns(&org_id, postgres_id, &query)
         .await?;
@@ -2207,11 +2054,10 @@ async fn postgres_slow_query_get(
     postgres_id: &str,
     query_id: &str,
     input: SlowQueryDetailInput<'_>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let query = build_slow_query_detail_query(input)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let pattern = client
         .get_postgres_slow_query_pattern(&org_id, postgres_id, query_id, &query)
         .await?;
@@ -2236,20 +2082,15 @@ fn print_prometheus(metrics: &str, json: bool) -> CloudResult<()> {
 async fn postgres_prometheus_service(
     client: &CloudClient,
     postgres_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let metrics = client.get_postgres_prometheus(&org_id, postgres_id).await?;
     print_prometheus(&metrics, json)
 }
 
-async fn postgres_prometheus_org(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn postgres_prometheus_org(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let metrics = client.get_postgres_org_prometheus(&org_id).await?;
     print_prometheus(&metrics, json)
 }
@@ -2450,11 +2291,10 @@ impl PostgresRoleCommand {
     }
 }
 
-pub struct RoleChangeOptions<'a> {
+pub struct RoleChangeOptions {
     /// How long to poll for convergence, or `None` to return once the API
     /// acknowledges the command.
     pub wait: Option<Duration>,
-    pub org_id: Option<&'a str>,
 }
 
 /// Translates `--wait` / `--wait-timeout` into a polling budget.
@@ -2601,10 +2441,10 @@ pub async fn postgres_role_change(
     client: &CloudClient,
     postgres_id: &str,
     cmd: PostgresRoleCommand,
-    opts: RoleChangeOptions<'_>,
+    opts: RoleChangeOptions,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let wait = match opts.wait {
         Some(timeout) => Some((
@@ -2687,11 +2527,15 @@ mod tests {
     }
 
     fn parse_postgres(args: &[&str]) -> PostgresCommands {
-        assert_eq!(args.get(1), Some(&"cloud"));
-        assert_eq!(args.get(2), Some(&"postgres"));
-        PostgresCli::try_parse_from(std::iter::once(args[0]).chain(args.iter().skip(3).copied()))
-            .expect("parse")
-            .command
+        let cli = Cli::try_parse_from(args).expect("parse");
+        let crate::cli::Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
+        let crate::cloud::cli::CloudCommands::Postgres { command } = cloud.command else {
+            panic!("expected postgres command");
+        };
+        command
     }
 
     #[test]
@@ -2872,7 +2716,6 @@ mod tests {
             sort_order,
             limit,
             offset,
-            org_id,
             ..
         } = cmd
         else {
@@ -2883,7 +2726,6 @@ mod tests {
         assert_eq!(sort_order, Some(PostgresLogsGetListSortorder::Asc));
         assert_eq!(limit, Some(2000));
         assert_eq!(offset, Some(0));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -3285,7 +3127,6 @@ mod tests {
             add_tag,
             remove_tag,
             clear_tags,
-            org_id,
             ..
         } = cmd
         else {
@@ -3297,7 +3138,6 @@ mod tests {
         assert!(add_tag.is_empty());
         assert!(remove_tag.is_empty());
         assert!(!clear_tags);
-        assert!(org_id.is_none());
     }
 
     #[test]
@@ -3659,7 +3499,6 @@ mod tests {
             from_date,
             to_date,
             bucket_size_seconds,
-            org_id,
         } = cmd
         else {
             panic!("expected metrics");
@@ -3668,7 +3507,6 @@ mod tests {
         assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
         assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
         assert_eq!(bucket_size_seconds, Some(60));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -3827,7 +3665,6 @@ mod tests {
             sort_order,
             limit,
             offset,
-            org_id,
         }) = cmd
         else {
             panic!("expected slow-query list");
@@ -3843,7 +3680,6 @@ mod tests {
         assert_eq!(sort_order.as_deref(), Some("asc"));
         assert_eq!(limit, Some(500));
         assert_eq!(offset, Some(0));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -4153,7 +3989,6 @@ mod tests {
             db_operation,
             app,
             timestamp,
-            org_id,
         }) = cmd
         else {
             panic!("expected slow-query detail");
@@ -4165,7 +4000,6 @@ mod tests {
         assert_eq!(db_operation, "SELECT");
         assert_eq!(app.as_deref(), Some("reporter"));
         assert_eq!(timestamp.as_deref(), Some("2026-04-16T12:30:00Z"));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -4227,15 +4061,11 @@ mod tests {
             "org-1",
         ]);
         assert!(!service.is_write());
-        let PostgresCommands::Prometheus(PrometheusCommands::Service {
-            postgres_id,
-            org_id,
-        }) = service
+        let PostgresCommands::Prometheus(PrometheusCommands::Service { postgres_id }) = service
         else {
             panic!("expected service prometheus");
         };
         assert_eq!(postgres_id, "pg-1");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let org = parse_postgres(&[
             "clickhousectl",
@@ -4247,10 +4077,9 @@ mod tests {
             "org-2",
         ]);
         assert!(!org.is_write());
-        let PostgresCommands::Prometheus(PrometheusCommands::Org { org_id }) = org else {
+        let PostgresCommands::Prometheus(PrometheusCommands::Org) = org else {
             panic!("expected organization prometheus");
         };
-        assert_eq!(org_id.as_deref(), Some("org-2"));
     }
 
     #[test]
@@ -4343,7 +4172,6 @@ mod tests {
             postgres_id,
             wait,
             wait_timeout,
-            org_id,
         } = parse_postgres(&[
             "clickhousectl",
             "cloud",
@@ -4362,7 +4190,6 @@ mod tests {
         assert_eq!(postgres_id, "pg-1");
         assert!(wait);
         assert_eq!(wait_timeout, Some(45));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -5119,16 +4946,14 @@ mod tests {
             }
         }
 
-        let cli = Cli::command();
+        let mut cli = Cli::command();
+        cli.build();
         let cloud = cli.find_subcommand("cloud").expect("cloud command");
         let postgres = cloud
             .find_subcommand("postgres")
             .expect("cloud postgres command");
         let mut org_id = None;
         walk(postgres, "cloud postgres", &mut org_id);
-        assert!(
-            org_id.is_some(),
-            "no --org-id argument found under cloud postgres"
-        );
+        assert!(org_id.is_some());
     }
 }

@@ -17,11 +17,7 @@ const API_KEY_STATES: &[&str] = &["enabled", "disabled"];
 #[derive(Subcommand)]
 pub enum KeyCommands {
     /// List API keys
-    List {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    List,
 
     /// Create an API key
     #[command(after_help = "\
@@ -61,10 +57,6 @@ CONTEXT FOR AGENTS:
         /// Pre-hashed key secret digest; needs --hash-key-id and --hash-key-id-suffix
         #[arg(long, requires_all = ["hash_key_id", "hash_key_id_suffix"])]
         hash_key_secret: Option<String>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Get API key details
@@ -72,10 +64,6 @@ CONTEXT FOR AGENTS:
         /// Management resource ID
         #[arg(value_name = "RESOURCE_ID")]
         key_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update an API key
@@ -119,10 +107,6 @@ CONTEXT FOR AGENTS:
         /// Clear the IP allowlist; conflicts with --ip-allow
         #[arg(long, conflicts_with = "ip_allow")]
         clear_ip_allow: bool,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete an API key
@@ -130,17 +114,13 @@ CONTEXT FOR AGENTS:
         /// Management resource ID
         #[arg(value_name = "RESOURCE_ID")]
         key_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
 impl KeyCommands {
     pub fn is_write(&self) -> bool {
         match self {
-            KeyCommands::List { .. } => false,
+            KeyCommands::List => false,
             KeyCommands::Get { .. } => false,
             KeyCommands::Create { .. } => true,
             KeyCommands::Update { .. } => true,
@@ -151,7 +131,7 @@ impl KeyCommands {
 
 pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> CloudResult<()> {
     match command {
-        KeyCommands::List { org_id } => key_list(client, org_id.as_deref(), json).await,
+        KeyCommands::List => key_list(client, json).await,
         KeyCommands::Create {
             name,
             role_id,
@@ -161,7 +141,6 @@ pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> Clou
             hash_key_id,
             hash_key_id_suffix,
             hash_key_secret,
-            org_id,
         } => {
             let options = KeyCreateOptions {
                 name,
@@ -172,13 +151,10 @@ pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> Clou
                 hash_key_id,
                 hash_key_id_suffix,
                 hash_key_secret,
-                org_id,
             };
             key_create(client, options, json).await
         }
-        KeyCommands::Get { key_id, org_id } => {
-            key_get(client, &key_id, org_id.as_deref(), json).await
-        }
+        KeyCommands::Get { key_id } => key_get(client, &key_id, json).await,
         KeyCommands::Update {
             key_id,
             name,
@@ -189,7 +165,6 @@ pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> Clou
             state,
             ip_allow,
             clear_ip_allow,
-            org_id,
         } => {
             let options = KeyUpdateOptions {
                 name,
@@ -200,13 +175,10 @@ pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> Clou
                 state,
                 ip_allow,
                 clear_ip_allow,
-                org_id,
             };
             key_update(client, &key_id, options, json).await
         }
-        KeyCommands::Delete { key_id, org_id } => {
-            key_delete(client, &key_id, org_id.as_deref(), json).await
-        }
+        KeyCommands::Delete { key_id } => key_delete(client, &key_id, json).await,
     }
 }
 
@@ -220,7 +192,6 @@ struct KeyCreateOptions {
     hash_key_id: Option<String>,
     hash_key_id_suffix: Option<String>,
     hash_key_secret: Option<String>,
-    org_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -233,7 +204,6 @@ struct KeyUpdateOptions {
     state: Option<String>,
     ip_allow: Vec<String>,
     clear_ip_allow: bool,
-    org_id: Option<String>,
 }
 
 fn parse_api_key_hash_data(
@@ -364,8 +334,8 @@ fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKe
     })
 }
 
-async fn key_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn key_list(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let keys = client.list_api_keys(&org_id).await?;
 
     if json {
@@ -446,7 +416,7 @@ async fn key_create(
     // Validate before organization resolution so malformed inputs make no network call.
     let request = build_api_key_create_request(&options)?;
     let deny_all = request.ip_access_list.is_empty();
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client.create_api_key(&org_id, &request).await?;
 
     let name = response.key.as_ref().and_then(|key| key.name.as_deref());
@@ -485,13 +455,8 @@ async fn key_create(
     Ok(())
 }
 
-async fn key_get(
-    client: &CloudClient,
-    key_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn key_get(client: &CloudClient, key_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let key = client.get_api_key(&org_id, key_id).await?;
 
     if json {
@@ -510,7 +475,7 @@ async fn key_update(
 ) -> CloudResult<()> {
     // Validate before organization resolution so malformed inputs make no network call.
     let request = build_api_key_update_request(&options)?;
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     let key = client.update_api_key(&org_id, key_id, &request).await?;
 
     if json {
@@ -523,13 +488,8 @@ async fn key_update(
     Ok(())
 }
 
-async fn key_delete(
-    client: &CloudClient,
-    key_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn key_delete(client: &CloudClient, key_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let response = client.delete_api_key(&org_id, key_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -748,11 +708,7 @@ mod tests {
     }
 
     fn parse_key(args: &[&str]) -> KeyCommands {
-        assert_eq!(args.get(1), Some(&"cloud"));
-        assert_eq!(args.get(2), Some(&"key"));
-        KeyCli::try_parse_from(std::iter::once(args[0]).chain(args.iter().skip(3).copied()))
-            .expect("parse")
-            .command
+        parse_top_level_key(args)
     }
 
     fn parse_top_level_key(args: &[&str]) -> KeyCommands {
@@ -760,6 +716,7 @@ mod tests {
         let Commands::Cloud(cloud_args) = cli.command else {
             panic!("expected cloud command");
         };
+        crate::cloud::cli::tests::assert_org_selector(&cloud_args, args);
         let crate::cloud::cli::CloudCommands::Key { command } = cloud_args.command else {
             panic!("expected key command");
         };
@@ -789,7 +746,6 @@ mod tests {
             hash_key_id,
             hash_key_id_suffix,
             hash_key_secret,
-            org_id,
         } = parse_top_level_key(&[
             "clickhousectl",
             "cloud",
@@ -809,7 +765,6 @@ mod tests {
         assert!(hash_key_id.is_none());
         assert!(hash_key_id_suffix.is_none());
         assert!(hash_key_secret.is_none());
-        assert!(org_id.is_none());
 
         let KeyCommands::Update {
             key_id,
@@ -821,7 +776,6 @@ mod tests {
             state,
             ip_allow,
             clear_ip_allow,
-            org_id,
         } = parse_top_level_key(&["clickhousectl", "cloud", "key", "update", "key-1"])
         else {
             panic!("expected key update");
@@ -835,7 +789,6 @@ mod tests {
         assert!(state.is_none());
         assert!(ip_allow.is_empty());
         assert!(!clear_ip_allow);
-        assert!(org_id.is_none());
     }
 
     #[test]
@@ -878,7 +831,6 @@ mod tests {
             hash_key_id,
             hash_key_id_suffix,
             hash_key_secret,
-            org_id,
         } = command
         else {
             panic!("expected key create");
@@ -894,7 +846,6 @@ mod tests {
         assert_eq!(hash_key_id.as_deref(), Some("id-hash"));
         assert_eq!(hash_key_id_suffix.as_deref(), Some("abcd"));
         assert_eq!(hash_key_secret.as_deref(), Some("secret-hash"));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -968,7 +919,6 @@ mod tests {
             state,
             ip_allow,
             clear_ip_allow,
-            org_id,
         } = command
         else {
             panic!("expected key update");
@@ -985,7 +935,6 @@ mod tests {
             vec!["10.0.0.0/8=office", "2001:db8::/32=\u{6771}\u{4eac}"]
         );
         assert!(!clear_ip_allow);
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -1259,7 +1208,6 @@ mod tests {
             hash_key_id: Some("id-hash".to_string()),
             hash_key_id_suffix: Some("abcd".to_string()),
             hash_key_secret: Some("secret-hash".to_string()),
-            org_id: None,
         })
         .unwrap();
         let expected_role_id = uuid::Uuid::parse_str(role_id).unwrap();
@@ -1293,7 +1241,6 @@ mod tests {
             state: Some("disabled".to_string()),
             ip_allow: vec!["2001:db8::/32=\u{6771}\u{4eac}".to_string()],
             clear_ip_allow: false,
-            org_id: None,
         })
         .unwrap();
         let expected_update_expiration =

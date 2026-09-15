@@ -1079,8 +1079,10 @@ async fn failed_parse_after_positional_captures_later_flags_without_values() {
 
     let output = sandbox.run(&[
         "cloud",
-        "org",
-        "usage",
+        "postgres",
+        "logs",
+        "SECRET-POSTGRES-ID",
+        "--org-id",
         "SECRET-ORG-ID",
         "--from-date",
         "SECRET-FROM-DATE",
@@ -1091,11 +1093,13 @@ async fn failed_parse_after_positional_captures_later_flags_without_values() {
 
     let payloads = sandbox.wait_for_requests(1).await;
     let event = &payloads[0];
-    assert_eq!(event["command"], "cloud org usage");
-    assert_eq!(event["flags"], serde_json::json!(["from-date", "to-date"]));
-    // The deprecated positional org-id form is now visible as presence — the
-    // exact signal #480 asked for, with the id still off the wire.
-    assert_eq!(event["positionals"], serde_json::json!(["legacy_org_id"]));
+    assert_eq!(event["command"], "cloud postgres logs");
+    assert_eq!(
+        event["flags"],
+        serde_json::json!(["from-date", "org-id", "to-date"])
+    );
+    // Only the positional definition is recorded; the ID stays off the wire.
+    assert_eq!(event["positionals"], serde_json::json!(["postgres_id"]));
     assert_eq!(event["exit_code"], 2);
     assert_eq!(event["outcome"], "invalid_value");
     let raw = serde_json::to_string(event).unwrap();

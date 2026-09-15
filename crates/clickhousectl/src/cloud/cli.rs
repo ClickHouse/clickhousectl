@@ -34,6 +34,10 @@ pub struct CloudArgs {
     #[arg(long, global = true)]
     pub api_secret: Option<String>,
 
+    /// Organization ID (auto-detected only if you have one org)
+    #[arg(long, global = true)]
+    pub org_id: Option<String>,
+
     /// Output as JSON
     #[arg(long, global = true)]
     pub json: bool,
@@ -111,7 +115,7 @@ pub enum CloudCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   `org list` is the source of the org IDs that other cloud commands take as --org-id.
-  BYOC infrastructure IDs and state are shown by `cloud org get <org-id>`.
+  BYOC infrastructure IDs and state are shown by `cloud org get --org-id <org-id>`.
   Next: `cloud service list`, `cloud member list`.")]
     Org {
         #[command(subcommand)]
@@ -270,9 +274,19 @@ impl CloudCommands {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use crate::cli::{Cli, Commands};
     use clap::Parser;
+
+    /// Assert the cloud-wide selector while domain helpers return only their command.
+    pub(crate) fn assert_org_selector(cloud: &super::CloudArgs, args: &[&str]) {
+        let expected = args
+            .windows(2)
+            .filter(|pair| pair[0] == "--org-id")
+            .map(|pair| pair[1])
+            .next_back();
+        assert_eq!(cloud.org_id.as_deref(), expected, "{args:?}");
+    }
 
     /// Helper to assert a command parsed from CLI args is classified correctly.
     fn assert_write(args: &[&str], expected: bool) {
@@ -286,6 +300,212 @@ mod tests {
             "wrong classification for: {}",
             args.join(" ")
         );
+    }
+
+    #[test]
+    fn org_id_is_global_and_visible_throughout_cloud_hierarchy() {
+        use clap::CommandFactory;
+        fn walk(command: &clap::Command) {
+            let selectors: Vec<_> = command
+                .get_arguments()
+                .filter(|arg| arg.get_id() == "org_id")
+                .collect();
+            assert_eq!(selectors.len(), 1, "{}", command.get_name());
+            let selector = selectors[0];
+            assert!(selector.is_global_set());
+            assert!(!selector.is_hide_set());
+            assert!(!selector.is_required_set());
+            assert_eq!(selector.get_long(), Some("org-id"));
+            assert!(
+                !command
+                    .get_arguments()
+                    .any(|arg| arg.get_id() == "legacy_org_id")
+            );
+            for child in command
+                .get_subcommands()
+                .filter(|child| child.get_name() != "help")
+            {
+                walk(child);
+            }
+        }
+        let mut command = Cli::command();
+        command.build();
+        assert!(!command.get_arguments().any(|arg| arg.get_id() == "org_id"));
+        walk(command.find_subcommand("cloud").unwrap());
+        assert!(
+            Cli::try_parse_from(["chctl", "--org-id", "org-1", "cloud", "org", "get"]).is_err()
+        );
+    }
+
+    #[test]
+    fn org_id_reaches_cloud_args_at_every_command_and_positional_boundary() {
+        let cases: &[&[&str]] = &[
+            &["service", "get", "svc-1"],
+            &["service", "backup-config", "get", "svc-1"],
+            &["service", "settings", "get", "svc-1", "setting"],
+            &["member", "get", "user-1"],
+            &["invitation", "get", "invite-1"],
+            &["key", "get", "key-1"],
+            &["activity", "get", "activity-1"],
+            &["backup", "get", "svc-1", "backup-1"],
+            &["postgres", "config", "get", "pg-1"],
+            &["clickstack", "dashboard", "get", "svc-1", "dashboard-1"],
+            &[
+                "clickpipe",
+                "reverse-private-endpoint",
+                "get",
+                "svc-1",
+                "endpoint-1",
+            ],
+            &["udf", "version", "list", "my_udf"],
+            &["udf", "attachment", "get", "my_udf", "svc-1"],
+            &["query-api-endpoint", "get", "svc-1", "endpoint-1"],
+            &["org", "get"],
+            &["org", "update", "--name", "Renamed"],
+            &[
+                "org",
+                "usage",
+                "--from-date",
+                "2026-09-01",
+                "--to-date",
+                "2026-09-15",
+            ],
+            &["org", "prometheus"],
+            &["org", "prometheus", "discovery"],
+            &["org", "role", "get", "role-1"],
+            &["org", "list"],
+            &["auth", "status"],
+            &[
+                "clickpipe",
+                "schema-discover",
+                "svc-1",
+                "kafka",
+                "--brokers",
+                "broker:9092",
+                "--topics",
+                "events",
+                "--format",
+                "JSONEachRow",
+            ],
+            &[
+                "clickpipe",
+                "schema-discover",
+                "svc-1",
+                "kinesis",
+                "--stream-name",
+                "events",
+                "--region",
+                "us-east-1",
+                "--format",
+                "JSONEachRow",
+            ],
+            &[
+                "clickpipe",
+                "schema-discover",
+                "svc-1",
+                "object-storage",
+                "--source-url",
+                "https://bucket.example/data",
+                "--format",
+                "JSONEachRow",
+            ],
+            &[
+                "clickpipe",
+                "schema-discover",
+                "svc-1",
+                "pubsub",
+                "--project-id",
+                "project",
+                "--topic",
+                "events",
+                "--seek-type",
+                "earliest",
+                "--format",
+                "JSONEachRow",
+                "--service-account-file",
+                "key.json",
+            ],
+        ];
+        for case in cases {
+            let first_flag = case
+                .iter()
+                .position(|arg| arg.starts_with("--"))
+                .unwrap_or(case.len());
+            for position in (0..=first_flag).chain(std::iter::once(case.len())) {
+                let mut args = vec!["chctl", "cloud"];
+                args.extend_from_slice(&case[..position]);
+                args.extend(["--org-id", "org-shared"]);
+                args.extend_from_slice(&case[position..]);
+                let cli =
+                    Cli::try_parse_from(&args).unwrap_or_else(|error| panic!("{args:?}: {error}"));
+                let Commands::Cloud(cloud) = cli.command else {
+                    panic!("cloud")
+                };
+                assert_eq!(cloud.org_id.as_deref(), Some("org-shared"), "{args:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn org_id_repetition_matches_other_cloud_global_value_flags() {
+        for flag in ["--org-id", "--api-key", "--url"] {
+            let error = Cli::try_parse_from([
+                "chctl", "cloud", flag, "first", flag, "second", "org", "get",
+            ])
+            .err()
+            .unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+            let cli = Cli::try_parse_from([
+                "chctl",
+                "cloud",
+                flag,
+                "ancestor",
+                "org",
+                "get",
+                flag,
+                "descendant",
+            ])
+            .unwrap();
+            let Commands::Cloud(cloud) = cli.command else {
+                panic!("cloud")
+            };
+            let value = match flag {
+                "--org-id" => cloud.org_id,
+                "--api-key" => cloud.api_key,
+                "--url" => cloud.url,
+                _ => unreachable!(),
+            };
+            assert_eq!(value.as_deref(), Some("descendant"));
+        }
+    }
+
+    #[test]
+    fn former_positional_org_selectors_are_usage_errors() {
+        for tail in [
+            vec!["get", "org-1"],
+            vec!["update", "org-1", "--name", "Renamed"],
+            vec![
+                "usage",
+                "org-1",
+                "--from-date",
+                "2026-09-01",
+                "--to-date",
+                "2026-09-15",
+            ],
+            vec!["prometheus", "org-1"],
+            vec!["prometheus", "org-1", "discovery"],
+        ] {
+            for selector in [vec![], vec!["--org-id", "org-2"]] {
+                let mut args = vec!["chctl", "cloud"];
+                args.extend(selector);
+                args.push("org");
+                args.extend(&tail);
+                let error = Cli::try_parse_from(&args)
+                    .err()
+                    .unwrap_or_else(|| panic!("accepted {args:?}"));
+                assert_eq!(error.exit_code(), 2, "{args:?}");
+            }
+        }
     }
 
     #[test]

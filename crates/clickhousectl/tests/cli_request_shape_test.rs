@@ -750,7 +750,14 @@ async fn organization_update_rejects_incomplete_endpoint_removals_before_http() 
     ] {
         let output = invoke_cli_with_cloud_credentials(
             &mock,
-            &["org", "update", "org-1", "--remove-private-endpoint", value],
+            &[
+                "org",
+                "update",
+                "--org-id",
+                "org-1",
+                "--remove-private-endpoint",
+                value,
+            ],
         );
 
         assert_eq!(output.status.code(), Some(2));
@@ -5396,10 +5403,12 @@ async fn tag_filters_preserve_repeated_equality_and_existence_filters_on_wire() 
 }
 
 #[tokio::test]
-async fn org_prometheus_accepts_legacy_positional_org_id() {
+async fn org_prometheus_uses_explicit_org_id_without_discovery() {
     let mock = start_mock_org_auto_detection_api().await;
-    let output =
-        invoke_cli_with_cloud_credentials(&mock, &["org", "prometheus", AUTO_DETECTED_ORG_ID]);
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "prometheus", "--org-id", AUTO_DETECTED_ORG_ID],
+    );
     assert_success(&output);
 
     let requests = mock.received_requests().await.unwrap();
@@ -5411,13 +5420,14 @@ async fn org_prometheus_accepts_legacy_positional_org_id() {
 }
 
 #[tokio::test]
-async fn org_usage_accepts_legacy_positional_org_id() {
+async fn org_usage_uses_explicit_org_id_without_discovery() {
     let mock = start_mock_org_auto_detection_api().await;
     let output = invoke_cli_with_cloud_credentials(
         &mock,
         &[
             "org",
             "usage",
+            "--org-id",
             AUTO_DETECTED_ORG_ID,
             "--from-date",
             "2025-01-01",
@@ -17585,7 +17595,7 @@ async fn org_get_unknown_well_formed_id_reads_as_not_found() {
     )
     .await;
 
-    let output = invoke_cli_human(&mock, &["org", "get", UNKNOWN_UUID]);
+    let output = invoke_cli_human(&mock, &["org", "get", "--org-id", UNKNOWN_UUID]);
 
     assert_eq!(output.status.code(), Some(1));
     // The organization is the identifier being looked up, so it is not
@@ -17618,7 +17628,7 @@ async fn by_id_read_not_found_carries_the_resource_not_found_code_in_json_mode()
         (
             format!("/v1/organizations/{UNKNOWN_UUID}"),
             "organization",
-            vec!["org", "get", UNKNOWN_UUID],
+            vec!["org", "get", "--org-id", UNKNOWN_UUID],
             "clickhousectl cloud org list".to_string(),
         ),
     ] {
@@ -17667,7 +17677,7 @@ async fn by_id_read_keeps_the_servers_message_for_a_malformed_id() {
         (
             format!("/v1/organizations/{MALFORMED_ID}"),
             "organization",
-            vec!["org", "get", MALFORMED_ID],
+            vec!["org", "get", "--org-id", MALFORMED_ID],
         ),
     ] {
         let mock = MockServer::start().await;
@@ -17703,7 +17713,7 @@ async fn by_id_read_in_json_mode_keeps_the_servers_message_for_a_malformed_id() 
         (
             format!("/v1/organizations/{MALFORMED_ID}"),
             "organization",
-            vec!["org", "get", MALFORMED_ID],
+            vec!["org", "get", "--org-id", MALFORMED_ID],
         ),
     ] {
         let mock = MockServer::start().await;
@@ -23217,12 +23227,11 @@ async fn service_settings_set_names_unreadable_files_before_organization_discove
 }
 
 #[tokio::test]
-async fn org_get_and_update_select_explicit_legacy_or_detected_organization() {
+async fn org_get_and_update_select_explicit_or_detected_organization() {
     for subcommand in ["get", "update"] {
         for selector in [
             vec![],
             vec!["--org-id", "00000000-0000-0000-0000-000000000001"],
-            vec!["00000000-0000-0000-0000-000000000001"],
         ] {
             let mock = MockServer::start().await;
             let home = tempfile::tempdir().unwrap();
@@ -23289,7 +23298,7 @@ async fn org_get_and_update_select_explicit_legacy_or_detected_organization() {
 }
 
 #[tokio::test]
-async fn org_get_and_update_reject_conflicting_selectors_before_http() {
+async fn org_get_and_update_reject_retired_positionals_with_global_selector() {
     let mock = MockServer::start().await;
     let home = tempfile::tempdir().unwrap();
     for subcommand in ["get", "update"] {
@@ -24303,10 +24312,11 @@ async fn deleted_resource_404_get_and_delete_have_structured_scope_and_guidance(
                 .expect(1)
                 .mount(&mock)
                 .await;
-                let mut args = vec![domain, operation, UNKNOWN_UUID];
-                if domain != "org" {
-                    args.extend(["--org-id", LOOKUP_ORG_ID]);
-                }
+                let args = if domain == "org" {
+                    vec![domain, operation, "--org-id", UNKNOWN_UUID]
+                } else {
+                    vec![domain, operation, UNKNOWN_UUID, "--org-id", LOOKUP_ORG_ID]
+                };
                 let output = if human {
                     invoke_cli_human(&mock, &args)
                 } else {
@@ -24448,4 +24458,105 @@ async fn deleted_resource_404_wrong_organization_scope_is_included_for_lists() {
         "{stderr}"
     );
     assert!(!stderr.contains("resource_not_found"), "{stderr}");
+}
+
+#[tokio::test]
+async fn global_org_id_scopes_requests_at_every_hierarchy_depth() {
+    for (tail, endpoint, result) in [
+        (
+            vec!["service", "get", "svc-1"],
+            "/v1/organizations/org-selected/services/svc-1",
+            serde_json::json!({}),
+        ),
+        (
+            vec!["postgres", "config", "get", "pg-1"],
+            "/v1/organizations/org-selected/postgres/pg-1/config",
+            serde_json::json!({"pgConfig": {}, "pgBouncerConfig": {}}),
+        ),
+        (
+            vec!["org", "prometheus", "discovery"],
+            "/v1/organizations/org-selected/prometheus/discovery",
+            serde_json::json!([]),
+        ),
+    ] {
+        for position in 0..=tail.len() {
+            let mock = MockServer::start().await;
+            let response = if tail[0] == "org" {
+                result.clone()
+            } else {
+                serde_json::json!({"result": result})
+            };
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response))
+                .expect(1)
+                .mount(&mock)
+                .await;
+            let mut args = tail[..position].to_vec();
+            args.extend(["--org-id", "org-selected"]);
+            args.extend_from_slice(&tail[position..]);
+            assert_success(&invoke_cli_with_cloud_credentials(&mock, &args));
+            let requests = mock.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1, "{args:?}");
+            assert_eq!(requests[0].url.path(), endpoint);
+        }
+    }
+}
+
+#[tokio::test]
+async fn global_org_id_does_not_add_lookup_to_auth_help_or_org_list() {
+    let mock = MockServer::start().await;
+    for args in [
+        vec!["--org-id", "ignored-scope", "auth", "status"],
+        vec!["service", "get", "--org-id", "ignored-scope", "--help"],
+    ] {
+        assert_success(&invoke_cli_with_cloud_credentials(&mock, &args));
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+    // A list call must return every org even if a shared selector is supplied.
+    let organizations = serde_json::json!([
+        {"id": "00000000-0000-0000-0000-000000000001", "name": "First"},
+        {"id": "00000000-0000-0000-0000-000000000002", "name": "Second"}
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": organizations})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output =
+        invoke_cli_with_cloud_credentials(&mock, &["org", "list", "--org-id", "ignored-scope"]);
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        organizations
+    );
+    assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn global_org_id_retires_all_positional_org_forms_before_http() {
+    let mock = MockServer::start().await;
+    for tail in [
+        vec!["get", "org-1"],
+        vec!["update", "org-1", "--name", "Renamed"],
+        vec![
+            "usage",
+            "org-1",
+            "--from-date",
+            "2026-09-01",
+            "--to-date",
+            "2026-09-15",
+        ],
+        vec!["prometheus", "org-1"],
+        vec!["prometheus", "org-1", "discovery"],
+    ] {
+        let mut args = vec!["org"];
+        args.extend(tail);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }

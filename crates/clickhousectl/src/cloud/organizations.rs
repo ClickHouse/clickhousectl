@@ -20,15 +20,7 @@ pub enum OrgCommands {
     List,
 
     /// Get organization details
-    Get {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-
-        /// Organization ID (deprecated positional form; use --org-id)
-        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
-        legacy_org_id: Option<String>,
-    },
+    Get,
 
     /// View organization quotas (Beta)
     Quota {
@@ -37,11 +29,7 @@ pub enum OrgCommands {
     },
 
     /// View active credit balances (Beta)
-    Balance {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    Balance,
 
     /// Manage BYOC infrastructure
     Byoc {
@@ -66,14 +54,6 @@ CONTEXT FOR AGENTS:
   Only the flags you pass change; everything else is left as-is.
   This can only remove private endpoints; add them with `cloud service update --add-private-endpoint-id`.")]
     Update {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-
-        /// Organization ID (deprecated positional form; use --org-id)
-        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
-        legacy_org_id: Option<String>,
-
         /// New organization name
         #[arg(long)]
         name: Option<String>,
@@ -101,14 +81,6 @@ CONTEXT FOR AGENTS:
         #[command(subcommand)]
         command: Option<PrometheusCommands>,
 
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long, global = true)]
-        org_id: Option<String>,
-
-        /// Organization ID (deprecated positional form; use --org-id)
-        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
-        legacy_org_id: Option<String>,
-
         /// Return the reduced (filtered) metric set
         #[arg(long, global = true)]
         filtered_metrics: Option<bool>,
@@ -120,14 +92,6 @@ CONTEXT FOR AGENTS:
   The date range is inclusive and may span at most 31 days; longer ranges are rejected.
   Costs are in CHC (ClickHouse Credits), one row per entity per day plus a grand total.")]
     Usage {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-
-        /// Organization ID (deprecated positional form; use --org-id)
-        #[arg(value_name = "ORG_ID", hide = true, conflicts_with = "org_id")]
-        legacy_org_id: Option<String>,
-
         /// Report start date in UTC (YYYY-MM-DD)
         #[arg(long, value_parser = parse_date_only)]
         from_date: String,
@@ -146,9 +110,9 @@ impl OrgCommands {
     pub fn is_write(&self) -> bool {
         match self {
             OrgCommands::List => false,
-            OrgCommands::Get { .. } => false,
+            OrgCommands::Get => false,
             OrgCommands::Quota { .. } => false,
-            OrgCommands::Balance { .. } => false,
+            OrgCommands::Balance => false,
             OrgCommands::Byoc { command } => command.is_write(),
             OrgCommands::Role { command } => command.is_write(),
             OrgCommands::Prometheus { .. } => false,
@@ -161,20 +125,12 @@ impl OrgCommands {
 #[derive(Subcommand)]
 pub enum RoleCommands {
     /// List organization roles
-    List {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    List,
 
     /// Get organization role details
     Get {
         /// Role ID (from `cloud org role list`)
         role_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Create a custom organization role
@@ -182,10 +138,6 @@ pub enum RoleCommands {
         /// JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update a custom organization role
@@ -199,27 +151,19 @@ CONTEXT FOR AGENTS:
         /// JSON request body path, or `-` for stdin
         #[arg(long, value_name = "PATH|-", required = true)]
         config_file: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete a custom organization role
     Delete {
         /// Role ID (from `cloud org role list`)
         role_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
 impl RoleCommands {
     fn is_write(&self) -> bool {
         match self {
-            Self::List { .. } | Self::Get { .. } => false,
+            Self::List | Self::Get { .. } => false,
             Self::Create { .. } | Self::Update { .. } | Self::Delete { .. } => true,
         }
     }
@@ -252,10 +196,6 @@ CONTEXT FOR AGENTS:
         /// Human-readable infrastructure name
         #[arg(long)]
         display_name: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update BYOC infrastructure
@@ -266,20 +206,12 @@ CONTEXT FOR AGENTS:
         /// New human-readable infrastructure name
         #[arg(long)]
         display_name: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete BYOC infrastructure
     Delete {
         /// BYOC infrastructure ID
         byoc_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -302,40 +234,24 @@ pub enum PrometheusCommands {
 #[derive(Subcommand)]
 pub enum QuotaCommands {
     /// List organization quotas
-    List {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    List,
 
     /// Get organization quota details
     Get {
         /// Quota code
         quota_code: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 pub enum MemberCommands {
     /// List organization members
-    List {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    List,
 
     /// Get member details
     Get {
         /// User ID
         user_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update member roles
@@ -350,27 +266,19 @@ pub enum MemberCommands {
         /// Remove all assigned roles; conflicts with --role-id
         #[arg(long, conflicts_with = "role_id")]
         clear_roles: bool,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Remove a member from the organization
     Remove {
         /// User ID
         user_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
 impl MemberCommands {
     pub fn is_write(&self) -> bool {
         match self {
-            MemberCommands::List { .. } => false,
+            MemberCommands::List => false,
             MemberCommands::Get { .. } => false,
             MemberCommands::Update { .. } => true,
             MemberCommands::Remove { .. } => true,
@@ -381,11 +289,7 @@ impl MemberCommands {
 #[derive(Subcommand)]
 pub enum InvitationCommands {
     /// List pending invitations
-    List {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    List,
 
     /// Create an invitation
     Create {
@@ -396,37 +300,25 @@ pub enum InvitationCommands {
         /// Role ID to assign (repeatable)
         #[arg(long)]
         role_id: Vec<String>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Get invitation details
     Get {
         /// Invitation ID
         invitation_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete an invitation
     Delete {
         /// Invitation ID
         invitation_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
 impl InvitationCommands {
     pub fn is_write(&self) -> bool {
         match self {
-            InvitationCommands::List { .. } => false,
+            InvitationCommands::List => false,
             InvitationCommands::Get { .. } => false,
             InvitationCommands::Create { .. } => true,
             InvitationCommands::Delete { .. } => true,
@@ -437,21 +329,15 @@ impl InvitationCommands {
 pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> CloudResult<()> {
     match command {
         OrgCommands::List => org_list(client, json).await,
-        OrgCommands::Get {
-            org_id,
-            legacy_org_id,
-        } => {
-            let org_id =
-                resolve_org_id(client, org_id.as_deref().or(legacy_org_id.as_deref())).await?;
+        OrgCommands::Get => {
+            let org_id = resolve_org_id(client).await?;
             org_get(client, &org_id, json).await
         }
         OrgCommands::Quota { command } => run_quota(client, command, json).await,
-        OrgCommands::Balance { org_id } => org_balance(client, org_id.as_deref(), json).await,
+        OrgCommands::Balance => org_balance(client, json).await,
         OrgCommands::Byoc { command } => run_byoc(client, command, json).await,
         OrgCommands::Role { command } => run_role(client, command, json).await,
         OrgCommands::Update {
-            org_id,
-            legacy_org_id,
             name,
             remove_private_endpoint,
             enable_core_dumps,
@@ -461,65 +347,41 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
                 remove_private_endpoints: remove_private_endpoint,
                 enable_core_dumps,
             };
-            org_update(
-                client,
-                org_id.as_deref().or(legacy_org_id.as_deref()),
-                options,
-                json,
-            )
-            .await
+            org_update(client, options, json).await
         }
         OrgCommands::Prometheus {
             command,
-            org_id,
-            legacy_org_id,
             filtered_metrics,
-        } => {
-            let org_id = org_id.as_deref().or(legacy_org_id.as_deref());
-            match command {
-                Some(PrometheusCommands::Discovery) => {
-                    org_prometheus_discovery(client, org_id, filtered_metrics, json).await
-                }
-                None => org_prometheus(client, org_id, filtered_metrics, json).await,
+        } => match command {
+            Some(PrometheusCommands::Discovery) => {
+                org_prometheus_discovery(client, filtered_metrics, json).await
             }
-        }
+            None => org_prometheus(client, filtered_metrics, json).await,
+        },
         OrgCommands::Usage {
-            org_id,
-            legacy_org_id,
             from_date,
             to_date,
             filter,
-        } => {
-            let org_id = org_id.as_deref().or(legacy_org_id.as_deref());
-            org_usage(client, org_id, &from_date, &to_date, &filter, json).await
-        }
+        } => org_usage(client, &from_date, &to_date, &filter, json).await,
     }
 }
 
 async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> CloudResult<()> {
     match command {
-        RoleCommands::List { org_id } => role_list(client, org_id.as_deref(), json).await,
-        RoleCommands::Get { role_id, org_id } => {
-            role_get(client, &role_id, org_id.as_deref(), json).await
-        }
-        RoleCommands::Create {
-            config_file,
-            org_id,
-        } => {
+        RoleCommands::List => role_list(client, json).await,
+        RoleCommands::Get { role_id } => role_get(client, &role_id, json).await,
+        RoleCommands::Create { config_file } => {
             let request = build_role_create_request(&config_file)?;
-            role_create(client, request, org_id.as_deref(), json).await
+            role_create(client, request, json).await
         }
         RoleCommands::Update {
             role_id,
             config_file,
-            org_id,
         } => {
             let request = build_role_update_request(&config_file)?;
-            role_update(client, &role_id, request, org_id.as_deref(), json).await
+            role_update(client, &role_id, request, json).await
         }
-        RoleCommands::Delete { role_id, org_id } => {
-            role_delete(client, &role_id, org_id.as_deref(), json).await
-        }
+        RoleCommands::Delete { role_id } => role_delete(client, &role_id, json).await,
     }
 }
 
@@ -531,7 +393,6 @@ async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> Cl
             availability_zone_suffix,
             vpc_cidr_range,
             display_name,
-            org_id,
         } => {
             let request = build_byoc_create_request(
                 &region,
@@ -540,28 +401,23 @@ async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> Cl
                 &vpc_cidr_range,
                 &display_name,
             )?;
-            byoc_create(client, request, org_id.as_deref(), json).await
+            byoc_create(client, request, json).await
         }
         ByocCommands::Update {
             byoc_id,
             display_name,
-            org_id,
         } => {
             let request = build_byoc_update_request(&display_name);
-            byoc_update(client, &byoc_id, request, org_id.as_deref(), json).await
+            byoc_update(client, &byoc_id, request, json).await
         }
-        ByocCommands::Delete { byoc_id, org_id } => {
-            byoc_delete(client, &byoc_id, org_id.as_deref(), json).await
-        }
+        ByocCommands::Delete { byoc_id } => byoc_delete(client, &byoc_id, json).await,
     }
 }
 
 async fn run_quota(client: &CloudClient, command: QuotaCommands, json: bool) -> CloudResult<()> {
     match command {
-        QuotaCommands::List { org_id } => quota_list(client, org_id.as_deref(), json).await,
-        QuotaCommands::Get { quota_code, org_id } => {
-            quota_get(client, &quota_code, org_id.as_deref(), json).await
-        }
+        QuotaCommands::List => quota_list(client, json).await,
+        QuotaCommands::Get { quota_code } => quota_get(client, &quota_code, json).await,
     }
 }
 
@@ -571,29 +427,14 @@ pub async fn run_member(
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        MemberCommands::List { org_id } => member_list(client, org_id.as_deref(), json).await,
-        MemberCommands::Get { user_id, org_id } => {
-            member_get(client, &user_id, org_id.as_deref(), json).await
-        }
+        MemberCommands::List => member_list(client, json).await,
+        MemberCommands::Get { user_id } => member_get(client, &user_id, json).await,
         MemberCommands::Update {
             user_id,
             role_id,
             clear_roles,
-            org_id,
-        } => {
-            member_update(
-                client,
-                &user_id,
-                &role_id,
-                clear_roles,
-                org_id.as_deref(),
-                json,
-            )
-            .await
-        }
-        MemberCommands::Remove { user_id, org_id } => {
-            member_remove(client, &user_id, org_id.as_deref(), json).await
-        }
+        } => member_update(client, &user_id, &role_id, clear_roles, json).await,
+        MemberCommands::Remove { user_id } => member_remove(client, &user_id, json).await,
     }
 }
 
@@ -603,22 +444,16 @@ pub async fn run_invitation(
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        InvitationCommands::List { org_id } => {
-            invitation_list(client, org_id.as_deref(), json).await
+        InvitationCommands::List => invitation_list(client, json).await,
+        InvitationCommands::Create { email, role_id } => {
+            invitation_create(client, &email, &role_id, json).await
         }
-        InvitationCommands::Create {
-            email,
-            role_id,
-            org_id,
-        } => invitation_create(client, &email, &role_id, org_id.as_deref(), json).await,
-        InvitationCommands::Get {
-            invitation_id,
-            org_id,
-        } => invitation_get(client, &invitation_id, org_id.as_deref(), json).await,
-        InvitationCommands::Delete {
-            invitation_id,
-            org_id,
-        } => invitation_delete(client, &invitation_id, org_id.as_deref(), json).await,
+        InvitationCommands::Get { invitation_id } => {
+            invitation_get(client, &invitation_id, json).await
+        }
+        InvitationCommands::Delete { invitation_id } => {
+            invitation_delete(client, &invitation_id, json).await
+        }
     }
 }
 
@@ -935,8 +770,8 @@ async fn org_get(client: &CloudClient, org_id: &str, json: bool) -> CloudResult<
     Ok(())
 }
 
-async fn quota_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn quota_list(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let quotas = client.list_organization_quotas(&org_id).await?;
 
     if json {
@@ -977,13 +812,8 @@ async fn quota_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> C
     Ok(())
 }
 
-async fn quota_get(
-    client: &CloudClient,
-    quota_code: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn quota_get(client: &CloudClient, quota_code: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let quota = client.get_organization_quota(&org_id, quota_code).await?;
 
     if json {
@@ -994,8 +824,8 @@ async fn quota_get(
     Ok(())
 }
 
-async fn org_balance(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn org_balance(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let credit_balances = client.get_credit_balances(&org_id).await?;
 
     if json {
@@ -1047,12 +877,11 @@ async fn org_balance(client: &CloudClient, org_id: Option<&str>, json: bool) -> 
 
 async fn org_update(
     client: &CloudClient,
-    org_id: Option<&str>,
     options: OrgUpdateOptions,
     json: bool,
 ) -> CloudResult<()> {
     let request = build_org_update_request(&options)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let organization = client.update_organization(&org_id, &request).await?;
 
     if json {
@@ -1070,10 +899,9 @@ async fn org_update(
 async fn byoc_create(
     client: &CloudClient,
     request: ByocInfrastructurePostRequest,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let infrastructure = client.create_byoc_infrastructure(&org_id, &request).await?;
 
     if json {
@@ -1088,10 +916,9 @@ async fn byoc_update(
     client: &CloudClient,
     byoc_id: &str,
     request: ByocInfrastructurePatchRequest,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let infrastructure = client
         .update_byoc_infrastructure(&org_id, byoc_id, &request)
         .await?;
@@ -1104,13 +931,8 @@ async fn byoc_update(
     Ok(())
 }
 
-async fn byoc_delete(
-    client: &CloudClient,
-    byoc_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn byoc_delete(client: &CloudClient, byoc_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let response = client.delete_byoc_infrastructure(&org_id, byoc_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -1120,8 +942,8 @@ async fn byoc_delete(
     Ok(())
 }
 
-async fn role_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn role_list(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let roles = client.list_organization_roles(&org_id).await?;
 
     if json {
@@ -1167,13 +989,8 @@ async fn role_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> Cl
     Ok(())
 }
 
-async fn role_get(
-    client: &CloudClient,
-    role_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn role_get(client: &CloudClient, role_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let role = client.get_organization_role(&org_id, role_id).await?;
 
     if json {
@@ -1187,10 +1004,9 @@ async fn role_get(
 async fn role_create(
     client: &CloudClient,
     request: RoleCreateRequest,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let role = client.create_organization_role(&org_id, &request).await?;
 
     if json {
@@ -1205,10 +1021,9 @@ async fn role_update(
     client: &CloudClient,
     role_id: &str,
     request: RoleUpdateRequest,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let role = client
         .update_organization_role(&org_id, role_id, &request)
         .await?;
@@ -1221,13 +1036,8 @@ async fn role_update(
     Ok(())
 }
 
-async fn role_delete(
-    client: &CloudClient,
-    role_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn role_delete(client: &CloudClient, role_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let response = client.delete_organization_role(&org_id, role_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -1239,11 +1049,10 @@ async fn role_delete(
 
 async fn org_prometheus(
     client: &CloudClient,
-    org_id: Option<&str>,
     filtered_metrics: Option<bool>,
     _json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let prometheus = client.get_org_prometheus(&org_id, filtered_metrics).await?;
     println!("{}", prometheus);
     Ok(())
@@ -1251,11 +1060,10 @@ async fn org_prometheus(
 
 async fn org_prometheus_discovery(
     client: &CloudClient,
-    org_id: Option<&str>,
     filtered_metrics: Option<bool>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let groups = client
         .discover_org_prometheus_targets(&org_id, filtered_metrics)
         .await?;
@@ -1269,13 +1077,12 @@ async fn org_prometheus_discovery(
 
 async fn org_usage(
     client: &CloudClient,
-    org_id: Option<&str>,
     from_date: &str,
     to_date: &str,
     filters: &[String],
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let usage = client
         .get_org_usage(&org_id, from_date, to_date, filters)
         .await?;
@@ -1323,8 +1130,8 @@ fn usage_entity_label(name: Option<&str>, id: Option<uuid::Uuid>) -> String {
     }
 }
 
-async fn member_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn member_list(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let members = client.list_members(&org_id).await?;
 
     if json {
@@ -1361,13 +1168,8 @@ async fn member_list(client: &CloudClient, org_id: Option<&str>, json: bool) -> 
     Ok(())
 }
 
-async fn member_get(
-    client: &CloudClient,
-    user_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn member_get(client: &CloudClient, user_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let member = client.get_member(&org_id, user_id).await?;
 
     if json {
@@ -1383,10 +1185,9 @@ async fn member_update(
     user_id: &str,
     role_ids: &[String],
     clear_roles: bool,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let request = build_member_update_request(role_ids, clear_roles);
     let member = client.update_member(&org_id, user_id, &request).await?;
 
@@ -1398,13 +1199,8 @@ async fn member_update(
     Ok(())
 }
 
-async fn member_remove(
-    client: &CloudClient,
-    user_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn member_remove(client: &CloudClient, user_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let response = client.delete_member(&org_id, user_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -1414,12 +1210,8 @@ async fn member_remove(
     Ok(())
 }
 
-async fn invitation_list(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn invitation_list(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let invitations = client.list_invitations(&org_id).await?;
 
     if json {
@@ -1460,10 +1252,9 @@ async fn invitation_create(
     client: &CloudClient,
     email: &str,
     role_ids: &[String],
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let request = build_invitation_create_request(email, role_ids);
     let invitation = client.create_invitation(&org_id, &request).await?;
 
@@ -1479,13 +1270,8 @@ async fn invitation_create(
     Ok(())
 }
 
-async fn invitation_get(
-    client: &CloudClient,
-    invitation_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn invitation_get(client: &CloudClient, invitation_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let invitation = client.get_invitation(&org_id, invitation_id).await?;
 
     if json {
@@ -1499,10 +1285,9 @@ async fn invitation_get(
 async fn invitation_delete(
     client: &CloudClient,
     invitation_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client.delete_invitation(&org_id, invitation_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -1876,6 +1661,7 @@ mod tests {
         let Commands::Cloud(cloud_args) = cli.command else {
             panic!("expected cloud command");
         };
+        crate::cloud::cli::tests::assert_org_selector(&cloud_args, args);
         cloud_args.command
     }
 
@@ -1896,87 +1682,18 @@ mod tests {
     }
 
     #[test]
-    fn org_get_and_update_hide_only_the_legacy_selector() {
-        use clap::CommandFactory;
-        let cli = Cli::command();
-        let org = cli
-            .find_subcommand("cloud")
-            .unwrap()
-            .find_subcommand("org")
-            .unwrap();
-        for name in ["get", "update"] {
-            let command = org.find_subcommand(name).unwrap();
-            let legacy = command
-                .get_arguments()
-                .find(|arg| arg.get_id() == "legacy_org_id")
-                .unwrap();
-            let flag = command
-                .get_arguments()
-                .find(|arg| arg.get_id() == "org_id")
-                .unwrap();
-            assert!(legacy.is_hide_set());
-            assert!(!legacy.is_required_set());
-            assert_eq!(flag.get_long(), Some("org-id"));
-            assert!(!flag.is_hide_set());
-            assert!(!flag.is_required_set());
-        }
-    }
-
-    #[test]
-    fn org_get_and_update_accept_optional_and_legacy_selectors() {
-        for subcommand in ["get", "update"] {
-            for selector in [vec![], vec!["--org-id", "org-1"], vec!["org-1"]] {
-                let mut args = vec!["clickhousectl", "cloud", "org", subcommand];
-                args.extend(&selector);
-                let CloudCommands::Org { command } = parse_cloud_command(&args) else {
-                    panic!("expected org command");
-                };
-                assert_eq!(command.is_write(), subcommand == "update");
-                let (org_id, legacy_org_id) = match command {
-                    OrgCommands::Get {
-                        org_id,
-                        legacy_org_id,
-                    }
-                    | OrgCommands::Update {
-                        org_id,
-                        legacy_org_id,
-                        ..
-                    } => (org_id, legacy_org_id),
-                    _ => panic!("expected get or update"),
-                };
-                assert_eq!(org_id.as_deref(), (selector.len() == 2).then_some("org-1"));
-                assert_eq!(
-                    legacy_org_id.as_deref(),
-                    (selector.len() == 1).then_some("org-1")
-                );
-            }
-            for positional in ["org-1", "org-2"] {
-                let err = Cli::try_parse_from([
-                    "clickhousectl",
-                    "cloud",
-                    "org",
-                    subcommand,
-                    positional,
-                    "--org-id",
-                    "org-1",
-                ])
-                .err()
-                .expect("conflicting selectors must fail");
-                assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
-            }
-        }
-    }
-
-    #[test]
     fn parses_organization_body_command_defaults() {
-        let CloudCommands::Org { command } =
-            parse_cloud_command(&["clickhousectl", "cloud", "org", "update", "org-1"])
-        else {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "update",
+            "--org-id",
+            "org-1",
+        ]) else {
             panic!("expected org command");
         };
         let OrgCommands::Update {
-            org_id,
-            legacy_org_id,
             name,
             remove_private_endpoint,
             enable_core_dumps,
@@ -1984,8 +1701,7 @@ mod tests {
         else {
             panic!("expected org update");
         };
-        assert!(org_id.is_none());
-        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
+
         assert!(name.is_none());
         assert!(remove_private_endpoint.is_empty());
         assert!(enable_core_dumps.is_none());
@@ -1999,7 +1715,6 @@ mod tests {
             user_id,
             role_id,
             clear_roles,
-            org_id,
         } = command
         else {
             panic!("expected member update");
@@ -2007,7 +1722,6 @@ mod tests {
         assert_eq!(user_id, "user-1");
         assert!(role_id.is_empty());
         assert!(!clear_roles);
-        assert!(org_id.is_none());
 
         let CloudCommands::Invitation { command } = parse_cloud_command(&[
             "clickhousectl",
@@ -2019,17 +1733,11 @@ mod tests {
         ]) else {
             panic!("expected invitation command");
         };
-        let InvitationCommands::Create {
-            email,
-            role_id,
-            org_id,
-        } = command
-        else {
+        let InvitationCommands::Create { email, role_id } = command else {
             panic!("expected invitation create");
         };
         assert_eq!(email, "user@example.com");
         assert!(role_id.is_empty());
-        assert!(org_id.is_none());
     }
 
     #[test]
@@ -2039,6 +1747,7 @@ mod tests {
             "cloud",
             "org",
             "update",
+            "--org-id",
             "org-1",
             "--name",
             "Updated Org",
@@ -2052,8 +1761,6 @@ mod tests {
             panic!("expected org command");
         };
         let OrgCommands::Update {
-            org_id,
-            legacy_org_id,
             name,
             remove_private_endpoint,
             enable_core_dumps,
@@ -2061,8 +1768,7 @@ mod tests {
         else {
             panic!("expected org update");
         };
-        assert!(org_id.is_none());
-        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
+
         assert_eq!(name.as_deref(), Some("Updated Org"));
         assert_eq!(
             remove_private_endpoint,
@@ -2092,7 +1798,6 @@ mod tests {
             user_id,
             role_id,
             clear_roles,
-            org_id,
         } = command
         else {
             panic!("expected member update");
@@ -2100,7 +1805,6 @@ mod tests {
         assert_eq!(user_id, "user-1");
         assert_eq!(role_id, vec!["role-1", "role-2"]);
         assert!(!clear_roles);
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let CloudCommands::Invitation { command } = parse_cloud_command(&[
             "clickhousectl",
@@ -2118,17 +1822,11 @@ mod tests {
         ]) else {
             panic!("expected invitation command");
         };
-        let InvitationCommands::Create {
-            email,
-            role_id,
-            org_id,
-        } = command
-        else {
+        let InvitationCommands::Create { email, role_id } = command else {
             panic!("expected invitation create");
         };
         assert_eq!(email, "user@example.com");
         assert_eq!(role_id, vec!["role-1", "role-2"]);
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -2138,6 +1836,7 @@ mod tests {
             "cloud",
             "org",
             "update",
+            "--org-id",
             "org-1",
             "--remove-private-endpoint",
             "pe-1,cloud-provider=aws,region=us-east-1",
@@ -2178,6 +1877,7 @@ mod tests {
                 "cloud",
                 "org",
                 "update",
+                "--org-id",
                 "org-1",
                 "--remove-private-endpoint",
                 value,
@@ -2253,17 +1953,12 @@ mod tests {
             panic!("expected org command");
         };
         let OrgCommands::Usage {
-            org_id,
-            legacy_org_id,
-            from_date,
-            to_date,
-            ..
+            from_date, to_date, ..
         } = command
         else {
             panic!("expected org usage");
         };
-        assert_eq!(org_id, None);
-        assert_eq!(legacy_org_id, None);
+
         assert_eq!(from_date, "2025-01-01");
         assert_eq!(to_date, "2025-01-31");
     }
@@ -2329,10 +2024,9 @@ mod tests {
         let crate::cloud::cli::CloudCommands::Org { command } = args.command else {
             panic!("expected org command");
         };
-        let OrgCommands::Prometheus { org_id, .. } = command else {
+        let OrgCommands::Prometheus { .. } = command else {
             panic!("expected org prometheus");
         };
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let usage = Cli::try_parse_from([
             "clickhousectl",
@@ -2353,10 +2047,9 @@ mod tests {
         let crate::cloud::cli::CloudCommands::Org { command } = args.command else {
             panic!("expected org command");
         };
-        let OrgCommands::Usage { org_id, .. } = command else {
+        let OrgCommands::Usage { .. } = command else {
             panic!("expected org usage");
         };
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -2382,14 +2075,13 @@ mod tests {
         };
         let OrgCommands::Prometheus {
             command: Some(PrometheusCommands::Discovery),
-            org_id,
             filtered_metrics,
             ..
         } = command
         else {
             panic!("expected prometheus discovery");
         };
-        assert_eq!(org_id.as_deref(), Some("org-1"));
+
         assert_eq!(filtered_metrics, Some(false));
     }
 
@@ -2407,12 +2099,11 @@ mod tests {
             panic!("expected org command");
         };
         let OrgCommands::Quota {
-            command: QuotaCommands::List { org_id },
+            command: QuotaCommands::List,
         } = command
         else {
             panic!("expected quota list command");
         };
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let CloudCommands::Org { command } = parse_cloud_command(&[
             "clickhousectl",
@@ -2425,13 +2116,12 @@ mod tests {
             panic!("expected org command");
         };
         let OrgCommands::Quota {
-            command: QuotaCommands::Get { quota_code, org_id },
+            command: QuotaCommands::Get { quota_code },
         } = command
         else {
             panic!("expected quota get command");
         };
         assert_eq!(quota_code, "replicas-per-warehouse");
-        assert!(org_id.is_none());
     }
 
     #[test]
@@ -2446,96 +2136,9 @@ mod tests {
         ]) else {
             panic!("expected org command");
         };
-        let OrgCommands::Balance { org_id } = command else {
+        let OrgCommands::Balance = command else {
             panic!("expected org balance command");
         };
-        assert_eq!(org_id.as_deref(), Some("org-1"));
-    }
-
-    #[test]
-    fn parses_legacy_org_id_positionals() {
-        let prometheus =
-            Cli::try_parse_from(["clickhousectl", "cloud", "org", "prometheus", "org-1"]).unwrap();
-        let Commands::Cloud(args) = prometheus.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Prometheus {
-            org_id,
-            legacy_org_id,
-            ..
-        } = command
-        else {
-            panic!("expected org prometheus");
-        };
-        assert_eq!(org_id, None);
-        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
-
-        let usage = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "org-1",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ])
-        .unwrap();
-        let Commands::Cloud(args) = usage.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Org { command } = args.command else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Usage {
-            org_id,
-            legacy_org_id,
-            ..
-        } = command
-        else {
-            panic!("expected org usage");
-        };
-        assert_eq!(org_id, None);
-        assert_eq!(legacy_org_id.as_deref(), Some("org-1"));
-    }
-
-    #[test]
-    fn rejects_org_id_flag_with_legacy_positional() {
-        let prometheus = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "prometheus",
-            "org-1",
-            "--org-id",
-            "org-2",
-        ]);
-        match prometheus {
-            Ok(_) => panic!("expected conflicting org IDs to be rejected"),
-            Err(error) => assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict),
-        }
-
-        let usage = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "org",
-            "usage",
-            "org-1",
-            "--org-id",
-            "org-2",
-            "--from-date",
-            "2025-01-01",
-            "--to-date",
-            "2025-01-31",
-        ]);
-        match usage {
-            Ok(_) => panic!("expected conflicting org IDs to be rejected"),
-            Err(error) => assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict),
-        }
     }
 
     #[test]
@@ -2579,7 +2182,10 @@ mod tests {
     #[test]
     fn top_level_write_classification_covers_every_organization_access_command() {
         assert_write(&["clickhousectl", "cloud", "org", "list"], false);
-        assert_write(&["clickhousectl", "cloud", "org", "get", "org-1"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "org", "get", "--org-id", "org-1"],
+            false,
+        );
         assert_write(&["clickhousectl", "cloud", "org", "quota", "list"], false);
         assert_write(
             &[
@@ -2611,7 +2217,17 @@ mod tests {
             ],
             false,
         );
-        assert_write(&["clickhousectl", "cloud", "org", "update", "org-1"], true);
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "update",
+                "--org-id",
+                "org-1",
+            ],
+            true,
+        );
 
         assert_write(&["clickhousectl", "cloud", "member", "list"], false);
         assert_write(
@@ -2854,7 +2470,6 @@ mod tests {
                     availability_zone_suffix,
                     vpc_cidr_range,
                     display_name,
-                    org_id,
                 },
         } = command
         else {
@@ -2865,7 +2480,6 @@ mod tests {
         assert_eq!(availability_zone_suffix, vec!["a", "b"]);
         assert_eq!(vpc_cidr_range, "10.0.0.0/16");
         assert_eq!(display_name, "production");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let CloudCommands::Org { command } = parse_cloud_command(&[
             "clickhousectl",
@@ -2884,7 +2498,6 @@ mod tests {
                 ByocCommands::Update {
                     byoc_id,
                     display_name,
-                    org_id,
                 },
         } = command
         else {
@@ -2892,7 +2505,6 @@ mod tests {
         };
         assert_eq!(byoc_id, "byoc-1");
         assert_eq!(display_name, "renamed");
-        assert!(org_id.is_none());
 
         assert_write(
             &[
@@ -3026,17 +2638,12 @@ mod tests {
             panic!("expected org command");
         };
         let OrgCommands::Role {
-            command:
-                RoleCommands::Create {
-                    config_file,
-                    org_id,
-                },
+            command: RoleCommands::Create { config_file },
         } = command
         else {
             panic!("expected role create");
         };
         assert_eq!(config_file, "role.json");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         assert_write(&["clickhousectl", "cloud", "org", "role", "list"], false);
         assert_write(
