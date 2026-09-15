@@ -983,6 +983,36 @@ async fn partial_cloud_credentials_are_usage_errors_before_auth_or_http() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn object_storage_missing_columns_is_a_usage_error_before_lookup_or_http() {
+    let mock = MockServer::start().await;
+    let args = [
+        "clickpipe",
+        "create",
+        "object-storage",
+        "svc-1",
+        "--name",
+        "pipe",
+        "--source-url",
+        "https://bucket.example/events.json",
+        "--format",
+        "JSONEachRow",
+        "--database",
+        "db",
+        "--table",
+        "events",
+    ]
+    .map(String::from);
+
+    let output = invoke_cli_without_cloud_credentials(&mock, &args);
+
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--column <NAME:TYPE>"), "{stderr}");
+    assert!(stderr.contains("Usage:"), "{stderr}");
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     let credentials_dir = root.join(".clickhouse");
     std::fs::create_dir_all(&credentials_dir).unwrap();
@@ -6308,6 +6338,8 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
         "default",
         "--table",
         "events",
+        "--column",
+        "id:Int64",
         "--org-id",
         "org",
     ]
@@ -6524,6 +6556,8 @@ async fn invalid_create_controls_fail_before_file_io_or_http() {
         "default",
         "--table",
         "events",
+        "--column",
+        "id:Int64",
         "--org-id",
         "org",
     ]
@@ -7529,6 +7563,10 @@ async fn object_storage_create_uses_the_shared_destination_table_definition() {
         "events",
         "--column",
         "event_id:Int64",
+        "--column",
+        "_path:LowCardinality(String)",
+        "--column",
+        "payload:Nullable(Tuple(id UInt64, label String))",
         "--table-definition-file",
         definition_path.as_ref(),
         "--org-id",
@@ -7538,6 +7576,14 @@ async fn object_storage_create_uses_the_shared_destination_table_definition() {
     let body = invoke_cli_capture_body(&mock, &args).await;
 
     assert_eq!(body["destination"]["managedTable"], true);
+    assert_eq!(
+        body["destination"]["columns"],
+        serde_json::json!([
+            {"name": "event_id", "type": "Int64"},
+            {"name": "_path", "type": "LowCardinality(String)"},
+            {"name": "payload", "type": "Nullable(Tuple(id UInt64, label String))"}
+        ])
+    );
     assert_eq!(
         body["destination"]["tableDefinition"],
         serde_json::json!({
@@ -14080,6 +14126,8 @@ async fn object_storage_insert_size_bounds_reach_create_and_settings_put() {
                 "default",
                 "--table",
                 "events",
+                "--column",
+                "id:Int64",
                 "--org-id",
                 "org",
                 "--object-storage-max-insert-bytes",
@@ -15489,6 +15537,8 @@ async fn contradictory_workload_identity_credentials_fail_before_http() {
             "default",
             "--table",
             "events",
+            "--column",
+            "id:Int64",
             "--org-id",
             "org",
         ],

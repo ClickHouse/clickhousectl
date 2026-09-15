@@ -726,6 +726,8 @@ pub enum ClickPipeCreateCommands {
         name = "object-storage",
         after_help = "\
 CONTEXT FOR AGENTS:
+  First run `clickpipe schema-discover object-storage <service-id>` with the same
+  source flags, then pass every desired field as `--column name:type`.
   Auth is inferred from the credential flags, in order: --iam-role,
   --access-key-id/--secret-key, --connection-string, --service-account-file.
   GCS workload identity uses --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY without
@@ -970,8 +972,13 @@ pub struct ObjectStorageCreateArgs {
     #[arg(long)]
     pub table: String,
 
-    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64" --column "name:String")
-    #[arg(long = "column", value_parser = parse_destination_column)]
+    /// Destination column as name:type (required, repeatable)
+    #[arg(
+        long = "column",
+        required = true,
+        value_name = "NAME:TYPE",
+        value_parser = parse_destination_column
+    )]
     pub columns: Vec<String>,
 
     #[command(flatten)]
@@ -5879,6 +5886,24 @@ mod tests {
         ]
     }
 
+    fn object_storage_create_cli_args() -> Vec<&'static str> {
+        vec![
+            "create",
+            "object-storage",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ]
+    }
+
     /// Minimal `clickpipe schema-discover kafka <SERVICE_ID>` invocation, before
     /// any auth flags. `KafkaSourceFields` is flattened into both commands, so
     /// credential-pairing rules must hold for each.
@@ -7211,6 +7236,39 @@ mod tests {
         assert!(
             ensure_clickpipe_has_ingestion_settings(&ClickPipe::default(), "svc-1", "pipe-1")
                 .is_ok()
+        );
+    }
+
+    #[test]
+    fn object_storage_create_requires_columns_during_parsing() {
+        let error = clickpipe_parse_error(&object_storage_create_cli_args());
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains("--column <NAME:TYPE>"));
+
+        let mut args = object_storage_create_cli_args();
+        args.extend([
+            "--column",
+            "_path:LowCardinality(String)",
+            "--column",
+            "payload:Nullable(Tuple(id UInt64, label String))",
+        ]);
+        let command = parse_clickpipe(&args);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::ObjectStorage(args),
+        } = command
+        else {
+            panic!("expected object-storage create");
+        };
+        assert_eq!(
+            args.columns,
+            [
+                "_path:LowCardinality(String)",
+                "payload:Nullable(Tuple(id UInt64, label String))"
+            ]
         );
     }
 

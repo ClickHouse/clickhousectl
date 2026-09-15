@@ -1819,6 +1819,12 @@ it does not grant GCP IAM permissions.
 
 The current source commands accept credentials as command-line options. Load values from your secret manager into environment variables, run them only in a trusted environment, and do not commit source credentials to scripts; expanded values may still be visible in process listings while a command runs.
 
+Object-storage creation requires at least one `--column name:type`. Run
+`clickpipe schema-discover object-storage <service-id>` with the same source
+flags first, review the inferred fields, then pass each field you want as a
+separate `--column`. The CLI preserves the names and type expressions you pass,
+including underscore-prefixed names.
+
 ```bash
 # From S3 / object storage (one-shot snapshot)
 clickhousectl cloud clickpipe create object-storage <service-id> \
