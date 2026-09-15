@@ -6042,6 +6042,8 @@ mod tests {
             parse_clickpipe(&[
                 "create",
                 "object-storage",
+                "--column",
+                "id:Int64",
                 "svc-1",
                 "--name",
                 "pipe-1",
@@ -6059,6 +6061,8 @@ mod tests {
         parse_clickpipe(&[
             "create",
             "object-storage",
+            "--column",
+            "id:Int64",
             "svc-1",
             "--name",
             "pipe-1",
@@ -6584,6 +6588,8 @@ mod tests {
                 vec![
                     "create",
                     "object-storage",
+                    "--column",
+                    "id:Int64",
                     "svc-1",
                     "--name",
                     "pipe-1",
@@ -7362,6 +7368,8 @@ mod tests {
         } = parse_clickpipe(&[
             "create",
             "object-storage",
+            "--column",
+            "id:Int64",
             "svc-1",
             "--name",
             "pipe-1",
@@ -7377,7 +7385,7 @@ mod tests {
         else {
             panic!("expected object-storage create");
         };
-        assert!(args.columns.is_empty());
+        assert_eq!(args.columns, ["id:Int64"]);
         assert_eq!(args.source.storage_type, "s3");
         assert_eq!(args.source.compression, "auto");
         assert_eq!(args.source.auth, None);
@@ -7402,6 +7410,8 @@ mod tests {
         } = parse_clickpipe(&[
             "create",
             "object-storage",
+            "--column",
+            "id:Int64",
             "svc-1",
             "--name",
             "pipe-1",
@@ -7425,6 +7435,8 @@ mod tests {
         let base = [
             "create",
             "object-storage",
+            "--column",
+            "id:Int64",
             "svc-1",
             "--name",
             "pipe-1",
@@ -9660,6 +9672,8 @@ mod tests {
         let object_base = [
             "create",
             "object-storage",
+            "--column",
+            "id:Int64",
             "svc-1",
             "--name",
             "pipe-1",
@@ -9675,6 +9689,8 @@ mod tests {
         assert_rejected(&[
             "create",
             "object-storage",
+            "--column",
+            "id:Int64",
             "svc-1",
             "--name",
             "pipe-1",
@@ -9891,6 +9907,8 @@ mod tests {
         let object_base = [
             "create",
             "object-storage",
+            "--column",
+            "id:Int64",
             "svc-1",
             "--name",
             "pipe-1",
@@ -10048,6 +10066,8 @@ mod tests {
             &[
                 "create",
                 "object-storage",
+                "--column",
+                "id:Int64",
                 "svc-1",
                 "--name",
                 "pipe-1",
@@ -12740,6 +12760,8 @@ mod tests {
             vec![
                 "create",
                 "object-storage",
+                "--column",
+                "id:Int64",
                 "svc-1",
                 "--name",
                 "pipe-1",
@@ -12837,6 +12859,8 @@ mod tests {
             (
                 "object-storage",
                 vec![
+                    "--column",
+                    "id:Int64",
                     "--source-url",
                     "https://bucket.example/data",
                     "--format",

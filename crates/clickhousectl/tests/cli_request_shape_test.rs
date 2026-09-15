@@ -975,7 +975,7 @@ async fn partial_cloud_credentials_are_usage_errors_before_auth_or_http() {
         if args[0] != "clickpipe" {
             assert!(stderr.contains("Usage:"), "{stderr}");
         } else {
-            assert!(stderr.contains("--column <COLUMNS>"), "{stderr}");
+            assert!(stderr.contains("--column <NAME:TYPE>"), "{stderr}");
         }
     }
     let output = invoke_cli_without_cloud_credentials(&mock, &["service".into(), "list".into()]);
