@@ -138,3 +138,13 @@ tracking issue. The analyzer reports stale field/enum exemptions and vanished
 unsupported locations so obsolete entries are removed during normal drift
 remediation. See the repository `AGENTS.md` for exact key formats and the full
 remediation and verification procedure.
+
+### ClickStack list pagination
+
+`click_stack_list_alerts`, `click_stack_list_webhooks`, and
+`click_stack_list_saved_searches` take `limit: Option<i64>` and
+`offset: Option<i64>` after the organization and service IDs. Pass `None, None`
+for the server defaults (1,000 records, offset zero). For a complete inventory,
+request pages with an explicit limit from 1 to 1,000 and advance the offset
+until the returned page is shorter than that limit. Existing callers upgrading
+to 0.5.0 should add `None, None` to preserve their current request behavior.

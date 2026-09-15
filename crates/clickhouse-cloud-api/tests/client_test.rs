@@ -1901,7 +1901,10 @@ async fn list_alerts() {
         .mount(&s)
         .await;
 
-    let resp = c.click_stack_list_alerts("org-1", "svc-1").await.unwrap();
+    let resp = c
+        .click_stack_list_alerts("org-1", "svc-1", None, None)
+        .await
+        .unwrap();
     let alerts = resp.result.unwrap();
     assert_eq!(alerts.len(), 1);
 }
@@ -2026,7 +2029,7 @@ async fn list_saved_searches() {
         .await;
 
     let resp = c
-        .click_stack_list_saved_searches("org-1", "svc-1")
+        .click_stack_list_saved_searches("org-1", "svc-1", None, None)
         .await
         .unwrap();
     let searches = resp.result.unwrap();
@@ -2428,7 +2431,10 @@ async fn list_webhooks() {
         .mount(&s)
         .await;
 
-    let resp = c.click_stack_list_webhooks("org-1", "svc-1").await.unwrap();
+    let resp = c
+        .click_stack_list_webhooks("org-1", "svc-1", None, None)
+        .await
+        .unwrap();
     let webhooks = resp.result.unwrap();
     assert_eq!(webhooks.len(), 0);
 }
@@ -4814,6 +4820,66 @@ async fn query_api_endpoint_methods_propagate_api_errors() {
             assert!(
                 matches!(error, clickhouse_cloud_api::Error::Api { status: actual_status, message } if actual_status == status && message == expected_message)
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn clickstack_list_pagination_encodes_only_supplied_parameters() {
+    for resource in ["alerts", "saved-searches", "webhooks"] {
+        for (limit, offset) in [
+            (None, None),
+            (Some(25), None),
+            (None, Some(50)),
+            (Some(25), Some(50)),
+        ] {
+            let (server, client) = setup().await;
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/v1/organizations/org-1/services/svc-1/clickstack/{resource}"
+                )))
+                .and(basic_auth("key", "secret"))
+                .respond_with(ok_json(serde_json::json!([{}])))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let count = match resource {
+                "alerts" => client
+                    .click_stack_list_alerts("org-1", "svc-1", limit, offset)
+                    .await
+                    .unwrap()
+                    .result
+                    .unwrap()
+                    .len(),
+                "saved-searches" => client
+                    .click_stack_list_saved_searches("org-1", "svc-1", limit, offset)
+                    .await
+                    .unwrap()
+                    .result
+                    .unwrap()
+                    .len(),
+                "webhooks" => client
+                    .click_stack_list_webhooks("org-1", "svc-1", limit, offset)
+                    .await
+                    .unwrap()
+                    .result
+                    .unwrap()
+                    .len(),
+                _ => unreachable!(),
+            };
+            assert_eq!(count, 1);
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            let actual: std::collections::BTreeMap<_, _> = requests[0]
+                .url
+                .query_pairs()
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            let expected: std::collections::BTreeMap<_, _> = [("limit", limit), ("offset", offset)]
+                .into_iter()
+                .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_string())))
+                .collect();
+            assert_eq!(actual, expected, "{resource}");
         }
     }
 }
