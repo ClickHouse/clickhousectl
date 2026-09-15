@@ -199,10 +199,10 @@ CONTEXT FOR AGENTS:
         #[command(flatten)]
         postgres_id: NameSelector,
         /// Start time (RFC 3339, at most millisecond precision)
-        #[arg(long, value_parser = parse_metrics_datetime)]
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
         from_date: String,
         /// End time (RFC 3339, at most millisecond precision)
-        #[arg(long, value_parser = parse_metrics_datetime)]
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
         to_date: String,
         /// Time bucket size in seconds
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
@@ -394,11 +394,11 @@ pub enum SlowQueryCommands {
     List {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// Inclusive start time (ISO 8601 / RFC 3339)
-        #[arg(long, value_parser = parse_datetime)]
+        /// Inclusive start time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
         from_date: String,
-        /// Exclusive end time (ISO 8601 / RFC 3339)
-        #[arg(long, value_parser = parse_datetime)]
+        /// Exclusive end time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
         to_date: String,
         /// Filter by database name
         #[arg(long)]
@@ -2008,9 +2008,9 @@ pub async fn postgres_state_change(
     Ok(())
 }
 
-// The metrics endpoint accepts UTC timestamps with exactly three fractional digits.
+// These endpoints accept UTC timestamps with exactly three fractional digits.
 // Check the original fraction: chrono discards digits beyond nanosecond precision.
-fn parse_metrics_datetime(value: &str) -> Result<String, String> {
+fn parse_postgres_window_datetime(value: &str) -> Result<String, String> {
     let timestamp = chrono::DateTime::parse_from_rfc3339(value)
         .map_err(|_| format!("invalid datetime '{value}': expected ISO 8601 / RFC 3339"))?;
     if value.split_once('.').is_some_and(|(_, fraction)| {
@@ -2021,7 +2021,7 @@ fn parse_metrics_datetime(value: &str) -> Result<String, String> {
             .any(|digit| digit != b'0')
     }) {
         return Err(format!(
-            "invalid datetime '{value}': Postgres metrics supports at most millisecond precision"
+            "invalid datetime '{value}': Postgres time windows support at most millisecond precision"
         ));
     }
     Ok(timestamp
@@ -4012,7 +4012,7 @@ mod tests {
                 "2026-04-16T12:00:00.123Z",
             ),
         ] {
-            let normalized = parse_metrics_datetime(input).unwrap();
+            let normalized = parse_postgres_window_datetime(input).unwrap();
             assert_eq!(normalized, expected, "{input}");
             assert_eq!(
                 chrono::DateTime::parse_from_rfc3339(input).unwrap(),
@@ -4085,8 +4085,8 @@ mod tests {
             panic!("expected slow-query list");
         };
         assert_eq!(postgres_id, "pg-1");
-        assert_eq!(from_date, "2026-04-16T12:00:00+01:00");
-        assert_eq!(to_date, "2026-04-16T13:00:00+01:00");
+        assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
+        assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
         assert_eq!(db_name.as_deref(), Some("app db"));
         assert_eq!(db_user.as_deref(), Some("reader+worker"));
         assert_eq!(db_operation.as_deref(), Some("SELECT"));

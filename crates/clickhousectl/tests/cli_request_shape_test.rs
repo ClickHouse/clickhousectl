@@ -3453,11 +3453,11 @@ async fn postgres_slow_query_list_sends_exact_query_supports_oauth_and_preserves
         [
             (
                 "from_date".to_string(),
-                "2026-04-16T12:00:00+01:00".to_string()
+                "2026-04-16T11:00:00.000Z".to_string()
             ),
             (
                 "to_date".to_string(),
-                "2026-04-16T13:00:00+01:00".to_string()
+                "2026-04-16T12:00:00.000Z".to_string()
             ),
             ("db_name".to_string(), "app db".to_string()),
             ("db_user".to_string(), "reader+worker".to_string()),
@@ -3469,6 +3469,88 @@ async fn postgres_slow_query_list_sends_exact_query_supports_oauth_and_preserves
             ("offset".to_string(), "0".to_string()),
         ]
     );
+}
+
+#[tokio::test]
+async fn postgres_slow_query_list_normalizes_exact_milliseconds_on_the_wire() {
+    let mock = MockServer::start().await;
+    for (from, to, expected_from, expected_to) in [
+        (
+            "2026-04-16T12:00:00Z",
+            "2026-04-16T13:00:00.000Z",
+            "2026-04-16T12:00:00.000Z",
+            "2026-04-16T13:00:00.000Z",
+        ),
+        (
+            "2026-04-16T00:00:00.1+05:30",
+            "2026-04-16T23:00:00.1230000000-02:30",
+            "2026-04-15T18:30:00.100Z",
+            "2026-04-17T01:30:00.123Z",
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(
+                "/v1/organizations/org-1/postgres/pg-1/slowQueryPatterns",
+            ))
+            .and(query_param("from_date", expected_from))
+            .and(query_param("to_date", expected_to))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [],
+                "status": 200
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "postgres",
+                "slow-queries",
+                "list",
+                "pg-1",
+                "--from-date",
+                from,
+                "--to-date",
+                to,
+                "--org-id",
+                "org-1",
+            ],
+        );
+        assert_success(&output);
+    }
+}
+
+#[tokio::test]
+async fn postgres_slow_query_list_rejects_malformed_and_submillisecond_windows_before_requests() {
+    let mock = MockServer::start().await;
+    for invalid in [
+        "yesterday",
+        "2026-04-16T12:00:00",
+        "2026-04-16T12:00:00.1234Z",
+        "2026-04-16T12:00:00.123456789Z",
+        "2026-04-16T12:00:00.0000000001Z",
+    ] {
+        for flag in ["--from-date", "--to-date"] {
+            let mut args = [
+                "postgres",
+                "slow-queries",
+                "list",
+                "pg-1",
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+                "--org-id",
+                "org-1",
+            ];
+            let position = args.iter().position(|arg| *arg == flag).unwrap();
+            args[position + 1] = invalid;
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert_eq!(output.status.code(), Some(2), "{flag} {invalid}");
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

@@ -1216,8 +1216,8 @@ clickhousectl cloud postgres logs <pg-id> \
 
 # Find costly normalized queries, then inspect one pattern and recent executions
 clickhousectl cloud postgres slow-queries list <pg-id> \
-  --from-date 2026-04-16T12:00:00Z \
-  --to-date 2026-04-16T13:00:00Z \
+  --from-date 2026-04-16T12:00:00.250+01:00 \
+  --to-date 2026-04-16T13:00:00.500+01:00 \
   --sort-by total_cpu_time --limit 20
 clickhousectl cloud postgres slow-queries get <pg-id> <query-id> \
   --db-name app --db-user reporter --db-operation SELECT
@@ -1328,7 +1328,7 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 
 `postgres logs` reads an inclusive RFC 3339 time window of at most 30 days. Results default to the API's newest-first order and page size; use `--sort-order asc|desc`, `--limit` and `--offset` to control pagination. Human output shows timestamp, severity and message in a table, extracting a string `message` from a structured log body and otherwise showing the body unchanged; missing fields show `-`. JSON output preserves the complete typed log entries, including the original body.
 
-`postgres slow-queries list` requires an RFC 3339 start and end time and supports database, user, operation and application filters, sorting, limits and non-negative offsets. Human output is a compact table in the API's returned order with query ID, query text, calls, and average and total duration in microseconds; missing values show as `-` and fractional durations are preserved. Use `--json` for every aggregate field the API returns, including sparse beta responses. Copy `queryId`, `dbName`, `dbUser` and `dbOperation` from JSON into `slow-queries get`; add `--app` when the result has one, and optionally select a recent execution with `--timestamp`. Detail output remains complete in both formats; call, row and block counts remain integers.
+`postgres slow-queries list` requires an RFC 3339 start and end time, with the start no later than the end. Its window bounds use the same millisecond contract as `postgres metrics`: whole seconds, fractional seconds and UTC offsets are normalized to UTC with three fractional digits, while finer nonzero precision is rejected before any request. The command supports database, user, operation and application filters, sorting, limits and non-negative offsets. Human output is a compact table in the API's returned order with query ID, query text, calls, and average and total duration in microseconds; missing values show as `-` and fractional durations are preserved. Use `--json` for every aggregate field the API returns, including sparse beta responses. Copy `queryId`, `dbName`, `dbUser` and `dbOperation` from JSON into `slow-queries get`; add `--app` when the result has one, and optionally select a recent execution with `--timestamp`. Detail output remains complete in both formats; call, row and block counts remain integers.
 
 `postgres prometheus service` and `postgres prometheus org` return the beta API's raw Prometheus exposition text for scraping. In `--json` mode, including automatic coding-agent mode, the complete text is emitted as one JSON string; it is not parsed into metric series. These endpoints have no filtered-metrics query parameter. Use `postgres metrics` when you need time-bucketed metric objects over a chosen date range.
 
