@@ -19,7 +19,7 @@ pub enum AuthCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   No flags: OAuth device flow, opens a browser, needs a human; the tokens are read-only.
-  --api-key/--api-secret: no browser, read+write, saved to .clickhouse/credentials.json.
+  --api-key/--api-secret: no browser, read+write.
   Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl")]
     Login {
         /// Prompt for an API key and secret instead of using flags
