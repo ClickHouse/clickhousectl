@@ -491,8 +491,8 @@ CONTEXT FOR AGENTS:
   Times out after about 30 seconds: the statement keeps running, the result is lost, and
     the error prints a `clickhouse client` fallback.
   SQL is read from stdin unless --query or --queries-file is given; --query never reads stdin.
+  This proxied path does not use the service IP access list; API key queries still use the key's access list.
   API key auth runs read+write SQL; OAuth is read-only SELECT.
-  Output: PrettyCompact on a TTY, TabSeparated when piped, JSONEachRow with --json (not --format).
   An idle service wakes automatically; a stopped one needs `cloud service start <id>` first.
   A stored query key rejected with 401/403 is never replaced automatically: `cloud service repair-query-key <id>`."
     )]

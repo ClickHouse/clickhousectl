@@ -1049,7 +1049,7 @@ Use `clickhousectl cloud service create --help` for the complete option list. If
 
 `--query` and `--queries-file` are mutually exclusive. If neither is supplied, `cloud service query` reads SQL from stdin; `--queries-file -` also reads stdin explicitly.
 
-An explicit `--format` wins over agent auto-JSON.
+An explicit `--format` wins over agent auto-JSON. Without it, query output uses `PrettyCompact` on a terminal, `TabSeparated` when piped, and `JSONEachRow` in explicit or automatic JSON mode.
 
 `--query` never reads stdin, so `--query "INSERT INTO trips FORMAT CSV" < data.csv` is refused (exit code `1`) before any request is sent rather than silently inserting nothing. The Query API takes a single request body, so a statement and a separate data stream cannot both be sent; pipe them together instead:
 
@@ -1094,7 +1094,11 @@ Private endpoint IDs supplied to `private-endpoint create --endpoint-id` and `se
 
 #### Query API auth modes
 
-`cloud service query` is the canonical way to run SQL against a cloud service — over HTTP, with no `clickhouse` binary and no service password required. It works with both credential modes:
+`cloud service query` is the canonical way to run SQL against a cloud service — over HTTP, with no `clickhouse` binary and no service password required.
+
+The command sends SQL to ClickHouse Cloud's Query API gateway, which proxies the request to the selected service from inside ClickHouse Cloud. The service IP access list applies to direct client connections to that service, so it does not filter this proxied path. Query API access still has its own controls: API key calls enforce the key's IP access list, endpoint binding and database role; OAuth calls run as the caller with read-only SQL access. See ClickHouse's [Query API endpoint IP access documentation](https://clickhouse.com/docs/cloud/features/query-api-endpoints#ip-access-control).
+
+It works with both credential modes:
 
 - **API key auth** (read + write SQL): when no per-service key is stored, `cloud service query` first uses the authenticated API key directly. This supports services whose Query API endpoint already authorizes that key without requiring permission to create another key. If the key or endpoint is not authorized, the CLI provisions a dedicated API key and binds it to the service with role `sql_console_admin`. Those generated query credentials, the endpoint ID, exact management API key ID, and provisioning organization ID are stored in `.clickhouse/credentials.json` under `service_query_keys.<service-id>`, alongside any user-level API key. Subsequent queries use that key. The generated key is scoped to a single service, so it can read and write (SELECT, INSERT, DDL) against that service but cannot reach any other service in the org. Pass `--no-auto-enable` to fail instead of provisioning.
 - **OAuth** (`cloud auth login`): the query runs as your own identity — the CLI sends your bearer token straight to the Query API, which grants **read-only** SQL access (SELECT and other read statements only; no INSERT, DDL, or other writes). No Query API key is provisioned or stored, and no query endpoint needs to be configured on the service. Use API key auth if you need to write. `--no-auto-enable` has no effect in this mode.
