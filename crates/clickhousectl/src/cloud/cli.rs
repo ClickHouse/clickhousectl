@@ -276,7 +276,7 @@ impl CloudCommands {
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::cli::{Cli, Commands};
-    use clap::Parser;
+    use clap::{CommandFactory, Parser};
 
     /// Assert the cloud-wide selector while domain helpers return only their command.
     pub(crate) fn assert_org_selector(cloud: &super::CloudArgs, args: &[&str]) {
@@ -303,8 +303,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn url_override_visibility_matches_the_build_mode() {
+        let mut command = Cli::command();
+        command.build();
+        let cloud = command.find_subcommand("cloud").unwrap();
+        let url = cloud
+            .get_arguments()
+            .find(|arg| arg.get_id() == "url")
+            .unwrap();
+
+        assert_eq!(url.get_long(), Some("url"));
+        assert!(url.is_global_set());
+        assert_eq!(url.is_hide_set(), !cfg!(debug_assertions));
+    }
+
+    #[test]
+    fn url_override_is_accepted_independently_of_help_visibility() {
+        let cli = Cli::try_parse_from([
+            "chctl",
+            "cloud",
+            "--url",
+            "https://api.control-plane.example.com",
+            "org",
+            "get",
+        ])
+        .unwrap();
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("cloud")
+        };
+
+        assert_eq!(
+            cloud.url.as_deref(),
+            Some("https://api.control-plane.example.com")
+        );
+    }
+
+    #[test]
     fn org_id_is_global_and_visible_throughout_cloud_hierarchy() {
-        use clap::CommandFactory;
         fn walk(command: &clap::Command) {
             let selectors: Vec<_> = command
                 .get_arguments()

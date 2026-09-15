@@ -703,13 +703,15 @@ Pass `--debug` to a Cloud resource command to print the resolved credential sour
 
 Cloud notices on stderr are best-effort: if their reader goes away, the operation still runs and reports its outcome through the exit status.
 
+`--url` is an advanced debugging override for targeting a non-production Cloud control plane. Release builds accept the option but omit it from `--help`; development builds show it. For `cloud service query`, set `CLICKHOUSE_CLOUD_QUERY_HOST` separately to override the Query API host.
+
 ```bash
 clickhousectl cloud --debug service list
 # [debug] auth source: credentials file (.clickhouse/credentials.json)
 # [debug] api url: https://api.clickhouse.cloud/v1
 # ... normal output ...
 
-# Target a non-production control plane (env: CLICKHOUSE_CLOUD_QUERY_HOST for the Query API host)
+# Target a non-production control plane
 clickhousectl cloud --url https://api.control-plane.example.com service list
 ```
 
