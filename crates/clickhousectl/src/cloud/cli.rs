@@ -253,7 +253,7 @@ CONTEXT FOR AGENTS:
   Service IDs: `cloud postgres list`.
   Credentials come only from `create` and `reset-password`; treat `get` as never returning them.
   `get` shows host/user; connections use port 5432, database postgres and TLS.
-  promote/switchover are eventually consistent: pass --wait to confirm the new role.
+  Role changes return after API acceptance; see each command's help for verification.
   Typical flow: `create` -> `get <id>` until running -> `certs get <id> --output ca.pem` -> connect.")]
     Postgres {
         #[command(subcommand)]

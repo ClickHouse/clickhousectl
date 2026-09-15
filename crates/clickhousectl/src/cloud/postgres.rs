@@ -18,7 +18,6 @@ use clickhouse_cloud_api::models::{
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tabled::{Table, Tabled, settings::Style};
 
 const POSTGRES_LOG_SORT_ORDERS: &[&str] = &["asc", "desc"];
@@ -273,38 +272,26 @@ CONTEXT FOR AGENTS:
     /// Promote a read replica to primary
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Exit 0 means accepted, not applied: the response omits isPrimary.
-  Pass --wait to poll until the target reports isPrimary=true; exit 1 if it never does.
-  The old primary can report isPrimary=true for minutes — confirm exactly one primary
-  with `cloud postgres list --filter isPrimary=true`.")]
+  Exit 0 means accepted, not completed; promotion is asynchronous.
+  The replica becomes an independent primary service; its source remains primary.
+  Poll `cloud postgres get <replica-id> --json` until isPrimary=true.")]
     Promote {
         /// Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
         postgres_id: NameSelector,
-        /// Poll until the service reports isPrimary=true, and fail if it never does
-        #[arg(long)]
-        wait: bool,
-        /// Seconds to poll for with --wait (default: 300)
-        #[arg(long, requires = "wait", value_name = "SECONDS")]
-        wait_timeout: Option<u16>,
     },
 
-    /// Switch over the primary and replica roles
+    /// Switch a primary over to an HA standby
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Exit 0 means accepted, not applied.
-  Pass --wait to poll until isPrimary flips; exit 1 if it never does.
-  --wait reads the pre-command role first and refuses when the API omits isPrimary.")]
+  Exit 0 means accepted, not completed; switchover is asynchronous.
+  The standby takes over inside the same HA service.
+  Service isPrimary and state, plus database readiness, do not identify the active HA node.
+  Monitor client connectivity separately; these service fields expose no completion check.")]
     Switchover {
         /// Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
         postgres_id: NameSelector,
-        /// Poll until the roles actually swap, and fail if they never do
-        #[arg(long)]
-        wait: bool,
-        /// Seconds to poll for with --wait (default: 300)
-        #[arg(long, requires = "wait", value_name = "SECONDS")]
-        wait_timeout: Option<u16>,
     },
 }
 
@@ -772,34 +759,20 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             )
             .await
         }
-        PostgresCommands::Promote {
-            postgres_id,
-            wait,
-            wait_timeout,
-        } => {
+        PostgresCommands::Promote { postgres_id } => {
             postgres_role_change(
                 client,
                 &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 PostgresRoleCommand::Promote,
-                RoleChangeOptions {
-                    wait: wait_duration(wait, wait_timeout),
-                },
                 json,
             )
             .await
         }
-        PostgresCommands::Switchover {
-            postgres_id,
-            wait,
-            wait_timeout,
-        } => {
+        PostgresCommands::Switchover { postgres_id } => {
             postgres_role_change(
                 client,
                 &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 PostgresRoleCommand::Switchover,
-                RoleChangeOptions {
-                    wait: wait_duration(wait, wait_timeout),
-                },
                 json,
             )
             .await
@@ -1144,9 +1117,8 @@ fn enum_label<T: serde::Serialize>(v: Option<&T>) -> String {
     }
 }
 
-// `print_line`, not `println!`: role changes render this after `--wait`
-// polling, minutes after the caller may have stopped reading, and a closed
-// stdout must not turn a completed operation into a panic (#598).
+// `print_line`, not `println!`: a closed stdout must not turn a completed
+// operation into a panic (#598).
 fn render_postgres_service(svc: &PostgresService) {
     print_line(format!("  ID: {}", or_absent(svc.id.as_ref())));
     print_line(format!("  Name: {}", or_absent(svc.name.as_deref())));
@@ -2038,10 +2010,7 @@ pub async fn postgres_restore(
     Ok(())
 }
 
-/// Issues a state command that does not change which service is primary.
-///
-/// `promote` and `switchover` go through [`postgres_role_change`] instead, which
-/// adds the `--wait` convergence polling this has no use for.
+/// Issues a state command that does not need operation-specific guidance.
 pub async fn postgres_state_change(
     client: &CloudClient,
     postgres_id: &str,
@@ -2417,7 +2386,7 @@ async fn postgres_prometheus_org(client: &CloudClient, json: bool) -> CloudResul
 }
 
 // ---------------------------------------------------------------------------
-// Role changes: promote / switchover (issue #604)
+// Role changes: promote / switchover
 // ---------------------------------------------------------------------------
 
 impl CloudClient {
@@ -2579,14 +2548,7 @@ impl CloudClient {
     }
 }
 
-/// Seconds `--wait` polls for when `--wait-timeout` is not given.
-const DEFAULT_ROLE_WAIT_SECS: u16 = 300;
-
-/// Gap between role polls. The API acknowledges a role change long before it
-/// applies it, so polling faster than this only burns rate limit.
-const ROLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
-
-/// The `cloud postgres` commands that change which service is primary.
+/// The `cloud postgres` commands that initiate primary-role operations.
 ///
 /// `restart` is not one of them: it keeps going through
 /// [`postgres_state_change`], which needs no role bookkeeping.
@@ -2612,223 +2574,52 @@ impl PostgresRoleCommand {
     }
 }
 
-pub struct RoleChangeOptions {
-    /// How long to poll for convergence, or `None` to return once the API
-    /// acknowledges the command.
-    pub wait: Option<Duration>,
-}
-
-/// Translates `--wait` / `--wait-timeout` into a polling budget.
-fn wait_duration(wait: bool, wait_timeout: Option<u16>) -> Option<Duration> {
-    wait.then(|| Duration::from_secs(u64::from(wait_timeout.unwrap_or(DEFAULT_ROLE_WAIT_SECS))))
-}
-
-/// The `isPrimary` value the target must report once `cmd` has taken effect.
-///
-/// `None` means the CLI has nothing to compare against: a switchover swaps the
-/// target's role, so without the pre-command `isPrimary` there is no swap to
-/// detect.
-fn expected_primary_after(cmd: PostgresRoleCommand, before: Option<bool>) -> Option<bool> {
-    match cmd {
-        PostgresRoleCommand::Promote => Some(true),
-        PostgresRoleCommand::Switchover => before.map(|primary| !primary),
-    }
-}
-
-/// Whether the polled service has reached the expected role.
-#[derive(Debug, PartialEq)]
-enum RoleConvergence {
-    Converged(PostgresService),
-    NotConverged(PostgresService),
-}
-
-/// Polls `fetch` until the service reports `isPrimary=expected_primary`.
-///
-/// The first poll happens immediately: `promote` flips the replica in under a
-/// second, so the common case must not pay a full interval.
-async fn poll_role_convergence<F, Fut>(
-    mut fetch: F,
-    expected_primary: bool,
-    timeout: Duration,
-    interval: Duration,
-) -> CloudResult<RoleConvergence>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = CloudResult<PostgresService>>,
-{
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let svc = fetch().await?;
-        if svc.is_primary == Some(expected_primary) {
-            return Ok(RoleConvergence::Converged(svc));
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Ok(RoleConvergence::NotConverged(svc));
-        }
-        tokio::time::sleep(interval.min(remaining)).await;
-    }
-}
-
-/// Error text for a role change the API accepted but never applied.
-fn role_timeout_message(
-    cmd: PostgresRoleCommand,
-    postgres_id: &str,
-    expected_primary: bool,
-    observed: Option<bool>,
-    timeout: Duration,
-) -> String {
-    format!(
-        "{} did not take effect within {}s: Postgres service {postgres_id} reports isPrimary={} \
-         (expected {expected_primary}). The API accepted the request; re-check with \
-         `clickhousectl cloud postgres get {postgres_id}`.",
-        cmd.label(),
-        timeout.as_secs(),
-        or_absent(observed),
-    )
-}
-
 /// stderr notes for a role change, in print order.
-///
-/// Both commands are eventually consistent and neither reports that: the
-/// `promote` response omits `isPrimary` entirely and the old primary has been
-/// observed reporting `isPrimary=true` for minutes afterwards, so a caller that
-/// trusts exit 0 sees two primaries (#604).
-fn role_change_notes(cmd: PostgresRoleCommand, postgres_id: &str, waited: bool) -> Vec<String> {
-    let mut notes = Vec::new();
+fn role_change_notes(cmd: PostgresRoleCommand, postgres_id: &str) -> Vec<String> {
     match cmd {
-        PostgresRoleCommand::Promote => {
-            notes.push(
-                "The previous primary is demoted asynchronously and can keep reporting \
-                 isPrimary=true for several minutes; verify with `clickhousectl cloud postgres \
-                 list --filter isPrimary=true` that exactly one service is primary."
-                    .to_string(),
-            );
-            if !waited {
-                notes.push(format!(
-                    "The promote response does not carry the new role; pass --wait to poll \
-                     Postgres service {postgres_id} until it reports isPrimary=true."
-                ));
-            }
-        }
-        PostgresRoleCommand::Switchover => {
-            if !waited {
-                notes.push(format!(
-                    "Switchover is acknowledged before (or without) the roles swapping; pass \
-                     --wait to poll Postgres service {postgres_id} until they actually change."
-                ));
-            }
-        }
+        PostgresRoleCommand::Promote => vec![format!(
+            "Promotion is asynchronous. Postgres service {postgres_id} becomes an independent \
+             primary and its source remains primary; poll `clickhousectl cloud postgres get \
+             {postgres_id} --json` until isPrimary is true."
+        )],
+        PostgresRoleCommand::Switchover => vec![format!(
+            "Switchover is asynchronous inside Postgres service {postgres_id}. Service isPrimary \
+             and state, plus database readiness, do not identify the active HA node or confirm \
+             completion. Monitor client connectivity separately; these service fields expose no \
+             completion check."
+        )],
     }
-    notes
-}
-
-/// The `isPrimary` value `--wait` polls for, resolved before the command is issued.
-///
-/// `promote` always targets `true`. A switchover swaps the target's role, so it
-/// reads the service first and refuses when that read omits `isPrimary`: with no
-/// pre-command role to compare a swap against, `--wait` could only report an
-/// unverifiable success (#604). This is the only place a role change reads the
-/// service before issuing the command.
-async fn wait_target(
-    client: &CloudClient,
-    org_id: &str,
-    postgres_id: &str,
-    cmd: PostgresRoleCommand,
-) -> CloudResult<bool> {
-    let before = match cmd {
-        PostgresRoleCommand::Promote => None,
-        PostgresRoleCommand::Switchover => {
-            client
-                .get_postgres_service(org_id, postgres_id)
-                .await?
-                .is_primary
-        }
-    };
-    expected_primary_after(cmd, before).ok_or_else(|| {
-        CloudError::new(format!(
-            "--wait cannot confirm a switchover of Postgres service {postgres_id}: the API \
-             response omitted isPrimary, so there is no pre-command role to compare a swap \
-             against. Re-run without --wait to issue the switchover unconfirmed."
-        ))
-    })
 }
 
 /// Handles `cloud postgres promote` and `cloud postgres switchover`.
 ///
-/// The command is issued as-is; the API acknowledges it before (or without)
-/// applying it, so `--wait` is the only way to learn whether a role changed.
+/// The command is issued as-is and returns the API acknowledgment. Completion
+/// is asynchronous and must be verified according to the operation.
 pub async fn postgres_role_change(
     client: &CloudClient,
     postgres_id: &str,
     cmd: PostgresRoleCommand,
-    opts: RoleChangeOptions,
     json: bool,
 ) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
-
-    let wait = match opts.wait {
-        Some(timeout) => Some((
-            timeout,
-            wait_target(client, &org_id, postgres_id, cmd).await?,
-        )),
-        None => None,
-    };
-
-    let accepted = client
+    let svc = client
         .set_postgres_service_state(&org_id, postgres_id, cmd.api_command())
         .await?;
 
-    let mut timeout_error = None;
-    let mut svc = accepted;
-
-    if let Some((timeout, expected_primary)) = wait {
-        let outcome = poll_role_convergence(
-            || client.get_postgres_service(&org_id, postgres_id),
-            expected_primary,
-            timeout,
-            ROLE_POLL_INTERVAL,
-        )
-        .await?;
-        svc = match outcome {
-            RoleConvergence::Converged(svc) => svc,
-            RoleConvergence::NotConverged(svc) => {
-                timeout_error = Some(role_timeout_message(
-                    cmd,
-                    postgres_id,
-                    expected_primary,
-                    svc.is_primary,
-                    timeout,
-                ));
-                svc
-            }
-        };
-    }
-
-    let waited = wait.is_some();
-    for note in role_change_notes(cmd, postgres_id, waited) {
+    for note in role_change_notes(cmd, postgres_id) {
         eprint_line(note);
     }
 
-    // `print_line`, not `println!`: with --wait this output can land minutes
-    // after the caller stopped reading, and a closed pipe must not turn a
-    // completed role change into a panic (#598).
+    // `print_line`, not `println!`: a closed pipe must not turn an accepted
+    // role change into a panic (#598).
     if json {
         print_line(serde_json::to_string_pretty(&svc)?);
     } else {
-        print_line(match (timeout_error.is_some(), waited) {
-            (true, _) => format!("{} not confirmed", cmd.label()),
-            (false, true) => format!("{} confirmed", cmd.label()),
-            (false, false) => format!("{} accepted", cmd.label()),
-        });
+        print_line(format!("{} accepted", cmd.label()));
         print_line("");
         render_postgres_service(&svc);
     }
-
-    match timeout_error {
-        Some(message) => Err(CloudError::new(message)),
-        None => Ok(()),
-    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -4617,293 +4408,29 @@ mod tests {
         ));
     }
 
-    // --- role change (promote / switchover) parsing, issue #604 ---
+    // --- role change (promote / switchover) parsing, issue #834 ---
 
     #[test]
-    fn promote_and_switchover_do_not_wait_by_default() {
-        let PostgresCommands::Promote {
-            wait, wait_timeout, ..
-        } = parse_postgres(&["clickhousectl", "cloud", "postgres", "promote", "pg-1"])
-        else {
-            panic!("expected promote");
-        };
-        assert!(!wait);
-        assert_eq!(wait_timeout, None);
-
-        let PostgresCommands::Switchover {
-            wait, wait_timeout, ..
-        } = parse_postgres(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"])
-        else {
-            panic!("expected switchover");
-        };
-        assert!(!wait);
-        assert_eq!(wait_timeout, None);
-    }
-
-    #[test]
-    fn promote_parses_wait_flags() {
-        let PostgresCommands::Promote {
-            postgres_id,
-            wait,
-            wait_timeout,
-        } = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "promote",
-            "pg-1",
-            "--wait",
-            "--wait-timeout",
-            "45",
-            "--org-id",
-            "org-1",
-        ])
-        else {
-            panic!("expected promote");
-        };
-        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
-        assert!(wait);
-        assert_eq!(wait_timeout, Some(45));
-    }
-
-    #[test]
-    fn switchover_parses_wait_flags() {
-        let PostgresCommands::Switchover {
-            postgres_id,
-            wait,
-            wait_timeout,
-            ..
-        } = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "switchover",
-            "pg-1",
-            "--wait",
-            "--wait-timeout",
-            "600",
-        ])
-        else {
-            panic!("expected switchover");
-        };
-        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
-        assert!(wait);
-        assert_eq!(wait_timeout, Some(600));
-    }
-
-    /// `--wait-timeout` without `--wait` would silently not wait, so clap
-    /// rejects it as a usage error instead.
-    #[test]
-    fn wait_timeout_requires_wait() {
+    fn promote_and_switchover_reject_removed_wait_flags() {
         for command in ["promote", "switchover"] {
-            let err = match PostgresCli::try_parse_from([
-                "clickhousectl",
-                command,
-                "pg-1",
-                "--wait-timeout",
-                "30",
-            ]) {
-                Ok(_) => {
-                    panic!("--wait-timeout without --wait should be a usage error for {command}")
+            for args in [["--wait", ""], ["--wait-timeout", "30"]] {
+                let mut argv = vec!["clickhousectl", command, "pg-1", args[0]];
+                if !args[1].is_empty() {
+                    argv.push(args[1]);
                 }
-                Err(err) => err,
-            };
-            assert_eq!(
-                err.kind(),
-                clap::error::ErrorKind::MissingRequiredArgument,
-                "{command}: {err}"
-            );
-            assert_eq!(err.exit_code(), 2, "{command}: {err}");
+                let err = match PostgresCli::try_parse_from(argv) {
+                    Ok(_) => panic!("{command} {} must be rejected", args[0]),
+                    Err(err) => err,
+                };
+                assert_eq!(
+                    err.kind(),
+                    clap::error::ErrorKind::UnknownArgument,
+                    "{command} {}: {err}",
+                    args[0]
+                );
+                assert_eq!(err.exit_code(), 2, "{command} {}: {err}", args[0]);
+            }
         }
-    }
-
-    #[test]
-    fn wait_duration_maps_flags_to_a_polling_budget() {
-        assert_eq!(wait_duration(false, None), None);
-        assert_eq!(wait_duration(false, Some(10)), None);
-        assert_eq!(
-            wait_duration(true, None),
-            Some(Duration::from_secs(u64::from(DEFAULT_ROLE_WAIT_SECS)))
-        );
-        assert_eq!(wait_duration(true, Some(30)), Some(Duration::from_secs(30)));
-        // A zero budget still polls once: `poll_role_convergence` fetches
-        // before it checks the deadline.
-        assert_eq!(wait_duration(true, Some(0)), Some(Duration::ZERO));
-    }
-
-    #[test]
-    fn expected_primary_after_a_role_change() {
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Promote, None),
-            Some(true)
-        );
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Promote, Some(false)),
-            Some(true)
-        );
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Switchover, Some(true)),
-            Some(false)
-        );
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Switchover, Some(false)),
-            Some(true)
-        );
-        // Nothing to compare against, so nothing to wait for.
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Switchover, None),
-            None
-        );
-    }
-
-    // --- role change convergence polling, issue #604 ---
-
-    fn primary_response(is_primary: Option<bool>) -> PostgresService {
-        PostgresService {
-            name: Some("pg".to_string()),
-            is_primary,
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn polling_returns_immediately_when_the_role_already_converged() {
-        let mut calls = 0;
-        let outcome = poll_role_convergence(
-            || {
-                calls += 1;
-                std::future::ready(Ok(primary_response(Some(true))))
-            },
-            true,
-            Duration::from_secs(60),
-            Duration::ZERO,
-        )
-        .await
-        .unwrap();
-        assert!(matches!(outcome, RoleConvergence::Converged(_)));
-        assert_eq!(calls, 1, "the first poll must not wait for an interval");
-    }
-
-    #[tokio::test]
-    async fn polling_converges_once_the_role_flips() {
-        let mut calls = 0;
-        let outcome = poll_role_convergence(
-            || {
-                calls += 1;
-                std::future::ready(Ok(primary_response(Some(calls >= 3))))
-            },
-            true,
-            Duration::from_secs(60),
-            Duration::ZERO,
-        )
-        .await
-        .unwrap();
-        let RoleConvergence::Converged(svc) = outcome else {
-            panic!("expected convergence");
-        };
-        assert_eq!(svc.is_primary, Some(true));
-        assert_eq!(calls, 3);
-    }
-
-    /// A role change the API accepted but never applied is the #604 failure:
-    /// polling must report the last observed role, not success.
-    #[tokio::test]
-    async fn polling_reports_non_convergence_with_the_last_observed_role() {
-        let outcome = poll_role_convergence(
-            || std::future::ready(Ok(primary_response(Some(true)))),
-            false,
-            Duration::from_millis(20),
-            Duration::from_millis(1),
-        )
-        .await
-        .unwrap();
-        let RoleConvergence::NotConverged(svc) = outcome else {
-            panic!("expected non-convergence");
-        };
-        assert_eq!(svc.is_primary, Some(true));
-    }
-
-    /// An omitted `isPrimary` is not the expected value, so it cannot count as
-    /// convergence — the promote response omits it entirely.
-    #[tokio::test]
-    async fn an_absent_is_primary_never_counts_as_converged() {
-        let outcome = poll_role_convergence(
-            || std::future::ready(Ok(primary_response(None))),
-            true,
-            Duration::ZERO,
-            Duration::ZERO,
-        )
-        .await
-        .unwrap();
-        assert!(matches!(outcome, RoleConvergence::NotConverged(_)));
-    }
-
-    #[tokio::test]
-    async fn polling_propagates_a_fetch_error() {
-        let error = poll_role_convergence(
-            || std::future::ready(Err(CloudError::new("boom"))),
-            true,
-            Duration::from_secs(60),
-            Duration::ZERO,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.message, "boom");
-    }
-
-    #[test]
-    fn role_timeout_message_names_the_observed_role() {
-        let message = role_timeout_message(
-            PostgresRoleCommand::Switchover,
-            "pg-1",
-            false,
-            Some(true),
-            Duration::from_secs(300),
-        );
-        assert!(
-            message.contains("switchover did not take effect within 300s")
-                && message.contains("isPrimary=true")
-                && message.contains("expected false")
-                && message.contains("postgres get pg-1"),
-            "unexpected message: {message}"
-        );
-
-        let absent = role_timeout_message(
-            PostgresRoleCommand::Promote,
-            "pg-1",
-            true,
-            None,
-            Duration::from_secs(5),
-        );
-        assert!(
-            absent.contains(&format!("isPrimary={ABSENT}")),
-            "an omitted isPrimary must render as {ABSENT}: {absent}"
-        );
-    }
-
-    #[test]
-    fn role_change_notes_warn_about_eventual_consistency() {
-        let promote_no_wait = role_change_notes(PostgresRoleCommand::Promote, "pg-1", false);
-        assert_eq!(promote_no_wait.len(), 2);
-        assert!(promote_no_wait[0].contains("previous primary is demoted asynchronously"));
-        assert!(promote_no_wait[1].contains("--wait"));
-
-        // With --wait the CLI already confirmed the new primary, but the old
-        // primary's demotion is still not something it can see.
-        let promote_waited = role_change_notes(PostgresRoleCommand::Promote, "pg-1", true);
-        assert_eq!(promote_waited.len(), 1);
-        assert!(promote_waited[0].contains("previous primary"));
-
-        let switchover_no_wait = role_change_notes(PostgresRoleCommand::Switchover, "pg-1", false);
-        assert_eq!(switchover_no_wait.len(), 1);
-        assert!(
-            switchover_no_wait[0].contains("acknowledged before (or without) the roles swapping")
-        );
-        assert!(switchover_no_wait[0].contains("--wait"));
-        assert!(
-            role_change_notes(PostgresRoleCommand::Switchover, "pg-1", true).is_empty(),
-            "a confirmed swap needs no caveat"
-        );
     }
 
     // --- helper unit tests ---
