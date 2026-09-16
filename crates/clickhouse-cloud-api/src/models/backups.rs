@@ -1,5 +1,80 @@
 use serde::{Deserialize, Serialize};
 
+/// Inline enum for `Snapshot.status`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum SnapshotStatus {
+    #[serde(rename = "done")]
+    #[default]
+    Done,
+    #[serde(rename = "error")]
+    Error,
+    #[serde(rename = "in_progress")]
+    InProgress,
+    #[serde(rename = "throttled")]
+    Throttled,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for SnapshotStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Done => write!(f, "done"),
+            Self::Error => write!(f, "error"),
+            Self::InProgress => write!(f, "in_progress"),
+            Self::Throttled => write!(f, "throttled"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// Inline enum for `Snapshot.type`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum SnapshotType {
+    #[serde(rename = "full")]
+    #[default]
+    Full,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for SnapshotType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Full => write!(f, "full"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// A service snapshot returned by the beta Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Snapshot {
+    #[serde(rename = "backupName", skip_serializing_if = "Option::is_none")]
+    pub backup_name: Option<String>,
+    /// Provider-specific bucket properties, preserved as returned by the API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<serde_json::Value>,
+    #[serde(rename = "durationInSeconds", skip_serializing_if = "Option::is_none")]
+    pub duration_in_seconds: Option<f64>,
+    #[serde(rename = "finishedAt", skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+    #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<String>,
+    #[serde(rename = "sizeInBytes", skip_serializing_if = "Option::is_none")]
+    pub size_in_bytes: Option<f64>,
+    #[serde(rename = "startedAt", skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<SnapshotStatus>,
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<SnapshotType>,
+}
+
 /// Inline enum for `AwsBackupBucket.bucketProvider`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum AwsBackupBucketBucketprovider {

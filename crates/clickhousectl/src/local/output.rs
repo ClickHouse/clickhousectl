@@ -13,6 +13,14 @@ use std::io::Write;
 use std::path::Path;
 use tabled::{Table, Tabled, settings::Style};
 
+const ABSENT: &str = "-";
+
+fn or_absent<T: fmt::Display>(value: Option<T>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| ABSENT.to_string())
+}
+
 /// Stable codes for local runtime failures. New codes may be added, but
 /// existing spellings and meanings are part of the machine-output contract.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -61,6 +69,10 @@ enum LocalErrorCode {
     PostgresError,
     SqlInputOpenFailed,
     SqlInputReadFailed,
+    /// A managed server metadata file contains invalid JSON. The structured
+    /// body names the file and gives conservative recovery guidance without
+    /// exposing serde's source text.
+    ServerMetadataInvalid,
     IoError,
     LocalError,
 }
@@ -161,6 +173,14 @@ struct LocalGuidance {
     command: Option<&'static str>,
 }
 
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ServerMetadataParseErrorDetail {
+    code: LocalErrorCode,
+    message: &'static str,
+    path: String,
+    guidance: Vec<LocalGuidance>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 enum LocalGuidanceAction {
@@ -216,6 +236,7 @@ enum LocalErrorBody {
     ManagedClient(ManagedClientErrorDetail),
     ProjectServer(ProjectServerErrorDetail),
     ProjectServerStateMissing(ProjectServerStateMissingDetail),
+    ServerMetadataParse(ServerMetadataParseErrorDetail),
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -262,6 +283,13 @@ impl LocalErrorOutput {
                 return Self {
                     error: LocalErrorBody::ProjectServerStateMissing(
                         ProjectServerStateMissingDetail::from_error(missing),
+                    ),
+                };
+            }
+            Error::ServerMetadataParse { path, .. } => {
+                return Self {
+                    error: LocalErrorBody::ServerMetadataParse(
+                        ServerMetadataParseErrorDetail::from_path(path),
                     ),
                 };
             }
@@ -349,8 +377,11 @@ impl LocalErrorOutput {
             // `server list` nor the caller's own state can find them.
             Error::VersionInUse { .. } => Mapping::parity(LocalErrorCode::ServerRunning)
                 .command("clickhousectl local server list --global"),
-            Error::VersionIsDefault { .. } => Mapping::parity(LocalErrorCode::VersionIsDefault)
-                .command("clickhousectl local use latest"),
+            Error::VersionIsDefault {
+                recovery_command, ..
+            } => {
+                Mapping::parity(LocalErrorCode::VersionIsDefault).command(recovery_command.clone())
+            }
             // Could not be resolved or downloaded, so the remote list is the
             // next step.
             Error::NoMatchingVersion(_)
@@ -434,7 +465,6 @@ impl LocalErrorOutput {
             | Error::ServerMetadataPermission { .. }
             | Error::ServerMetadataRead { .. }
             | Error::ServerMetadataUtf8 { .. }
-            | Error::ServerMetadataParse { .. }
             | Error::ServerMetadataWrite { .. }
             | Error::ServerLock { .. } => {
                 Mapping::redacted(LocalErrorCode::IoError, "Local I/O operation failed")
@@ -472,6 +502,34 @@ impl LocalErrorOutput {
         };
         Self {
             error: LocalErrorBody::General(mapping.into_detail(error)),
+        }
+    }
+}
+
+impl ServerMetadataParseErrorDetail {
+    fn from_path(path: &Path) -> Self {
+        Self {
+            code: LocalErrorCode::ServerMetadataInvalid,
+            message: "Server metadata is not valid JSON",
+            path: path.display().to_string(),
+            guidance: vec![
+                LocalGuidance {
+                    message: "Repair the metadata file, then retry",
+                    command: None,
+                },
+                LocalGuidance {
+                    message: "For ClickHouse, if repair is not possible, confirm that the running server is discoverable before moving the metadata file aside",
+                    command: Some("clickhousectl local server list --global"),
+                },
+                LocalGuidance {
+                    message: "For Postgres, verify the container state separately before moving the metadata file aside",
+                    command: None,
+                },
+                LocalGuidance {
+                    message: "Retry from the owning project; ClickHouse recovery requires the server to remain running and discoverable",
+                    command: Some("clickhousectl local server list"),
+                },
+            ],
         }
     }
 }
@@ -1022,9 +1080,9 @@ impl fmt::Display for ServerListOutput {
                         e.container_id
                             .as_deref()
                             .map(|s| s.chars().take(12).collect::<String>())
-                            .unwrap_or_default()
+                            .unwrap_or_else(|| ABSENT.to_string())
                     } else {
-                        e.pid.map(|p| p.to_string()).unwrap_or_default()
+                        or_absent(e.pid)
                     };
                     ServerListRowWithEngine {
                         name: e.name.clone(),
@@ -1035,9 +1093,9 @@ impl fmt::Display for ServerListOutput {
                             "stopped".into()
                         },
                         pid_or_container: id,
-                        version: e.version.clone().unwrap_or_default(),
-                        http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                        tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+                        version: or_absent(e.version.as_deref()),
+                        http_port: or_absent(e.http_port),
+                        tcp_port: or_absent(e.tcp_port),
                     }
                 })
                 .collect();
@@ -1063,11 +1121,11 @@ impl fmt::Display for ServerListOutput {
                     } else {
                         "stopped".to_string()
                     },
-                    pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
-                    version: e.version.clone().unwrap_or_default(),
-                    http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                    tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
-                    project: e.project.clone().unwrap_or_default(),
+                    pid: or_absent(e.pid),
+                    version: or_absent(e.version.as_deref()),
+                    http_port: or_absent(e.http_port),
+                    tcp_port: or_absent(e.tcp_port),
+                    project: or_absent(e.project.as_deref()),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::markdown()).to_string();
@@ -1083,10 +1141,10 @@ impl fmt::Display for ServerListOutput {
                     } else {
                         "stopped".to_string()
                     },
-                    pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
-                    version: e.version.clone().unwrap_or_default(),
-                    http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                    tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+                    pid: or_absent(e.pid),
+                    version: or_absent(e.version.as_deref()),
+                    http_port: or_absent(e.http_port),
+                    tcp_port: or_absent(e.tcp_port),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::markdown()).to_string();
@@ -1127,7 +1185,7 @@ impl fmt::Display for PostgresStartOutput {
         writeln!(f, "  Database: {}", self.database)?;
         write!(
             f,
-            "  Connect:  clickhousectl local postgres client --name {}",
+            "  Connect:  clickhousectl local postgres client {}",
             self.name
         )
     }
@@ -1427,6 +1485,7 @@ mod tests {
             (
                 Error::VersionIsDefault {
                     version: "25.12.9.61".into(),
+                    recovery_command: "clickhousectl local use latest".into(),
                 },
                 "version_is_default",
             ),
@@ -1556,6 +1615,14 @@ mod tests {
                 Error::Io(std::io::Error::other("raw I/O details")),
                 "io_error",
             ),
+            (
+                Error::ServerMetadataParse {
+                    path: "/work/.clickhouse/servers/default.json".into(),
+                    source: serde_json::from_str::<serde_json::Value>("{")
+                        .expect_err("invalid fixture must fail to parse"),
+                },
+                "server_metadata_invalid",
+            ),
             (Error::Exec("raw fallback details".into()), "local_error"),
             (
                 Error::BinaryNotLaunchable {
@@ -1616,6 +1683,7 @@ mod tests {
     fn version_is_default_json_error_explains_both_the_refusal_and_the_way_forward() {
         let json = error_json(&Error::VersionIsDefault {
             version: "25.12.9.61".into(),
+            recovery_command: "clickhousectl local use 24.8.14.39".into(),
         });
         let message = json["error"]["message"].as_str().expect("message");
 
@@ -1631,7 +1699,7 @@ mod tests {
             );
         }
         assert_eq!(
-            json["error"]["command"], "clickhousectl local use latest",
+            json["error"]["command"], "clickhousectl local use 24.8.14.39",
             "the JSON error must name the recovery command"
         );
     }
@@ -1773,6 +1841,7 @@ mod tests {
             },
             Error::VersionIsDefault {
                 version: "25.12.9.61".into(),
+                recovery_command: "clickhousectl local use latest".into(),
             },
             Error::NoMatchingVersion("99.99".into()),
             Error::ExactVersionUnavailable {
@@ -2520,7 +2589,92 @@ mod tests {
         assert!(text.contains("9000"));
         assert!(text.contains("test"));
         assert!(text.contains("stopped"));
+        let stopped = text
+            .lines()
+            .find(|line| line.contains("| test"))
+            .expect("stopped server row");
+        let cells: Vec<_> = stopped.split('|').map(str::trim).collect();
+        assert_eq!(cells, ["", "test", "stopped", "-", "-", "-", "-", ""]);
         assert!(text.contains("2 servers, 1 running"));
+    }
+
+    #[test]
+    fn server_list_display_marks_unavailable_postgres_and_global_fields() {
+        let postgres = ServerListOutput {
+            servers: vec![ServerListEntry {
+                name: "pg".to_string(),
+                running: true,
+                pid: None,
+                version: Some("postgres:18".to_string()),
+                http_port: None,
+                tcp_port: Some(5432),
+                project: None,
+                engine: "postgres".to_string(),
+                container_id: Some("1234567890abcdef".to_string()),
+            }],
+            total_servers: 1,
+            total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
+        }
+        .to_string();
+        let postgres_row = postgres
+            .lines()
+            .find(|line| line.contains("| pg"))
+            .expect("Postgres server row");
+        let postgres_cells: Vec<_> = postgres_row.split('|').map(str::trim).collect();
+        assert_eq!(
+            postgres_cells,
+            [
+                "",
+                "pg",
+                "postgres",
+                "running",
+                "1234567890ab",
+                "postgres:18",
+                "-",
+                "5432",
+                ""
+            ]
+        );
+
+        let global = ServerListOutput {
+            servers: vec![ServerListEntry {
+                name: "recovered".to_string(),
+                running: true,
+                pid: Some(42),
+                version: None,
+                http_port: None,
+                tcp_port: None,
+                project: Some("/project".to_string()),
+                engine: "clickhouse".to_string(),
+                container_id: None,
+            }],
+            total_servers: 1,
+            total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
+        }
+        .to_string();
+        let global_row = global
+            .lines()
+            .find(|line| line.contains("| recovered"))
+            .expect("globally discovered server row");
+        let global_cells: Vec<_> = global_row.split('|').map(str::trim).collect();
+        assert_eq!(
+            global_cells,
+            [
+                "",
+                "recovered",
+                "running",
+                "42",
+                "-",
+                "-",
+                "-",
+                "/project",
+                ""
+            ]
+        );
     }
 
     #[test]

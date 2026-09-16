@@ -72,18 +72,15 @@ impl Sandbox {
     }
 
     /// Run the binary sandboxed: `HOME` at the temp dir, telemetry pointed at
-    /// the mock, and every env var that would alter the consent flow or the
-    /// payload cleared for determinism (the harness itself may run under CI
-    /// or a coding agent).
+    /// the mock, and inherited settings cleared for determinism (the harness
+    /// itself may run under CI or a coding agent). Preserve executable lookup.
     fn command(&self, args: &[&str]) -> Command {
         let mut cmd = Command::new(clickhousectl_binary());
         cmd.args(args)
+            .env_clear()
+            .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.home.path())
-            .env("CHCTL_TELEMETRY_URL", self.telemetry_url())
-            .env_remove("DO_NOT_TRACK")
-            .env_remove("CHCTL_TELEMETRY_DEBUG")
-            .env_remove("CHCTL_TELEMETRY_PAYLOAD")
-            .env_remove("CI");
+            .env("CHCTL_TELEMETRY_URL", self.telemetry_url());
         cmd
     }
 
@@ -1079,8 +1076,10 @@ async fn failed_parse_after_positional_captures_later_flags_without_values() {
 
     let output = sandbox.run(&[
         "cloud",
-        "org",
-        "usage",
+        "postgres",
+        "logs",
+        "SECRET-POSTGRES-ID",
+        "--org-id",
         "SECRET-ORG-ID",
         "--from-date",
         "SECRET-FROM-DATE",
@@ -1091,11 +1090,13 @@ async fn failed_parse_after_positional_captures_later_flags_without_values() {
 
     let payloads = sandbox.wait_for_requests(1).await;
     let event = &payloads[0];
-    assert_eq!(event["command"], "cloud org usage");
-    assert_eq!(event["flags"], serde_json::json!(["from-date", "to-date"]));
-    // The deprecated positional org-id form is now visible as presence — the
-    // exact signal #480 asked for, with the id still off the wire.
-    assert_eq!(event["positionals"], serde_json::json!(["legacy_org_id"]));
+    assert_eq!(event["command"], "cloud postgres logs");
+    assert_eq!(
+        event["flags"],
+        serde_json::json!(["from-date", "org-id", "to-date"])
+    );
+    // Only the positional definition is recorded; the ID stays off the wire.
+    assert_eq!(event["positionals"], serde_json::json!(["resource_id"]));
     assert_eq!(event["exit_code"], 2);
     assert_eq!(event["outcome"], "invalid_value");
     let raw = serde_json::to_string(event).unwrap();
@@ -1279,6 +1280,83 @@ async fn status_is_read_only_when_telemetry_is_enabled() {
             .exists()
     );
     sandbox.assert_no_requests().await;
+}
+
+#[tokio::test]
+async fn json_status_is_read_only_with_explicit_and_agent_output_selection() {
+    for agent_mode in [false, true] {
+        for (disabled, preference, enabled, reason) in [
+            (None, "unconfigured", false, "unconfigured"),
+            (Some(false), "enabled", true, "preference_enabled"),
+            (Some(true), "disabled", false, "preference_disabled"),
+        ] {
+            let sandbox = Sandbox::new().await;
+            if let Some(disabled) = disabled {
+                sandbox.write_state(disabled);
+            }
+            let original = std::fs::read(sandbox.state_path()).ok();
+            let mut command = sandbox.command(&["telemetry", "status"]);
+            if agent_mode {
+                command.env("CLAUDECODE", "1");
+            } else {
+                command.arg("--json");
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{}", stderr_of(&output));
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["action"], "status");
+            assert_eq!(value["preference"], preference);
+            assert_eq!(value["enabled"], enabled);
+            assert_eq!(value["reason"], reason);
+            assert_eq!(value["config_path"], sandbox.state_path().to_str().unwrap());
+            assert!(output.stderr.is_empty(), "{}", stderr_of(&output));
+            assert_eq!(std::fs::read(sandbox.state_path()).ok(), original);
+            assert!(
+                !sandbox
+                    .home
+                    .path()
+                    .join(".clickhouse/last_update_check")
+                    .exists()
+            );
+            sandbox.assert_no_requests().await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn json_telemetry_changes_report_saved_preference_and_effective_consent() {
+    for agent_mode in [false, true] {
+        let sandbox = Sandbox::new().await;
+        for (action, preference, disabled) in
+            [("enable", "enabled", false), ("disable", "disabled", true)]
+        {
+            let mut command = sandbox.command(&["telemetry", action]);
+            command.env("DO_NOT_TRACK", "1");
+            if agent_mode {
+                command.env("CLAUDECODE", "1");
+            } else {
+                command.arg("--json");
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{}", stderr_of(&output));
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["action"], action);
+            assert_eq!(value["preference"], preference);
+            assert_eq!(value["enabled"], false);
+            assert_eq!(value["reason"], "do_not_track");
+            assert_eq!(
+                serde_json::from_slice::<Value>(&std::fs::read(sandbox.state_path()).unwrap())
+                    .unwrap()["disabled"],
+                disabled
+            );
+
+            let output = sandbox.run(&["telemetry", "status", "--json"]);
+            let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(value["enabled"], !disabled);
+            assert_eq!(value["preference"], preference);
+        }
+        sandbox.assert_no_requests().await;
+    }
 }
 
 #[tokio::test]
@@ -1675,6 +1753,68 @@ async fn a_sql_error_is_classified_without_the_sql_reaching_the_payload() {
         "the user must still see the real error: {}",
         stderr_of(&output)
     );
+}
+
+#[tokio::test]
+async fn query_timeouts_retain_classification_with_or_without_wake_context() {
+    for (state, confirm_wake) in [("running", false), ("idle", false), ("running", true)] {
+        let control = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1/organizations/org-1/services/{QUERY_SERVICE_ID}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": { "id": QUERY_SERVICE_ID, "name": "demo", "state": state },
+                "status": 200,
+                "requestId": "stub-service-get"
+            })))
+            .expect(1)
+            .mount(&control)
+            .await;
+        let query_host = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/service/{QUERY_SERVICE_ID}/run")))
+            .respond_with(move |request: &wiremock::Request| {
+                if confirm_wake && !request.headers.contains_key("wake-service") {
+                    ResponseTemplate::new(206).set_body_string(r#"{"data":"Confirm wake service"}"#)
+                } else {
+                    ResponseTemplate::new(500).set_body_string(r#"{"error":"Timeout error."}"#)
+                }
+            })
+            .mount(&query_host)
+            .await;
+        let (sandbox, project) = query_sandbox(&control).await;
+        let output = run_query(
+            &sandbox,
+            project.path(),
+            &control,
+            Some(&query_host),
+            &["--query", "SELECT 'secret-timeout-test'"],
+        );
+        assert_eq!(output.status.code(), Some(1));
+        let event = debug_payload(&output);
+        assert_eq!(event["failure_stage"], "query_request");
+        assert_eq!(event["failure_kind"], "timeout");
+        assert_eq!(event["http_status"], 500);
+        assert_eq!(event["retry_bucket"], if confirm_wake { "1" } else { "0" });
+        assert_eq!(event["provisioning_state"], "bearer");
+        assert_eq!(
+            query_host.received_requests().await.unwrap().len(),
+            if confirm_wake { 2 } else { 1 }
+        );
+        let raw = event.to_string();
+        for sensitive in [
+            "secret-timeout-test",
+            QUERY_SERVICE_ID,
+            "test-bearer-token",
+            "Timeout error.",
+        ] {
+            assert!(
+                !raw.contains(sensitive),
+                "telemetry leaked {sensitive}: {raw}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

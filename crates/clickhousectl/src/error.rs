@@ -7,7 +7,6 @@ pub enum NetworkStage {
     BuildProbe,
     VersionFallback,
     VersionList,
-    MasterCheck,
     DownloadHeaders,
     DownloadBody,
     Download,
@@ -19,7 +18,6 @@ impl fmt::Display for NetworkStage {
             Self::BuildProbe => "build probe",
             Self::VersionFallback => "version fallback",
             Self::VersionList => "version list",
-            Self::MasterCheck => "master check",
             Self::DownloadHeaders => "download headers",
             Self::DownloadBody => "download body",
             Self::Download => "download",
@@ -458,9 +456,12 @@ pub enum Error {
     /// build), so the default is protected unless `--force` is passed.
     #[error(
         "Version {version} is the current default (~/.clickhouse/default) and is linked as ~/.local/bin/clickhouse; removing it would clear both, and the exact build may not be re-downloadable.\n\
-         Switch the default first with `clickhousectl local use <other-version>`, or pass --force to remove it and clear the default marker and the global symlink."
+         Switch the default first with `{recovery_command}`, or pass --force to remove it and clear the default marker and the global symlink."
     )]
-    VersionIsDefault { version: String },
+    VersionIsDefault {
+        version: String,
+        recovery_command: String,
+    },
 
     #[error("Unsupported platform: {os}/{arch}")]
     UnsupportedPlatform { os: String, arch: String },
@@ -661,7 +662,7 @@ pub enum Error {
     },
 
     #[error(
-        "Server metadata '{}' is not valid JSON: {source}. Repair or remove the metadata file, then retry.",
+        "Server metadata '{}' is not valid JSON: {source}. Repair the metadata file, then retry.",
         path.display()
     )]
     ServerMetadataParse {
@@ -729,7 +730,7 @@ pub enum Error {
     /// so structured output can render this self-composed guidance verbatim.
     #[error(
         "Docker error: container '{0}' already exists but is not managed by clickhousectl. \
-         Remove it manually or pick a different --name."
+         Remove it manually or pick a different name."
     )]
     ContainerNameConflict(String),
 
@@ -786,6 +787,7 @@ mod tests {
         assert_eq!(
             Error::VersionIsDefault {
                 version: "25.12".into(),
+                recovery_command: "clickhousectl local use latest".into(),
             }
             .exit_code(),
             1
@@ -796,6 +798,7 @@ mod tests {
     fn version_is_default_error_names_the_marker_the_symlink_and_both_ways_forward() {
         let message = Error::VersionIsDefault {
             version: "26.9.1.217".into(),
+            recovery_command: "clickhousectl local use 25.12.9.61".into(),
         }
         .to_string();
 
@@ -803,7 +806,7 @@ mod tests {
             "26.9.1.217 is the current default",
             "~/.clickhouse/default",
             "~/.local/bin/clickhouse",
-            "`clickhousectl local use <other-version>`",
+            "`clickhousectl local use 25.12.9.61`",
             "--force",
         ] {
             assert!(

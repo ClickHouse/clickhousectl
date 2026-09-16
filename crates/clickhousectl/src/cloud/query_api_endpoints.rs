@@ -1,7 +1,7 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
-use crate::cloud::shared::resolve_org_id;
+use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use crate::cloud::types::DeleteResponse;
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::{
@@ -13,9 +13,6 @@ use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Args)]
 pub struct QueryApiEndpointArgs {
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long, global = true)]
-    org_id: Option<String>,
     #[command(subcommand)]
     command: QueryApiEndpointCommands,
 }
@@ -56,13 +53,14 @@ pub struct QueryApiEndpointTarget {
     /// Service ID
     service_id: String,
     /// Query API endpoint ID
-    endpoint_id: String,
+    #[command(flatten)]
+    endpoint_id: NameSelector,
 }
 
 #[derive(Args)]
 pub struct QueryApiEndpointConfigArgs {
     /// Complete JSON definition (file path or - for stdin)
-    #[arg(long = "config-file")]
+    #[arg(long = "file", alias = "config-file", value_name = "PATH")]
     config_file: String,
 }
 
@@ -90,7 +88,7 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
         QueryApiEndpointCommands::Create(input) => {
             let request =
                 build_query_api_endpoint_request(read_config_value(&input.input.config_file)?)?;
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             output(
                 &client
                     .create_query_api_endpoint(&org, &input.service_id, &request)
@@ -99,16 +97,12 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
             )
         }
         QueryApiEndpointCommands::Update { target, input } => {
+            let endpoint_id = resolve_endpoint_id(client, &target).await?;
             let request = build_query_api_endpoint_request(read_config_value(&input.config_file)?)?;
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             output(
                 &client
-                    .update_query_api_endpoint(
-                        &org,
-                        &target.service_id,
-                        &target.endpoint_id,
-                        &request,
-                    )
+                    .update_query_api_endpoint(&org, &target.service_id, &endpoint_id, &request)
                     .await?,
                 json,
             )
@@ -118,7 +112,7 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
             cursor,
             limit,
         } => {
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             let data = client
                 .list_query_api_endpoints(&org, &service_id, cursor.as_deref(), limit)
                 .await?;
@@ -130,30 +124,104 @@ pub async fn run(client: &CloudClient, args: QueryApiEndpointArgs, json: bool) -
             }
         }
         QueryApiEndpointCommands::Get(target) => {
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let endpoint_id = resolve_endpoint_id(client, &target).await?;
+            let org = resolve_org_id(client).await?;
             output(
                 &client
-                    .get_query_api_endpoint(&org, &target.service_id, &target.endpoint_id)
+                    .get_query_api_endpoint(&org, &target.service_id, &endpoint_id)
                     .await?,
                 json,
             )
         }
         QueryApiEndpointCommands::Delete(target) => {
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let endpoint_id = resolve_endpoint_id(client, &target).await?;
+            let org = resolve_org_id(client).await?;
             let data = client
-                .delete_query_api_endpoint(&org, &target.service_id, &target.endpoint_id)
+                .delete_query_api_endpoint(&org, &target.service_id, &endpoint_id)
                 .await?;
             if json {
                 output(&data, true)
             } else {
                 crate::cloud::output::print_line(format!(
                     "Deleted Query API endpoint {}",
-                    target.endpoint_id
+                    endpoint_id
                 ));
                 Ok(())
             }
         }
     }
+}
+
+async fn resolve_endpoint_id(
+    client: &CloudClient,
+    target: &QueryApiEndpointTarget,
+) -> CloudResult<String> {
+    let name = match (&target.endpoint_id.id, &target.endpoint_id.name) {
+        (Some(id), None) => return Ok(id.clone()),
+        (None, Some(name)) => name,
+        _ => {
+            return Err(CloudError::new(
+                "supply exactly one positional endpoint ID or --name",
+            ));
+        }
+    };
+    let org = resolve_org_id(client).await?;
+    let mut rows = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut seen = std::collections::HashSet::new();
+    let mut total_records = None;
+    let mut seen_ids = std::collections::HashSet::new();
+    loop {
+        let page = client
+            .list_query_api_endpoints(&org, &target.service_id, cursor.as_deref(), Some(100))
+            .await?;
+        let items = page
+            .items
+            .ok_or_else(|| CloudError::new("endpoint list response is missing items"))?;
+        for item in &items {
+            let id = item
+                .id
+                .ok_or_else(|| CloudError::new("endpoint list contains a missing ID"))?;
+            if !seen_ids.insert(id) {
+                return Err(CloudError::new(
+                    "endpoint pagination repeated a resource ID",
+                ));
+            }
+        }
+        rows.extend(items);
+        let pagination = page
+            .pagination
+            .ok_or_else(|| CloudError::new("endpoint list response is missing pagination"))?;
+        if let Some(total) = pagination.total_records {
+            if total < 0 || total_records.is_some_and(|previous| previous != total) {
+                return Err(CloudError::new(
+                    "endpoint list returned inconsistent totalRecords",
+                ));
+            }
+            total_records = Some(total);
+        }
+        match pagination.next_cursor {
+            None => {
+                if total_records.is_some_and(|total| total as usize != rows.len()) {
+                    return Err(CloudError::new(
+                        "endpoint list ended before all records were received",
+                    ));
+                }
+                break;
+            }
+            Some(next) if next.is_empty() || !seen.insert(next.clone()) => {
+                return Err(CloudError::new(
+                    "endpoint list returned an empty or repeated cursor",
+                ));
+            }
+            Some(next) => cursor = Some(next),
+        }
+    }
+    select_named_id(
+        "Query API endpoint",
+        name,
+        rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
+    )
 }
 
 fn output<T: Serialize>(data: &T, json: bool) -> CloudResult<()> {
@@ -303,6 +371,26 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "query-api-endpoint", "create", "svc-1"],
+            "config_file",
+            &["config-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &[
+                "cloud",
+                "query-api-endpoint",
+                "update",
+                "svc-1",
+                "endpoint-1",
+            ],
+            "config_file",
+            &["config-file"],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
@@ -405,6 +493,7 @@ mod tests {
         let Commands::Cloud(cloud) = cli.command else {
             panic!("cloud command")
         };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, extra);
         let CloudCommands::QueryApiEndpoint(args) = cloud.command else {
             panic!("endpoint command")
         };
@@ -416,14 +505,8 @@ mod tests {
         for (args, write) in [
             (vec!["list", "svc"], false),
             (vec!["get", "svc", "endpoint"], false),
-            (
-                vec!["create", "svc", "--config-file", "definition.json"],
-                true,
-            ),
-            (
-                vec!["update", "svc", "endpoint", "--config-file", "-"],
-                true,
-            ),
+            (vec!["create", "svc", "--file", "definition.json"], true),
+            (vec!["update", "svc", "endpoint", "--file", "-"], true),
             (vec!["delete", "svc", "endpoint"], true),
         ] {
             assert_eq!(parse(&args).is_write(), write);
@@ -437,30 +520,24 @@ mod tests {
             "org",
             "create",
             "svc",
-            "--config-file",
+            "--file",
             "definition.json",
         ]);
-        assert_eq!(args.org_id.as_deref(), Some("org"));
+
         let QueryApiEndpointCommands::Create(input) = args.command else {
             panic!("create")
         };
         assert_eq!(input.service_id, "svc");
         assert_eq!(input.input.config_file, "definition.json");
         let args = parse(&[
-            "update",
-            "svc",
-            "endpoint",
-            "--config-file",
-            "-",
-            "--org-id",
-            "org",
+            "update", "svc", "endpoint", "--file", "-", "--org-id", "org",
         ]);
-        assert_eq!(args.org_id.as_deref(), Some("org"));
+
         let QueryApiEndpointCommands::Update { target, input } = args.command else {
             panic!("update")
         };
         assert_eq!(target.service_id, "svc");
-        assert_eq!(target.endpoint_id, "endpoint");
+        assert_eq!(target.endpoint_id.id.as_deref(), Some("endpoint"));
         assert_eq!(input.config_file, "-");
         for command in ["get", "delete"] {
             let args = parse(&[command, "svc", "endpoint"]);
@@ -470,7 +547,7 @@ mod tests {
                 _ => panic!("target"),
             };
             assert_eq!(target.service_id, "svc");
-            assert_eq!(target.endpoint_id, "endpoint");
+            assert_eq!(target.endpoint_id.id.as_deref(), Some("endpoint"));
         }
     }
 

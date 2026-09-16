@@ -91,6 +91,8 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "service_clickhouse_settings_update",
     "slow_query_pattern_get",
     "slow_query_patterns_get_list",
+    "snapshot_get",
+    "snapshot_get_list",
     "udf_attach",
     "udf_attachment_get",
     "udf_attachment_list",

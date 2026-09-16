@@ -462,10 +462,35 @@ pub async fn ensure_name_free(
     }
 }
 
-pub async fn is_container_running(docker: &Docker, id: &str) -> bool {
+/// A missing container is distinct from an inspection failure. Only Docker's
+/// typed 404 response establishes absence; all other failures remain errors.
+pub async fn inspect_container(
+    docker: &Docker,
+    id: &str,
+) -> Result<Option<bollard::models::ContainerInspectResponse>> {
     match docker.inspect_container(id, None).await {
-        Ok(resp) => resp.state.and_then(|s| s.running).unwrap_or(false),
-        Err(_) => false,
+        Ok(response) => Ok(Some(response)),
+        Err(BollardError::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(None),
+        Err(error) => Err(Error::DockerError(error.to_string())),
+    }
+}
+
+pub fn inspected_container_running(
+    response: &bollard::models::ContainerInspectResponse,
+) -> Result<bool> {
+    response
+        .state
+        .as_ref()
+        .and_then(|state| state.running)
+        .ok_or_else(|| Error::DockerError("container inspection omitted its running state".into()))
+}
+
+pub async fn is_container_running(docker: &Docker, id: &str) -> Result<bool> {
+    match inspect_container(docker, id).await? {
+        Some(response) => inspected_container_running(&response),
+        None => Ok(false),
     }
 }
 
@@ -583,7 +608,12 @@ pub async fn remove_container(docker: &Docker, id: &str) -> Result<()> {
         docker
             .remove_container(
                 id,
-                Some(RemoveContainerOptionsBuilder::default().force(true).build()),
+                Some(
+                    RemoveContainerOptionsBuilder::default()
+                        .force(true)
+                        .v(true)
+                        .build(),
+                ),
             )
             .await,
     )
@@ -1011,13 +1041,10 @@ pub(crate) fn block_on<F: std::future::Future>(f: F) -> F::Output {
     }
 }
 
-pub fn is_container_running_blocking(id: &str) -> bool {
+pub fn is_container_running_blocking(id: &str) -> Result<bool> {
     let id = id.to_string();
     block_on(async move {
-        let docker = match connect().await {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
+        let docker = connect().await?;
         is_container_running(&docker, &id).await
     })
 }
@@ -1200,6 +1227,57 @@ pub fn recover_project_postgres_blocking(
 mod tests {
     use super::*;
     use bollard::models::{CreateImageInfo, ProgressDetail};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_container_requests_anonymous_volume_cleanup() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let directory = tempfile::tempdir().expect("create Docker mock directory");
+        let socket_path = directory.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind Docker mock socket");
+        let request = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Docker request");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read Docker request");
+                assert!(count > 0, "Docker request ended before its headers");
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write Docker response");
+            String::from_utf8(bytes).expect("Docker request is UTF-8")
+        });
+        let docker = Docker::connect_with_unix(
+            socket_path.to_str().expect("socket path is UTF-8"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .expect("connect to Docker mock");
+
+        remove_container(&docker, "pg-id")
+            .await
+            .expect("remove container");
+
+        let request = request.join().expect("join Docker mock");
+        let request_line = request.lines().next().expect("Docker request line");
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .expect("Docker request path");
+        let query = path.split_once('?').expect("Docker request query").1;
+        let parameters: HashMap<_, _> = query
+            .split('&')
+            .filter_map(|parameter| parameter.split_once('='))
+            .collect();
+        assert_eq!(parameters.get("force"), Some(&"true"));
+        assert_eq!(parameters.get("v"), Some(&"true"));
+    }
 
     #[tokio::test]
     async fn sql_reader_failures_are_distinct_from_docker_input_write_failures() {

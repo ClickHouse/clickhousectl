@@ -58,13 +58,22 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         }
         LocalCommands::Client {
             name,
+            name_flag,
             host,
             port,
             version,
             query,
             queries_file,
             args,
-        } => run_client(name, host, port, version, query, queries_file, args),
+        } => run_client(
+            name.or(name_flag),
+            host,
+            port,
+            version,
+            query,
+            queries_file,
+            args,
+        ),
         LocalCommands::Server { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
     }
@@ -218,6 +227,7 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     if version_manager::default_version_marker().as_deref() == Some(version) && !force {
         return Err(Error::VersionIsDefault {
             version: version.to_string(),
+            recovery_command: default_removal_recovery_command(version),
         });
     }
 
@@ -266,6 +276,7 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     if was_default && !force {
         return Err(Error::VersionIsDefault {
             version: version.to_string(),
+            recovery_command: default_removal_recovery_command(version),
         });
     }
     if was_default && !json {
@@ -298,6 +309,28 @@ fn remove(version: &str, force: bool, json: bool) -> Result<()> {
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+/// Prefer the newest installed version that `local use` can select and launch.
+/// Falling back to `latest` keeps the existing recovery path when no usable
+/// local alternative can be identified.
+fn default_removal_recovery_command(removing_version: &str) -> String {
+    let alternative = version_manager::list_installed_versions()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|version| version != removing_version)
+        .find(|version| {
+            matches!(
+                version_manager::parse_version_spec(version),
+                Ok(version_manager::VersionSpec::Exact(_))
+            ) && paths::binary_path(version)
+                .is_ok_and(|binary| ensure_launchable(&binary, version).is_ok())
+        });
+
+    format!(
+        "clickhousectl local use {}",
+        alternative.as_deref().unwrap_or("latest")
+    )
 }
 
 fn which(json: bool) -> Result<()> {
@@ -938,11 +971,19 @@ async fn run_server_commands(command: ServerCommands, json: bool) -> Result<()> 
         }
         ServerCommands::Dotenv {
             name,
+            name_flag,
             local,
             user,
             password,
             database,
-        } => dotenv_server(name.as_deref(), local, user, password, database, json),
+        } => dotenv_server(
+            name.or(name_flag).as_deref(),
+            local,
+            user,
+            password,
+            database,
+            json,
+        ),
         ServerCommands::Remove { name, name_flag } => {
             remove_server(ServerNameInput::from_args(name, name_flag), json)
         }

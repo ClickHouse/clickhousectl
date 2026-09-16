@@ -102,6 +102,62 @@ where
     deserialize_strict_config(read_config_value(config_file)?, config_file)
 }
 
+/// Check the shared primary document argument contract for a concrete command.
+#[cfg(test)]
+pub(crate) fn assert_primary_json_input(args: &[&str], id: &str, aliases: &[&str]) {
+    use crate::cli::Cli;
+    use clap::{CommandFactory, Parser, error::ErrorKind};
+
+    let base: Vec<_> = ["chctl"].into_iter().chain(args.iter().copied()).collect();
+    assert_eq!(
+        Cli::try_parse_from(&base).err().unwrap().kind(),
+        ErrorKind::MissingRequiredArgument,
+        "{args:?} requires a document or its existing alternative input"
+    );
+    let spellings: Vec<_> = ["file"]
+        .into_iter()
+        .chain(aliases.iter().copied())
+        .collect();
+    for spelling in &spellings {
+        for input in ["private/request.json", "-"] {
+            let flag = format!("--{spelling}");
+            let mut argv = base.clone();
+            argv.extend([flag.as_str(), input]);
+            assert!(Cli::try_parse_from(&argv).is_ok(), "{argv:?}");
+            let mut command = Cli::command();
+            command.build();
+            let matches = command.clone().try_get_matches_from(argv).unwrap();
+            let mut leaf = &matches;
+            let mut definition = &command;
+            while let Some((name, child)) = leaf.subcommand() {
+                leaf = child;
+                definition = definition.find_subcommand(name).unwrap();
+            }
+            assert_eq!(leaf.get_raw(id).unwrap().collect::<Vec<_>>(), [input]);
+            let arg = definition
+                .get_arguments()
+                .find(|arg| arg.get_id() == id)
+                .unwrap();
+            assert_eq!(arg.get_long(), Some("file"));
+            assert_eq!(arg.get_value_names().unwrap(), ["PATH"]);
+            assert!(!arg.is_hide_set());
+            assert!(arg.get_visible_aliases().unwrap_or_default().is_empty());
+            assert_eq!(arg.get_all_aliases().unwrap_or_default(), aliases);
+        }
+        for other in &spellings {
+            let first = format!("--{spelling}");
+            let second = format!("--{other}");
+            let mut argv = base.clone();
+            argv.extend([first.as_str(), "first.json", second.as_str(), "second.json"]);
+            assert_eq!(
+                Cli::try_parse_from(argv).err().unwrap().kind(),
+                ErrorKind::ArgumentConflict,
+                "{args:?}: {first} and {second} must not choose a file silently"
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -29,24 +29,15 @@ fn install_fake_clickhouse(home: &Path, version: &str) {
     std::fs::set_permissions(binary, permissions).expect("make fake ClickHouse executable");
 }
 
-fn run_start(project: &Path, home: &Path, args_file: &Path) -> Output {
+fn run_start(project: &Path, home: &Path, args_file: &Path, selector: &[&str]) -> Output {
     Command::new(clickhousectl_binary())
         .env("DO_NOT_TRACK", "1")
         .env("HOME", home)
         .env("FAKE_CLICKHOUSE_ARGS_FILE", args_file)
         .current_dir(project)
-        .args([
-            "local",
-            "--json",
-            "server",
-            "start",
-            "--no-wait",
-            "existing",
-            "--version",
-            REQUESTED_VERSION,
-            "--",
-            "--logger.level=trace",
-        ])
+        .args(["local", "--json", "server", "start", "--no-wait"])
+        .args(selector)
+        .args(["--version", REQUESTED_VERSION, "--", "--logger.level=trace"])
         .output()
         .expect("run clickhousectl")
 }
@@ -76,44 +67,46 @@ impl Drop for ProcessGuard {
 }
 
 #[test]
-fn positional_name_keeps_following_version_and_passthrough_separate() {
-    let project = tempfile::tempdir().expect("create project tempdir");
-    let home = tempfile::tempdir().expect("create home tempdir");
-    install_fake_clickhouse(home.path(), DEFAULT_VERSION);
-    install_fake_clickhouse(home.path(), REQUESTED_VERSION);
-    std::fs::write(home.path().join(".clickhouse/default"), DEFAULT_VERSION)
-        .expect("write default version");
-    let args_file = home.path().join("clickhouse-args.txt");
+fn both_name_forms_keep_following_version_and_passthrough_separate() {
+    for selector in [&["existing"][..], &["--name", "existing"][..]] {
+        let project = tempfile::tempdir().expect("create project tempdir");
+        let home = tempfile::tempdir().expect("create home tempdir");
+        install_fake_clickhouse(home.path(), DEFAULT_VERSION);
+        install_fake_clickhouse(home.path(), REQUESTED_VERSION);
+        std::fs::write(home.path().join(".clickhouse/default"), DEFAULT_VERSION)
+            .expect("write default version");
+        let args_file = home.path().join("clickhouse-args.txt");
 
-    let output = run_start(project.path(), home.path(), &args_file);
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let body: Value = serde_json::from_slice(&output.stdout).expect("parse start JSON");
-    let _process = ProcessGuard(body["pid"].as_u64().expect("start PID") as u32);
+        let output = run_start(project.path(), home.path(), &args_file, selector);
+        assert!(
+            output.status.success(),
+            "stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let body: Value = serde_json::from_slice(&output.stdout).expect("parse start JSON");
+        let _process = ProcessGuard(body["pid"].as_u64().expect("start PID") as u32);
 
-    assert_eq!(body["name"], "existing");
-    assert_eq!(body["version"], REQUESTED_VERSION);
-    assert!(
-        project
-            .path()
-            .join(".clickhouse/servers/existing.json")
-            .exists()
-    );
-    assert_eq!(
-        std::fs::read_to_string(project.path().join(".clickhouse/.gitignore")).unwrap(),
-        "*\n"
-    );
-    assert!(
-        !project
-            .path()
-            .join(".clickhouse/servers/default.json")
-            .exists()
-    );
+        assert_eq!(body["name"], "existing");
+        assert_eq!(body["version"], REQUESTED_VERSION);
+        assert!(
+            project
+                .path()
+                .join(".clickhouse/servers/existing.json")
+                .exists()
+        );
+        assert_eq!(
+            std::fs::read_to_string(project.path().join(".clickhouse/.gitignore")).unwrap(),
+            "*\n"
+        );
+        assert!(
+            !project
+                .path()
+                .join(".clickhouse/servers/default.json")
+                .exists()
+        );
 
-    let child_args = read_file_eventually(&args_file);
-    assert_eq!(child_args.lines().last(), Some("--logger.level=trace"));
-    assert!(!child_args.lines().any(|arg| arg == "--version"));
+        let child_args = read_file_eventually(&args_file);
+        assert_eq!(child_args.lines().last(), Some("--logger.level=trace"));
+        assert!(!child_args.lines().any(|arg| arg == "--version"));
+    }
 }

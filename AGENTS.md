@@ -42,8 +42,9 @@ work on a branch, with an associated issue and a PR.
   is passed or a coding agent is detected — `json_output()` in `main.rs` wraps `is_ai_agent::detect()`.
 - `CloudError` carries `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`) and an
   optional `details: CloudErrorDetail`. `cloud_error_to_top_level` (entered from `cloud::run`) maps `Auth` →
-  `Error::AuthRequired`, `Generic` + details → `Error::CloudDetailed`, else `Error::Cloud`. A `CloudDetailed`
-  replaces the prose only in JSON mode, where `main.rs` renders it via `cloud::output::print_error`.
+  `Error::AuthRequired`, `Generic` → `Error::CloudDetailed`, retaining existing details or deriving a fallback
+  code from `FailureKind`. JSON mode renders every Cloud runtime failure via `cloud::output::print_error`,
+  including auth and cancellation; rendering never changes exit codes. Human output keeps the same message.
 - Exit codes: `0` success, else `Error::exit_code()` — `1` error, `3` cancelled, `4` auth required, and
   `ChildExit(code)` passes a spawned child's status through. Clap uses `2` for usage errors.
 
@@ -105,11 +106,19 @@ module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new l
 - `about`: imperative verb phrase, ≤ ~60 chars, no trailing period, no implementation detail; keep siblings parallel
   ("List X", "Get X details", "Create X", "Delete X"). Flag help: one line, ≤ ~70 chars, include units/format
   ("Interval in seconds"), and never repeat clap's `[default: …]` or `[possible values: …]` in prose.
+- Use `(Beta)` for beta markers; keep `(limited preview)` distinct.
 - State cross-flag constraints on the flag itself ("only with `--replication-mode cdc_only`"). Add a second
   doc-comment paragraph (≤ ~3 lines) only for a constraint the flag's name and type cannot convey.
-- Shared flags (`--api-key`, `--api-secret`, `--url`, `--org-id`, `--json`, `--debug`) read identically everywhere.
+- Shared flags (`--api-key`, `--api-secret`, `--url`, `--org-id`, `--org-name`, `--json`, `--debug`) read identically everywhere.
+- Help options: command-specific flags first (display ranks below 900), then the contiguous shared block
+  `--org-id`, `--org-name` (when available), `--api-key`, `--api-secret`, `--url`, `--json`, `--debug`, `--help`.
+  Use `src/cli.rs`'s `help_order` ranks 900–906; `--org-name` uses 901, and clap supplies help at 999.
+  Apply ranks at every declaration, including local JSON and auth flags; inheritance must preserve the block.
+  Both local clients order common arguments as name, host, port, version, query, queries-file. Names stay in
+  Arguments; compatibility flags stay hidden. Keep standard headings and release-only URL hiding.
 - `CONTEXT FOR AGENTS:` — hard cap 8 content lines, target 3-6, one fact per line. May hold: an auth requirement or
-  precondition; where to get required inputs ("Service ID: `cloud service list`"); non-obvious runtime behaviour
+  precondition; credential precedence without storage paths; where to get required inputs
+  ("Service ID: `cloud service list`"); non-obvious runtime behaviour
   (timeouts, stdin handling, irreversibility, "must be stopped first"); an output note only when it changes what the
   agent does; a `Typical flow:` line; at most one docs URL.
   It must NOT hold implementation details, crates/files, HTTP or API mechanics, storage paths, history or

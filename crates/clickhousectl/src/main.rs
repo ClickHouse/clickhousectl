@@ -138,6 +138,19 @@ async fn main() {
 }
 
 fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Result<(), clap::Error> {
+    if let Commands::Skills(args) = &cli.command {
+        use std::io::IsTerminal;
+        if let Some(message) = args.selection_validation_error(
+            std::io::stdin().is_terminal() && std::io::stdout().is_terminal(),
+        ) {
+            let skills = cmd
+                .find_subcommand_mut("skills")
+                .expect("skills command must exist");
+            return Err(skills.error(ErrorKind::MissingRequiredArgument, message));
+        }
+        return Ok(());
+    }
+
     if let Commands::Local(args) = &cli.command {
         let Some(message) = args.postgres_start_validation_error() else {
             return Ok(());
@@ -153,6 +166,29 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
     let Commands::Cloud(args) = &cli.command else {
         return Ok(());
     };
+    if args.has_organization_selector_conflict() {
+        let cloud = cmd
+            .find_subcommand_mut("cloud")
+            .expect("cloud command must exist");
+        return Err(cloud.error(
+            ErrorKind::ArgumentConflict,
+            "--org-id cannot be used with --org-name",
+        ));
+    }
+
+    // Login's credentials are global arguments. Validate after propagation so
+    // a pair split across command levels remains valid.
+    if let cloud::cli::CloudCommands::Auth { command } = &args.command
+        && let Some(message) = command.login_validation_error()
+    {
+        let login = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("auth"))
+            .and_then(|auth| auth.find_subcommand_mut("login"))
+            .expect("cloud auth login command must exist");
+        return Err(login.error(ErrorKind::MissingRequiredArgument, message));
+    }
+
     if args.has_explicit_json_format_conflict() {
         // clap validates each subcommand before propagating values supplied for a
         // global argument at a parent level, so this cross-level conflict needs a
@@ -218,7 +254,8 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
     if matches!(
         cli.command,
         Commands::Telemetry(cli::TelemetryArgs {
-            command: cli::TelemetryCommands::Send
+            command: cli::TelemetryCommands::Send,
+            ..
         })
     ) {
         telemetry::run_child_send().await;
@@ -260,20 +297,13 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
         Ok(()) => (0, false, false),
         Err(e) => {
             let is_child_exit = matches!(&e, Error::ChildExit(_));
-            // A cloud failure that carries a machine-readable detail is
-            // emitted as one JSON object on stderr in JSON mode (#644),
-            // matching the envelope local errors use. Cloud failures without
-            // a detail stay prose: nothing structured has been resolved for
-            // them, and inventing a code per message is exactly the
-            // text-derived vocabulary this codebase avoids.
-            let structured_cloud_error =
-                cloud_json && matches!(&e, Error::CloudDetailed(_)) && !is_child_exit;
+            // All Cloud runtime failures share one envelope, including auth
+            // and cancellation. Keep child output and exit statuses intact.
+            let structured_cloud_error = cloud_json && !is_child_exit;
             if !is_child_exit {
                 match &e {
                     _ if local_json => local::output::print_error(&e),
-                    Error::CloudDetailed(details) if cloud_json => {
-                        cloud::output::print_error(details);
-                    }
+                    _ if cloud_json => cloud::output::print_error(&e),
                     _ => {
                         use std::io::Write;
                         // Not `eprintln!`, which panics on a closed stderr — see
@@ -308,7 +338,8 @@ fn is_read_only_telemetry_status(command: &Commands) -> bool {
     matches!(
         command,
         Commands::Telemetry(cli::TelemetryArgs {
-            command: cli::TelemetryCommands::Status
+            command: cli::TelemetryCommands::Status,
+            ..
         })
     )
 }
@@ -319,17 +350,16 @@ fn is_read_only_telemetry_status(_command: &Commands) -> bool {
 }
 
 /// The explicit `--json` flag for a command, or `None` for commands that never
-/// surface the update notice (the `update` command itself). `Skills` has no
-/// `--json` flag, so it reports `false`. Kept separate from agent detection so
-/// the mapping is deterministic and unit-testable regardless of environment.
+/// surface the update notice (the `update` command itself). Kept separate from
+/// agent detection so the mapping is deterministic and unit-testable.
 fn command_json_flag(cmd: &Commands) -> Option<bool> {
     match cmd {
         Commands::Update(_) => None,
         Commands::Local(args) => Some(args.json),
         Commands::Cloud(args) => Some(args.json),
-        Commands::Skills(_) => Some(false),
+        Commands::Skills(args) => Some(args.json),
         #[cfg(feature = "telemetry")]
-        Commands::Telemetry(_) => Some(false),
+        Commands::Telemetry(args) => Some(args.json),
     }
 }
 
@@ -361,35 +391,93 @@ async fn run(cmd: Commands) -> Result<()> {
         }
         Commands::Update(args) => run_update(args).await,
         #[cfg(feature = "telemetry")]
-        Commands::Telemetry(args) => telemetry::run_command(args.command),
+        Commands::Telemetry(args) => telemetry::run_command(args.command, json_output(args.json)),
     }
 }
 
 async fn run_update(args: UpdateArgs) -> Result<()> {
-    if args.check {
-        match update::check_for_update().await? {
-            Some((current, latest)) => {
-                println!("Update available: v{} → v{}", current, latest);
-                println!("Run `clickhousectl update` to upgrade.");
-            }
-            None => {
-                println!("Already up to date (v{}).", env!("CARGO_PKG_VERSION"));
-            }
-        }
-        Ok(())
+    let json = json_output(args.json);
+    let result = if args.check {
+        update::check_for_update().await?
     } else {
-        update::perform_update().await
-    }
+        update::perform_update(json).await?
+    };
+    result.write(&mut std::io::stdout(), json)
 }
 
 async fn run_skills(args: SkillsArgs) -> Result<()> {
-    skills::install(args).await
+    let json = json_output(args.json);
+    skills::install(args, json).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn login_credential_pairs_are_validated_after_global_flag_propagation() {
+        for prefix in [
+            vec!["clickhousectl", "cloud", "auth", "login"],
+            vec!["clickhousectl", "cloud"],
+        ] {
+            for flag in ["--api-key", "--api-secret"] {
+                let mut args = prefix.clone();
+                args.extend([flag, "value"]);
+                if prefix.len() == 2 {
+                    args.extend(["auth", "login"]);
+                }
+                let error = parse_and_validate(&args).err().expect("partial pair");
+                assert_eq!(error.kind(), ErrorKind::MissingRequiredArgument);
+                assert_eq!(error.exit_code(), 2);
+            }
+        }
+        for args in [
+            vec!["clickhousectl", "cloud", "auth", "login"],
+            vec!["clickhousectl", "cloud", "auth", "login", "--interactive"],
+            vec![
+                "clickhousectl",
+                "cloud",
+                "--api-key",
+                "key",
+                "auth",
+                "login",
+                "--api-secret",
+                "secret",
+            ],
+            vec![
+                "clickhousectl",
+                "cloud",
+                "--api-secret",
+                "secret",
+                "auth",
+                "login",
+                "--api-key",
+                "key",
+            ],
+            vec![
+                "clickhousectl",
+                "cloud",
+                "--api-key",
+                "key",
+                "--api-secret",
+                "secret",
+                "auth",
+                "login",
+            ],
+            // A partial runtime credential override is outside login's contract.
+            vec![
+                "clickhousectl",
+                "cloud",
+                "--api-key",
+                "key",
+                "service",
+                "list",
+            ],
+        ] {
+            assert!(parse_and_validate(&args).is_ok(), "{args:?}");
+        }
+    }
 
     #[test]
     fn json_output_true_when_flag_set() {
@@ -576,21 +664,30 @@ mod tests {
             command_json_flag(&parse(&["clickhousectl", "local", "--json", "list"])),
             Some(true)
         );
-        // Skills has no --json flag, so it always reports `false`.
+        // Management commands expose their explicit JSON flag.
         assert_eq!(
             command_json_flag(&parse(&["clickhousectl", "skills"])),
             Some(false)
+        );
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "skills", "--json"])),
+            Some(true)
         );
         // The update command never surfaces the notice.
         assert_eq!(
             command_json_flag(&parse(&["clickhousectl", "update"])),
             None
         );
-        // Telemetry management commands are human-readable output.
+        // Telemetry inherits --json on its subcommands.
         #[cfg(feature = "telemetry")]
         assert_eq!(
             command_json_flag(&parse(&["clickhousectl", "telemetry", "status"])),
             Some(false)
+        );
+        #[cfg(feature = "telemetry")]
+        assert_eq!(
+            command_json_flag(&parse(&["clickhousectl", "telemetry", "status", "--json"])),
+            Some(true)
         );
     }
 

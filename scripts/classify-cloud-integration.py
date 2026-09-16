@@ -95,6 +95,8 @@ SOURCE_PATH_SUITES = {
 }
 
 TEST_PATH_SUITES = {
+    "crates/clickhousectl/tests/local_docker_status_test.rs": NO_SUITES,
+    "crates/clickhousectl/tests/skills_usage_test.rs": NO_SUITES,
     "crates/clickhousectl/tests/local_client_output_contract_test.rs": NO_SUITES,
     "crates/clickhousectl/tests/local_postgres_client_input_test.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/clickpipes/driver.rs": NO_SUITES,

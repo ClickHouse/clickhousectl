@@ -1,6 +1,6 @@
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
-use crate::cloud::output::{or_absent, print_human};
+use crate::cloud::output::{or_absent, print_human, print_line};
 use crate::cloud::shared::resolve_org_id;
 use crate::cloud::types::DeleteResponse;
 use clap::{Args, Subcommand};
@@ -12,9 +12,6 @@ use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Args)]
 pub struct UdfArgs {
-    /// Organization ID (auto-detected only if you have one org)
-    #[arg(long, global = true)]
-    org_id: Option<String>,
     #[command(subcommand)]
     command: UdfCommands,
 }
@@ -29,7 +26,7 @@ pub enum UdfCommands {
     Create(UdfCreateArgs),
     /// Delete a UDF
     #[command(
-        after_help = "CONTEXT FOR AGENTS:\n  Deletes every version and detaches the UDF from all services.\n  Service removal completes asynchronously."
+        after_help = "CONTEXT FOR AGENTS:\n  Deletes every version and detaches the UDF from all services.\n  A UDF cannot be deleted while any version is still building.\n  Service removal completes asynchronously."
     )]
     Delete(UdfNameArgs),
     /// Attach a UDF to a service
@@ -130,7 +127,7 @@ pub struct UdfPageArgs {
 #[derive(Args)]
 pub struct UdfCreateArgs {
     /// Complete JSON definition without uploadId (file path or - for stdin)
-    #[arg(long = "config-file", alias = "config")]
+    #[arg(long = "file", value_name = "PATH", aliases = ["config-file", "config"])]
     config: String,
     /// Source archive path in ZIP format
     #[arg(long)]
@@ -173,7 +170,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
             let mut request =
                 build_udf_create_request(read_config_value(&input.config)?, "pending")?;
             let file = open_artifact(&input.artifact).await?;
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             let upload_id = upload_artifact(client, &org, file).await?;
             match &mut request {
                 UdfCreateRequest::UdfCreateRequestV1(body) => body.upload_id = upload_id,
@@ -188,7 +185,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
             let mut request =
                 build_udf_version_create_request(read_config_value(&input.config)?, "pending")?;
             let file = open_artifact(&input.artifact).await?;
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             let upload_id = upload_artifact(client, &org, file).await?;
             match &mut request {
                 UdfVersionCreateRequest::UdfVersionCreateRequestV1(body) => {
@@ -209,7 +206,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
             )
         }
         command => {
-            let org = resolve_org_id(client, args.org_id.as_deref()).await?;
+            let org = resolve_org_id(client).await?;
             match command {
                 UdfCommands::List(page) => {
                     let data = client
@@ -218,14 +215,20 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                     if json {
                         output(&data, true)
                     } else {
-                        print_udfs(data.items, data.pagination)
+                        print_udfs(data.items, data.pagination, "UDFs")
                     }
                 }
                 UdfCommands::Get(name) => {
                     output(&client.get_udf(&org, &name.function_name).await?, json)
                 }
                 UdfCommands::Delete(name) => {
-                    output(&client.delete_udf(&org, &name.function_name).await?, json)
+                    let data = client.delete_udf(&org, &name.function_name).await?;
+                    if json {
+                        output(&data, true)
+                    } else {
+                        print_line(format!("UDF {} deleted", name.function_name));
+                        Ok(())
+                    }
                 }
                 UdfCommands::Attach { target, version } => output(
                     &client
@@ -284,15 +287,23 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                         if json {
                             output(&data, true)
                         } else {
-                            print_udfs(data.items, data.pagination)
+                            print_udfs(data.items, data.pagination, "UDF versions")
                         }
                     }
-                    UdfVersionCommands::Delete { name, version } => output(
-                        &client
+                    UdfVersionCommands::Delete { name, version } => {
+                        let data = client
                             .delete_udf_version(&org, &name.function_name, version)
-                            .await?,
-                        json,
-                    ),
+                            .await?;
+                        if json {
+                            output(&data, true)
+                        } else {
+                            print_line(format!(
+                                "UDF {} version {} deleted",
+                                name.function_name, version
+                            ));
+                            Ok(())
+                        }
+                    }
                     UdfVersionCommands::Create { .. } => unreachable!("handled above"),
                 },
                 UdfCommands::Create(_) => unreachable!("handled above"),
@@ -310,7 +321,11 @@ fn output<T: Serialize>(data: &T, json: bool) -> CloudResult<()> {
     Ok(())
 }
 
-fn print_udfs(items: Option<Vec<Udf>>, pagination: Option<Pagination>) -> CloudResult<()> {
+fn print_udfs(
+    items: Option<Vec<Udf>>,
+    pagination: Option<Pagination>,
+    label: &str,
+) -> CloudResult<()> {
     #[derive(Tabled)]
     struct Row {
         name: String,
@@ -318,20 +333,20 @@ fn print_udfs(items: Option<Vec<Udf>>, pagination: Option<Pagination>) -> CloudR
         runtime: String,
         status: String,
     }
-    if let Some(items) = items {
-        let rows = items.into_iter().map(|item| Row {
-            name: or_absent(item.function_name),
-            version: or_absent(item.version),
-            runtime: or_absent(item.runtime),
-            status: or_absent(item.status),
-        });
-        println!("{}", Table::new(rows).with(Style::markdown()));
-    } else {
-        println!("UDFs: -");
+    match items {
+        Some(items) if items.is_empty() => println!("No {label} found"),
+        Some(items) => {
+            let rows = items.into_iter().map(|item| Row {
+                name: or_absent(item.function_name),
+                version: or_absent(item.version),
+                runtime: or_absent(item.runtime),
+                status: or_absent(item.status),
+            });
+            println!("{}", Table::new(rows).with(Style::markdown()));
+        }
+        None => println!("{label}: -"),
     }
-    if let Some(page) = pagination {
-        print_human(&page)?;
-    }
+    print_pagination(pagination);
     Ok(())
 }
 
@@ -346,21 +361,43 @@ fn print_attachments(
         version: String,
         status: String,
     }
-    if let Some(items) = items {
-        let rows = items.into_iter().map(|item| Row {
-            name: or_absent(item.function_name),
-            service_id: or_absent(item.service_id),
-            version: or_absent(item.version),
-            status: or_absent(item.status),
-        });
-        println!("{}", Table::new(rows).with(Style::markdown()));
-    } else {
-        println!("Attachments: -");
+    match items {
+        Some(items) if items.is_empty() => println!("No UDF attachments found"),
+        Some(items) => {
+            let rows = items.into_iter().map(|item| Row {
+                name: or_absent(item.function_name),
+                service_id: or_absent(item.service_id),
+                version: or_absent(item.version),
+                status: or_absent(item.status),
+            });
+            println!("{}", Table::new(rows).with(Style::markdown()));
+        }
+        None => println!("UDF attachments: -"),
     }
-    if let Some(page) = pagination {
-        print_human(&page)?;
-    }
+    print_pagination(pagination);
     Ok(())
+}
+
+fn print_pagination(pagination: Option<Pagination>) {
+    let Some(page) = pagination else {
+        return;
+    };
+    let mut details = Vec::new();
+    if let Some(total) = page.total_records {
+        details.push(format!("{total} total records"));
+    }
+    if let Some(limit) = page.limit {
+        details.push(format!("page limit {limit}"));
+    }
+    if let Some(cursor) = page.current_cursor {
+        details.push(format!("current cursor: {cursor}"));
+    }
+    if let Some(cursor) = page.next_cursor {
+        details.push(format!("next cursor: {cursor}"));
+    }
+    if !details.is_empty() {
+        println!("Pagination: {}", details.join("; "));
+    }
 }
 
 fn validate_udf_config(value: &mut Value, upload_id: &str, create: bool) -> CloudResult<String> {
@@ -754,6 +791,28 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "udf", "create", "--artifact", "source.zip"],
+            "config",
+            &["config-file", "config"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &[
+                "cloud",
+                "udf",
+                "version",
+                "create",
+                "my_udf",
+                "--artifact",
+                "source.zip",
+            ],
+            "config",
+            &["config-file", "config"],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
@@ -873,7 +932,7 @@ mod tests {
             (vec!["get", "my_udf"], false),
             (vec!["delete", "my_udf"], true),
             (
-                vec!["create", "--config-file", "-", "--artifact", "code.zip"],
+                vec!["create", "--file", "-", "--artifact", "code.zip"],
                 true,
             ),
             (vec!["attach", "my_udf", "svc-1", "--version", "2"], true),
@@ -897,7 +956,7 @@ mod tests {
                     "version",
                     "create",
                     "my_udf",
-                    "--config-file",
+                    "--file",
                     "file.json",
                     "--artifact",
                     "code.zip",
@@ -913,11 +972,12 @@ mod tests {
             let Commands::Cloud(cloud) = cli.command else {
                 panic!("cloud");
             };
+            assert_eq!(cloud.org_id.as_deref(), Some("org-1"));
             assert_eq!(cloud.command.is_write_command(), write);
             let CloudCommands::Udf(udf) = cloud.command else {
                 panic!("udf");
             };
-            assert_eq!(udf.org_id.as_deref(), Some("org-1"));
+
             match udf.command {
                 UdfCommands::List(page) => {
                     assert_eq!(page.cursor.as_deref(), Some("next"));
@@ -943,7 +1003,7 @@ mod tests {
             vec!["attach", "my_udf", "svc-1", "--version", "0"],
             vec!["version", "delete", "my_udf", "0"],
             vec!["get", "../oops"],
-            vec!["create", "--config-file", "config.json"],
+            vec!["create", "--file", "config.json"],
         ] {
             assert!(
                 Cli::try_parse_from(["chctl", "cloud", "udf"].into_iter().chain(args)).is_err()

@@ -261,20 +261,17 @@ fn io_and_docker_errors_redact_paths_daemon_details_and_secrets() {
     let root = tempfile::tempdir().expect("create root");
     let project = root.path().join("project-private-token");
     let home = root.path().join("home-private-token");
-    std::fs::create_dir_all(project.join(".clickhouse/servers")).unwrap();
+    std::fs::create_dir_all(project.join(".clickhouse")).unwrap();
     std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(
-        project.join(".clickhouse/servers/default.json"),
-        b"{ private SQL and password=hunter2",
-    )
-    .unwrap();
+    let invalid_servers_dir = project.join(".clickhouse/servers");
+    std::fs::write(&invalid_servers_dir, b"private SQL and password=hunter2").unwrap();
 
     let io_error = run(&project, &home, &["local", "--json", "server", "list"]);
     assert_structured_failure(
         &io_error,
         &expected_error("io_error", "Local I/O operation failed", None),
     );
-    std::fs::remove_file(project.join(".clickhouse/servers/default.json")).unwrap();
+    std::fs::remove_file(invalid_servers_dir).unwrap();
 
     // Docker unavailability is classified and described by clickhousectl
     // itself, so JSON carries the full human diagnostic — but never the

@@ -1184,6 +1184,122 @@ async fn delete_query_endpoint() {
 // ===========================================================================
 
 #[tokio::test]
+async fn list_snapshots() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1/snapshots"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!([
+            {"status": "throttled", "type": "full", "durationInSeconds": 1.5},
+            {"status": "done", "type": "full", "sizeInBytes": 2048}
+        ])))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let snapshots = client
+        .snapshot_get_list("org-1", "svc-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(snapshots.len(), 2);
+    assert_eq!(snapshots[0].status, Some(SnapshotStatus::Throttled));
+    assert_eq!(snapshots[0].r#type, Some(SnapshotType::Full));
+    assert_eq!(snapshots[0].duration_in_seconds, Some(1.5));
+    assert_eq!(snapshots[1].status, Some(SnapshotStatus::Done));
+}
+
+#[tokio::test]
+async fn get_snapshot() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/snapshots/snapshot-1",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "serviceId": "svc-1",
+            "status": "done",
+            "type": "full",
+            "sizeInBytes": 2048,
+            "bucket": {"bucketProvider": "AWS", "bucketPath": "s3://backups"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let snapshot = client
+        .snapshot_get("org-1", "svc-1", "snapshot-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        snapshot.id.unwrap().to_string(),
+        "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    );
+    assert_eq!(snapshot.service_id.as_deref(), Some("svc-1"));
+    assert_eq!(snapshot.size_in_bytes, Some(2048.0));
+    assert_eq!(snapshot.bucket.unwrap()["bucketPath"], "s3://backups");
+}
+
+#[tokio::test]
+async fn snapshot_methods_preserve_api_errors() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1/snapshots"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403, "error": "Access denied"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/snapshots/missing",
+        ))
+        .respond_with(ResponseTemplate::new(500).set_body_string("Snapshot lookup failed"))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let list_error = client
+        .snapshot_get_list("org-1", "svc-1")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(list_error, clickhouse_cloud_api::Error::Api { status: 403, message } if message == "Access denied")
+    );
+    let get_error = client
+        .snapshot_get("org-1", "svc-1", "missing")
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(get_error, clickhouse_cloud_api::Error::Api { status: 500, message } if message == "Snapshot lookup failed")
+    );
+}
+
+#[tokio::test]
+async fn snapshot_methods_reject_malformed_success_payloads() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string("not JSON"))
+        .expect(2)
+        .mount(&server)
+        .await;
+    assert!(matches!(
+        client.snapshot_get_list("org-1", "svc-1").await,
+        Err(clickhouse_cloud_api::Error::Json(_))
+    ));
+    assert!(matches!(
+        client.snapshot_get("org-1", "svc-1", "snapshot-1").await,
+        Err(clickhouse_cloud_api::Error::Json(_))
+    ));
+}
+
+#[tokio::test]
 async fn list_backups() {
     let mock_server = MockServer::start().await;
 
@@ -1499,6 +1615,40 @@ async fn create_click_pipe() {
     let resp = c.click_pipe_create("org-1", "svc-1", &body).await.unwrap();
     let pipe = resp.result.unwrap();
     assert_eq!(pipe.name.as_deref(), Some("new-pipe"));
+}
+
+#[tokio::test]
+async fn create_click_pipe_sends_start_paused_and_table_ttl() {
+    let (server, client) = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes"))
+        .and(body_partial_json(serde_json::json!({
+            "startPaused": true,
+            "destination": {"tableDefinition": {"ttl": "event_time + INTERVAL 30 DAY"}}
+        })))
+        .respond_with(ok_json(serde_json::json!({"state": "Stopped"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let request = ClickPipePostRequest {
+        start_paused: true,
+        destination: ClickPipeMutateDestination {
+            table_definition: Some(ClickPipeDestinationTableDefinition {
+                ttl: "event_time + INTERVAL 30 DAY".to_string(),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let response = client
+        .click_pipe_create("org-1", "svc-1", &request)
+        .await
+        .unwrap();
+    assert_eq!(
+        response.result.unwrap().state,
+        Some(ClickPipeState::Stopped)
+    );
 }
 
 #[tokio::test]
@@ -1901,7 +2051,10 @@ async fn list_alerts() {
         .mount(&s)
         .await;
 
-    let resp = c.click_stack_list_alerts("org-1", "svc-1").await.unwrap();
+    let resp = c
+        .click_stack_list_alerts("org-1", "svc-1", None, None)
+        .await
+        .unwrap();
     let alerts = resp.result.unwrap();
     assert_eq!(alerts.len(), 1);
 }
@@ -2026,7 +2179,7 @@ async fn list_saved_searches() {
         .await;
 
     let resp = c
-        .click_stack_list_saved_searches("org-1", "svc-1")
+        .click_stack_list_saved_searches("org-1", "svc-1", None, None)
         .await
         .unwrap();
     let searches = resp.result.unwrap();
@@ -2428,7 +2581,10 @@ async fn list_webhooks() {
         .mount(&s)
         .await;
 
-    let resp = c.click_stack_list_webhooks("org-1", "svc-1").await.unwrap();
+    let resp = c
+        .click_stack_list_webhooks("org-1", "svc-1", None, None)
+        .await
+        .unwrap();
     let webhooks = resp.result.unwrap();
     assert_eq!(webhooks.len(), 0);
 }
@@ -2741,6 +2897,140 @@ async fn attach_udf_encodes_optional_version() {
             .as_deref(),
         Some("my_udf")
     );
+}
+
+#[tokio::test]
+async fn attach_udf_preserves_structured_dependency_errors() {
+    for (wire_code, expected_code, state, can_wake) in [
+        (
+            "SERVICE_IDLE",
+            UdfAttachErrorCode::ServiceIdle,
+            "idle",
+            true,
+        ),
+        (
+            "SERVICE_STOPPED",
+            UdfAttachErrorCode::ServiceStopped,
+            "stopped",
+            false,
+        ),
+        (
+            "SERVICE_NOT_RUNNING",
+            UdfAttachErrorCode::ServiceNotRunning,
+            "starting",
+            false,
+        ),
+        (
+            "FUTURE_CODE",
+            UdfAttachErrorCode::Unknown("FUTURE_CODE".into()),
+            "future_state",
+            false,
+        ),
+    ] {
+        let (server, client) = setup().await;
+        let body = serde_json::json!({
+            "error": "service unavailable", "code": wire_code, "serviceState": state,
+            "canWake": can_wake, "status": 424,
+            "requestId": "00000000-0000-0000-0000-000000000001", "futureField": 1
+        });
+        Mock::given(method("PUT"))
+            .and(path(
+                "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+            ))
+            .and(basic_auth("key", "secret"))
+            .respond_with(ResponseTemplate::new(424).set_body_json(&body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = client
+            .udf_attach("org-1", "my_udf", "svc-1", None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "API error (status 424): service unavailable"
+        );
+        let clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+            status,
+            message,
+            response,
+        } = error
+        else {
+            panic!("expected typed UDF dependency error");
+        };
+        assert_eq!(status, 424);
+        assert_eq!(message, "service unavailable");
+        assert_eq!(response.code, Some(expected_code));
+        assert_eq!(response.service_state.as_ref().unwrap().to_string(), state);
+        assert_eq!(response.can_wake, Some(can_wake));
+        let mut expected = body;
+        expected.as_object_mut().unwrap().remove("futureField");
+        assert_eq!(serde_json::to_value(response).unwrap(), expected);
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn attach_udf_dependency_errors_tolerate_absent_and_null_fields() {
+    for body in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "error": null, "code": null, "serviceState": null, "canWake": null,
+            "status": null, "requestId": null
+        }),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(424).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = client
+            .udf_attach("org-1", "my_udf", "svc-1", None)
+            .await
+            .unwrap_err();
+        let clickhouse_cloud_api::Error::UdfAttachmentUnavailable { response, .. } = error else {
+            panic!("expected tolerant UDF dependency error");
+        };
+        assert_eq!(*response, UdfAttachResponse424::default());
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[tokio::test]
+async fn attach_udf_keeps_generic_errors_for_other_statuses_and_invalid_bodies() {
+    for (status, body, expected_message) in [
+        (424, "upstream unavailable", "upstream unavailable"),
+        (424, r#"{"error":"bad response","code":42}"#, "bad response"),
+        (
+            403,
+            r#"{"error":"forbidden","code":"SERVICE_IDLE"}"#,
+            "forbidden",
+        ),
+        (
+            500,
+            r#"{"error":"failed","code":"SERVICE_STOPPED"}"#,
+            "failed",
+        ),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(method("PUT"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = client
+            .udf_attach("org-1", "my_udf", "svc-1", None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, clickhouse_cloud_api::Error::Api { status: actual, message }
+            if actual == status && message == expected_message)
+        );
+    }
 }
 
 // ===========================================================================
@@ -4814,6 +5104,66 @@ async fn query_api_endpoint_methods_propagate_api_errors() {
             assert!(
                 matches!(error, clickhouse_cloud_api::Error::Api { status: actual_status, message } if actual_status == status && message == expected_message)
             );
+        }
+    }
+}
+
+#[tokio::test]
+async fn clickstack_list_pagination_encodes_only_supplied_parameters() {
+    for resource in ["alerts", "saved-searches", "webhooks"] {
+        for (limit, offset) in [
+            (None, None),
+            (Some(25), None),
+            (None, Some(50)),
+            (Some(25), Some(50)),
+        ] {
+            let (server, client) = setup().await;
+            Mock::given(method("GET"))
+                .and(path(format!(
+                    "/v1/organizations/org-1/services/svc-1/clickstack/{resource}"
+                )))
+                .and(basic_auth("key", "secret"))
+                .respond_with(ok_json(serde_json::json!([{}])))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let count = match resource {
+                "alerts" => client
+                    .click_stack_list_alerts("org-1", "svc-1", limit, offset)
+                    .await
+                    .unwrap()
+                    .result
+                    .unwrap()
+                    .len(),
+                "saved-searches" => client
+                    .click_stack_list_saved_searches("org-1", "svc-1", limit, offset)
+                    .await
+                    .unwrap()
+                    .result
+                    .unwrap()
+                    .len(),
+                "webhooks" => client
+                    .click_stack_list_webhooks("org-1", "svc-1", limit, offset)
+                    .await
+                    .unwrap()
+                    .result
+                    .unwrap()
+                    .len(),
+                _ => unreachable!(),
+            };
+            assert_eq!(count, 1);
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1);
+            let actual: std::collections::BTreeMap<_, _> = requests[0]
+                .url
+                .query_pairs()
+                .map(|(key, value)| (key.into_owned(), value.into_owned()))
+                .collect();
+            let expected: std::collections::BTreeMap<_, _> = [("limit", limit), ("offset", offset)]
+                .into_iter()
+                .filter_map(|(key, value)| value.map(|value| (key.to_owned(), value.to_string())))
+                .collect();
+            assert_eq!(actual, expected, "{resource}");
         }
     }
 }
