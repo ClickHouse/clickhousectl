@@ -3,6 +3,10 @@
 Read with the root `AGENTS.md` (commands, workspace rules, CI gates). This file covers the published API library
 and the private drift analyzer, which are always edited together.
 
+Document library capabilities, Rust caller migrations, and analyzer changes in this crate's `README.md`.
+OpenAPI drift remediation alone does not require a root `README.md` update: its feature sections describe
+CLI capabilities and behaviour, so update them only when a change is exposed through `clickhousectl`.
+
 ## Layout
 
 - `src/client.rs` — `Client` and shared HTTP machinery; endpoint methods live in private per-domain `src/client/*.rs`.

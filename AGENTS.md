@@ -3,7 +3,8 @@
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`; never replace the symlink.
 
 clickhousectl (`chctl`) is the CLI for ClickHouse and Postgres, local and in ClickHouse Cloud. Use `--help` to
-learn the current command surface. `README.md` is the user-facing doc; do not duplicate it here.
+learn the current command surface. Root `README.md` documents the CLI; the API library has its own README.
+Do not duplicate user-facing documentation here.
 
 ## Commands
 
@@ -16,7 +17,7 @@ learn the current command surface. `README.md` is the user-facing doc; do not du
   If `deprecated-fields` changed, also `cargo check --workspace --all-features`.
 
 **Done** means: `cargo fmt --all`; both clippy configurations clean; tests pass for every crate touched;
-classifier mappings updated if a file was added or renamed; `README.md` updated for user-visible behaviour;
+classifier mappings updated if a file was added or renamed; the relevant README updated for user-visible behaviour;
 work on a branch, with an associated issue and a PR.
 
 ## Workspace
@@ -172,5 +173,8 @@ Use `cargo add` with the latest version and an explicit crate, e.g. `cargo add -
 ## Git workflow and documentation
 
 - Branch per feature/issue and use the PR workflow. PRs should have an associated issue.
-- PRs should include `README.md` updates for functionality or behaviour users and developers must understand.
+- Root `README.md` sections document `clickhousectl` CLI capabilities and behaviour. Update them only for
+  functionality exposed through the CLI. API-library-only changes (including OpenAPI drift remediation) belong
+  in `crates/clickhouse-cloud-api/README.md`; do not add Rust methods, models, migration notes, or analyzer
+  changes to the root README. A library-only PR does not require a root README change.
 - Keep `AGENTS.md` up to date when development practice changes materially.

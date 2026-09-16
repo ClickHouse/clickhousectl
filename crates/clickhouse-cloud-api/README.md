@@ -10,7 +10,7 @@ BigQuery and Pub/Sub source models now distinguish service-account and workload-
 
 `ServiceProfile` now represents the profile discovery response (`profile`, `cpu_cores`, `memory_gi`); the former `Service.profile` value enum is named `ServiceProfileName`. Dynamic profile names remain lossless through its `Unknown(String)` variant.
 
-ClickStack models now include alert channel lists, 30-second alert intervals, query-timeout errors, chart formulas and series limits, dashboard variables and broadcast filters, service-version expressions, and typed SQL/variable saved-filter unions. New formula and saved-filter response/request pairs support explicit fallible write-back through `TryFrom`; absent nested required fields return their wire names. UDF responses include `deterministic`.
+ClickStack models now include alert channel lists, 30-second alert intervals, query-timeout errors, chart formulas and series limits, dashboard variables and broadcast filters, service-version expressions, and typed SQL/variable saved-filter unions. New formula and saved-filter response/request pairs support explicit fallible write-back through `TryFrom`; absent nested required fields return their wire names. UDF responses include `deterministic`. UDF request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation.
 
 The current alert request schemas have no `required` array or optional marker on either `channel` or `channels`, so both fields remain strict in the Rust request models. This mirrors the documented requiredness policy; it does not establish whether the server accepts a channels-only request. Supply the channel list explicitly rather than relying on the empty `Default` value (the API specifies 1–10 channels).
 
@@ -19,6 +19,12 @@ Postgres slow-query aggregate durations (`*DurationUs`) and execution `durationU
 Kinesis source format enums now include `Protobuf`. Set `ClickPipePostKinesisSource.protobuf_schema` to the base64-encoded `.proto` source or serialized `FileDescriptorSet` for that format; omit it for other formats. Organization Prometheus discovery has graduated from beta and is no longer listed in `BETA_OPERATIONS`.
 
 The beta Query API endpoint management methods are `query_api_endpoint_create`, `query_api_endpoint_get`, `query_api_endpoint_list`, `query_api_endpoint_update`, and `query_api_endpoint_delete`. Create and update take `PublicQueryApiEndpointRequest`; list accepts an optional cursor and limit (1–100) and returns `items` with `pagination.next_cursor`. User-owned endpoints can be listed and read, but cannot be updated or deleted through this API.
+
+### ClickHouse settings models
+
+`ServiceClickhouseSettingsPatchRequest` uses a map of setting names to JSON values, and `ServiceClickhouseSettingsPatchResponse.settings` returns the applied map. The published OpenAPI now describes both fields as nonempty objects with string or integer values. Use `ServiceClickhouseSettingsPatchRequest<ServiceClickhouseSettingsMap>` and `ServiceClickhouseSettingValue` for typed requests; the default JSON-value map remains source-compatible with existing callers. Explicit `ServiceClickhouseSettingsPatchRequest<String>` callers remain supported: encoded objects are validated and serialized as objects before sending.
+
+`ServiceClickhouseSetting.value` is `Option<serde_json::Value>`: the published contract permits strings and integers. The response aliases `ServiceClickhouseSettingValueResponse` and `ServiceClickhouseSettingsMapResponse` retain arbitrary JSON to tolerate future response types. Values retain their JSON types; missing and null values remain absent.
 
 ## Development
 
@@ -122,7 +128,8 @@ the module trees rooted at `client.rs`, `models.rs`, and `meta.rs`, including
 private per-domain files. That same analyzer powers the scheduled live-spec
 issue, so operation, model, field, optionality, beta, deprecation, enum,
 snapshot, and stale-exemption findings share one implementation. The single
-ignored test runs the same report against the live spec.
+ignored test runs the same report against the live spec. The analyzer also checks
+inline union payload fields and request requiredness.
 
 ### Optionality exemptions
 
