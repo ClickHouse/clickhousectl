@@ -1313,10 +1313,6 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 
 ### Backups
 
-The Rust API client provides the beta `snapshot_get_list` and `snapshot_get` methods
-for service snapshots. See the [library documentation](crates/clickhouse-cloud-api/README.md)
-for snapshot models and the latest ClickPipes request fields.
-
 ```bash
 clickhousectl cloud backup list <service-id>
 clickhousectl cloud backup get <service-id> <backup-id>
