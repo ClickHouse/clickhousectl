@@ -1,6 +1,78 @@
 use clickhouse_cloud_api::models::*;
 
 #[test]
+fn snapshot_configuration_tolerates_missing_null_and_extra_fields() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "enabled": null, "gap": null, "timeFrame": null, "futureProperty": 1
+        }),
+    ] {
+        let configuration: SnapshotConfiguration = serde_json::from_value(wire).unwrap();
+        assert_eq!(configuration, SnapshotConfiguration::default());
+        assert_eq!(
+            serde_json::to_value(configuration).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[test]
+fn snapshot_configuration_preserves_false_zero_and_fractional_numbers() {
+    let configuration: SnapshotConfiguration = serde_json::from_value(serde_json::json!({
+        "enabled": false, "gap": 0, "timeFrame": 1440.5
+    }))
+    .unwrap();
+    assert_eq!(configuration.enabled, Some(false));
+    assert_eq!(configuration.gap, Some(0.0));
+    assert_eq!(configuration.time_frame, Some(1440.5));
+    assert_eq!(
+        serde_json::to_value(configuration).unwrap(),
+        serde_json::json!({"enabled": false, "gap": 0.0, "timeFrame": 1440.5})
+    );
+}
+
+#[test]
+fn snapshot_configuration_patch_omits_none_and_preserves_provided_values() {
+    for (request, expected) in [
+        (
+            SnapshotConfigurationPatchRequest::default(),
+            serde_json::json!({}),
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            serde_json::json!({"enabled": false}),
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: None,
+                gap: Some(0.0),
+                time_frame: Some(1440.5),
+            },
+            serde_json::json!({"gap": 0.0, "timeFrame": 1440.5}),
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(true),
+                gap: Some(30.0),
+                time_frame: Some(1440.0),
+            },
+            serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+        ),
+    ] {
+        let serialized = serde_json::to_value(&request).unwrap();
+        assert_eq!(serialized, expected);
+        assert_eq!(
+            serde_json::from_value::<SnapshotConfigurationPatchRequest>(serialized).unwrap(),
+            request
+        );
+    }
+}
+
+#[test]
 fn snapshot_round_trips_complete_response_and_unknown_bucket_properties() {
     let value = serde_json::json!({
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",

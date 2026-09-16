@@ -61,7 +61,9 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/src/serde_helpers.rs",
             },
             frozenset({"service"}): {
+                "crates/clickhouse-cloud-api/src/client/backups.rs",
                 "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
+                "crates/clickhouse-cloud-api/src/models/backups.rs",
                 "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
             },
             frozenset({"service", "clickpipes"}): {
@@ -94,12 +96,10 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/src/models/rbac.rs",
             },
             classifier.NO_SUITES: {
-                "crates/clickhouse-cloud-api/src/client/backups.rs",
                 "crates/clickhouse-cloud-api/src/client/clickstack.rs",
                 "crates/clickhouse-cloud-api/src/client/udfs.rs",
                 "crates/clickhouse-cloud-api/src/convert/clickstack.rs",
                 "crates/clickhouse-cloud-api/src/meta.rs",
-                "crates/clickhouse-cloud-api/src/models/backups.rs",
                 "crates/clickhouse-cloud-api/src/models/clickstack.rs",
                 "crates/clickhouse-cloud-api/src/models/clickstack_enums.rs",
                 "crates/clickhouse-cloud-api/src/models/quotas.rs",
@@ -117,6 +117,16 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 relative
             )
         self.assertEqual(actual, expected)
+
+    def test_snapshot_configuration_source_changes_select_service_lifecycle(self):
+        for path in (
+            "crates/clickhouse-cloud-api/src/client/backups.rs",
+            "crates/clickhouse-cloud-api/src/models/backups.rs",
+        ):
+            with self.subTest(path=path):
+                selection = classifier.select_records([("M", (path,))])
+                self.assertEqual(selection.suites, ("service",))
+                self.assertFalse(selection.failed_closed)
 
     def test_every_current_cloud_api_test_file_has_an_explicit_mapping(self):
         test_root = (

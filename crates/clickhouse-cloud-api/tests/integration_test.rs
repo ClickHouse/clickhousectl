@@ -285,6 +285,134 @@ async fn cloud_clickhouse_settings_native_contract(
     outcome
 }
 
+/// The service is already registered for deletion by the outer lifecycle.
+/// Return errors instead of panicking so teardown runs after a failed mutation
+/// or readback; the final successful transition leaves snapshots disabled.
+async fn cloud_snapshot_configuration_lifecycle(
+    client: &Client,
+    org: &str,
+    service: &str,
+) -> TestResult<()> {
+    let transitions = [
+        (
+            "enable scheduled snapshots",
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(true),
+                gap: Some(30.0),
+                time_frame: Some(1440.0),
+            },
+            (Some(true), Some(30.0), Some(1440.0)),
+        ),
+        (
+            "update snapshot cadence without changing enabled",
+            SnapshotConfigurationPatchRequest {
+                enabled: None,
+                gap: Some(60.0),
+                time_frame: Some(2880.0),
+            },
+            (Some(true), Some(60.0), Some(2880.0)),
+        ),
+        (
+            "disable scheduled snapshots without changing cadence",
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(false),
+                gap: None,
+                time_frame: None,
+            },
+            (Some(false), Some(60.0), Some(2880.0)),
+        ),
+    ];
+    for (phase, request, expected) in transitions {
+        let updated = client
+            .snapshot_configuration_update(org, service, &request)
+            .await?
+            .result
+            .ok_or("snapshot configuration PATCH returned no result")?;
+        if (updated.enabled, updated.gap, updated.time_frame) != expected {
+            return Err(
+                format!("{phase}: snapshot configuration PATCH returned {updated:?}").into(),
+            );
+        }
+        let fetched = client
+            .snapshot_configuration_get(org, service)
+            .await?
+            .result
+            .ok_or("snapshot configuration GET returned no result")?;
+        if (fetched.enabled, fetched.gap, fetched.time_frame) != expected {
+            return Err(format!("{phase}: snapshot configuration GET returned {fetched:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn snapshot_configuration_lifecycle_checks_every_transition_and_rejects_bad_readback() {
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    for corrupt_readback in [false, true] {
+        let server = MockServer::start().await;
+        let client = Client::with_base_url(server.uri(), "key", "secret");
+        let endpoint = "/v1/organizations/org/services/service/snapshotConfiguration";
+        let transitions = [
+            (
+                serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+                serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+            ),
+            (
+                serde_json::json!({"gap": 60.0, "timeFrame": 2880.0}),
+                serde_json::json!({"enabled": true, "gap": 60.0, "timeFrame": 2880.0}),
+            ),
+            (
+                serde_json::json!({"enabled": false}),
+                serde_json::json!({"enabled": false, "gap": 60.0, "timeFrame": 2880.0}),
+            ),
+        ];
+        for (index, (request, result)) in transitions.into_iter().enumerate() {
+            let calls = if corrupt_readback && index > 0 { 0 } else { 1 };
+            Mock::given(method("PATCH"))
+                .and(path(endpoint))
+                .and(body_json(request))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"status": 200, "result": result})),
+                )
+                .expect(calls)
+                .mount(&server)
+                .await;
+            let readback = if corrupt_readback && index == 0 {
+                // A successful HTTP status must not hide a dropped write.
+                serde_json::json!({"enabled": false, "gap": 30.0, "timeFrame": 1440.0})
+            } else {
+                result
+            };
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"status": 200, "result": readback})),
+                )
+                .up_to_n_times(1)
+                .with_priority(index as u8 + 1)
+                .expect(calls)
+                .mount(&server)
+                .await;
+        }
+        let outcome = cloud_snapshot_configuration_lifecycle(&client, "org", "service").await;
+        if corrupt_readback {
+            assert!(
+                outcome
+                    .unwrap_err()
+                    .to_string()
+                    .contains("snapshot configuration GET returned")
+            );
+        } else {
+            outcome.unwrap();
+        }
+        server.verify().await;
+    }
+}
+
 #[tokio::test]
 async fn settings_native_contract_restores_overrides_after_success_or_type_mismatch() {
     use wiremock::matchers::{body_json, method, path};
@@ -633,6 +761,15 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     Ok(())
                 }
             })
+            .await?;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "verify snapshot configuration updates and omitted fields",
+                || cloud_snapshot_configuration_lifecycle(&client, &ctx.org_id, &service_id),
+            )
             .await?;
 
         // ── 2. Query API Endpoint ────────────────────────────────────

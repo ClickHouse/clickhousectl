@@ -23,7 +23,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/client/api_keys.rs": frozenset(
         {"service", "organization"}
     ),
-    "crates/clickhouse-cloud-api/src/client/backups.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/client/backups.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/clickpipes.rs": frozenset(
         {"clickpipes"}
     ),
@@ -58,7 +58,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/models/api_keys.rs": frozenset(
         {"service", "organization"}
     ),
-    "crates/clickhouse-cloud-api/src/models/backups.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/backups.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/models/byoc.rs": frozenset(
         {"service", "organization"}
     ),

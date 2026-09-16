@@ -9,6 +9,14 @@ records, including the `throttled` status and full snapshot type. Snapshot respo
 fields tolerate missing and null values; provider-specific bucket properties and
 unknown status/type values remain lossless.
 
+The beta `snapshot_configuration_get` and `snapshot_configuration_update` methods
+read and update scheduled snapshots using `SnapshotConfiguration` and
+`SnapshotConfigurationPatchRequest`. `gap` and `time_frame` are measured in
+minutes. Updates require an ADMIN API key and at least one field; `None` omits a
+field to leave it unchanged, while `Some(false)` explicitly disables scheduling.
+The API rejects null and validates supported enabled cadence pairs: gap/time-frame
+values of `(30, 1440)` or `(60, 2880)`. Response fields tolerate absence and null.
+
 ClickPipes requests now include destination-table `ttl`, MongoDB
 `initial_load_parallelism`, and `start_paused`. Empty TTL and false `start_paused`
 values are omitted to preserve existing create behavior; set a nonempty TTL SQL

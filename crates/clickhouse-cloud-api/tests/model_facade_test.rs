@@ -50,6 +50,14 @@ fn deprecated_api_key_roles_preserve_string_source_and_wire_compatibility() {
 #[test]
 fn extracted_models_keep_root_and_models_paths() {
     assert_same_type(
+        api::SnapshotConfiguration::default(),
+        api::models::SnapshotConfiguration::default(),
+    );
+    assert_same_type(
+        api::SnapshotConfigurationPatchRequest::default(),
+        api::models::SnapshotConfigurationPatchRequest::default(),
+    );
+    assert_same_type(
         api::UdfAttachResponse424::default(),
         api::models::UdfAttachResponse424::default(),
     );

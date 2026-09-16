@@ -1,5 +1,38 @@
 use serde::{Deserialize, Serialize};
 
+/// A service's scheduled snapshot configuration returned by the beta Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SnapshotConfiguration {
+    /// Whether scheduled snapshots are enabled for the service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Interval between snapshots, in minutes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap: Option<f64>,
+    /// Retention window covered by snapshots, in minutes.
+    #[serde(rename = "timeFrame", skip_serializing_if = "Option::is_none")]
+    pub time_frame: Option<f64>,
+}
+
+/// Changes to a service's scheduled snapshot configuration (beta).
+///
+/// Provide at least one field. `None` omits a field to leave its value unchanged;
+/// the API does not accept explicit nulls. When enabled, `gap` and `time_frame`
+/// together must be one of the supported minute pairs: `(30, 1440)` or `(60, 2880)`.
+/// The server validates the resulting configuration, including supported presets.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct SnapshotConfigurationPatchRequest {
+    /// Whether scheduled snapshots are enabled for the service.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    /// Interval between snapshots, in minutes. Set together with `time_frame`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap: Option<f64>,
+    /// Retention window, in minutes. Set together with `gap`.
+    #[serde(rename = "timeFrame", skip_serializing_if = "Option::is_none")]
+    pub time_frame: Option<f64>,
+}
+
 /// Inline enum for `Snapshot.status`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum SnapshotStatus {

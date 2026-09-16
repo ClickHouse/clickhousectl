@@ -162,7 +162,8 @@ pub use backups::{
     GcpBackupBucketBucketprovider, GcpBackupBucketPatchRequestV1,
     GcpBackupBucketPatchRequestV1Bucketprovider, GcpBackupBucketPostRequestV1,
     GcpBackupBucketPostRequestV1Bucketprovider, GcpBackupBucketProperties,
-    GcpBackupBucketPropertiesBucketprovider, Snapshot, SnapshotStatus, SnapshotType,
+    GcpBackupBucketPropertiesBucketprovider, Snapshot, SnapshotConfiguration,
+    SnapshotConfigurationPatchRequest, SnapshotStatus, SnapshotType,
 };
 pub use byoc::{
     ByocAvailabilityZoneSuffix, ByocConfig, ByocConfigCloudprovider, ByocConfigRegionid,

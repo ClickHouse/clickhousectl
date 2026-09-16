@@ -1184,6 +1184,224 @@ async fn delete_query_endpoint() {
 // ===========================================================================
 
 #[tokio::test]
+async fn get_snapshot_configuration() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "enabled": true, "gap": 30, "timeFrame": 1440
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let configuration = client
+        .snapshot_configuration_get("org-1", "svc-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(configuration.enabled, Some(true));
+    assert_eq!(configuration.gap, Some(30.0));
+    assert_eq!(configuration.time_frame, Some(1440.0));
+}
+
+#[tokio::test]
+async fn update_snapshot_configuration_sends_supported_presets() {
+    for (gap, time_frame) in [(30.0, 1440.0), (60.0, 2880.0)] {
+        let (server, client) = setup().await;
+        let wire = serde_json::json!({
+            "enabled": true, "gap": gap, "timeFrame": time_frame
+        });
+        Mock::given(method("PATCH"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
+            ))
+            .and(basic_auth("key", "secret"))
+            .and(body_json(wire.clone()))
+            .respond_with(ok_json(wire))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let configuration = client
+            .snapshot_configuration_update(
+                "org-1",
+                "svc-1",
+                &SnapshotConfigurationPatchRequest {
+                    enabled: Some(true),
+                    gap: Some(gap),
+                    time_frame: Some(time_frame),
+                },
+            )
+            .await
+            .unwrap()
+            .result
+            .unwrap();
+        assert_eq!(configuration.enabled, Some(true));
+        assert_eq!(configuration.gap, Some(gap));
+        assert_eq!(configuration.time_frame, Some(time_frame));
+    }
+}
+
+#[tokio::test]
+async fn update_snapshot_configuration_omits_unchanged_fields() {
+    let (server, client) = setup().await;
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
+        ))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({"enabled": false})))
+        .respond_with(ok_json(serde_json::json!({"enabled": false})))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let configuration = client
+        .snapshot_configuration_update(
+            "org-1",
+            "svc-1",
+            &SnapshotConfigurationPatchRequest {
+                enabled: Some(false),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(configuration.enabled, Some(false));
+    assert_eq!(configuration.gap, None);
+    assert_eq!(configuration.time_frame, None);
+}
+
+#[tokio::test]
+async fn update_snapshot_configuration_leaves_validation_to_the_server() {
+    for (request, wire, message) in [
+        (
+            SnapshotConfigurationPatchRequest::default(),
+            serde_json::json!({}),
+            "Provide at least one field",
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(true),
+                gap: Some(0.0),
+                time_frame: Some(0.0),
+            },
+            serde_json::json!({"enabled": true, "gap": 0.0, "timeFrame": 0.0}),
+            "Unsupported snapshot cadence",
+        ),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(method("PATCH"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
+            ))
+            .and(basic_auth("key", "secret"))
+            .and(body_json(wire))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "status": 400, "error": message
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let error = client
+            .snapshot_configuration_update("org-1", "svc-1", &request)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, clickhouse_cloud_api::Error::Api { status: 400, message: actual } if actual == message)
+        );
+    }
+}
+
+#[tokio::test]
+async fn snapshot_configuration_methods_preserve_api_errors() {
+    for (status, response, message) in [
+        (
+            403,
+            ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "status": 403, "error": "Access denied"
+            })),
+            "Access denied",
+        ),
+        (
+            500,
+            ResponseTemplate::new(500).set_body_string("Snapshot configuration unavailable"),
+            "Snapshot configuration unavailable",
+        ),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(path(
+            "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
+        ))
+        .respond_with(response)
+        .expect(2)
+        .mount(&server)
+        .await;
+
+        let errors = [
+            client
+                .snapshot_configuration_get("org-1", "svc-1")
+                .await
+                .unwrap_err(),
+            client
+                .snapshot_configuration_update(
+                    "org-1",
+                    "svc-1",
+                    &SnapshotConfigurationPatchRequest {
+                        enabled: Some(false),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap_err(),
+        ];
+        for error in errors {
+            assert!(
+                matches!(error, clickhouse_cloud_api::Error::Api { status: actual_status, message: actual_message } if actual_status == status && actual_message == message)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn snapshot_configuration_methods_reject_malformed_success_payloads() {
+    let (server, client) = setup().await;
+    Mock::given(path(
+        "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
+    ))
+    .respond_with(ResponseTemplate::new(200).set_body_string("not JSON"))
+    .expect(2)
+    .mount(&server)
+    .await;
+
+    assert!(matches!(
+        client.snapshot_configuration_get("org-1", "svc-1").await,
+        Err(clickhouse_cloud_api::Error::Json(_))
+    ));
+    assert!(matches!(
+        client
+            .snapshot_configuration_update(
+                "org-1",
+                "svc-1",
+                &SnapshotConfigurationPatchRequest {
+                    enabled: Some(false),
+                    ..Default::default()
+                },
+            )
+            .await,
+        Err(clickhouse_cloud_api::Error::Json(_))
+    ));
+}
+
+#[tokio::test]
 async fn list_snapshots() {
     let (server, client) = setup().await;
     Mock::given(method("GET"))
