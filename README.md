@@ -315,10 +315,6 @@ clickhousectl cloud clickstack alert update <service-id> <alert-id> \
 A `saved_search` alert uses `savedSearchId` instead of `dashboardId` and `tileId`. The `30s` alert
 interval is accepted when the 30-second alert interval feature is enabled for the ClickStack team.
 
-The Rust API client's ClickStack alert, webhook, and saved-search list methods accept
-optional `limit` and `offset` arguments. Pass `None, None` for server defaults, or
-request successive pages when a complete inventory is required.
-
 ## Local
 
 ### Installing and managing ClickHouse versions
@@ -1367,10 +1363,6 @@ The human-readable list includes each service's cloud provider; an omitted provi
 - `switchover` asks an internal HA standby to take over within the same service. The service-level `isPrimary` and state fields, and database readiness, do not identify the active HA node and cannot confirm that the switchover completed. Monitor client connectivity separately, but do not treat availability as proof of the swap; these service fields expose no completion check.
 
 ### Backups
-
-The Rust API client provides the beta `snapshot_get_list` and `snapshot_get` methods
-for service snapshots. See the [library documentation](crates/clickhouse-cloud-api/README.md)
-for snapshot models and the latest ClickPipes request fields.
 
 ```bash
 clickhousectl cloud backup list <service-id>
