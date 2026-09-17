@@ -315,10 +315,6 @@ clickhousectl cloud clickstack alert update <service-id> <alert-id> \
 A `saved_search` alert uses `savedSearchId` instead of `dashboardId` and `tileId`. The `30s` alert
 interval is accepted when the 30-second alert interval feature is enabled for the ClickStack team.
 
-The Rust API client's ClickStack alert, webhook, and saved-search list methods accept
-optional `limit` and `offset` arguments. Pass `None, None` for server defaults, or
-request successive pages when a complete inventory is required.
-
 ## Local
 
 ### Installing and managing ClickHouse versions
