@@ -315,10 +315,6 @@ clickhousectl cloud clickstack alert update <service-id> <alert-id> \
 A `saved_search` alert uses `savedSearchId` instead of `dashboardId` and `tileId`. The `30s` alert
 interval is accepted when the 30-second alert interval feature is enabled for the ClickStack team.
 
-The Rust API client's ClickStack alert, webhook, and saved-search list methods accept
-optional `limit` and `offset` arguments. Pass `None, None` for server defaults, or
-request successive pages when a complete inventory is required.
-
 ## Local
 
 ### Installing and managing ClickHouse versions
@@ -1312,10 +1308,6 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 - The previous primary is demoted asynchronously and can keep reporting `isPrimary=true` for minutes afterwards. No client can see that pair from one service, so `promote` always reports the dual-primary window on stderr; verify with `clickhousectl cloud postgres list --filter isPrimary=true` that exactly one service is primary.
 
 ### Backups
-
-The Rust API client provides the beta `snapshot_get_list` and `snapshot_get` methods
-for service snapshots. See the [library documentation](crates/clickhouse-cloud-api/README.md)
-for snapshot models and the latest ClickPipes request fields.
 
 ```bash
 clickhousectl cloud backup list <service-id>
