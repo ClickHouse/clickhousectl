@@ -2,6 +2,7 @@ use crate::cli::SkillsArgs;
 use crate::error::{Error, Result};
 use flate2::read::GzDecoder;
 use futures_util::StreamExt;
+use serde::Serialize;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, IsTerminal, Read, Write};
 use std::path::{Component, Path, PathBuf};
@@ -9,7 +10,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tar::Archive;
 use tokio::io::AsyncWriteExt;
 
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum InstallScope {
     Project,
     Global,
@@ -22,10 +24,26 @@ struct AgentSpec {
     install_dir: &'static str,
 }
 
+#[derive(Serialize)]
 struct InstallSummary {
     created_files: usize,
     updated_files: usize,
     unchanged_files: usize,
+}
+
+#[derive(Serialize)]
+struct AgentInstallResult {
+    agent: &'static str,
+    path: PathBuf,
+    #[serde(flatten)]
+    summary: InstallSummary,
+}
+
+#[derive(Serialize)]
+struct InstallResult {
+    scope: InstallScope,
+    skills: Vec<String>,
+    agents: Vec<AgentInstallResult>,
 }
 
 struct SkillFile {
@@ -149,17 +167,19 @@ pub(crate) fn supported_agent_keys() -> impl Iterator<Item = &'static str> {
     SUPPORTED_AGENTS.iter().map(|agent| agent.key)
 }
 
-pub async fn install(args: SkillsArgs) -> Result<()> {
+pub async fn install(args: SkillsArgs, json: bool) -> Result<()> {
     let home = home_dir()?;
-    let scope = resolve_scope(&args)?;
+    let scope = resolve_scope(&args, json)?;
     let root = scope_root(scope)?;
     let detected = detect_agents(&home);
-    let selected = resolve_selection(&root, &detected, &args)?;
+    let selected = resolve_selection(&root, &detected, &args, json)?;
 
-    println!(
-        "Downloading ClickHouse agent skills from {}...",
-        AGENT_SKILLS_REPO
-    );
+    if !json {
+        println!(
+            "Downloading ClickHouse agent skills from {}...",
+            AGENT_SKILLS_REPO
+        );
+    }
     let archive = download_agent_skills_archive().await?;
     let extracted = extract_skills_from_tarball(&archive.path)?;
     let skill_files = collect_skill_files(&extracted.path)?;
@@ -171,20 +191,55 @@ pub async fn install(args: SkillsArgs) -> Result<()> {
         )));
     }
 
-    let skill_names = installed_skill_names(&skill_files);
-    println!("Installing skills: {}", skill_names.join(", "));
+    install_skill_files(
+        scope,
+        &root,
+        selected,
+        &skill_files,
+        json,
+        &mut io::stdout(),
+    )
+}
+
+fn install_skill_files(
+    scope: InstallScope,
+    root: &Path,
+    selected: Vec<&'static AgentSpec>,
+    skill_files: &[SkillFile],
+    json: bool,
+    output: &mut dyn Write,
+) -> Result<()> {
+    let mut result = InstallResult {
+        scope,
+        skills: installed_skill_names(skill_files),
+        agents: Vec::new(),
+    };
+    if !json {
+        writeln!(output, "Installing skills: {}", result.skills.join(", "))?;
+    }
 
     for agent in selected {
-        let summary = install_into_agent(&root, agent, &skill_files)?;
+        let summary = install_into_agent(root, agent, skill_files)?;
         let skill_dir = root.join(agent.install_dir);
-        println!(
-            "  {} -> {} (created {}, updated {}, unchanged {})",
-            agent.key,
-            skill_dir.display(),
-            summary.created_files,
-            summary.updated_files,
-            summary.unchanged_files
-        );
+        if !json {
+            writeln!(
+                output,
+                "  {} -> {} (created {}, updated {}, unchanged {})",
+                agent.key,
+                skill_dir.display(),
+                summary.created_files,
+                summary.updated_files,
+                summary.unchanged_files
+            )?;
+        }
+        result.agents.push(AgentInstallResult {
+            agent: agent.key,
+            path: skill_dir,
+            summary,
+        });
+    }
+    if json {
+        writeln!(output, "{}", serde_json::to_string_pretty(&result)?)?;
     }
 
     Ok(())
@@ -400,6 +455,7 @@ fn resolve_selection(
     _install_root: &Path,
     detected: &[&'static AgentSpec],
     args: &SkillsArgs,
+    json: bool,
 ) -> Result<Vec<&'static AgentSpec>> {
     if args.all {
         return Ok(SUPPORTED_AGENTS.iter().collect());
@@ -436,13 +492,13 @@ fn resolve_selection(
         return Ok(selected);
     }
 
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(Error::Skills(
-            "Interactive selection requires a TTY. Use --all or --agent <name> in non-interactive environments.".into(),
-        ));
+    if let Some(message) =
+        args.selection_validation_error(io::stdin().is_terminal() && io::stdout().is_terminal())
+    {
+        return Err(Error::Skills(message.into()));
     }
 
-    interactive_select(detected)
+    interactive_select(detected, json)
 }
 
 fn detect_agents(root: &Path) -> Vec<&'static AgentSpec> {
@@ -452,9 +508,12 @@ fn detect_agents(root: &Path) -> Vec<&'static AgentSpec> {
         .collect()
 }
 
-fn interactive_select(detected: &[&'static AgentSpec]) -> Result<Vec<&'static AgentSpec>> {
-    let mut stdout = io::stdout();
-    let _terminal_ui = TerminalUi::new(&mut stdout)?;
+fn interactive_select(
+    detected: &[&'static AgentSpec],
+    json: bool,
+) -> Result<Vec<&'static AgentSpec>> {
+    let mut stdout = ui_output(json);
+    let _terminal_ui = TerminalUi::new(&mut stdout, json)?;
     let agents = ordered_additional_agents(detected);
     let mut selected = agents
         .iter()
@@ -500,7 +559,7 @@ fn interactive_select(detected: &[&'static AgentSpec]) -> Result<Vec<&'static Ag
 }
 
 fn render_picker(
-    stdout: &mut io::Stdout,
+    stdout: &mut dyn Write,
     detected: &[&'static AgentSpec],
     agents: &[&'static AgentSpec],
     selected: &[bool],
@@ -583,7 +642,7 @@ fn universal_agent() -> &'static AgentSpec {
         .expect("universal .agents support must exist")
 }
 
-fn write_line(stdout: &mut io::Stdout, line: &str) -> io::Result<()> {
+fn write_line(stdout: &mut dyn Write, line: &str) -> io::Result<()> {
     write!(stdout, "{line}\r\n")
 }
 
@@ -654,7 +713,7 @@ fn scope_root(scope: InstallScope) -> Result<PathBuf> {
     }
 }
 
-fn resolve_scope(args: &SkillsArgs) -> Result<InstallScope> {
+fn resolve_scope(args: &SkillsArgs, json: bool) -> Result<InstallScope> {
     if args.global {
         return Ok(InstallScope::Global);
     }
@@ -667,12 +726,12 @@ fn resolve_scope(args: &SkillsArgs) -> Result<InstallScope> {
         return Ok(InstallScope::Project);
     }
 
-    interactive_scope_select()
+    interactive_scope_select(json)
 }
 
-fn interactive_scope_select() -> Result<InstallScope> {
-    let mut stdout = io::stdout();
-    let _terminal_ui = TerminalUi::new(&mut stdout)?;
+fn interactive_scope_select(json: bool) -> Result<InstallScope> {
+    let mut stdout = ui_output(json);
+    let _terminal_ui = TerminalUi::new(&mut stdout, json)?;
     let mut cursor = 0usize;
     let scopes = [
         (
@@ -758,10 +817,19 @@ fn read_key() -> Result<Key> {
 struct TerminalUi {
     fd: i32,
     original: libc::termios,
+    json: bool,
+}
+
+fn ui_output(json: bool) -> Box<dyn Write> {
+    if json {
+        Box::new(io::stderr())
+    } else {
+        Box::new(io::stdout())
+    }
 }
 
 impl TerminalUi {
-    fn new(stdout: &mut io::Stdout) -> Result<Self> {
+    fn new(stdout: &mut dyn Write, json: bool) -> Result<Self> {
         let fd = libc::STDIN_FILENO;
         let mut original = unsafe { std::mem::zeroed::<libc::termios>() };
 
@@ -786,7 +854,7 @@ impl TerminalUi {
         write!(stdout, "\x1b[?1049h\x1b[?25l\x1b[2J\x1b[H")?;
         stdout.flush()?;
 
-        Ok(Self { fd, original })
+        Ok(Self { fd, original, json })
     }
 }
 
@@ -795,7 +863,7 @@ impl Drop for TerminalUi {
         unsafe {
             libc::tcsetattr(self.fd, libc::TCSAFLUSH, &self.original);
         }
-        let mut stdout = io::stdout();
+        let mut stdout = ui_output(self.json);
         let _ = write!(stdout, "\x1b[?25h\x1b[?1049l");
         let _ = stdout.flush();
     }
@@ -808,6 +876,57 @@ mod tests {
     use flate2::write::GzEncoder;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tar::Builder;
+
+    #[test]
+    fn json_install_reports_real_file_changes_for_every_selected_agent() {
+        let source = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let source_path = source.path().join("SKILL.md");
+        fs::write(&source_path, "first version").unwrap();
+        let files = vec![SkillFile {
+            skill_slug: "example".into(),
+            relative_path: PathBuf::from("SKILL.md"),
+            source_path: source_path.clone(),
+        }];
+        for (contents, expected) in [
+            ("first version", (1, 0, 0)),
+            ("first version", (0, 0, 1)),
+            ("second version", (0, 1, 0)),
+        ] {
+            fs::write(&source_path, contents).unwrap();
+            let selected = vec![universal_agent(), find_agent("claude").unwrap()];
+            let mut output = Vec::new();
+            install_skill_files(
+                InstallScope::Project,
+                destination.path(),
+                selected,
+                &files,
+                true,
+                &mut output,
+            )
+            .unwrap();
+            // Parsing the entire output also rules out progress prose and extra objects.
+            let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(value["scope"], "project");
+            assert_eq!(value["skills"], serde_json::json!(["example"]));
+            let agents = value["agents"].as_array().unwrap();
+            assert_eq!(agents.len(), 2);
+            for (result, key) in agents.iter().zip(["agents", "claude"]) {
+                assert_eq!(result["agent"], key);
+                let path = destination
+                    .path()
+                    .join(find_agent(key).unwrap().install_dir);
+                assert_eq!(result["path"], path.to_str().unwrap());
+                assert_eq!(result["created_files"], expected.0);
+                assert_eq!(result["updated_files"], expected.1);
+                assert_eq!(result["unchanged_files"], expected.2);
+                assert_eq!(
+                    fs::read_to_string(path.join("example/SKILL.md")).unwrap(),
+                    contents
+                );
+            }
+        }
+    }
 
     #[test]
     fn detects_agents_from_home_dirs() {
@@ -957,13 +1076,14 @@ mod tests {
         std::fs::create_dir_all(home.join(".claude")).unwrap();
         let detected = detect_agents(&home);
         let args = SkillsArgs {
+            json: false,
             agents: Vec::new(),
             all: true,
             detected_only: false,
             global: false,
         };
 
-        let selected = resolve_selection(&install_root, &detected, &args).unwrap();
+        let selected = resolve_selection(&install_root, &detected, &args, false).unwrap();
         assert_eq!(selected.len(), SUPPORTED_AGENTS.len());
 
         std::fs::remove_dir_all(install_root).unwrap();
@@ -978,13 +1098,14 @@ mod tests {
         std::fs::create_dir_all(home.join(".windsurf")).unwrap();
         let detected = detect_agents(&home);
         let args = SkillsArgs {
+            json: false,
             agents: Vec::new(),
             all: false,
             detected_only: true,
             global: false,
         };
 
-        let selected = resolve_selection(&install_root, &detected, &args).unwrap();
+        let selected = resolve_selection(&install_root, &detected, &args, false).unwrap();
         let keys = selected.iter().map(|agent| agent.key).collect::<Vec<_>>();
 
         assert_eq!(keys, vec!["agents", "claude", "windsurf"]);

@@ -4,13 +4,33 @@ Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/
 
 ## Updated Cloud API surface
 
+The beta `snapshot_get_list` and `snapshot_get` methods return service `Snapshot`
+records, including the `throttled` status and full snapshot type. Snapshot response
+fields tolerate missing and null values; provider-specific bucket properties and
+unknown status/type values remain lossless.
+
+The beta `snapshot_configuration_get` and `snapshot_configuration_update` methods
+read and update scheduled snapshots using `SnapshotConfiguration` and
+`SnapshotConfigurationPatchRequest`. `gap` and `time_frame` are measured in
+minutes. Updates require an ADMIN API key and at least one field; `None` omits a
+field to leave it unchanged, while `Some(false)` explicitly disables scheduling.
+The API rejects null and validates supported enabled cadence pairs: gap/time-frame
+values of `(30, 1440)` or `(60, 2880)`. Response fields tolerate absence and null.
+
+ClickPipes requests now include destination-table `ttl`, MongoDB
+`initial_load_parallelism`, and `start_paused`. Empty TTL and false `start_paused`
+values are omitted to preserve existing create behavior; set a nonempty TTL SQL
+expression or `start_paused: true` to send them. Starting paused is unsupported
+for database ClickPipes. `UdfArgumentOutput` matches the newly named UDF response
+schema; `UdfArgumentResponse` remains a compatible alias.
+
 The live snapshot adds `credit_balances_get` (trial and prepaid credit balances), `service_profiles_list` (region and optional BYOC infrastructure), and `click_pipes_service_context_get` (GCP workload identity readiness and principal).
 
 BigQuery and Pub/Sub source models now distinguish service-account and workload-identity authentication with typed unions. Build `ClickPipePostBigQueryServiceAccountSource` or `ClickPipePostPubSubServiceAccountSource` and call `.into()` for existing service-account flows; workload-identity variants omit customer credentials. BigQuery settings and table mappings now permit the optional fields the API accepts. Kafka requests gain optional `protobuf_schema`, which is only supported for Protobuf without a schema registry; MySQL table mappings gain `partition_by_expr`.
 
 `ServiceProfile` now represents the profile discovery response (`profile`, `cpu_cores`, `memory_gi`); the former `Service.profile` value enum is named `ServiceProfileName`. Dynamic profile names remain lossless through its `Unknown(String)` variant.
 
-ClickStack models now include alert channel lists, 30-second alert intervals, query-timeout errors, chart formulas and series limits, dashboard variables and broadcast filters, service-version expressions, and typed SQL/variable saved-filter unions. New formula and saved-filter response/request pairs support explicit fallible write-back through `TryFrom`; absent nested required fields return their wire names. UDF responses include `deterministic`.
+ClickStack models now include alert channel lists, 30-second alert intervals, query-timeout errors, chart formulas and series limits, dashboard variables and broadcast filters, service-version expressions, and typed SQL/variable saved-filter unions. New formula and saved-filter response/request pairs support explicit fallible write-back through `TryFrom`; absent nested required fields return their wire names. UDF responses include `deterministic`. UDF request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation.
 
 The current alert request schemas have no `required` array or optional marker on either `channel` or `channels`, so both fields remain strict in the Rust request models. This mirrors the documented requiredness policy; it does not establish whether the server accepts a channels-only request. Supply the channel list explicitly rather than relying on the empty `Default` value (the API specifies 1–10 channels).
 
@@ -19,6 +39,12 @@ Postgres slow-query aggregate durations (`*DurationUs`) and execution `durationU
 Kinesis source format enums now include `Protobuf`. Set `ClickPipePostKinesisSource.protobuf_schema` to the base64-encoded `.proto` source or serialized `FileDescriptorSet` for that format; omit it for other formats. Organization Prometheus discovery has graduated from beta and is no longer listed in `BETA_OPERATIONS`.
 
 The beta Query API endpoint management methods are `query_api_endpoint_create`, `query_api_endpoint_get`, `query_api_endpoint_list`, `query_api_endpoint_update`, and `query_api_endpoint_delete`. Create and update take `PublicQueryApiEndpointRequest`; list accepts an optional cursor and limit (1–100) and returns `items` with `pagination.next_cursor`. User-owned endpoints can be listed and read, but cannot be updated or deleted through this API.
+
+### ClickHouse settings models
+
+`ServiceClickhouseSettingsPatchRequest` uses a map of setting names to JSON values, and `ServiceClickhouseSettingsPatchResponse.settings` returns the applied map. The published OpenAPI now describes both fields as nonempty objects with string or integer values. Use `ServiceClickhouseSettingsPatchRequest<ServiceClickhouseSettingsMap>` and `ServiceClickhouseSettingValue` for typed requests; the default JSON-value map remains source-compatible with existing callers. Explicit `ServiceClickhouseSettingsPatchRequest<String>` callers remain supported: encoded objects are validated and serialized as objects before sending.
+
+`ServiceClickhouseSetting.value` is `Option<serde_json::Value>`: the published contract permits strings and integers. The response aliases `ServiceClickhouseSettingValueResponse` and `ServiceClickhouseSettingsMapResponse` retain arbitrary JSON to tolerate future response types. Values retain their JSON types; missing and null values remain absent.
 
 ## Development
 
@@ -122,7 +148,8 @@ the module trees rooted at `client.rs`, `models.rs`, and `meta.rs`, including
 private per-domain files. That same analyzer powers the scheduled live-spec
 issue, so operation, model, field, optionality, beta, deprecation, enum,
 snapshot, and stale-exemption findings share one implementation. The single
-ignored test runs the same report against the live spec.
+ignored test runs the same report against the live spec. The analyzer also checks
+inline union payload fields and request requiredness.
 
 ### Optionality exemptions
 
@@ -136,5 +163,25 @@ Add an exemption only for a deliberate runtime behavior and document why the
 spec cannot be followed. New unsupported-enum acknowledgements also require a
 tracking issue. The analyzer reports stale field/enum exemptions and vanished
 unsupported locations so obsolete entries are removed during normal drift
-remediation. See the repository `AGENTS.md` for exact key formats and the full
+remediation. Acknowledged locations also report changed enum values against
+the snapshot, including numeric and mixed values; unchanged sets remain
+acknowledged. See the repository `AGENTS.md` for exact key formats and the full
 remediation and verification procedure.
+
+### ClickStack list pagination
+
+`click_stack_list_alerts`, `click_stack_list_webhooks`, and
+`click_stack_list_saved_searches` take `limit: Option<i64>` and
+`offset: Option<i64>` after the organization and service IDs. Pass `None, None`
+for the server defaults (1,000 records, offset zero). For a complete inventory,
+request pages with an explicit limit from 1 to 1,000 and advance the offset
+until the returned page is shorter than that limit. Existing callers upgrading
+to 0.5.0 should add `None, None` to preserve their current request behavior.
+
+### UDF attachment errors
+
+Rust callers receive `Error::UdfAttachmentUnavailable` for a structured attachment failure (HTTP 424); its `UdfAttachResponse424` payload preserves the error code, service state, wake eligibility, and request ID. Fields tolerate absence and null, and enums retain unknown values. Malformed responses remain `Error::Api` with the original error message.
+
+### OpenAPI response coverage
+
+The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 8.

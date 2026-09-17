@@ -4,14 +4,25 @@ use crate::models::*;
 
 impl Client {
     /// ClickStack: List Alerts
+    ///
+    /// The API defaults to 1,000 records from offset zero. Request successive
+    /// pages with `limit` (1–1,000) and `offset` until a page is shorter than the limit.
     pub async fn click_stack_list_alerts(
         &self,
         organization_id: &str,
         service_id: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<ClickStackAlertResponse>>, Error> {
         let path =
             format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts");
-        let req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(offset) = offset {
+            req = req.query(&[("offset", offset)]);
+        }
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -133,15 +144,26 @@ impl Client {
     }
 
     /// ClickStack: List Saved Searches
+    ///
+    /// The API defaults to 1,000 records from offset zero. Request successive
+    /// pages with `limit` (1–1,000) and `offset` until a page is shorter than the limit.
     pub async fn click_stack_list_saved_searches(
         &self,
         organization_id: &str,
         service_id: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<ClickStackSavedSearch>>, Error> {
         let path = format!(
             "/v1/organizations/{organization_id}/services/{service_id}/clickstack/saved-searches"
         );
-        let req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(offset) = offset {
+            req = req.query(&[("offset", offset)]);
+        }
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
@@ -657,15 +679,26 @@ impl Client {
     }
 
     /// ClickStack: List Webhooks
+    ///
+    /// The API defaults to 1,000 records from offset zero. Request successive
+    /// pages with `limit` (1–1,000) and `offset` until a page is shorter than the limit.
     pub async fn click_stack_list_webhooks(
         &self,
         organization_id: &str,
         service_id: &str,
+        limit: Option<i64>,
+        offset: Option<i64>,
     ) -> Result<ApiResponse<Vec<ClickStackWebhook>>, Error> {
         let path = format!(
             "/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks"
         );
-        let req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(offset) = offset {
+            req = req.query(&[("offset", offset)]);
+        }
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

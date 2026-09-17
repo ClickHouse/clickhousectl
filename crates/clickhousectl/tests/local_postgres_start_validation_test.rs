@@ -83,8 +83,22 @@ impl FakeDocker {
                 thread_requests.fetch_add(1, Ordering::Relaxed);
                 if request.contains("/_ping ") {
                     write_response(&mut stream, "text/plain", "OK");
+                } else if request.contains("/containers/create") {
+                    // macOS removes bind-mounted data through a short-lived container.
+                    write_response(
+                        &mut stream,
+                        "application/json",
+                        r#"{"Id":"cleanup-container","Warnings":[]}"#,
+                    );
+                } else if request.contains("/containers/cleanup-container/wait") {
+                    write_response(&mut stream, "application/json", r#"{"StatusCode":0}"#);
+                } else if request.contains("/containers/cleanup-container/start") {
+                    write_response(&mut stream, "application/json", "");
                 } else if request.contains("/containers/json") {
                     write_response(&mut stream, "application/json", "[]");
+                } else if request.contains("/containers/existing-container/stop") {
+                    thread_started.store(false, Ordering::Relaxed);
+                    write_response(&mut stream, "application/json", "");
                 } else if request.contains("/containers/existing-container/start") {
                     thread_started.store(true, Ordering::Relaxed);
                     write_response(&mut stream, "application/json", "");
@@ -97,6 +111,12 @@ impl FakeDocker {
                         &mut stream,
                         "application/json",
                         r#"{"Running":false,"ExitCode":0}"#,
+                    );
+                } else if request.contains("/containers/decoy-container/json") {
+                    write_response(
+                        &mut stream,
+                        "application/json",
+                        r#"{"Id":"decoy-container","State":{"Running":false}}"#,
                     );
                 } else if request.contains("/containers/existing-container/json") {
                     let body = json!({
@@ -209,6 +229,7 @@ fn run_resume(
 fn invalid_start_inputs_make_zero_docker_requests_or_project_state() {
     for args in [
         vec!["--name", "../unsafe"],
+        vec!["../unsafe"],
         vec!["--version", "18garbage"],
         vec!["--port", "0"],
         vec!["--env", "NO_EQUALS"],
@@ -366,8 +387,8 @@ fn postgres_start_help_renders_clap_structure() {
 
     // Clap-rendered structure: usage line, value names, and the `--wait-timeout` default.
     for token in [
-        "Usage: clickhousectl local postgres start [OPTIONS]",
-        "--name <NAME>",
+        "Usage: clickhousectl local postgres start [OPTIONS] [NAME]",
+        "Arguments:",
         "-v, --version <VERSION>",
         "--port <PORT>",
         "--user <USER>",
@@ -382,4 +403,73 @@ fn postgres_start_help_renders_clap_structure() {
 
     // Quotes in doc comments render literally, never as escaped `\"` sequences.
     assert!(!help.contains(r#"\"default\""#), "{help}");
+}
+
+#[test]
+fn postgres_lifecycle_and_dotenv_name_forms_select_the_same_instance() {
+    for (name, selector) in [
+        ("default", &[][..]),
+        ("default", &["default"][..]),
+        ("default", &["--name", "default"][..]),
+        ("dev", &["dev"][..]),
+        ("dev", &["--name", "dev"][..]),
+    ] {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let servers = project.path().join(".clickhouse/servers");
+        write_stopped_postgres_metadata(project.path(), 6543);
+        let original = servers.join("default-pg18.json");
+        let selected = servers.join(format!("{name}-pg18.json"));
+        let mut metadata: Value =
+            serde_json::from_slice(&std::fs::read(&original).unwrap()).unwrap();
+        metadata["name"] = json!(format!("{name}-pg18"));
+        std::fs::remove_file(original).unwrap();
+        std::fs::write(&selected, metadata.to_string()).unwrap();
+        let selected_data = servers.join(format!("{name}-pg18/data"));
+        std::fs::create_dir_all(&selected_data).unwrap();
+        let socket_path = home.path().join("docker.sock");
+        let _docker = FakeDocker::start(&socket_path);
+
+        // Without --version, either name syntax resumes the sole stored major.
+        let output = run_resume(project.path(), home.path(), &socket_path, true, selector);
+        assert!(output.status.success(), "{selector:?}: {output:?}");
+        let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(body["name"], name);
+        assert_eq!(body["container_id"], "existing-container");
+        assert_eq!(body["port"], 6543);
+
+        // A second major must remain untouched when --version disambiguates.
+        let decoy = servers.join(format!("{name}-pg17.json"));
+        metadata["name"] = json!(format!("{name}-pg17"));
+        metadata["version"] = json!("postgres:17");
+        metadata["container_id"] = json!("decoy-container");
+        std::fs::write(&decoy, metadata.to_string()).unwrap();
+        for action in ["dotenv", "stop", "remove"] {
+            let output = Command::new(clickhousectl_binary())
+                .env_clear()
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", home.path())
+                .env("DOCKER_HOST", format!("unix://{}", socket_path.display()))
+                .current_dir(project.path())
+                .args(["local", "--json", "postgres", action])
+                .args(selector)
+                .args(["--version", "18"])
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{action} {selector:?}: {output:?}");
+            if action == "dotenv" {
+                let contents = std::fs::read_to_string(project.path().join(".env")).unwrap();
+                assert!(
+                    contents.lines().any(|line| line == "POSTGRES_PORT=6543"),
+                    "{contents}"
+                );
+            } else {
+                let body: Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(body["name"], name);
+            }
+            assert!(decoy.exists(), "{action} touched another major");
+        }
+        assert!(!selected.exists());
+        assert!(!selected_data.exists());
+    }
 }

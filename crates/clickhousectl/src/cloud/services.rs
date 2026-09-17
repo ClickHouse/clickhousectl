@@ -9,6 +9,7 @@ use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
 use crate::cloud::service_query::{RepairVerification, existing_open_api_keys};
+use crate::cloud::shared::{NameSelector, NamedResource};
 use crate::cloud::shared::{
     parse_ip_access_entries, parse_serde_enum, parse_tag_filter, parse_tags, resolve_org_id,
 };
@@ -63,10 +64,6 @@ const QUERY_ENDPOINT_READINESS: QueryEndpointReadiness = QueryEndpointReadiness 
 pub enum ServiceCommands {
     /// List services in the organization
     List {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-
         /// Filter by resource tag: `tag:KEY=VALUE` or `tag:KEY` (repeatable)
         #[arg(long, value_parser = parse_tag_filter)]
         filter: Vec<String>,
@@ -75,11 +72,8 @@ pub enum ServiceCommands {
     /// Get service details
     Get {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Discover available service profiles
@@ -134,23 +128,26 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Fixed replica count for vertical autoscaling (1-20)
+        /// Fixed replica count for vertical autoscaling (up to 50)
         ///
-        /// Conflicts with the horizontal band (--min-replicas/--max-replicas).
+        /// The first service in a warehouse needs at least 2; existing warehouses allow 1.
+        /// Tier and per-warehouse limits may lower the maximum. Conflicts with the horizontal band.
         #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
-        /// Minimum replicas for horizontal autoscaling (1-20)
+        /// Minimum replicas for horizontal autoscaling (1-50)
         ///
         /// Requires --max-replicas and conflicts with --num-replicas. Needs the horizontal
-        /// autoscaling org feature unless the band is equal and the mode is vertical.
+        /// autoscaling org feature unless the band is equal and the mode is vertical. Tier and
+        /// per-warehouse limits may lower the maximum.
         #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
-        /// Maximum replicas for horizontal autoscaling (1-20)
+        /// Maximum replicas for horizontal autoscaling (1-50)
         ///
         /// Requires --min-replicas and conflicts with --num-replicas. Needs the horizontal
-        /// autoscaling org feature unless the band is equal and the mode is vertical.
+        /// autoscaling org feature unless the band is equal and the mode is vertical. Tier and
+        /// per-warehouse limits may lower the maximum.
         #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
@@ -239,10 +236,6 @@ CONTEXT FOR AGENTS:
         /// Enable or disable service core dump collection
         #[arg(long)]
         enable_core_dumps: Option<bool>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete a service
@@ -253,15 +246,12 @@ CONTEXT FOR AGENTS:
     progress lines on stderr.")]
     Delete {
         /// Service ID
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// Stop the service first if it is running, then delete (waits for the stop)
         #[arg(long)]
         force: bool,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Start a service
@@ -271,11 +261,8 @@ CONTEXT FOR AGENTS:
   Returns as soon as the start is accepted: poll `cloud service get <id>` until state is `running`.")]
     Start {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Wake an idled service
@@ -285,11 +272,8 @@ CONTEXT FOR AGENTS:
   Returns as soon as the wake is accepted: poll `cloud service get <id>` until state is `running`.")]
     Wake {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Stop a service
@@ -300,14 +284,11 @@ CONTEXT FOR AGENTS:
     or `idle`.")]
     Stop {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
-    /// Update service settings
+    /// Update service configuration
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Only the flags you pass are changed; everything else is left as it is.
@@ -315,10 +296,11 @@ CONTEXT FOR AGENTS:
     absent exits 0 with a warning on stderr.")]
     Update {
         /// Service ID
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// New service name
-        #[arg(long)]
+        #[arg(long = "new-name", id = "new_name")]
         name: Option<String>,
 
         /// IP/CIDR to add, optionally IP_OR_CIDR=DESCRIPTION (repeatable)
@@ -364,16 +346,13 @@ CONTEXT FOR AGENTS:
         /// Enable or disable service core dump collection
         #[arg(long)]
         enable_core_dumps: Option<bool>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
-    /// Update replica scaling
+    /// Update service scaling and idle behaviour
     Scale {
         /// Service ID
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// Minimum memory per replica in GB
         ///
@@ -389,23 +368,26 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         max_replica_memory_gb: Option<u32>,
 
-        /// Fixed replica count for vertical autoscaling (1-20)
+        /// Fixed replica count for vertical autoscaling (up to 50)
         ///
-        /// Conflicts with the horizontal band (--min-replicas/--max-replicas).
+        /// The first service in a warehouse needs at least 2; existing warehouses allow 1.
+        /// Tier and per-warehouse limits may lower the maximum. Conflicts with the horizontal band.
         #[arg(long, conflicts_with_all = ["min_replicas", "max_replicas"])]
         num_replicas: Option<u32>,
 
-        /// Minimum replicas for horizontal autoscaling (1-20)
+        /// Minimum replicas for horizontal autoscaling (1-50)
         ///
         /// Requires --max-replicas and conflicts with --num-replicas. Needs the horizontal
-        /// autoscaling org feature unless the band is equal and the mode is vertical.
+        /// autoscaling org feature unless the band is equal and the mode is vertical. Tier and
+        /// per-warehouse limits may lower the maximum.
         #[arg(long, conflicts_with = "num_replicas")]
         min_replicas: Option<u32>,
 
-        /// Maximum replicas for horizontal autoscaling (1-20)
+        /// Maximum replicas for horizontal autoscaling (1-50)
         ///
         /// Requires --min-replicas and conflicts with --num-replicas. Needs the horizontal
-        /// autoscaling org feature unless the band is equal and the mode is vertical.
+        /// autoscaling org feature unless the band is equal and the mode is vertical. Tier and
+        /// per-warehouse limits may lower the maximum.
         #[arg(long, conflicts_with = "num_replicas")]
         max_replicas: Option<u32>,
 
@@ -428,10 +410,6 @@ CONTEXT FOR AGENTS:
         /// Minimum idle timeout in minutes (>= 5)
         #[arg(long)]
         idle_timeout_minutes: Option<u32>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Reset the default user password
@@ -442,7 +420,8 @@ CONTEXT FOR AGENTS:
     generation.")]
     ResetPassword {
         /// Service ID
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// SHA256 password hash encoded as base64
         #[arg(long)]
@@ -451,10 +430,6 @@ CONTEXT FOR AGENTS:
         /// MySQL-compatible double SHA1 password hash
         #[arg(long)]
         new_double_sha1_hash: Option<String>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Manage the Query API endpoint
@@ -499,11 +474,8 @@ CONTEXT FOR AGENTS:
   Output is always raw Prometheus exposition text; --json is accepted for consistency but ignored.")]
     Prometheus {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// Whether to request filtered metrics
         #[arg(long)]
@@ -512,25 +484,29 @@ CONTEXT FOR AGENTS:
 
     /// Run SQL over HTTP via the Query API
     #[command(
-        group(ArgGroup::new("service_selector").required(true).args(["name", "id"])),
+        group(ArgGroup::new("service_selector").required(true).args(["name", "id", "service_id"])),
         after_help = "\
 CONTEXT FOR AGENTS:
   One statement per request: a ';'-separated script is rejected. Run statements one call at a time.
-  Times out after about 30 seconds: the statement keeps running, the result is lost, and
-    the error prints a `clickhouse client` fallback.
+  A timeout may include wake delays; SQL may have executed. The CLI never retries a timeout.
+  For long statements on a running service, use the native `clickhouse client`.
   SQL is read from stdin unless --query or --queries-file is given; --query never reads stdin.
+  This proxied path does not use the service IP access list; API key queries still use the key's access list.
   API key auth runs read+write SQL; OAuth is read-only SELECT.
-  Output: PrettyCompact on a TTY, TabSeparated when piped, JSONEachRow with --json (not --format).
-  An idle service wakes automatically; a stopped one needs `cloud service start <id>` first.
+  Queries request an idle service wake; a stopped one needs `cloud service start <id>` first.
   A stored query key rejected with 401/403 is never replaced automatically: `cloud service repair-query-key <id>`."
     )]
     Query {
+        /// Service ID to query
+        #[arg(conflicts_with_all = ["name", "id"])]
+        service_id: Option<String>,
+
         /// Service name to query
-        #[arg(long, conflicts_with = "id")]
+        #[arg(long, conflicts_with_all = ["id", "service_id"])]
         name: Option<String>,
 
         /// Service ID to query
-        #[arg(long, conflicts_with = "name")]
+        #[arg(long, hide = true, conflicts_with_all = ["name", "service_id"])]
         id: Option<String>,
 
         /// SQL to run: a single statement, and never read from stdin
@@ -549,10 +525,6 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "json")]
         format: Option<String>,
 
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-
         /// Fail instead of auto-provisioning a per-service Query API key (API key auth only)
         #[arg(long)]
         no_auto_enable: bool,
@@ -568,14 +540,11 @@ CONTEXT FOR AGENTS:
   On a running service it waits for a probe query with the new key to succeed; the result reports
     it under `verification`.
   Exit 1 after the readiness window still means the repair stands — do not rerun it, run
-    `cloud service query --id <id>` instead.")]
+    `cloud service query <id>` instead.")]
     RepairQueryKey {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 }
 
@@ -584,11 +553,8 @@ pub enum QueryEndpointCommands {
     /// Get the Query API endpoint configuration
     Get {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Create or update the Query API endpoint
@@ -600,7 +566,8 @@ CONTEXT FOR AGENTS:
   Avoid concurrent changes to the same endpoint.")]
     Create {
         /// Service ID
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// Endpoint-wide role to grant (required, repeatable)
         #[arg(long, required = true, value_parser = PossibleValuesParser::new(QueryEndpointRole::VALUES))]
@@ -617,20 +584,13 @@ CONTEXT FOR AGENTS:
         /// Browser origins; preserve when omitted on an existing endpoint
         #[arg(long, value_parser = clap::builder::NonEmptyStringValueParser::new())]
         allowed_origins: Option<String>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete the Query API endpoint
     Delete {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 }
 
@@ -639,7 +599,8 @@ pub enum PrivateEndpointCommands {
     /// Create a private endpoint connection
     Create {
         /// Service ID
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// Private endpoint ID (AWS VPC endpoint ID, GCP PSC connection ID, or
         /// Azure private endpoint Resource ID / resourceGuid)
@@ -649,20 +610,13 @@ pub enum PrivateEndpointCommands {
         /// Description
         #[arg(long)]
         description: Option<String>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Get the private endpoint configuration
     GetConfig {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 }
 
@@ -677,10 +631,6 @@ pub enum ServiceProfileCommands {
         /// BYOC infrastructure ID
         #[arg(long)]
         byoc_id: Option<String>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -689,34 +639,21 @@ pub enum ServiceSettingsCommands {
     /// List configured ClickHouse settings
     List {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Get a ClickHouse setting
     Get {
-        /// Service ID
-        service_id: String,
-
-        /// Setting name
-        setting_name: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        target: ServiceSettingTarget,
     },
 
     /// Get the configurable ClickHouse settings schema
     Schema {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Set one or more ClickHouse settings
@@ -726,37 +663,70 @@ pub enum ServiceSettingsCommands {
 CONTEXT FOR AGENTS:
   Discover supported names and types with `settings schema <service-id>`.
   --setting values are JSON literals; quote string values inside the argument.
-  --settings-file reads a JSON settings map; `-` reads stdin. Only named settings change."
+  --file reads a JSON settings map; `-` reads stdin. Only named settings change."
     )]
     Set {
         /// Service ID
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// Setting as NAME=JSON_VALUE (repeatable)
         #[arg(long, value_name = "NAME=JSON_VALUE")]
         setting: Vec<String>,
 
         /// JSON settings map file (`-` reads stdin)
-        #[arg(long, value_name = "PATH")]
+        #[arg(long = "file", alias = "settings-file", value_name = "PATH")]
         settings_file: Option<String>,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Reset a ClickHouse setting to its platform default
     Unset {
-        /// Service ID
-        service_id: String,
-
-        /// Setting name
-        setting_name: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        target: ServiceSettingTarget,
     },
+}
+
+/// Keep the natural setting key required while allowing options between the
+/// service ID and key. Clap's allow_missing_positional would shift the ID into
+/// the key slot when an option follows it; the explicit --name decides grammar.
+#[derive(clap::Args)]
+pub struct ServiceSettingTarget {
+    /// Service ID, or setting name with --name
+    #[arg(value_name = "ID_OR_SETTING_NAME")]
+    id_or_setting_name: String,
+    /// Setting name when selecting by service ID
+    #[arg(
+        value_name = "SETTING_NAME",
+        required_unless_present = "name",
+        conflicts_with = "name"
+    )]
+    setting_name: Option<String>,
+    /// Exact service name within the selected organization
+    #[arg(long)]
+    name: Option<String>,
+}
+
+impl ServiceSettingTarget {
+    pub(super) fn parts(&self) -> (NameSelector, &str) {
+        match &self.name {
+            Some(name) => (
+                NameSelector {
+                    id: None,
+                    name: Some(name.clone()),
+                },
+                &self.id_or_setting_name,
+            ),
+            None => (
+                NameSelector {
+                    id: Some(self.id_or_setting_name.clone()),
+                    name: None,
+                },
+                self.setting_name
+                    .as_deref()
+                    .expect("clap requires the setting name with a positional ID"),
+            ),
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -764,11 +734,8 @@ pub enum ScalingScheduleCommands {
     /// Get the scaling schedule
     Get {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Create or replace the scaling schedule
@@ -780,15 +747,12 @@ CONTEXT FOR AGENTS:
   Omit response-only baseConfig and each entry's id and isActiveNow when setting a schedule.")]
     Set {
         /// Service ID
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// JSON request file (use "-" for stdin)
-        #[arg(long)]
+        #[arg(long, value_name = "PATH")]
         file: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete the scaling schedule
@@ -797,11 +761,8 @@ CONTEXT FOR AGENTS:
   Deletes every scheduled entry. An active entry returns to the service's base scaling config.")]
     Delete {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 }
 
@@ -810,17 +771,15 @@ pub enum UpgradeWindowCommands {
     /// Get the service upgrade window
     Get {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Set the service upgrade window
     Set {
         /// Service ID
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// Start day: 0=Sunday through 6=Saturday
         #[arg(
@@ -833,10 +792,6 @@ pub enum UpgradeWindowCommands {
         /// UTC start hour
         #[arg(long, value_parser = PossibleValuesParser::new(["0", "6", "12", "18"]))]
         start_hour: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete the service upgrade window
@@ -845,11 +800,8 @@ pub enum UpgradeWindowCommands {
     )]
     Delete {
         /// Service ID
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 }
 
@@ -926,73 +878,97 @@ impl ServiceCommands {
 
 pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> CloudResult<()> {
     match command {
-        ServiceCommands::List { org_id, filter } => {
-            service_list(client, org_id.as_deref(), &filter, json).await
-        }
-        ServiceCommands::Get { service_id, org_id } => {
-            service_get(client, &service_id, org_id.as_deref(), json).await
+        ServiceCommands::List { filter } => service_list(client, &filter, json).await,
+        ServiceCommands::Get { service_id } => {
+            service_get(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                json,
+            )
+            .await
         }
         ServiceCommands::Profile { command } => match command {
-            ServiceProfileCommands::List {
-                region,
-                byoc_id,
-                org_id,
-            } => {
-                service_profile_list(client, &region, byoc_id.as_deref(), org_id.as_deref(), json)
-                    .await
+            ServiceProfileCommands::List { region, byoc_id } => {
+                service_profile_list(client, &region, byoc_id.as_deref(), json).await
             }
         },
         ServiceCommands::Settings { command } => match command {
-            ServiceSettingsCommands::List { service_id, org_id } => {
-                service_settings_list(client, &service_id, org_id.as_deref(), json).await
+            ServiceSettingsCommands::List { service_id } => {
+                service_settings_list(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
             }
-            ServiceSettingsCommands::Get {
-                service_id,
-                setting_name,
-                org_id,
-            } => {
-                service_setting_get(client, &service_id, &setting_name, org_id.as_deref(), json)
-                    .await
+            ServiceSettingsCommands::Get { target } => {
+                let (selector, setting_name) = target.parts();
+                service_setting_get(
+                    client,
+                    &selector.resolve(client, NamedResource::Service).await?,
+                    setting_name,
+                    json,
+                )
+                .await
             }
-            ServiceSettingsCommands::Schema { service_id, org_id } => {
-                service_settings_schema(client, &service_id, org_id.as_deref(), json).await
+            ServiceSettingsCommands::Schema { service_id } => {
+                service_settings_schema(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
             }
             ServiceSettingsCommands::Set {
                 service_id,
                 setting,
                 settings_file,
-                org_id,
             } => {
                 service_settings_set(
                     client,
-                    &service_id,
+                    &service_id.resolve(client, NamedResource::Service).await?,
                     &setting,
                     settings_file.as_deref(),
-                    org_id.as_deref(),
                     json,
                 )
                 .await
             }
-            ServiceSettingsCommands::Unset {
-                service_id,
-                setting_name,
-                org_id,
-            } => {
-                service_setting_unset(client, &service_id, &setting_name, org_id.as_deref(), json)
-                    .await
+            ServiceSettingsCommands::Unset { target } => {
+                let (selector, setting_name) = target.parts();
+                service_setting_unset(
+                    client,
+                    &selector.resolve(client, NamedResource::Service).await?,
+                    setting_name,
+                    json,
+                )
+                .await
             }
         },
         ServiceCommands::ScalingSchedule { command } => match command {
-            ScalingScheduleCommands::Get { service_id, org_id } => {
-                scaling_schedule_get(client, &service_id, org_id.as_deref(), json).await
+            ScalingScheduleCommands::Get { service_id } => {
+                scaling_schedule_get(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
             }
-            ScalingScheduleCommands::Set {
-                service_id,
-                file,
-                org_id,
-            } => scaling_schedule_set(client, &service_id, &file, org_id.as_deref(), json).await,
-            ScalingScheduleCommands::Delete { service_id, org_id } => {
-                scaling_schedule_delete(client, &service_id, org_id.as_deref(), json).await
+            ScalingScheduleCommands::Set { service_id, file } => {
+                scaling_schedule_set(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    &file,
+                    json,
+                )
+                .await
+            }
+            ScalingScheduleCommands::Delete { service_id } => {
+                scaling_schedule_delete(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
             }
         },
         ServiceCommands::Create {
@@ -1023,7 +999,6 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             disable_endpoint,
             private_preview_terms_checked,
             enable_core_dumps,
-            org_id,
         } => {
             let options = CreateServiceOptions {
                 name,
@@ -1053,23 +1028,41 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 disable_endpoints: disable_endpoint,
                 private_preview_terms_checked,
                 enable_core_dumps,
-                org_id,
             };
             service_create(client, options, json).await
         }
-        ServiceCommands::Delete {
-            service_id,
-            force,
-            org_id,
-        } => service_delete(client, &service_id, force, org_id.as_deref(), json).await,
-        ServiceCommands::Start { service_id, org_id } => {
-            service_start(client, &service_id, org_id.as_deref(), json).await
+        ServiceCommands::Delete { service_id, force } => {
+            service_delete(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                force,
+                json,
+            )
+            .await
         }
-        ServiceCommands::Wake { service_id, org_id } => {
-            service_wake(client, &service_id, org_id.as_deref(), json).await
+        ServiceCommands::Start { service_id } => {
+            service_start(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                json,
+            )
+            .await
         }
-        ServiceCommands::Stop { service_id, org_id } => {
-            service_stop(client, &service_id, org_id.as_deref(), json).await
+        ServiceCommands::Wake { service_id } => {
+            service_wake(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                json,
+            )
+            .await
+        }
+        ServiceCommands::Stop { service_id } => {
+            service_stop(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                json,
+            )
+            .await
         }
         ServiceCommands::Update {
             service_id,
@@ -1085,7 +1078,6 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             add_tag,
             remove_tag,
             enable_core_dumps,
-            org_id,
         } => {
             let options = ServiceUpdateOptions {
                 name,
@@ -1100,9 +1092,14 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 add_tags: add_tag,
                 remove_tags: remove_tag,
                 enable_core_dumps,
-                org_id,
             };
-            service_update(client, &service_id, options, json).await
+            service_update(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                options,
+                json,
+            )
+            .await
         }
         ServiceCommands::Scale {
             service_id,
@@ -1114,11 +1111,10 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             autoscaling_mode,
             idle_scaling,
             idle_timeout_minutes,
-            org_id,
         } => {
             service_scale(
                 client,
-                &service_id,
+                &service_id.resolve(client, NamedResource::Service).await?,
                 ServiceScaleOptions {
                     min_replica_memory_gb,
                     max_replica_memory_gb,
@@ -1128,7 +1124,6 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                     autoscaling_mode,
                     idle_scaling,
                     idle_timeout_minutes,
-                    org_id,
                 },
                 json,
             )
@@ -1138,18 +1133,27 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             service_id,
             new_password_hash,
             new_double_sha1_hash,
-            org_id,
         } => {
             let options = ServiceResetPasswordOptions {
                 new_password_hash,
                 new_double_sha1_hash,
-                org_id,
             };
-            service_reset_password(client, &service_id, options, json).await
+            service_reset_password(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                options,
+                json,
+            )
+            .await
         }
         ServiceCommands::QueryEndpoint { command } => match command {
-            QueryEndpointCommands::Get { service_id, org_id } => {
-                query_endpoint_get(client, &service_id, org_id.as_deref(), json).await
+            QueryEndpointCommands::Get { service_id } => {
+                query_endpoint_get(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
             }
             QueryEndpointCommands::Create {
                 service_id,
@@ -1157,19 +1161,28 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 open_api_key,
                 replace_open_api_keys,
                 allowed_origins,
-                org_id,
             } => {
                 let options = QueryEndpointCreateOptions {
                     roles: role,
                     open_api_keys: open_api_key,
                     replace_open_api_keys,
                     allowed_origins,
-                    org_id,
                 };
-                query_endpoint_create(client, &service_id, options, json).await
+                query_endpoint_create(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    options,
+                    json,
+                )
+                .await
             }
-            QueryEndpointCommands::Delete { service_id, org_id } => {
-                query_endpoint_delete(client, &service_id, org_id.as_deref(), json).await
+            QueryEndpointCommands::Delete { service_id } => {
+                query_endpoint_delete(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
             }
         },
         ServiceCommands::PrivateEndpoint { command } => match command {
@@ -1177,79 +1190,100 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 service_id,
                 endpoint_id,
                 description,
-                org_id,
             } => {
                 private_endpoint_create(
                     client,
-                    &service_id,
+                    &service_id.resolve(client, NamedResource::Service).await?,
                     &endpoint_id,
                     description.as_deref(),
-                    org_id.as_deref(),
                     json,
                 )
                 .await
             }
-            PrivateEndpointCommands::GetConfig { service_id, org_id } => {
-                private_endpoint_get_config(client, &service_id, org_id.as_deref(), json).await
+            PrivateEndpointCommands::GetConfig { service_id } => {
+                private_endpoint_get_config(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
             }
         },
         ServiceCommands::BackupConfig { command } => {
             crate::cloud::backups::run_config(client, command, json).await
         }
         ServiceCommands::UpgradeWindow { command } => match command {
-            UpgradeWindowCommands::Get { service_id, org_id } => {
-                upgrade_window_get(client, &service_id, org_id.as_deref(), json).await
+            UpgradeWindowCommands::Get { service_id } => {
+                upgrade_window_get(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
             }
             UpgradeWindowCommands::Set {
                 service_id,
                 weekday,
                 start_hour,
-                org_id,
             } => {
                 upgrade_window_set(
                     client,
-                    &service_id,
+                    &service_id.resolve(client, NamedResource::Service).await?,
                     weekday,
                     &start_hour,
-                    org_id.as_deref(),
                     json,
                 )
                 .await
             }
-            UpgradeWindowCommands::Delete { service_id, org_id } => {
-                upgrade_window_delete(client, &service_id, org_id.as_deref(), json).await
+            UpgradeWindowCommands::Delete { service_id } => {
+                upgrade_window_delete(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
             }
         },
         ServiceCommands::Prometheus {
             service_id,
-            org_id,
             filtered_metrics,
-        } => service_prometheus(client, &service_id, org_id.as_deref(), filtered_metrics).await,
+        } => {
+            service_prometheus(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                filtered_metrics,
+            )
+            .await
+        }
         ServiceCommands::Query {
+            service_id,
             name,
             id,
             query,
             queries_file,
             database,
             format,
-            org_id,
             no_auto_enable,
         } => {
             let options = ServiceQueryOptions {
                 name,
-                id,
+                id: service_id.or(id),
                 query,
                 queries_file,
                 database,
                 format,
                 json,
-                org_id,
                 no_auto_enable,
             };
             service_query(client, options).await
         }
-        ServiceCommands::RepairQueryKey { service_id, org_id } => {
-            service_query_key_repair(client, &service_id, org_id.as_deref(), json).await
+        ServiceCommands::RepairQueryKey { service_id } => {
+            service_query_key_repair(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                json,
+            )
+            .await
         }
     }
 }
@@ -1281,27 +1315,30 @@ async fn resolve_service(
     match (name, id) {
         (Some(name), None) => {
             let services = client.list_services(org_id).await?;
-            let matches: Vec<_> = services
+            let id = crate::cloud::shared::select_named_id(
+                "service",
+                name,
+                services
+                    .iter()
+                    .map(|service| (service.name.as_deref(), service.id.as_ref())),
+            )?;
+            services
                 .into_iter()
-                .filter(|service| service.name.as_deref() == Some(name))
-                .collect();
-            match matches.len() {
-                0 => Err(CloudError::new(format!(
-                    "no service found with name '{}'",
-                    name
-                ))),
-                1 => Ok(matches.into_iter().next().unwrap()),
-                count => Err(CloudError::new(format!(
-                    "found {} services named '{}' — use --id to disambiguate",
-                    count, name
-                ))),
-            }
+                .find(|service| {
+                    service
+                        .id
+                        .as_ref()
+                        .is_some_and(|candidate| candidate.to_string() == id)
+                })
+                .ok_or_else(|| CloudError::new("resolved service is missing from the list"))
         }
         (None, Some(id)) => Ok(client.get_service(org_id, id).await?),
-        (Some(_), Some(_)) => Err(CloudError::new("specify either --name or --id, not both")),
+        (Some(_), Some(_)) => Err(CloudError::new(
+            "supply either a positional service ID or --name",
+        )),
         // Clap rejects this state; retain the check for any future non-CLI caller.
         (None, None) => Err(CloudError::new(
-            "specify --name or --id to identify the service",
+            "supply a positional service ID or --name to identify the service",
         )),
     }
 }
@@ -1476,13 +1513,45 @@ fn build_upgrade_window_request(
     })
 }
 
-async fn service_list(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    filters: &[String],
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+#[derive(serde::Serialize)]
+struct UpgradeWindowHumanView {
+    duration: String,
+    #[serde(rename = "startHourUtc")]
+    start_hour_utc: String,
+    weekday: String,
+}
+
+fn upgrade_window_human_view(window: &UpgradeWindow) -> UpgradeWindowHumanView {
+    let duration = window
+        .duration
+        .map(|duration| {
+            let hours = i64::from(duration);
+            format!("{hours} hour{}", if hours == 1 { "" } else { "s" })
+        })
+        .unwrap_or_else(|| ABSENT.to_string());
+    let weekday = window
+        .weekday
+        .map(|weekday| match weekday {
+            0 => "Sunday (0)".to_string(),
+            1 => "Monday (1)".to_string(),
+            2 => "Tuesday (2)".to_string(),
+            3 => "Wednesday (3)".to_string(),
+            4 => "Thursday (4)".to_string(),
+            5 => "Friday (5)".to_string(),
+            6 => "Saturday (6)".to_string(),
+            unknown => unknown.to_string(),
+        })
+        .unwrap_or_else(|| ABSENT.to_string());
+
+    UpgradeWindowHumanView {
+        duration,
+        start_hour_utc: or_absent(window.start_hour_utc.as_ref()),
+        weekday,
+    }
+}
+
+async fn service_list(client: &CloudClient, filters: &[String], json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
 
     let services = if filters.is_empty() {
         client.list_services(&org_id).await?
@@ -1528,13 +1597,8 @@ async fn service_list(
     Ok(())
 }
 
-async fn service_get(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn service_get(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let service = client.get_service(&org_id, service_id).await?;
 
     if json {
@@ -1545,18 +1609,13 @@ async fn service_get(
     Ok(())
 }
 
-async fn upgrade_window_get(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn upgrade_window_get(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let window = client.get_upgrade_window(&org_id, service_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&window)?);
     } else {
-        print_human(&window)?;
+        print_human(&upgrade_window_human_view(&window))?;
     }
     Ok(())
 }
@@ -1566,18 +1625,17 @@ async fn upgrade_window_set(
     service_id: &str,
     weekday: i64,
     start_hour: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let request = build_upgrade_window_request(weekday, start_hour)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let window = client
         .set_upgrade_window(&org_id, service_id, &request)
         .await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&window)?);
     } else {
-        print_human(&window)?;
+        print_human(&upgrade_window_human_view(&window))?;
     }
     Ok(())
 }
@@ -1585,10 +1643,9 @@ async fn upgrade_window_set(
 async fn upgrade_window_delete(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client.delete_upgrade_window(&org_id, service_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -1602,10 +1659,9 @@ async fn service_profile_list(
     client: &CloudClient,
     region_id: &str,
     byoc_id: Option<&str>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let profiles = client
         .list_service_profiles(&org_id, region_id, byoc_id)
         .await?;
@@ -1767,10 +1823,9 @@ fn build_service_settings_patch_request(
 async fn service_settings_list(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client.list_clickhouse_settings(&org_id, service_id).await?;
 
     if json {
@@ -1810,10 +1865,9 @@ async fn service_setting_get(
     client: &CloudClient,
     service_id: &str,
     setting_name: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let setting = client
         .get_clickhouse_setting(&org_id, service_id, setting_name)
         .await?;
@@ -1828,10 +1882,9 @@ async fn service_setting_get(
 async fn service_settings_schema(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let schema = client
         .get_clickhouse_settings_schema(&org_id, service_id)
         .await?;
@@ -1848,14 +1901,13 @@ async fn service_settings_set(
     service_id: &str,
     assignments: &[String],
     settings_file: Option<&str>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     // Parse before organization discovery so malformed local input never
     // causes an HTTP request, even when --org-id was omitted.
     let settings = read_service_settings(assignments, settings_file)?;
     let request = build_service_settings_patch_request(&settings)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client
         .update_clickhouse_settings(&org_id, service_id, &request)
         .await?;
@@ -1871,10 +1923,9 @@ async fn service_setting_unset(
     client: &CloudClient,
     service_id: &str,
     setting_name: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client
         .reset_clickhouse_setting(&org_id, service_id, setting_name)
         .await?;
@@ -1915,7 +1966,6 @@ struct CreateServiceOptions {
     disable_endpoints: Vec<String>,
     private_preview_terms_checked: bool,
     enable_core_dumps: Option<bool>,
-    org_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -1932,14 +1982,12 @@ struct ServiceUpdateOptions {
     add_tags: Vec<String>,
     remove_tags: Vec<String>,
     enable_core_dumps: Option<bool>,
-    org_id: Option<String>,
 }
 
 #[derive(Default)]
 struct ServiceResetPasswordOptions {
     new_password_hash: Option<String>,
     new_double_sha1_hash: Option<String>,
-    org_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -1948,7 +1996,6 @@ struct QueryEndpointCreateOptions {
     open_api_keys: Vec<String>,
     replace_open_api_keys: bool,
     allowed_origins: Option<String>,
-    org_id: Option<String>,
 }
 
 struct HorizontalAutoscaling {
@@ -2474,7 +2521,7 @@ fn validate_scaling_schedule_entry(
 fn service_query_hint(service_id: Option<uuid::Uuid>) -> Option<String> {
     service_id.map(|id| {
         format!(
-            "Run SQL with: clickhousectl cloud service query --id {} --query \"SELECT 1\"\n\
+            "Run SQL with: clickhousectl cloud service query {} --query \"SELECT 1\"\n\
              (the Query API endpoint is provisioned automatically on first use)",
             id
         )
@@ -2508,7 +2555,7 @@ async fn service_create(
     json: bool,
 ) -> CloudResult<()> {
     let request = build_create_service_request(&options)?;
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     validate_dynamic_byoc_profile(client, &org_id, &request).await?;
     let response = client.create_service(&org_id, &request).await?;
 
@@ -2645,10 +2692,9 @@ async fn service_delete(
     client: &CloudClient,
     service_id: &str,
     force: bool,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let (query_key_ids, retain_query_key) = service_query_key_cleanup(&org_id, service_id)?;
 
     if force {
@@ -2703,13 +2749,8 @@ async fn service_delete(
     Ok(())
 }
 
-async fn service_start(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn service_start(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let service = client
         .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Start)
         .await?;
@@ -2718,7 +2759,7 @@ async fn service_start(
         println!("{}", serde_json::to_string_pretty(&service)?);
     } else {
         println!(
-            "Service {} starting (state: {})",
+            "Service {} start request accepted (returned state: {})",
             or_absent(service.name.as_deref()),
             or_absent(service.state.as_ref())
         );
@@ -2726,13 +2767,8 @@ async fn service_start(
     Ok(())
 }
 
-async fn service_stop(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn service_stop(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let service = client
         .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Stop)
         .await?;
@@ -2741,7 +2777,7 @@ async fn service_stop(
         println!("{}", serde_json::to_string_pretty(&service)?);
     } else {
         println!(
-            "Service {} stopping (state: {})",
+            "Service {} stop request accepted (returned state: {})",
             or_absent(service.name.as_deref()),
             or_absent(service.state.as_ref())
         );
@@ -2749,13 +2785,8 @@ async fn service_stop(
     Ok(())
 }
 
-async fn service_wake(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn service_wake(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let service = client
         .change_service_state(&org_id, service_id, ServiceStatePatchRequestCommand::Awake)
         .await?;
@@ -2779,7 +2810,7 @@ async fn service_update(
     json: bool,
 ) -> CloudResult<()> {
     let request = build_update_service_request(&options)?;
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
 
     if has_removals(&options) {
         let current = client.get_service(&org_id, service_id).await?;
@@ -2810,7 +2841,6 @@ struct ServiceScaleOptions {
     autoscaling_mode: Option<String>,
     idle_scaling: Option<bool>,
     idle_timeout_minutes: Option<u32>,
-    org_id: Option<String>,
 }
 
 fn build_service_scale_request(
@@ -2841,7 +2871,7 @@ async fn service_scale(
     json: bool,
 ) -> CloudResult<()> {
     let request = build_service_scale_request(&options)?;
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     let service = client
         .update_replica_scaling(&org_id, service_id, &request)
         .await?;
@@ -2889,7 +2919,7 @@ async fn service_reset_password(
     options: ServiceResetPasswordOptions,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     let request = build_service_password_patch_request(&options);
     let response = client.reset_password(&org_id, service_id, &request).await?;
     let outcome = resolve_reset_password_outcome(
@@ -2940,13 +2970,8 @@ fn resolve_reset_password_outcome(
     }
 }
 
-async fn query_endpoint_get(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn query_endpoint_get(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let endpoint = client.get_query_endpoint(&org_id, service_id).await?;
 
     if json {
@@ -2963,7 +2988,7 @@ async fn query_endpoint_create(
     options: QueryEndpointCreateOptions,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
     let existing = client
         .get_query_endpoint_for_binding(&org_id, service_id)
         .await
@@ -2985,10 +3010,9 @@ async fn query_endpoint_create(
 async fn query_endpoint_delete(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client.delete_query_endpoint(&org_id, service_id).await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -3001,10 +3025,9 @@ async fn query_endpoint_delete(
 async fn service_query_key_repair(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let result =
         crate::cloud::service_query::repair_service_query_key(client, &org_id, service_id).await?;
     // A retired key that could not be deleted is a warning, not a failure: the
@@ -3152,9 +3175,7 @@ fn repaired_query_credential(
 }
 
 fn next_query_command(service_id: &str, org_id: &str) -> String {
-    format!(
-        "clickhousectl cloud service query --id {service_id} --org-id {org_id} --query \"SELECT 1\""
-    )
+    format!("clickhousectl cloud service query {service_id} --org-id {org_id} --query \"SELECT 1\"")
 }
 
 /// Print the one `Note:` line every skipped verification gets, and return
@@ -3294,7 +3315,7 @@ struct ServiceQueryOptions {
     database: Option<String>,
     format: Option<String>,
     json: bool,
-    org_id: Option<String>,
+
     no_auto_enable: bool,
 }
 
@@ -3309,25 +3330,64 @@ async fn run_basic_service_query(
     format: &str,
     service_name: &str,
     confirmed_idle: bool,
-) -> Result<reqwest::Response, clickhouse_cloud_api::Error> {
-    let run = |wake: bool| {
+) -> Result<reqwest::Response, QueryRequestError> {
+    run_service_query_with_wake(service_name, confirmed_idle, |wake| {
         client
             .api()
             .run_query(service_id, key_id, key_secret, sql, database, format, wake)
+    })
+    .await
+}
+
+/// Preserve an explicit pre-execution idle response when the following wake
+/// attempt fails. A timeout alone never permits another SQL submission.
+struct QueryRequestError {
+    error: clickhouse_cloud_api::Error,
+    wake_requested: bool,
+}
+
+impl QueryRequestError {
+    fn into_cloud_error(self, client: &CloudClient, target: QueryTarget<'_>) -> CloudError {
+        convert_query_error(
+            client,
+            self.error,
+            QueryTarget {
+                may_be_waking: target.may_be_waking || self.wake_requested,
+                ..target
+            },
+        )
+    }
+}
+
+async fn run_service_query_with_wake<F, Fut>(
+    service_name: &str,
+    confirmed_idle: bool,
+    run: F,
+) -> Result<reqwest::Response, QueryRequestError>
+where
+    F: Fn(bool) -> Fut,
+    Fut: std::future::Future<Output = Result<reqwest::Response, clickhouse_cloud_api::Error>>,
+{
+    let waking_error = |error| QueryRequestError {
+        error,
+        wake_requested: true,
     };
     if confirmed_idle {
         eprint_waking_service(service_name);
         failure::note_retry();
-        return run(true).await;
+        return run(true).await.map_err(waking_error);
     }
 
     match run(false).await {
         Err(clickhouse_cloud_api::Error::ServiceIdle) => {
             eprint_waking_service(service_name);
             failure::note_retry();
-            run(true).await
+            run(true).await.map_err(waking_error)
         }
-        other => other,
+        other => other.map_err(|error| QueryRequestError {
+            error,
+            wake_requested: false,
+        }),
     }
 }
 
@@ -3434,7 +3494,7 @@ async fn run_just_provisioned_service_query(
         confirmed_idle,
     )
     .await
-    .map_err(|error| convert_query_error(client, error, target))
+    .map_err(|error| error.into_cloud_error(client, target))
 }
 
 /// Whether an error means "the Query API endpoint is not (yet) usable by this
@@ -3488,7 +3548,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
 
     let sql = read_query_sql(options.query.as_deref(), options.queries_file.as_deref())
         .map_err(|error| error.at_stage(FailureStage::SqlInput))?;
-    let org_id = resolve_org_id(client, options.org_id.as_deref())
+    let org_id = resolve_org_id(client)
         .await
         .map_err(|error| error.at_stage(FailureStage::OrgResolution))?;
     let service = resolve_service(
@@ -3517,6 +3577,12 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
         service_id: &service_id,
         org_id: &org_id,
         native: native.as_ref(),
+        // Use the service lookup already required for this query. This is
+        // evidence of a possible wake delay, not proof the SQL never ran.
+        may_be_waking: matches!(
+            service.state,
+            Some(ServiceState::Idle | ServiceState::Awaking)
+        ),
     };
 
     let format = options.format.unwrap_or_else(|| {
@@ -3546,20 +3612,15 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                 wake,
             )
         };
-        let result = match run(false).await {
-            Err(clickhouse_cloud_api::Error::ServiceIdle) => {
-                eprint_waking_service(&service_name);
-                failure::note_retry();
-                run(true).await
-            }
-            other => other,
-        };
-        result.map_err(|error| {
-            convert_query_error(client, error, target).at_stage(FailureStage::QueryRequest)
-        })?
+        run_service_query_with_wake(&service_name, false, run)
+            .await
+            .map_err(|error| {
+                error
+                    .into_cloud_error(client, target)
+                    .at_stage(FailureStage::QueryRequest)
+            })?
     } else {
-        let convert =
-            |error: clickhouse_cloud_api::Error| convert_query_error(client, error, target);
+        let convert = |error: QueryRequestError| error.into_cloud_error(client, target);
         let result = if let Some(key) = credentials::try_get_service_query_key(&service_id)
             .map_err(|error| error.at_stage(FailureStage::QueryRequest))?
         {
@@ -3588,7 +3649,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             )
             .await
             {
-                Err(error) => match stored_query_key_rejection_status(&error) {
+                Err(error) => match stored_query_key_rejection_status(&error.error) {
                     // The 401/403 alone does not say whether the key is stale
                     // or was deliberately revoked; the management record
                     // decides, and nothing is replaced automatically (#528).
@@ -3628,10 +3689,10 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
             )
             .await
             {
-                Err(error) if query_endpoint_readiness_error(&error) => {
+                Err(error) if query_endpoint_readiness_error(&error.error) => {
                     if options.no_auto_enable {
                         failure::set_provisioning_state(ProvisioningState::Refused);
-                        return Err(refused_query_provisioning_error(&service_id, &error)
+                        return Err(refused_query_provisioning_error(&service_id, &error.error)
                             .at_stage(FailureStage::QueryRequest));
                     }
                     eprint_line(format!(
@@ -3763,6 +3824,9 @@ struct QueryTarget<'a> {
     /// The service's `nativesecure` endpoint, when the `GET service`
     /// response carried a complete one.
     native: Option<&'a NativeEndpoint>,
+    /// An idle/awaking service lookup, or an explicit pre-execution idle
+    /// response followed by a wake request. Neither proves the SQL did not run.
+    may_be_waking: bool,
 }
 
 /// The service's `nativesecure` endpoint, when the API returned a complete
@@ -3807,43 +3871,50 @@ fn native_client_command(native: Option<&NativeEndpoint>) -> String {
     )
 }
 
-/// The Query API gateway stopped waiting for the statement (#644).
-///
-/// The statement itself is unaffected, so the message leads with that and
-/// points at `system.processes` *before* offering the native-protocol route:
-/// re-running an `INSERT` that is still executing loads the data twice. There
-/// is deliberately no retry anywhere on this path.
+/// Diagnose a typed gateway timeout using the state observed before the
+/// request (#826). A possible wake delay does not prove the statement was
+/// never executed, so neither diagnosis permits an automatic retry.
 fn query_timeout_error(target: QueryTarget<'_>) -> CloudError {
-    let command = native_client_command(target.native);
-    let endpoint_guidance = if target.native.is_some() {
-        String::new()
-    } else {
-        format!(
-            "\nThe API response carried no native endpoint for this service; read the host and \
-             port from `clickhousectl cloud service get {} --org-id {}`.",
+    let details = if target.may_be_waking {
+        let command = format!(
+            "clickhousectl cloud service get {} --org-id {}",
             target.service_id, target.org_id
-        )
-    };
-    let message = format!(
-        "the query timed out at the Query API gateway, which stops waiting after about 30 \
-         seconds.\nThe statement may still be running on the service; check `SELECT query_id, \
-         elapsed FROM system.processes` before running it again.\n\nHint: run long statements \
-         over the native protocol instead. Install the client with\n  clickhousectl local use \
-         latest\nthen rerun the query with\n  {command}{endpoint_guidance}\nThe password is the \
-         one shown when the service was created; `clickhousectl cloud service reset-password {}` \
-         issues a new one.",
-        target.service_id
-    );
-
-    CloudError::new(message.clone())
-        // Rewriting the message must not lose the classification the variant
-        // already established, and the classification still comes only from
-        // the variant (#450).
-        .with_failure(failure::classify_api_error(
-            &clickhouse_cloud_api::Error::QueryTimeout,
-        ))
-        // The same failure, machine-readable, for `--json` mode.
-        .with_details(CloudErrorDetail {
+        );
+        let message = format!(
+            "the query timed out and service '{}' may still be waking; it was idle or awaking \
+             before the query attempt.\nThe statement may already have executed or may still be \
+             running; it was not retried after the timeout.\nCheck the service state with \
+             `{command}`. Once it is running, verify the statement's outcome before deciding \
+             whether it is safe to run again.",
+            target.service_name
+        );
+        CloudErrorDetail {
+            command: Some(command),
+            ..CloudErrorDetail::new(CloudErrorCode::QueryTimeout, message)
+        }
+    } else {
+        let command = native_client_command(target.native);
+        let endpoint_guidance = if target.native.is_some() {
+            String::new()
+        } else {
+            format!(
+                "\nThe API response carried no native endpoint for this service; read the host and \
+                 port from `clickhousectl cloud service get {} --org-id {}`.",
+                target.service_id, target.org_id
+            )
+        };
+        let message = format!(
+            "the query timed out at the Query API gateway, which stops waiting after about 30 \
+             seconds.\nThe statement may still be running on the service or may already have \
+             completed; check `SELECT query_id, elapsed FROM system.processes` and verify its \
+             outcome before running it again.\n\nHint: run long statements over the native \
+             protocol instead. Install the client with\n  clickhousectl local use latest\nthen \
+             rerun the query with\n  {command}{endpoint_guidance}\nThe password is the one shown \
+             when the service was created; `clickhousectl cloud service reset-password {}` \
+             issues a new one.",
+            target.service_id
+        );
+        CloudErrorDetail {
             code: CloudErrorCode::QueryTimeout,
             message,
             host: target.native.map(|native| native.host.clone()),
@@ -3851,7 +3922,15 @@ fn query_timeout_error(target: QueryTarget<'_>) -> CloudError {
             command: Some(command),
             api_key_id: None,
             ip_access_list: None,
-        })
+        }
+    };
+
+    CloudError::new(details.message.clone())
+        // Both diagnoses retain the typed timeout classification (#450).
+        .with_failure(failure::classify_api_error(
+            &clickhouse_cloud_api::Error::QueryTimeout,
+        ))
+        .with_details(details)
 }
 
 fn convert_query_error(
@@ -3963,6 +4042,29 @@ fn fd_becomes_readable(fd: libc::c_int, timeout_ms: libc::c_int) -> bool {
     ready > 0 && poll_fd.revents & libc::POLLIN != 0
 }
 
+/// Decode SQL at the Query API boundary without replacing invalid bytes.
+///
+/// This happens before service lookup, so the native fallback deliberately
+/// uses placeholders instead of guessing an endpoint or handling credentials.
+fn decode_query_sql(bytes: Vec<u8>, source: &str) -> CloudResult<String> {
+    String::from_utf8(bytes).map_err(|_| {
+        CloudError::new(format!(
+            concat!(
+                "SQL from {} is not valid UTF-8. The Query API accepts only UTF-8 SQL ",
+                "and text-format data; use the native protocol for binary formats such as ",
+                "RowBinary or Native, and for bulk input. Install the client with ",
+                "`clickhousectl local use latest`, then stream the statement and data with:\n  ",
+                "printf 'INSERT INTO <table> FORMAT RowBinary\\n' | cat - <data-file> | ",
+                "clickhousectl local client --host <nativesecure-host> --port 9440 -- --secure ",
+                "--user default --password '<password>'\nFind the native host and port with ",
+                "`clickhousectl cloud service get <service-id>`."
+            ),
+            source
+        ))
+        .with_failure(ApiFailure::new(FailureKind::Io))
+    })
+}
+
 fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResult<String> {
     use std::io::Read as _;
 
@@ -3977,12 +4079,14 @@ fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResu
     }
 
     if let Some(path) = queries_file {
-        let mut content = String::new();
-        if path == "-" {
-            std::io::stdin().read_to_string(&mut content)?;
+        let (bytes, source) = if path == "-" {
+            let mut bytes = Vec::new();
+            std::io::stdin().read_to_end(&mut bytes)?;
+            (bytes, "stdin".to_string())
         } else {
-            content = std::fs::read_to_string(path)?;
-        }
+            (std::fs::read(path)?, format!("queries file '{}'", path))
+        };
+        let content = decode_query_sql(bytes, &source)?;
         if content.trim().is_empty() {
             return Err(CloudError::new("queries file was empty"));
         }
@@ -3995,8 +4099,9 @@ fn read_query_sql(inline: Option<&str>, queries_file: Option<&str>) -> CloudResu
         ));
     }
 
-    let mut content = String::new();
-    std::io::stdin().read_to_string(&mut content)?;
+    let mut bytes = Vec::new();
+    std::io::stdin().read_to_end(&mut bytes)?;
+    let content = decode_query_sql(bytes, "stdin")?;
     if content.trim().is_empty() {
         return Err(CloudError::new("no SQL received on stdin"));
     }
@@ -4016,10 +4121,9 @@ async fn private_endpoint_create(
     service_id: &str,
     endpoint_id: &str,
     description: Option<&str>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let request = build_private_endpoint_create_request(endpoint_id, description);
     let endpoint = client
         .create_private_endpoint(&org_id, service_id, &request)
@@ -4041,10 +4145,9 @@ async fn private_endpoint_create(
 async fn private_endpoint_get_config(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let config = client
         .get_service_private_endpoint_config(&org_id, service_id)
         .await?;
@@ -4060,10 +4163,9 @@ async fn private_endpoint_get_config(
 async fn scaling_schedule_get(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let schedule = client.get_scaling_schedule(&org_id, service_id).await?;
 
     if json {
@@ -4078,11 +4180,10 @@ async fn scaling_schedule_set(
     client: &CloudClient,
     service_id: &str,
     file: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let request = build_scaling_schedule_request(read_config_value(file)?, file)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let schedule = client
         .set_scaling_schedule(&org_id, service_id, &request)
         .await?;
@@ -4098,10 +4199,9 @@ async fn scaling_schedule_set(
 async fn scaling_schedule_delete(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client.delete_scaling_schedule(&org_id, service_id).await?;
 
     if json {
@@ -4117,10 +4217,9 @@ async fn scaling_schedule_delete(
 async fn service_prometheus(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     filtered_metrics: Option<bool>,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let prometheus = client
         .get_service_prometheus(&org_id, service_id, filtered_metrics)
         .await?;
@@ -4290,8 +4389,7 @@ impl CloudClient {
             .instance_get(org_id, service_id)
             .await
             .map_err(|error| {
-                // A read by identifier: a 400 over well-formed UUIDs is a
-                // missing service, not a bad request (#666).
+                // This path identifies the service itself, not a subresource.
                 self.convert_error_for_lookup(
                     error,
                     ResourceLookup::in_org(ResourceKind::Service, service_id, org_id),
@@ -4456,12 +4554,24 @@ impl CloudClient {
         org_id: &str,
         service_id: &str,
     ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
-        let response = self
+        match self
             .api()
             .instance_query_endpoint_get(org_id, service_id)
             .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
-        Self::unwrap_response(response)
+        {
+            Ok(response) => Self::unwrap_response(response),
+            Err(error) => {
+                // A 404 can mean the endpoint is absent on an existing service.
+                // Only the service lookup can establish that its parent is missing.
+                let lookup = ResourceLookup::in_org(ResourceKind::Service, service_id, org_id);
+                if matches!(&error, clickhouse_cloud_api::Error::Api { status: 404, .. })
+                    && lookup.rejected_well_formed_ids(&error)
+                {
+                    self.get_service(org_id, service_id).await?;
+                }
+                Err(self.convert_error_for_organization(error, org_id))
+            }
+        }
     }
 
     pub async fn create_query_endpoint(
@@ -4537,6 +4647,20 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "service", "settings", "set", "svc-1"],
+            "settings_file",
+            &["settings-file"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "service", "scaling-schedule", "set", "svc-1"],
+            "file",
+            &[],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
@@ -4547,6 +4671,7 @@ mod tests {
         let Commands::Cloud(cloud_args) = cli.command else {
             panic!("expected cloud command");
         };
+        crate::cloud::cli::tests::assert_org_selector(&cloud_args, args);
         let CloudCommands::Service { command } = cloud_args.command else {
             panic!("expected service command");
         };
@@ -4585,22 +4710,24 @@ mod tests {
         assert!(lines <= 8, "{lines} lines: {help}");
     }
 
-    /// The service is a positional, so clap renders it as the `SERVICE_ID`
-    /// value name rather than as a flag.
     #[test]
-    fn repair_query_key_help_renders_the_service_id_positional() {
-        let error = Cli::try_parse_from([
-            "clickhousectl",
-            "cloud",
-            "service",
-            "repair-query-key",
-            "--help",
-        ])
-        .err()
-        .expect("--help should stop parsing");
-        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
-        let help = error.to_string();
-        assert!(help.contains("SERVICE_ID"), "{help}");
+    fn repair_query_key_has_a_positional_id_selector() {
+        use clap::CommandFactory;
+        let mut root = Cli::command();
+        root.build();
+        let command = root
+            .find_subcommand("cloud")
+            .unwrap()
+            .find_subcommand("service")
+            .unwrap()
+            .find_subcommand("repair-query-key")
+            .unwrap();
+        let id = command
+            .get_arguments()
+            .find(|arg| arg.get_id() == "resource_id")
+            .unwrap();
+        assert!(id.is_positional());
+        assert_eq!(id.get_value_names().unwrap(), &["ID"]);
     }
 
     #[test]
@@ -4641,7 +4768,6 @@ mod tests {
             disable_endpoint,
             private_preview_terms_checked,
             enable_core_dumps,
-            org_id,
         } = command
         else {
             panic!("expected service create");
@@ -4674,7 +4800,6 @@ mod tests {
         assert!(disable_endpoint.is_empty());
         assert!(!private_preview_terms_checked);
         assert!(enable_core_dumps.is_none());
-        assert!(org_id.is_none());
     }
 
     #[test]
@@ -4764,7 +4889,6 @@ mod tests {
             disable_endpoint,
             private_preview_terms_checked,
             enable_core_dumps,
-            org_id,
             ..
         } = command
         else {
@@ -4799,7 +4923,6 @@ mod tests {
         assert_eq!(disable_endpoint, vec!["mysql"]);
         assert!(private_preview_terms_checked);
         assert_eq!(enable_core_dumps, Some(false));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -4839,10 +4962,10 @@ mod tests {
     #[test]
     fn parses_service_list_filters_and_org_id() {
         let command = parse_service(&["clickhousectl", "cloud", "service", "list"]);
-        let crate::cloud::cli::ServiceCommands::List { org_id, filter } = command else {
+        let crate::cloud::cli::ServiceCommands::List { filter } = command else {
             panic!("expected service list");
         };
-        assert!(org_id.is_none());
+
         assert!(filter.is_empty());
 
         let command = parse_service(&[
@@ -4857,10 +4980,10 @@ mod tests {
             "--org-id",
             "org-1",
         ]);
-        let crate::cloud::cli::ServiceCommands::List { org_id, filter } = command else {
+        let crate::cloud::cli::ServiceCommands::List { filter } = command else {
             panic!("expected service list");
         };
-        assert_eq!(org_id.as_deref(), Some("org-1"));
+
         assert_eq!(filter, vec!["tag:env=prod", "tag:team=analytics"]);
     }
 
@@ -4918,19 +5041,13 @@ mod tests {
             "org-1",
         ]);
         let ServiceCommands::Profile {
-            command:
-                ServiceProfileCommands::List {
-                    region,
-                    byoc_id,
-                    org_id,
-                },
+            command: ServiceProfileCommands::List { region, byoc_id },
         } = command
         else {
             panic!("expected service profile list");
         };
         assert_eq!(region, "eu-west-1");
         assert_eq!(byoc_id.as_deref(), Some("byoc-1"));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "profile", "list"])
             .err()
@@ -4952,13 +5069,12 @@ mod tests {
             "svc-1",
         ]);
         let ServiceCommands::ScalingSchedule {
-            command: ScalingScheduleCommands::Get { service_id, org_id },
+            command: ScalingScheduleCommands::Get { service_id },
         } = get
         else {
             panic!("expected scaling schedule get");
         };
-        assert_eq!(service_id, "svc-1");
-        assert!(org_id.is_none());
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
 
         let set = parse_service(&[
             "clickhousectl",
@@ -4973,19 +5089,13 @@ mod tests {
             "org-1",
         ]);
         let ServiceCommands::ScalingSchedule {
-            command:
-                ScalingScheduleCommands::Set {
-                    service_id,
-                    file,
-                    org_id,
-                },
+            command: ScalingScheduleCommands::Set { service_id, file },
         } = set
         else {
             panic!("expected scaling schedule set");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert_eq!(file, "-");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         assert_write(
             &[
@@ -5054,16 +5164,14 @@ mod tests {
                     service_id,
                     weekday,
                     start_hour,
-                    org_id,
                 },
         } = command
         else {
             panic!("expected upgrade-window set");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert_eq!(weekday, 3);
         assert_eq!(start_hour, "12");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         assert_write(
             &[
@@ -5174,13 +5282,67 @@ mod tests {
     }
 
     #[test]
+    fn upgrade_window_human_view_names_every_documented_weekday() {
+        let expected = [
+            "Sunday (0)",
+            "Monday (1)",
+            "Tuesday (2)",
+            "Wednesday (3)",
+            "Thursday (4)",
+            "Friday (5)",
+            "Saturday (6)",
+        ];
+
+        for (weekday, expected) in expected.into_iter().enumerate() {
+            let view = upgrade_window_human_view(&UpgradeWindow {
+                duration: None,
+                start_hour_utc: None,
+                weekday: Some(weekday as i64),
+            });
+            assert_eq!(view.weekday, expected);
+        }
+    }
+
+    #[test]
+    fn upgrade_window_human_view_labels_duration_and_preserves_sparse_unknowns() {
+        use clickhouse_cloud_api::models::UpgradeWindowDuration;
+
+        let known = upgrade_window_human_view(&UpgradeWindow {
+            duration: Some(UpgradeWindowDuration::SixHours),
+            start_hour_utc: Some(UpgradeWindowStartHourUtc::Hour12),
+            weekday: Some(3),
+        });
+        assert_eq!(
+            serde_json::to_value(known).unwrap(),
+            serde_json::json!({
+                "duration": "6 hours",
+                "startHourUtc": "12",
+                "weekday": "Wednesday (3)"
+            })
+        );
+
+        let sparse_unknown = upgrade_window_human_view(&UpgradeWindow {
+            duration: Some(UpgradeWindowDuration::Unknown(1)),
+            start_hour_utc: None,
+            weekday: Some(9),
+        });
+        assert_eq!(
+            serde_json::to_value(sparse_unknown).unwrap(),
+            serde_json::json!({
+                "duration": "1 hour",
+                "startHourUtc": "-",
+                "weekday": "9"
+            })
+        );
+    }
+
+    #[test]
     fn parses_service_delete_force_and_org_id() {
         let command = parse_service(&["clickhousectl", "cloud", "service", "delete", "svc-1"]);
-        let crate::cloud::cli::ServiceCommands::Delete { force, org_id, .. } = command else {
+        let crate::cloud::cli::ServiceCommands::Delete { force, .. } = command else {
             panic!("expected service delete");
         };
         assert!(!force);
-        assert!(org_id.is_none());
 
         let command = parse_service(&[
             "clickhousectl",
@@ -5192,17 +5354,11 @@ mod tests {
             "--org-id",
             "org-1",
         ]);
-        let crate::cloud::cli::ServiceCommands::Delete {
-            service_id,
-            force,
-            org_id,
-        } = command
-        else {
+        let crate::cloud::cli::ServiceCommands::Delete { service_id, force } = command else {
             panic!("expected service delete");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert!(force);
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -5221,7 +5377,6 @@ mod tests {
             add_tag,
             remove_tag,
             enable_core_dumps,
-            org_id,
             ..
         } = update
         else {
@@ -5239,7 +5394,6 @@ mod tests {
         assert!(add_tag.is_empty());
         assert!(remove_tag.is_empty());
         assert!(enable_core_dumps.is_none());
-        assert!(org_id.is_none());
 
         let scale = parse_service(&["clickhousectl", "cloud", "service", "scale", "svc-1"]);
         let crate::cloud::cli::ServiceCommands::Scale {
@@ -5251,7 +5405,6 @@ mod tests {
             autoscaling_mode,
             idle_scaling,
             idle_timeout_minutes,
-            org_id,
             ..
         } = scale
         else {
@@ -5265,7 +5418,6 @@ mod tests {
         assert!(autoscaling_mode.is_none());
         assert!(idle_scaling.is_none());
         assert!(idle_timeout_minutes.is_none());
-        assert!(org_id.is_none());
 
         let reset = parse_service(&[
             "clickhousectl",
@@ -5277,7 +5429,6 @@ mod tests {
         let crate::cloud::cli::ServiceCommands::ResetPassword {
             new_password_hash,
             new_double_sha1_hash,
-            org_id,
             ..
         } = reset
         else {
@@ -5285,7 +5436,6 @@ mod tests {
         };
         assert!(new_password_hash.is_none());
         assert!(new_double_sha1_hash.is_none());
-        assert!(org_id.is_none());
 
         let query_endpoint = parse_service(&[
             "clickhousectl",
@@ -5305,7 +5455,6 @@ mod tests {
             open_api_key,
             allowed_origins,
             replace_open_api_keys,
-            org_id,
             ..
         } = command
         else {
@@ -5315,7 +5464,6 @@ mod tests {
         assert!(!replace_open_api_keys);
         assert!(open_api_key.is_empty());
         assert!(allowed_origins.is_none());
-        assert!(org_id.is_none());
 
         let private_endpoint = parse_service(&[
             "clickhousectl",
@@ -5331,16 +5479,10 @@ mod tests {
         else {
             panic!("expected private-endpoint command");
         };
-        let crate::cloud::cli::PrivateEndpointCommands::Create {
-            description,
-            org_id,
-            ..
-        } = command
-        else {
+        let crate::cloud::cli::PrivateEndpointCommands::Create { description, .. } = command else {
             panic!("expected private-endpoint create");
         };
         assert!(description.is_none());
-        assert!(org_id.is_none());
     }
 
     #[test]
@@ -5452,7 +5594,7 @@ mod tests {
         else {
             panic!("expected service update");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert_eq!(add_ip_allow, vec!["2001:db8::/32=office"]);
         assert_eq!(remove_ip_allow, vec!["0.0.0.0/0"]);
         assert_eq!(add_private_endpoint_id, vec!["pe-1"]);
@@ -5471,7 +5613,7 @@ mod tests {
             "service",
             "update",
             "svc-1",
-            "--name",
+            "--new-name",
             "renamed",
             "--add-ip-allow",
             "10.0.0.0/8=office",
@@ -5518,13 +5660,12 @@ mod tests {
             add_tag,
             remove_tag,
             enable_core_dumps,
-            org_id,
         } = command
         else {
             panic!("expected service update");
         };
 
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert_eq!(name.as_deref(), Some("renamed"));
         assert_eq!(
             add_ip_allow,
@@ -5540,7 +5681,6 @@ mod tests {
         assert_eq!(add_tag, vec!["env=prod", "team=analytics"]);
         assert_eq!(remove_tag, vec!["legacy"]);
         assert_eq!(enable_core_dumps, Some(false));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -5685,7 +5825,7 @@ mod tests {
         else {
             panic!("expected service scale");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert_eq!(min_replicas, Some(2));
         assert_eq!(max_replicas, Some(8));
         assert_eq!(autoscaling_mode.as_deref(), Some("horizontal"));
@@ -5724,7 +5864,6 @@ mod tests {
             max_replicas,
             idle_scaling,
             idle_timeout_minutes,
-            org_id,
             ..
         } = command
         else {
@@ -5738,7 +5877,6 @@ mod tests {
         assert!(max_replicas.is_none());
         assert_eq!(idle_scaling, Some(false));
         assert_eq!(idle_timeout_minutes, Some(15));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -5779,7 +5917,6 @@ mod tests {
         let ServiceCommands::ResetPassword {
             new_password_hash,
             new_double_sha1_hash,
-            org_id,
             ..
         } = command
         else {
@@ -5787,7 +5924,6 @@ mod tests {
         };
         assert_eq!(new_password_hash.as_deref(), Some("sha256"));
         assert_eq!(new_double_sha1_hash.as_deref(), Some("sha1"));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let command = parse_service(&[
             "clickhousectl",
@@ -5802,11 +5938,10 @@ mod tests {
         let ServiceCommands::PrivateEndpoint { command } = command else {
             panic!("expected private-endpoint command");
         };
-        let PrivateEndpointCommands::GetConfig { service_id, org_id } = command else {
+        let PrivateEndpointCommands::GetConfig { service_id } = command else {
             panic!("expected get-config");
         };
-        assert_eq!(service_id, "svc-1");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
     }
 
     #[test]
@@ -5826,8 +5961,8 @@ mod tests {
             queries_file,
             database,
             format,
-            org_id,
             no_auto_enable,
+            ..
         } = command
         else {
             panic!("expected service query");
@@ -5838,7 +5973,7 @@ mod tests {
         assert!(queries_file.is_none());
         assert!(database.is_none());
         assert!(format.is_none());
-        assert!(org_id.is_none());
+
         assert!(!no_auto_enable);
 
         let command = parse_service(&[
@@ -5865,8 +6000,8 @@ mod tests {
             queries_file,
             database,
             format,
-            org_id,
             no_auto_enable,
+            ..
         } = command
         else {
             panic!("expected service query");
@@ -5878,7 +6013,7 @@ mod tests {
         assert!(queries_file.is_none());
         assert_eq!(database.as_deref(), Some("default"));
         assert_eq!(format.as_deref(), Some("CSV"));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
+
         assert!(no_auto_enable);
     }
 
@@ -5893,13 +6028,12 @@ mod tests {
             "--org-id",
             "org-1",
         ]);
-        let ServiceCommands::RepairQueryKey { service_id, org_id } = command else {
+        let ServiceCommands::RepairQueryKey { service_id } = command else {
             panic!("expected query-key repair");
         };
-        assert_eq!(service_id, "svc-1");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
 
-        let ServiceCommands::RepairQueryKey { org_id, .. } = parse_service(&[
+        let ServiceCommands::RepairQueryKey { .. } = parse_service(&[
             "clickhousectl",
             "cloud",
             "service",
@@ -5908,7 +6042,6 @@ mod tests {
         ]) else {
             panic!("expected query-key repair");
         };
-        assert!(org_id.is_none());
     }
 
     #[test]
@@ -6051,17 +6184,15 @@ mod tests {
             open_api_key,
             allowed_origins,
             replace_open_api_keys,
-            org_id,
         } = command
         else {
             panic!("expected query-endpoint create");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert!(replace_open_api_keys);
         assert_eq!(role, vec!["sql_console_read_only", "sql_console_admin"]);
         assert_eq!(open_api_key, vec!["key-1", "key-2"]);
         assert_eq!(allowed_origins.as_deref(), Some("https://example.com"));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         for action in ["get", "delete"] {
             let command = parse_service(&[
@@ -6078,10 +6209,9 @@ mod tests {
                 panic!("expected query-endpoint command");
             };
             match command {
-                crate::cloud::cli::QueryEndpointCommands::Get { service_id, org_id }
-                | crate::cloud::cli::QueryEndpointCommands::Delete { service_id, org_id } => {
-                    assert_eq!(service_id, "svc-1");
-                    assert_eq!(org_id.as_deref(), Some("org-1"));
+                crate::cloud::cli::QueryEndpointCommands::Get { service_id }
+                | crate::cloud::cli::QueryEndpointCommands::Delete { service_id } => {
+                    assert_eq!(service_id.id.as_deref(), Some("svc-1"));
                 }
                 crate::cloud::cli::QueryEndpointCommands::Create { .. } => {
                     panic!("expected query-endpoint {action}")
@@ -6165,15 +6295,13 @@ mod tests {
             service_id,
             endpoint_id,
             description,
-            org_id,
         } = command
         else {
             panic!("expected private-endpoint create");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert_eq!(endpoint_id, "vpce-0123456789abcdef0");
         assert_eq!(description.as_deref(), Some("production"));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     /// Non-AWS endpoint IDs have no marker that separates a typo from a valid
@@ -6343,11 +6471,10 @@ mod tests {
             "--org-id",
             "org-1",
         ]);
-        let crate::cloud::cli::ServiceCommands::Get { service_id, org_id } = command else {
+        let crate::cloud::cli::ServiceCommands::Get { service_id } = command else {
             panic!("expected service get");
         };
-        assert_eq!(service_id, "svc-1");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
 
         for action in ["start", "wake", "stop"] {
             let command = parse_service(&[
@@ -6360,11 +6487,10 @@ mod tests {
                 "org-1",
             ]);
             match command {
-                crate::cloud::cli::ServiceCommands::Start { service_id, org_id }
-                | crate::cloud::cli::ServiceCommands::Wake { service_id, org_id }
-                | crate::cloud::cli::ServiceCommands::Stop { service_id, org_id } => {
-                    assert_eq!(service_id, "svc-1");
-                    assert_eq!(org_id.as_deref(), Some("org-1"));
+                crate::cloud::cli::ServiceCommands::Start { service_id }
+                | crate::cloud::cli::ServiceCommands::Wake { service_id }
+                | crate::cloud::cli::ServiceCommands::Stop { service_id } => {
+                    assert_eq!(service_id.id.as_deref(), Some("svc-1"));
                 }
                 _ => panic!("expected service {action}"),
             }
@@ -6372,14 +6498,12 @@ mod tests {
 
         let command = parse_service(&["clickhousectl", "cloud", "service", "prometheus", "svc-1"]);
         let crate::cloud::cli::ServiceCommands::Prometheus {
-            org_id,
-            filtered_metrics,
-            ..
+            filtered_metrics, ..
         } = command
         else {
             panic!("expected service prometheus");
         };
-        assert!(org_id.is_none());
+
         assert!(filtered_metrics.is_none());
 
         let command = parse_service(&[
@@ -6395,14 +6519,13 @@ mod tests {
         ]);
         let crate::cloud::cli::ServiceCommands::Prometheus {
             service_id,
-            org_id,
             filtered_metrics,
         } = command
         else {
             panic!("expected service prometheus");
         };
-        assert_eq!(service_id, "svc-1");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
+
         assert_eq!(filtered_metrics, Some(true));
     }
 
@@ -6588,6 +6711,8 @@ mod tests {
                 "backup-config",
                 "update",
                 "svc-1",
+                "--backup-period-hours",
+                "24",
             ],
             true,
         );
@@ -6622,7 +6747,7 @@ mod tests {
         assert_eq!(service_query_hint(None), None);
         let id = uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap();
         let hint = service_query_hint(Some(id)).unwrap();
-        assert!(hint.contains("--id a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"));
+        assert!(hint.contains("query a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6"));
         assert!(hint.contains("provisioned automatically on first use"));
     }
 
@@ -6904,7 +7029,7 @@ mod tests {
             details.command.as_deref(),
             Some(
                 format!(
-                    "clickhousectl cloud service query --id {VERIFIED_SERVICE_ID} --org-id org-1 \
+                    "clickhousectl cloud service query {VERIFIED_SERVICE_ID} --org-id org-1 \
                      --query \"SELECT 1\""
                 )
                 .as_str()
@@ -7113,6 +7238,7 @@ mod tests {
             service_id: "svc-1",
             org_id: "org-1",
             native,
+            may_be_waking: false,
         }
     }
 
@@ -7256,6 +7382,52 @@ mod tests {
                  default --password '<password>' --query '<your SQL>'"
             )
         );
+    }
+
+    #[test]
+    fn query_timeout_after_wake_retains_structural_classification() {
+        let client = CloudClient::new(
+            Some("test-key"),
+            Some("test-secret"),
+            Some("https://api.example.com/v1"),
+        )
+        .unwrap();
+        let error = QueryRequestError {
+            error: clickhouse_cloud_api::Error::QueryTimeout,
+            wake_requested: true,
+        }
+        .into_cloud_error(&client, test_query_target(None));
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+        assert_eq!(
+            error.failure,
+            Some(ApiFailure::with_status(FailureKind::Timeout, 500))
+        );
+        let details = error.details.as_deref().unwrap();
+        assert_eq!(details.code, CloudErrorCode::QueryTimeout);
+        assert_eq!(details.message, error.message);
+        assert_eq!(
+            details.command.as_deref(),
+            Some("clickhousectl cloud service get svc-1 --org-id org-1")
+        );
+        assert!(details.host.is_none());
+        assert!(details.port.is_none());
+
+        for status in [401, 403, 500] {
+            let error = QueryRequestError {
+                error: clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "unrelated failure".into(),
+                },
+                wake_requested: true,
+            }
+            .into_cloud_error(&client, test_query_target(None));
+            assert!(!error.message.contains("waking"));
+            assert_eq!(error.failure.unwrap().http_status, Some(status));
+            assert_eq!(
+                error.kind == crate::cloud::client::CloudErrorKind::Auth,
+                status == 401 || status == 403
+            );
+        }
     }
 
     #[test]
@@ -7766,7 +7938,6 @@ mod tests {
             add_tags: vec!["env=staging".to_string()],
             remove_tags: vec!["old=tag".to_string()],
             enable_core_dumps: Some(false),
-            ..Default::default()
         };
         let request = build_update_service_request(&options).unwrap();
 
@@ -8337,7 +8508,6 @@ mod tests {
         let request = build_service_password_patch_request(&ServiceResetPasswordOptions {
             new_password_hash: Some("sha256".to_string()),
             new_double_sha1_hash: Some("sha1".to_string()),
-            org_id: None,
         });
 
         assert_eq!(request.new_password_hash.as_deref(), Some("sha256"));
@@ -8369,7 +8539,6 @@ mod tests {
                 open_api_keys: vec!["key-1".into(), "key-2".into(), "key-1".into()],
                 replace_open_api_keys: true,
                 allowed_origins: Some("*".into()),
-                org_id: Some("org-1".into()),
             },
             Some(&ServiceQueryAPIEndpoint {
                 open_api_keys: Some(vec!["old-key".into()]),
@@ -8636,16 +8805,14 @@ mod tests {
                     service_id,
                     setting,
                     settings_file,
-                    org_id,
                 },
         } = command
         else {
             panic!("expected settings set");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert_eq!(setting, ["compatibility=\"24.8\"", "enable_analyzer=1"]);
         assert!(settings_file.is_none());
-        assert_eq!(org_id.as_deref(), Some("org-1"));
 
         let command = parse_service(&[
             "clickhousectl",
@@ -8654,7 +8821,7 @@ mod tests {
             "settings",
             "set",
             "svc-1",
-            "--settings-file",
+            "--file",
             "-",
         ]);
         let ServiceCommands::Settings {
@@ -8692,7 +8859,7 @@ mod tests {
             "svc-1",
             "--setting",
             "compatibility=\"24.8\"",
-            "--settings-file",
+            "--file",
             "settings.json",
         ])
         .err()

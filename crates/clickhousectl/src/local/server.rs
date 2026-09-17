@@ -324,12 +324,12 @@ pub(crate) fn mark_server_stopped_locked(name: &str, pid: u32, lock: &MetadataLo
 }
 
 /// Engine-aware liveness check.
-fn is_alive(info: &ServerInfo) -> bool {
+fn is_alive(info: &ServerInfo) -> Result<bool> {
     match info.engine {
-        Engine::Clickhouse => is_process_alive(info.pid),
+        Engine::Clickhouse => Ok(is_process_alive(info.pid)),
         Engine::Postgres => match info.container_id.as_deref() {
             Some(id) => docker::is_container_running_blocking(id),
-            None => false,
+            None => Ok(false),
         },
     }
 }
@@ -413,7 +413,7 @@ fn load_running_info_locked(name: &str, lock: &MetadataLock) -> Result<Option<Se
     let Some(info) = load_info_locked(name, lock)? else {
         return Ok(None);
     };
-    if is_alive(&info) {
+    if is_alive(&info)? {
         Ok(Some(info))
     } else {
         Ok(None)
@@ -534,7 +534,7 @@ fn server_entry_locked_with(
     let Some(mut info) = load_info_locked(name, lock)? else {
         return Ok(None);
     };
-    let mut running = is_alive(&info);
+    let mut running = is_alive(&info)?;
 
     // Keep the lock across liveness, comparison, and replacement. A restart
     // either commits before this read or waits and commits after normalization.
@@ -543,7 +543,7 @@ fn server_entry_locked_with(
         mark_server_stopped_locked(name, info.pid, lock)?;
         info =
             load_info_locked(name, lock)?.ok_or_else(|| Error::ServerNotFound(name.to_string()))?;
-        running = is_alive(&info);
+        running = is_alive(&info)?;
     }
 
     Ok(Some(ServerEntry {

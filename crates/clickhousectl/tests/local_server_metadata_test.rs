@@ -181,7 +181,11 @@ fn list_ignores_stale_temp_but_rejects_corrupt_live_entry() {
     let body: Value = serde_json::from_slice(&absent.stdout).expect("parse list JSON");
     assert_eq!(body["total_servers"], 0);
 
-    std::fs::write(directory.join("default.json"), b"{").expect("write corrupt live entry");
+    std::fs::write(
+        directory.join("default.json"),
+        b"{ private SQL and password=hunter2",
+    )
+    .expect("write corrupt live entry");
     let corrupt = run(
         project.path(),
         home.path(),
@@ -189,7 +193,35 @@ fn list_ignores_stale_temp_but_rejects_corrupt_live_entry() {
     );
     assert_eq!(corrupt.status.code(), Some(1));
     let error: Value = serde_json::from_slice(&corrupt.stderr).expect("parse metadata error JSON");
-    assert_eq!(error["error"]["code"], "io_error");
+    assert_eq!(
+        error,
+        json!({
+            "error": {
+                "code": "server_metadata_invalid",
+                "message": "Server metadata is not valid JSON",
+                "path": directory.canonicalize().unwrap().join("default.json"),
+                "guidance": [
+                    {
+                        "message": "Repair the metadata file, then retry"
+                    },
+                    {
+                        "message": "For ClickHouse, if repair is not possible, confirm that the running server is discoverable before moving the metadata file aside",
+                        "command": "clickhousectl local server list --global"
+                    },
+                    {
+                        "message": "For Postgres, verify the container state separately before moving the metadata file aside"
+                    },
+                    {
+                        "message": "Retry from the owning project; ClickHouse recovery requires the server to remain running and discoverable",
+                        "command": "clickhousectl local server list"
+                    }
+                ]
+            }
+        })
+    );
+    let stderr = String::from_utf8_lossy(&corrupt.stderr);
+    assert!(!stderr.contains("private SQL"));
+    assert!(!stderr.contains("hunter2"));
 }
 
 #[test]

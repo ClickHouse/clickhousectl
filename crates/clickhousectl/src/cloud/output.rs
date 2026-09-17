@@ -57,21 +57,26 @@ pub(crate) fn print_line(line: impl std::fmt::Display) {
     let _ = writeln!(std::io::stdout(), "{line}");
 }
 
-// ── structured errors (issue #644) ─────────────────────────────────────────
-//
-// Cloud failures are prose on stderr: `Error: <message>`. That is fine for a
-// human, but an agent asked to recover from one has to parse it. A failure
-// whose remedy is a concrete command therefore also carries a machine-readable
-// detail, emitted under `--json` in the same envelope local errors use
-// (#475/#608): one object on stderr, `{"error": {"code": ..., "message": ...}}`,
-// with a `command` a caller can run.
+// ── structured errors (issues #644, #825) ───────────────────────────────────
 
-/// Stable machine-readable code for a cloud failure that carries structured
-/// remediation. Literal wire values only, and never widened by anything the
-/// API sends: the vocabulary is this enum.
+/// Stable machine-readable code for a cloud failure. Literal wire values only,
+/// and never widened by anything the API sends: the vocabulary is this enum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CloudErrorCode {
+    AuthRequired,
+    Cancelled,
+    Io,
+    Transport,
+    #[serde(rename = "http_4xx")]
+    Http4xx,
+    #[serde(rename = "http_5xx")]
+    Http5xx,
+    SqlError,
+    ServiceStopped,
+    Timeout,
+    RateLimited,
+    Other,
     /// The Query API gateway stopped waiting for the statement (#644).
     QueryTimeout,
     /// The stored Query API key no longer exists in the organization; the
@@ -105,9 +110,35 @@ pub enum CloudErrorCode {
 }
 
 impl CloudErrorCode {
+    pub fn from_failure(kind: crate::failure::FailureKind) -> Self {
+        use crate::failure::FailureKind;
+        match kind {
+            FailureKind::Io => Self::Io,
+            FailureKind::Transport => Self::Transport,
+            FailureKind::Http4xx => Self::Http4xx,
+            FailureKind::Http5xx => Self::Http5xx,
+            FailureKind::SqlError => Self::SqlError,
+            FailureKind::ServiceStopped => Self::ServiceStopped,
+            FailureKind::Timeout => Self::Timeout,
+            FailureKind::RateLimited => Self::RateLimited,
+            FailureKind::Other => Self::Other,
+        }
+    }
+
     /// Every code, for closed-vocabulary tests.
     #[cfg(test)]
     const ALL: &'static [Self] = &[
+        Self::AuthRequired,
+        Self::Cancelled,
+        Self::Io,
+        Self::Transport,
+        Self::Http4xx,
+        Self::Http5xx,
+        Self::SqlError,
+        Self::ServiceStopped,
+        Self::Timeout,
+        Self::RateLimited,
+        Self::Other,
         Self::QueryTimeout,
         Self::QueryKeyDeleted,
         Self::QueryKeyDisabled,
@@ -150,6 +181,39 @@ pub struct CloudErrorDetail {
     pub ip_access_list: Option<Vec<String>>,
 }
 
+impl CloudErrorDetail {
+    pub fn new(code: CloudErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            host: None,
+            port: None,
+            command: None,
+            api_key_id: None,
+            ip_access_list: None,
+        }
+    }
+
+    /// Runtime errors outside the CloudClient boundary (including auth and
+    /// cancellation) use the same envelope without changing their exit codes.
+    /// Unclassified failures use `other`; never inspect their message for a code.
+    fn from_error(error: &crate::error::Error) -> std::borrow::Cow<'_, Self> {
+        use crate::error::Error;
+        let code = match error {
+            Error::CloudDetailed(detail) => return std::borrow::Cow::Borrowed(detail),
+            Error::AuthRequired(_) => CloudErrorCode::AuthRequired,
+            Error::Cancelled => CloudErrorCode::Cancelled,
+            Error::Io(_) | Error::SqlInputOpen { .. } | Error::SqlInputRead(_) => {
+                CloudErrorCode::Io
+            }
+            Error::Http(error) if error.is_timeout() => CloudErrorCode::Timeout,
+            Error::Http(_) => CloudErrorCode::Transport,
+            _ => CloudErrorCode::Other,
+        };
+        std::borrow::Cow::Owned(Self::new(code, error.to_string()))
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct CloudErrorOutput<'a> {
     error: &'a CloudErrorDetail,
@@ -160,11 +224,12 @@ struct CloudErrorOutput<'a> {
 /// Serialization failure is swallowed for the same reason [`eprint_line`]
 /// swallows a write failure: the exit code reports the outcome, so a closed
 /// stderr must not become a panic.
-pub fn print_error(detail: &CloudErrorDetail) {
+pub fn print_error(error: &crate::error::Error) {
     use std::io::Write;
+    let detail = CloudErrorDetail::from_error(error);
     let stderr = std::io::stderr();
     let mut stderr = stderr.lock();
-    if serde_json::to_writer_pretty(&mut stderr, &CloudErrorOutput { error: detail }).is_ok() {
+    if serde_json::to_writer_pretty(&mut stderr, &CloudErrorOutput { error: &detail }).is_ok() {
         let _ = writeln!(stderr);
     }
 }
@@ -631,6 +696,17 @@ mod tests {
         assert_eq!(
             wire,
             [
+                "auth_required",
+                "cancelled",
+                "io",
+                "transport",
+                "http_4xx",
+                "http_5xx",
+                "sql_error",
+                "service_stopped",
+                "timeout",
+                "rate_limited",
+                "other",
                 "query_timeout",
                 "query_key_deleted",
                 "query_key_disabled",
@@ -642,6 +718,29 @@ mod tests {
                 "resource_not_found",
             ]
         );
+    }
+
+    #[test]
+    fn cloud_runtime_errors_preserve_the_message_and_exit_code() {
+        use crate::error::Error;
+        for (error, code, exit_code) in [
+            (
+                Error::AuthRequired("login required".into()),
+                "auth_required",
+                4,
+            ),
+            (Error::Cancelled, "cancelled", 3),
+            (Error::Cloud("validation failed".into()), "other", 1),
+            (Error::Io(std::io::Error::other("read failed")), "io", 1),
+        ] {
+            let detail = CloudErrorDetail::from_error(&error);
+            let value = serde_json::to_value(CloudErrorOutput { error: &detail }).unwrap();
+            assert_eq!(
+                value,
+                json!({"error": {"code": code, "message": error.to_string()}})
+            );
+            assert_eq!(error.exit_code(), exit_code);
+        }
     }
 
     #[test]

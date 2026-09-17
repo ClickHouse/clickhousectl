@@ -457,17 +457,23 @@ impl<'a> ResourceLookup<'a> {
     }
 
     /// Whether the API rejected a request whose every path identifier is a
-    /// well-formed UUID, which is how it answers "no such resource" for a
-    /// request that has no other user-controlled input (#666).
+    /// well-formed UUID: 400 for an unknown ID (#666), or 404 for a deleted
+    /// resource (#831). Use only when the path identifies the resource itself
+    /// and the request has no other user-controlled input, never a subresource.
     ///
     /// The single implementation of that judgement: both
     /// [`CloudClient::convert_error_for_lookup`] and the callers that turn
     /// the rejection into an absent resource read it from here.
     pub fn rejected_well_formed_ids(&self, err: &clickhouse_cloud_api::Error) -> bool {
-        matches!(err, clickhouse_cloud_api::Error::Api { status: 400, .. })
-            && self
-                .identifiers()
-                .all(|id| uuid::Uuid::parse_str(id).is_ok())
+        matches!(
+            err,
+            clickhouse_cloud_api::Error::Api {
+                status: 400 | 404,
+                ..
+            }
+        ) && self
+            .identifiers()
+            .all(|id| uuid::Uuid::parse_str(id).is_ok())
     }
 
     /// Every identifier the CLI formatted into the request path.
@@ -488,6 +494,9 @@ impl<'a> ResourceLookup<'a> {
 }
 
 pub struct CloudClient {
+    organization_id: Option<String>,
+    organization_name: Option<String>,
+    resolved_organization_id: tokio::sync::OnceCell<String>,
     lib_client: clickhouse_cloud_api::Client,
     auth_mode: AuthMode,
     auth_source: AuthSource,
@@ -504,6 +513,43 @@ fn lib_base_url(cli_base_url: &str) -> String {
 }
 
 impl CloudClient {
+    /// Set the shared cloud organization scope without performing a lookup.
+    pub(super) fn with_organization_id(mut self, organization_id: Option<String>) -> Self {
+        self.organization_id = organization_id;
+        self.resolved_organization_id = tokio::sync::OnceCell::new();
+        self
+    }
+
+    pub(super) fn with_organization_name(mut self, name: Option<String>) -> Self {
+        self.organization_name = name;
+        self.resolved_organization_id = tokio::sync::OnceCell::new();
+        self
+    }
+
+    /// Resolve organization scope only when needed, caching successful detection.
+    pub(super) async fn resolve_organization_id(&self) -> Result<String> {
+        self.resolved_organization_id
+            .get_or_try_init(|| async {
+                match (&self.organization_id, &self.organization_name) {
+                    (Some(_), Some(_)) => {
+                        Err(CloudError::new("--org-id conflicts with --org-name"))
+                    }
+                    (Some(id), None) => Ok(id.clone()),
+                    (None, Some(name)) => {
+                        let rows = self.list_organizations().await?;
+                        crate::cloud::shared::select_named_id(
+                            "organization",
+                            name,
+                            rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
+                        )
+                    }
+                    (None, None) => self.get_default_org_id().await,
+                }
+            })
+            .await
+            .cloned()
+    }
+
     pub fn new(
         api_key: Option<&str>,
         api_secret: Option<&str>,
@@ -533,6 +579,9 @@ impl CloudClient {
 
         Ok(Self {
             lib_client,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode,
             auth_source: resolved.source,
             base_url: resolved.base_url,
@@ -555,6 +604,9 @@ impl CloudClient {
         }
         Self {
             lib_client,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Basic {
                 key: "test_key".into(),
                 secret: "test_secret".into(),
@@ -626,7 +678,7 @@ impl CloudClient {
     ///
     /// Conversion still goes through [`Self::convert_error_with_organization`],
     /// so the telemetry classification (#450) is inherited unchanged and
-    /// carried across the rewrite: the server did answer 400, and only the
+    /// carried across the rewrite: the original HTTP status stays intact, and only the
     /// user-facing message changes.
     pub fn convert_error_for_lookup(
         &self,
@@ -634,7 +686,10 @@ impl CloudClient {
         lookup: ResourceLookup<'_>,
     ) -> CloudError {
         let rejected_well_formed_ids = lookup.rejected_well_formed_ids(&err);
-        let error = self.convert_error_with_organization(err, Some(lookup.org_id));
+        // The lookup message supplies its own scope; leave the server detail
+        // untouched rather than appending the organization a second time.
+        let scope = (!rejected_well_formed_ids).then_some(lookup.org_id);
+        let error = self.convert_error_with_organization(err, scope);
         if !rejected_well_formed_ids {
             return error;
         }
@@ -680,13 +735,16 @@ impl CloudClient {
         org_id: Option<&str>,
     ) -> CloudError {
         match &err {
-            clickhouse_cloud_api::Error::Api { status, message } => {
+            clickhouse_cloud_api::Error::Api { status, message }
+            | clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+                status, message, ..
+            } => {
                 let mut msg = message.clone();
                 let trimmed_message = message.trim();
                 if *status == 404
                     && matches!(
                         trimmed_message.to_ascii_uppercase().as_str(),
-                        "NOT_FOUND" | "NOT FOUND"
+                        "NOT_FOUND" | "NOT FOUND" | "NOT_FOUND: NOT FOUND"
                     )
                     && let Some(org_id) = org_id
                 {
@@ -718,6 +776,21 @@ mod tests {
 
     const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
 
+    #[test]
+    fn typed_udf_dependency_error_keeps_message_and_http_classification() {
+        let error =
+            test_client().convert_error(clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+                status: 424,
+                message: "service unavailable".into(),
+                response: Box::default(),
+            });
+        assert_eq!(error.to_string(), "service unavailable");
+        assert_eq!(
+            error.failure.unwrap().kind,
+            crate::failure::FailureKind::Http4xx
+        );
+    }
+
     fn test_client() -> CloudClient {
         let http = reqwest::Client::builder().build().unwrap();
         let lib_client = clickhouse_cloud_api::Client::with_http_client(
@@ -728,6 +801,9 @@ mod tests {
         );
         CloudClient {
             lib_client,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Basic {
                 key: "test_key".into(),
                 secret: "test_secret".into(),
@@ -735,6 +811,36 @@ mod tests {
             auth_source: AuthSource::CliFlags,
             base_url: DEFAULT_BASE_URL.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn shared_organization_scope_is_lazy_and_caches_detection() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let client = CloudClient::for_tests(&server.uri(), None);
+        assert!(server.received_requests().await.unwrap().is_empty());
+        let organization = "00000000-0000-0000-0000-000000000001";
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"id": organization}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for _ in 0..2 {
+            assert_eq!(
+                client.resolve_organization_id().await.unwrap(),
+                organization
+            );
+        }
+        let client = client.with_organization_id(Some("explicit-org".into()));
+        assert_eq!(
+            client.resolve_organization_id().await.unwrap(),
+            "explicit-org"
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[test]
@@ -747,6 +853,9 @@ mod tests {
         );
         let client = CloudClient {
             lib_client,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
@@ -835,6 +944,9 @@ mod tests {
         );
         let client = CloudClient {
             lib_client,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
@@ -1149,25 +1261,72 @@ mod tests {
         assert!(err.details.is_none());
     }
 
-    /// Any other status is somebody else's story. A 404 keeps the existing
-    /// organization-scope enrichment, and a 5xx is untouched.
+    #[test]
+    fn lookup_404_refines_only_well_formed_ids_and_preserves_typed_failure() {
+        for message in ["NOT_FOUND: Not Found", "deleted", "arbitrary server detail"] {
+            for kind in [
+                ResourceKind::Service,
+                ResourceKind::PostgresService,
+                ResourceKind::Organization,
+            ] {
+                let lookup = if kind == ResourceKind::Organization {
+                    ResourceLookup::organization(NIL_UUID)
+                } else {
+                    ResourceLookup::in_org(kind, NIL_UUID, ORG_UUID)
+                };
+                let err = test_client().convert_error_for_lookup(
+                    clickhouse_cloud_api::Error::Api {
+                        status: 404,
+                        message: message.into(),
+                    },
+                    lookup,
+                );
+                let detail = err.details.expect("structured missing resource");
+                assert_eq!(detail.code, CloudErrorCode::ResourceNotFound);
+                assert!(detail.message.contains(message));
+                assert_eq!(
+                    err.failure,
+                    Some(ApiFailure::with_status(FailureKind::Http4xx, 404))
+                );
+            }
+        }
+        for (id, org_id) in [("service-name", ORG_UUID), (NIL_UUID, "org-name")] {
+            let err = test_client().convert_error_for_lookup(
+                clickhouse_cloud_api::Error::Api {
+                    status: 404,
+                    message: "original detail".into(),
+                },
+                ResourceLookup::in_org(ResourceKind::Service, id, org_id),
+            );
+            assert!(err.details.is_none());
+            assert_eq!(err.message, "original detail");
+        }
+    }
+
+    #[test]
+    fn lookup_auth_errors_are_not_missing_resources_even_with_not_found_text() {
+        for status in [401, 403] {
+            let err = test_client().convert_error_for_lookup(
+                clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "NOT_FOUND: Not Found".into(),
+                },
+                ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID),
+            );
+            assert_eq!(err.kind, CloudErrorKind::Auth);
+            assert!(err.details.is_none());
+            assert_eq!(
+                err.failure,
+                Some(ApiFailure::with_status(FailureKind::Http4xx, status))
+            );
+        }
+    }
+
+    /// Other statuses and non-API errors cannot imply a missing resource.
     #[test]
     fn lookup_leaves_every_other_status_unchanged() {
         let client = test_client();
         let lookup = || ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID);
-
-        let err = client.convert_error_for_lookup(
-            clickhouse_cloud_api::Error::Api {
-                status: 404,
-                message: "NOT_FOUND".into(),
-            },
-            lookup(),
-        );
-        assert_eq!(
-            err.message,
-            format!("NOT_FOUND: request scoped to organization {ORG_UUID}")
-        );
-        assert!(err.details.is_none());
 
         let err = client.convert_error_for_lookup(
             clickhouse_cloud_api::Error::Api {

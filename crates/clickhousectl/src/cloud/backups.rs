@@ -2,8 +2,9 @@ use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::resolve_org_id;
+use crate::cloud::shared::{NameSelector, NamedResource};
 use crate::cloud::types::DeleteResponse;
-use clap::Subcommand;
+use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     AwsBackupBucketPatchRequestV1, AwsBackupBucketPostRequestV1, AzureBackupBucketPatchRequestV1,
     AzureBackupBucketPostRequestV1, BackupBucket, BackupBucketPatchRequest,
@@ -19,10 +20,6 @@ pub enum BackupCommands {
     List {
         /// Service ID (from `cloud service list`)
         service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Get backup details
@@ -32,10 +29,6 @@ pub enum BackupCommands {
 
         /// Backup ID
         backup_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Manage a service backup bucket
@@ -59,10 +52,6 @@ pub enum BackupBucketCommands {
     Get {
         /// Service ID (from `cloud service list`)
         service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Create a backup bucket
@@ -71,12 +60,8 @@ pub enum BackupBucketCommands {
         service_id: String,
 
         /// Provider-specific JSON file, or - to read from stdin
-        #[arg(long, value_name = "PATH", alias = "config")]
+        #[arg(long = "file", value_name = "PATH", aliases = ["config-file", "config"])]
         config_file: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update a backup bucket
@@ -85,22 +70,14 @@ pub enum BackupBucketCommands {
         service_id: String,
 
         /// Provider-specific update JSON file, or - to read from stdin
-        #[arg(long, value_name = "PATH", alias = "config")]
+        #[arg(long = "file", value_name = "PATH", aliases = ["config-file", "config"])]
         config_file: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete a backup bucket
     Delete {
         /// Service ID (from `cloud service list`)
         service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -120,17 +97,26 @@ pub enum BackupConfigCommands {
     /// Get the backup configuration
     Get {
         /// Service ID (from `cloud service list`)
-        service_id: String,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        service_id: NameSelector,
     },
 
     /// Update the backup configuration
+    #[command(group(
+        ArgGroup::new("backup_config_change")
+            .required(true)
+            .multiple(true)
+            .args([
+                "backup_period_hours",
+                "backup_retention_period_hours",
+                "backup_start_time",
+                "clear_backup_start_time",
+            ])
+    ))]
     Update {
         /// Service ID (from `cloud service list`)
-        service_id: String,
+        #[command(flatten)]
+        service_id: NameSelector,
 
         /// Interval in hours between backups
         ///
@@ -138,7 +124,7 @@ pub enum BackupConfigCommands {
         #[arg(long)]
         backup_period_hours: Option<u32>,
 
-        /// Retention period in hours
+        /// Retention in hours (24-1080, in multiples of 24)
         #[arg(long)]
         backup_retention_period_hours: Option<u32>,
 
@@ -155,10 +141,6 @@ pub enum BackupConfigCommands {
         /// --backup-period-hours; conflicts with --backup-start-time.
         #[arg(long, conflicts_with = "backup_start_time")]
         clear_backup_start_time: bool,
-
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -173,14 +155,11 @@ impl BackupConfigCommands {
 
 pub async fn run(client: &CloudClient, command: BackupCommands, json: bool) -> CloudResult<()> {
     match command {
-        BackupCommands::List { service_id, org_id } => {
-            backup_list(client, &service_id, org_id.as_deref(), json).await
-        }
+        BackupCommands::List { service_id } => backup_list(client, &service_id, json).await,
         BackupCommands::Get {
             service_id,
             backup_id,
-            org_id,
-        } => backup_get(client, &service_id, &backup_id, org_id.as_deref(), json).await,
+        } => backup_get(client, &service_id, &backup_id, json).await,
         BackupCommands::Bucket(command) => run_bucket(client, command, json).await,
     }
 }
@@ -191,29 +170,27 @@ async fn run_bucket(
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        BackupBucketCommands::Get { service_id, org_id } => {
-            backup_bucket_get(client, &service_id, org_id.as_deref(), json).await
+        BackupBucketCommands::Get { service_id } => {
+            backup_bucket_get(client, &service_id, json).await
         }
         BackupBucketCommands::Create {
             service_id,
             config_file,
-            org_id,
         } => {
             let request =
                 build_backup_bucket_create_request(read_config_value(&config_file)?, &config_file)?;
-            backup_bucket_create(client, &service_id, request, org_id.as_deref(), json).await
+            backup_bucket_create(client, &service_id, request, json).await
         }
         BackupBucketCommands::Update {
             service_id,
             config_file,
-            org_id,
         } => {
             let request =
                 build_backup_bucket_update_request(read_config_value(&config_file)?, &config_file)?;
-            backup_bucket_update(client, &service_id, request, org_id.as_deref(), json).await
+            backup_bucket_update(client, &service_id, request, json).await
         }
-        BackupBucketCommands::Delete { service_id, org_id } => {
-            backup_bucket_delete(client, &service_id, org_id.as_deref(), json).await
+        BackupBucketCommands::Delete { service_id } => {
+            backup_bucket_delete(client, &service_id, json).await
         }
     }
 }
@@ -224,8 +201,13 @@ pub async fn run_config(
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        BackupConfigCommands::Get { service_id, org_id } => {
-            backup_config_get(client, &service_id, org_id.as_deref(), json).await
+        BackupConfigCommands::Get { service_id } => {
+            backup_config_get(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                json,
+            )
+            .await
         }
         BackupConfigCommands::Update {
             service_id,
@@ -233,16 +215,20 @@ pub async fn run_config(
             backup_retention_period_hours,
             backup_start_time,
             clear_backup_start_time,
-            org_id,
         } => {
             let options = BackupConfigUpdateOptions {
                 backup_period_hours,
                 backup_retention_period_hours,
                 backup_start_time,
                 clear_backup_start_time,
-                org_id,
             };
-            backup_config_update(client, &service_id, options, json).await
+            backup_config_update(
+                client,
+                &service_id.resolve(client, NamedResource::Service).await?,
+                options,
+                json,
+            )
+            .await
         }
     }
 }
@@ -253,7 +239,6 @@ struct BackupConfigUpdateOptions {
     backup_retention_period_hours: Option<u32>,
     backup_start_time: Option<String>,
     clear_backup_start_time: bool,
-    org_id: Option<String>,
 }
 
 fn parse_backup_start_time(value: &str) -> Result<String, String> {
@@ -382,13 +367,8 @@ fn build_backup_bucket_update_request(
     }
 }
 
-async fn backup_list(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn backup_list(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let backups = client.list_backups(&org_id, service_id).await?;
 
     if json {
@@ -415,7 +395,7 @@ async fn backup_list(
                 id: or_absent(backup.id),
                 status: or_absent(backup.status.as_ref()),
                 size: or_absent(backup.size_in_bytes.map(format_bytes)),
-                created: or_absent(backup.started_at.map(|at| at.to_rfc3339())),
+                created: format_backup_created(backup.started_at),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -427,10 +407,9 @@ async fn backup_get(
     client: &CloudClient,
     service_id: &str,
     backup_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let backup = client.get_backup(&org_id, service_id, backup_id).await?;
 
     if json {
@@ -441,13 +420,8 @@ async fn backup_get(
     Ok(())
 }
 
-async fn backup_bucket_get(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn backup_bucket_get(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let bucket = client.get_backup_bucket(&org_id, service_id).await?;
 
     if json {
@@ -462,10 +436,9 @@ async fn backup_bucket_create(
     client: &CloudClient,
     service_id: &str,
     request: BackupBucketPostRequest,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let bucket = client
         .create_backup_bucket(&org_id, service_id, &request)
         .await?;
@@ -482,10 +455,9 @@ async fn backup_bucket_update(
     client: &CloudClient,
     service_id: &str,
     request: BackupBucketPatchRequest,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let bucket = client
         .update_backup_bucket(&org_id, service_id, &request)
         .await?;
@@ -501,10 +473,9 @@ async fn backup_bucket_update(
 async fn backup_bucket_delete(
     client: &CloudClient,
     service_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let response = client.delete_backup_bucket(&org_id, service_id).await?;
 
     if json {
@@ -515,13 +486,8 @@ async fn backup_bucket_delete(
     Ok(())
 }
 
-async fn backup_config_get(
-    client: &CloudClient,
-    service_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn backup_config_get(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let config = client.get_backup_config(&org_id, service_id).await?;
 
     if json {
@@ -539,7 +505,7 @@ async fn backup_config_update(
     json: bool,
 ) -> CloudResult<()> {
     let request = build_backup_config_update_request(&options)?;
-    let org_id = resolve_org_id(client, options.org_id.as_deref()).await?;
+    let org_id = resolve_org_id(client).await?;
 
     // Only a start time being *set* is measured against the stored period.
     // Clearing one is exactly how a service escapes an incompatible period, so
@@ -589,6 +555,10 @@ fn format_bytes(bytes: f64) -> String {
     } else {
         format!("{} B", bytes)
     }
+}
+
+fn format_backup_created(value: Option<chrono::DateTime<chrono::Utc>>) -> String {
+    or_absent(value.map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)))
 }
 
 impl CloudClient {
@@ -706,39 +676,49 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "backup", "bucket", "create", "svc-1"],
+            "config_file",
+            &["config-file", "config"],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "backup", "bucket", "update", "svc-1"],
+            "config_file",
+            &["config-file", "config"],
+        );
+    }
+
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
 
-    #[derive(Parser)]
-    struct BackupCli {
-        #[command(subcommand)]
-        command: BackupCommands,
-    }
-
-    #[derive(Parser)]
-    struct BackupConfigCli {
-        #[command(subcommand)]
-        command: BackupConfigCommands,
-    }
-
     fn parse_backup(args: &[&str]) -> BackupCommands {
-        assert_eq!(args.get(1), Some(&"cloud"));
-        assert_eq!(args.get(2), Some(&"backup"));
-        BackupCli::try_parse_from(std::iter::once(args[0]).chain(args.iter().skip(3).copied()))
-            .expect("parse")
-            .command
+        let cli = Cli::try_parse_from(args).expect("parse");
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
+        let crate::cloud::cli::CloudCommands::Backup { command } = cloud.command else {
+            panic!("expected backup command");
+        };
+        command
     }
 
     fn parse_backup_config(args: &[&str]) -> BackupConfigCommands {
-        assert_eq!(args.get(1), Some(&"cloud"));
-        assert_eq!(args.get(2), Some(&"service"));
-        assert_eq!(args.get(3), Some(&"backup-config"));
-        BackupConfigCli::try_parse_from(
-            std::iter::once(args[0]).chain(args.iter().skip(4).copied()),
-        )
-        .expect("parse")
-        .command
+        let cli = Cli::try_parse_from(args).expect("parse");
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
+        let crate::cloud::cli::CloudCommands::Service { command } = cloud.command else {
+            panic!("expected service command");
+        };
+        let crate::cloud::cli::ServiceCommands::BackupConfig { command } = command else {
+            panic!("expected backup-config command");
+        };
+        command
     }
 
     #[test]
@@ -773,22 +753,20 @@ mod tests {
             backup_retention_period_hours,
             backup_start_time,
             clear_backup_start_time,
-            org_id,
         } = command
         else {
             panic!("expected backup-config update");
         };
-        assert_eq!(service_id, "svc-1");
+        assert_eq!(service_id.id.as_deref(), Some("svc-1"));
         assert_eq!(backup_period_hours, Some(48));
         assert_eq!(backup_retention_period_hours, Some(336));
         assert_eq!(backup_start_time.as_deref(), Some("03:00"));
         assert!(!clear_backup_start_time);
-        assert!(org_id.is_none());
     }
 
     #[test]
-    fn parses_backup_config_update_defaults() {
-        let cli = Cli::try_parse_from([
+    fn rejects_backup_config_update_without_changes() {
+        let error = Cli::try_parse_from([
             "clickhousectl",
             "cloud",
             "service",
@@ -796,33 +774,40 @@ mod tests {
             "update",
             "svc-1",
         ])
-        .unwrap();
-        let Commands::Cloud(args) = cli.command else {
-            panic!("expected cloud command");
-        };
-        let crate::cloud::cli::CloudCommands::Service { command } = args.command else {
-            panic!("expected service command");
-        };
-        let crate::cloud::cli::ServiceCommands::BackupConfig { command } = command else {
-            panic!("expected backup-config command");
-        };
-        let crate::cloud::cli::BackupConfigCommands::Update {
-            service_id,
+        .err()
+        .expect("empty backup configuration update should be rejected");
+
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn parses_backup_config_update_with_explicit_zero_values() {
+        let command = parse_backup_config(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "backup-config",
+            "update",
+            "svc-1",
+            "--backup-period-hours",
+            "0",
+            "--backup-retention-period-hours",
+            "0",
+        ]);
+        let BackupConfigCommands::Update {
             backup_period_hours,
             backup_retention_period_hours,
-            backup_start_time,
-            clear_backup_start_time,
-            org_id,
+            ..
         } = command
         else {
             panic!("expected backup-config update");
         };
-        assert_eq!(service_id, "svc-1");
-        assert!(backup_period_hours.is_none());
-        assert!(backup_retention_period_hours.is_none());
-        assert!(backup_start_time.is_none());
-        assert!(!clear_backup_start_time);
-        assert!(org_id.is_none());
+
+        assert_eq!(backup_period_hours, Some(0));
+        assert_eq!(backup_retention_period_hours, Some(0));
     }
 
     #[test]
@@ -835,11 +820,27 @@ mod tests {
         let crate::cloud::cli::CloudCommands::Backup { command } = args.command else {
             panic!("expected backup command");
         };
-        let crate::cloud::cli::BackupCommands::List { service_id, org_id } = command else {
+        let crate::cloud::cli::BackupCommands::List { service_id } = command else {
             panic!("expected backup list");
         };
         assert_eq!(service_id, "svc-1");
-        assert!(org_id.is_none());
+    }
+
+    #[test]
+    fn formats_backup_created_as_utc_with_subseconds_and_missing_values() {
+        let offset = chrono::DateTime::parse_from_rfc3339("2026-09-15T10:34:56+02:00")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(format_backup_created(Some(offset)), "2026-09-15T08:34:56Z");
+
+        let subsecond = chrono::DateTime::parse_from_rfc3339("2026-09-15T08:34:56.123Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            format_backup_created(Some(subsecond)),
+            "2026-09-15T08:34:56.123Z"
+        );
+        assert_eq!(format_backup_created(None), "-");
     }
 
     #[test]
@@ -906,6 +907,8 @@ mod tests {
                 "backup-config",
                 "update",
                 "svc-1",
+                "--backup-retention-period-hours",
+                "0",
             ])
             .is_write()
         );
@@ -922,7 +925,7 @@ mod tests {
                     "bucket",
                     action,
                     "svc-1",
-                    "--config-file",
+                    "--file",
                     "bucket.json",
                 ])
                 .is_write()
@@ -950,7 +953,7 @@ mod tests {
             "bucket",
             "create",
             "svc-1",
-            "--config-file",
+            "--file",
             "-",
             "--org-id",
             "org-1",
@@ -965,14 +968,12 @@ mod tests {
         let BackupCommands::Bucket(BackupBucketCommands::Create {
             service_id,
             config_file,
-            org_id,
         }) = command
         else {
             panic!("expected backup bucket create");
         };
         assert_eq!(service_id, "svc-1");
         assert_eq!(config_file, "-");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -1106,7 +1107,6 @@ mod tests {
             backup_retention_period_hours: Some(336),
             backup_start_time: Some("03:00".to_string()),
             clear_backup_start_time: false,
-            org_id: None,
         })
         .unwrap();
         assert_eq!(maximal.backup_period_in_hours, Some(48.0));

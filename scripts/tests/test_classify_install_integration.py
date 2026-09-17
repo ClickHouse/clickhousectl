@@ -135,6 +135,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/tests/local_client_selectors_test.rs",
                     "crates/clickhousectl/tests/local_client_output_contract_test.rs",
                     "crates/clickhousectl/tests/local_docker_diagnostics_test.rs",
+                    "crates/clickhousectl/tests/local_docker_status_test.rs",
                     "crates/clickhousectl/tests/local_docker_pull_progress_test.rs",
                     "crates/clickhousectl/tests/local_init_json_test.rs",
                     "crates/clickhousectl/tests/local_postgres_client_input_test.rs",
@@ -153,6 +154,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/tests/local_server_watchdog_pid_test.rs",
                     "crates/clickhousectl/tests/local_structured_errors_test.rs",
                     "crates/clickhousectl/tests/telemetry_test.rs",
+                    "crates/clickhousectl/tests/skills_usage_test.rs",
                 }
             ),
         )

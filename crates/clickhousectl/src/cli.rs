@@ -3,10 +3,27 @@ use clap::{Args, Parser, Subcommand};
 use crate::cloud::cli::CloudArgs;
 pub use crate::local::cli::LocalArgs;
 
+// Keep command options below this block; clap's generated --help uses rank 999.
+pub(crate) mod help_order {
+    pub const ORG_ID: usize = 900;
+    pub const ORG_NAME: usize = 901;
+    pub const API_KEY: usize = 902;
+    pub const API_SECRET: usize = 903;
+    pub const URL: usize = 904;
+    pub const JSON: usize = 905;
+    pub const DEBUG: usize = 906;
+}
+
 #[derive(Parser)]
 #[command(name = "clickhousectl")]
 #[command(about = "The official CLI for ClickHouse: local and cloud", long_about = None)]
-#[command(version)]
+#[command(version, disable_version_flag = true)]
+#[command(arg(clap::Arg::new("version")
+    .short('V')
+    .long("version")
+    .action(clap::ArgAction::Version)
+    .help("Print version")
+    .display_order(0)))]
 #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Cloud auth: OAuth (`cloud auth login`) is read-only; API keys
@@ -33,8 +50,8 @@ CONTEXT FOR AGENTS:
     /// Manage ClickHouse and Postgres in ClickHouse Cloud
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Credential precedence, first wins: --api-key/--api-secret flags, .clickhouse/credentials.json,
-  CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth tokens.
+  Credentials, first wins: --api-key/--api-secret, saved API keys,
+  CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth.
   API keys are read+write; OAuth is read-only and every write command fails on it.
   `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
   delete/remove act immediately — there is no confirmation prompt.
@@ -69,6 +86,10 @@ CONTEXT FOR AGENTS:
 #[cfg(feature = "telemetry")]
 #[derive(Args, Debug)]
 pub struct TelemetryArgs {
+    /// Output as JSON
+    #[arg(long, global = true, display_order = help_order::JSON)]
+    pub json: bool,
+
     #[command(subcommand)]
     pub command: TelemetryCommands,
 }
@@ -95,6 +116,10 @@ pub enum TelemetryCommands {
 
 #[derive(Args, Debug)]
 pub struct SkillsArgs {
+    /// Output as JSON
+    #[arg(long, display_order = help_order::JSON)]
+    pub json: bool,
+
     /// Install into specific agents (repeatable, comma-separated)
     #[arg(
         long = "agent",
@@ -117,8 +142,24 @@ pub struct SkillsArgs {
     pub global: bool,
 }
 
+impl SkillsArgs {
+    pub fn selection_validation_error(&self, has_terminal: bool) -> Option<&'static str> {
+        if !has_terminal && !self.all && !self.detected_only && self.agents.is_empty() {
+            Some(
+                "Interactive selection requires a TTY. Use --all, --detected-only, or --agent <AGENT> in non-interactive environments.",
+            )
+        } else {
+            None
+        }
+    }
+}
+
 #[derive(Args, Debug)]
 pub struct UpdateArgs {
+    /// Output as JSON
+    #[arg(long, display_order = help_order::JSON)]
+    pub json: bool,
+
     /// Check for updates without installing
     #[arg(long)]
     pub check: bool,
@@ -238,7 +279,15 @@ mod tests {
 
     #[test]
     fn shared_flags_have_identical_help_at_every_declaration() {
-        let shared = ["api-key", "api-secret", "url", "org-id", "json", "debug"];
+        let shared = [
+            "api-key",
+            "api-secret",
+            "url",
+            "org-id",
+            "org-name",
+            "json",
+            "debug",
+        ];
         let mut declarations = BTreeMap::new();
         let mut failures = Vec::new();
         // Inspect declarations before build() propagates global flags to descendants.
@@ -263,6 +312,231 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
+    // Read only option identities from rendered option rows, never their descriptions.
+    fn rendered_options(command: &clap::Command, long: bool) -> Vec<String> {
+        let mut command = command.clone();
+        let help = if long {
+            command.render_long_help()
+        } else {
+            command.render_help()
+        };
+        help.to_string()
+            .lines()
+            .skip_while(|line| *line != "Options:")
+            .skip(1)
+            .take_while(|line| line.is_empty() || line.starts_with(' '))
+            .filter_map(|line| {
+                let mut words = line.split_whitespace();
+                let first = words.next()?;
+                let flag = if first.starts_with("--") {
+                    first
+                } else if first.starts_with('-') && first.ends_with(',') {
+                    words.next()?
+                } else {
+                    return None;
+                };
+                let flag = flag.strip_prefix("--")?.trim_end_matches(',');
+                command
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some(flag))
+                    .then(|| flag.to_owned())
+            })
+            .collect()
+    }
+
+    fn with_hidden_url(command: clap::Command) -> clap::Command {
+        command
+            .mut_args(|arg| {
+                if arg.get_long() == Some("url") {
+                    arg.hide(true)
+                } else {
+                    arg
+                }
+            })
+            .mut_subcommands(with_hidden_url)
+    }
+
+    #[test]
+    fn built_help_tree_keeps_shared_options_in_a_final_ordered_block() {
+        let shared = [
+            "org-id",
+            "org-name",
+            "api-key",
+            "api-secret",
+            "url",
+            "json",
+            "debug",
+            "help",
+        ];
+        let mut tree = Cli::command();
+        tree.build();
+        // Exercise release visibility in debug tests too. A release test run also
+        // checks the actual cfg-controlled URL declaration below.
+        for tree in [tree.clone(), with_hidden_url(tree)] {
+            visit_commands(&tree, "clickhousectl", &mut |command, path| {
+                if command.is_hide_set() {
+                    return;
+                }
+                for long in [false, true] {
+                    let actual = rendered_options(command, long);
+                    let visible: Vec<_> = command
+                        .get_arguments()
+                        .filter(|arg| {
+                            !arg.is_hide_set()
+                                && !(if long {
+                                    arg.is_hide_long_help_set()
+                                } else {
+                                    arg.is_hide_short_help_set()
+                                })
+                                && arg.get_long().is_some()
+                        })
+                        .collect();
+                    assert_eq!(actual.len(), visible.len(), "{path}, long={long}");
+                    for arg in &visible {
+                        let flag = arg.get_long().unwrap();
+                        assert!(actual.iter().any(|item| item == flag), "{path}: --{flag}");
+                        if !shared.contains(&flag) {
+                            assert!(
+                                arg.get_display_order() < help_order::ORG_ID,
+                                "{path}: domain option --{flag} overlaps shared display ranks"
+                            );
+                        }
+                    }
+                    let expected: Vec<_> = shared
+                        .iter()
+                        .copied()
+                        .filter(|flag| visible.iter().any(|arg| arg.get_long() == Some(flag)))
+                        .collect();
+                    assert!(
+                        actual.ends_with(
+                            &expected
+                                .iter()
+                                .map(|flag| (*flag).to_owned())
+                                .collect::<Vec<_>>()
+                        ),
+                        "{path}, long={long}: expected final block {expected:?}, got {actual:?}"
+                    );
+                    // Hidden compatibility aliases must never become option rows.
+                    for arg in command.get_arguments().filter(|arg| arg.is_hide_set()) {
+                        if let Some(flag) = arg.get_long() {
+                            assert!(!actual.iter().any(|item| item == flag), "{path}: --{flag}");
+                        }
+                    }
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn built_help_tree_preserves_inherited_flags_and_url_visibility() {
+        let mut tree = Cli::command();
+        tree.build();
+        visit_commands(&tree, "clickhousectl", &mut |command, path| {
+            // Generated help subcommands describe navigation, not command execution.
+            if path.split_whitespace().any(|part| part == "help") {
+                return;
+            }
+            let required: &[&str] = if path.starts_with("clickhousectl cloud") {
+                &[
+                    "org-id",
+                    "org-name",
+                    "api-key",
+                    "api-secret",
+                    "url",
+                    "json",
+                    "debug",
+                ]
+            } else if path.starts_with("clickhousectl local") {
+                &["json"]
+            } else {
+                &[]
+            };
+            for flag in required {
+                let arg = command
+                    .get_arguments()
+                    .find(|arg| arg.get_long() == Some(flag))
+                    .unwrap_or_else(|| panic!("{path}: missing inherited --{flag}"));
+                if *flag == "url" {
+                    assert_eq!(arg.is_hide_set(), !cfg!(debug_assertions), "{path}");
+                }
+            }
+        });
+    }
+
+    #[test]
+    fn local_clients_share_common_argument_order_in_both_help_forms() {
+        let mut tree = Cli::command();
+        tree.build();
+        let local = tree.find_subcommand("local").unwrap();
+        let clients = [
+            local.find_subcommand("client").unwrap(),
+            local
+                .find_subcommand("postgres")
+                .unwrap()
+                .find_subcommand("client")
+                .unwrap(),
+        ];
+        for client in clients {
+            let name = client
+                .get_arguments()
+                .find(|arg| arg.get_id() == "name")
+                .unwrap();
+            assert!(name.is_positional());
+            assert_eq!(name.get_index(), Some(1));
+            let alias = client
+                .get_arguments()
+                .find(|arg| arg.get_id() == "name_flag")
+                .unwrap();
+            assert!(alias.is_hide_set());
+            assert_eq!(alias.get_long(), Some("name"));
+            assert_eq!(alias.get_short(), Some('n'));
+            for long in [false, true] {
+                assert_eq!(
+                    rendered_options(client, long),
+                    [
+                        "host",
+                        "port",
+                        "version",
+                        "query",
+                        "queries-file",
+                        "json",
+                        "help"
+                    ]
+                );
+                let help = if long {
+                    client.clone().render_long_help()
+                } else {
+                    client.clone().render_help()
+                }
+                .to_string();
+                let arguments = help
+                    .split("Arguments:")
+                    .nth(1)
+                    .expect("positional arguments heading")
+                    .split("Options:")
+                    .next()
+                    .unwrap();
+                assert!(
+                    arguments
+                        .lines()
+                        .any(|line| line.trim_start().starts_with("[NAME]"))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn version_flags_preserve_the_version_action() {
+        for flag in ["-V", "--version"] {
+            let error = Cli::try_parse_from(["clickhousectl", flag])
+                .err()
+                .expect("version flag should exit before dispatch");
+            assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+            assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
+            assert_eq!(error.exit_code(), 0);
+        }
+    }
+
     #[test]
     fn unknown_command_exits_with_a_usage_error() {
         assert_eq!(
@@ -272,6 +546,32 @@ mod tests {
                 .exit_code(),
             2
         );
+    }
+
+    #[test]
+    fn skills_requires_selection_only_without_a_terminal() {
+        for flags in [
+            vec![],
+            vec!["--global"],
+            vec!["--all"],
+            vec!["--detected-only"],
+            vec!["--agent", "claude"],
+        ] {
+            let cli = Cli::try_parse_from(
+                ["clickhousectl", "skills"]
+                    .into_iter()
+                    .chain(flags.iter().copied()),
+            )
+            .unwrap();
+            let Commands::Skills(args) = cli.command else {
+                panic!("skills command");
+            };
+            assert!(args.selection_validation_error(true).is_none());
+            assert_eq!(
+                args.selection_validation_error(false).is_some(),
+                flags.is_empty() || flags == ["--global"]
+            );
+        }
     }
 
     #[test]
@@ -364,5 +664,66 @@ mod tests {
     #[test]
     fn telemetry_requires_a_subcommand() {
         assert!(Cli::try_parse_from(["clickhousectl", "telemetry"]).is_err());
+    }
+
+    #[test]
+    fn management_commands_parse_json_without_changing_defaults() {
+        for json in [false, true] {
+            for command in ["skills", "update"] {
+                let mut argv = vec!["clickhousectl", command];
+                if json {
+                    argv.push("--json");
+                }
+                let cli = Cli::try_parse_from(argv).unwrap();
+                match cli.command {
+                    Commands::Skills(args) => {
+                        assert_eq!(args.json, json);
+                        assert!(!args.all && !args.detected_only && !args.global);
+                        assert!(args.agents.is_empty());
+                    }
+                    Commands::Update(args) => {
+                        assert_eq!(args.json, json);
+                        assert!(!args.check);
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        let cli = Cli::try_parse_from(["clickhousectl", "update", "--check", "--json"]).unwrap();
+        let Commands::Update(args) = cli.command else {
+            panic!("update")
+        };
+        assert!(args.check && args.json);
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "skills",
+            "--agent",
+            "claude,codex",
+            "--global",
+            "--json",
+        ])
+        .unwrap();
+        let Commands::Skills(args) = cli.command else {
+            panic!("skills")
+        };
+        assert!(args.global && args.json);
+        assert_eq!(args.agents, ["claude", "codex"]);
+    }
+
+    #[cfg(feature = "telemetry")]
+    #[test]
+    fn telemetry_json_is_available_before_and_after_each_subcommand() {
+        for command in ["status", "enable", "disable"] {
+            for argv in [
+                vec!["clickhousectl", "telemetry", "--json", command],
+                vec!["clickhousectl", "telemetry", command, "--json"],
+            ] {
+                let cli = Cli::try_parse_from(argv).unwrap();
+                let Commands::Telemetry(args) = cli.command else {
+                    panic!("telemetry")
+                };
+                assert!(args.json);
+            }
+        }
     }
 }

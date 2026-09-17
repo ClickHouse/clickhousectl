@@ -1,5 +1,223 @@
 use clickhouse_cloud_api::models::*;
 
+#[test]
+fn snapshot_configuration_tolerates_missing_null_and_extra_fields() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "enabled": null, "gap": null, "timeFrame": null, "futureProperty": 1
+        }),
+    ] {
+        let configuration: SnapshotConfiguration = serde_json::from_value(wire).unwrap();
+        assert_eq!(configuration, SnapshotConfiguration::default());
+        assert_eq!(
+            serde_json::to_value(configuration).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[test]
+fn snapshot_configuration_preserves_false_zero_and_fractional_numbers() {
+    let configuration: SnapshotConfiguration = serde_json::from_value(serde_json::json!({
+        "enabled": false, "gap": 0, "timeFrame": 1440.5
+    }))
+    .unwrap();
+    assert_eq!(configuration.enabled, Some(false));
+    assert_eq!(configuration.gap, Some(0.0));
+    assert_eq!(configuration.time_frame, Some(1440.5));
+    assert_eq!(
+        serde_json::to_value(configuration).unwrap(),
+        serde_json::json!({"enabled": false, "gap": 0.0, "timeFrame": 1440.5})
+    );
+}
+
+#[test]
+fn snapshot_configuration_patch_omits_none_and_preserves_provided_values() {
+    for (request, expected) in [
+        (
+            SnapshotConfigurationPatchRequest::default(),
+            serde_json::json!({}),
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            serde_json::json!({"enabled": false}),
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: None,
+                gap: Some(0.0),
+                time_frame: Some(1440.5),
+            },
+            serde_json::json!({"gap": 0.0, "timeFrame": 1440.5}),
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(true),
+                gap: Some(30.0),
+                time_frame: Some(1440.0),
+            },
+            serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+        ),
+    ] {
+        let serialized = serde_json::to_value(&request).unwrap();
+        assert_eq!(serialized, expected);
+        assert_eq!(
+            serde_json::from_value::<SnapshotConfigurationPatchRequest>(serialized).unwrap(),
+            request
+        );
+    }
+}
+
+#[test]
+fn snapshot_round_trips_complete_response_and_unknown_bucket_properties() {
+    let value = serde_json::json!({
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "status": "done", "type": "full", "serviceId": "svc-1",
+        "startedAt": "2026-09-15T01:00:00Z", "finishedAt": "2026-09-15T01:00:01Z",
+        "sizeInBytes": 2048.0, "durationInSeconds": 1.5, "backupName": "snapshot-1",
+        "bucket": {"bucketProvider": "FUTURE", "newProperty": {"region": "test"}}
+    });
+    let snapshot: Snapshot = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(snapshot.status, Some(SnapshotStatus::Done));
+    assert_eq!(snapshot.r#type, Some(SnapshotType::Full));
+    assert_eq!(snapshot.duration_in_seconds, Some(1.5));
+    assert_eq!(serde_json::to_value(snapshot).unwrap(), value);
+}
+
+#[test]
+fn snapshot_tolerates_missing_null_and_extra_fields() {
+    let dropped: Snapshot = serde_json::from_str("{}").unwrap();
+    let nulled: Snapshot = serde_json::from_value(serde_json::json!({
+        "id": null, "status": null, "type": null, "serviceId": null,
+        "startedAt": null, "finishedAt": null, "sizeInBytes": null,
+        "durationInSeconds": null, "backupName": null, "bucket": null,
+        "futureProperty": 1
+    }))
+    .unwrap();
+    assert_eq!(dropped, Snapshot::default());
+    assert_eq!(nulled, Snapshot::default());
+    assert_eq!(serde_json::to_value(nulled).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn snapshot_enums_preserve_known_and_unknown_values() {
+    for (wire, expected) in [
+        ("done", SnapshotStatus::Done),
+        ("error", SnapshotStatus::Error),
+        ("in_progress", SnapshotStatus::InProgress),
+        ("throttled", SnapshotStatus::Throttled),
+        ("queued", SnapshotStatus::Unknown("queued".to_string())),
+    ] {
+        let parsed: SnapshotStatus = serde_json::from_value(serde_json::json!(wire)).unwrap();
+        assert_eq!(parsed, expected);
+        assert_eq!(parsed.to_string(), wire);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+    for (wire, expected) in [
+        ("full", SnapshotType::Full),
+        ("future", SnapshotType::Unknown("future".to_string())),
+    ] {
+        let parsed: SnapshotType = serde_json::from_value(serde_json::json!(wire)).unwrap();
+        assert_eq!(parsed, expected);
+        assert_eq!(parsed.to_string(), wire);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn clickpipe_new_request_fields_preserve_omission_and_wire_names() {
+    let mut request = ClickPipePostRequest::default();
+    assert!(
+        serde_json::to_value(&request)
+            .unwrap()
+            .get("startPaused")
+            .is_none()
+    );
+    request.start_paused = true;
+    assert_eq!(serde_json::to_value(&request).unwrap()["startPaused"], true);
+
+    let mut table = ClickPipeDestinationTableDefinition::default();
+    assert!(serde_json::to_value(&table).unwrap().get("ttl").is_none());
+    table.ttl = "event_time + INTERVAL 30 DAY".to_string();
+    let serialized = serde_json::to_value(&table).unwrap();
+    assert_eq!(serialized["ttl"], table.ttl);
+
+    let mut settings = ClickPipeMongoDBPipeSettings::default();
+    assert!(
+        serde_json::to_value(&settings)
+            .unwrap()
+            .get("initialLoadParallelism")
+            .is_none()
+    );
+    settings.initial_load_parallelism = Some(4);
+    let serialized = serde_json::to_value(&settings).unwrap();
+    assert_eq!(serialized["initialLoadParallelism"], 4);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMongoDBPipeSettings>(serialized).unwrap(),
+        settings
+    );
+}
+
+#[test]
+fn clickpipe_new_response_fields_tolerate_missing_and_null() {
+    for value in [serde_json::json!({}), serde_json::json!({"ttl": null})] {
+        let response: ClickPipeDestinationTableDefinitionResponse =
+            serde_json::from_value(value).unwrap();
+        assert_eq!(response.ttl, None);
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({"initialLoadParallelism": null}),
+    ] {
+        let response: ClickPipeMongoDBPipeSettingsResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(response.initial_load_parallelism, None);
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    let table: ClickPipeDestinationTableDefinitionResponse =
+        serde_json::from_value(serde_json::json!({"ttl": "event_time + INTERVAL 30 DAY"})).unwrap();
+    assert_eq!(table.ttl.as_deref(), Some("event_time + INTERVAL 30 DAY"));
+    let settings: ClickPipeMongoDBPipeSettingsResponse =
+        serde_json::from_value(serde_json::json!({"initialLoadParallelism": 4})).unwrap();
+    assert_eq!(settings.initial_load_parallelism, Some(4));
+}
+
+#[test]
+fn udf_argument_output_preserves_response_tolerance_and_old_name() {
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({"name": null, "type": null}),
+    ] {
+        let argument: UdfArgumentOutput = serde_json::from_value(value).unwrap();
+        let old_name: UdfArgumentResponse = argument.clone();
+        assert_eq!(old_name, UdfArgumentOutput::default());
+        assert_eq!(
+            serde_json::to_value(argument).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    let value = serde_json::json!({"name": "x", "type": "UInt64"});
+    let argument: UdfArgumentOutput = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(argument).unwrap(), value);
+    for invalid in [
+        serde_json::json!({}),
+        serde_json::json!({"name": "x"}),
+        serde_json::json!({"type": "UInt64"}),
+    ] {
+        assert!(serde_json::from_value::<UdfArgument>(invalid).is_err());
+    }
+}
+
 /// Shared assertion for the discriminated-union `Unknown` catch-all: an
 /// unrecognized payload must deserialize into the union's lossless `Unknown`
 /// variant (confirmed by `is_unknown`) and re-serialize to the byte-identical

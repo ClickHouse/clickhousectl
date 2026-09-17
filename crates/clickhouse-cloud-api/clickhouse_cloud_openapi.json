@@ -1,11 +1,11 @@
 {
-  "openapi": "3.1.2",
+  "openapi": "3.1.1",
   "info": {
     "title": "OpenAPI spec for ClickHouse Cloud",
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1108755",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1141075",
       "email": "support@clickhouse.com"
     }
   },
@@ -37,6 +37,9 @@
     },
     {
       "name": "Backup"
+    },
+    {
+      "name": "Snapshot"
     },
     {
       "name": "API keys"
@@ -250,6 +253,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "Organization"
         ]
@@ -358,6 +368,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "Organization"
         ]
@@ -765,6 +782,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "Role Management"
         ]
@@ -994,6 +1018,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "Role Management"
         ]
@@ -1100,6 +1131,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "Role Management"
         ]
@@ -1204,6 +1242,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "Organization"
         ],
@@ -1320,6 +1365,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "Organization"
         ],
@@ -1448,6 +1500,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -1676,6 +1735,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:create-service"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -1787,6 +1853,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -2011,6 +2084,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:delete"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -2122,6 +2202,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-private-endpoints"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -2233,6 +2320,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-query-api-endpoints"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -2339,6 +2433,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-query-api-endpoints"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -2457,6 +2558,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-query-api-endpoints"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -2697,6 +2805,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-scaling-config"
+            ]
+          }
+        ],
         "deprecated": true,
         "tags": [
           "Service"
@@ -2818,6 +2933,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-scaling-config"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -3058,6 +3180,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-private-endpoints"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -3163,6 +3292,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view"
+            ]
+          }
+        ],
         "tags": [
           "Prometheus"
         ]
@@ -3274,6 +3410,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ],
@@ -3398,6 +3541,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-scaling-config"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ],
@@ -3510,6 +3660,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-scaling-config"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ],
@@ -3627,6 +3784,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -3745,6 +3909,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -3851,6 +4022,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -3962,6 +4140,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ],
@@ -4086,6 +4271,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ],
@@ -4203,6 +4395,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ],
@@ -4329,6 +4528,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ],
@@ -4450,6 +4656,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ],
@@ -4570,6 +4783,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-backups"
+            ]
+          }
+        ],
         "tags": [
           "Backup"
         ]
@@ -4691,8 +4911,262 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-backups"
+            ]
+          }
+        ],
         "tags": [
           "Backup"
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/services/{serviceId}/snapshots": {
+      "get": {
+        "summary": "List of service snapshots",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns a list of all snapshots for the service. The most recent snapshots come first in the list.",
+        "operationId": "snapshotGetList",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the snapshot.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service the snapshot was created from.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Snapshot"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Snapshot"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}": {
+      "get": {
+        "summary": "Get snapshot details",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns a single snapshot info.",
+        "operationId": "snapshotGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the snapshot.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service the snapshot was created from.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "snapshotId",
+            "description": "ID of the requested snapshot.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/Snapshot"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Snapshot"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
         ]
       }
     },
@@ -4802,6 +5276,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-backups"
+            ]
+          }
+        ],
         "tags": [
           "Backup"
         ]
@@ -4920,8 +5401,270 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-backups"
+            ]
+          }
+        ],
         "tags": [
           "Backup"
+        ]
+      }
+    },
+    "/v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration": {
+      "get": {
+        "summary": "Get service snapshot configuration",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns the service snapshot configuration.",
+        "operationId": "snapshotConfigurationGet",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/SnapshotConfiguration"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-backups"
+            ]
+          }
+        ],
+        "tags": [
+          "Snapshot"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
+        ]
+      },
+      "patch": {
+        "summary": "Update service snapshot configuration",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Updates the service snapshot configuration. Requires ADMIN auth key role. Enables or disables scheduled snapshots and sets the cadence; when enabled, gap and timeFrame (in minutes) must together be one of the supported (gap, timeFrame) pairs: (30, 1440), (60, 2880). Provide at least one of enabled, gap, timeFrame; omit a field to leave it unchanged (null is not accepted).",
+        "operationId": "snapshotConfigurationUpdate",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "organizationId",
+            "description": "ID of the organization that owns the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serviceId",
+            "description": "ID of the service.",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnapshotConfigurationPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 200
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    },
+                    "result": {
+                      "$ref": "#/components/schemas/SnapshotConfiguration"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "number",
+                      "description": "HTTP status code.",
+                      "example": 400
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "integer",
+                      "description": "HTTP status code.",
+                      "example": 500
+                    },
+                    "error": {
+                      "type": "string",
+                      "description": "Detailed error description."
+                    },
+                    "requestId": {
+                      "type": "string",
+                      "description": "Unique id assigned to every request. UUIDv4",
+                      "format": "uuid"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-backups"
+            ]
+          }
+        ],
+        "tags": [
+          "Snapshot"
+        ],
+        "x-badges": [
+          {
+            "name": "Beta",
+            "position": "after"
+          }
         ]
       }
     },
@@ -5031,6 +5774,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-backups"
+            ]
+          }
+        ],
         "tags": [
           "Backup"
         ],
@@ -5155,6 +5905,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-backups"
+            ]
+          }
+        ],
         "tags": [
           "Backup"
         ],
@@ -5279,6 +6036,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-backups"
+            ]
+          }
+        ],
         "tags": [
           "Backup"
         ],
@@ -5391,6 +6155,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-backups"
+            ]
+          }
+        ],
         "tags": [
           "Backup"
         ],
@@ -5501,6 +6272,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view-api-keys"
+            ]
+          }
+        ],
         "tags": [
           "API keys"
         ]
@@ -5609,6 +6387,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:create-api-keys"
+            ]
+          }
+        ],
         "tags": [
           "API keys"
         ]
@@ -5720,6 +6505,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view-api-keys"
+            ]
+          }
+        ],
         "tags": [
           "API keys"
         ]
@@ -6048,6 +6840,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "User management"
         ]
@@ -6159,6 +6958,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "User management"
         ]
@@ -6277,6 +7083,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "User management"
         ]
@@ -6383,6 +7196,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "User management"
         ]
@@ -6487,6 +7307,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "User management"
         ]
@@ -6595,6 +7422,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "User management"
         ]
@@ -6706,6 +7540,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "User management"
         ]
@@ -6812,6 +7653,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "User management"
         ]
@@ -7181,6 +8029,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "Billing"
         ]
@@ -7303,6 +8158,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view-billing"
+            ]
+          }
+        ],
         "deprecated": true,
         "tags": [
           "Billing"
@@ -7405,6 +8267,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view-billing"
+            ]
+          }
+        ],
         "tags": [
           "Billing"
         ],
@@ -9227,6 +10096,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -9486,6 +10362,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -9607,6 +10490,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -9733,6 +10623,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -9998,6 +10895,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -10242,6 +11146,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -10501,6 +11412,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -10622,6 +11540,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -10881,6 +11806,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -11002,6 +11934,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -11267,6 +12206,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -11402,6 +12348,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -11523,6 +12476,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -12412,6 +13372,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -12671,6 +13638,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -12792,6 +13766,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -14542,6 +15523,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
         "tags": [
           "Prometheus"
         ],
@@ -15403,6 +16391,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "deprecated": true,
         "tags": [
           "Organization"
@@ -24420,6 +25415,12 @@
             ],
             "example": "cdc"
           },
+          "initialLoadParallelism": {
+            "description": "Number of parallel workers to use per collection in the initial snapshot phase.",
+            "type": "integer",
+            "minimum": 1,
+            "example": 1
+          },
           "snapshotNumRowsPerPartition": {
             "description": "Number of rows per partition during the snapshot phase.",
             "type": "integer",
@@ -25251,6 +26252,12 @@
           "primaryKey": {
             "description": "Primary key of SQL expression.",
             "type": "string"
+          },
+          "ttl": {
+            "description": "TTL SQL expression of the destination table.",
+            "type": "string",
+            "example": "toDateTime(event_time) + INTERVAL 30 DAY",
+            "minLength": 1
           }
         }
       },
@@ -26536,6 +27543,88 @@
                 "$ref": "#/components/schemas/AzureBackupBucketProperties"
               }
             ]
+          }
+        }
+      },
+      "Snapshot": {
+        "properties": {
+          "id": {
+            "description": "Unique snapshot ID.",
+            "type": "string",
+            "format": "uuid"
+          },
+          "status": {
+            "description": "Status of the snapshot: 'done', 'error', 'in_progress', 'throttled'. 'throttled' means snapshot creation was rate-limited and will be retried.",
+            "type": "string",
+            "enum": [
+              "done",
+              "error",
+              "in_progress",
+              "throttled"
+            ]
+          },
+          "serviceId": {
+            "description": "ID of the service the snapshot was created from.",
+            "type": "string"
+          },
+          "startedAt": {
+            "description": "Snapshot start timestamp. ISO-8601.",
+            "type": "string",
+            "format": "date-time"
+          },
+          "finishedAt": {
+            "description": "Snapshot finish timestamp. ISO-8601. Available only for finished snapshots",
+            "type": "string",
+            "format": "date-time"
+          },
+          "sizeInBytes": {
+            "description": "Size of the snapshot in bytes.",
+            "type": "number"
+          },
+          "durationInSeconds": {
+            "description": "Time in seconds it took to perform the snapshot. If the status is in_progress or throttled, this is the time in seconds since the snapshot started until now.",
+            "type": "number"
+          },
+          "type": {
+            "description": "Snapshot type. Always \"full\" — snapshots never chain off a parent.",
+            "type": "string",
+            "enum": [
+              "full"
+            ]
+          },
+          "backupName": {
+            "description": "Snapshot name on the external backup bucket.",
+            "type": "string"
+          },
+          "bucket": {
+            "description": "Backup bucket where the snapshot is stored.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/AwsBackupBucketProperties"
+              },
+              {
+                "$ref": "#/components/schemas/GcpBackupBucketProperties"
+              },
+              {
+                "$ref": "#/components/schemas/AzureBackupBucketProperties"
+              }
+            ]
+          }
+        }
+      },
+      "SnapshotConfiguration": {
+        "properties": {
+          "enabled": {
+            "description": "Whether scheduled snapshots are enabled for the service.",
+            "type": "boolean"
+          },
+          "gap": {
+            "description": "Interval between snapshots, in minutes. Set together with timeFrame; only supported preset pairs are accepted.",
+            "type": "number"
+          },
+          "timeFrame": {
+            "description": "Retention window the snapshots cover, in minutes. Set together with gap; only supported preset pairs are accepted.",
+            "type": "number"
           }
         }
       },
@@ -31588,7 +32677,7 @@
             "type": "string"
           },
           "expiration": {
-            "description": "Expiration timestamp. ISO-8601.",
+            "description": "Expiration timestamp, inherited from the organization's licensing terms. Absent when the organization has no licensing terms configured. ISO-8601.",
             "type": "string",
             "format": "date-time"
           },
@@ -35626,6 +36715,22 @@
           }
         }
       },
+      "SnapshotConfigurationPatchRequest": {
+        "properties": {
+          "enabled": {
+            "description": "Whether scheduled snapshots are enabled for the service.",
+            "type": "boolean"
+          },
+          "gap": {
+            "description": "Interval between snapshots, in minutes. Set together with timeFrame; only supported preset pairs are accepted.",
+            "type": "number"
+          },
+          "timeFrame": {
+            "description": "Retention window the snapshots cover, in minutes. Set together with gap; only supported preset pairs are accepted.",
+            "type": "number"
+          }
+        }
+      },
       "ApiKeyPostResponse": {
         "properties": {
           "key": {
@@ -35817,6 +36922,10 @@
           },
           "settings": {
             "$ref": "#/components/schemas/ClickPipeSettings"
+          },
+          "startPaused": {
+            "description": "Create the ClickPipe in the Stopped state instead of starting ingestion immediately. Start it later with the state endpoint. Not supported for database ClickPipes.",
+            "type": "boolean"
           }
         }
       },
@@ -36106,22 +37215,7 @@
               "arguments": {
                 "type": "array",
                 "items": {
-                  "type": "object",
-                  "properties": {
-                    "name": {
-                      "description": "Name of the argument. Required for Native and JSONEachRow formats.",
-                      "type": "string",
-                      "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
-                    },
-                    "type": {
-                      "description": "ClickHouse data type of the argument.",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "name",
-                    "type"
-                  ]
+                  "$ref": "#/components/schemas/UdfArgument"
                 }
               },
               "returnType": {
@@ -36197,8 +37291,13 @@
                 "const": "executable"
               },
               "poolSize": {
+                "description": "Always null — an executable UDF has no command pool.",
                 "default": null,
-                "type": "null"
+                "anyOf": [
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "maxCommandExecutionTime": {
                 "default": 10,
@@ -36245,22 +37344,7 @@
               "arguments": {
                 "type": "array",
                 "items": {
-                  "type": "object",
-                  "properties": {
-                    "name": {
-                      "description": "Name of the argument. Required for Native and JSONEachRow formats.",
-                      "type": "string",
-                      "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
-                    },
-                    "type": {
-                      "description": "ClickHouse data type of the argument.",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "name",
-                    "type"
-                  ]
+                  "$ref": "#/components/schemas/UdfArgument"
                 }
               },
               "returnType": {
@@ -36362,6 +37446,24 @@
         ],
         "type": "object"
       },
+      "UdfArgument": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Name of the argument. Required for Native and JSONEachRow formats.",
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+          },
+          "type": {
+            "description": "ClickHouse data type of the argument.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ]
+      },
       "UdfVersionCreateRequest": {
         "oneOf": [
           {
@@ -36383,22 +37485,7 @@
               "arguments": {
                 "type": "array",
                 "items": {
-                  "type": "object",
-                  "properties": {
-                    "name": {
-                      "description": "Name of the argument. Required for Native and JSONEachRow formats.",
-                      "type": "string",
-                      "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
-                    },
-                    "type": {
-                      "description": "ClickHouse data type of the argument.",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "name",
-                    "type"
-                  ]
+                  "$ref": "#/components/schemas/UdfArgument"
                 }
               },
               "returnType": {
@@ -36474,8 +37561,13 @@
                 "const": "executable"
               },
               "poolSize": {
+                "description": "Always null — an executable UDF has no command pool.",
                 "default": null,
-                "type": "null"
+                "anyOf": [
+                  {
+                    "type": "null"
+                  }
+                ]
               },
               "maxCommandExecutionTime": {
                 "default": 10,
@@ -36517,22 +37609,7 @@
               "arguments": {
                 "type": "array",
                 "items": {
-                  "type": "object",
-                  "properties": {
-                    "name": {
-                      "description": "Name of the argument. Required for Native and JSONEachRow formats.",
-                      "type": "string",
-                      "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
-                    },
-                    "type": {
-                      "description": "ClickHouse data type of the argument.",
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "name",
-                    "type"
-                  ]
+                  "$ref": "#/components/schemas/UdfArgument"
                 }
               },
               "returnType": {
@@ -36942,23 +38019,7 @@
             "description": "Arguments passed to the UDF command.",
             "type": "array",
             "items": {
-              "type": "object",
-              "properties": {
-                "name": {
-                  "description": "Name of the argument. Required for Native and JSONEachRow formats.",
-                  "type": "string",
-                  "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
-                },
-                "type": {
-                  "description": "ClickHouse data type of the argument.",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "name",
-                "type"
-              ],
-              "additionalProperties": false
+              "$ref": "#/components/schemas/UdfArgumentOutput"
             }
           },
           "returnType": {
@@ -37165,6 +38226,25 @@
           "pagination"
         ],
         "additionalProperties": false
+      },
+      "UdfArgumentOutput": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "description": "Name of the argument. Required for Native and JSONEachRow formats.",
+            "type": "string",
+            "pattern": "^[A-Za-z][A-Za-z0-9_]*$"
+          },
+          "type": {
+            "description": "ClickHouse data type of the argument.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ],
+        "additionalProperties": false
       }
     },
     "securitySchemes": {
@@ -37192,6 +38272,7 @@
       "tags": [
         "Service",
         "Backup",
+        "Snapshot",
         "Query API endpoints"
       ]
     },

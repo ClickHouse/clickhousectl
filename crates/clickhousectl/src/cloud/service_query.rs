@@ -512,7 +512,7 @@ async fn fail_after_repair_binding<T>(
                  {new_api_key_id}: {cleanup_error}. Its ID was recorded under \
                  service_query_keys.{service_id}.pending_cleanup_api_key_ids in \
                  .clickhouse/credentials.json and deletion is retried automatically by the \
-                 next `clickhousectl cloud service query --id {service_id} --org-id {org_id} \
+                 next `clickhousectl cloud service query {service_id} --org-id {org_id} \
                  ...`"
             ),
             Ok(false) => format!(
@@ -798,7 +798,7 @@ fn pending_cleanup_warning(
         "Warning: the query key for service {service_id} is active, but the {noun} could not be \
          deleted ({failures}). The exact key IDs remain in .clickhouse/credentials.json under \
          service_query_keys.{service_id}.pending_cleanup_api_key_ids and deletion is retried \
-         automatically by the next `clickhousectl cloud service query --id {service_id} --org-id \
+         automatically by the next `clickhousectl cloud service query {service_id} --org-id \
          {org_id} ...`. To delete a key now, run `clickhousectl cloud key delete <key-id> --org-id \
          {org_id}`"
     )
@@ -2262,7 +2262,7 @@ mod tests {
             "{warning}"
         );
         assert!(
-            warning.contains("clickhousectl cloud service query --id service-1 --org-id org-1"),
+            warning.contains("clickhousectl cloud service query service-1 --org-id org-1"),
             "{warning}"
         );
         assert!(

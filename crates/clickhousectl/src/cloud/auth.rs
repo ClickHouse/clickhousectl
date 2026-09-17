@@ -19,7 +19,7 @@ pub enum AuthCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   No flags: OAuth device flow, opens a browser, needs a human; the tokens are read-only.
-  --api-key/--api-secret: no browser, read+write, saved to .clickhouse/credentials.json.
+  --api-key/--api-secret: no browser, read+write.
   Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl")]
     Login {
         /// Prompt for an API key and secret instead of using flags
@@ -27,11 +27,11 @@ CONTEXT FOR AGENTS:
         interactive: bool,
 
         /// Cloud API key (requires --api-secret for auth login)
-        #[arg(long)]
+        #[arg(long, display_order = crate::cli::help_order::API_KEY)]
         api_key: Option<String>,
 
         /// Cloud API secret (requires --api-key for auth login)
-        #[arg(long)]
+        #[arg(long, display_order = crate::cli::help_order::API_SECRET)]
         api_secret: Option<String>,
     },
     /// Log out and clear saved credentials
@@ -58,6 +58,22 @@ CONTEXT FOR AGENTS:
 }
 
 impl AuthCommands {
+    pub fn login_validation_error(&self) -> Option<&'static str> {
+        let Self::Login {
+            api_key,
+            api_secret,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        match (api_key.is_some(), api_secret.is_some()) {
+            (true, false) => Some("--api-secret is required when --api-key is provided"),
+            (false, true) => Some("--api-key is required when --api-secret is provided"),
+            _ => None,
+        }
+    }
+
     pub fn is_write(&self) -> bool {
         match self {
             AuthCommands::Login { .. } => false,
@@ -664,7 +680,7 @@ pub async fn refresh_access_token(
 
 /// If tokens exist and are near-expiry, refresh them. Returns Ok(()) even if
 /// no tokens are present (the user may be using API keys instead).
-pub async fn ensure_fresh_tokens() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::Error>> {
     let Some(tokens) = load_tokens() else {
         return Ok(());
     };
@@ -685,10 +701,12 @@ pub async fn ensure_fresh_tokens() -> Result<(), Box<dyn std::error::Error>> {
         Err(_) => {
             // Refresh failed — clear stale tokens so we fall back to API keys
             clear_tokens();
-            eprint_line("Warning: OAuth token refresh failed. Tokens cleared.");
-            eprint_line(
-                "Run `clickhousectl cloud auth login` to re-authenticate, or use API keys.",
-            );
+            if !json {
+                eprint_line("Warning: OAuth token refresh failed. Tokens cleared.");
+                eprint_line(
+                    "Run `clickhousectl cloud auth login` to re-authenticate, or use API keys.",
+                );
+            }
         }
     }
 

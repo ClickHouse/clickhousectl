@@ -2131,6 +2131,9 @@ pub struct ClickPipeDestinationTableDefinition {
     pub primary_key: String,
     #[serde(rename = "sortingKey", skip_serializing_if = "Vec::is_empty")]
     pub sorting_key: Vec<String>,
+    /// TTL SQL expression. An empty value omits TTL configuration.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub ttl: String,
 }
 
 /// `ClickPipeDestinationTableDefinition` from the ClickHouse Cloud API, in
@@ -2149,6 +2152,8 @@ pub struct ClickPipeDestinationTableDefinitionResponse {
     pub primary_key: Option<String>,
     #[serde(rename = "sortingKey", skip_serializing_if = "Option::is_none")]
     pub sorting_key: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl: Option<String>,
 }
 
 /// `ClickPipeDestinationTableEngine` from the ClickHouse Cloud API.
@@ -2298,6 +2303,12 @@ pub struct ClickPipeKinesisSource {
 /// `ClickPipeMongoDBPipeSettings` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBPipeSettings {
+    /// Parallel workers per collection during the initial snapshot.
+    #[serde(
+        rename = "initialLoadParallelism",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub initial_load_parallelism: Option<i64>,
     #[serde(rename = "deleteOnMerge", skip_serializing_if = "Option::is_none")]
     pub delete_on_merge: Option<bool>,
     #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
@@ -2334,6 +2345,11 @@ pub struct ClickPipeMongoDBPipeSettings {
 /// `None` instead of failing.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipeMongoDBPipeSettingsResponse {
+    #[serde(
+        rename = "initialLoadParallelism",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub initial_load_parallelism: Option<i64>,
     #[serde(rename = "deleteOnMerge", skip_serializing_if = "Option::is_none")]
     pub delete_on_merge: Option<bool>,
     #[serde(rename = "pullBatchSize", skip_serializing_if = "Option::is_none")]
@@ -3263,6 +3279,11 @@ pub struct ClickPipePostRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<ClickPipeSettings>,
     pub source: ClickPipePostSource,
+    /// Create stopped and start ingestion later; unsupported for database ClickPipes.
+    // The description heuristic requires bool. Omit false to preserve existing
+    // create requests, including database sources that do not support this flag.
+    #[serde(rename = "startPaused", skip_serializing_if = "std::ops::Not::not")]
+    pub start_paused: bool,
 }
 
 /// `ClickPipePostSource` from the ClickHouse Cloud API.

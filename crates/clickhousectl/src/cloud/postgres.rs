@@ -2,6 +2,7 @@ use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
 use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
+use crate::cloud::shared::{NameSelector, NamedResource, SourceSelector};
 use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
 use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
@@ -17,7 +18,6 @@ use clickhouse_cloud_api::models::{
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 use tabled::{Table, Tabled, settings::Style};
 
 const POSTGRES_LOG_SORT_ORDERS: &[&str] = &["asc", "desc"];
@@ -26,9 +26,6 @@ const POSTGRES_LOG_SORT_ORDERS: &[&str] = &["asc", "desc"];
 pub enum PostgresCommands {
     /// List Postgres services in the organization
     List {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
         /// Filter results client-side, repeatable (KEY=VALUE)
         ///
         /// Keys: state, region, name, provider, isPrimary. Every filter must
@@ -40,16 +37,15 @@ pub enum PostgresCommands {
     /// Get Postgres service details
     Get {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
     /// List Postgres server logs
     Logs {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Inclusive start of the time window (RFC 3339)
         #[arg(long, value_parser = parse_datetime)]
         from_date: String,
@@ -80,9 +76,6 @@ pub enum PostgresCommands {
             value_parser = clap::value_parser!(i64).range(0..)
         )]
         offset: Option<i64>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Create a Postgres service
@@ -123,21 +116,19 @@ CONTEXT FOR AGENTS:
         /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Update a Postgres service's name, size, HA type or tags
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  --name also changes the service host name and its certificates: stored connection strings and
+  --new-name also changes the service host name and its certificates: stored connection strings and
   pinned CAs break, so re-read `cloud postgres get` and `cloud postgres certs get` afterwards.")]
     Update {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// New service name
-        #[arg(long)]
+        #[arg(long = "new-name", id = "new_name")]
         name: Option<String>,
         /// New instance size (e.g. c6gd.xlarge); validated by the server
         #[arg(long)]
@@ -154,9 +145,6 @@ CONTEXT FOR AGENTS:
         /// Remove all tags; conflicts with --add-tag and --remove-tag
         #[arg(long, conflicts_with_all = ["add_tag", "remove_tag"])]
         clear_tags: bool,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Delete a Postgres service
@@ -166,10 +154,8 @@ CONTEXT FOR AGENTS:
   Deletes from any state, including running — no stop first, unlike `cloud service delete`.")]
     Delete {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
     /// Manage Postgres CA certificates
@@ -182,26 +168,31 @@ CONTEXT FOR AGENTS:
         after_help = "\
 CONTEXT FOR AGENTS:
   `replace` sends the whole object — start from `config get --json` output, not a fragment.
-  `patch --set` only touches pgConfig; use --file to patch pgBouncerConfig."
+  `patch --set` only touches pgConfig; use --file to patch pgBouncerConfig.
+  Exit 0 from `patch` or `replace` means accepted; confirm stored values with `config get`.
+  If the response requires a restart, run `cloud postgres restart <id>` (or --name <name>),
+  then reconnect and use `SHOW <setting>` to confirm a Postgres setting is active."
     )]
     Config(ConfigCommands),
 
     /// Reset the Postgres service password
     #[command(
-        group(ArgGroup::new("password_source").required(true).args(["password", "generate"]))
+        group(ArgGroup::new("password_source").required(true).args(["password", "generate"])),
+        after_help = "\
+CONTEXT FOR AGENTS:
+  The response contains no endpoint; use `cloud postgres get <id>` for host and username.
+  Prefer a psql password prompt; if a URI embeds the password, percent-encode it first."
     )]
     ResetPassword {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// New password (min 12, must include upper, lower, digit)
         #[arg(long, conflicts_with = "generate")]
         password: Option<String>,
         /// Generate a random compliant password and print it once
         #[arg(long, conflicts_with = "password")]
         generate: bool,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Manage Postgres read replicas
@@ -211,19 +202,17 @@ CONTEXT FOR AGENTS:
     /// Get Postgres service metrics
     Metrics {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Start time (RFC 3339, at most millisecond precision)
-        #[arg(long, value_parser = parse_metrics_datetime)]
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
         from_date: String,
         /// End time (RFC 3339, at most millisecond precision)
-        #[arg(long, value_parser = parse_metrics_datetime)]
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
         to_date: String,
-        /// Time bucket size in seconds
+        /// Time bucket size in seconds; omit to let the API choose
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
         bucket_size_seconds: Option<i64>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Inspect Postgres slow query patterns
@@ -244,10 +233,13 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Creates a NEW service from the source's backups; the source is untouched.
-  --restore-target must fall inside the source's backup retention window.")]
+  --restore-target must fall inside the source's backup retention window.
+  The response has no password; use its ID with `get`, then reset it if no valid password is known.
+  Do not assume the source's current password matches the historical restore.")]
     Restore {
         /// Source Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: SourceSelector,
         /// Name for the restored service
         #[arg(long)]
         name: String,
@@ -263,59 +255,43 @@ CONTEXT FOR AGENTS:
         /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Restart a Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Before restarting, record `SELECT pg_postmaster_start_time()` through psql.
+  Exit 0 means accepted, not completed; state=running or readiness alone does not prove a restart.
+  After connections recover, run it again; a later timestamp confirms a restart after the baseline.")]
     Restart {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
     /// Promote a read replica to primary
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Exit 0 means accepted, not applied: the response omits isPrimary.
-  Pass --wait to poll until the target reports isPrimary=true; exit 1 if it never does.
-  The old primary can report isPrimary=true for minutes — confirm exactly one primary
-  with `cloud postgres list --filter isPrimary=true`.")]
+  Exit 0 means accepted, not completed; promotion is asynchronous.
+  The replica becomes an independent primary service; its source remains primary.
+  Poll `cloud postgres get <replica-id> --json` until isPrimary=true.")]
     Promote {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
-        /// Poll until the service reports isPrimary=true, and fail if it never does
-        #[arg(long)]
-        wait: bool,
-        /// Seconds to poll for with --wait (default: 300)
-        #[arg(long, requires = "wait", value_name = "SECONDS")]
-        wait_timeout: Option<u16>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
-    /// Switch over the primary and replica roles
+    /// Switch a primary over to an HA standby
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Exit 0 means accepted, not applied.
-  Pass --wait to poll until isPrimary flips; exit 1 if it never does.
-  --wait reads the pre-command role first and refuses when the API omits isPrimary.")]
+  Exit 0 means accepted, not completed; switchover is asynchronous.
+  The standby takes over inside the same HA service.
+  Service isPrimary and state, plus database readiness, do not identify the active HA node.
+  Monitor client connectivity separately; these service fields expose no completion check.")]
     Switchover {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
-        /// Poll until the roles actually swap, and fail if they never do
-        #[arg(long)]
-        wait: bool,
-        /// Seconds to poll for with --wait (default: 300)
-        #[arg(long, requires = "wait", value_name = "SECONDS")]
-        wait_timeout: Option<u16>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 }
 
@@ -328,13 +304,11 @@ CONTEXT FOR AGENTS:
   get --json automatically — use --output to write a usable file.")]
     Get {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Write PEM to the given file (mode 0600 on unix) instead of stdout
         #[arg(long)]
         output: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -343,23 +317,19 @@ pub enum ConfigCommands {
     /// Get the runtime configuration (pgConfig + pgBouncerConfig)
     Get {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
     /// Replace the whole runtime configuration from a file
     Replace {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// JSON file with a complete PostgresInstanceConfig object
         ///
         /// Not a fragment: use a document obtained from `config get --json`.
-        #[arg(long)]
+        #[arg(long, value_name = "PATH")]
         file: PathBuf,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Change selected runtime configuration fields
     #[command(
@@ -367,7 +337,8 @@ pub enum ConfigCommands {
     )]
     Patch {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Set a pgConfig field (repeatable), e.g. --set max_connections=500
         ///
         /// Values parse as JSON first, falling back to a string
@@ -375,11 +346,8 @@ pub enum ConfigCommands {
         #[arg(long = "set", conflicts_with = "file")]
         sets: Vec<String>,
         /// JSON file with explicit pgConfig and pgBouncerConfig objects
-        #[arg(long, conflicts_with = "sets")]
+        #[arg(long, value_name = "PATH", conflicts_with = "sets")]
         file: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -389,10 +357,13 @@ pub enum ReadReplicaCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   The replica inherits the source's provider, region, size and version.
+  The response has no password; use its ID with `get` for the replica endpoint.
+  Do not assume the source's password works on the replica.
   Next: `cloud postgres promote <replica-id>` to make it primary.")]
     Create {
         /// Source Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
+        #[command(flatten)]
+        postgres_id: SourceSelector,
         /// Name for the new replica
         #[arg(long)]
         name: String,
@@ -405,9 +376,6 @@ CONTEXT FOR AGENTS:
         /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -416,17 +384,11 @@ pub enum PrometheusCommands {
     /// Get metrics for one Postgres service
     Service {
         /// Postgres service ID (from `cloud postgres list`)
-        postgres_id: String,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
     /// Get metrics for all Postgres services in an organization
-    Org {
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
-    },
+    Org,
 }
 
 #[derive(Subcommand)]
@@ -435,11 +397,11 @@ pub enum SlowQueryCommands {
     List {
         /// Postgres service ID (from `cloud postgres list`)
         postgres_id: String,
-        /// Inclusive start time (ISO 8601 / RFC 3339)
-        #[arg(long, value_parser = parse_datetime)]
+        /// Inclusive start time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
         from_date: String,
-        /// Exclusive end time (ISO 8601 / RFC 3339)
-        #[arg(long, value_parser = parse_datetime)]
+        /// Exclusive end time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
         to_date: String,
         /// Filter by database name
         #[arg(long)]
@@ -479,9 +441,6 @@ pub enum SlowQueryCommands {
             value_parser = clap::value_parser!(i64).range(0..)
         )]
         offset: Option<i64>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
     /// Get a slow query pattern with recent executions
     Get {
@@ -504,9 +463,6 @@ pub enum SlowQueryCommands {
         /// Timestamp of a specific execution (ISO 8601 / RFC 3339)
         #[arg(long, value_parser = parse_datetime)]
         timestamp: Option<String>,
-        /// Organization ID (auto-detected only if you have one org)
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
@@ -539,13 +495,15 @@ impl PostgresCommands {
 
 pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) -> CloudResult<()> {
     match command {
-        PostgresCommands::List { org_id, filter } => {
-            postgres_list(client, org_id.as_deref(), &filter, json).await
+        PostgresCommands::List { filter } => postgres_list(client, &filter, json).await,
+        PostgresCommands::Get { postgres_id } => {
+            postgres_get(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
         }
-        PostgresCommands::Get {
-            postgres_id,
-            org_id,
-        } => postgres_get(client, &postgres_id, org_id.as_deref(), json).await,
         PostgresCommands::Logs {
             postgres_id,
             from_date,
@@ -555,7 +513,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             sort_order,
             limit,
             offset,
-            org_id,
         } => {
             let query = build_postgres_logs_query(
                 &from_date,
@@ -566,7 +523,13 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 limit,
                 offset,
             )?;
-            postgres_logs(client, &postgres_id, &query, org_id.as_deref(), json).await
+            postgres_logs(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                &query,
+                json,
+            )
+            .await
         }
         PostgresCommands::Create {
             name,
@@ -578,7 +541,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             tag,
             pg_config_file,
             pg_bouncer_config_file,
-            org_id,
         } => {
             let opts = PostgresCreateOptions {
                 name: &name,
@@ -590,7 +552,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 tags: &tag,
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
-                org_id: org_id.as_deref(),
             };
             postgres_create(client, opts, json).await
         }
@@ -602,7 +563,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             add_tag,
             remove_tag,
             clear_tags,
-            org_id,
         } => {
             let opts = PostgresUpdateOptions {
                 name: name.as_deref(),
@@ -611,49 +571,62 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 add_tag: &add_tag,
                 remove_tag: &remove_tag,
                 clear_tags,
-                org_id: org_id.as_deref(),
             };
-            postgres_update(client, &postgres_id, opts, json).await
-        }
-        PostgresCommands::Delete {
-            postgres_id,
-            org_id,
-        } => postgres_delete(client, &postgres_id, org_id.as_deref(), json).await,
-        PostgresCommands::Certs(CertsCommands::Get {
-            postgres_id,
-            output,
-            org_id,
-        }) => {
-            postgres_certs_get(
+            postgres_update(
                 client,
-                &postgres_id,
-                output.as_deref(),
-                org_id.as_deref(),
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                opts,
                 json,
             )
             .await
         }
-        PostgresCommands::Config(ConfigCommands::Get {
+        PostgresCommands::Delete { postgres_id } => {
+            postgres_delete(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Certs(CertsCommands::Get {
             postgres_id,
-            org_id,
-        }) => postgres_config_get(client, &postgres_id, org_id.as_deref(), json).await,
-        PostgresCommands::Config(ConfigCommands::Replace {
-            postgres_id,
-            file,
-            org_id,
-        }) => postgres_config_replace(client, &postgres_id, &file, org_id.as_deref(), json).await,
+            output,
+        }) => {
+            postgres_certs_get(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                output.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Config(ConfigCommands::Get { postgres_id }) => {
+            postgres_config_get(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Config(ConfigCommands::Replace { postgres_id, file }) => {
+            postgres_config_replace(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                &file,
+                json,
+            )
+            .await
+        }
         PostgresCommands::Config(ConfigCommands::Patch {
             postgres_id,
             sets,
             file,
-            org_id,
         }) => {
             postgres_config_patch(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 &sets,
                 file.as_deref(),
-                org_id.as_deref(),
                 json,
             )
             .await
@@ -662,14 +635,12 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             postgres_id,
             password,
             generate,
-            org_id,
         } => {
             postgres_reset_password(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 password.as_deref(),
                 generate,
-                org_id.as_deref(),
                 json,
             )
             .await
@@ -680,31 +651,28 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             tag,
             pg_config_file,
             pg_bouncer_config_file,
-            org_id,
         }) => {
             let opts = PostgresReadReplicaOptions {
                 name: &name,
                 tags: &tag,
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
-                org_id: org_id.as_deref(),
             };
-            postgres_read_replica_create(client, &postgres_id, opts, json).await
+            postgres_read_replica_create(client, &postgres_id.resolve(client).await?, opts, json)
+                .await
         }
         PostgresCommands::Metrics {
             postgres_id,
             from_date,
             to_date,
             bucket_size_seconds,
-            org_id,
         } => {
             postgres_metrics(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 &from_date,
                 &to_date,
                 bucket_size_seconds,
-                org_id.as_deref(),
                 json,
             )
             .await
@@ -721,7 +689,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             sort_order,
             limit,
             offset,
-            org_id,
         }) => {
             let input = SlowQueryListInput {
                 from_date: &from_date,
@@ -735,7 +702,7 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 limit,
                 offset,
             };
-            postgres_slow_queries_list(client, &postgres_id, input, org_id.as_deref(), json).await
+            postgres_slow_queries_list(client, &postgres_id, input, json).await
         }
         PostgresCommands::SlowQueries(SlowQueryCommands::Get {
             postgres_id,
@@ -745,7 +712,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             db_operation,
             app,
             timestamp,
-            org_id,
         }) => {
             let input = SlowQueryDetailInput {
                 db_name: &db_name,
@@ -754,22 +720,18 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 app: app.as_deref(),
                 timestamp: timestamp.as_deref(),
             };
-            postgres_slow_query_get(
+            postgres_slow_query_get(client, &postgres_id, &query_id, input, json).await
+        }
+        PostgresCommands::Prometheus(PrometheusCommands::Service { postgres_id }) => {
+            postgres_prometheus_service(
                 client,
-                &postgres_id,
-                &query_id,
-                input,
-                org_id.as_deref(),
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 json,
             )
             .await
         }
-        PostgresCommands::Prometheus(PrometheusCommands::Service {
-            postgres_id,
-            org_id,
-        }) => postgres_prometheus_service(client, &postgres_id, org_id.as_deref(), json).await,
-        PostgresCommands::Prometheus(PrometheusCommands::Org { org_id }) => {
-            postgres_prometheus_org(client, org_id.as_deref(), json).await
+        PostgresCommands::Prometheus(PrometheusCommands::Org) => {
+            postgres_prometheus_org(client, json).await
         }
         PostgresCommands::Restore {
             postgres_id,
@@ -778,7 +740,6 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             tag,
             pg_config_file,
             pg_bouncer_config_file,
-            org_id,
         } => {
             let opts = PostgresRestoreOptions {
                 name: &name,
@@ -786,55 +747,32 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 tags: &tag,
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
-                org_id: org_id.as_deref(),
             };
-            postgres_restore(client, &postgres_id, opts, json).await
+            postgres_restore(client, &postgres_id.resolve(client).await?, opts, json).await
         }
-        PostgresCommands::Restart {
-            postgres_id,
-            org_id,
-        } => {
+        PostgresCommands::Restart { postgres_id } => {
             postgres_state_change(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 PostgresServiceSetStateCommand::Restart,
-                org_id.as_deref(),
                 json,
             )
             .await
         }
-        PostgresCommands::Promote {
-            postgres_id,
-            wait,
-            wait_timeout,
-            org_id,
-        } => {
+        PostgresCommands::Promote { postgres_id } => {
             postgres_role_change(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 PostgresRoleCommand::Promote,
-                RoleChangeOptions {
-                    wait: wait_duration(wait, wait_timeout),
-                    org_id: org_id.as_deref(),
-                },
                 json,
             )
             .await
         }
-        PostgresCommands::Switchover {
-            postgres_id,
-            wait,
-            wait_timeout,
-            org_id,
-        } => {
+        PostgresCommands::Switchover { postgres_id } => {
             postgres_role_change(
                 client,
-                &postgres_id,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
                 PostgresRoleCommand::Switchover,
-                RoleChangeOptions {
-                    wait: wait_duration(wait, wait_timeout),
-                    org_id: org_id.as_deref(),
-                },
                 json,
             )
             .await
@@ -1179,9 +1117,8 @@ fn enum_label<T: serde::Serialize>(v: Option<&T>) -> String {
     }
 }
 
-// `print_line`, not `println!`: role changes render this after `--wait`
-// polling, minutes after the caller may have stopped reading, and a closed
-// stdout must not turn a completed operation into a panic (#598).
+// `print_line`, not `println!`: a closed stdout must not turn a completed
+// operation into a panic (#598).
 fn render_postgres_service(svc: &PostgresService) {
     print_line(format!("  ID: {}", or_absent(svc.id.as_ref())));
     print_line(format!("  Name: {}", or_absent(svc.name.as_deref())));
@@ -1215,6 +1152,41 @@ fn render_postgres_service(svc: &PostgresService) {
             .collect();
         print_line(format!("  Tags: {}", tags.join(", ")));
     }
+}
+
+/// Print a short connection handoff without putting a password in argv or a URI.
+///
+/// The API does not expose port or database fields. They are stable service
+/// defaults documented by ClickHouse Managed Postgres. Sparse asynchronous
+/// responses can also omit host and username, so those fields retain explicit
+/// placeholders until `get` supplies them.
+fn render_postgres_connection_guidance(svc: &PostgresService) {
+    let postgres_id = svc
+        .id
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "<postgres-id>".to_string());
+    let host = svc
+        .hostname
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<host-from-get>");
+    let username = svc
+        .username
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<username-from-get>");
+
+    print_line("");
+    print_line(format!(
+        "Connection: host={host} port=5432 database=postgres user={username}; TLS required"
+    ));
+    print_line(format!(
+        "Next: clickhousectl cloud postgres get {postgres_id} (wait for state=running and fill any placeholders)"
+    ));
+    print_line(format!(
+        "Verified TLS: clickhousectl cloud postgres certs get {postgres_id} --output ca.pem; see README for psql"
+    ));
 }
 
 fn merge_tags(
@@ -1275,7 +1247,6 @@ pub struct PostgresCreateOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
-    pub org_id: Option<&'a str>,
 }
 
 pub struct PostgresUpdateOptions<'a> {
@@ -1285,7 +1256,6 @@ pub struct PostgresUpdateOptions<'a> {
     pub add_tag: &'a [String],
     pub remove_tag: &'a [String],
     pub clear_tags: bool,
-    pub org_id: Option<&'a str>,
 }
 
 pub struct PostgresReadReplicaOptions<'a> {
@@ -1293,7 +1263,6 @@ pub struct PostgresReadReplicaOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
-    pub org_id: Option<&'a str>,
 }
 
 pub struct PostgresRestoreOptions<'a> {
@@ -1302,7 +1271,6 @@ pub struct PostgresRestoreOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
-    pub org_id: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1389,13 +1357,26 @@ fn validate_postgres_logs_sort_order(
 // Handlers
 // ---------------------------------------------------------------------------
 
+impl CloudClient {
+    pub(super) async fn list_postgres_services(
+        &self,
+        org_id: &str,
+    ) -> CloudResult<Vec<PostgresServiceListItem>> {
+        let response = self
+            .api()
+            .postgres_service_get_list(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+}
+
 pub async fn postgres_list(
     client: &CloudClient,
-    org_id: Option<&str>,
     filters: &[PostgresListFilter],
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_service_get_list(&org_id)
@@ -1425,6 +1406,8 @@ pub async fn postgres_list(
         id: String,
         #[tabled(rename = "State")]
         state: String,
+        #[tabled(rename = "Provider")]
+        provider: String,
         #[tabled(rename = "Region")]
         region: String,
         #[tabled(rename = "Size")]
@@ -1443,6 +1426,7 @@ pub async fn postgres_list(
             name: or_absent(i.name.as_deref()),
             id: or_absent(i.id.as_ref()),
             state: state_label(i.state.as_ref()),
+            provider: enum_label(i.provider.as_ref()),
             region: or_absent(i.region.as_deref()),
             size: enum_label(i.size.as_ref()),
             pg: enum_label(i.postgres_version.as_ref()),
@@ -1459,13 +1443,8 @@ pub async fn postgres_list(
     Ok(())
 }
 
-pub async fn postgres_get(
-    client: &CloudClient,
-    postgres_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+pub async fn postgres_get(client: &CloudClient, postgres_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let svc = client.get_postgres_service(&org_id, postgres_id).await?;
 
     if json {
@@ -1475,6 +1454,7 @@ pub async fn postgres_get(
         // credentials on July 31, 2026 — they are only available from
         // `postgres create` and `postgres reset-password`.
         render_postgres_service(&svc);
+        render_postgres_connection_guidance(&svc);
     }
     Ok(())
 }
@@ -1483,10 +1463,9 @@ async fn postgres_logs(
     client: &CloudClient,
     postgres_id: &str,
     query: &PostgresLogsQuery,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let logs = client
         .list_postgres_logs(&org_id, postgres_id, query)
         .await?;
@@ -1496,9 +1475,56 @@ async fn postgres_logs(
     } else if logs.is_empty() {
         println!("No Postgres logs found");
     } else {
-        print_human(&logs)?;
+        println!("{}", render_postgres_logs_table(&logs));
     }
     Ok(())
+}
+
+#[derive(Debug, PartialEq, Tabled)]
+struct PostgresLogRow {
+    #[tabled(rename = "Timestamp")]
+    timestamp: String,
+    #[tabled(rename = "Severity")]
+    severity: String,
+    #[tabled(rename = "Message")]
+    message: String,
+}
+
+fn render_postgres_logs_table(logs: &[PostgresLogEntry]) -> String {
+    let rows = logs.iter().map(postgres_log_row);
+    Table::new(rows).with(Style::markdown()).to_string()
+}
+
+fn postgres_log_row(log: &PostgresLogEntry) -> PostgresLogRow {
+    PostgresLogRow {
+        timestamp: or_absent(
+            log.timestamp
+                .as_ref()
+                .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)),
+        ),
+        severity: or_absent(log.severity.as_deref()),
+        message: postgres_log_message(log.body.as_deref()),
+    }
+}
+
+/// Extract the useful message from the JSON document carried in `body`.
+///
+/// The API model deliberately keeps `body` as a string. Returning that string
+/// unchanged for every other shape avoids hiding data when the provider sends
+/// plain text, malformed JSON, a missing message, or a future message type.
+fn postgres_log_message(body: Option<&str>) -> String {
+    let Some(body) = body else {
+        return ABSENT.to_string();
+    };
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| body.to_string())
 }
 
 /// The post-create credentials block, or the warning that replaces it.
@@ -1577,7 +1603,7 @@ pub async fn postgres_create(
         pg_bouncer_config,
     };
 
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_service_create(&org_id, &req)
@@ -1635,7 +1661,7 @@ pub async fn postgres_update(
     opts: PostgresUpdateOptions<'_>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let size = opts.size.map(parse_pg_size).transpose()?;
     let ha_type = opts
@@ -1681,10 +1707,9 @@ pub async fn postgres_update(
 pub async fn postgres_delete(
     client: &CloudClient,
     postgres_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
 
     // The delete endpoint itself only ever returns the raw API envelope
     // (`ApiResponse<serde_json::Value>`, no resource in `result`), so fetch the
@@ -1697,7 +1722,12 @@ pub async fn postgres_delete(
         .api()
         .postgres_service_delete(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
+        .map_err(|error| {
+            client.convert_error_for_lookup(
+                error,
+                ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, &org_id),
+            )
+        })?;
 
     // The service is already gone by here, so a closed stdout must not turn a
     // completed deletion into a panic — see `print_line` and #598.
@@ -1716,10 +1746,9 @@ pub async fn postgres_certs_get(
     client: &CloudClient,
     postgres_id: &str,
     output: Option<&Path>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let pem = client
         .api()
         .postgres_service_certs_get(&org_id, postgres_id)
@@ -1758,10 +1787,9 @@ pub async fn postgres_certs_get(
 pub async fn postgres_config_get(
     client: &CloudClient,
     postgres_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_config_get(&org_id, postgres_id)
@@ -1780,11 +1808,10 @@ pub async fn postgres_config_replace(
     client: &CloudClient,
     postgres_id: &str,
     file: &Path,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let cfg = instance_config_from_json(&load_json_file::<serde_json::Value>(file)?)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_config_post(&org_id, postgres_id, &cfg)
@@ -1808,7 +1835,6 @@ pub async fn postgres_config_patch(
     postgres_id: &str,
     sets: &[String],
     file: Option<&Path>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     debug_assert!(
@@ -1829,7 +1855,7 @@ pub async fn postgres_config_patch(
         .map_err(|e| CloudError::new(format!("failed to build config from --set entries: {}", e)))?
     };
 
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_config_patch(&org_id, postgres_id, &cfg)
@@ -1853,10 +1879,9 @@ pub async fn postgres_reset_password(
     postgres_id: &str,
     password: Option<&str>,
     generate: bool,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
 
     let pw = match (password, generate) {
         (Some(p), false) => {
@@ -1897,6 +1922,8 @@ pub async fn postgres_reset_password(
             println!("Generated password (save this — not recoverable):");
             println!("  {}", password);
         }
+        println!();
+        println!("Connection details: clickhousectl cloud postgres get {postgres_id}");
     }
     Ok(())
 }
@@ -1921,7 +1948,7 @@ pub async fn postgres_read_replica_create(
         pg_bouncer_config,
     };
 
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_create_read_replica(&org_id, postgres_id, &req)
@@ -1935,6 +1962,7 @@ pub async fn postgres_read_replica_create(
         println!("Read replica created");
         println!();
         render_postgres_service(&svc);
+        render_postgres_connection_guidance(&svc);
     }
     Ok(())
 }
@@ -1963,7 +1991,7 @@ pub async fn postgres_restore(
         pg_bouncer_config,
     };
 
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_restore(&org_id, postgres_id, &req)
@@ -1977,22 +2005,19 @@ pub async fn postgres_restore(
         println!("Postgres service restore initiated");
         println!();
         render_postgres_service(&svc);
+        render_postgres_connection_guidance(&svc);
     }
     Ok(())
 }
 
-/// Issues a state command that does not change which service is primary.
-///
-/// `promote` and `switchover` go through [`postgres_role_change`] instead, which
-/// adds the `--wait` convergence polling this has no use for.
+/// Issues a state command that does not need operation-specific guidance.
 pub async fn postgres_state_change(
     client: &CloudClient,
     postgres_id: &str,
     cmd: PostgresServiceSetStateCommand,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let req = PostgresServiceSetState { command: cmd };
     let resp = client
         .api()
@@ -2011,9 +2036,9 @@ pub async fn postgres_state_change(
     Ok(())
 }
 
-// The metrics endpoint accepts UTC timestamps with exactly three fractional digits.
+// These endpoints accept UTC timestamps with exactly three fractional digits.
 // Check the original fraction: chrono discards digits beyond nanosecond precision.
-fn parse_metrics_datetime(value: &str) -> Result<String, String> {
+fn parse_postgres_window_datetime(value: &str) -> Result<String, String> {
     let timestamp = chrono::DateTime::parse_from_rfc3339(value)
         .map_err(|_| format!("invalid datetime '{value}': expected ISO 8601 / RFC 3339"))?;
     if value.split_once('.').is_some_and(|(_, fraction)| {
@@ -2024,7 +2049,7 @@ fn parse_metrics_datetime(value: &str) -> Result<String, String> {
             .any(|digit| digit != b'0')
     }) {
         return Err(format!(
-            "invalid datetime '{value}': Postgres metrics supports at most millisecond precision"
+            "invalid datetime '{value}': Postgres time windows support at most millisecond precision"
         ));
     }
     Ok(timestamp
@@ -2045,17 +2070,108 @@ fn validate_datetime_range(from_date: &str, to_date: &str) -> CloudResult<()> {
     Ok(())
 }
 
+fn postgres_metric_timestamp(timestamp: Option<i64>) -> String {
+    timestamp
+        .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        // The wire type permits epoch values outside chrono's calendar range.
+        // Keep such a value visible rather than dropping its data point.
+        .unwrap_or_else(|| match timestamp {
+            Some(timestamp) => format!("{timestamp} (outside displayable date range)"),
+            None => ABSENT.to_string(),
+        })
+}
+
+/// Compact human view for the nested metrics response.
+///
+/// The view starts from the response's serde representation, retaining source
+/// field order and the same field-hiding behavior as JSON. Only data points are
+/// condensed: each becomes a numbered RFC 3339/value line. Numbering preserves
+/// duplicate points and API order. Missing collections become `-`, while empty
+/// arrays stay `[]`.
+fn postgres_metrics_human_view(
+    metrics: &PostgresMetrics,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut view = serde_json::to_value(metrics)?;
+    let root = view
+        .as_object_mut()
+        .expect("PostgresMetrics serializes as an object");
+    let Some(source_metrics) = metrics.metrics.as_ref() else {
+        root.insert(
+            "metrics".to_string(),
+            serde_json::Value::String(ABSENT.to_string()),
+        );
+        return Ok(view);
+    };
+    let view_metrics = root["metrics"]
+        .as_array_mut()
+        .expect("a present metrics field serializes as an array");
+
+    for (source_metric, view_metric) in source_metrics.iter().zip(view_metrics) {
+        let view_metric = view_metric
+            .as_object_mut()
+            .expect("PostgresMetric serializes as an object");
+        let Some(source_series) = source_metric.series.as_ref() else {
+            view_metric.insert(
+                "series".to_string(),
+                serde_json::Value::String(ABSENT.to_string()),
+            );
+            continue;
+        };
+        let view_series = view_metric["series"]
+            .as_array_mut()
+            .expect("a present series field serializes as an array");
+
+        for (source_series, view_series) in source_series.iter().zip(view_series) {
+            let view_series = view_series
+                .as_object_mut()
+                .expect("PostgresMetricSeries serializes as an object");
+            let Some(source_points) = source_series.data_points.as_ref() else {
+                view_series.insert(
+                    "dataPoints".to_string(),
+                    serde_json::Value::String(ABSENT.to_string()),
+                );
+                continue;
+            };
+            if source_points.is_empty() {
+                continue;
+            }
+
+            let mut point_lines = serde_json::Map::new();
+            for (index, point) in source_points.iter().enumerate() {
+                let timestamp = postgres_metric_timestamp(point.timestamp);
+                let value = point
+                    .value
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| ABSENT.to_string());
+                let value = match (source_metric.unit.as_deref(), point.value) {
+                    (Some(unit), Some(_)) => format!("{value} {unit}"),
+                    _ => value,
+                };
+                point_lines.insert(
+                    (index + 1).to_string(),
+                    serde_json::Value::String(format!("{timestamp}  {value}")),
+                );
+            }
+            view_series.insert(
+                "dataPoints".to_string(),
+                serde_json::Value::Object(point_lines),
+            );
+        }
+    }
+    Ok(view)
+}
+
 pub async fn postgres_metrics(
     client: &CloudClient,
     postgres_id: &str,
     from_date: &str,
     to_date: &str,
     bucket_size_seconds: Option<i64>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     validate_datetime_range(from_date, to_date)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let metrics = client
         .get_postgres_metrics(
             &org_id,
@@ -2069,7 +2185,7 @@ pub async fn postgres_metrics(
     if json {
         println!("{}", serde_json::to_string_pretty(&metrics)?);
     } else {
-        print_human(&metrics)?;
+        print_human(&postgres_metrics_human_view(&metrics)?)?;
     }
     Ok(())
 }
@@ -2181,19 +2297,45 @@ async fn postgres_slow_queries_list(
     client: &CloudClient,
     postgres_id: &str,
     input: SlowQueryListInput<'_>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let query = build_slow_query_list_query(input)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let patterns = client
         .list_postgres_slow_query_patterns(&org_id, postgres_id, &query)
         .await?;
     if json {
         println!("{}", serde_json::to_string_pretty(&patterns)?);
-    } else {
-        print_human(&patterns)?;
+        return Ok(());
     }
+
+    if patterns.is_empty() {
+        println!("No Postgres slow query patterns found");
+        return Ok(());
+    }
+
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Query ID")]
+        query_id: String,
+        #[tabled(rename = "Query")]
+        query: String,
+        #[tabled(rename = "Calls")]
+        calls: String,
+        #[tabled(rename = "Avg duration (µs)")]
+        avg_duration_us: String,
+        #[tabled(rename = "Total duration (µs)")]
+        total_duration_us: String,
+    }
+
+    let rows = patterns.into_iter().map(|pattern| Row {
+        query_id: or_absent(pattern.query_id),
+        query: or_absent(pattern.query_text),
+        calls: or_absent(pattern.call_count),
+        avg_duration_us: or_absent(pattern.avg_duration_us),
+        total_duration_us: or_absent(pattern.total_duration_us),
+    });
+    println!("{}", Table::new(rows).with(Style::markdown()));
     Ok(())
 }
 
@@ -2202,11 +2344,10 @@ async fn postgres_slow_query_get(
     postgres_id: &str,
     query_id: &str,
     input: SlowQueryDetailInput<'_>,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
     let query = build_slow_query_detail_query(input)?;
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let pattern = client
         .get_postgres_slow_query_pattern(&org_id, postgres_id, query_id, &query)
         .await?;
@@ -2231,26 +2372,21 @@ fn print_prometheus(metrics: &str, json: bool) -> CloudResult<()> {
 async fn postgres_prometheus_service(
     client: &CloudClient,
     postgres_id: &str,
-    org_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    let org_id = resolve_org_id(client).await?;
     let metrics = client.get_postgres_prometheus(&org_id, postgres_id).await?;
     print_prometheus(&metrics, json)
 }
 
-async fn postgres_prometheus_org(
-    client: &CloudClient,
-    org_id: Option<&str>,
-    json: bool,
-) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, org_id).await?;
+async fn postgres_prometheus_org(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let metrics = client.get_postgres_org_prometheus(&org_id).await?;
     print_prometheus(&metrics, json)
 }
 
 // ---------------------------------------------------------------------------
-// Role changes: promote / switchover (issue #604)
+// Role changes: promote / switchover
 // ---------------------------------------------------------------------------
 
 impl CloudClient {
@@ -2361,8 +2497,7 @@ impl CloudClient {
             .postgres_service_get(org_id, postgres_id)
             .await
             .map_err(|error| {
-                // A read by identifier: a 400 over well-formed UUIDs is a
-                // missing Postgres service, not a bad request (#666).
+                // This path identifies the Postgres service itself.
                 self.convert_error_for_lookup(
                     error,
                     ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id),
@@ -2413,14 +2548,7 @@ impl CloudClient {
     }
 }
 
-/// Seconds `--wait` polls for when `--wait-timeout` is not given.
-const DEFAULT_ROLE_WAIT_SECS: u16 = 300;
-
-/// Gap between role polls. The API acknowledges a role change long before it
-/// applies it, so polling faster than this only burns rate limit.
-const ROLE_POLL_INTERVAL: Duration = Duration::from_secs(5);
-
-/// The `cloud postgres` commands that change which service is primary.
+/// The `cloud postgres` commands that initiate primary-role operations.
 ///
 /// `restart` is not one of them: it keeps going through
 /// [`postgres_state_change`], which needs no role bookkeeping.
@@ -2446,224 +2574,52 @@ impl PostgresRoleCommand {
     }
 }
 
-pub struct RoleChangeOptions<'a> {
-    /// How long to poll for convergence, or `None` to return once the API
-    /// acknowledges the command.
-    pub wait: Option<Duration>,
-    pub org_id: Option<&'a str>,
-}
-
-/// Translates `--wait` / `--wait-timeout` into a polling budget.
-fn wait_duration(wait: bool, wait_timeout: Option<u16>) -> Option<Duration> {
-    wait.then(|| Duration::from_secs(u64::from(wait_timeout.unwrap_or(DEFAULT_ROLE_WAIT_SECS))))
-}
-
-/// The `isPrimary` value the target must report once `cmd` has taken effect.
-///
-/// `None` means the CLI has nothing to compare against: a switchover swaps the
-/// target's role, so without the pre-command `isPrimary` there is no swap to
-/// detect.
-fn expected_primary_after(cmd: PostgresRoleCommand, before: Option<bool>) -> Option<bool> {
-    match cmd {
-        PostgresRoleCommand::Promote => Some(true),
-        PostgresRoleCommand::Switchover => before.map(|primary| !primary),
-    }
-}
-
-/// Whether the polled service has reached the expected role.
-#[derive(Debug, PartialEq)]
-enum RoleConvergence {
-    Converged(PostgresService),
-    NotConverged(PostgresService),
-}
-
-/// Polls `fetch` until the service reports `isPrimary=expected_primary`.
-///
-/// The first poll happens immediately: `promote` flips the replica in under a
-/// second, so the common case must not pay a full interval.
-async fn poll_role_convergence<F, Fut>(
-    mut fetch: F,
-    expected_primary: bool,
-    timeout: Duration,
-    interval: Duration,
-) -> CloudResult<RoleConvergence>
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = CloudResult<PostgresService>>,
-{
-    let deadline = tokio::time::Instant::now() + timeout;
-    loop {
-        let svc = fetch().await?;
-        if svc.is_primary == Some(expected_primary) {
-            return Ok(RoleConvergence::Converged(svc));
-        }
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Ok(RoleConvergence::NotConverged(svc));
-        }
-        tokio::time::sleep(interval.min(remaining)).await;
-    }
-}
-
-/// Error text for a role change the API accepted but never applied.
-fn role_timeout_message(
-    cmd: PostgresRoleCommand,
-    postgres_id: &str,
-    expected_primary: bool,
-    observed: Option<bool>,
-    timeout: Duration,
-) -> String {
-    format!(
-        "{} did not take effect within {}s: Postgres service {postgres_id} reports isPrimary={} \
-         (expected {expected_primary}). The API accepted the request; re-check with \
-         `clickhousectl cloud postgres get {postgres_id}`.",
-        cmd.label(),
-        timeout.as_secs(),
-        or_absent(observed),
-    )
-}
-
 /// stderr notes for a role change, in print order.
-///
-/// Both commands are eventually consistent and neither reports that: the
-/// `promote` response omits `isPrimary` entirely and the old primary has been
-/// observed reporting `isPrimary=true` for minutes afterwards, so a caller that
-/// trusts exit 0 sees two primaries (#604).
-fn role_change_notes(cmd: PostgresRoleCommand, postgres_id: &str, waited: bool) -> Vec<String> {
-    let mut notes = Vec::new();
+fn role_change_notes(cmd: PostgresRoleCommand, postgres_id: &str) -> Vec<String> {
     match cmd {
-        PostgresRoleCommand::Promote => {
-            notes.push(
-                "The previous primary is demoted asynchronously and can keep reporting \
-                 isPrimary=true for several minutes; verify with `clickhousectl cloud postgres \
-                 list --filter isPrimary=true` that exactly one service is primary."
-                    .to_string(),
-            );
-            if !waited {
-                notes.push(format!(
-                    "The promote response does not carry the new role; pass --wait to poll \
-                     Postgres service {postgres_id} until it reports isPrimary=true."
-                ));
-            }
-        }
-        PostgresRoleCommand::Switchover => {
-            if !waited {
-                notes.push(format!(
-                    "Switchover is acknowledged before (or without) the roles swapping; pass \
-                     --wait to poll Postgres service {postgres_id} until they actually change."
-                ));
-            }
-        }
+        PostgresRoleCommand::Promote => vec![format!(
+            "Promotion is asynchronous. Postgres service {postgres_id} becomes an independent \
+             primary and its source remains primary; poll `clickhousectl cloud postgres get \
+             {postgres_id} --json` until isPrimary is true."
+        )],
+        PostgresRoleCommand::Switchover => vec![format!(
+            "Switchover is asynchronous inside Postgres service {postgres_id}. Service isPrimary \
+             and state, plus database readiness, do not identify the active HA node or confirm \
+             completion. Monitor client connectivity separately; these service fields expose no \
+             completion check."
+        )],
     }
-    notes
-}
-
-/// The `isPrimary` value `--wait` polls for, resolved before the command is issued.
-///
-/// `promote` always targets `true`. A switchover swaps the target's role, so it
-/// reads the service first and refuses when that read omits `isPrimary`: with no
-/// pre-command role to compare a swap against, `--wait` could only report an
-/// unverifiable success (#604). This is the only place a role change reads the
-/// service before issuing the command.
-async fn wait_target(
-    client: &CloudClient,
-    org_id: &str,
-    postgres_id: &str,
-    cmd: PostgresRoleCommand,
-) -> CloudResult<bool> {
-    let before = match cmd {
-        PostgresRoleCommand::Promote => None,
-        PostgresRoleCommand::Switchover => {
-            client
-                .get_postgres_service(org_id, postgres_id)
-                .await?
-                .is_primary
-        }
-    };
-    expected_primary_after(cmd, before).ok_or_else(|| {
-        CloudError::new(format!(
-            "--wait cannot confirm a switchover of Postgres service {postgres_id}: the API \
-             response omitted isPrimary, so there is no pre-command role to compare a swap \
-             against. Re-run without --wait to issue the switchover unconfirmed."
-        ))
-    })
 }
 
 /// Handles `cloud postgres promote` and `cloud postgres switchover`.
 ///
-/// The command is issued as-is; the API acknowledges it before (or without)
-/// applying it, so `--wait` is the only way to learn whether a role changed.
+/// The command is issued as-is and returns the API acknowledgment. Completion
+/// is asynchronous and must be verified according to the operation.
 pub async fn postgres_role_change(
     client: &CloudClient,
     postgres_id: &str,
     cmd: PostgresRoleCommand,
-    opts: RoleChangeOptions<'_>,
     json: bool,
 ) -> CloudResult<()> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
-
-    let wait = match opts.wait {
-        Some(timeout) => Some((
-            timeout,
-            wait_target(client, &org_id, postgres_id, cmd).await?,
-        )),
-        None => None,
-    };
-
-    let accepted = client
+    let org_id = resolve_org_id(client).await?;
+    let svc = client
         .set_postgres_service_state(&org_id, postgres_id, cmd.api_command())
         .await?;
 
-    let mut timeout_error = None;
-    let mut svc = accepted;
-
-    if let Some((timeout, expected_primary)) = wait {
-        let outcome = poll_role_convergence(
-            || client.get_postgres_service(&org_id, postgres_id),
-            expected_primary,
-            timeout,
-            ROLE_POLL_INTERVAL,
-        )
-        .await?;
-        svc = match outcome {
-            RoleConvergence::Converged(svc) => svc,
-            RoleConvergence::NotConverged(svc) => {
-                timeout_error = Some(role_timeout_message(
-                    cmd,
-                    postgres_id,
-                    expected_primary,
-                    svc.is_primary,
-                    timeout,
-                ));
-                svc
-            }
-        };
-    }
-
-    let waited = wait.is_some();
-    for note in role_change_notes(cmd, postgres_id, waited) {
+    for note in role_change_notes(cmd, postgres_id) {
         eprint_line(note);
     }
 
-    // `print_line`, not `println!`: with --wait this output can land minutes
-    // after the caller stopped reading, and a closed pipe must not turn a
-    // completed role change into a panic (#598).
+    // `print_line`, not `println!`: a closed pipe must not turn an accepted
+    // role change into a panic (#598).
     if json {
         print_line(serde_json::to_string_pretty(&svc)?);
     } else {
-        print_line(match (timeout_error.is_some(), waited) {
-            (true, _) => format!("{} not confirmed", cmd.label()),
-            (false, true) => format!("{} confirmed", cmd.label()),
-            (false, false) => format!("{} accepted", cmd.label()),
-        });
+        print_line(format!("{} accepted", cmd.label()));
         print_line("");
         render_postgres_service(&svc);
     }
-
-    match timeout_error {
-        Some(message) => Err(CloudError::new(message)),
-        None => Ok(()),
-    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -2672,9 +2628,26 @@ pub async fn postgres_role_change(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "postgres", "config", "replace", "pg-1"],
+            "file",
+            &[],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "postgres", "config", "patch", "pg-1"],
+            "file",
+            &[],
+        );
+    }
+
     use super::*;
     use crate::cli::Cli;
     use clap::Parser;
+    use clickhouse_cloud_api::models::{
+        PostgresMetric, PostgresMetricDataPoint, PostgresMetricSeries,
+    };
 
     #[derive(Parser)]
     struct PostgresCli {
@@ -2683,11 +2656,113 @@ mod tests {
     }
 
     fn parse_postgres(args: &[&str]) -> PostgresCommands {
-        assert_eq!(args.get(1), Some(&"cloud"));
-        assert_eq!(args.get(2), Some(&"postgres"));
-        PostgresCli::try_parse_from(std::iter::once(args[0]).chain(args.iter().skip(3).copied()))
-            .expect("parse")
-            .command
+        let cli = Cli::try_parse_from(args).expect("parse");
+        let crate::cli::Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
+        let crate::cloud::cli::CloudCommands::Postgres { command } = cloud.command else {
+            panic!("expected postgres command");
+        };
+        command
+    }
+
+    #[test]
+    fn metrics_human_view_preserves_series_points_labels_and_units() {
+        let metrics = PostgresMetrics {
+            metrics: Some(vec![
+                PostgresMetric {
+                    key: Some("cpu".to_string()),
+                    name: Some("CPU usage".to_string()),
+                    description: Some("Average CPU usage".to_string()),
+                    unit: Some("percent".to_string()),
+                    series: Some(vec![
+                        PostgresMetricSeries {
+                            label: Some("{role=\"primary\",zone=\"eu-west-1\"}".to_string()),
+                            data_points: Some(vec![
+                                PostgresMetricDataPoint {
+                                    timestamp: Some(1_776_337_200),
+                                    value: Some(12.5),
+                                },
+                                PostgresMetricDataPoint {
+                                    timestamp: Some(1_776_337_200),
+                                    value: None,
+                                },
+                            ]),
+                        },
+                        PostgresMetricSeries {
+                            label: Some("line one\nline two".to_string()),
+                            data_points: Some(Vec::new()),
+                        },
+                    ]),
+                },
+                PostgresMetric {
+                    key: Some("replication-lag".to_string()),
+                    series: None,
+                    ..Default::default()
+                },
+            ]),
+        };
+
+        assert_eq!(
+            postgres_metrics_human_view(&metrics).unwrap(),
+            serde_json::json!({
+                "metrics": [{
+                    "description": "Average CPU usage",
+                    "key": "cpu",
+                    "name": "CPU usage",
+                    "series": [{
+                        "dataPoints": {
+                            "1": "2026-04-16T11:00:00Z  12.5 percent",
+                            "2": "2026-04-16T11:00:00Z  -"
+                        },
+                        "label": "{role=\"primary\",zone=\"eu-west-1\"}"
+                    }, {
+                        "dataPoints": [],
+                        "label": "line one\nline two"
+                    }],
+                    "unit": "percent"
+                }, {
+                    "key": "replication-lag",
+                    "series": "-"
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn metrics_human_view_distinguishes_absent_empty_and_unrepresentable_timestamps() {
+        assert_eq!(
+            postgres_metrics_human_view(&PostgresMetrics::default()).unwrap(),
+            serde_json::json!({"metrics": "-"})
+        );
+        assert_eq!(
+            postgres_metrics_human_view(&PostgresMetrics {
+                metrics: Some(Vec::new())
+            })
+            .unwrap(),
+            serde_json::json!({"metrics": []})
+        );
+
+        let metrics = PostgresMetrics {
+            metrics: Some(vec![PostgresMetric {
+                series: Some(vec![PostgresMetricSeries {
+                    data_points: Some(vec![PostgresMetricDataPoint {
+                        timestamp: Some(i64::MAX),
+                        value: Some(1.0),
+                    }]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }]),
+        };
+        let output = postgres_metrics_human_view(&metrics).unwrap();
+        assert_eq!(
+            output.pointer("/metrics/0/series/0/dataPoints/1"),
+            Some(&serde_json::Value::String(
+                "9223372036854775807 (outside displayable date range)  1".to_string()
+            ))
+        );
     }
 
     #[test]
@@ -2796,7 +2871,7 @@ mod tests {
         let PostgresCommands::Get { postgres_id, .. } = cmd else {
             panic!("expected get");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
     }
 
     #[test]
@@ -2826,7 +2901,7 @@ mod tests {
         else {
             panic!("expected logs");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(from_date, "2026-08-01T00:00:00Z");
         assert_eq!(to_date, "2026-08-02T00:00:00Z");
         assert_eq!(body_contains, &None);
@@ -2868,7 +2943,6 @@ mod tests {
             sort_order,
             limit,
             offset,
-            org_id,
             ..
         } = cmd
         else {
@@ -2879,7 +2953,6 @@ mod tests {
         assert_eq!(sort_order, Some(PostgresLogsGetListSortorder::Asc));
         assert_eq!(limit, Some(2000));
         assert_eq!(offset, Some(0));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -3010,6 +3083,47 @@ mod tests {
         assert_eq!(query.sort_order, Some(PostgresLogsGetListSortorder::Asc));
         assert_eq!(query.limit, Some(2000));
         assert_eq!(query.offset, Some(0));
+    }
+
+    #[test]
+    fn postgres_log_row_extracts_a_string_message_and_formats_utc() {
+        let log = PostgresLogEntry {
+            timestamp: Some("2026-08-01T12:00:00.123Z".parse().unwrap()),
+            severity: Some("LOG".to_string()),
+            body: Some(
+                serde_json::json!({
+                    "message": "checkpoint complete",
+                    "detail": "all buffers written"
+                })
+                .to_string(),
+            ),
+        };
+
+        assert_eq!(
+            postgres_log_row(&log),
+            PostgresLogRow {
+                timestamp: "2026-08-01T12:00:00.123Z".to_string(),
+                severity: "LOG".to_string(),
+                message: "checkpoint complete".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn postgres_log_message_preserves_raw_and_unusual_bodies() {
+        let long_message = "x".repeat(4096);
+        for body in [
+            "recovery complete",
+            r#"{"message":42,"detail":"kept"}"#,
+            r#"{"detail":"message absent"}"#,
+            r#"{"message":"unfinished""#,
+            "null",
+            long_message.as_str(),
+        ] {
+            assert_eq!(postgres_log_message(Some(body)), body);
+        }
+        assert_eq!(postgres_log_message(None), ABSENT);
+        assert_eq!(postgres_log_message(Some("")), "");
     }
 
     #[test]
@@ -3264,7 +3378,7 @@ mod tests {
         else {
             panic!("expected update");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(size.as_deref(), Some("c6gd.large"));
         assert_eq!(add_tag, vec!["env=prod", "team=data"]);
         assert_eq!(remove_tag, vec!["old"]);
@@ -3281,19 +3395,17 @@ mod tests {
             add_tag,
             remove_tag,
             clear_tags,
-            org_id,
             ..
         } = cmd
         else {
             panic!("expected update");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert!(name.is_none());
         assert!(size.is_none());
         assert!(add_tag.is_empty());
         assert!(remove_tag.is_empty());
         assert!(!clear_tags);
-        assert!(org_id.is_none());
     }
 
     #[test]
@@ -3348,7 +3460,7 @@ mod tests {
             "postgres",
             "update",
             "pg-1",
-            "--name",
+            "--new-name",
             "renamed-pg",
         ]);
         let PostgresCommands::Update {
@@ -3357,7 +3469,7 @@ mod tests {
         else {
             panic!("expected update");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(name.as_deref(), Some("renamed-pg"));
     }
 
@@ -3367,7 +3479,7 @@ mod tests {
         let PostgresCommands::Delete { postgres_id, .. } = cmd else {
             panic!("expected delete");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
     }
 
     #[test]
@@ -3512,9 +3624,6 @@ mod tests {
         .err()
         .expect("expected parse error");
         assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
-        let message = err.to_string();
-        assert!(message.contains("--set <SETS>"), "{message}");
-        assert!(message.contains("--file <FILE>"), "{message}");
     }
 
     #[test]
@@ -3655,16 +3764,14 @@ mod tests {
             from_date,
             to_date,
             bucket_size_seconds,
-            org_id,
         } = cmd
         else {
             panic!("expected metrics");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
         assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
         assert_eq!(bucket_size_seconds, Some(60));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -3755,7 +3862,7 @@ mod tests {
                 "2026-04-16T12:00:00.123Z",
             ),
         ] {
-            let normalized = parse_metrics_datetime(input).unwrap();
+            let normalized = parse_postgres_window_datetime(input).unwrap();
             assert_eq!(normalized, expected, "{input}");
             assert_eq!(
                 chrono::DateTime::parse_from_rfc3339(input).unwrap(),
@@ -3823,14 +3930,13 @@ mod tests {
             sort_order,
             limit,
             offset,
-            org_id,
         }) = cmd
         else {
             panic!("expected slow-query list");
         };
         assert_eq!(postgres_id, "pg-1");
-        assert_eq!(from_date, "2026-04-16T12:00:00+01:00");
-        assert_eq!(to_date, "2026-04-16T13:00:00+01:00");
+        assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
+        assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
         assert_eq!(db_name.as_deref(), Some("app db"));
         assert_eq!(db_user.as_deref(), Some("reader+worker"));
         assert_eq!(db_operation.as_deref(), Some("SELECT"));
@@ -3839,7 +3945,6 @@ mod tests {
         assert_eq!(sort_order.as_deref(), Some("asc"));
         assert_eq!(limit, Some(500));
         assert_eq!(offset, Some(0));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -4149,7 +4254,6 @@ mod tests {
             db_operation,
             app,
             timestamp,
-            org_id,
         }) = cmd
         else {
             panic!("expected slow-query detail");
@@ -4161,7 +4265,6 @@ mod tests {
         assert_eq!(db_operation, "SELECT");
         assert_eq!(app.as_deref(), Some("reporter"));
         assert_eq!(timestamp.as_deref(), Some("2026-04-16T12:30:00Z"));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
     }
 
     #[test]
@@ -4223,15 +4326,11 @@ mod tests {
             "org-1",
         ]);
         assert!(!service.is_write());
-        let PostgresCommands::Prometheus(PrometheusCommands::Service {
-            postgres_id,
-            org_id,
-        }) = service
+        let PostgresCommands::Prometheus(PrometheusCommands::Service { postgres_id }) = service
         else {
             panic!("expected service prometheus");
         };
-        assert_eq!(postgres_id, "pg-1");
-        assert_eq!(org_id.as_deref(), Some("org-1"));
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
 
         let org = parse_postgres(&[
             "clickhousectl",
@@ -4243,10 +4342,9 @@ mod tests {
             "org-2",
         ]);
         assert!(!org.is_write());
-        let PostgresCommands::Prometheus(PrometheusCommands::Org { org_id }) = org else {
+        let PostgresCommands::Prometheus(PrometheusCommands::Org) = org else {
             panic!("expected organization prometheus");
         };
-        assert_eq!(org_id.as_deref(), Some("org-2"));
     }
 
     #[test]
@@ -4289,7 +4387,7 @@ mod tests {
         else {
             panic!("expected read-replica create");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(name, "replica1");
         assert_eq!(tag, vec!["role=read"]);
     }
@@ -4310,295 +4408,29 @@ mod tests {
         ));
     }
 
-    // --- role change (promote / switchover) parsing, issue #604 ---
+    // --- role change (promote / switchover) parsing, issue #834 ---
 
     #[test]
-    fn promote_and_switchover_do_not_wait_by_default() {
-        let PostgresCommands::Promote {
-            wait, wait_timeout, ..
-        } = parse_postgres(&["clickhousectl", "cloud", "postgres", "promote", "pg-1"])
-        else {
-            panic!("expected promote");
-        };
-        assert!(!wait);
-        assert_eq!(wait_timeout, None);
-
-        let PostgresCommands::Switchover {
-            wait, wait_timeout, ..
-        } = parse_postgres(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"])
-        else {
-            panic!("expected switchover");
-        };
-        assert!(!wait);
-        assert_eq!(wait_timeout, None);
-    }
-
-    #[test]
-    fn promote_parses_wait_flags() {
-        let PostgresCommands::Promote {
-            postgres_id,
-            wait,
-            wait_timeout,
-            org_id,
-        } = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "promote",
-            "pg-1",
-            "--wait",
-            "--wait-timeout",
-            "45",
-            "--org-id",
-            "org-1",
-        ])
-        else {
-            panic!("expected promote");
-        };
-        assert_eq!(postgres_id, "pg-1");
-        assert!(wait);
-        assert_eq!(wait_timeout, Some(45));
-        assert_eq!(org_id.as_deref(), Some("org-1"));
-    }
-
-    #[test]
-    fn switchover_parses_wait_flags() {
-        let PostgresCommands::Switchover {
-            postgres_id,
-            wait,
-            wait_timeout,
-            ..
-        } = parse_postgres(&[
-            "clickhousectl",
-            "cloud",
-            "postgres",
-            "switchover",
-            "pg-1",
-            "--wait",
-            "--wait-timeout",
-            "600",
-        ])
-        else {
-            panic!("expected switchover");
-        };
-        assert_eq!(postgres_id, "pg-1");
-        assert!(wait);
-        assert_eq!(wait_timeout, Some(600));
-    }
-
-    /// `--wait-timeout` without `--wait` would silently not wait, so clap
-    /// rejects it as a usage error instead.
-    #[test]
-    fn wait_timeout_requires_wait() {
+    fn promote_and_switchover_reject_removed_wait_flags() {
         for command in ["promote", "switchover"] {
-            let err = match PostgresCli::try_parse_from([
-                "clickhousectl",
-                command,
-                "pg-1",
-                "--wait-timeout",
-                "30",
-            ]) {
-                Ok(_) => {
-                    panic!("--wait-timeout without --wait should be a usage error for {command}")
+            for args in [["--wait", ""], ["--wait-timeout", "30"]] {
+                let mut argv = vec!["clickhousectl", command, "pg-1", args[0]];
+                if !args[1].is_empty() {
+                    argv.push(args[1]);
                 }
-                Err(err) => err,
-            };
-            assert_eq!(
-                err.kind(),
-                clap::error::ErrorKind::MissingRequiredArgument,
-                "{command}: {err}"
-            );
-            assert_eq!(err.exit_code(), 2, "{command}: {err}");
+                let err = match PostgresCli::try_parse_from(argv) {
+                    Ok(_) => panic!("{command} {} must be rejected", args[0]),
+                    Err(err) => err,
+                };
+                assert_eq!(
+                    err.kind(),
+                    clap::error::ErrorKind::UnknownArgument,
+                    "{command} {}: {err}",
+                    args[0]
+                );
+                assert_eq!(err.exit_code(), 2, "{command} {}: {err}", args[0]);
+            }
         }
-    }
-
-    #[test]
-    fn wait_duration_maps_flags_to_a_polling_budget() {
-        assert_eq!(wait_duration(false, None), None);
-        assert_eq!(wait_duration(false, Some(10)), None);
-        assert_eq!(
-            wait_duration(true, None),
-            Some(Duration::from_secs(u64::from(DEFAULT_ROLE_WAIT_SECS)))
-        );
-        assert_eq!(wait_duration(true, Some(30)), Some(Duration::from_secs(30)));
-        // A zero budget still polls once: `poll_role_convergence` fetches
-        // before it checks the deadline.
-        assert_eq!(wait_duration(true, Some(0)), Some(Duration::ZERO));
-    }
-
-    #[test]
-    fn expected_primary_after_a_role_change() {
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Promote, None),
-            Some(true)
-        );
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Promote, Some(false)),
-            Some(true)
-        );
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Switchover, Some(true)),
-            Some(false)
-        );
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Switchover, Some(false)),
-            Some(true)
-        );
-        // Nothing to compare against, so nothing to wait for.
-        assert_eq!(
-            expected_primary_after(PostgresRoleCommand::Switchover, None),
-            None
-        );
-    }
-
-    // --- role change convergence polling, issue #604 ---
-
-    fn primary_response(is_primary: Option<bool>) -> PostgresService {
-        PostgresService {
-            name: Some("pg".to_string()),
-            is_primary,
-            ..Default::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn polling_returns_immediately_when_the_role_already_converged() {
-        let mut calls = 0;
-        let outcome = poll_role_convergence(
-            || {
-                calls += 1;
-                std::future::ready(Ok(primary_response(Some(true))))
-            },
-            true,
-            Duration::from_secs(60),
-            Duration::ZERO,
-        )
-        .await
-        .unwrap();
-        assert!(matches!(outcome, RoleConvergence::Converged(_)));
-        assert_eq!(calls, 1, "the first poll must not wait for an interval");
-    }
-
-    #[tokio::test]
-    async fn polling_converges_once_the_role_flips() {
-        let mut calls = 0;
-        let outcome = poll_role_convergence(
-            || {
-                calls += 1;
-                std::future::ready(Ok(primary_response(Some(calls >= 3))))
-            },
-            true,
-            Duration::from_secs(60),
-            Duration::ZERO,
-        )
-        .await
-        .unwrap();
-        let RoleConvergence::Converged(svc) = outcome else {
-            panic!("expected convergence");
-        };
-        assert_eq!(svc.is_primary, Some(true));
-        assert_eq!(calls, 3);
-    }
-
-    /// A role change the API accepted but never applied is the #604 failure:
-    /// polling must report the last observed role, not success.
-    #[tokio::test]
-    async fn polling_reports_non_convergence_with_the_last_observed_role() {
-        let outcome = poll_role_convergence(
-            || std::future::ready(Ok(primary_response(Some(true)))),
-            false,
-            Duration::from_millis(20),
-            Duration::from_millis(1),
-        )
-        .await
-        .unwrap();
-        let RoleConvergence::NotConverged(svc) = outcome else {
-            panic!("expected non-convergence");
-        };
-        assert_eq!(svc.is_primary, Some(true));
-    }
-
-    /// An omitted `isPrimary` is not the expected value, so it cannot count as
-    /// convergence — the promote response omits it entirely.
-    #[tokio::test]
-    async fn an_absent_is_primary_never_counts_as_converged() {
-        let outcome = poll_role_convergence(
-            || std::future::ready(Ok(primary_response(None))),
-            true,
-            Duration::ZERO,
-            Duration::ZERO,
-        )
-        .await
-        .unwrap();
-        assert!(matches!(outcome, RoleConvergence::NotConverged(_)));
-    }
-
-    #[tokio::test]
-    async fn polling_propagates_a_fetch_error() {
-        let error = poll_role_convergence(
-            || std::future::ready(Err(CloudError::new("boom"))),
-            true,
-            Duration::from_secs(60),
-            Duration::ZERO,
-        )
-        .await
-        .unwrap_err();
-        assert_eq!(error.message, "boom");
-    }
-
-    #[test]
-    fn role_timeout_message_names_the_observed_role() {
-        let message = role_timeout_message(
-            PostgresRoleCommand::Switchover,
-            "pg-1",
-            false,
-            Some(true),
-            Duration::from_secs(300),
-        );
-        assert!(
-            message.contains("switchover did not take effect within 300s")
-                && message.contains("isPrimary=true")
-                && message.contains("expected false")
-                && message.contains("postgres get pg-1"),
-            "unexpected message: {message}"
-        );
-
-        let absent = role_timeout_message(
-            PostgresRoleCommand::Promote,
-            "pg-1",
-            true,
-            None,
-            Duration::from_secs(5),
-        );
-        assert!(
-            absent.contains(&format!("isPrimary={ABSENT}")),
-            "an omitted isPrimary must render as {ABSENT}: {absent}"
-        );
-    }
-
-    #[test]
-    fn role_change_notes_warn_about_eventual_consistency() {
-        let promote_no_wait = role_change_notes(PostgresRoleCommand::Promote, "pg-1", false);
-        assert_eq!(promote_no_wait.len(), 2);
-        assert!(promote_no_wait[0].contains("previous primary is demoted asynchronously"));
-        assert!(promote_no_wait[1].contains("--wait"));
-
-        // With --wait the CLI already confirmed the new primary, but the old
-        // primary's demotion is still not something it can see.
-        let promote_waited = role_change_notes(PostgresRoleCommand::Promote, "pg-1", true);
-        assert_eq!(promote_waited.len(), 1);
-        assert!(promote_waited[0].contains("previous primary"));
-
-        let switchover_no_wait = role_change_notes(PostgresRoleCommand::Switchover, "pg-1", false);
-        assert_eq!(switchover_no_wait.len(), 1);
-        assert!(
-            switchover_no_wait[0].contains("acknowledged before (or without) the roles swapping")
-        );
-        assert!(switchover_no_wait[0].contains("--wait"));
-        assert!(
-            role_change_notes(PostgresRoleCommand::Switchover, "pg-1", true).is_empty(),
-            "a confirmed swap needs no caveat"
-        );
     }
 
     // --- helper unit tests ---
@@ -5115,16 +4947,14 @@ mod tests {
             }
         }
 
-        let cli = Cli::command();
+        let mut cli = Cli::command();
+        cli.build();
         let cloud = cli.find_subcommand("cloud").expect("cloud command");
         let postgres = cloud
             .find_subcommand("postgres")
             .expect("cloud postgres command");
         let mut org_id = None;
         walk(postgres, "cloud postgres", &mut org_id);
-        assert!(
-            org_id.is_some(),
-            "no --org-id argument found under cloud postgres"
-        );
+        assert!(org_id.is_some());
     }
 }

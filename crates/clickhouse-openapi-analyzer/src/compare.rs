@@ -16,15 +16,22 @@ pub(crate) fn compare(
     let mut report = DriftReport::default();
     compare_operations(rust, spec, config, &mut report);
     compare_models_and_refs(rust, spec, &mut report);
-    compare_inline_union_fields(rust, spec, config, &mut report);
+    compare_inline_fields(rust, spec, config, &mut report);
     compare_additional_properties(rust, spec, &mut report);
     compare_beta_and_deprecation(rust, spec, config, &mut report);
     compare_enums(rust, spec, config, &mut report);
+    compare_acknowledged_enums(spec, snapshot, config, &mut report);
     let fractional = integer_float_fields(rust, spec);
     stale_pairs(
         "fractional_response",
         &config.fractional_response_exemptions,
         &fractional.response_only,
+        &mut report,
+    );
+    stale_strings(
+        "partial_required_schema",
+        &config.partial_required_schemas,
+        &spec.partial_required_hits,
         &mut report,
     );
     compare_snapshot(spec, snapshot, &mut report);
@@ -126,6 +133,37 @@ fn compare_operations(
                 .detail("method_name", name),
             );
         }
+    }
+    let helper_hits = rust
+        .client_methods
+        .keys()
+        .filter(|name| !spec.operations.contains_key(*name))
+        .cloned()
+        .collect();
+    stale_strings(
+        "non_openapi_client_method",
+        &config.non_openapi_client_methods,
+        &helper_hits,
+        report,
+    );
+}
+
+fn stale_strings(
+    kind: &str,
+    configured: &BTreeSet<String>,
+    hits: &BTreeSet<String>,
+    report: &mut DriftReport,
+) {
+    for key in configured.difference(hits) {
+        report.findings.push(
+            Finding::new(
+                FindingKind::StaleExemption,
+                format!("{kind} exemption {key} is stale"),
+            )
+            .at_rust(format!("analyzer_config::{kind}::{key}"))
+            .detail("exemption_kind", kind)
+            .detail("key", key),
+        );
     }
 }
 
@@ -329,16 +367,58 @@ fn compare_fields(
     );
 }
 
-/// Resolve inline object branches using their constant discriminator and the
-/// value enums on the union's actual payload structs, never source ordering or
-/// guessed variant names. Reuse the ordinary field checks in each direction.
-fn compare_inline_union_fields(
+/// Resolve inline responses by the documented operation/status naming
+/// convention, and union branches by their discriminator and payload enums.
+/// Reuse the ordinary field checks in each direction.
+fn compare_inline_fields(
     rust: &RustInventory,
     spec: &OpenApiInventory,
     config: &AnalyzerConfig,
     report: &mut DriftReport,
 ) {
     let mut inline = spec.clone();
+    let response_types = rust.response_reachable_types();
+    for (name, (pointer, schema)) in &spec.inline_responses {
+        if !rust.model_types.contains(name) {
+            // Unmodeled inline enums remain actionable unsupported constraints.
+            continue;
+        }
+        if !response_types.contains(name) || !rust.structs.contains_key(name) {
+            report.findings.push(
+                Finding::new(
+                    FindingKind::MissingModelType,
+                    format!("inline response {name} needs a response-reachable struct"),
+                )
+                .at_spec(pointer)
+                .at_rust(format!("models.rs::{name}")),
+            );
+            continue;
+        }
+        inline.schemas.insert(name.clone(), pointer.clone());
+        inline.rust_schema_names.insert(name.clone());
+        inline.response_position_schemas.insert(name.clone());
+        if let Some(properties) = schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+        {
+            for (key, value) in properties {
+                inline.properties.insert(
+                    (name.clone(), key.clone()),
+                    crate::openapi::PropertyInfo {
+                        pointer: format!(
+                            "{pointer}/properties/{}",
+                            key.replace('~', "~0").replace('/', "~1")
+                        ),
+                        required_non_nullable: false,
+                        schema_type: value
+                            .get("type")
+                            .and_then(serde_json::Value::as_str)
+                            .map(str::to_owned),
+                    },
+                );
+            }
+        }
+    }
     for (parent, pointer, branch) in &spec.inline_union_objects {
         let properties = branch["properties"].as_object().unwrap();
         let discriminators: Vec<_> = properties
@@ -833,6 +913,48 @@ fn compare_enums(
     compare_enum_values_consts(rust, report);
 }
 
+fn compare_acknowledged_enums(
+    spec: &OpenApiInventory,
+    snapshot: &OpenApiInventory,
+    config: &AnalyzerConfig,
+    report: &mut DriftReport,
+) {
+    for constraint in &spec.enum_constraints {
+        if !config
+            .acknowledged_unsupported_enum_pointers
+            .contains(&constraint.pointer)
+        {
+            continue;
+        }
+        let previous = snapshot
+            .enum_constraints
+            .iter()
+            .find(|item| item.pointer == constraint.pointer);
+        if previous.is_some_and(|item| item.wire_values == constraint.wire_values) {
+            continue;
+        }
+        let format_values = |item: &EnumConstraint| {
+            item.wire_values
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let previous_values = previous
+            .map(format_values)
+            .unwrap_or_else(|| "(absent)".to_string());
+        report.findings.push(
+            Finding::new(
+                FindingKind::AcknowledgedEnumConstraintChanged,
+                "acknowledged enum values differ from the vendored snapshot; review the legacy contract",
+            )
+            .at_spec(&constraint.pointer)
+            .detail("previous_values", previous_values)
+            .detail("current_values", format_values(constraint)),
+        );
+    }
+}
+
 fn compare_enum_values_consts(rust: &RustInventory, report: &mut DriftReport) {
     for (name, info) in &rust.enums {
         let Some(values_const) = &info.values_const else {
@@ -942,6 +1064,28 @@ fn map_enum(rust: &RustInventory, constraint: &EnumConstraint) -> EnumMapping {
                 rust.terminal_type(argument),
                 format!("client.rs::Client::{operation_id}::{parameter}"),
             )
+        }
+        EnumContext::InlineResponse { model, steps } => {
+            if !rust.response_reachable_types().contains(model) {
+                return EnumMapping::Unsupported {
+                    rust_item: Some(format!("models.rs::{model}")),
+                    reason: format!("inline response has no response-reachable model {model}"),
+                };
+            }
+            if steps.is_empty() {
+                (Some(model.clone()), format!("models.rs::{model}"))
+            } else {
+                match resolve_property_chain(rust, model, steps) {
+                    ChainResolution::Mapped {
+                        type_name,
+                        rust_item,
+                    } => (type_name, rust_item),
+                    ChainResolution::Unmapped => return EnumMapping::Unmapped,
+                    ChainResolution::Unsupported { rust_item, reason } => {
+                        return EnumMapping::Unsupported { rust_item, reason };
+                    }
+                }
+            }
         }
         EnumContext::Unknown => {
             return EnumMapping::Unsupported {
@@ -1160,6 +1304,224 @@ mod tests {
     use crate::openapi::OpenApiInventory;
     use crate::rust_inventory::RustInventory;
 
+    #[test]
+    fn helper_exemptions_require_an_existing_unspecified_method() {
+        let config = AnalyzerConfig {
+            non_openapi_client_methods: BTreeSet::from(["query_helper".into()]),
+            ..AnalyzerConfig::default()
+        };
+        for (has_method, has_operation) in
+            [(true, false), (false, false), (true, true), (false, true)]
+        {
+            let rust = RustInventory::parse(
+                if has_method {
+                    "pub struct Client; impl Client { pub async fn query_helper(&self) {} }"
+                } else {
+                    "pub struct Client; impl Client {}"
+                },
+                "",
+                "",
+            )
+            .unwrap();
+            let paths = if has_operation {
+                serde_json::json!({"/helper": {"get": {"operationId": "queryHelper"}}})
+            } else {
+                serde_json::json!({})
+            };
+            let spec = OpenApiInventory::build(
+                &serde_json::json!({"paths": paths, "components": {"schemas": {}}}),
+                &config,
+            )
+            .unwrap();
+            let report = compare(&rust, &spec, &spec, &config);
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::StaleExemption),
+                !has_method || has_operation,
+            );
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::MissingClientMethod),
+                !has_method && has_operation,
+                "an obsolete exclusion must not suppress a missing operation",
+            );
+            assert!(
+                !report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::ExtraClientMethod)
+            );
+        }
+    }
+
+    #[test]
+    fn partial_required_exemptions_require_an_effective_override() {
+        let schema = serde_json::json!({
+            "properties": {"name": {"type": "string"}, "note": {"type": "string", "description": "Optional note"}},
+            "required": []
+        });
+        let mut completed = schema.clone();
+        completed["required"] = serde_json::json!(["name"]);
+        let mut implicit = schema.clone();
+        implicit.as_object_mut().unwrap().remove("required");
+        let mut optional = schema.clone();
+        optional["properties"]["name"]["description"] = serde_json::json!("Optional name");
+        let mut nullable = schema.clone();
+        nullable["properties"]["name"]["type"] = serde_json::json!(["string", "null"]);
+        for (case, name, schema, stale) in [
+            ("partial array", "Widget", schema.clone(), false),
+            ("complete array", "Widget", completed, true),
+            ("no array", "Widget", implicit, true),
+            ("optional descriptions", "Widget", optional, true),
+            ("nullable property", "Widget", nullable, true),
+            ("no properties", "Widget", serde_json::json!({}), true),
+            ("deleted schema", "Widget", serde_json::Value::Null, true),
+            ("PATCH policy", "WidgetPatchRequest", schema, true),
+        ] {
+            let config = AnalyzerConfig {
+                partial_required_schemas: BTreeSet::from([name.into()]),
+                ..AnalyzerConfig::default()
+            };
+            let schemas = if schema.is_null() {
+                serde_json::json!({})
+            } else {
+                serde_json::json!({name: schema})
+            };
+            let spec = OpenApiInventory::build(
+                &serde_json::json!({"paths": {}, "components": {"schemas": schemas}}),
+                &config,
+            )
+            .unwrap();
+            let rust = RustInventory::parse(
+                "",
+                &format!("pub struct {name} {{ pub name: String, pub note: Option<String> }}"),
+                "",
+            )
+            .unwrap();
+            let report = compare(&rust, &spec, &spec, &config);
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::StaleExemption),
+                stale,
+                "{case}: {}",
+                report.render_text(),
+            );
+        }
+    }
+
+    #[test]
+    fn partial_required_exemptions_follow_request_position_including_orphans() {
+        let config = AnalyzerConfig {
+            partial_required_schemas: BTreeSet::from(["Widget".into()]),
+            ..AnalyzerConfig::default()
+        };
+        let rust = RustInventory::parse(
+            "pub struct Client; impl Client { pub async fn use_widget(&self) {} }",
+            "pub struct Widget { pub name: String } pub struct WidgetResponse { pub name: Option<String> }",
+            "",
+        ).unwrap();
+        for (request, response) in [(false, false), (true, false), (false, true), (true, true)] {
+            let mut operation = serde_json::json!({"operationId": "useWidget"});
+            let content = serde_json::json!({"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Widget"}}}});
+            if request {
+                operation["requestBody"] = content.clone();
+            }
+            if response {
+                operation["responses"] = serde_json::json!({"200": content});
+            }
+            let spec = OpenApiInventory::build(&serde_json::json!({
+                "paths": {"/widgets": {"post": operation}},
+                "components": {"schemas": {"Widget": {"properties": {"name": {"type": "string"}}, "required": []}}}
+            }), &config).unwrap();
+            let report = compare(&rust, &spec, &spec, &config);
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::StaleExemption),
+                response && !request,
+                "request={request}, response={response}: {}",
+                report.render_text(),
+            );
+        }
+    }
+
+    #[test]
+    fn partial_required_exemptions_cover_inline_union_branches() {
+        let config = AnalyzerConfig {
+            partial_required_schemas: BTreeSet::from(["Widget".into()]),
+            ..AnalyzerConfig::default()
+        };
+        let models = r#"
+            pub enum Widget { A(Payload) }
+            pub struct Payload { pub kind: Kind, pub name: String }
+            pub enum Kind { #[serde(rename = "a")] A }
+        "#;
+        let schema = serde_json::json!({"oneOf": [{
+            "properties": {"kind": {"type": "string", "const": "a"}, "name": {"type": "string"}},
+            "required": ["kind"]
+        }]});
+        let report = analyze_fixture(models, schema.clone(), config.clone());
+        assert!(!report.has_drift(), "{}", report.render_text());
+        let mut completed = schema;
+        completed["oneOf"][0]["required"] = serde_json::json!(["kind", "name"]);
+        let report = analyze_fixture(models, completed, config);
+        assert_eq!(report.findings.len(), 1, "{}", report.render_text());
+        assert_eq!(report.findings[0].kind, FindingKind::StaleExemption);
+    }
+
+    #[test]
+    fn stale_string_exemptions_have_stable_actionable_reports() {
+        let config = AnalyzerConfig {
+            non_openapi_client_methods: BTreeSet::from(["query_helper".into()]),
+            partial_required_schemas: BTreeSet::from(["Widget".into()]),
+            ..AnalyzerConfig::default()
+        };
+        let rust = RustInventory::parse("", "", "").unwrap();
+        let spec = OpenApiInventory::build(
+            &serde_json::json!({"paths": {}, "components": {"schemas": {}}}),
+            &config,
+        )
+        .unwrap();
+        let report = compare(&rust, &spec, &spec, &config);
+        assert!(report.has_drift());
+        assert_eq!(report.actionable_count(), 2);
+        let expected_findings: Vec<_> = [
+            ("non_openapi_client_method", "query_helper"),
+            ("partial_required_schema", "Widget"),
+        ]
+        .into_iter()
+        .map(|(kind, key)| {
+            serde_json::json!({
+                "kind": "stale_exemption",
+                "message": format!("{kind} exemption {key} is stale"),
+                "rust_item": format!("analyzer_config::{kind}::{key}"),
+                "details": {"exemption_kind": kind, "key": key},
+            })
+        })
+        .collect();
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::json!({
+                "schema_version": 8,
+                "findings": expected_findings,
+                "unsupported_enum_constraints": [],
+            })
+        );
+        assert_eq!(report.render_text(), [
+            "2 actionable OpenAPI drift finding(s):",
+            "- StaleExemption [analyzer_config::non_openapi_client_method::query_helper]: non_openapi_client_method exemption query_helper is stale",
+            "- StaleExemption [analyzer_config::partial_required_schema::Widget]: partial_required_schema exemption Widget is stale",
+        ].join("\n"));
+        assert_eq!(report, compare(&rust, &spec, &spec, &config));
+    }
+
     fn analyze_fixture(
         models: &str,
         schema: serde_json::Value,
@@ -1345,7 +1707,7 @@ mod tests {
             Some("models.rs::WidgetResponse")
         );
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 5);
+        assert_eq!(json["schema_version"], 8);
         assert_eq!(
             json["findings"][0]["kind"],
             "additional_properties_mismatch"
@@ -1761,6 +2123,159 @@ mod tests {
                 .iter()
                 .any(|finding| { finding.kind == FindingKind::StaleExemption })
         );
+    }
+
+    fn compare_acknowledged_fixture(
+        before: Option<serde_json::Value>,
+        after: Option<serde_json::Value>,
+    ) -> DriftReport {
+        let pointer = "/components/schemas/Widget/properties/roles/items";
+        let config = AnalyzerConfig {
+            acknowledged_unsupported_enum_pointers: BTreeSet::from([pointer.into()]),
+            ..AnalyzerConfig::default()
+        };
+        let rust =
+            RustInventory::parse("", "pub struct Widget { pub roles: Vec<String> }", "").unwrap();
+        let make_spec = |values| {
+            let mut document = serde_json::json!({
+                "paths": {}, "components": {"schemas": {"Widget": {
+                    "required": ["roles"],
+                    "properties": {"roles": {"type": "array", "items": {}}}
+                }}}
+            });
+            if let Some(values) = values {
+                document["components"]["schemas"]["Widget"]["properties"]["roles"]["items"]["enum"] =
+                    values;
+            }
+            OpenApiInventory::build(&document, &config).unwrap()
+        };
+        compare(&rust, &make_spec(after), &make_spec(before), &config)
+    }
+
+    #[test]
+    fn acknowledged_enum_sets_ignore_order_and_duplicates_for_all_value_kinds() {
+        for (before, after) in [
+            (
+                serde_json::json!(["a", "b"]),
+                serde_json::json!(["b", "a", "b"]),
+            ),
+            (serde_json::json!([1, 2]), serde_json::json!([2, 1, 2])),
+            (serde_json::json!([1, 2]), serde_json::json!([2.0, 1.0])),
+            (
+                serde_json::json!([1.1, 2.2]),
+                serde_json::json!([2.2, 1.1, 1.1]),
+            ),
+            (
+                serde_json::json!(["a", true, null, 3]),
+                serde_json::json!([3, null, true, "a", 3]),
+            ),
+            (serde_json::json!(["a", 1]), serde_json::json!([1.0, "a"])),
+            (serde_json::json!([]), serde_json::json!([])),
+        ] {
+            let report = compare_acknowledged_fixture(Some(before), Some(after));
+            assert!(!report.has_drift(), "{}", report.render_text());
+            assert_eq!(report.unsupported_enum_constraints.len(), 1);
+            assert!(report.unsupported_enum_constraints[0].acknowledged);
+        }
+    }
+
+    #[test]
+    fn acknowledged_enum_value_changes_are_actionable_and_report_both_sets() {
+        for (before, after, previous_values, current_values) in [
+            (
+                serde_json::json!(["a"]),
+                serde_json::json!(["b", "a"]),
+                "\"a\"",
+                "\"a\", \"b\"",
+            ),
+            (
+                serde_json::json!(["a", "b"]),
+                serde_json::json!(["a"]),
+                "\"a\", \"b\"",
+                "\"a\"",
+            ),
+            (
+                serde_json::json!([1, 2]),
+                serde_json::json!([1, 3]),
+                "1, 2",
+                "1, 3",
+            ),
+            (
+                serde_json::json!([1.1, 2.2]),
+                serde_json::json!([1.1, 3.3]),
+                "1.1, 2.2",
+                "1.1, 3.3",
+            ),
+            (
+                serde_json::json!([u64::MAX]),
+                serde_json::json!([u64::MAX - 1]),
+                "18446744073709551615",
+                "18446744073709551614",
+            ),
+            (
+                serde_json::json!(["a", true]),
+                serde_json::json!(["a", false]),
+                "\"a\", true",
+                "\"a\", false",
+            ),
+            (
+                serde_json::json!(["1", null]),
+                serde_json::json!([1, null]),
+                "\"1\", null",
+                "1, null",
+            ),
+            (serde_json::json!(["a"]), serde_json::json!([]), "\"a\"", ""),
+        ] {
+            let report = compare_acknowledged_fixture(Some(before), Some(after));
+            assert_eq!(report.actionable_count(), 1, "{}", report.render_text());
+            assert_eq!(report.unsupported_enum_constraints.len(), 1);
+            assert!(report.unsupported_enum_constraints[0].acknowledged);
+            let finding = &report.findings[0];
+            assert_eq!(finding.kind, FindingKind::AcknowledgedEnumConstraintChanged);
+            assert_eq!(
+                finding.spec_pointer.as_deref(),
+                Some("/components/schemas/Widget/properties/roles/items")
+            );
+            assert_eq!(finding.details["previous_values"], previous_values);
+            assert_eq!(finding.details["current_values"], current_values);
+            let json = serde_json::to_value(&report).unwrap();
+            assert_eq!(
+                json["findings"][0]["kind"],
+                "acknowledged_enum_constraint_changed"
+            );
+            assert_eq!(
+                json["findings"][0]["details"]["previous_values"],
+                previous_values
+            );
+            assert_eq!(
+                json["findings"][0]["details"]["current_values"],
+                current_values
+            );
+            let decoded: DriftReport = serde_json::from_value(json).unwrap();
+            assert_eq!(report, decoded);
+            assert!(report.render_text().contains("AcknowledgedEnumConstraintChanged [/components/schemas/Widget/properties/roles/items]"));
+        }
+    }
+
+    #[test]
+    fn acknowledged_enum_constraints_missing_from_either_spec_are_actionable() {
+        let added = compare_acknowledged_fixture(None, Some(serde_json::json!(["a"])));
+        assert_eq!(added.actionable_count(), 1);
+        assert_eq!(
+            added.findings[0].kind,
+            FindingKind::AcknowledgedEnumConstraintChanged
+        );
+        assert_eq!(added.findings[0].details["previous_values"], "(absent)");
+        assert!(added.unsupported_enum_constraints[0].acknowledged);
+
+        let removed = compare_acknowledged_fixture(Some(serde_json::json!(["a"])), None);
+        assert_eq!(removed.actionable_count(), 1);
+        assert_eq!(removed.findings[0].kind, FindingKind::StaleExemption);
+        assert_eq!(
+            removed.findings[0].details["exemption_kind"],
+            "unsupported_enum"
+        );
+        assert!(removed.unsupported_enum_constraints.is_empty());
     }
 
     #[test]

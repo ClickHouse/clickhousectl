@@ -250,6 +250,109 @@ mod tests {
     }
 
     #[test]
+    fn inline_error_responses_are_checked_and_reachable_through_error_payloads() {
+        let source = source_tree(
+            "pub struct Client; impl Client { pub async fn attach_widget(&self) -> Result<(), Error> {} }",
+            r#"
+                pub struct AttachWidgetResponse424 {
+                    #[serde(skip_serializing_if = "Option::is_none")]
+                    pub code: Option<Code>,
+                    #[serde(rename = "canWake", skip_serializing_if = "Option::is_none")]
+                    pub can_wake: Option<bool>,
+                }
+                pub enum Code { #[serde(rename = "IDLE")] Idle, #[serde(untagged)] Unknown(String) }
+                pub struct UnusedResponse { pub strict: String }
+            "#,
+        );
+        fs::write(
+            source.path().join("error.rs"),
+            r#"
+            pub enum Error { Dependency(Box<Dependency>), Other(String) }
+            pub struct Dependency { pub response: AttachWidgetResponse424 }
+            pub enum UnusedError { Unused(UnusedResponse) }
+        "#,
+        )
+        .unwrap();
+        let tree = response_tree(source.path()).unwrap();
+        assert_eq!(
+            tree.types,
+            BTreeSet::from(["AttachWidgetResponse424".into(), "Code".into()])
+        );
+        assert!(tree.non_option_fields.is_empty());
+        assert!(tree.option_fields_missing_skip_serializing_if.is_empty());
+        let mut spec = serde_json::json!({
+            "paths": {"/widgets/{id}": {"put": {
+                "operationId": "attachWidget", "responses": {"424": {"content": {"application/json": {"schema": {
+                    "type": "object", "properties": {"code": {"type": "string", "enum": ["IDLE"]}, "canWake": {"type": "boolean"}},
+                    "required": ["code", "canWake"]
+                }}}}}
+            }}}, "components": {"schemas": {}}
+        });
+        let baseline = spec.to_string();
+        let config = AnalyzerConfig::default();
+        let check = |document: &serde_json::Value| {
+            analyze(
+                AnalysisInput {
+                    spec_json: &document.to_string(),
+                    snapshot_json: &baseline,
+                    rust_source_root: source.path(),
+                },
+                &config,
+            )
+            .unwrap()
+        };
+        assert!(!check(&spec).has_drift());
+        let schema_pointer =
+            "/paths/~1widgets~1{id}/put/responses/424/content/application~1json/schema";
+        let schema = spec.pointer_mut(schema_pointer).unwrap();
+        schema["properties"]["code"]["enum"] = serde_json::json!(["STOPPED"]);
+        schema["properties"]
+            .as_object_mut()
+            .unwrap()
+            .remove("canWake");
+        schema["properties"]["requestId"] = serde_json::json!({"type": "string"});
+        let report = check(&spec);
+        for kind in [
+            report::FindingKind::MissingEnumValue,
+            report::FindingKind::ExtraEnumValue,
+            report::FindingKind::MissingStructField,
+            report::FindingKind::ExtraStructField,
+        ] {
+            assert!(
+                report.findings.iter().any(|finding| finding.kind == kind),
+                "{}",
+                report.render_text()
+            );
+        }
+        assert!(report.findings.iter().all(|finding| {
+            finding
+                .spec_pointer
+                .as_ref()
+                .unwrap()
+                .starts_with(schema_pointer)
+        }));
+        fs::write(
+            source.path().join("error.rs"),
+            "pub enum Error { Other(String) }",
+        )
+        .unwrap();
+        let report = check(&spec);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == report::FindingKind::MissingModelType)
+        );
+        assert!(
+            report
+                .unsupported_enum_constraints
+                .iter()
+                .all(|constraint| !constraint.acknowledged)
+        );
+        assert_eq!(report.unsupported_enum_constraints.len(), 1);
+    }
+
+    #[test]
     fn integer_float_inventory_resolves_split_models_and_ignores_number_fields() {
         let spec = r##"{
             "paths": {

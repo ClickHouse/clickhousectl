@@ -1016,12 +1016,85 @@ pub async fn run_child_send() {
 // `clickhousectl telemetry` subcommand
 // ---------------------------------------------------------------------------
 
-pub fn run_command(cmd: crate::cli::TelemetryCommands) -> Result<()> {
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TelemetryPreference {
+    Unavailable,
+    Unconfigured,
+    Enabled,
+    Disabled,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TelemetryReason {
+    DoNotTrack,
+    HomeUnavailable,
+    Unconfigured,
+    PreferenceEnabled,
+    PreferenceDisabled,
+}
+
+#[derive(serde::Serialize)]
+struct TelemetryStatus {
+    preference: TelemetryPreference,
+    enabled: bool,
+    reason: TelemetryReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    config_path: Option<PathBuf>,
+}
+
+impl TelemetryStatus {
+    fn read(config_path: Option<PathBuf>, do_not_track: bool) -> Self {
+        let preference = match config_path.as_deref().map(load_state_from) {
+            None => TelemetryPreference::Unavailable,
+            Some(State::Missing) => TelemetryPreference::Unconfigured,
+            Some(State::Enabled) => TelemetryPreference::Enabled,
+            Some(State::Disabled) => TelemetryPreference::Disabled,
+        };
+        let reason = if do_not_track {
+            TelemetryReason::DoNotTrack
+        } else {
+            match preference {
+                TelemetryPreference::Unavailable => TelemetryReason::HomeUnavailable,
+                TelemetryPreference::Unconfigured => TelemetryReason::Unconfigured,
+                TelemetryPreference::Enabled => TelemetryReason::PreferenceEnabled,
+                TelemetryPreference::Disabled => TelemetryReason::PreferenceDisabled,
+            }
+        };
+        Self {
+            preference,
+            enabled: matches!(reason, TelemetryReason::PreferenceEnabled),
+            reason,
+            config_path,
+        }
+    }
+}
+
+fn print_json_status(action: &'static str) -> Result<()> {
+    #[derive(serde::Serialize)]
+    struct Output {
+        action: &'static str,
+        #[serde(flatten)]
+        status: TelemetryStatus,
+    }
+    let output = Output {
+        action,
+        status: TelemetryStatus::read(state_path(), env_truthy(real_env_lookup(DNT_ENV))),
+    };
+    println!("{}", serde_json::to_string_pretty(&output)?);
+    Ok(())
+}
+
+pub fn run_command(cmd: crate::cli::TelemetryCommands, json: bool) -> Result<()> {
     use crate::cli::TelemetryCommands;
 
     match cmd {
         TelemetryCommands::Enable => {
             set_disabled(false)?;
+            if json {
+                return print_json_status("enable");
+            }
             println!("Telemetry enabled.");
             // The preference is recorded either way, but DNT overrides it
             // (see `decide`): without this note the user would see success
@@ -1039,10 +1112,16 @@ pub fn run_command(cmd: crate::cli::TelemetryCommands) -> Result<()> {
         }
         TelemetryCommands::Disable => {
             set_disabled(true)?;
+            if json {
+                return print_json_status("disable");
+            }
             println!("Telemetry disabled.");
             Ok(())
         }
         TelemetryCommands::Status => {
+            if json {
+                return print_json_status("status");
+            }
             print_status();
             Ok(())
         }
@@ -1088,6 +1167,16 @@ fn print_status() {
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn json_status_reports_unavailable_home_without_a_config_path() {
+        let status = TelemetryStatus::read(None, false);
+        let value = serde_json::to_value(status).unwrap();
+        assert_eq!(value["preference"], "unavailable");
+        assert_eq!(value["enabled"], false);
+        assert_eq!(value["reason"], "home_unavailable");
+        assert!(value.get("config_path").is_none());
+    }
 
     /// Env lookup over a synthetic map; `set_var` is unsafe in edition 2024.
     fn env_of(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
@@ -1564,23 +1653,113 @@ mod tests {
     }
 
     #[test]
+    fn primary_json_file_aliases_capture_only_canonical_argument_names() {
+        for (command, aliases) in [
+            (
+                vec!["backup", "bucket", "create", "SECRET-SERVICE"],
+                vec!["file", "config-file", "config"],
+            ),
+            (
+                vec!["service", "settings", "set", "SECRET-SERVICE"],
+                vec!["file", "settings-file"],
+            ),
+        ] {
+            for alias in aliases {
+                let flag = format!("--{alias}");
+                let mut args = vec!["chctl", "cloud"];
+                args.extend(command.iter().copied());
+                args.extend([flag.as_str(), "SECRET-PATH.json"]);
+                let inv = capture_from(&args);
+                assert_eq!(inv.flags, ["file"]);
+                assert_eq!(
+                    inv.positionals,
+                    if command[0] == "backup" {
+                        vec!["service_id"]
+                    } else {
+                        vec!["resource_id"]
+                    }
+                );
+                let json =
+                    serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
+                assert!(!json.contains("SECRET"), "file value leaked: {json}");
+
+                args.extend(["--file", "SECRET-OTHER.json"]);
+                let lossy = capture_lossy_from(&args);
+                assert_eq!(lossy.flags, ["file"]);
+                assert_eq!(lossy.outcome, "other_parse_error");
+                let json =
+                    serde_json::to_string(&build_payload(&lossy, 2, &env_of(&[]), None)).unwrap();
+                assert!(
+                    !json.contains("SECRET"),
+                    "conflicting file value leaked: {json}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cloud_resource_selectors_capture_names_only() {
+        for (tail, flags) in [
+            (
+                vec![
+                    "--org-name",
+                    "SECRET-ORG",
+                    "service",
+                    "update",
+                    "--name",
+                    "SECRET-TARGET",
+                    "--new-name",
+                    "SECRET-REPLACEMENT",
+                ],
+                vec!["name", "new-name", "org-name"],
+            ),
+            (
+                vec!["member", "get", "--email", "SECRET-EMAIL"],
+                vec!["email"],
+            ),
+            (
+                vec![
+                    "postgres",
+                    "restore",
+                    "--source-name",
+                    "SECRET-SOURCE",
+                    "--name",
+                    "SECRET-NEW",
+                    "--restore-target",
+                    "2026-09-01T12:00:00Z",
+                ],
+                vec!["name", "restore-target", "source-name"],
+            ),
+        ] {
+            let mut args = vec!["chctl", "cloud"];
+            args.extend(tail);
+            let inv = capture_from(&args);
+            assert_eq!(inv.flags, flags);
+            let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
+            assert!(!json.contains("SECRET"), "selector value leaked: {json}");
+        }
+    }
+
+    #[test]
     fn capture_reports_names_only_never_values_or_positionals() {
-        let inv = capture_from(&[
-            "clickhousectl",
-            "cloud",
-            "--json",
-            "service",
-            "get",
-            "SECRET-SERVICE-ID",
-            "--org-id",
-            "SECRET-ORG",
-        ]);
-        assert_eq!(inv.command, "cloud service get");
-        assert_eq!(inv.flags, ["json", "org-id"]);
-        // The positional's definition id is recorded; its value is not (#480).
-        assert_eq!(inv.positionals, ["service_id"]);
-        let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
-        assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+        for position in 3..=6 {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "--json",
+                "service",
+                "get",
+                "SECRET-SERVICE-ID",
+            ];
+            args.splice(position..position, ["--org-id", "SECRET-ORG"]);
+            let inv = capture_from(&args);
+            assert_eq!(inv.command, "cloud service get");
+            assert_eq!(inv.flags, ["json", "org-id"]);
+            // The positional's definition id is recorded; its value is not (#480).
+            assert_eq!(inv.positionals, ["resource_id"]);
+            let json = serde_json::to_string(&build_payload(&inv, 0, &env_of(&[]), None)).unwrap();
+            assert!(!json.contains("SECRET"), "payload leaked a value: {json}");
+        }
     }
 
     /// The three lifecycle shapes issue #480 could not tell apart.
