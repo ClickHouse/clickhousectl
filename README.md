@@ -315,10 +315,6 @@ clickhousectl cloud clickstack alert update <service-id> <alert-id> \
 A `saved_search` alert uses `savedSearchId` instead of `dashboardId` and `tileId`. The `30s` alert
 interval is accepted when the 30-second alert interval feature is enabled for the ClickStack team.
 
-The Rust API client's ClickStack alert, webhook, and saved-search list methods accept
-optional `limit` and `offset` arguments. Pass `None, None` for server defaults, or
-request successive pages when a complete inventory is required.
-
 ## Local
 
 ### Installing and managing ClickHouse versions
@@ -1327,10 +1323,6 @@ Use `clickhousectl cloud postgres create --help` for the complete option list. S
 - The previous primary is demoted asynchronously and can keep reporting `isPrimary=true` for minutes afterwards. No client can see that pair from one service, so `promote` always reports the dual-primary window on stderr; verify with `clickhousectl cloud postgres list --filter isPrimary=true` that exactly one service is primary.
 
 ### Backups
-
-The Rust API client provides the beta `snapshot_get_list` and `snapshot_get` methods
-for service snapshots. See the [library documentation](crates/clickhouse-cloud-api/README.md)
-for snapshot models and the latest ClickPipes request fields.
 
 ```bash
 clickhousectl cloud backup list <service-id>
@@ -3058,10 +3050,6 @@ Version creation uses defaults for omitted options, without inheriting the previ
 Creation and version creation each request a new upload URL, stream the ZIP archive, and submit its upload ID once. Failed uploads never submit a create request. Uploads time out after five minutes; rerun the command to obtain a fresh session after any failure. The target service must be running; wake an idle service before attaching. Attachment replaces the service's existing version; omitted `--version` selects the latest ready version. A dependency failure (HTTP 424) exits with an error; inspect the UDF and service before retrying. The latest version and versions still building cannot be deleted individually. A whole UDF cannot be deleted while any version is still building; wait for all versions to finish building first. Deleting a UDF deletes all its versions and detaches it from every service; service removal finishes asynchronously.
 
 All three list commands expose `--cursor` and `--limit` (1–100). JSON output retains the API's pagination object unchanged; human output summarizes the total record count, page limit, and available cursors. Detail and list output tolerate missing fields and new response status values.
-
-The UDF API request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation. Rust callers receive `Error::UdfAttachmentUnavailable` for a structured attachment failure (HTTP 424); its `UdfAttachResponse424` payload preserves the error code, service state, wake eligibility, and request ID. Fields tolerate absence and null, and enums retain unknown values. Malformed responses remain `Error::Api` with the original error message.
-
-The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 8.
 
 ## CLI help checks
 
