@@ -789,9 +789,11 @@ clickhousectl cloud service list
 clickhousectl cloud service get <service-id>
 clickhousectl cloud service get --name analytics
 
-# Discover profiles available in a region before choosing --profile
+# Discover profiles available in a region or BYOC infrastructure
 clickhousectl cloud service profile list --region us-east-1
-clickhousectl cloud service profile list --region us-east-1 --byoc-id <infrastructure-id> --json
+clickhousectl cloud service profile list --byoc-id <infrastructure-id> --json
+# If both are supplied, Cloud validates the region against the infrastructure
+clickhousectl cloud service profile list --region us-east-1 --byoc-id <infrastructure-id>
 
 # Create a BYOC service using the discovered profile and its exact memory size
 clickhousectl cloud service create --name my-byoc-service \
@@ -2829,6 +2831,9 @@ clickhousectl cloud invitation delete <invitation-id>
 ```
 
 ### Keys
+
+Key listing and `--name` lookup read all pages. JSON lists remain a single array;
+name lookup rejects ambiguous matches even when they appear on different pages.
 
 ```bash
 clickhousectl cloud key list

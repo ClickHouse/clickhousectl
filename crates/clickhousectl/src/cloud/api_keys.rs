@@ -11,6 +11,7 @@ use clickhouse_cloud_api::models::IpAccessListEntry;
 use clickhouse_cloud_api::models::{
     ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
 };
+use std::collections::HashSet;
 use tabled::{Table, Tabled, settings::Style};
 
 const API_KEY_STATES: &[&str] = &["enabled", "disabled"];
@@ -612,12 +613,27 @@ impl CloudClient {
         &self,
         org_id: &str,
     ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::ApiKey>> {
-        let response = self
-            .api()
-            .openapi_key_get_list(org_id, None, None)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
-        Self::unwrap_response(response)
+        let mut keys = Vec::new();
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+        loop {
+            let mut response = self
+                .api()
+                .openapi_key_get_list(org_id, None, cursor.as_deref())
+                .await
+                .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+            let next_cursor = response.next_cursor.take();
+            keys.extend(Self::unwrap_response(response)?);
+            match next_cursor {
+                None => return Ok(keys),
+                Some(next) => {
+                    if !seen_cursors.insert(next.clone()) {
+                        return Err(CloudError::new("API key list returned a repeated cursor"));
+                    }
+                    cursor = Some(next);
+                }
+            }
+        }
     }
 
     pub async fn create_api_key(
