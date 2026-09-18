@@ -4296,7 +4296,7 @@ impl CloudClient {
     ) -> crate::cloud::client::Result<Vec<ServiceProfile>> {
         let response = self
             .api()
-            .service_profiles_list(org_id, region_id, byoc_id)
+            .service_profiles_list(org_id, Some(region_id), byoc_id)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)

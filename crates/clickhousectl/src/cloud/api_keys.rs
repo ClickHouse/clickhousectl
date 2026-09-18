@@ -614,7 +614,7 @@ impl CloudClient {
     ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::ApiKey>> {
         let response = self
             .api()
-            .openapi_key_get_list(org_id)
+            .openapi_key_get_list(org_id, None, None)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)

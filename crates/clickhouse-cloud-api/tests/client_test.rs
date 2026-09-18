@@ -526,10 +526,85 @@ async fn list_api_keys() {
         .await;
 
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
-    let resp = client.openapi_key_get_list("org-1").await.unwrap();
+    let resp = client
+        .openapi_key_get_list("org-1", None, None)
+        .await
+        .unwrap();
     let keys = resp.result.unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].name.as_deref(), Some("Production Key"));
+}
+
+#[tokio::test]
+async fn list_api_keys_pagination_encodes_parameters_and_preserves_envelope() {
+    let (server, client) = setup().await;
+    let cursor = "opaque +/=&?雪";
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/keys"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200.0, "requestId": "req-page", "result": [],
+            "limit": 25, "totalCount": 100, "nextCursor": cursor
+        })))
+        .expect(4)
+        .mount(&server)
+        .await;
+    for (limit, cursor_arg) in [
+        (None, None),
+        (Some(25), None),
+        (None, Some(cursor)),
+        (Some(25), Some(cursor)),
+    ] {
+        let response = client
+            .openapi_key_get_list("org", limit, cursor_arg)
+            .await
+            .unwrap();
+        assert_eq!(response.status, Some(200));
+        assert_eq!(response.request_id.as_deref(), Some("req-page"));
+        assert_eq!(response.result, Some(vec![]));
+        assert_eq!(response.error, None);
+        assert_eq!(response.limit, Some(25));
+        assert_eq!(response.total_count, Some(100));
+        assert_eq!(response.next_cursor.as_deref(), Some(cursor));
+    }
+    let requests = server.received_requests().await.unwrap();
+    let queries: Vec<Vec<(String, String)>> = requests
+        .iter()
+        .map(|request| request.url.query_pairs().into_owned().collect())
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            vec![],
+            vec![("limit".into(), "25".into())],
+            vec![("cursor".into(), cursor.into())],
+            vec![
+                ("limit".into(), "25".into()),
+                ("cursor".into(), cursor.into())
+            ],
+        ]
+    );
+}
+
+#[tokio::test]
+async fn list_api_keys_preserves_api_errors() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/keys"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403.0, "error": "forbidden", "requestId": "req-denied"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let error = client
+        .openapi_key_get_list("org", Some(25), Some("cursor"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, clickhouse_cloud_api::Error::Api { status: 403, message } if message == "forbidden")
+    );
 }
 
 #[tokio::test]
@@ -4868,21 +4943,27 @@ async fn credit_balances_get_includes_trial_and_prepaid_balances() {
 }
 
 #[tokio::test]
-async fn service_profiles_list_encodes_region_and_optional_byoc() {
+async fn service_profiles_list_encodes_optional_region_and_byoc() {
     let (server, client) = setup().await;
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org/serviceProfiles"))
         .and(basic_auth("key", "secret"))
-        .and(query_param("region_id", "us-east-1"))
         .respond_with(ok_json(
             serde_json::json!([{"profile": "v1-standard-byoc-4", "cpuCores": 4, "memoryGi": 16}]),
         ))
-        .expect(2)
+        .expect(4)
         .mount(&server)
         .await;
-    for byoc in [None, Some("byoc +/id")] {
+    let region = "region +/=&?雪";
+    let byoc = "byoc +/=&?雪";
+    for (region_id, byoc_id) in [
+        (None, None),
+        (Some(region), None),
+        (None, Some(byoc)),
+        (Some(region), Some(byoc)),
+    ] {
         let result = client
-            .service_profiles_list("org", "us-east-1", byoc)
+            .service_profiles_list("org", region_id, byoc_id)
             .await
             .unwrap()
             .result
@@ -4892,17 +4973,21 @@ async fn service_profiles_list_encodes_region_and_optional_byoc() {
         assert_eq!(result[0].memory_gi, Some(16.0));
     }
     let requests = server.received_requests().await.unwrap();
-    assert!(
-        !requests[0]
-            .url
-            .query_pairs()
-            .any(|(key, _)| key == "byoc_id")
-    );
-    assert!(
-        requests[1]
-            .url
-            .query_pairs()
-            .any(|(key, value)| key == "byoc_id" && value == "byoc +/id")
+    let queries: Vec<Vec<(String, String)>> = requests
+        .iter()
+        .map(|request| request.url.query_pairs().into_owned().collect())
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            vec![],
+            vec![("region_id".into(), region.into())],
+            vec![("byoc_id".into(), byoc.into())],
+            vec![
+                ("region_id".into(), region.into()),
+                ("byoc_id".into(), byoc.into())
+            ],
+        ]
     );
 }
 
@@ -4944,7 +5029,7 @@ async fn new_discovery_operations_preserve_api_errors() {
     let errors = [
         client.credit_balances_get("org").await.unwrap_err(),
         client
-            .service_profiles_list("org", "region", None)
+            .service_profiles_list("org", Some("region"), None)
             .await
             .unwrap_err(),
         client

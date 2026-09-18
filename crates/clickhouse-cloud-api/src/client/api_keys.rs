@@ -3,13 +3,24 @@ use crate::error::Error;
 use crate::models::*;
 
 impl Client {
-    /// Get list of all keys
+    /// Get one page of keys.
+    ///
+    /// `limit` accepts 1–250; omission uses the server default of 250. Pass the
+    /// response's `next_cursor` to fetch another page, until it is `None`.
     pub async fn openapi_key_get_list(
         &self,
         organization_id: &str,
+        limit: Option<i64>,
+        cursor: Option<&str>,
     ) -> Result<ApiResponse<Vec<ApiKey>>, Error> {
         let path = format!("/v1/organizations/{organization_id}/keys");
-        let req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(cursor) = cursor {
+            req = req.query(&[("cursor", cursor)]);
+        }
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;
