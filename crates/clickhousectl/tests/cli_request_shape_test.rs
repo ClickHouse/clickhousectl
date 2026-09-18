@@ -27207,3 +27207,410 @@ async fn start_paused_omission_and_database_rejection_are_preserved() {
         assert!(mock.received_requests().await.unwrap().is_empty());
     }
 }
+
+// #990: API-key pagination belongs to the shared list wrapper, including name lookup.
+const API_KEYS_PATH: &str = "/v1/organizations/org-1/keys";
+const KEY_PAGE_CURSOR: &str = "opaque +/&?=雪";
+const PAGED_KEY_ID: &str = "11111111-2222-3333-4444-555555555555";
+const OTHER_PAGED_KEY_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+async fn mount_key_page(mock: &MockServer, cursor: Option<&str>, status: u16, body: Value) {
+    let matcher = Mock::given(method("GET")).and(path(API_KEYS_PATH));
+    let matcher = match cursor {
+        Some(cursor) => matcher.and(query_param("cursor", cursor)),
+        None => matcher.and(wiremock::matchers::query_param_is_missing("cursor")),
+    };
+    matcher
+        .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+async fn assert_key_page_requests(mock: &MockServer, cursors: &[Option<&str>]) {
+    let requests = mock.received_requests().await.unwrap();
+    let pages: Vec<_> = requests
+        .iter()
+        .filter(|request| request.url.path() == API_KEYS_PATH)
+        .collect();
+    assert_eq!(pages.len(), cursors.len());
+    for (request, cursor) in pages.iter().zip(cursors) {
+        assert_eq!(request.method, "GET");
+        assert!(request.body.is_empty());
+        let expected: Vec<_> = cursor
+            .iter()
+            .map(|cursor| ("cursor".to_owned(), (*cursor).to_owned()))
+            .collect();
+        assert_eq!(
+            request.url.query_pairs().into_owned().collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            request.headers["authorization"].to_str().unwrap(),
+            "Basic ZmFrZS1rZXktZm9yLXRlc3RzOmZha2Utc2VjcmV0LWZvci10ZXN0cw=="
+        );
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_list_collects_all_pages_in_json_and_human_output() {
+    for human in [false, true] {
+        let mock = MockServer::start().await;
+        let first = serde_json::json!({"id": OTHER_PAGED_KEY_ID, "name": "first-key"});
+        let last = serde_json::json!({"id": PAGED_KEY_ID, "name": "last-key"});
+        mount_key_page(
+            &mock,
+            None,
+            200,
+            serde_json::json!({
+                "result": [first], "nextCursor": KEY_PAGE_CURSOR, "limit": 1, "totalCount": 2
+            }),
+        )
+        .await;
+        // An empty page is not a terminator when the server supplies another cursor.
+        mount_key_page(
+            &mock,
+            Some(KEY_PAGE_CURSOR),
+            200,
+            serde_json::json!({
+                "result": [], "nextCursor": "last-page"
+            }),
+        )
+        .await;
+        mount_key_page(
+            &mock,
+            Some("last-page"),
+            200,
+            serde_json::json!({
+                "result": [last], "nextCursor": null
+            }),
+        )
+        .await;
+        let args = ["key", "list", "--org-id", "org-1"];
+        let output = if human {
+            invoke_cli_with_cloud_credentials_human(&mock, &args)
+        } else {
+            invoke_cli_with_cloud_credentials(&mock, &args)
+        };
+        assert_success(&output);
+        if human {
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert!(stdout.contains("| first-key"), "{stdout}");
+            assert!(stdout.contains("| last-key"), "{stdout}");
+        } else {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                serde_json::json!([first, last])
+            );
+        }
+        assert_key_page_requests(&mock, &[None, Some(KEY_PAGE_CURSOR), Some("last-page")]).await;
+        assert_eq!(mock.received_requests().await.unwrap().len(), 3);
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_accepts_unpaginated_and_null_cursor_responses() {
+    for next_cursor in [None, Some(Value::Null)] {
+        for result in [
+            serde_json::json!([]),
+            serde_json::json!([{ "id": PAGED_KEY_ID, "name": "only-key" }]),
+        ] {
+            let mock = MockServer::start().await;
+            let mut body = serde_json::json!({"result": result});
+            if let Some(cursor) = &next_cursor {
+                body["nextCursor"] = cursor.clone();
+            }
+            mount_key_page(&mock, None, 200, body).await;
+            let output =
+                invoke_cli_with_cloud_credentials(&mock, &["key", "list", "--org-id", "org-1"]);
+            assert_success(&output);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                result
+            );
+            assert_key_page_requests(&mock, &[None]).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_name_lookup_finds_later_match_and_rejects_cross_page_ambiguity() {
+    for ambiguous in [false, true] {
+        let mock = MockServer::start().await;
+        mount_key_page(&mock, None, 200, serde_json::json!({
+            "result": [{"id": OTHER_PAGED_KEY_ID, "name": if ambiguous { "target" } else { "other" }}],
+            "nextCursor": KEY_PAGE_CURSOR
+        })).await;
+        let target = serde_json::json!({"id": PAGED_KEY_ID, "name": "target"});
+        mount_key_page(
+            &mock,
+            Some(KEY_PAGE_CURSOR),
+            200,
+            serde_json::json!({"result": [target]}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path(format!("{API_KEYS_PATH}/{PAGED_KEY_ID}")))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": target})),
+            )
+            .expect(if ambiguous { 0 } else { 1 })
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &["key", "get", "--name", "target", "--org-id", "org-1"],
+        );
+        if ambiguous {
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty());
+            let error = cloud_runtime_error(&output);
+            let message = error["message"].as_str().unwrap();
+            assert!(message.contains("found 2 API key resources"), "{message}");
+        } else {
+            assert_success(&output);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                target
+            );
+        }
+        assert_key_page_requests(&mock, &[None, Some(KEY_PAGE_CURSOR)]).await;
+        assert_eq!(
+            mock.received_requests().await.unwrap().len(),
+            if ambiguous { 2 } else { 3 }
+        );
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_later_page_errors_prevent_partial_output_and_name_resolution() {
+    for lookup in [false, true] {
+        for (status, exit) in [(400, 1), (403, 4)] {
+            let mock = MockServer::start().await;
+            mount_key_page(&mock, None, 200, serde_json::json!({
+                "result": [{"id": PAGED_KEY_ID, "name": "target"}], "nextCursor": KEY_PAGE_CURSOR
+            })).await;
+            mount_key_page(
+                &mock,
+                Some(KEY_PAGE_CURSOR),
+                status,
+                serde_json::json!({"error": "later page denied"}),
+            )
+            .await;
+            let args = if lookup {
+                vec!["key", "get", "--name", "target", "--org-id", "org-1"]
+            } else {
+                vec!["key", "list", "--org-id", "org-1"]
+            };
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert_eq!(output.status.code(), Some(exit), "{output:?}");
+            assert!(output.stdout.is_empty());
+            let error = cloud_runtime_error(&output);
+            assert!(
+                error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("later page denied")
+            );
+            assert_key_page_requests(&mock, &[None, Some(KEY_PAGE_CURSOR)]).await;
+            assert_eq!(mock.received_requests().await.unwrap().len(), 2);
+        }
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_repeated_cursors_fail_before_another_request() {
+    for lookup in [false, true] {
+        let mock = MockServer::start().await;
+        mount_key_page(
+            &mock,
+            None,
+            200,
+            serde_json::json!({
+                "result": [{"id": PAGED_KEY_ID, "name": "target"}], "nextCursor": KEY_PAGE_CURSOR
+            }),
+        )
+        .await;
+        mount_key_page(
+            &mock,
+            Some(KEY_PAGE_CURSOR),
+            200,
+            serde_json::json!({
+                "result": [], "nextCursor": "intermediate"
+            }),
+        )
+        .await;
+        mount_key_page(
+            &mock,
+            Some("intermediate"),
+            200,
+            serde_json::json!({
+                "result": [], "nextCursor": KEY_PAGE_CURSOR
+            }),
+        )
+        .await;
+        let args = if lookup {
+            vec!["key", "get", "--name", "target", "--org-id", "org-1"]
+        } else {
+            vec!["key", "list", "--org-id", "org-1"]
+        };
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stdout.is_empty());
+        let error = cloud_runtime_error(&output);
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains("repeated cursor"), "{message}");
+        assert!(!message.contains(KEY_PAGE_CURSOR), "{message}");
+        assert_key_page_requests(&mock, &[None, Some(KEY_PAGE_CURSOR), Some("intermediate")]).await;
+        assert_eq!(mock.received_requests().await.unwrap().len(), 3);
+    }
+}
+
+#[tokio::test]
+async fn service_profile_list_byoc_only_sends_no_region() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([{"profile": "custom-byoc", "memoryGi": 16.0}]);
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .and(query_param("byoc_id", "byoc-1"))
+        .and(wiremock::matchers::query_param_is_missing("region_id"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "profile",
+            "list",
+            "--byoc-id",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url.query_pairs().collect::<Vec<_>>(),
+        vec![("byoc_id".into(), "byoc-1".into())]
+    );
+}
+
+#[tokio::test]
+async fn service_profile_list_requires_region_or_byoc_before_credentials_or_network() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    for flags in [vec![], vec!["--region"], vec!["--byoc-id"]] {
+        let output = Command::new(clickhousectl_binary())
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", project.path())
+            .current_dir(project.path())
+            .args(["cloud", "--url", &mock.uri(), "service", "profile", "list"])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_profile_list_leaves_region_byoc_validation_to_cloud() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .and(query_param("region_id", "eu-west-1"))
+        .and(query_param("byoc_id", "byoc-1"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(
+            serde_json::json!({"error": "region does not match BYOC infrastructure"}),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "profile",
+            "list",
+            "--region",
+            "eu-west-1",
+            "--byoc-id",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let error = cloud_runtime_error(&output);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("region does not match BYOC infrastructure")
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.query_pairs().count(), 2);
+}
+
+#[tokio::test]
+async fn key_pagination_preserves_oauth_and_treats_empty_cursor_as_opaque() {
+    let mock = MockServer::start().await;
+    mount_key_page(
+        &mock,
+        None,
+        200,
+        serde_json::json!({"result": [], "nextCursor": ""}),
+    )
+    .await;
+    let result = serde_json::json!([{"id": PAGED_KEY_ID, "name": "oauth-key"}]);
+    mount_key_page(&mock, Some(""), 200, serde_json::json!({"result": result})).await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "key",
+            "list",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert_eq!(request.headers["authorization"], "Bearer test-bearer-token");
+    }
+    assert!(requests[0].url.query().is_none());
+    assert_eq!(
+        requests[1].url.query_pairs().collect::<Vec<_>>(),
+        vec![("cursor".into(), "".into())]
+    );
+}
