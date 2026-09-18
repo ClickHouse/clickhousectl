@@ -40,6 +40,12 @@ curl -fsSL https://clickhouse.com/cli | sh
 
 The install script will download the correct version for your OS and install to `~/.local/bin/clickhousectl`. A `chctl` alias is also created automatically for convenience.
 
+### Homebrew
+
+```bash
+brew install clickhouse/tap/clickhousectl
+```
+
 ### `cargo binstall`
 
 If you already have [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall), this pulls the prebuilt binary from `builds.clickhouse.com`:
