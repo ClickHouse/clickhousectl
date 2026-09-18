@@ -1735,6 +1735,10 @@ pub struct MongoDbCreateArgs {
     #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1..))]
     pub pull_batch_size: Option<i64>,
 
+    /// Parallel workers per collection during the initial snapshot
+    #[arg(long, value_name = "WORKERS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub initial_load_parallelism: Option<i64>,
+
     /// Number of rows per partition during the snapshot phase
     #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1000..))]
     pub snapshot_rows_per_partition: Option<i64>,
@@ -5456,6 +5460,11 @@ fn validate_mongodb_create_args(args: &MongoDbCreateArgs) -> CloudResult<()> {
         ("--sync-interval-seconds", args.sync_interval_seconds, 1),
         ("--pull-batch-size", args.pull_batch_size, 1),
         (
+            "--initial-load-parallelism",
+            args.initial_load_parallelism,
+            1,
+        ),
+        (
             "--snapshot-rows-per-partition",
             args.snapshot_rows_per_partition,
             1000,
@@ -5548,7 +5557,7 @@ fn build_mongodb_request(
             None
         },
         settings: ClickPipeMongoDBPipeSettings {
-            initial_load_parallelism: None,
+            initial_load_parallelism: args.initial_load_parallelism,
             replication_mode,
             delete_on_merge: args.delete_on_merge,
             pull_batch_size: args.pull_batch_size,
@@ -12195,6 +12204,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mongodb_initial_load_parallelism_parses_validates_and_preserves_omission() {
+        let base = [
+            "create",
+            "mongodb",
+            "svc-1",
+            "--name",
+            "pipe",
+            "--uri",
+            "mongodb://host/db",
+            "--username",
+            "user",
+            "--password",
+            "pass",
+            "--table-mapping",
+            "db.events:events",
+        ];
+        for (value, expected) in [
+            (None, None),
+            (Some("1"), Some(1)),
+            (Some("9223372036854775807"), Some(i64::MAX)),
+        ] {
+            let mut args = base.to_vec();
+            if let Some(value) = value {
+                args.extend(["--initial-load-parallelism", value]);
+            }
+            let ClickPipeCommands::Create {
+                command: ClickPipeCreateCommands::MongoDB(args),
+            } = parse_clickpipe(&args)
+            else {
+                panic!("mongodb");
+            };
+            assert_eq!(args.initial_load_parallelism, expected);
+            let request = build_mongodb_request(&args).unwrap();
+            assert_eq!(
+                request
+                    .source
+                    .mongodb
+                    .unwrap()
+                    .settings
+                    .initial_load_parallelism,
+                expected
+            );
+        }
+        for value in ["0", "-1", "1.5", "9223372036854775808"] {
+            let mut args = base.to_vec();
+            args.extend(["--initial-load-parallelism", value]);
+            assert_rejected(&args);
+        }
+        let mut args = mongodb_builder_args();
+        args.initial_load_parallelism = Some(0);
+        assert!(
+            build_mongodb_request(&args)
+                .unwrap_err()
+                .message
+                .contains("--initial-load-parallelism must be at least 1")
+        );
+    }
+
     fn mongodb_builder_args() -> MongoDbCreateArgs {
         MongoDbCreateArgs {
             service_id: "svc-1".into(),
@@ -12213,6 +12281,7 @@ mod tests {
             skip_cert_verification: false,
             sync_interval_seconds: None,
             pull_batch_size: None,
+            initial_load_parallelism: None,
             snapshot_rows_per_partition: None,
             snapshot_parallel_collections: None,
             delete_on_merge: None,
@@ -12240,6 +12309,7 @@ mod tests {
         assert_eq!(source.skip_cert_verification, None);
         assert_eq!(source.settings.sync_interval_seconds, None);
         assert_eq!(source.settings.pull_batch_size, None);
+        assert_eq!(source.settings.initial_load_parallelism, None);
         assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
         assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
         assert_eq!(source.settings.delete_on_merge, None);
@@ -12262,6 +12332,7 @@ mod tests {
         args.skip_cert_verification = true;
         args.sync_interval_seconds = Some(1);
         args.pull_batch_size = Some(2);
+        args.initial_load_parallelism = Some(4);
         args.snapshot_rows_per_partition = Some(1000);
         args.snapshot_parallel_collections = Some(3);
         args.delete_on_merge = Some(false);
@@ -12285,6 +12356,7 @@ mod tests {
         assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
         assert_eq!(source.settings.sync_interval_seconds, Some(1));
         assert_eq!(source.settings.pull_batch_size, Some(2));
+        assert_eq!(source.settings.initial_load_parallelism, Some(4));
         assert_eq!(source.settings.snapshot_num_rows_per_partition, Some(1000));
         assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(3));
         assert_eq!(source.settings.delete_on_merge, Some(false));
