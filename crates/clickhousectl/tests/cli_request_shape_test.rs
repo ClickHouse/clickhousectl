@@ -7453,6 +7453,204 @@ async fn kinesis_iam_user_omits_iam_role() {
     );
 }
 
+fn kinesis_auth_args<'a>(operation: &'a str, flags: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "clickpipe",
+        operation,
+        "kinesis",
+        "svc-id",
+        "--org-id",
+        "org",
+        "--stream-name",
+        "stream",
+        "--region",
+        "us-east-1",
+        "--format",
+        "JSONEachRow",
+    ];
+    if operation == "create" {
+        args.extend([
+            "--name",
+            "pipe",
+            "--database",
+            "default",
+            "--table",
+            "events",
+            "--column",
+            "id:Int64",
+        ]);
+    }
+    args.extend(flags);
+    args
+}
+
+#[tokio::test]
+async fn kinesis_auth_inference_sends_exact_credentials_for_create_and_discovery() {
+    for operation in ["create", "schema-discover"] {
+        for (flags, auth, role, keys) in [
+            (vec![], "IAM_ROLE", None, false),
+            (
+                vec!["--iam-role", "arn:aws:iam::123:role/x"],
+                "IAM_ROLE",
+                Some("arn:aws:iam::123:role/x"),
+                false,
+            ),
+            (
+                vec![
+                    "--auth",
+                    "IAM_ROLE",
+                    "--iam-role",
+                    "arn:aws:iam::123:role/x",
+                ],
+                "IAM_ROLE",
+                Some("arn:aws:iam::123:role/x"),
+                false,
+            ),
+            (
+                vec![
+                    "--access-key-id",
+                    "exact-access-id",
+                    "--secret-key",
+                    "exact/secret+key=",
+                ],
+                "IAM_USER",
+                None,
+                true,
+            ),
+            (
+                vec![
+                    "--auth",
+                    "IAM_USER",
+                    "--access-key-id",
+                    "exact-access-id",
+                    "--secret-key",
+                    "exact/secret+key=",
+                ],
+                "IAM_USER",
+                None,
+                true,
+            ),
+        ] {
+            let mock = if operation == "create" {
+                start_mock_clickpipes_api().await
+            } else {
+                start_mock_schema_discovery_api().await
+            };
+            let body = invoke_cli_capture_body(&mock, &kinesis_auth_args(operation, &flags)).await;
+            let mut expected = serde_json::json!({
+                "streamName": "stream", "region": "us-east-1", "format": "JSONEachRow",
+                "authentication": auth, "iteratorType": "TRIM_HORIZON",
+            });
+            if let Some(role) = role {
+                expected["iamRole"] = serde_json::json!(role);
+            }
+            if keys {
+                expected["accessKey"] = serde_json::json!({
+                    "accessKeyId": "exact-access-id", "secretKey": "exact/secret+key=",
+                });
+            }
+            assert_eq!(body["source"]["kinesis"], expected, "{operation}");
+            assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn kinesis_auth_conflicts_are_secret_free_usage_errors_before_credentials_or_http() {
+    let mock = MockServer::start().await;
+    let home = tempfile::tempdir().unwrap();
+    for operation in ["create", "schema-discover"] {
+        for flags in [
+            vec![
+                "--auth",
+                "IAM_ROLE",
+                "--access-key-id",
+                "private-access-id",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            vec!["--auth", "IAM_ROLE", "--access-key-id", "private-access-id"],
+            vec!["--auth", "IAM_ROLE", "--secret-key", "private-secret-key"],
+            vec![
+                "--iam-role",
+                "private-role-arn",
+                "--access-key-id",
+                "private-access-id",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            vec![
+                "--iam-role",
+                "private-role-arn",
+                "--access-key-id",
+                "private-access-id",
+            ],
+            vec![
+                "--iam-role",
+                "private-role-arn",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            vec!["--auth", "IAM_USER", "--iam-role", "private-role-arn"],
+            vec![
+                "--auth",
+                "IAM_USER",
+                "--iam-role",
+                "private-role-arn",
+                "--access-key-id",
+                "private-access-id",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            vec!["--access-key-id", "private-access-id"],
+            vec!["--secret-key", "private-secret-key"],
+            vec!["--auth", "IAM_USER", "--access-key-id", "private-access-id"],
+            vec!["--auth", "IAM_USER", "--secret-key", "private-secret-key"],
+        ] {
+            // Reverse flag pairs to ensure precedence cannot silently select one mode.
+            for ordered_flags in [
+                flags.clone(),
+                flags
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .rev()
+                    .flatten()
+                    .copied()
+                    .collect(),
+            ] {
+                for credentials in [false, true] {
+                    let mut command = Command::new(clickhousectl_binary());
+                    command
+                        .env_clear()
+                        .env("HOME", home.path())
+                        .env("DO_NOT_TRACK", "1")
+                        .args(["cloud", "--url", &mock.uri(), "--json"])
+                        .args(kinesis_auth_args(operation, &ordered_flags));
+                    if credentials {
+                        command
+                            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+                            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests");
+                    }
+                    let output = command.output().unwrap();
+                    assert_eq!(output.status.code(), Some(2), "{operation}: {output:?}");
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    assert!(stderr.contains("--"), "actionable flags missing: {stderr}");
+                    for value in [
+                        "private-role-arn",
+                        "private-access-id",
+                        "private-secret-key",
+                    ] {
+                        assert!(!stderr.contains(value), "credential leaked: {stderr}");
+                        assert!(!String::from_utf8_lossy(&output.stdout).contains(value));
+                    }
+                }
+            }
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 // ── BigQuery ───────────────────────────────────────────────────────────────
 //
 // BigQuery falls into the "database pipe" bucket — destination MUST omit
