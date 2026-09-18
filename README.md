@@ -2064,11 +2064,11 @@ clickhousectl cloud clickpipe create kinesis <service-id> \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
-# Kinesis with access keys, enhanced fan-out, starting at a timestamp
+# Kinesis with inferred IAM_USER, enhanced fan-out, starting at a timestamp
 clickhousectl cloud clickpipe create kinesis <service-id> \
   --name my-kinesis-replay --stream-name events --region us-east-1 \
   --format JSONEachRow \
-  --auth IAM_USER --access-key-id "$AWS_ACCESS_KEY_ID" --secret-key "$AWS_SECRET_ACCESS_KEY" \
+  --access-key-id "$AWS_ACCESS_KEY_ID" --secret-key "$AWS_SECRET_ACCESS_KEY" \
   --iterator-type AT_TIMESTAMP --iterator-timestamp 1767225600 --enhanced-fan-out \
   --database default --table events \
   --column "event_id:Int64"
@@ -2299,6 +2299,10 @@ authentication can read the requested topics. Avro and Protobuf sources need a
 schema registry; Protobuf can instead use `--protobuf-schema-file <PATH|->`.
 See the [Kafka creation guide](https://clickhouse.com/docs/integrations/clickpipes/kafka/create-kafka-clickpipe)
 for the full connection flow.
+
+For Kinesis create and schema discovery, omitting `--auth` infers `IAM_USER`
+from a complete `--access-key-id` / `--secret-key` pair; otherwise it uses `IAM_ROLE`.
+Role ARNs and `IAM_ROLE` cannot be combined with access keys; `IAM_USER` cannot use `--iam-role`.
 
 For Kinesis, grant the IAM role or user permission to list streams and read the
 selected stream. Enhanced fan-out also needs consumer registration and shard
