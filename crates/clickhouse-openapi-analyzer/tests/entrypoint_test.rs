@@ -56,3 +56,110 @@ fn executable_and_library_return_the_same_vendored_report() {
         "the executable must report the exact configured unsupported enum inventory"
     );
 }
+
+/// Operation fragments captured from the vendored snapshot at a65a9ca6 and
+/// https://api.clickhouse.cloud/v1 on 2026-09-18 for issue #978. Other operations
+/// and models remain the common snapshot, isolating the two changed contracts.
+fn contract_spec(after: bool) -> String {
+    let mut spec: serde_json::Value = serde_json::from_str(SPEC).unwrap();
+    let fragment: serde_json::Value = serde_json::from_str(if after {
+        include_str!("fixtures/operation_contracts/after.json")
+    } else {
+        include_str!("fixtures/operation_contracts/before.json")
+    })
+    .unwrap();
+    for (path, methods) in fragment.as_object().unwrap() {
+        spec["paths"][path]["get"] = methods["get"].clone();
+    }
+    spec.to_string()
+}
+
+fn contract_report(target: &str, snapshot: &str) -> DriftReport {
+    analyze(
+        AnalysisInput {
+            spec_json: target,
+            snapshot_json: snapshot,
+            rust_source_root: &Path::new(API_ROOT).join("src"),
+        },
+        &clickhouse_cloud_config(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn captured_pagination_and_byoc_changes_survive_snapshot_refresh() {
+    use clickhouse_openapi_analyzer::report::FindingKind::*;
+    let before = contract_spec(false);
+    let after = contract_spec(true);
+    assert!(!contract_report(&before, &before).has_drift());
+    let report = contract_report(&after, &before);
+    assert_eq!(report.findings.len(), 9, "{}", report.render_text());
+    for kind in [
+        MissingOperationParameter,
+        OperationParameterMismatch,
+        SnapshotAddedParameter,
+        SnapshotChangedParameter,
+        MissingStructField,
+    ] {
+        assert!(report.findings.iter().any(|finding| finding.kind == kind));
+    }
+    let target: serde_json::Value = serde_json::from_str(&after).unwrap();
+    for finding in &report.findings {
+        let pointer = finding.spec_pointer.as_ref().unwrap();
+        assert!(target.pointer(pointer).is_some(), "{pointer}");
+    }
+    let refreshed = contract_report(&after, &after);
+    assert_eq!(refreshed.findings.len(), 6, "{}", refreshed.render_text());
+    assert_eq!(
+        refreshed
+            .findings
+            .iter()
+            .filter(|f| f.kind == MissingOperationParameter)
+            .count(),
+        2
+    );
+    assert_eq!(
+        refreshed
+            .findings
+            .iter()
+            .filter(|f| f.kind == OperationParameterMismatch)
+            .count(),
+        1
+    );
+    assert_eq!(
+        refreshed
+            .findings
+            .iter()
+            .filter(|f| f.kind == MissingStructField)
+            .count(),
+        3
+    );
+    let json = serde_json::to_string(&report).unwrap();
+    assert_eq!(serde_json::from_str::<DriftReport>(&json).unwrap(), report);
+    assert_eq!(
+        contract_report(&after, &before).render_text(),
+        report.render_text()
+    );
+}
+
+#[test]
+fn captured_contract_prose_and_parameter_order_do_not_produce_drift() {
+    let before = contract_spec(false);
+    let mut edited: serde_json::Value = serde_json::from_str(&before).unwrap();
+    for path in [
+        "/v1/organizations/{organizationId}/keys",
+        "/v1/organizations/{organizationId}/serviceProfiles",
+    ] {
+        let operation = &mut edited["paths"][path]["get"];
+        operation["description"] = "Revised documentation".into();
+        operation["summary"] = "Revised summary".into();
+        let parameters = operation["parameters"].as_array_mut().unwrap();
+        for parameter in parameters.iter_mut() {
+            parameter["description"] = "Revised parameter documentation".into();
+            parameter["schema"]["example"] = "Example only".into();
+        }
+        parameters.reverse();
+    }
+    let report = contract_report(&edited.to_string(), &before);
+    assert!(!report.has_drift(), "{}", report.render_text());
+}

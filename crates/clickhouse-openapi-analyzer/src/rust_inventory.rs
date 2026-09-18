@@ -485,6 +485,8 @@ pub(crate) struct MethodInfo {
     /// Every named type mentioned anywhere in the method's return type
     /// (e.g. `ApiResponse` and `Service` in `Result<ApiResponse<Vec<Service>>, Error>`).
     pub(crate) return_type_names: BTreeSet<String>,
+    /// The outer successful return type, excluding Result and its error payload.
+    pub(crate) success_type: Option<TypeNode>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -592,6 +594,7 @@ impl RustInventory {
                     MethodInfo {
                         arguments,
                         return_type_names,
+                        success_type: success_type(&function.sig.output),
                     },
                 );
             }
@@ -909,6 +912,22 @@ impl RustInventory {
             })
             .collect()
     }
+}
+
+fn success_type(output: &syn::ReturnType) -> Option<TypeNode> {
+    let syn::ReturnType::Type(_, output_type) = output else {
+        return None;
+    };
+    let mut ty = output_type.as_ref();
+    if let Type::Path(path) = ty
+        && let Some(segment) = path.path.segments.last()
+        && segment.ident == "Result"
+        && let PathArguments::AngleBracketed(arguments) = &segment.arguments
+        && let Some(GenericArgument::Type(inner)) = arguments.args.first()
+    {
+        ty = inner;
+    }
+    Some(TypeNode::from_syn(ty))
 }
 
 /// Collects every named type appearing anywhere in `ty`, including inside
