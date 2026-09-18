@@ -16701,6 +16701,8 @@ async fn service_update_warns_on_unmatched_private_endpoint_and_tag_removal() {
             "pe-missing",
             "--remove-tag",
             "missing",
+            "--remove-tag",
+            "env",
         ],
     );
 
@@ -16712,6 +16714,17 @@ async fn service_update_warns_on_unmatched_private_endpoint_and_tag_removal() {
          on the service; nothing was removed\n\
          Warning: --remove-tag missing did not match any tag on the service; nothing was \
          removed\n"
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    let patch = requests
+        .iter()
+        .find(|request| request.method.as_str() == "PATCH")
+        .unwrap();
+    let body: Value = serde_json::from_slice(&patch.body).unwrap();
+    assert_eq!(
+        body["tags"]["remove"],
+        serde_json::json!([{ "key": "missing" }, { "key": "env" }])
     );
 }
 
@@ -16747,6 +16760,10 @@ async fn service_update_skips_get_when_no_removals_requested() {
             "org-1",
             "--new-name",
             "renamed",
+            "--add-tag",
+            "env=prod",
+            "--add-tag",
+            "team=analytics",
         ],
     );
 
@@ -16756,6 +16773,42 @@ async fn service_update_skips_get_when_no_removals_requested() {
         "unexpected stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["name"], "renamed");
+    assert_eq!(
+        body["tags"]["add"],
+        serde_json::json!([
+            { "key": "env", "value": "prod" },
+            { "key": "team", "value": "analytics" },
+        ])
+    );
+}
+
+#[tokio::test]
+async fn service_update_rejects_mixed_tag_operations_before_auth_or_http() {
+    let mock = MockServer::start().await;
+
+    for args in [
+        ["--add-tag", "env=prod", "--remove-tag", "env=prod"],
+        ["--remove-tag", "env=staging", "--add-tag", "env=prod"],
+        ["--add-tag", "env=prod", "--remove-tag", "team=analytics"],
+        ["--remove-tag", "team", "--add-tag", "env"],
+    ] {
+        let mut command = vec!["service", "update", "svc-1"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        command.extend(args.into_iter().map(String::from));
+
+        let output = invoke_cli_without_cloud_credentials(&mock, &command);
+
+        assert_eq!(output.status.code(), Some(2), "{command:?}");
+        assert!(output.stdout.is_empty(), "{command:?}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 // ── Private endpoint ID format validation (issue #611) ─────────────────────
