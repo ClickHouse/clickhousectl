@@ -30,6 +30,8 @@
 
 `clickhousectl` also installs official ClickHouse skills into supported coding agents and helps move local ClickHouse development to ClickHouse Cloud.
 
+When a downstream reader closes stdout (for example, `clickhousectl cloud service list | head`), CLI-owned human and JSON output finish quietly with exit `0` if the command succeeds. Genuine command failures and native-client exit statuses are preserved; other output errors still fail.
+
 ## Installation
 
 ### Quick install

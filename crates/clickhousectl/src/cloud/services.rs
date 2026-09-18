@@ -3738,8 +3738,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
     use futures_util::StreamExt;
     use std::io::Write as _;
     let mut stream = response.bytes_stream();
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
+    let mut handle = crate::stdout::stdout();
     let mut byte_count = 0;
     let mut last_byte = None;
     // Both failure modes of the stream are classified here, at the boundary

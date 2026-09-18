@@ -26925,3 +26925,103 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
         assert!(!token_dir.join("tokens.json").exists());
     }
 }
+
+// A pipe with no reader before spawn makes failure deterministic, even if the
+// scheduler never runs the reader until after the CLI has produced its output.
+fn closed_stdout() -> std::io::PipeWriter {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    writer
+}
+
+#[tokio::test]
+async fn closed_stdout_large_cloud_list_succeeds_in_human_and_json_modes() {
+    let mock = MockServer::start().await;
+    let services: Vec<_> = (0..512)
+        .map(|id| serde_json::json!({"id": format!("00000000-0000-0000-0000-{id:012x}"), "name": "x".repeat(4096)}))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": services})),
+        )
+        .mount(&mock)
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    for json in [false, true] {
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .env_clear()
+            .env("HOME", home.path())
+            .env("DO_NOT_TRACK", "1")
+            .current_dir(project.path())
+            .args([
+                "cloud",
+                "--url",
+                &mock.uri(),
+                "--api-key",
+                "test-key",
+                "--api-secret",
+                "test-secret",
+                "service",
+                "list",
+                "--org-id",
+                "org-1",
+            ]);
+        if json {
+            command.arg("--json");
+        }
+        // Check that both forms really exceed ordinary pipe buffer sizes.
+        let complete = command.output().unwrap();
+        assert_success(&complete);
+        assert!(complete.stdout.len() > 1024 * 1024);
+        let output = command.stdout(closed_stdout()).output().unwrap();
+        assert_success(&output);
+        assert!(output.stderr.is_empty(), "{output:?}");
+    }
+}
+
+#[tokio::test]
+async fn closed_stdout_keeps_a_genuine_cloud_failure_and_error_envelope() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("Denied"))
+        .mount(&mock)
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    for json in [false, true] {
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .env_clear()
+            .env("HOME", home.path())
+            .env("DO_NOT_TRACK", "1")
+            .current_dir(home.path())
+            .args([
+                "cloud",
+                "--url",
+                &mock.uri(),
+                "--api-key",
+                "test-key",
+                "--api-secret",
+                "test-secret",
+                "service",
+                "list",
+                "--org-id",
+                "org-1",
+            ])
+            .stdout(closed_stdout());
+        if json {
+            command.arg("--json");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(4), "{output:?}");
+        if json {
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "auth_required");
+        } else {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("Error:"));
+        }
+    }
+}
