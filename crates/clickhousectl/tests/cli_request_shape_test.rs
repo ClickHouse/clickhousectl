@@ -6581,6 +6581,7 @@ async fn mongodb_tls_host_absent_when_not_passed() {
     .await;
 
     let mongo = &body["source"]["mongodb"];
+    assert!(mongo["settings"].get("initialLoadParallelism").is_none());
     assert!(
         mongo.get("tlsHost").is_none(),
         "tlsHost leaked into mongodb source body: {mongo}",
@@ -6618,6 +6619,8 @@ async fn issue_593_mongodb_create_sends_every_source_tuning_and_tls_field() {
             "db.c:t",
             "--sync-interval-seconds",
             "1",
+            "--initial-load-parallelism",
+            "4",
             "--pull-batch-size",
             "2",
             "--snapshot-rows-per-partition",
@@ -6643,6 +6646,7 @@ async fn issue_593_mongodb_create_sends_every_source_tuning_and_tls_field() {
             "replicationMode": "cdc",
             "syncIntervalSeconds": 1,
             "pullBatchSize": 2,
+            "initialLoadParallelism": 4,
             "snapshotNumRowsPerPartition": 1000,
             "snapshotNumberOfParallelTables": 3,
             "deleteOnMerge": false,
