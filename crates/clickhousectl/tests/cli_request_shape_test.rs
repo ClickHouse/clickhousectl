@@ -6714,6 +6714,7 @@ fn append_sample_validation(args: &mut Vec<String>) {
 fn append_streaming_create_controls(args: &mut Vec<String>) {
     append_initial_scaling_and_validation(args);
     args.extend([
+        "--start-paused".into(),
         "--field-mapping".into(),
         r#"{"sourceField":"source:a=b","destinationField":"destination:x=y"}"#.into(),
         "--clickhouse-max-threads".into(),
@@ -6875,6 +6876,7 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
         assert_eq!(body["source"]["validateSamples"], true, "{source}");
         assert!(body["source"][source].is_object(), "{source}: {body}");
         if has_streaming_controls {
+            assert_eq!(body["startPaused"], true, "{source}");
             assert_eq!(
                 body["scaling"],
                 serde_json::json!({
@@ -6921,6 +6923,7 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
                 assert_eq!(body["settings"]["streaming_max_insert_wait_ms"], 500);
             }
         } else {
+            assert!(body.get("startPaused").is_none(), "{source}");
             assert!(body.get("scaling").is_none(), "{source}: {body}");
             assert!(body.get("fieldMappings").is_none(), "{source}: {body}");
             assert!(body.get("settings").is_none(), "{source}: {body}");
@@ -27181,5 +27184,26 @@ async fn kinesis_protobuf_create_and_discovery_forward_file_and_stdin() {
                 serde_json::json!({"accessKeyId": "access", "secretKey": "secret"})
             );
         }
+    }
+}
+
+#[tokio::test]
+async fn start_paused_omission_and_database_rejection_are_preserved() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(&mock, &kafka_args_minimal()).await;
+    assert!(body.get("startPaused").is_none());
+    for source in ["postgres", "mysql", "mongodb", "bigquery"] {
+        let mock = MockServer::start().await;
+        let output = invoke_cli_without_cloud_credentials(
+            &mock,
+            &["clickpipe", "create", source, "svc-1", "--start-paused"].map(str::to_string),
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{source}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(mock.received_requests().await.unwrap().is_empty());
     }
 }

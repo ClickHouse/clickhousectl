@@ -870,6 +870,10 @@ pub struct ClickPipeCreateValidationArgs {
 /// Request controls shared by streaming and object-storage creates.
 #[derive(Args, Debug, Default)]
 pub struct ClickPipeCreateRequestArgs {
+    /// Create stopped; start ingestion later with `clickpipe start`
+    #[arg(long)]
+    pub start_paused: bool,
+
     #[command(flatten)]
     pub validation: ClickPipeCreateValidationArgs,
 
@@ -4049,6 +4053,7 @@ fn parse_create_field_mappings(
 
 #[derive(Debug)]
 struct BuiltCreateRequestArgs {
+    start_paused: bool,
     validate_samples: Option<bool>,
     scaling: Option<clickhouse_cloud_api::models::ClickPipeScaling>,
     settings: Option<clickhouse_cloud_api::models::ClickPipeSettings>,
@@ -4059,6 +4064,11 @@ fn build_create_request_args(
     args: &ClickPipeCreateRequestArgs,
     source: ClickPipeSourceKind,
 ) -> CloudResult<BuiltCreateRequestArgs> {
+    if args.start_paused && source.database_source_label().is_some() {
+        return Err(CloudError::new(
+            "--start-paused is not supported for database ClickPipes",
+        ));
+    }
     let scaling = match (args.replicas, args.cpu_millicores, args.memory_gb) {
         (None, None, None) => None,
         (Some(replicas), Some(cpu), Some(memory)) => {
@@ -4146,6 +4156,7 @@ fn build_create_request_args(
             });
 
     Ok(BuiltCreateRequestArgs {
+        start_paused: args.start_paused,
         validate_samples: args.validation.validate_samples,
         scaling,
         settings,
@@ -4155,6 +4166,7 @@ fn build_create_request_args(
 
 fn build_create_validation_args(args: &ClickPipeCreateValidationArgs) -> BuiltCreateRequestArgs {
     BuiltCreateRequestArgs {
+        start_paused: false,
         validate_samples: args.validate_samples,
         scaling: None,
         settings: None,
@@ -4166,6 +4178,7 @@ fn apply_create_request_args(
     request: &mut clickhouse_cloud_api::models::ClickPipePostRequest,
     args: BuiltCreateRequestArgs,
 ) {
+    request.start_paused = args.start_paused;
     request.source.validate_samples = args.validate_samples;
     request.scaling = args.scaling;
     request.settings = args.settings;
@@ -7002,12 +7015,110 @@ mod tests {
     }
 
     #[test]
+    fn start_paused_parsing_and_shared_builder_match_supported_sources() {
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        let create = cli
+            .find_subcommand("cloud")
+            .unwrap()
+            .find_subcommand("clickpipe")
+            .unwrap()
+            .find_subcommand("create")
+            .unwrap();
+        for (source, kind) in [
+            ("kafka", ClickPipeSourceKind::Kafka),
+            ("kinesis", ClickPipeSourceKind::Kinesis),
+            ("object-storage", ClickPipeSourceKind::ObjectStorage),
+            ("pubsub", ClickPipeSourceKind::PubSub),
+        ] {
+            assert!(
+                create
+                    .find_subcommand(source)
+                    .unwrap()
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some("start-paused"))
+            );
+            for paused in [false, true] {
+                let args = ClickPipeCreateRequestArgs {
+                    start_paused: paused,
+                    ..Default::default()
+                };
+                let built = build_create_request_args(&args, kind).unwrap();
+                let mut request = clickhouse_cloud_api::models::ClickPipePostRequest::default();
+                apply_create_request_args(&mut request, built);
+                assert_eq!(request.start_paused, paused);
+                let json = serde_json::to_value(&request).unwrap();
+                assert_eq!(
+                    json.get("startPaused"),
+                    paused.then_some(&serde_json::Value::Bool(true))
+                );
+            }
+        }
+        for (source, kind) in [
+            ("postgres", ClickPipeSourceKind::Postgres),
+            ("mysql", ClickPipeSourceKind::MySql),
+            ("mongodb", ClickPipeSourceKind::MongoDb),
+            ("bigquery", ClickPipeSourceKind::BigQuery),
+        ] {
+            assert!(
+                !create
+                    .find_subcommand(source)
+                    .unwrap()
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some("start-paused"))
+            );
+            let error = Cli::try_parse_from([
+                "chctl",
+                "cloud",
+                "clickpipe",
+                "create",
+                source,
+                "svc-1",
+                "--start-paused",
+            ])
+            .err()
+            .unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+            let args = ClickPipeCreateRequestArgs {
+                start_paused: true,
+                ..Default::default()
+            };
+            assert!(build_create_request_args(&args, kind).is_err());
+        }
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kinesis(args),
+        } = parse_clickpipe(&[
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe",
+            "--stream-name",
+            "events",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "default",
+            "--table",
+            "events",
+            "--start-paused",
+        ])
+        else {
+            panic!("kinesis");
+        };
+        assert!(args.request.start_paused);
+    }
+
+    #[test]
     fn build_create_request_args_preserves_omission_and_explicit_values() {
         let minimal = build_create_request_args(
             &ClickPipeCreateRequestArgs::default(),
             ClickPipeSourceKind::Kafka,
         )
         .unwrap();
+        assert!(!minimal.start_paused);
         assert_eq!(minimal.validate_samples, None);
         assert_eq!(minimal.scaling, None);
         assert_eq!(minimal.settings, None);
@@ -7015,6 +7126,7 @@ mod tests {
 
         let maximal = build_create_request_args(
             &ClickPipeCreateRequestArgs {
+                start_paused: true,
                 validation: ClickPipeCreateValidationArgs {
                     validate_samples: Some(false),
                 },
@@ -7039,6 +7151,7 @@ mod tests {
             ClickPipeSourceKind::Kafka,
         )
         .unwrap();
+        assert!(maximal.start_paused);
         assert_eq!(maximal.validate_samples, Some(false));
         let scaling = maximal.scaling.unwrap();
         assert_eq!(scaling.replicas, 1);

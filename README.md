@@ -1895,6 +1895,11 @@ leaves `validateSamples` out of the request, while explicit `false` remains an
 explicit value. The API documents sample validation as having no effect for
 PostgreSQL and MySQL.
 
+Kafka, Kinesis, object-storage, and Pub/Sub creates accept `--start-paused` to create
+in the `Stopped` state. Start ingestion later with `cloud clickpipe start <service-id> <clickpipe-id>`.
+Omission preserves immediate ingestion. Database ClickPipes (PostgreSQL, MySQL, MongoDB, BigQuery)
+do not support this flag and reject it before any request.
+
 Kafka, Kinesis, object-storage, and Pub/Sub creates also accept repeatable
 `--field-mapping '{"sourceField":"...","destinationField":"..."}'` values and
 initial scaling. Scaling is one complete allocation, so pass `--replicas`,
