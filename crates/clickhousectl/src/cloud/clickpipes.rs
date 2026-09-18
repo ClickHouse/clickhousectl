@@ -41,7 +41,7 @@ const OBJECT_STORAGE_TYPES: &[&str] = &[
     "cloudflarer2",
     "ovhobjectstorage",
 ];
-const KINESIS_FORMATS: &[&str] = &["JSONEachRow", "Avro", "AvroConfluent"];
+const KINESIS_FORMATS: &[&str] = &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"];
 const KINESIS_AUTHS: &[&str] = &["IAM_ROLE", "IAM_USER"];
 const KINESIS_ITERATOR_TYPES: &[&str] = &["TRIM_HORIZON", "LATEST", "AT_TIMESTAMP"];
 const POSTGRES_TYPES: &[&str] = &[
@@ -1249,6 +1249,12 @@ pub struct KinesisSourceFields {
     /// Data format
     #[arg(long, value_parser = PossibleValuesParser::new(KINESIS_FORMATS))]
     pub format: String,
+
+    /// Protobuf schema file or - for stdin; requires --format Protobuf
+    ///
+    /// Required for Protobuf; accepts .proto source or a binary descriptor set.
+    #[arg(long, value_name = "PATH")]
+    pub protobuf_schema_file: Option<String>,
 
     /// Authentication method (inferred when omitted)
     ///
@@ -2877,6 +2883,16 @@ fn build_kinesis_source(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKinesisSource> {
     use clickhouse_cloud_api::models::{ClickPipePostKinesisSource, MskIamUser};
 
+    if args.format == "Protobuf" && args.protobuf_schema_file.is_none() {
+        return Err(CloudError::new(
+            "--format Protobuf requires --protobuf-schema-file",
+        ));
+    }
+    if args.format != "Protobuf" && args.protobuf_schema_file.is_some() {
+        return Err(CloudError::new(
+            "--protobuf-schema-file can only be used with --format Protobuf",
+        ));
+    }
     let auth = resolve_kinesis_auth(args)?;
     let access_key = match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
         (Some(access_key_id), Some(secret_key)) => Some(MskIamUser {
@@ -2887,7 +2903,11 @@ fn build_kinesis_source(
     };
 
     Ok(ClickPipePostKinesisSource {
-        protobuf_schema: None,
+        protobuf_schema: args
+            .protobuf_schema_file
+            .as_deref()
+            .map(read_protobuf_schema_file)
+            .transpose()?,
         format: parse_enum(&args.format)?,
         stream_name: args.stream_name.clone(),
         region: args.region.clone(),
@@ -9642,7 +9662,10 @@ mod tests {
                 "ovhobjectstorage",
             ]
         );
-        assert_eq!(KINESIS_FORMATS, &["JSONEachRow", "Avro", "AvroConfluent"]);
+        assert_eq!(
+            KINESIS_FORMATS,
+            &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"]
+        );
         assert_eq!(KINESIS_AUTHS, &["IAM_ROLE", "IAM_USER"]);
         assert_eq!(
             KINESIS_ITERATOR_TYPES,
@@ -11112,6 +11135,7 @@ mod tests {
     #[test]
     fn build_kinesis_source_rejects_out_of_range_iterator_timestamp() {
         let args = KinesisSourceFields {
+            protobuf_schema_file: None,
             stream_name: "stream".to_string(),
             region: "us-east-1".to_string(),
             format: "JSONEachRow".to_string(),
@@ -13477,6 +13501,99 @@ mod tests {
         assert_eq!(registry.ca_certificate.as_deref(), Some("REGISTRY_CA"));
     }
 
+    #[test]
+    fn kinesis_protobuf_parsing_and_builder_cover_create_and_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let schema = dir.path().join("schema.proto");
+        std::fs::write(&schema, b"syntax = \"proto3\"; message Event {}").unwrap();
+        for operation in ["create", "schema-discover"] {
+            let mut args = vec![
+                operation,
+                "kinesis",
+                "svc-1",
+                "--stream-name",
+                "stream",
+                "--region",
+                "us-east-1",
+                "--format",
+                "Protobuf",
+                "--protobuf-schema-file",
+                schema.to_str().unwrap(),
+            ];
+            if operation == "create" {
+                args.extend([
+                    "--name",
+                    "pipe",
+                    "--database",
+                    "default",
+                    "--table",
+                    "events",
+                ]);
+            }
+            let source_args = match parse_clickpipe(&args) {
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kinesis(args),
+                } => args.source,
+                ClickPipeCommands::SchemaDiscover {
+                    command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
+                } => args.source,
+                _ => panic!("Kinesis"),
+            };
+            assert_eq!(source_args.protobuf_schema_file.as_deref(), schema.to_str());
+            let source = build_kinesis_source(&source_args).unwrap();
+            assert_eq!(source.format.to_string(), "Protobuf");
+            assert_eq!(
+                source.protobuf_schema.as_deref(),
+                Some("c3ludGF4ID0gInByb3RvMyI7IG1lc3NhZ2UgRXZlbnQge30=")
+            );
+            assert_eq!(source.authentication.to_string(), "IAM_ROLE");
+        }
+    }
+
+    #[test]
+    fn kinesis_protobuf_rejects_missing_incompatible_and_invalid_files() {
+        let mut args = parsed_kinesis_source("create", &[]);
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap()
+                .protobuf_schema
+                .is_none()
+        );
+        args.protobuf_schema_file = Some("/missing/schema.proto".into());
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap_err()
+                .message
+                .contains("only be used")
+        );
+        args.format = "Protobuf".into();
+        assert!(build_kinesis_source(&args).is_err());
+        args.protobuf_schema_file = None;
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap_err()
+                .message
+                .contains("requires --protobuf-schema-file")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let schema = dir.path().join("schema.proto");
+        args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
+        std::fs::write(&schema, b"").unwrap();
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap_err()
+                .message
+                .contains("empty")
+        );
+        std::fs::write(&schema, vec![0; PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH]).unwrap();
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap_err()
+                .message
+                .contains("size limit")
+        );
+    }
+
     fn parsed_kinesis_source(operation: &str, flags: &[&str]) -> KinesisSourceFields {
         let mut args = vec![
             operation,
@@ -13613,6 +13730,7 @@ mod tests {
     #[test]
     fn build_kinesis_source_supports_minimal_fields() {
         let args = KinesisSourceFields {
+            protobuf_schema_file: None,
             stream_name: "stream".into(),
             region: "us-east-1".into(),
             format: "JSONEachRow".into(),
@@ -13640,6 +13758,7 @@ mod tests {
     #[test]
     fn build_kinesis_source_supports_maximal_fields() {
         let args = KinesisSourceFields {
+            protobuf_schema_file: None,
             stream_name: "stream".into(),
             region: "us-east-1".into(),
             format: "AvroConfluent".into(),

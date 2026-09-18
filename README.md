@@ -2314,6 +2314,11 @@ schema registry; Protobuf can instead use `--protobuf-schema-file <PATH|->`.
 See the [Kafka creation guide](https://clickhouse.com/docs/integrations/clickpipes/kafka/create-kafka-clickpipe)
 for the full connection flow.
 
+Kinesis create and schema discovery accept `--format Protobuf` with the required
+`--protobuf-schema-file <PATH|->`. Supply raw `.proto` source or a serialized descriptor set;
+the CLI base64-encodes it. Empty schemas and encoded schemas above 1 MiB are rejected.
+The schema flag is rejected for other formats.
+
 For Kinesis create and schema discovery, omitting `--auth` infers `IAM_USER`
 from a complete `--access-key-id` / `--secret-key` pair; otherwise it uses `IAM_ROLE`.
 Role ARNs and `IAM_ROLE` cannot be combined with access keys; `IAM_USER` cannot use `--iam-role`.
