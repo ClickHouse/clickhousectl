@@ -62,6 +62,11 @@ pub(crate) struct ApiResponseWire<T> {
     request_id: Option<String>,
     result: Option<T>,
     error: Option<String>,
+    limit: Option<i64>,
+    #[serde(rename = "totalCount")]
+    total_count: Option<i64>,
+    #[serde(rename = "nextCursor")]
+    next_cursor: Option<String>,
 }
 
 impl<T> From<ApiResponseWire<T>> for ApiResponse<T> {
@@ -71,6 +76,9 @@ impl<T> From<ApiResponseWire<T>> for ApiResponse<T> {
             request_id: value.request_id,
             result: value.result,
             error: value.error,
+            limit: value.limit,
+            total_count: value.total_count,
+            next_cursor: value.next_cursor,
         }
     }
 }

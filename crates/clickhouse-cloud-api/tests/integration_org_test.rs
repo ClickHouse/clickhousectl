@@ -1208,7 +1208,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     let org_id = ctx.org_id.clone();
                     let api_key_uuid = api_key_uuid_for_list.clone();
                     async move {
-                        let resp = client.openapi_key_get_list(&org_id).await?;
+                        let resp = client.openapi_key_get_list(&org_id, None, None).await?;
                         let keys = resp
                             .result
                             .ok_or_else(|| "openapi_key_get_list returned no result".to_string())?;

@@ -107,4 +107,13 @@ pub struct ApiResponse<T> {
     pub result: Option<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Page size when the endpoint returns pagination metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+    /// Total number of results across all pages.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "totalCount")]
+    pub total_count: Option<i64>,
+    /// Opaque cursor for the next page; absent on the last page.
+    #[serde(skip_serializing_if = "Option::is_none", rename = "nextCursor")]
+    pub next_cursor: Option<String>,
 }

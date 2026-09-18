@@ -7193,3 +7193,40 @@ fn query_api_endpoint_owner_types_preserve_unknown_values() {
         "\"futureOwner\""
     );
 }
+
+#[test]
+fn api_response_pagination_tolerates_missing_null_and_unknown_fields() {
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "limit": null, "totalCount": null, "nextCursor": null, "futureMetadata": true
+        }),
+    ] {
+        let response: ApiResponse<Vec<ApiKey>> = serde_json::from_value(value).unwrap();
+        assert_eq!(response.limit, None);
+        assert_eq!(response.total_count, None);
+        assert_eq!(response.next_cursor, None);
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[test]
+fn api_response_pagination_round_trips_values_and_omits_last_page_cursor() {
+    for (total_count, next_cursor) in [(0, None), (500, Some("opaque +/=&?雪"))] {
+        let mut value = serde_json::json!({
+            "status": 200, "requestId": "req-page", "result": [],
+            "limit": 250, "totalCount": total_count
+        });
+        if let Some(cursor) = next_cursor {
+            value["nextCursor"] = serde_json::json!(cursor);
+        }
+        let response: ApiResponse<Vec<ApiKey>> = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(response.limit, Some(250));
+        assert_eq!(response.total_count, Some(total_count));
+        assert_eq!(response.next_cursor.as_deref(), next_cursor);
+        assert_eq!(serde_json::to_value(response).unwrap(), value);
+    }
+}

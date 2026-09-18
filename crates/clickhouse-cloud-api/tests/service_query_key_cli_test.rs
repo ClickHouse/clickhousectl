@@ -1363,7 +1363,7 @@ async fn assert_single_owned_key(
     api_key_id: &str,
 ) -> TestResult<()> {
     let keys = client
-        .openapi_key_get_list(org_id)
+        .openapi_key_get_list(org_id, None, None)
         .await?
         .result
         .ok_or("key list returned no result")?;
@@ -1660,7 +1660,7 @@ async fn key_inventory(
     org_id: &str,
 ) -> TestResult<std::collections::BTreeSet<String>> {
     let keys = client
-        .openapi_key_get_list(org_id)
+        .openapi_key_get_list(org_id, None, None)
         .await?
         .result
         .ok_or("key list returned no result")?;

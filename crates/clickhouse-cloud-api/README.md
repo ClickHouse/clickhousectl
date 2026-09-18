@@ -4,6 +4,18 @@ Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/
 
 ## Updated Cloud API surface
 
+`openapi_key_get_list(organization_id, limit, cursor)` returns one page of API keys.
+Migrate existing calls by passing `None, None` for the new arguments. The server
+accepts limits from 1–250 and defaults to 250; continue with the response's
+`next_cursor` until it is `None` to read all keys. `ApiResponse<T>` now preserves
+optional `limit`, `total_count`, and `next_cursor` envelope metadata. Missing or
+null metadata becomes `None` and is omitted when serialized. Struct literal
+callers must supply the new fields or use `..Default::default()` when available.
+
+`service_profiles_list` now takes `region_id: Option<&str>`: wrap existing region
+arguments in `Some(...)`, or pass `None` with `byoc_id` to use the infrastructure's
+region. When both are supplied, the region must match that infrastructure.
+
 The beta `snapshot_get_list` and `snapshot_get` methods return service `Snapshot`
 records, including the `throttled` status and full snapshot type. Snapshot response
 fields tolerate missing and null values; provider-specific bucket properties and
