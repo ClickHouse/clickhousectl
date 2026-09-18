@@ -27116,3 +27116,66 @@ async fn service_snapshot_config_patch_preserves_omission_and_pairs() {
         );
     }
 }
+
+#[tokio::test]
+async fn kinesis_protobuf_create_and_discovery_forward_file_and_stdin() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = dir.path().join("events.proto");
+    let raw = "syntax = \"proto3\"; message Event {}";
+    std::fs::write(&schema, raw).unwrap();
+    for operation in ["create", "schema-discover"] {
+        for input in [schema.to_str().unwrap(), "-"] {
+            let mock = if operation == "create" {
+                start_mock_clickpipes_api().await
+            } else {
+                start_mock_schema_discovery_api().await
+            };
+            let mut args = vec![
+                "clickpipe",
+                operation,
+                "kinesis",
+                "svc-id",
+                "--org-id",
+                "org",
+                "--stream-name",
+                "events",
+                "--region",
+                "us-east-1",
+                "--format",
+                "Protobuf",
+                "--protobuf-schema-file",
+                input,
+                "--access-key-id",
+                "access",
+                "--secret-key",
+                "secret",
+            ];
+            if operation == "create" {
+                args.extend([
+                    "--name",
+                    "pipe",
+                    "--database",
+                    "default",
+                    "--table",
+                    "events",
+                ]);
+            }
+            let body = if input == "-" {
+                invoke_cli_capture_body_with_stdin(&mock, &args, raw.as_bytes()).await
+            } else {
+                invoke_cli_capture_body(&mock, &args).await
+            };
+            let source = &body["source"]["kinesis"];
+            assert_eq!(source["format"], "Protobuf");
+            assert_eq!(
+                source["protobufSchema"],
+                "c3ludGF4ID0gInByb3RvMyI7IG1lc3NhZ2UgRXZlbnQge30="
+            );
+            assert_eq!(source["authentication"], "IAM_USER");
+            assert_eq!(
+                source["accessKey"],
+                serde_json::json!({"accessKeyId": "access", "secretKey": "secret"})
+            );
+        }
+    }
+}
