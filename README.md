@@ -898,6 +898,8 @@ clickhousectl cloud service update <service-id> \
   --remove-tag legacy
 # --remove-* flags are idempotent: an entry that matched nothing still exits 0,
 # with one stderr warning per miss (tags match by key).
+# Add and remove tags in separate service update commands; --add-tag and
+# --remove-tag cannot be combined in one operation.
 
 # Update replica scaling (vertical autoscaling — fixed replica count, variable memory)
 clickhousectl cloud service scale <service-id> \
