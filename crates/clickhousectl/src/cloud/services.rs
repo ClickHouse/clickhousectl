@@ -335,12 +335,20 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         transparent_data_encryption_key_id: Option<String>,
 
-        /// Tag to add. Format: key or key=value (repeatable)
-        #[arg(long = "add-tag", value_name = "KEY[=VALUE]")]
+        /// Tag to add (repeatable; cannot be combined with --remove-tag)
+        #[arg(
+            long = "add-tag",
+            value_name = "KEY[=VALUE]",
+            conflicts_with = "remove_tag"
+        )]
         add_tag: Vec<String>,
 
-        /// Tag to remove. Format: key or key=value (repeatable)
-        #[arg(long = "remove-tag", value_name = "KEY[=VALUE]")]
+        /// Tag to remove (repeatable; cannot be combined with --add-tag)
+        #[arg(
+            long = "remove-tag",
+            value_name = "KEY[=VALUE]",
+            conflicts_with = "add_tag"
+        )]
         remove_tag: Vec<String>,
 
         /// Enable or disable service core dump collection
@@ -5606,7 +5614,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_update_maximal_and_repeatable_flags() {
+    fn parses_service_update_maximal_and_repeatable_add_flags() {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
@@ -5639,8 +5647,6 @@ mod tests {
             "env=prod",
             "--add-tag",
             "team=analytics",
-            "--remove-tag",
-            "legacy",
             "--enable-core-dumps",
             "false",
             "--org-id",
@@ -5679,8 +5685,76 @@ mod tests {
         assert_eq!(disable_endpoint, vec!["mysql"]);
         assert_eq!(transparent_data_encryption_key_id.as_deref(), Some("tde-1"));
         assert_eq!(add_tag, vec!["env=prod", "team=analytics"]);
-        assert_eq!(remove_tag, vec!["legacy"]);
+        assert!(remove_tag.is_empty());
         assert_eq!(enable_core_dumps, Some(false));
+    }
+
+    #[test]
+    fn parses_service_update_repeatable_tag_removals_with_other_removals() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "update",
+            "svc-1",
+            "--remove-tag",
+            "legacy",
+            "--remove-tag",
+            "owner=former-team",
+            "--remove-ip-allow",
+            "10.0.0.0/8",
+            "--remove-private-endpoint-id",
+            "pe-1",
+        ]);
+        let ServiceCommands::Update {
+            add_tag,
+            remove_tag,
+            remove_ip_allow,
+            remove_private_endpoint_id,
+            ..
+        } = command
+        else {
+            panic!("expected service update");
+        };
+
+        assert!(add_tag.is_empty());
+        assert_eq!(remove_tag, vec!["legacy", "owner=former-team"]);
+        assert_eq!(remove_ip_allow, vec!["10.0.0.0/8"]);
+        assert_eq!(remove_private_endpoint_id, vec!["pe-1"]);
+    }
+
+    #[test]
+    fn rejects_combining_service_update_tag_additions_and_removals() {
+        for (first_flag, first_value, second_flag, second_value) in [
+            ("--add-tag", "env=prod", "--remove-tag", "env=prod"),
+            ("--remove-tag", "env=prod", "--add-tag", "env=prod"),
+            ("--add-tag", "env=prod", "--remove-tag", "env=staging"),
+            ("--remove-tag", "env=staging", "--add-tag", "env=prod"),
+            ("--add-tag", "env=prod", "--remove-tag", "team=analytics"),
+            ("--remove-tag", "team=analytics", "--add-tag", "env=prod"),
+            ("--add-tag", "env", "--remove-tag", "team"),
+            ("--remove-tag", "team", "--add-tag", "env"),
+        ] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "service",
+                "update",
+                "svc-1",
+                first_flag,
+                first_value,
+                second_flag,
+                second_value,
+            ])
+            .err()
+            .expect("mixed tag operations must conflict");
+
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{first_flag} {first_value} followed by {second_flag} {second_value}"
+            );
+        }
     }
 
     #[test]
