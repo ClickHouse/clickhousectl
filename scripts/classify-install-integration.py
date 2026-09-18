@@ -28,6 +28,7 @@ INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/src/local/symlink.rs",
         "crates/clickhousectl/src/main.rs",
         "crates/clickhousectl/src/paths.rs",
+        "crates/clickhousectl/src/stdout.rs",
         "crates/clickhousectl/src/user_agent.rs",
         "crates/clickhousectl/tests/local_install_local_first_test.rs",
         "crates/clickhousectl/tests/local_version_error_test.rs",
@@ -80,6 +81,7 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhousectl/tests/local_server_watchdog_pid_test.rs",
         "crates/clickhousectl/tests/local_structured_errors_test.rs",
         "crates/clickhousectl/tests/telemetry_test.rs",
+        "crates/clickhousectl/tests/local_stdout_test.rs",
         "crates/clickhousectl/tests/skills_usage_test.rs",
     }
 )

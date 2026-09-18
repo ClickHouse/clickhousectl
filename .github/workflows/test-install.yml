@@ -14,6 +14,7 @@ on:
       - "crates/clickhousectl/src/local/symlink.rs"
       - "crates/clickhousectl/src/init.rs"
       - "crates/clickhousectl/src/paths.rs"
+      - "crates/clickhousectl/src/stdout.rs"
       - "crates/clickhousectl/src/error.rs"
       - "crates/clickhousectl/src/http.rs"
       - "crates/clickhousectl/src/user_agent.rs"

@@ -303,7 +303,7 @@ fn auth_interactive() -> std::result::Result<(), Box<dyn std::error::Error>> {
     use std::io::Write;
 
     print!("API Key: ");
-    std::io::stdout().flush()?;
+    crate::stdout::stdout().flush()?;
     let mut api_key = String::new();
     std::io::stdin().read_line(&mut api_key)?;
     let api_key = api_key.trim().to_string();
@@ -313,7 +313,7 @@ fn auth_interactive() -> std::result::Result<(), Box<dyn std::error::Error>> {
     }
 
     print!("API Secret: ");
-    std::io::stdout().flush()?;
+    crate::stdout::stdout().flush()?;
     let api_secret = rpassword::read_password()?;
 
     if api_secret.is_empty() {
