@@ -2560,6 +2560,10 @@ snapshot and initial-load settings cannot be changed later on a pipe that was
 created without them. `clickpipe settings update` is a different endpoint for
 streaming and object-storage pipes and does not cover these settings.
 
+MongoDB create accepts `--initial-load-parallelism <WORKERS>` for workers **per collection**
+during the initial snapshot (integer, minimum 1). Omission keeps the Cloud default;
+`--snapshot-parallel-collections` separately controls how many collections load concurrently.
+
 MySQL and MongoDB expose the corresponding settings on their create commands.
 The integer fields enforce the Cloud API minima: sync interval, pull batch,
 initial-load workers and parallel tables/collections are at least `1`, while
