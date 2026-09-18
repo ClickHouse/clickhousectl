@@ -15,6 +15,171 @@ use serde_json::Value;
 use tabled::{Table, Tabled, settings::Style};
 
 #[derive(Subcommand)]
+pub enum SnapshotCommands {
+    /// List service snapshots
+    List {
+        #[command(flatten)]
+        service_id: NameSelector,
+    },
+    /// Get snapshot details
+    Get {
+        #[command(flatten)]
+        service_id: NameSelector,
+        /// Snapshot ID (from `cloud service snapshot list`)
+        #[arg(long)]
+        snapshot_id: String,
+    },
+    /// Manage snapshot configuration
+    #[command(subcommand)]
+    Config(SnapshotConfigCommands),
+}
+
+impl SnapshotCommands {
+    pub fn is_write(&self) -> bool {
+        match self {
+            Self::List { .. } | Self::Get { .. } => false,
+            Self::Config(command) => command.is_write(),
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum SnapshotConfigCommands {
+    /// Get snapshot configuration
+    Get {
+        #[command(flatten)]
+        service_id: NameSelector,
+    },
+    /// Update snapshot configuration
+    #[command(after_help = "CONTEXT FOR AGENTS:
+  Requires an ADMIN API key.
+  Omitted fields stay unchanged; Cloud validates the resulting configuration.")]
+    Update {
+        #[command(flatten)]
+        service_id: NameSelector,
+        #[command(flatten)]
+        options: SnapshotConfigUpdateOptions,
+    },
+}
+
+impl SnapshotConfigCommands {
+    pub fn is_write(&self) -> bool {
+        match self {
+            Self::Get { .. } => false,
+            Self::Update { .. } => true,
+        }
+    }
+}
+
+#[derive(clap::Args, Default)]
+#[group(required = true, multiple = true)]
+pub struct SnapshotConfigUpdateOptions {
+    /// Enable or disable scheduled snapshots
+    #[arg(long, action = clap::ArgAction::Set)]
+    enabled: Option<bool>,
+    /// Interval in minutes; requires --time-frame
+    #[arg(long, requires = "time_frame")]
+    gap: Option<u32>,
+    /// Retention in minutes; requires --gap
+    #[arg(long, requires = "gap")]
+    time_frame: Option<u32>,
+}
+
+fn build_snapshot_config_update_request(
+    options: &SnapshotConfigUpdateOptions,
+) -> CloudResult<clickhouse_cloud_api::models::SnapshotConfigurationPatchRequest> {
+    if options.enabled.is_none() && options.gap.is_none() && options.time_frame.is_none() {
+        return Err(CloudError::new(
+            "provide at least one snapshot configuration change",
+        ));
+    }
+    if options.gap.is_some() != options.time_frame.is_some() {
+        return Err(CloudError::new(
+            "--gap and --time-frame must be supplied together",
+        ));
+    }
+    Ok(
+        clickhouse_cloud_api::models::SnapshotConfigurationPatchRequest {
+            enabled: options.enabled,
+            gap: options.gap.map(f64::from),
+            time_frame: options.time_frame.map(f64::from),
+        },
+    )
+}
+
+pub async fn run_snapshot(
+    client: &CloudClient,
+    command: SnapshotCommands,
+    json: bool,
+) -> CloudResult<()> {
+    let org = resolve_org_id(client).await?;
+    match command {
+        SnapshotCommands::List { service_id } => {
+            let id = service_id.resolve(client, NamedResource::Service).await?;
+            let snapshots = client.list_snapshots(&org, &id).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&snapshots)?);
+            } else if snapshots.is_empty() {
+                println!("No snapshots found");
+            } else {
+                #[derive(Tabled)]
+                struct Row {
+                    #[tabled(rename = "ID")]
+                    id: String,
+                    #[tabled(rename = "Status")]
+                    status: String,
+                    #[tabled(rename = "Size")]
+                    size: String,
+                    #[tabled(rename = "Created")]
+                    created: String,
+                }
+                let rows = snapshots.into_iter().map(|snapshot| Row {
+                    id: or_absent(snapshot.id),
+                    status: or_absent(snapshot.status.as_ref()),
+                    size: or_absent(snapshot.size_in_bytes.map(format_bytes)),
+                    created: format_backup_created(snapshot.started_at),
+                });
+                println!("{}", Table::new(rows).with(Style::markdown()));
+            }
+        }
+        SnapshotCommands::Get {
+            service_id,
+            snapshot_id,
+        } => {
+            let id = service_id.resolve(client, NamedResource::Service).await?;
+            let snapshot = client.get_snapshot(&org, &id, &snapshot_id).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&snapshot)?);
+            } else {
+                print_human(&snapshot)?;
+            }
+        }
+        SnapshotCommands::Config(command) => {
+            let config = match command {
+                SnapshotConfigCommands::Get { service_id } => {
+                    let id = service_id.resolve(client, NamedResource::Service).await?;
+                    client.get_snapshot_config(&org, &id).await?
+                }
+                SnapshotConfigCommands::Update {
+                    service_id,
+                    options,
+                } => {
+                    let request = build_snapshot_config_update_request(&options)?;
+                    let id = service_id.resolve(client, NamedResource::Service).await?;
+                    client.update_snapshot_config(&org, &id, &request).await?
+                }
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&config)?);
+            } else {
+                print_human(&config)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Subcommand)]
 pub enum BackupCommands {
     /// List backups for a service
     List {
@@ -562,6 +727,57 @@ fn format_backup_created(value: Option<chrono::DateTime<chrono::Utc>>) -> String
 }
 
 impl CloudClient {
+    pub async fn list_snapshots(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudResult<Vec<clickhouse_cloud_api::models::Snapshot>> {
+        let response = self
+            .api()
+            .snapshot_get_list(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+    pub async fn get_snapshot(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        snapshot_id: &str,
+    ) -> CloudResult<clickhouse_cloud_api::models::Snapshot> {
+        let response = self
+            .api()
+            .snapshot_get(org_id, service_id, snapshot_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+    pub async fn get_snapshot_config(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> CloudResult<clickhouse_cloud_api::models::SnapshotConfiguration> {
+        let response = self
+            .api()
+            .snapshot_configuration_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+    pub async fn update_snapshot_config(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &clickhouse_cloud_api::models::SnapshotConfigurationPatchRequest,
+    ) -> CloudResult<clickhouse_cloud_api::models::SnapshotConfiguration> {
+        let response = self
+            .api()
+            .snapshot_configuration_update(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     pub async fn list_backups(
         &self,
         org_id: &str,
@@ -676,6 +892,112 @@ impl CloudClient {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn snapshot_parsing_classifies_reads_and_updates() {
+        for (args, write) in [
+            (vec!["list", "svc-1"], false),
+            (
+                vec!["get", "--name", "analytics", "--snapshot-id", "snap-1"],
+                false,
+            ),
+            (vec!["config", "get", "svc-1"], false),
+            (
+                vec!["config", "update", "svc-1", "--enabled", "false"],
+                true,
+            ),
+            (
+                vec![
+                    "config",
+                    "update",
+                    "svc-1",
+                    "--enabled",
+                    "true",
+                    "--gap",
+                    "30",
+                    "--time-frame",
+                    "1440",
+                ],
+                true,
+            ),
+        ] {
+            let mut full = vec!["chctl", "cloud", "service", "snapshot"];
+            full.extend(args);
+            let cli = Cli::try_parse_from(full).unwrap();
+            let Commands::Cloud(cloud) = cli.command else {
+                panic!("cloud");
+            };
+            assert_eq!(cloud.command.is_write_command(), write);
+            if let crate::cloud::cli::CloudCommands::Service {
+                command:
+                    crate::cloud::services::ServiceCommands::Snapshot {
+                        command:
+                            SnapshotCommands::Config(SnapshotConfigCommands::Update { options, .. }),
+                    },
+            } = cloud.command
+            {
+                assert_eq!(options.enabled, Some(options.gap.is_some()));
+                if options.gap.is_some() {
+                    assert_eq!(options.gap, Some(30));
+                    assert_eq!(options.time_frame, Some(1440));
+                }
+            }
+        }
+        for flags in [vec![], vec!["--gap", "30"], vec!["--time-frame", "1440"]] {
+            let mut full = vec![
+                "chctl", "cloud", "service", "snapshot", "config", "update", "svc-1",
+            ];
+            full.extend(flags);
+            assert_eq!(
+                Cli::try_parse_from(full).err().unwrap().kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+    }
+
+    #[test]
+    fn snapshot_config_builder_preserves_partial_and_complete_updates() {
+        let minimal = build_snapshot_config_update_request(&SnapshotConfigUpdateOptions {
+            enabled: Some(false),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(minimal.enabled, Some(false));
+        assert!(minimal.gap.is_none());
+        assert!(minimal.time_frame.is_none());
+        assert_eq!(
+            serde_json::to_value(minimal).unwrap(),
+            serde_json::json!({"enabled": false})
+        );
+        for (gap, time_frame) in [(30, 1440), (60, 2880)] {
+            let maximal = build_snapshot_config_update_request(&SnapshotConfigUpdateOptions {
+                enabled: Some(true),
+                gap: Some(gap),
+                time_frame: Some(time_frame),
+            })
+            .unwrap();
+            assert_eq!(maximal.enabled, Some(true));
+            assert_eq!(maximal.gap, Some(f64::from(gap)));
+            assert_eq!(maximal.time_frame, Some(f64::from(time_frame)));
+        }
+        let pair_only = build_snapshot_config_update_request(&SnapshotConfigUpdateOptions {
+            gap: Some(60),
+            time_frame: Some(2880),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(pair_only.enabled.is_none());
+        assert!(
+            build_snapshot_config_update_request(&SnapshotConfigUpdateOptions::default()).is_err()
+        );
+        assert!(
+            build_snapshot_config_update_request(&SnapshotConfigUpdateOptions {
+                gap: Some(30),
+                ..Default::default()
+            })
+            .is_err()
+        );
+    }
+
     #[test]
     fn primary_json_file_argument_contract() {
         crate::cloud::config::assert_primary_json_input(

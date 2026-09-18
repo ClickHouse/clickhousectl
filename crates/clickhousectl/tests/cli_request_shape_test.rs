@@ -27025,3 +27025,94 @@ async fn closed_stdout_keeps_a_genuine_cloud_failure_and_error_envelope() {
         }
     }
 }
+
+#[tokio::test]
+async fn service_snapshots_routes_preserve_json_and_human_output() {
+    let mock = MockServer::start().await;
+    let snapshot = serde_json::json!({"id": "00000000-0000-0000-0000-000000000001", "status": "done", "startedAt": "2026-09-18T10:00:00Z", "bucket": {"region": "us-east-1"}});
+    for (args, suffix, result) in [
+        (
+            vec!["list", "svc-1"],
+            "snapshots",
+            serde_json::json!([snapshot, {}]),
+        ),
+        (
+            vec!["get", "svc-1", "--snapshot-id", "snap-1"],
+            "snapshots/snap-1",
+            snapshot,
+        ),
+        (
+            vec!["config", "get", "svc-1"],
+            "snapshotConfiguration",
+            serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1/organizations/org-1/services/svc-1/{suffix}"
+            )))
+            .and(header(
+                "authorization",
+                "Basic ZmFrZS1rZXktZm9yLXRlc3RzOmZha2Utc2VjcmV0LWZvci10ZXN0cw==",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+            )
+            .expect(2)
+            .mount(&mock)
+            .await;
+        let mut full = vec!["service", "snapshot"];
+        full.extend(args);
+        full.extend(["--org-id", "org-1"]);
+        let json = invoke_cli_with_cloud_credentials(&mock, &full);
+        assert_success(&json);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+            result
+        );
+        let human = invoke_cli_with_cloud_credentials_human(&mock, &full);
+        assert_success(&human);
+        assert!(!human.stdout.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn service_snapshot_config_patch_preserves_omission_and_pairs() {
+    for (flags, body) in [
+        (
+            vec!["--enabled", "false"],
+            serde_json::json!({"enabled": false}),
+        ),
+        (
+            vec!["--gap", "60", "--time-frame", "2880"],
+            serde_json::json!({"gap": 60.0, "timeFrame": 2880.0}),
+        ),
+        (
+            vec!["--enabled", "true", "--gap", "30", "--time-frame", "1440"],
+            serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
+            ))
+            .and(body_json(&body))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": body})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut args = vec![
+            "service", "snapshot", "config", "update", "svc-1", "--org-id", "org-1",
+        ];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_success(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            body
+        );
+    }
+}

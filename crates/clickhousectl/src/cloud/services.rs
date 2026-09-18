@@ -1,5 +1,5 @@
 use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanup};
-use crate::cloud::backups::BackupConfigCommands;
+use crate::cloud::backups::{BackupConfigCommands, SnapshotCommands};
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
@@ -462,6 +462,12 @@ CONTEXT FOR AGENTS:
         command: PrivateEndpointCommands,
     },
 
+    /// Manage service snapshots (Beta)
+    Snapshot {
+        #[command(subcommand)]
+        command: SnapshotCommands,
+    },
+
     /// Manage backup configuration
     #[command(name = "backup-config")]
     BackupConfig {
@@ -879,6 +885,7 @@ impl ServiceCommands {
                 PrivateEndpointCommands::GetConfig { .. } => false,
             },
             ServiceCommands::BackupConfig { command } => command.is_write(),
+            ServiceCommands::Snapshot { command } => command.is_write(),
             ServiceCommands::UpgradeWindow { command } => command.is_write(),
         }
     }
@@ -1217,6 +1224,9 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 .await
             }
         },
+        ServiceCommands::Snapshot { command } => {
+            crate::cloud::backups::run_snapshot(client, command, json).await
+        }
         ServiceCommands::BackupConfig { command } => {
             crate::cloud::backups::run_config(client, command, json).await
         }
