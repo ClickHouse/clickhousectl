@@ -197,7 +197,7 @@ pub async fn install(args: SkillsArgs, json: bool) -> Result<()> {
         selected,
         &skill_files,
         json,
-        &mut io::stdout(),
+        &mut crate::stdout::stdout(),
     )
 }
 
@@ -824,7 +824,7 @@ fn ui_output(json: bool) -> Box<dyn Write> {
     if json {
         Box::new(io::stderr())
     } else {
-        Box::new(io::stdout())
+        Box::new(crate::stdout::stdout())
     }
 }
 

@@ -2364,7 +2364,7 @@ fn print_prometheus(metrics: &str, json: bool) -> CloudResult<()> {
         print_line(serde_json::to_string_pretty(metrics)?);
     } else {
         use std::io::Write;
-        std::io::stdout().lock().write_all(metrics.as_bytes())?;
+        crate::stdout::stdout().write_all(metrics.as_bytes())?;
     }
     Ok(())
 }

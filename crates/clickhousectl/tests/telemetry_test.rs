@@ -2000,24 +2000,39 @@ async fn a_failed_provisioning_burst_names_the_key_create_stage() {
     }
 }
 
+fn assert_success_without_failure_details(event: &Value) {
+    assert_eq!(event["exit_code"], 0, "{event}");
+    assert_eq!(event["outcome"], "ok", "{event}");
+    for key in [
+        "failure_stage",
+        "failure_kind",
+        "http_status",
+        "retry_bucket",
+        "provisioning_state",
+        "duration_bucket",
+        "failure_count",
+    ] {
+        assert!(
+            event.get(key).is_none(),
+            "successful closed-pipe command carried {key}: {event}"
+        );
+    }
+}
+
 #[tokio::test]
-async fn a_refused_stdout_write_is_an_io_failure_of_the_response_stream() {
-    // The response arrives fine; forwarding it to a closed stdout does not.
-    // That is local I/O at the streaming stage, not a query failure — the
-    // distinction the single `error` outcome could not express.
+async fn closed_stdout_query_stream_is_quiet_and_records_success() {
     let control = start_control_plane(200).await;
     let query_host =
-        start_query_host(ResponseTemplate::new(200).set_body_string("1\n".repeat(4096))).await;
-    let (sandbox, project) = query_sandbox(&control).await;
-
-    let url = control.uri();
-    let (reader, writer) = std::io::pipe().expect("failed to create pipe");
-    drop(reader);
-    let output = sandbox
-        .command(&[
+        start_query_host(ResponseTemplate::new(200).set_body_string("1\n".repeat(1024 * 1024)))
+            .await;
+    for json in [false, true] {
+        let (sandbox, project) = query_sandbox(&control).await;
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let mut command = sandbox.command(&[
             "cloud",
             "--url",
-            &url,
+            &control.uri(),
             "service",
             "query",
             "--id",
@@ -2026,30 +2041,151 @@ async fn a_refused_stdout_write_is_an_io_failure_of_the_response_stream() {
             "org-1",
             "--query",
             "SELECT 1",
+        ]);
+        command
+            .current_dir(project.path())
+            .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+            .stdout(writer);
+        if json {
+            command.arg("--json");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let events = sandbox.wait_for_requests(1).await;
+        assert_success_without_failure_details(&events[0]);
+    }
+}
+
+#[tokio::test]
+async fn closed_stdout_large_list_records_success_in_human_and_json_modes() {
+    let control = MockServer::start().await;
+    let services: Vec<_> = (0..512)
+        .map(|id| serde_json::json!({"id": format!("00000000-0000-0000-0000-{id:012x}"), "name": "x".repeat(4096)}))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": services})),
+        )
+        .mount(&control)
+        .await;
+    for json in [false, true] {
+        let sandbox = Sandbox::new().await;
+        sandbox.write_state(false);
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let mut command = sandbox.command(&[
+            "cloud",
+            "--url",
+            &control.uri(),
+            "--api-key",
+            "test-key",
+            "--api-secret",
+            "test-secret",
+            "service",
+            "list",
+            "--org-id",
+            "org-1",
+        ]);
+        command.current_dir(sandbox.home.path()).stdout(writer);
+        if json {
+            command.arg("--json");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(output.stderr.is_empty(), "{output:?}");
+        let events = sandbox.wait_for_requests(1).await;
+        assert_success_without_failure_details(&events[0]);
+    }
+}
+
+#[tokio::test]
+async fn closed_stdout_does_not_hide_a_later_response_stream_failure() {
+    use std::io::{Read, Write};
+    let control = start_control_plane(200).await;
+    let (sandbox, project) = query_sandbox(&control).await;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let query_url = format!("http://{}", listener.local_addr().unwrap());
+    listener.set_nonblocking(true).unwrap();
+    let server = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "query request never arrived");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("accept query request: {error}"),
+            }
+        };
+        socket.set_nonblocking(false).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        let mut request = Vec::new();
+        let mut byte = [0];
+        while !request.ends_with(b"\r\n\r\n") {
+            socket.read_exact(&mut byte).unwrap();
+            request.push(byte[0]);
+        }
+        // Consume the request body so closing the socket delivers a FIN,
+        // rather than a reset that could discard the response already sent.
+        let length = String::from_utf8_lossy(&request)
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().unwrap())
+            })
+            .unwrap();
+        socket.read_exact(&mut vec![0; length]).unwrap();
+        // Deliver much more than a pipe buffer, then truncate the body. The
+        // stdout write fails first; the transport failure must still survive.
+        let body = "1\n".repeat(1024 * 1024);
+        write!(
+            socket,
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len() + 100
+        )
+        .unwrap();
+        socket.write_all(body.as_bytes()).unwrap();
+        socket.shutdown(std::net::Shutdown::Write).unwrap();
+    });
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let output = sandbox
+        .command(&[
+            "cloud",
+            "--url",
+            &control.uri(),
+            "service",
+            "query",
+            "--id",
+            QUERY_SERVICE_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 1",
+            "--json",
         ])
         .current_dir(project.path())
-        .env("CHCTL_TELEMETRY_DEBUG", "1")
-        .env_remove("CLICKHOUSE_CLOUD_API_KEY")
-        .env_remove("CLICKHOUSE_CLOUD_API_SECRET")
-        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_url)
         .stdout(writer)
         .output()
-        .expect("failed to spawn binary");
-    assert_eq!(
-        output.status.code(),
-        Some(1),
-        "a broken pipe must stay exit 1, never a panic: {}",
-        stderr_of(&output)
-    );
-
-    let event = debug_payload(&output);
-    assert_eq!(event["failure_stage"], "response_stream");
-    assert_eq!(event["failure_kind"], "io");
-    assert!(
-        event.get("http_status").is_none(),
-        "local I/O has no HTTP status: {event}"
-    );
-    assert_eq!(event["provisioning_state"], "bearer");
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "transport");
+    let events = sandbox.wait_for_requests(1).await;
+    assert_eq!(events[0]["outcome"], "error");
+    assert_eq!(events[0]["failure_kind"], "transport");
+    assert_eq!(events[0]["failure_stage"], "response_stream");
 }
 
 #[tokio::test]

@@ -809,7 +809,7 @@ pub async fn exec_psql_one_shot(
         Ok::<_, Error>(())
     };
     let read_output = async {
-        let mut stdout = tokio::io::stdout();
+        let mut stdout = crate::stdout::async_stdout();
         let mut stderr = tokio::io::stderr();
         while let Some(chunk) = output.next().await {
             match chunk.map_err(|error| Error::DockerError(error.to_string()))? {
@@ -994,13 +994,13 @@ pub async fn exec_psql_in_container(
     });
 
     // Pump exec output to stdout.
-    let mut stdout = tokio::io::stdout();
+    let mut stdout = crate::stdout::async_stdout();
     while let Some(chunk) = output.next().await {
         match chunk {
             Ok(out) => {
                 let bytes = out.into_bytes();
-                let _ = stdout.write_all(&bytes).await;
-                let _ = stdout.flush().await;
+                crate::stdout::record(stdout.write_all(&bytes).await);
+                crate::stdout::record(stdout.flush().await);
             }
             Err(_) => break,
         }
