@@ -4,13 +4,18 @@
 //! `local::server` — Postgres entries land in the same metadata directory and
 //! show up alongside ClickHouse in `local server list`.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, PortKind, Result, StartupKind};
 use crate::local::cli::PostgresCommands;
 use crate::local::docker::{self, PostgresRunOpts};
 use crate::local::output;
 use crate::local::server::{self, Engine, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
+use std::collections::HashSet;
+use std::future::Future;
+use std::io::IsTerminal;
+use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 const DEFAULT_PG_PORT: u16 = 5432;
 const DEFAULT_USER: &str = "postgres";
@@ -18,6 +23,10 @@ const DEFAULT_DATABASE: &str = "postgres";
 /// Default image tag when `--version` is not given. Within the supported
 /// range; users can override with any 17/18 tag (`17`, `17.0`, `18-bookworm`, etc).
 pub const DEFAULT_PG_TAG: &str = "18";
+const READINESS_POLL_INTERVAL: Duration = Duration::from_millis(200);
+const READINESS_LOG_LINES: usize = 50;
+const READINESS_LOG_BYTES: usize = 16 * 1024;
+const READINESS_LOG_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Extract the major-version digits from a Postgres image tag. `17-alpine` →
 /// `"17"`, `17.0` → `"17"`, `18-bookworm` → `"18"`. Validation is the caller's
@@ -26,47 +35,231 @@ pub(crate) fn pg_major_from_tag(tag: &str) -> String {
     tag.chars().take_while(|c| c.is_ascii_digit()).collect()
 }
 
-/// Accept Postgres image tags whose major version is 17 or 18 — anything
-/// else is unsupported for now. Examples that pass: `17`, `17.0`, `17-alpine`,
-/// `18-bookworm`, `18.1-alpine3.20`. Examples that fail: `latest`, `16`, `19`.
+/// Accept Postgres image tags in the form `17|18[.<minor>][-<variant>]`.
+/// The variant follows Docker's tag character grammar. Examples that pass:
+/// `17`, `17.0`, `17-alpine`, `18-bookworm`, `18.1-alpine3.20`.
 pub(crate) fn validate_pg_tag(tag: &str) -> Result<()> {
-    let major: String = tag.chars().take_while(|c| c.is_ascii_digit()).collect();
-    if !matches!(major.as_str(), "17" | "18") {
-        return Err(Error::Exec(format!(
-            "postgres version '{}' is not supported. Use a 17 or 18 image tag \
-             (for example: 17, 17-alpine, 18.1, 18-bookworm).",
+    let valid = tag.len() <= 128 && tag.is_ascii() && {
+        let (version, variant) = match tag.split_once('-') {
+            Some((version, variant)) => (version, Some(variant)),
+            None => (tag, None),
+        };
+        let variant_valid = variant.is_none_or(|variant| {
+            let mut chars = variant.chars();
+            chars
+                .next()
+                .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+        });
+        let (major, minor) = match version.split_once('.') {
+            Some((major, minor)) => (major, Some(minor)),
+            None => (version, None),
+        };
+        let minor_valid = minor
+            .is_none_or(|minor| !minor.is_empty() && minor.chars().all(|c| c.is_ascii_digit()));
+        matches!(major, "17" | "18") && minor_valid && variant_valid
+    };
+
+    if !valid {
+        return Err(Error::PostgresUsage(format!(
+            "invalid or unsupported postgres version '{}'. Use 17 or 18, optionally followed \
+             by .<minor> and -<variant> (for example: 17, 17-alpine, 18.1, 18-bookworm).",
             tag
         )));
     }
     Ok(())
 }
 
+pub(crate) fn parse_pg_tag_arg(tag: &str) -> std::result::Result<String, String> {
+    validate_pg_tag(tag)
+        .map(|()| tag.to_string())
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn parse_pg_port_arg(value: &str) -> std::result::Result<u16, String> {
+    let port = value
+        .parse::<u16>()
+        .map_err(|_| format!("invalid port '{value}': expected an integer from 1 to 65535"))?;
+    if port == 0 {
+        return Err("--port 0 is not allowed; pick a specific port or omit the flag".into());
+    }
+    Ok(port)
+}
+
+fn validate_pg_env_assignment(assignment: &str) -> std::result::Result<(&str, &str), String> {
+    let Some((key, value)) = assignment.split_once('=') else {
+        return Err(format!(
+            "invalid environment variable '{assignment}': expected KEY=VALUE"
+        ));
+    };
+    let mut chars = key.chars();
+    if !chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(format!(
+            "invalid environment variable key '{key}': use letters, digits, and underscores, and do not start with a digit"
+        ));
+    }
+    match key {
+        "POSTGRES_USER" => {
+            Err("POSTGRES_USER is managed by clickhousectl; use --user instead of --env".into())
+        }
+        "POSTGRES_DB" => {
+            Err("POSTGRES_DB is managed by clickhousectl; use --database instead of --env".into())
+        }
+        "PGDATA" => Err("PGDATA is managed by clickhousectl and cannot be set with --env".into()),
+        _ => Ok((key, value)),
+    }
+}
+
+pub(crate) fn parse_pg_env_arg(assignment: &str) -> std::result::Result<String, String> {
+    validate_pg_env_assignment(assignment).map(|_| assignment.to_string())
+}
+
+pub(crate) fn validate_pg_start_env_args(
+    password: Option<&str>,
+    extra_env: &[String],
+) -> std::result::Result<(), String> {
+    let mut seen = HashSet::new();
+    let mut has_password_env = false;
+    for assignment in extra_env {
+        let (key, _) = validate_pg_env_assignment(assignment)?;
+        if !seen.insert(key) {
+            return Err(format!(
+                "environment variable '{key}' was provided more than once; pass each --env key only once"
+            ));
+        }
+        has_password_env |= key == "POSTGRES_PASSWORD";
+    }
+    if password.is_some() && has_password_env {
+        return Err(
+            "POSTGRES_PASSWORD cannot be set with both --password and --env; choose one".into(),
+        );
+    }
+    Ok(())
+}
+
+struct StartPreflight {
+    host_port: Option<u16>,
+    extra_env: Vec<String>,
+    password_from_env: Option<String>,
+}
+
+fn validate_start_options(
+    name: Option<&str>,
+    version: Option<&str>,
+    port: Option<u16>,
+    password: Option<&str>,
+    extra_env: Vec<String>,
+) -> Result<StartPreflight> {
+    if let Some(name) = name {
+        server::validate_server_name(name)?;
+    }
+    if let Some(version) = version {
+        validate_pg_tag(version)?;
+    }
+
+    validate_pg_start_env_args(password, &extra_env).map_err(Error::PostgresUsage)?;
+    let password_from_env = extra_env.iter().find_map(|assignment| {
+        assignment
+            .strip_prefix("POSTGRES_PASSWORD=")
+            .map(str::to_string)
+    });
+    let validated_env = extra_env
+        .into_iter()
+        .filter(|assignment| !assignment.starts_with("POSTGRES_PASSWORD="))
+        .collect();
+
+    let host_port = port.map(|port| resolve_port(Some(port))).transpose()?;
+    Ok(StartPreflight {
+        host_port,
+        extra_env: validated_env,
+        password_from_env,
+    })
+}
+
 pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
     match cmd {
         PostgresCommands::Start {
             name,
+            name_flag,
             version,
             port,
             user,
             password,
             database,
             env,
-        } => start(name, version, port, user, password, database, env, json).await,
-        PostgresCommands::Stop { name, version } => stop(&name, version.as_deref(), json).await,
+            wait_timeout,
+        } => {
+            start(
+                name.or(name_flag),
+                version,
+                port,
+                user,
+                password,
+                database,
+                env,
+                Duration::from_secs(wait_timeout.into()),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Stop {
+            name,
+            name_flag,
+            version,
+        } => {
+            stop(
+                name.or(name_flag).as_deref().unwrap_or("default"),
+                version.as_deref(),
+                json,
+            )
+            .await
+        }
         PostgresCommands::StopAll => stop_all(json).await,
-        PostgresCommands::Remove { name, version } => remove(&name, version.as_deref(), json),
+        PostgresCommands::Remove {
+            name,
+            name_flag,
+            version,
+        } => remove(
+            name.or(name_flag).as_deref().unwrap_or("default"),
+            version.as_deref(),
+            json,
+        ),
         PostgresCommands::Client {
             name,
+            name_flag,
             version,
             host,
             port,
             query,
             queries_file,
             args,
-        } => client(name, version, host, port, query, queries_file, args).await,
-        PostgresCommands::Dotenv { name, version, local } => {
-            dotenv(name.as_deref(), version.as_deref(), local, json)
+        } => {
+            client(
+                name.or(name_flag),
+                version,
+                host,
+                port,
+                query,
+                queries_file,
+                args,
+            )
+            .await
         }
+        PostgresCommands::Dotenv {
+            name,
+            name_flag,
+            version,
+            local,
+        } => dotenv(
+            name.or(name_flag).as_deref(),
+            version.as_deref(),
+            local,
+            json,
+        ),
     }
 }
 
@@ -79,78 +272,87 @@ async fn start(
     password: Option<String>,
     database: Option<String>,
     extra_env: Vec<String>,
+    wait_timeout: Duration,
     json: bool,
 ) -> Result<()> {
-    server::recover_current_project_servers();
-
-    // User-facing name (no version suffix). Defaults to "default" when no
-    // postgres "default" is currently running.
-    let user_name = match name.as_deref() {
-        Some(n) => {
-            server::validate_server_name(n)?;
-            n.to_string()
-        }
-        None => default_pg_name(),
-    };
-
-    // If `--version` is omitted but there's already exactly one instance for
-    // this name, resume it — the user almost certainly wants their existing
-    // data, not a freshly-initialized DEFAULT_PG_TAG. With multiple
-    // instances, we ask them to disambiguate. Only when zero exist do we
-    // default to DEFAULT_PG_TAG.
-    let (tag, major) = match version.as_deref() {
-        Some(v) => {
-            validate_pg_tag(v)?;
-            (v.to_string(), pg_major_from_tag(v))
-        }
-        None => {
-            let existing = server::find_pg_instances(&user_name);
-            match existing.len() {
-                0 => (DEFAULT_PG_TAG.to_string(), pg_major_from_tag(DEFAULT_PG_TAG)),
-                1 => {
-                    let info = &existing[0];
-                    let stored_tag = info.version.strip_prefix("postgres:").unwrap_or(&info.version);
-                    (stored_tag.to_string(), pg_major_from_tag(stored_tag))
-                }
-                _ => {
-                    let versions: Vec<String> =
-                        existing.iter().map(|i| i.version.clone()).collect();
-                    return Err(Error::Exec(format!(
-                        "multiple postgres instances named '{}' ({}); pass --version to select one",
-                        user_name,
-                        versions.join(", ")
-                    )));
-                }
-            }
-        }
-    };
-    let tag = tag.as_str();
-
-    // Disk identifier — uniquely scopes (name, major) so two majors of the
-    // same name never share container/data/metadata.
-    let key = server::pg_instance_key(&user_name, &major);
+    let has_extra_env = !extra_env.is_empty();
+    let preflight = validate_start_options(
+        name.as_deref(),
+        version.as_deref(),
+        port,
+        password.as_deref(),
+        extra_env,
+    )?;
+    let host_port = preflight.host_port;
+    let extra_env = preflight.extra_env;
+    let password_from_env = preflight.password_from_env;
 
     let docker = docker::connect().await?;
-
     let project_cwd = std::env::current_dir()
         .and_then(|p| p.canonicalize())
         .map(|p| p.display().to_string())
         .unwrap_or_default();
 
-    // Resume path: an instance for this exact (name, major) already exists.
-    if let Some(prior) = server::load_info(&key) {
-        let cid = prior.container_id.as_deref().unwrap_or("");
-        let container_present =
-            !cid.is_empty() && docker.inspect_container(cid, None).await.is_ok();
-        if container_present {
-            if server::is_server_running(&key) {
+    loop {
+        // Resolve an optimistic target, then release the project-wide lock
+        // before potentially slow fresh-image inspection and pulling.
+        let metadata_lock = server::lock_metadata()?;
+        server::recover_current_project_servers_locked(&metadata_lock)?;
+        let user_name = match name.as_deref() {
+            Some(name) => name.to_string(),
+            None => default_pg_name_locked(&metadata_lock)?,
+        };
+        let (tag, major) =
+            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
+        let key = server::pg_instance_key(&user_name, &major);
+        let prior = server::load_info_locked(&key, &metadata_lock)?;
+        drop(metadata_lock);
+
+        if prior.is_none() {
+            if !docker::image_exists(&docker, &tag).await? {
+                docker::pull_image(&docker, &tag, json).await?;
+            }
+            docker::ensure_name_free(&docker, &user_name, &major, &project_cwd).await?;
+        }
+
+        // The optimistic target may have changed while Docker work was in
+        // progress. Re-resolve it before any state-determining mutation.
+        let metadata_lock = server::lock_metadata()?;
+        let (current_tag, current_major) =
+            resolve_pg_start_version_locked(&user_name, version.as_deref(), &metadata_lock)?;
+        let current_key = server::pg_instance_key(&user_name, &current_major);
+        let current = server::load_info_locked(&current_key, &metadata_lock)?;
+        if current_tag != tag || current_key != key || current != prior {
+            drop(metadata_lock);
+            continue;
+        }
+        crate::init::ensure_runtime_gitignore()?;
+
+        // Resume path: an instance for this exact (name, major) already exists.
+        if let Some(prior) = prior {
+            let cid = prior.container_id.as_deref().unwrap_or("");
+            let inspected = if cid.is_empty() {
+                None
+            } else {
+                docker::inspect_container(&docker, cid).await?
+            };
+            let Some(inspected) = inspected else {
+                return Err(Error::PostgresUsage(format!(
+                    "server '{}' (postgres:{}) has metadata but the container is gone. \
+                     Run `clickhousectl local postgres remove {}` to clear the data dir \
+                     and start fresh.",
+                    user_name, major, user_name
+                )));
+            };
+            if docker::inspected_container_running(&inspected)? {
                 return Err(Error::ServerAlreadyRunning(user_name));
             }
-            if port.is_some()
-                || user.is_some()
-                || password.is_some()
-                || database.is_some()
-                || !extra_env.is_empty()
+            if !json
+                && (port.is_some()
+                    || user.is_some()
+                    || password.is_some()
+                    || database.is_some()
+                    || has_extra_env)
             {
                 eprintln!(
                     "Note: postgres:{major} '{}' already exists; resuming with stored settings. \
@@ -158,140 +360,286 @@ async fn start(
                     user_name, user_name
                 );
             }
-            return resume_existing(&docker, prior, json).await;
+            return resume_existing(&docker, prior, wait_timeout, json, metadata_lock).await;
         }
-        // Metadata orphaned — container removed externally. Force explicit
-        // cleanup to avoid silently re-initing against potentially-stale data.
-        return Err(Error::Exec(format!(
-            "Postgres '{}' (postgres:{}) has metadata but the container is gone. \
-             Run `clickhousectl local postgres remove {}` to clear the data dir \
-             and start fresh.",
-            user_name, major, user_name
-        )));
+
+        // Fresh create.
+        let host_port = match host_port {
+            Some(port) => port,
+            None => resolve_port(None)?,
+        };
+
+        let instance_dir = server::servers_dir_join(&key);
+        let remove_fresh_data_on_failure = fresh_instance_dir_is_disposable(&instance_dir);
+        server::ensure_pg_data_dir(&user_name, &major)?;
+        let data_dir = server::pg_data_dir(&user_name, &major);
+
+        let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
+        let database = database.unwrap_or_else(|| DEFAULT_DATABASE.to_string());
+
+        let password = password_from_env
+            .or(password)
+            .unwrap_or_else(generate_password);
+
+        let opts = PostgresRunOpts {
+            user_name: &user_name,
+            major: &major,
+            tag: &tag,
+            host_port,
+            data_dir: &data_dir,
+            project_cwd: &project_cwd,
+            user: &user,
+            password: &password,
+            database: &database,
+            extra_env,
+        };
+
+        let container_id = docker::create_postgres(&docker, opts).await?;
+
+        let info = ServerInfo {
+            name: key.clone(),
+            pid: 0,
+            version: format!("postgres:{tag}"),
+            http_port: 0,
+            tcp_port: host_port,
+            started_at: server::now_timestamp(),
+            cwd: project_cwd.clone(),
+            engine: Engine::Postgres,
+            container_id: Some(container_id.clone()),
+        };
+        let startup_result = async {
+            docker::start_existing(&docker, &container_id).await?;
+            server::save_server_info_locked(&info, &metadata_lock)
+        }
+        .await;
+
+        if let Err(primary) = startup_result {
+            return Err(rollback_failed_fresh_start(
+                &docker,
+                &container_id,
+                &info,
+                remove_fresh_data_on_failure,
+                primary,
+                &metadata_lock,
+            )
+            .await);
+        }
+        drop(metadata_lock);
+
+        if let Err(failure) = wait_for_postgres_ready(&docker, &container_id, wait_timeout).await {
+            let primary =
+                postgres_readiness_error(&docker, &container_id, &user_name, wait_timeout, failure)
+                    .await;
+            let metadata_lock = server::lock_metadata()?;
+            return Err(rollback_failed_fresh_start(
+                &docker,
+                &container_id,
+                &info,
+                remove_fresh_data_on_failure,
+                primary,
+                &metadata_lock,
+            )
+            .await);
+        }
+
+        let out = output::PostgresStartOutput {
+            name: user_name,
+            container_id,
+            image: format!("postgres:{tag}"),
+            port: host_port,
+            user,
+            password,
+            database,
+        };
+        output::print_output(&out, json);
+        return Ok(());
     }
-
-    // Fresh create.
-    if !docker::image_exists(&docker, tag).await? {
-        eprintln!("Pulling postgres:{tag}...");
-        docker::pull_image(&docker, tag).await?;
-    }
-
-    let host_port = resolve_port(port)?;
-
-    server::ensure_pg_data_dir(&user_name, &major)?;
-    let data_dir = server::pg_data_dir(&user_name, &major);
-
-    // Defensive cleanup of any unmanaged container colliding on our chosen
-    // container name (only if labels confirm we own it).
-    docker::ensure_name_free(&docker, &user_name, &major, &project_cwd).await?;
-
-    let user = user.unwrap_or_else(|| DEFAULT_USER.to_string());
-    let database = database.unwrap_or_else(|| DEFAULT_DATABASE.to_string());
-
-    let password_from_env = extra_env
-        .iter()
-        .find_map(|kv| kv.strip_prefix("POSTGRES_PASSWORD="))
-        .map(|s| s.to_string());
-    let password = password_from_env
-        .or(password)
-        .unwrap_or_else(generate_password);
-
-    let opts = PostgresRunOpts {
-        user_name: &user_name,
-        major: &major,
-        tag,
-        host_port,
-        data_dir: &data_dir,
-        project_cwd: &project_cwd,
-        user: &user,
-        password: &password,
-        database: &database,
-        extra_env,
-    };
-
-    let container_id = docker::run_postgres(&docker, opts).await?;
-
-    let info = ServerInfo {
-        name: key.clone(),
-        pid: 0,
-        version: format!("postgres:{tag}"),
-        http_port: 0,
-        tcp_port: host_port,
-        started_at: server::now_timestamp(),
-        cwd: project_cwd.clone(),
-        engine: Engine::Postgres,
-        container_id: Some(container_id.clone()),
-    };
-    server::save_server_info(&info)?;
-
-    let healthy = wait_running(&docker, &container_id, 30).await;
-    if !healthy {
-        let logs = docker::container_logs_tail(&docker, &container_id, 50)
-            .await
-            .unwrap_or_default();
-        let _ = docker::stop_container(&docker, &container_id).await;
-        let _ = docker::remove_container(&docker, &container_id).await;
-        server::remove_server_info(&key);
-        return Err(Error::DockerError(format!(
-            "Postgres container '{}' did not start.\n--- container logs ---\n{}",
-            user_name, logs
-        )));
-    }
-
-    let out = output::PostgresStartOutput {
-        name: user_name,
-        container_id,
-        image: format!("postgres:{tag}"),
-        port: host_port,
-        user,
-        password,
-        database,
-    };
-    output::print_output(&out, json);
-    Ok(())
 }
 
-/// Default user-facing name when `--name` is omitted: `"default"` if no
-/// postgres "default" is running, otherwise a random adjective-noun.
-fn default_pg_name() -> String {
-    let any_default_running = server::find_pg_instances("default")
-        .iter()
-        .any(|i| i
-            .container_id
-            .as_deref()
-            .map(docker::is_container_running_blocking)
-            .unwrap_or(false));
-    if any_default_running {
-        // Fall back to the existing random-name generator, which checks
-        // metadata file uniqueness across engines.
-        server::resolve_name(None).unwrap_or_else(|_| "default".into())
+/// A fresh attempt owns an absent or empty instance directory, including one
+/// containing only an empty `data/` from an earlier pre-container step.
+fn fresh_instance_dir_is_disposable(path: &Path) -> bool {
+    let mut entries = match std::fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return true,
+        Err(_) => return false,
+    };
+    let entry = match entries.next() {
+        None => return true,
+        Some(Ok(entry)) => entry,
+        Some(Err(_)) => return false,
+    };
+    if entries.next().is_some()
+        || entry.file_name() != "data"
+        || !entry.file_type().is_ok_and(|file_type| file_type.is_dir())
+    {
+        return false;
+    }
+    match std::fs::read_dir(entry.path()) {
+        Ok(mut data_entries) => data_entries.next().is_none(),
+        Err(_) => false,
+    }
+}
+
+async fn rollback_failed_fresh_start(
+    docker: &bollard::Docker,
+    container_id: &str,
+    info: &ServerInfo,
+    remove_fresh_data_on_failure: bool,
+    primary: Error,
+    metadata_lock: &server::MetadataLock,
+) -> Error {
+    let instance_dir = server::servers_dir_join(&info.name);
+    let metadata_path = server::servers_dir_join(&format!("{}.json", info.name));
+    let mut diagnostics = Vec::new();
+
+    let container_removed = match docker::remove_container(docker, container_id).await {
+        Ok(()) => true,
+        Err(error) => {
+            diagnostics.push(format!(
+                "failed to remove container '{container_id}': {error}"
+            ));
+            false
+        }
+    };
+
+    let instance_removed = if remove_fresh_data_on_failure && container_removed {
+        match docker::remove_host_dir_blocking(&instance_dir) {
+            Ok(()) if !instance_dir.exists() => true,
+            Ok(()) => {
+                diagnostics.push(format!(
+                    "failed to remove fresh Postgres data '{}': path still exists",
+                    instance_dir.display()
+                ));
+                false
+            }
+            Err(error) => {
+                diagnostics.push(format!(
+                    "failed to remove fresh Postgres data '{}': {error}",
+                    instance_dir.display()
+                ));
+                false
+            }
+        }
     } else {
-        "default".into()
+        let reason = if remove_fresh_data_on_failure {
+            "the container could not be removed"
+        } else {
+            "the directory contained data before this start attempt"
+        };
+        diagnostics.push(format!(
+            "retained Postgres data '{}' because {reason}",
+            instance_dir.display()
+        ));
+        false
+    };
+
+    if container_removed && instance_removed {
+        match server::try_remove_server_info_locked(&info.name, metadata_lock) {
+            Ok(()) => return primary,
+            Err(error) => diagnostics.push(format!(
+                "failed to remove metadata '{}': {error}",
+                metadata_path.display()
+            )),
+        }
+    } else {
+        match server::save_server_info_locked(info, metadata_lock) {
+            Ok(()) => diagnostics.push(format!(
+                "recovery metadata retained at '{}'; run `clickhousectl local postgres remove {}` to clean up",
+                metadata_path.display(),
+                user_name_from_key(&info.name)
+            )),
+            Err(error) => diagnostics.push(format!(
+                "failed to preserve recovery metadata '{}': {error}",
+                metadata_path.display()
+            )),
+        }
+    }
+
+    Error::PostgresStartupRollback {
+        primary: Box::new(primary),
+        cleanup: diagnostics.join("; "),
     }
 }
 
-/// Resolve `--name <X> [--version <V>]` to a single Postgres instance on disk.
-/// If `version` is given, target the (X, major(V)) pair directly. Otherwise:
-/// 0 instances → ServerNotFound; 1 → use it; >1 → ask for `--version`.
-fn resolve_pg_target(
+/// Default user-facing name when NAME is omitted: `"default"` if no
+/// postgres "default" is running, otherwise a random adjective-noun.
+fn default_pg_name_locked(metadata_lock: &server::MetadataLock) -> Result<String> {
+    default_pg_name_locked_with(metadata_lock, docker::is_container_running_blocking)
+}
+
+fn default_pg_name_locked_with(
+    metadata_lock: &server::MetadataLock,
+    is_container_running: impl Fn(&str) -> Result<bool>,
+) -> Result<String> {
+    for info in server::find_pg_instances_locked("default", metadata_lock)? {
+        if let Some(id) = info.container_id.as_deref()
+            && is_container_running(id)?
+        {
+            return server::generate_random_name_locked(metadata_lock);
+        }
+    }
+    Ok("default".into())
+}
+
+/// Resolve the image tag for a user-facing name. The caller invokes this both
+/// before Docker image preparation and under the final metadata lock.
+fn resolve_pg_start_version_locked(
     user_name: &str,
     version: Option<&str>,
+    metadata_lock: &server::MetadataLock,
+) -> Result<(String, String)> {
+    if let Some(version) = version {
+        return Ok((version.to_string(), pg_major_from_tag(version)));
+    }
+
+    let existing = server::find_pg_instances_locked(user_name, metadata_lock)?;
+    match existing.as_slice() {
+        [] => Ok((
+            DEFAULT_PG_TAG.to_string(),
+            pg_major_from_tag(DEFAULT_PG_TAG),
+        )),
+        [info] => {
+            let stored_tag = info
+                .version
+                .strip_prefix("postgres:")
+                .unwrap_or(&info.version);
+            Ok((stored_tag.to_string(), pg_major_from_tag(stored_tag)))
+        }
+        _ => {
+            let versions: Vec<&str> = existing.iter().map(|info| info.version.as_str()).collect();
+            Err(Error::PostgresUsage(format!(
+                "multiple postgres instances named '{}' ({}); pass --version to select one",
+                user_name,
+                versions.join(", ")
+            )))
+        }
+    }
+}
+
+/// Resolve `[NAME] [--version <V>]` to a single Postgres instance on disk.
+/// If `version` is given, target the (X, major(V)) pair directly. Otherwise:
+/// 0 instances → ServerNotFound; 1 → use it; >1 → ask for `--version`.
+fn resolve_pg_target_locked(
+    user_name: &str,
+    version: Option<&str>,
+    metadata_lock: &server::MetadataLock,
 ) -> Result<server::ServerInfo> {
     if let Some(v) = version {
         validate_pg_tag(v)?;
         let major = pg_major_from_tag(v);
         let key = server::pg_instance_key(user_name, &major);
-        return server::load_info(&key)
+        return server::load_info_locked(&key, metadata_lock)?
             .filter(|i| i.engine == Engine::Postgres)
             .ok_or_else(|| Error::ServerNotFound(format!("{user_name} (postgres:{major})")));
     }
-    let instances = server::find_pg_instances(user_name);
+    let instances = server::find_pg_instances_locked(user_name, metadata_lock)?;
     match instances.len() {
         0 => Err(Error::ServerNotFound(user_name.to_string())),
         1 => Ok(instances.into_iter().next().unwrap()),
         _ => {
             let versions: Vec<String> = instances.iter().map(|i| i.version.clone()).collect();
-            Err(Error::Exec(format!(
+            Err(Error::PostgresUsage(format!(
                 "multiple postgres instances named '{}' ({}); pass --version to select one",
                 user_name,
                 versions.join(", ")
@@ -306,31 +654,42 @@ fn resolve_pg_target(
 async fn resume_existing(
     docker: &bollard::Docker,
     prior: ServerInfo,
+    wait_timeout: Duration,
     json: bool,
+    metadata_lock: server::MetadataLock,
 ) -> Result<()> {
     let container_id = prior.container_id.clone().expect("checked by caller");
     let display_name = user_name_from_key(&prior.name).to_string();
 
-    docker::start_existing_blocking(&container_id)?;
-
-    let healthy = wait_running(docker, &container_id, 30).await;
-    if !healthy {
-        let logs = docker::container_logs_tail(docker, &container_id, 50)
-            .await
-            .unwrap_or_default();
-        return Err(Error::DockerError(format!(
-            "Postgres container '{}' did not resume.\n--- container logs ---\n{}",
-            display_name, logs
-        )));
-    }
-
-    let (user, password, database) = read_pg_env(docker, &container_id).await;
+    docker::start_existing(docker, &container_id).await?;
 
     let info = ServerInfo {
         started_at: server::now_timestamp(),
         ..prior
     };
-    server::save_server_info(&info)?;
+    if let Err(primary) = server::save_server_info_locked(&info, &metadata_lock) {
+        drop(metadata_lock);
+        return match docker::stop_container(docker, &container_id).await {
+            Ok(()) => Err(primary),
+            Err(cleanup) => Err(Error::PostgresStartupRollback {
+                primary: Box::new(primary),
+                cleanup: format!(
+                    "could not stop resumed container '{container_id}' after metadata failure: {cleanup}"
+                ),
+            }),
+        };
+    }
+    drop(metadata_lock);
+
+    if let Err(failure) = wait_for_postgres_ready(docker, &container_id, wait_timeout).await {
+        let error =
+            postgres_readiness_error(docker, &container_id, &display_name, wait_timeout, failure)
+                .await;
+        let _ = docker::stop_container(docker, &container_id).await;
+        return Err(error);
+    }
+
+    let (user, password, database) = read_pg_env(docker, &container_id).await;
 
     let out = output::PostgresStartOutput {
         name: display_name,
@@ -357,24 +716,268 @@ pub(crate) fn user_name_from_key(key: &str) -> &str {
     key
 }
 
-async fn wait_running(docker: &bollard::Docker, id: &str, attempts: usize) -> bool {
-    for _ in 0..attempts {
-        if docker::is_container_running(docker, id).await {
-            return true;
+#[derive(Debug, Clone, Eq, PartialEq)]
+enum ContainerReadinessState {
+    Pending,
+    Running,
+    Exited {
+        status: String,
+        exit_code: Option<i64>,
+        oom_killed: bool,
+    },
+}
+
+#[derive(Debug)]
+enum ReadinessFailure {
+    Exited {
+        status: String,
+        exit_code: Option<i64>,
+        oom_killed: bool,
+    },
+    Probe(Error),
+    TimedOut {
+        last_probe_error: Option<String>,
+    },
+}
+
+trait ReadinessProbe {
+    async fn container_state(&mut self) -> Result<ContainerReadinessState>;
+    async fn postgres_is_ready(&mut self) -> Result<bool>;
+}
+
+struct DockerReadinessProbe<'a> {
+    docker: &'a bollard::Docker,
+    container_id: &'a str,
+}
+
+impl ReadinessProbe for DockerReadinessProbe<'_> {
+    async fn container_state(&mut self) -> Result<ContainerReadinessState> {
+        let state = docker::container_state(self.docker, self.container_id).await?;
+        if state.running {
+            Ok(ContainerReadinessState::Running)
+        } else if state.exited {
+            Ok(ContainerReadinessState::Exited {
+                status: state.status,
+                exit_code: state.exit_code,
+                oom_killed: state.oom_killed,
+            })
+        } else {
+            Ok(ContainerReadinessState::Pending)
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    false
+
+    async fn postgres_is_ready(&mut self) -> Result<bool> {
+        docker::postgres_is_ready(self.docker, self.container_id).await
+    }
+}
+
+async fn poll_postgres_readiness<P, S, SFut>(
+    probe: &mut P,
+    max_checks: usize,
+    mut sleep: S,
+    last_probe_error: &mut Option<String>,
+) -> std::result::Result<(), ReadinessFailure>
+where
+    P: ReadinessProbe,
+    S: FnMut() -> SFut,
+    SFut: Future<Output = ()>,
+{
+    for check in 0..max_checks {
+        match probe
+            .container_state()
+            .await
+            .map_err(ReadinessFailure::Probe)?
+        {
+            ContainerReadinessState::Exited {
+                status,
+                exit_code,
+                oom_killed,
+            } => {
+                return Err(ReadinessFailure::Exited {
+                    status,
+                    exit_code,
+                    oom_killed,
+                });
+            }
+            ContainerReadinessState::Running => match probe.postgres_is_ready().await {
+                Ok(true) => return Ok(()),
+                Ok(false) => {}
+                Err(error) => {
+                    *last_probe_error = Some(error.to_string());
+                    if let Ok(ContainerReadinessState::Exited {
+                        status,
+                        exit_code,
+                        oom_killed,
+                    }) = probe.container_state().await
+                    {
+                        return Err(ReadinessFailure::Exited {
+                            status,
+                            exit_code,
+                            oom_killed,
+                        });
+                    }
+                }
+            },
+            ContainerReadinessState::Pending => {}
+        }
+
+        if check + 1 < max_checks {
+            sleep().await;
+        }
+    }
+    Err(ReadinessFailure::TimedOut {
+        last_probe_error: last_probe_error.take(),
+    })
+}
+
+async fn wait_for_postgres_ready_with_probe<P: ReadinessProbe>(
+    probe: &mut P,
+    timeout: Duration,
+) -> std::result::Result<(), ReadinessFailure> {
+    let mut last_probe_error = None;
+    match tokio::time::timeout(
+        timeout,
+        poll_postgres_readiness(
+            probe,
+            usize::MAX,
+            || tokio::time::sleep(READINESS_POLL_INTERVAL),
+            &mut last_probe_error,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(ReadinessFailure::TimedOut { last_probe_error }),
+    }
+}
+
+async fn wait_for_postgres_ready(
+    docker: &bollard::Docker,
+    container_id: &str,
+    timeout: Duration,
+) -> std::result::Result<(), ReadinessFailure> {
+    let mut probe = DockerReadinessProbe {
+        docker,
+        container_id,
+    };
+    wait_for_postgres_ready_with_probe(&mut probe, timeout).await
+}
+
+async fn postgres_readiness_error(
+    docker: &bollard::Docker,
+    container_id: &str,
+    display_name: &str,
+    timeout: Duration,
+    failure: ReadinessFailure,
+) -> Error {
+    let logs = collect_postgres_readiness_logs(
+        container_id,
+        READINESS_LOG_TIMEOUT,
+        docker::container_logs_tail(
+            docker,
+            container_id,
+            READINESS_LOG_LINES,
+            READINESS_LOG_BYTES,
+        ),
+    )
+    .await;
+    format_postgres_readiness_error(display_name, timeout, failure, &logs)
+}
+
+async fn collect_postgres_readiness_logs<F>(
+    container_id: &str,
+    timeout: Duration,
+    logs: F,
+) -> String
+where
+    F: Future<Output = Result<String>>,
+{
+    match tokio::time::timeout(timeout, logs).await {
+        Ok(Ok(logs)) if logs.trim().is_empty() || logs == "(no container logs)" => format!(
+            "No container logs were available. Run `docker logs {container_id}` for current diagnostics."
+        ),
+        Ok(Ok(logs)) => logs,
+        Ok(Err(error)) => format!(
+            "Could not read container logs ({error}). Run `docker logs {container_id}` for diagnostics."
+        ),
+        Err(_) => format!(
+            "Timed out reading container logs. Run `docker logs {container_id}` for diagnostics."
+        ),
+    }
+}
+
+fn format_postgres_readiness_error(
+    display_name: &str,
+    timeout: Duration,
+    failure: ReadinessFailure,
+    logs: &str,
+) -> Error {
+    let diagnostics = |summary: &str| {
+        format!(
+            "{summary}\n--- last {READINESS_LOG_LINES} container log lines (maximum {READINESS_LOG_BYTES} bytes) ---\n{logs}"
+        )
+    };
+    match failure {
+        ReadinessFailure::Exited {
+            status,
+            exit_code,
+            oom_killed,
+        } => {
+            let exit_code = exit_code
+                .map(|code| code.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            let oom = if oom_killed { "; out of memory" } else { "" };
+            let summary = format!(
+                "Postgres container '{display_name}' exited before PostgreSQL became ready \
+                 (status: {status}, exit code: {exit_code}{oom})."
+            );
+            Error::StartupExit {
+                kind: StartupKind::Postgres,
+                name: display_name.to_string(),
+                details: format!("Docker error: {}", diagnostics(&summary)),
+            }
+        }
+        ReadinessFailure::Probe(error) => {
+            let summary = format!(
+                "Could not check PostgreSQL readiness in container '{display_name}': {error}."
+            );
+            Error::DockerError(diagnostics(&summary))
+        }
+        ReadinessFailure::TimedOut { last_probe_error } => {
+            let probe_context = last_probe_error
+                .map(|error| format!(" Last readiness probe error: {error}."))
+                .unwrap_or_default();
+            let summary = format!(
+                "PostgreSQL in container '{display_name}' did not become ready within {} seconds.{probe_context}",
+                timeout.as_secs()
+            );
+            Error::StartupTimeout {
+                kind: StartupKind::Postgres,
+                name: display_name.to_string(),
+                seconds: timeout.as_secs(),
+                details: format!("Docker error: {}", diagnostics(&summary)),
+            }
+        }
+    }
 }
 
 fn resolve_port(explicit: Option<u16>) -> Result<u16> {
-    if let Some(p) = explicit {
-        if p == 0 {
-            return Err(Error::Exec(
+    match explicit {
+        Some(0) => {
+            return Err(Error::PostgresUsage(
                 "--port 0 is not allowed; pick a specific port or omit the flag".into(),
             ));
         }
-        return Ok(p);
+        Some(port) if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() => {
+            return Ok(port);
+        }
+        Some(port) => {
+            return Err(Error::PortInUse {
+                kind: PortKind::Postgres,
+                port,
+            });
+        }
+        None => {}
     }
     if std::net::TcpListener::bind(("127.0.0.1", DEFAULT_PG_PORT)).is_ok() {
         return Ok(DEFAULT_PG_PORT);
@@ -384,7 +987,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
             return Ok(p);
         }
     }
-    Err(Error::Exec("could not find a free TCP port for Postgres".into()))
+    Err(Error::PortUnavailable(PortKind::Postgres))
 }
 
 fn generate_password() -> String {
@@ -395,66 +998,40 @@ fn generate_password() -> String {
 
 async fn stop(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
-    server::recover_current_project_servers();
-    let target = resolve_pg_target(name, version)?;
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let target = resolve_pg_target_locked(name, version, &metadata_lock)?;
     if !json {
-        let display = format!(
-            "{} ({})",
-            user_name_from_key(&target.name),
-            target.version
-        );
+        let display = format!("{} ({})", user_name_from_key(&target.name), target.version);
         println!("Stopping Postgres {}...", display);
     }
-    server::kill_server(&target.name)?;
+    server::kill_server_locked(&target.name, &metadata_lock)?;
     let out = output::ServerStopOutput {
         name: user_name_from_key(&target.name).to_string(),
         already_stopped: false,
+        selection: None,
     };
     output::print_output(&out, json);
     Ok(())
 }
 
 async fn stop_all(json: bool) -> Result<()> {
-    server::recover_current_project_servers();
-    let servers: Vec<_> = server::list_running_servers()
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
+    let servers: Vec<_> = server::list_running_servers_locked(&metadata_lock)?
         .into_iter()
         .filter(|s| s.engine == Engine::Postgres)
         .collect();
-    let mut stop_entries = Vec::new();
-    for s in &servers {
-        if !json {
-            print!("Stopping '{}'...", s.name);
-        }
-        match server::kill_server(&s.name) {
-            Ok(()) => {
-                if !json {
-                    println!(" stopped");
-                }
-                stop_entries.push(output::ServerStopEntry {
-                    name: s.name.clone(),
-                    stopped: true,
-                    error: None,
-                });
-            }
-            Err(e) => {
-                if !json {
-                    println!(" error: {}", e);
-                }
-                stop_entries.push(output::ServerStopEntry {
-                    name: s.name.clone(),
-                    stopped: false,
-                    error: Some(e.to_string()),
-                });
-            }
-        }
-    }
-    if json {
-        let out = output::ServerStopAllOutput {
-            servers: stop_entries,
-        };
-        output::print_output(&out, json);
-    } else if servers.is_empty() {
+    if !json && servers.is_empty() {
         println!("No running Postgres servers");
+        return Ok(());
+    }
+
+    let out = super::stop_servers(&servers, json, |name| {
+        server::kill_server_locked(name, &metadata_lock)
+    });
+    if json {
+        output::print_output(&out, json);
     } else {
         println!("Done");
     }
@@ -463,12 +1040,21 @@ async fn stop_all(json: bool) -> Result<()> {
 
 fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     server::validate_server_name(name)?;
-    server::recover_current_project_servers();
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
 
-    let target = resolve_pg_target(name, version)?;
+    let target = resolve_pg_target_locked(name, version, &metadata_lock)?;
     let key = target.name.clone();
-    if server::is_server_running(&key) {
-        return Err(Error::ServerAlreadyRunning(name.to_string()));
+    if server::is_server_running_locked(&key, &metadata_lock)? {
+        let tag = target
+            .version
+            .strip_prefix("postgres:")
+            .unwrap_or(&target.version);
+        let major = pg_major_from_tag(tag);
+        return Err(Error::ServerRunningCannotRemove {
+            name: name.to_string(),
+            command: format!("clickhousectl local postgres stop {name} --version {major}"),
+        });
     }
 
     if let Some(cid) = target.container_id.as_deref() {
@@ -482,9 +1068,10 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     // privileged container in that case.
     let pg_dir = server::servers_dir_join(&key);
     docker::remove_host_dir_blocking(&pg_dir)?;
-    server::remove_server_info(&key);
+    server::try_remove_server_info_locked(&key, &metadata_lock)?;
     let out = output::ServerRemoveOutput {
         name: name.to_string(),
+        selection: None,
     };
     output::print_output(&out, json);
     Ok(())
@@ -501,18 +1088,40 @@ async fn client(
     extra_args: Vec<String>,
 ) -> Result<()> {
     if host.is_some() || port.is_some() {
-        // Direct connect — no server lookup; require host psql.
+        // Direct connect — no server lookup; require host psql. Probing before
+        // the handoff (the same probe the managed path already uses to choose
+        // between host psql and `docker exec`) keeps a missing `psql` an
+        // ordinary error event instead of a censored `exec_attempt` (#471).
+        // `PostgresUsage`, not `Postgres`: this text is composed here, so it
+        // renders verbatim in `--json` and the repair hint reaches agents.
+        if !host_has_psql() {
+            return Err(Error::PostgresUsage(
+                "could not execute psql: not found on PATH (install the PostgreSQL client tools)"
+                    .to_string(),
+            ));
+        }
         let h = host.unwrap_or_else(|| "127.0.0.1".to_string());
         let p = port.unwrap_or(DEFAULT_PG_PORT);
-        return exec_host_psql(&h, p, DEFAULT_USER, None, DEFAULT_DATABASE, query, queries_file, extra_args);
+        return exec_host_psql(
+            &h,
+            p,
+            DEFAULT_USER,
+            None,
+            DEFAULT_DATABASE,
+            query,
+            queries_file,
+            extra_args,
+        );
     }
 
-    server::recover_current_project_servers();
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
     let server_name = name.as_deref().unwrap_or("default");
-    let info = resolve_pg_target(server_name, version.as_deref())?;
-    if !server::is_server_running(&info.name) {
+    let info = resolve_pg_target_locked(server_name, version.as_deref(), &metadata_lock)?;
+    if !server::is_server_running_locked(&info.name, &metadata_lock)? {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
+    drop(metadata_lock);
 
     let docker = docker::connect().await?;
     let container_id = info
@@ -535,25 +1144,42 @@ async fn client(
         );
     }
 
-    let one_shot = query.is_some() || queries_file.is_some();
-    let mut psql_args: Vec<String> = vec![
-        "-U".into(), user,
-        "-d".into(), database,
-    ];
+    let explicit_input = query.is_some() || queries_file.is_some();
+    let interactive =
+        !explicit_input && std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    let mut psql_args: Vec<String> = vec!["-U".into(), user, "-d".into(), database];
     if let Some(q) = query {
         psql_args.push("-c".into());
         psql_args.push(q);
     }
-    if let Some(f) = queries_file {
-        psql_args.push("-f".into());
-        psql_args.push(f);
-    }
+    // Host paths do not exist inside the container. Stream the selected file
+    // through psql's explicit stdin file argument, after any -c command.
+    let input: Option<Box<dyn std::io::Read + Send>> = match queries_file {
+        Some(file) => {
+            let reader: Box<dyn std::io::Read + Send> = if file == "-" {
+                Box::new(std::io::stdin())
+            } else {
+                Box::new(
+                    std::fs::File::open(&file).map_err(|error| Error::SqlInputOpen {
+                        path: file.into(),
+                        source: error,
+                    })?,
+                )
+            };
+            psql_args.extend(["-f".into(), "-".into()]);
+            Some(reader)
+        }
+        // Match host psql: without an explicit wrapper input, a non-terminal
+        // stdin is still SQL input. Docker must attach it and receive EOF.
+        None if !explicit_input && !interactive => Some(Box::new(std::io::stdin())),
+        None => None,
+    };
     psql_args.extend(extra_args);
 
-    if one_shot {
+    if !interactive {
         // Non-interactive: no TTY, no raw mode, output goes to stdout/stderr
         // so the caller can pipe / capture / redirect.
-        docker::exec_psql_one_shot(&docker, container_id, &psql_args).await
+        docker::exec_psql_one_shot(&docker, container_id, &psql_args, input).await
     } else {
         docker::exec_psql_in_container(&docker, container_id, &psql_args).await
     }
@@ -601,10 +1227,14 @@ fn exec_host_psql(
 ) -> Result<()> {
     use std::os::unix::process::CommandExt;
     let mut cmd = Command::new("psql");
-    cmd.arg("-h").arg(host)
-        .arg("-p").arg(port.to_string())
-        .arg("-U").arg(user)
-        .arg("-d").arg(database);
+    cmd.arg("-h")
+        .arg(host)
+        .arg("-p")
+        .arg(port.to_string())
+        .arg("-U")
+        .arg(user)
+        .arg("-d")
+        .arg(database);
     if let Some(p) = password {
         cmd.env("PGPASSWORD", p);
     }
@@ -615,22 +1245,28 @@ fn exec_host_psql(
         cmd.arg("-f").arg(f);
     }
     cmd.args(&extra_args);
+    // `exec()` replaces the process image on success, so `main`'s telemetry
+    // tail never runs for this invocation; record the censored handoff attempt
+    // now (#320, #471). Both callers probe for `psql` first, so only a race
+    // (or a `PATH` entry that is not launchable) can fail below this line;
+    // `psql` itself then inherits this process's stdio, process group, session
+    // and controlling TTY unchanged, which is why the handoff stays an
+    // `exec()`.
+    #[cfg(feature = "telemetry")]
+    crate::telemetry::finalize_before_exec();
     let err = cmd.exec();
-    Err(Error::Exec(err.to_string()))
+    Err(Error::Postgres(format!("could not execute psql: {err}")))
 }
 
-fn dotenv(
-    name: Option<&str>,
-    version: Option<&str>,
-    use_local: bool,
-    json: bool,
-) -> Result<()> {
-    server::recover_current_project_servers();
+fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool) -> Result<()> {
+    let metadata_lock = server::lock_metadata()?;
+    server::recover_current_project_servers_locked(&metadata_lock)?;
     let server_name = name.unwrap_or("default");
-    let info = resolve_pg_target(server_name, version)?;
-    if !server::is_server_running(&info.name) {
+    let info = resolve_pg_target_locked(server_name, version, &metadata_lock)?;
+    if !server::is_server_running_locked(&info.name, &metadata_lock)? {
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
+    drop(metadata_lock);
 
     // Read user/password/db from the container env so we always emit accurate creds.
     let (user, password, database) = docker::block_on(read_pg_env_for_dotenv(
@@ -689,31 +1325,388 @@ async fn read_pg_env_for_dotenv(container_id: &str) -> (String, String, String) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
+    use std::collections::VecDeque;
+
+    struct FakeReadinessProbe {
+        states: VecDeque<ContainerReadinessState>,
+        ready: VecDeque<Result<bool>>,
+        readiness_checks: usize,
+    }
+
+    impl FakeReadinessProbe {
+        fn new(states: Vec<ContainerReadinessState>, ready: Vec<Result<bool>>) -> Self {
+            Self {
+                states: states.into(),
+                ready: ready.into(),
+                readiness_checks: 0,
+            }
+        }
+    }
+
+    impl ReadinessProbe for FakeReadinessProbe {
+        async fn container_state(&mut self) -> Result<ContainerReadinessState> {
+            Ok(self
+                .states
+                .pop_front()
+                .expect("fake container state exhausted"))
+        }
+
+        async fn postgres_is_ready(&mut self) -> Result<bool> {
+            self.readiness_checks += 1;
+            self.ready
+                .pop_front()
+                .expect("fake pg_isready result exhausted")
+        }
+    }
 
     #[test]
-    fn resolve_port_rejects_zero() {
+    fn unnamed_start_after_running_default_selects_fresh_name() {
+        let directory = tempfile::tempdir().unwrap();
+        let lock = server::MetadataLock::acquire_at(directory.path()).unwrap();
+        assert_eq!(
+            default_pg_name_locked_with(&lock, |_| Ok(true)).unwrap(),
+            "default"
+        );
+
+        let info = ServerInfo {
+            name: server::pg_instance_key("default", "18"),
+            pid: 0,
+            version: "postgres:18".into(),
+            http_port: 0,
+            tcp_port: 5432,
+            started_at: "1700000000".into(),
+            cwd: "/tmp/project".into(),
+            engine: Engine::Postgres,
+            container_id: Some("running-default".into()),
+        };
+        server::save_server_info_locked(&info, &lock).unwrap();
+
+        assert_eq!(
+            default_pg_name_locked_with(&lock, |_| Ok(false)).unwrap(),
+            "default"
+        );
+
+        let unavailable = default_pg_name_locked_with(&lock, |_| {
+            Err(Error::DockerNotAvailable("test daemon unavailable".into()))
+        });
+        assert!(matches!(unavailable, Err(Error::DockerNotAvailable(_))));
+        let failed_inspection = default_pg_name_locked_with(&lock, |_| {
+            Err(Error::DockerError("test inspection failed".into()))
+        });
+        assert!(matches!(failed_inspection, Err(Error::DockerError(_))));
+
+        let selected =
+            default_pg_name_locked_with(&lock, |id| Ok(id == "running-default")).unwrap();
+
+        assert_ne!(selected, "default");
+        assert!(
+            server::find_pg_instances_locked(&selected, &lock)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn running_container_is_not_postgres_readiness() {
+        let mut probe =
+            FakeReadinessProbe::new(vec![ContainerReadinessState::Running], vec![Ok(false)]);
+        let mut last_probe_error = None;
+
+        let result = poll_postgres_readiness(
+            &mut probe,
+            1,
+            || std::future::ready(()),
+            &mut last_probe_error,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ReadinessFailure::TimedOut {
+                last_probe_error: None
+            })
+        ));
+        assert_eq!(probe.readiness_checks, 1);
+    }
+
+    #[tokio::test]
+    async fn delayed_postgres_readiness_succeeds_after_retries() {
+        let mut probe = FakeReadinessProbe::new(
+            vec![
+                ContainerReadinessState::Running,
+                ContainerReadinessState::Running,
+                ContainerReadinessState::Running,
+            ],
+            vec![Ok(false), Ok(false), Ok(true)],
+        );
+        let sleeps = Cell::new(0);
+        let mut last_probe_error = None;
+
+        let result = poll_postgres_readiness(
+            &mut probe,
+            3,
+            || {
+                sleeps.set(sleeps.get() + 1);
+                std::future::ready(())
+            },
+            &mut last_probe_error,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(probe.readiness_checks, 3);
+        assert_eq!(sleeps.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn immediate_container_exit_stops_readiness_checks() {
+        let mut probe = FakeReadinessProbe::new(
+            vec![ContainerReadinessState::Exited {
+                status: "exited".to_string(),
+                exit_code: Some(1),
+                oom_killed: false,
+            }],
+            vec![],
+        );
+        let sleeps = Cell::new(0);
+        let mut last_probe_error = None;
+
+        let result = poll_postgres_readiness(
+            &mut probe,
+            3,
+            || {
+                sleeps.set(sleeps.get() + 1);
+                std::future::ready(())
+            },
+            &mut last_probe_error,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ReadinessFailure::Exited {
+                status,
+                exit_code: Some(1),
+                oom_killed: false,
+            }) if status == "exited"
+        ));
+        assert_eq!(probe.readiness_checks, 0);
+        assert_eq!(sleeps.get(), 0);
+    }
+
+    #[tokio::test]
+    async fn transient_readiness_probe_error_is_retried() {
+        let mut probe = FakeReadinessProbe::new(
+            vec![
+                ContainerReadinessState::Running,
+                ContainerReadinessState::Running,
+                ContainerReadinessState::Running,
+            ],
+            vec![
+                Err(Error::DockerError("temporary exec failure".to_string())),
+                Ok(true),
+            ],
+        );
+        let mut last_probe_error = None;
+
+        let result = poll_postgres_readiness(
+            &mut probe,
+            2,
+            || std::future::ready(()),
+            &mut last_probe_error,
+        )
+        .await;
+
+        assert!(result.is_ok());
+        assert_eq!(probe.readiness_checks, 2);
+        assert_eq!(
+            last_probe_error.as_deref(),
+            Some("Docker error: temporary exec failure")
+        );
+    }
+
+    #[tokio::test]
+    async fn polling_limit_reports_timeout() {
+        let mut probe = FakeReadinessProbe::new(
+            vec![ContainerReadinessState::Running; 4],
+            vec![Ok(false), Ok(false), Ok(false), Ok(false)],
+        );
+        let sleeps = Cell::new(0);
+        let mut last_probe_error = None;
+
+        let result = poll_postgres_readiness(
+            &mut probe,
+            4,
+            || {
+                sleeps.set(sleeps.get() + 1);
+                std::future::ready(())
+            },
+            &mut last_probe_error,
+        )
+        .await;
+
+        assert!(matches!(
+            result,
+            Err(ReadinessFailure::TimedOut {
+                last_probe_error: None
+            })
+        ));
+        assert_eq!(probe.readiness_checks, 4);
+        assert_eq!(sleeps.get(), 3);
+
+        let error = format_postgres_readiness_error(
+            "test",
+            Duration::from_secs(12),
+            ReadinessFailure::TimedOut {
+                last_probe_error: None,
+            },
+            "FATAL: database system is not ready",
+        )
+        .to_string();
+        assert!(error.contains("did not become ready within 12 seconds"));
+        assert!(error.contains("last 50 container log lines"));
+        assert!(error.contains("FATAL: database system is not ready"));
+    }
+
+    #[tokio::test]
+    async fn stalled_log_collection_returns_actionable_fallback() {
+        let logs = collect_postgres_readiness_logs(
+            "test-container",
+            Duration::from_millis(10),
+            std::future::pending::<Result<String>>(),
+        )
+        .await;
+
+        assert!(logs.contains("Timed out reading container logs"));
+        assert!(logs.contains("docker logs test-container"));
+    }
+
+    #[test]
+    fn resolve_port_rejects_zero_for_non_clap_callers() {
         let err = resolve_port(Some(0)).unwrap_err();
-        assert!(matches!(err, Error::Exec(msg) if msg.contains("--port 0")));
+        assert!(matches!(err, Error::PostgresUsage(msg) if msg.contains("--port 0")));
+    }
+
+    #[test]
+    fn fresh_data_cleanup_ownership_is_conservative() {
+        let tempdir = tempfile::tempdir().expect("create policy tempdir");
+        let instance_dir = tempdir.path().join("policy-pg18");
+        assert!(fresh_instance_dir_is_disposable(&instance_dir));
+
+        std::fs::create_dir(&instance_dir).expect("create empty instance dir");
+        assert!(fresh_instance_dir_is_disposable(&instance_dir));
+
+        let data_dir = instance_dir.join("data");
+        std::fs::create_dir(&data_dir).expect("create empty data dir");
+        assert!(fresh_instance_dir_is_disposable(&instance_dir));
+
+        std::fs::write(data_dir.join("PG_VERSION"), "existing").expect("write existing PGDATA");
+        assert!(!fresh_instance_dir_is_disposable(&instance_dir));
+    }
+
+    #[test]
+    fn parse_pg_port_rejects_zero_with_actionable_error() {
+        let err = parse_pg_port_arg("0").unwrap_err();
+        assert_eq!(
+            err,
+            "--port 0 is not allowed; pick a specific port or omit the flag"
+        );
     }
 
     #[test]
     fn resolve_port_passes_through_explicit_value() {
-        // Use a port unlikely to be bound; we just want the passthrough path.
-        assert_eq!(resolve_port(Some(54321)).unwrap(), 54321);
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        assert_eq!(resolve_port(Some(port)).unwrap(), port);
+    }
+
+    #[test]
+    fn resolve_port_rejects_bound_explicit_value() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let err = resolve_port(Some(port)).unwrap_err();
+        assert!(
+            matches!(err, Error::PortInUse { kind: PortKind::Postgres, port: error_port } if error_port == port)
+        );
+    }
+
+    #[test]
+    fn resolve_port_auto_selects_when_omitted_default_is_bound() {
+        let default_listener = match std::net::TcpListener::bind(("127.0.0.1", DEFAULT_PG_PORT)) {
+            Ok(listener) => Some(listener),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => None,
+            Err(error) => panic!("bind default Postgres port: {error}"),
+        };
+
+        let port = resolve_port(None).unwrap();
+
+        assert_ne!(port, DEFAULT_PG_PORT);
+        drop(default_listener);
     }
 
     #[test]
     fn validate_pg_tag_accepts_supported_majors() {
-        for tag in ["17", "18", "17-alpine", "17.0", "18-bookworm", "18.1-alpine3.20"] {
-            assert!(validate_pg_tag(tag).is_ok(), "expected `{}` to be accepted", tag);
+        for tag in [
+            "17",
+            "18",
+            "17-alpine",
+            "17.0",
+            "18-bookworm",
+            "18-alpine3.20",
+            "18.1-alpine3.20",
+            "18.01-Custom_variant-1.0",
+        ] {
+            assert!(
+                validate_pg_tag(tag).is_ok(),
+                "expected `{}` to be accepted",
+                tag
+            );
         }
     }
 
     #[test]
     fn validate_pg_tag_rejects_unsupported() {
-        for tag in ["latest", "15", "16", "16-alpine", "19", "14-alpine", "alpine", ""] {
-            assert!(validate_pg_tag(tag).is_err(), "expected `{}` to be rejected", tag);
+        for tag in [
+            "latest",
+            "15",
+            "16",
+            "16-alpine",
+            "19",
+            "14-alpine",
+            "alpine",
+            "",
+            "18garbage",
+            "18.1garbage",
+            "18.",
+            "18..1",
+            "18.1.2",
+            "18-",
+            "18-.alpine",
+            "18_alpine",
+            "18 alpine",
+            "18/alpine",
+            "18:alpine",
+        ] {
+            assert!(
+                validate_pg_tag(tag).is_err(),
+                "expected `{}` to be rejected",
+                tag
+            );
         }
+    }
+
+    #[test]
+    fn validate_pg_tag_enforces_docker_tag_length() {
+        let max_length = format!("18-{}", "a".repeat(125));
+        let too_long = format!("18-{}", "a".repeat(126));
+
+        assert_eq!(max_length.len(), 128);
+        assert!(validate_pg_tag(&max_length).is_ok());
+        assert_eq!(too_long.len(), 129);
+        assert!(validate_pg_tag(&too_long).is_err());
     }
 
     #[test]
@@ -721,5 +1714,121 @@ mod tests {
         let p = generate_password();
         assert_eq!(p.len(), 24);
         assert!(p.chars().all(|c| c.is_ascii_alphanumeric()));
+    }
+
+    #[test]
+    fn start_env_accepts_unique_assignments_and_equals_in_values() {
+        let preflight = validate_start_options(
+            Some("dev"),
+            Some("18.1-alpine3.20"),
+            None,
+            None,
+            vec![
+                "APP_MODE=test".into(),
+                "DATABASE_URL=postgres://user:pass@host/db?sslmode=require".into(),
+                "POSTGRES_PASSWORD=a=b".into(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            preflight.extra_env,
+            [
+                "APP_MODE=test",
+                "DATABASE_URL=postgres://user:pass@host/db?sslmode=require"
+            ]
+        );
+        assert_eq!(preflight.password_from_env.as_deref(), Some("a=b"));
+        assert_eq!(preflight.host_port, None);
+    }
+
+    #[test]
+    fn start_env_rejects_malformed_assignments() {
+        for assignment in ["NO_EQUALS", "=value", "1KEY=value", "BAD-KEY=value"] {
+            let error = validate_start_options(
+                Some("dev"),
+                Some("18"),
+                None,
+                None,
+                vec![assignment.into()],
+            )
+            .err()
+            .expect("malformed environment variable should fail");
+            assert!(
+                matches!(error, Error::PostgresUsage(_)),
+                "{assignment}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn start_env_rejects_duplicate_keys() {
+        let error = validate_start_options(
+            Some("dev"),
+            Some("18"),
+            None,
+            None,
+            vec!["APP_MODE=dev".into(), "APP_MODE=test".into()],
+        )
+        .err()
+        .expect("duplicate environment variable should fail");
+
+        assert!(
+            matches!(error, Error::PostgresUsage(msg) if msg.contains("APP_MODE") && msg.contains("more than once"))
+        );
+    }
+
+    #[test]
+    fn start_env_rejects_generated_keys_except_password() {
+        for assignment in [
+            "POSTGRES_USER=admin",
+            "POSTGRES_DB=app",
+            "PGDATA=/tmp/postgres",
+        ] {
+            let error = validate_start_options(
+                Some("dev"),
+                Some("18"),
+                None,
+                None,
+                vec![assignment.into()],
+            )
+            .err()
+            .expect("reserved environment variable should fail");
+            assert!(
+                matches!(error, Error::PostgresUsage(msg) if msg.contains("managed by clickhousectl"))
+            );
+        }
+    }
+
+    #[test]
+    fn start_env_password_sources_are_unambiguous() {
+        let error = validate_start_options(
+            Some("dev"),
+            Some("18"),
+            None,
+            Some("from-flag"),
+            vec!["POSTGRES_PASSWORD=from-env".into()],
+        )
+        .err()
+        .expect("password sources should conflict");
+        assert!(
+            matches!(error, Error::PostgresUsage(msg) if msg.contains("both --password and --env"))
+        );
+
+        let error = validate_start_options(
+            Some("dev"),
+            Some("18"),
+            None,
+            None,
+            vec![
+                "POSTGRES_PASSWORD=first".into(),
+                "POSTGRES_PASSWORD=second".into(),
+            ],
+        )
+        .err()
+        .expect("duplicate password should fail");
+        assert!(
+            matches!(error, Error::PostgresUsage(msg) if msg.contains("POSTGRES_PASSWORD") && msg.contains("more than once"))
+        );
     }
 }

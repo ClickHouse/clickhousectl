@@ -99,7 +99,10 @@ async fn assert_create_shape_accepted(
     request: ClickPipePostRequest,
 ) -> TestResult<()> {
     let mut cleanup = CleanupRegistry::default();
-    eprintln!("create request body: {}", serde_json::to_string_pretty(&request)?);
+    eprintln!(
+        "create request body: {}",
+        serde_json::to_string_pretty(&request)?
+    );
 
     let outcome: TestResult<()> = match ctx
         .client
@@ -108,18 +111,26 @@ async fn assert_create_shape_accepted(
     {
         Ok(resp) => {
             if let Some(pipe) = resp.result {
-                eprintln!("  pipe created: id={} state={}", pipe.id, pipe.state);
-                cleanup.register_clickpipe(ctx.service_id.clone(), pipe.id.to_string());
+                eprintln!(
+                    "  pipe created: id={} state={}",
+                    field_string(pipe.id.as_ref()),
+                    clickpipe_state(&pipe)
+                );
+                cleanup.register_clickpipe(ctx.service_id.clone(), clickpipe_id(&pipe)?);
             }
             Ok(())
         }
-        Err(Error::Api { status: 400, message }) if is_runtime_error(&message) => {
+        Err(Error::Api {
+            status: 400,
+            message,
+        }) if is_runtime_error(&message) => {
             eprintln!("  shape accepted; runtime validation failed as expected: {message}");
             Ok(())
         }
-        Err(Error::Api { status: 400, message }) => {
-            Err(format!("shape rejected (HTTP 400): {message}").into())
-        }
+        Err(Error::Api {
+            status: 400,
+            message,
+        }) => Err(format!("shape rejected (HTTP 400): {message}").into()),
         Err(other) => Err(format!("create failed with non-shape error: {other}").into()),
     };
 
@@ -189,7 +200,7 @@ async fn cloud_clickpipe_create_kafka_sasl_smoke() -> TestResult<()> {
                 brokers: "broker.invalid:9092".to_string(),
                 topics: "smoke-topic".to_string(),
                 consumer_group: Some(format!("smoke-cg-{}", ctx.run_id)),
-                authentication: ClickPipePostKafkaSourceAuthentication::PLAIN,
+                authentication: Some(ClickPipePostKafkaSourceAuthentication::PLAIN),
                 credentials: serde_json::json!({
                     "username": "smoke-user",
                     "password": "smoke-pass",
@@ -220,11 +231,9 @@ async fn cloud_clickpipe_create_kafka_msk_iam_smoke() -> TestResult<()> {
                 format: ClickPipePostKafkaSourceFormat::JSONEachRow,
                 brokers: "msk.invalid:9098".to_string(),
                 topics: "smoke-topic".to_string(),
-                authentication: ClickPipePostKafkaSourceAuthentication::IAM_ROLE,
+                authentication: Some(ClickPipePostKafkaSourceAuthentication::IAM_ROLE),
                 credentials: serde_json::Value::Null,
-                iam_role: Some(
-                    "arn:aws:iam::000000000000:role/smoke-fake-role".to_string(),
-                ),
+                iam_role: Some("arn:aws:iam::000000000000:role/smoke-fake-role".to_string()),
                 offset: Some(ClickPipeKafkaOffset {
                     strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
                     timestamp: None,
@@ -234,6 +243,39 @@ async fn cloud_clickpipe_create_kafka_msk_iam_smoke() -> TestResult<()> {
             ..Default::default()
         },
         destination: managed_destination("smoke_kafka_msk"),
+        ..Default::default()
+    };
+    assert_create_shape_accepted(&ctx, request).await
+}
+
+#[tokio::test]
+#[ignore = "requires live ClickHouse Cloud credentials and a pre-provisioned service"]
+async fn cloud_clickpipe_create_kafka_no_auth_smoke() -> TestResult<()> {
+    // A broker that requires no authentication: `authentication` is absent from
+    // the body entirely (the spec enum has no unauthenticated value) and
+    // `credentials` is null, exactly as the CLI builds it when no auth flags
+    // are given. Pins that the control plane accepts that shape (issue #606).
+    let ctx = SmokeCtx::from_env()?;
+    let request = ClickPipePostRequest {
+        name: ctx.pipe_name("kafka-noauth"),
+        source: ClickPipePostSource {
+            kafka: Some(ClickPipePostKafkaSource {
+                r#type: ClickPipePostKafkaSourceType::default(),
+                format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+                brokers: "broker.invalid:9092".to_string(),
+                topics: "smoke-topic".to_string(),
+                consumer_group: Some(format!("smoke-cg-noauth-{}", ctx.run_id)),
+                authentication: None,
+                credentials: serde_json::Value::Null,
+                offset: Some(ClickPipeKafkaOffset {
+                    strategy: ClickPipeKafkaOffsetStrategy::From_beginning,
+                    timestamp: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        destination: managed_destination("smoke_kafka_noauth"),
         ..Default::default()
     };
     assert_create_shape_accepted(&ctx, request).await
@@ -276,11 +318,8 @@ async fn cloud_clickpipe_create_s3_iam_user_smoke() -> TestResult<()> {
             object_storage: Some(ClickPipePostObjectStorageSource {
                 r#type: ClickPipePostObjectStorageSourceType::default(),
                 format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
-                url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json"
-                    .to_string(),
-                authentication: Some(
-                    ClickPipePostObjectStorageSourceAuthentication::IAM_USER,
-                ),
+                url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json".to_string(),
+                authentication: Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER),
                 access_key: Some(MskIamUser {
                     access_key_id: "AKIAFAKEKEYFORSMOKE".to_string(),
                     secret_key: "fake/secret/for/smoke/test/0000000000000000".to_string(),
@@ -305,14 +344,9 @@ async fn cloud_clickpipe_create_s3_iam_role_smoke() -> TestResult<()> {
             object_storage: Some(ClickPipePostObjectStorageSource {
                 r#type: ClickPipePostObjectStorageSourceType::default(),
                 format: ClickPipePostObjectStorageSourceFormat::JSONEachRow,
-                url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json"
-                    .to_string(),
-                authentication: Some(
-                    ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE,
-                ),
-                iam_role: Some(
-                    "arn:aws:iam::000000000000:role/smoke-fake-role".to_string(),
-                ),
+                url: "https://smoke-fake-bucket.s3.us-east-1.amazonaws.com/data/*.json".to_string(),
+                authentication: Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE),
+                iam_role: Some("arn:aws:iam::000000000000:role/smoke-fake-role".to_string()),
                 ..Default::default()
             }),
             ..Default::default()
@@ -347,23 +381,27 @@ async fn cloud_clickpipe_create_bigquery_snapshot_smoke() -> TestResult<()> {
     let request = ClickPipePostRequest {
         name: ctx.pipe_name("bq"),
         source: ClickPipePostSource {
-            bigquery: Some(ClickPipeMutateBigQuerySource {
-                credentials: ServiceAccount {
-                    service_account_file: sa_b64,
-                },
-                snapshot_staging_path: "gs://smoke-fake-bucket/staging".to_string(),
-                settings: ClickPipeBigQueryPipeSettings {
-                    replication_mode:
-                        ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
-                    ..Default::default()
-                },
-                table_mappings: vec![ClickPipeBigQueryPipeTableMapping {
-                    source_dataset_name: "smoke_dataset".to_string(),
-                    source_table: "smoke_source".to_string(),
-                    target_table: "smoke_target".to_string(),
-                    ..Default::default()
-                }],
-            }),
+            bigquery: Some(
+                ClickPipePostBigQueryServiceAccountSource {
+                    authentication: None,
+                    project_id: None,
+                    credentials: ServiceAccount {
+                        service_account_file: sa_b64,
+                    },
+                    snapshot_staging_path: "gs://smoke-fake-bucket/staging".to_string(),
+                    settings: ClickPipeBigQueryPipeSettings {
+                        replication_mode: ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
+                        ..Default::default()
+                    },
+                    table_mappings: vec![ClickPipeBigQueryPipeTableMapping {
+                        source_dataset_name: "smoke_dataset".to_string(),
+                        source_table: "smoke_source".to_string(),
+                        target_table: "smoke_target".to_string(),
+                        ..Default::default()
+                    }],
+                }
+                .into(),
+            ),
             ..Default::default()
         },
         destination: database_destination(),
@@ -421,11 +459,9 @@ async fn cloud_clickpipe_create_mongodb_cdc_smoke() -> TestResult<()> {
                     password: "smoke-pass".to_string(),
                 }),
                 uri: "mongodb://mongo.invalid:27017".to_string(),
-                read_preference:
-                    ClickPipeMutateMongoDBSourceReadpreference::Primary,
+                read_preference: ClickPipeMutateMongoDBSourceReadpreference::Primary,
                 settings: ClickPipeMongoDBPipeSettings {
-                    replication_mode:
-                        ClickPipeMongoDBPipeSettingsReplicationmode::Cdc,
+                    replication_mode: ClickPipeMongoDBPipeSettingsReplicationmode::Cdc,
                     ..Default::default()
                 },
                 table_mappings: vec![ClickPipeMongoDBPipeTableMapping {

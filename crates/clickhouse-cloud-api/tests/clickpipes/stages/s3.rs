@@ -4,8 +4,8 @@
 
 use std::time::Duration;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 
 use crate::support::*;
 
@@ -42,9 +42,23 @@ pub async fn run_s3_stage(sctx: StageCtx<'_>) -> StageOutcome {
         mut aws_cleanup,
     } = sctx;
 
-    let result = run_inner(client, ctx, ch, s3, iam, aws_region, &mut cleanup, &mut aws_cleanup).await;
+    let result = run_inner(
+        client,
+        ctx,
+        ch,
+        s3,
+        iam,
+        aws_region,
+        &mut cleanup,
+        &mut aws_cleanup,
+    )
+    .await;
 
-    StageOutcome { result, cleanup, aws_cleanup }
+    StageOutcome {
+        result,
+        cleanup,
+        aws_cleanup,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -78,7 +92,10 @@ async fn run_inner(
     ];
 
     create_private_bucket(s3, aws_region, &bucket, &aws_tags).await?;
-    aws_cleanup.register_s3_bucket(aws_sdk_s3::config::Region::new(aws_region.to_string()), bucket.clone());
+    aws_cleanup.register_s3_bucket(
+        aws_sdk_s3::config::Region::new(aws_region.to_string()),
+        bucket.clone(),
+    );
     eprintln!("  created bucket {bucket}");
 
     put_object_bytes(
@@ -110,14 +127,8 @@ async fn run_inner(
     })
     .to_string();
 
-    let role_arn = create_clickpipes_iam_role(
-        iam,
-        &role_name,
-        &ch.iam_role,
-        &read_policy,
-        &aws_tags,
-    )
-    .await?;
+    let role_arn =
+        create_clickpipes_iam_role(iam, &role_name, &ch.iam_role, &read_policy, &aws_tags).await?;
     aws_cleanup.register_iam_role(role_name.clone());
     eprintln!("  created iam role {role_name}");
 

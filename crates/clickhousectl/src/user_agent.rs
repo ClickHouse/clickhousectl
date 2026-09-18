@@ -41,7 +41,10 @@ mod tests {
     fn agent_invocation_appends_paren_comment() {
         assert_eq!(
             user_agent_from(Some("claude-code")),
-            format!("clickhousectl/{} (agent=claude-code)", env!("CARGO_PKG_VERSION"))
+            format!(
+                "clickhousectl/{} (agent=claude-code)",
+                env!("CARGO_PKG_VERSION")
+            )
         );
     }
 

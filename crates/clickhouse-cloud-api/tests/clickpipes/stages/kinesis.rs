@@ -8,8 +8,8 @@
 
 use std::time::Duration;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 
 use crate::support::*;
 
@@ -21,9 +21,18 @@ use super::{
 const KINESIS_TARGET_TABLE: &str = "kinesis_users";
 const KINESIS_SEED_ROW_COUNT: i64 = 3;
 const KINESIS_SEED_RECORDS: &[(&str, &str)] = &[
-    ("1", "{\"id\": 1, \"name\": \"Ada Lovelace\", \"email\": \"ada@example.com\"}"),
-    ("2", "{\"id\": 2, \"name\": \"Grace Hopper\", \"email\": \"grace@example.com\"}"),
-    ("3", "{\"id\": 3, \"name\": \"Margaret Hamilton\", \"email\": \"margaret@example.com\"}"),
+    (
+        "1",
+        "{\"id\": 1, \"name\": \"Ada Lovelace\", \"email\": \"ada@example.com\"}",
+    ),
+    (
+        "2",
+        "{\"id\": 2, \"name\": \"Grace Hopper\", \"email\": \"grace@example.com\"}",
+    ),
+    (
+        "3",
+        "{\"id\": 3, \"name\": \"Margaret Hamilton\", \"email\": \"margaret@example.com\"}",
+    ),
 ];
 
 const DEFAULT_CLICKPIPE_READY_TIMEOUT_SECS: u64 = 600;
@@ -58,7 +67,11 @@ pub async fn run_kinesis_stage(sctx: StageCtx<'_>) -> StageOutcome {
     )
     .await;
 
-    StageOutcome { result, cleanup, aws_cleanup }
+    StageOutcome {
+        result,
+        cleanup,
+        aws_cleanup,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -141,14 +154,8 @@ async fn run_inner(
     })
     .to_string();
 
-    let role_arn = create_clickpipes_iam_role(
-        iam,
-        &role_name,
-        &ch.iam_role,
-        &read_policy,
-        &aws_tags,
-    )
-    .await?;
+    let role_arn =
+        create_clickpipes_iam_role(iam, &role_name, &ch.iam_role, &read_policy, &aws_tags).await?;
     aws_cleanup.register_iam_role(role_name.clone());
     eprintln!("  created iam role {role_name}");
 

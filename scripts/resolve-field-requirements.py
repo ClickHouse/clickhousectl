@@ -57,9 +57,9 @@ def is_patch_schema(schema_name: str) -> bool:
 # Adding a schema here makes its resolution use the union of `required[]`
 # and the description heuristic instead of treating `required[]` as exclusive.
 #
-# Remove an entry once the spec is corrected upstream (the `required[]` array
-# becomes comprehensive for the schema). The Rust test mirrors this list in
-# `tests/spec_coverage_test.rs` and asserts on stale entries.
+# This script is only a code-generation aid. The canonical comparison policy
+# lives in `clickhouse-openapi-analyzer/src/config.rs`; keep this helper list in
+# sync with `AnalyzerConfig::partial_required_schemas`.
 PARTIAL_REQUIRED_SCHEMAS: set[str] = {
     "Service",
     "ServiceScalingPatchResponse",

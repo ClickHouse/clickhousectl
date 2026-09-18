@@ -7,8 +7,8 @@
 
 use std::time::Duration;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 
 use crate::support::*;
 
@@ -82,7 +82,10 @@ async fn launch_mysql(
     let subnet_id = first_subnet_in_vpc(ec2, &vpc_id).await?;
     let ami_id = latest_ubuntu_noble_amd64_ami(ec2).await?;
 
-    let sg_name = format!("clickhousectl-e2e-mysql-{}", sanitize_for_topic(&ctx.run_id));
+    let sg_name = format!(
+        "clickhousectl-e2e-mysql-{}",
+        sanitize_for_topic(&ctx.run_id)
+    );
     let sg_id = create_open_security_group(ec2, &vpc_id, &sg_name, &[3306]).await?;
     aws_cleanup.register_ec2_security_group(sg_id.clone());
     eprintln!("  created security group {sg_id}");
@@ -96,7 +99,10 @@ async fn launch_mysql(
         &sg_id,
         MYSQL_INSTANCE_TYPE,
         &user_data,
-        &format!("clickhousectl-e2e-mysql-{}", sanitize_for_topic(&ctx.run_id)),
+        &format!(
+            "clickhousectl-e2e-mysql-{}",
+            sanitize_for_topic(&ctx.run_id)
+        ),
     )
     .await?;
     aws_cleanup.register_ec2_instance(instance_id.clone());
@@ -123,7 +129,11 @@ pub async fn run_mysql_stage(sctx: StageCtx<'_>) -> StageOutcome {
         mut aws_cleanup,
     } = sctx;
     let result = run_inner(client, ctx, ch, ec2, &mut cleanup, &mut aws_cleanup).await;
-    StageOutcome { result, cleanup, aws_cleanup }
+    StageOutcome {
+        result,
+        cleanup,
+        aws_cleanup,
+    }
 }
 
 async fn run_inner(

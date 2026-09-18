@@ -12,11 +12,10 @@
 # Environment:
 #   HOMEBREW_TAP_DEPLOY_KEY  Private SSH key registered as a deploy key with
 #                           write access on ClickHouse/homebrew-tap (required).
-#   GITHUB_REPOSITORY        Set by GitHub Actions (e.g. ClickHouse/clickhousectl).
 #
 # The script:
 #   1. Downloads the 4 prebuilt archives from the GitHub release (immediately
-#      available, no mirror propagation delay) and computes SHA256 for each.
+#      available) and verifies that the distribution mirror serves identical bytes.
 #   2. Renders homebrew/clickhousectl.rb.tmpl with the version + hashes.
 #   3. Clones ClickHouse/homebrew-tap, replaces Formula/clickhousectl.rb,
 #      commits and pushes.
@@ -27,6 +26,13 @@
 set -euo pipefail
 
 VERSION="${1:?usage: $0 <version> (without leading v)}"
+# Release archives embed the Cargo package version. Refuse to publish a formula
+# for a mismatched tag, which would fail Homebrew's installed-version test.
+PACKAGE_VERSION="$(python3 -c 'import tomllib; print(tomllib.load(open("crates/clickhousectl/Cargo.toml", "rb"))["package"]["version"])')"
+if [ "$VERSION" != "$PACKAGE_VERSION" ]; then
+  echo "error: release version ${VERSION} does not match Cargo version ${PACKAGE_VERSION}" >&2
+  exit 1
+fi
 TAG="v${VERSION}"
 TAP_REPO="ClickHouse/homebrew-tap"
 TEMPLATE="homebrew/clickhousectl.rb.tmpl"
@@ -43,47 +49,46 @@ fi
 # the formula for the canonical distribution path.
 GH_BASE="https://github.com/ClickHouse/clickhousectl/releases/download/${TAG}"
 
-declare -A TARGETS=(
-  [X86_64_LINUX_MUSL]="x86_64-unknown-linux-musl"
-  [AARCH64_LINUX_MUSL]="aarch64-unknown-linux-musl"
-  [X86_64_APPLE_DARWIN]="x86_64-apple-darwin"
-  [AARCH64_APPLE_DARWIN]="aarch64-apple-darwin"
+TARGETS=(
+  "x86_64-unknown-linux-musl"
+  "aarch64-unknown-linux-musl"
+  "x86_64-apple-darwin"
+  "aarch64-apple-darwin"
 )
+HASHES=()
 
-declare -A HASHES
-
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT
+FORMULA_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$FORMULA_TMP_DIR"' EXIT
 
 for key in "${!TARGETS[@]}"; do
   target="${TARGETS[$key]}"
   asset="clickhousectl-${target}-${TAG}.tar.gz"
   url="${GH_BASE}/${asset}"
   echo "Downloading ${asset}..."
-  curl -fsSL "$url" -o "${TMPDIR}/${asset}"
-  hash="$(shasum -a 256 "${TMPDIR}/${asset}" | awk '{print $1}')"
-  HASHES[$key]="$hash"
+  curl -fsSL "$url" -o "${FORMULA_TMP_DIR}/${asset}"
+  hash="$(shasum -a 256 "${FORMULA_TMP_DIR}/${asset}" | awk '{print $1}')"
+  HASHES[key]="$hash"
   echo "  sha256: ${hash}"
 done
 
-# ── 1b. Verify builds.clickhouse.com URLs are reachable ────────────────────
-# The formula serves from builds.clickhouse.com, which is populated async
-# from the GitHub release. Fail fast if the mirror isn't ready yet so the
-# tap isn't published with 404 URLs — re-run this job after the async push
-# completes.
+# Verify the exact bytes Homebrew will download, not just URL reachability.
+# The mirror is populated asynchronously. On missing or mismatched archives,
+# stop before touching the tap; retry after propagation completes.
 BUILDS_BASE="https://builds.clickhouse.com/clickhousectl"
 for key in "${!TARGETS[@]}"; do
   target="${TARGETS[$key]}"
   asset="clickhousectl-${target}-${TAG}.tar.gz"
   builds_url="${BUILDS_BASE}/${asset}"
   echo "Verifying ${builds_url}..."
-  if ! curl -fsSI "$builds_url" -o /dev/null; then
-    echo "error: ${builds_url} is not reachable." >&2
-    echo "       builds.clickhouse.com may not have propagated this release yet." >&2
-    echo "       Trigger the async push and re-run this job." >&2
+  if ! curl -fsSL "$builds_url" -o "${FORMULA_TMP_DIR}/mirror-${asset}"; then
+    echo "error: ${builds_url} is not reachable; retry after mirror propagation." >&2
     exit 1
   fi
-  echo "  OK"
+  mirror_hash="$(shasum -a 256 "${FORMULA_TMP_DIR}/mirror-${asset}" | awk '{print $1}')"
+  if [ "$mirror_hash" != "${HASHES[$key]}" ]; then
+    echo "error: mirror checksum differs for ${asset}; retry after mirror propagation." >&2
+    exit 1
+  fi
 done
 
 # ── 2. Render the template ─────────────────────────────────────────────────
@@ -92,13 +97,13 @@ if [ ! -f "$TEMPLATE" ]; then
   exit 1
 fi
 
-RENDERED="${TMPDIR}/clickhousectl.rb"
+RENDERED="${FORMULA_TMP_DIR}/clickhousectl.rb"
 sed \
   -e "s|{{VERSION}}|${VERSION}|g" \
-  -e "s|{{SHA256_X86_64_LINUX_MUSL}}|${HASHES[X86_64_LINUX_MUSL]}|g" \
-  -e "s|{{SHA256_AARCH64_LINUX_MUSL}}|${HASHES[AARCH64_LINUX_MUSL]}|g" \
-  -e "s|{{SHA256_X86_64_APPLE_DARWIN}}|${HASHES[X86_64_APPLE_DARWIN]}|g" \
-  -e "s|{{SHA256_AARCH64_APPLE_DARWIN}}|${HASHES[AARCH64_APPLE_DARWIN]}|g" \
+  -e "s|{{SHA256_X86_64_LINUX_MUSL}}|${HASHES[0]}|g" \
+  -e "s|{{SHA256_AARCH64_LINUX_MUSL}}|${HASHES[1]}|g" \
+  -e "s|{{SHA256_X86_64_APPLE_DARWIN}}|${HASHES[2]}|g" \
+  -e "s|{{SHA256_AARCH64_APPLE_DARWIN}}|${HASHES[3]}|g" \
   "$TEMPLATE" > "$RENDERED"
 
 echo "Rendered formula:"
@@ -107,23 +112,23 @@ head -5 "$RENDERED"
 # ── 3. Clone the tap, update, commit, push ─────────────────────────────────
 # Use a deploy key (SSH) for authentication — scoped to the tap repo only,
 # not tied to any individual's GitHub account.
-TAP_DIR="${TMPDIR}/homebrew-tap"
-SSH_KEY="${TMPDIR}/deploy_key"
+TAP_DIR="${FORMULA_TMP_DIR}/homebrew-tap"
+SSH_KEY="${FORMULA_TMP_DIR}/deploy_key"
 printf '%s\n' "$HOMEBREW_TAP_DEPLOY_KEY" > "$SSH_KEY"
 chmod 600 "$SSH_KEY"
 
 # Pin GitHub's published ed25519 SSH key so a MITM attacker can't substitute
 # their own host key during the deploy-key session. See:
 # https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/githubs-ssh-key-fingerprints
-echo "github.com ssh-ed25519 AAAAC3NzC1lZDI1NTE5AAAAIOMqqnkVzq0S2G4Ue0hKQipxwlPGB0XzYxgO0GR6djQx" > "${TMPDIR}/known_hosts"
+echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" > "${FORMULA_TMP_DIR}/known_hosts"
 
-GIT_SSH_COMMAND="ssh -i ${SSH_KEY} -o UserKnownHostsFile=${TMPDIR}/known_hosts -o IdentitiesOnly=yes" \
+GIT_SSH_COMMAND="ssh -i \"${SSH_KEY}\" -o UserKnownHostsFile=\"${FORMULA_TMP_DIR}/known_hosts\" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
   git clone "git@github.com:${TAP_REPO}.git" "$TAP_DIR"
 mkdir -p "${TAP_DIR}/Formula"
 cp "$RENDERED" "${TAP_DIR}/Formula/clickhousectl.rb"
 
 git -C "$TAP_DIR" add Formula/clickhousectl.rb
-# Allow a no-op commit when the formula is already up to date (e.g. a
+# Skip the commit when the formula is already up to date (e.g. a
 # re-run of the release job after the first push succeeded).
 if ! git -C "$TAP_DIR" diff --cached --quiet; then
   git -C "$TAP_DIR" -c user.name="github-actions[bot]" \
@@ -133,6 +138,6 @@ else
   echo "Formula unchanged; nothing to commit."
 fi
 
-GIT_SSH_COMMAND="ssh -i ${SSH_KEY} -o UserKnownHostsFile=${TMPDIR}/known_hosts -o IdentitiesOnly=yes" \
+GIT_SSH_COMMAND="ssh -i \"${SSH_KEY}\" -o UserKnownHostsFile=\"${FORMULA_TMP_DIR}/known_hosts\" -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes" \
   git -C "$TAP_DIR" push origin HEAD
 echo "Pushed clickhousectl ${VERSION} to ${TAP_REPO}"

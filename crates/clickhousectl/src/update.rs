@@ -1,9 +1,9 @@
 use crate::error::{Error, Result};
 use crate::paths;
 use flate2::read::GzDecoder;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{self, Cursor};
+use std::io::{self, Cursor, Write};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tar::Archive;
@@ -15,6 +15,63 @@ const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60; // 24 hours
 #[derive(Deserialize)]
 struct GitHubRelease {
     tag_name: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UpdateAction {
+    UpToDate,
+    UpdateAvailable,
+    Updated,
+}
+
+#[derive(Serialize)]
+pub struct UpdateResult {
+    current_version: String,
+    latest_version: String,
+    action: UpdateAction,
+}
+
+impl UpdateResult {
+    fn checked(current: &str, latest: &str) -> Self {
+        Self {
+            current_version: current.to_owned(),
+            latest_version: latest.strip_prefix('v').unwrap_or(latest).to_owned(),
+            action: if is_newer(current, latest) {
+                UpdateAction::UpdateAvailable
+            } else {
+                UpdateAction::UpToDate
+            },
+        }
+    }
+
+    pub fn write(&self, output: &mut dyn Write, json: bool) -> Result<()> {
+        if json {
+            writeln!(output, "{}", serde_json::to_string_pretty(self)?)?;
+        } else {
+            match self.action {
+                UpdateAction::UpToDate => {
+                    writeln!(output, "Already up to date (v{}).", self.current_version)?;
+                }
+                UpdateAction::UpdateAvailable => {
+                    writeln!(
+                        output,
+                        "Update available: v{} → v{}",
+                        self.current_version, self.latest_version
+                    )?;
+                    writeln!(output, "Run `clickhousectl update` to upgrade.")?;
+                }
+                UpdateAction::Updated => {
+                    writeln!(
+                        output,
+                        "Updated clickhousectl: v{} → v{}",
+                        self.current_version, self.latest_version
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The platform target triple used in release artifact names.
@@ -58,11 +115,11 @@ fn is_newer(current: &str, latest: &str) -> bool {
 
 /// Fetch the latest release info from GitHub with configurable timeout.
 async fn fetch_latest_release(timeout: std::time::Duration) -> Result<GitHubRelease> {
-    let url = format!("https://api.github.com/repos/{}/releases/latest", GITHUB_REPO);
-    let client = reqwest::Client::builder()
-        .user_agent(crate::user_agent::user_agent())
-        .timeout(timeout)
-        .build()?;
+    let url = format!(
+        "https://api.github.com/repos/{}/releases/latest",
+        GITHUB_REPO
+    );
+    let client = crate::http::client_builder().timeout(timeout).build()?;
 
     let response = client
         .get(&url)
@@ -115,31 +172,34 @@ const EXPLICIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10)
 /// Timeout for the implicit background cache refresh.
 const BACKGROUND_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(400);
 
-/// Check for updates. Returns Some((current, latest)) if an update is available.
+/// Check for updates and retain both versions even when no update is available.
 /// Uses the explicit (longer) timeout since this is called from user-initiated commands.
-pub async fn check_for_update() -> Result<Option<(String, String)>> {
+pub async fn check_for_update() -> Result<UpdateResult> {
     let current = env!("CARGO_PKG_VERSION");
     let release = fetch_latest_release(EXPLICIT_TIMEOUT).await?;
     let latest = &release.tag_name;
+    let display = latest.strip_prefix('v').unwrap_or(latest);
 
-    if is_newer(current, latest) {
-        let display = latest.strip_prefix('v').unwrap_or(latest);
-        Ok(Some((current.to_string(), display.to_string())))
-    } else {
-        Ok(None)
-    }
+    // An explicit check always refreshes the cache and resets the staleness
+    // timer, so subsequent commands reflect what we just learned.
+    let _ = save_update_check(display);
+
+    Ok(UpdateResult::checked(current, latest))
 }
 
 /// Download the latest release and replace the current binary.
-pub async fn perform_update() -> Result<()> {
+pub async fn perform_update(json: bool) -> Result<UpdateResult> {
     let current = env!("CARGO_PKG_VERSION");
     let release = fetch_latest_release(EXPLICIT_TIMEOUT).await?;
     let latest = &release.tag_name;
+    let mut result = UpdateResult::checked(current, latest);
 
-    if !is_newer(current, latest) {
+    if matches!(result.action, UpdateAction::UpToDate) {
         let display = latest.strip_prefix('v').unwrap_or(latest);
-        println!("Already up to date (v{}).", display);
-        return Ok(());
+        // Refresh the cache with the network truth so a stale "update available"
+        // notice can't keep nagging after the user explicitly checked.
+        let _ = save_update_check(display);
+        return Ok(result);
     }
 
     let target = target_triple()?;
@@ -147,10 +207,11 @@ pub async fn perform_update() -> Result<()> {
     let download_url = format!("{}/{}", BUILDS_BASE_URL, archive_name);
 
     let display = latest.strip_prefix('v').unwrap_or(latest);
-    println!("Downloading clickhousectl v{}...", display);
+    if !json {
+        println!("Downloading clickhousectl v{}...", display);
+    }
 
-    let client = reqwest::Client::builder()
-        .user_agent(crate::user_agent::user_agent())
+    let client = crate::http::client_builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
@@ -205,10 +266,10 @@ pub async fn perform_update() -> Result<()> {
         ))
     })?;
 
-    println!("Updated clickhousectl: v{} → v{}", current, display);
-    // Save the check cache so we don't nag right after updating
-    let _ = save_update_check(display);
-    Ok(())
+    // Clear the check cache so the update notice disappears immediately.
+    let _ = clear_update_check();
+    result.action = UpdateAction::Updated;
+    Ok(result)
 }
 
 // --- Background update check with caching ---
@@ -245,52 +306,115 @@ fn read_update_check() -> Option<(u64, String)> {
     Some((ts, version))
 }
 
+/// Remove the cached update check. Used after a successful self-update so the
+/// notice disappears immediately. Missing file is not an error.
+fn clear_update_check() -> Result<()> {
+    let path = update_check_path()?;
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(Error::Io(e)),
+    }
+}
+
+/// Whether the cache is stale enough to warrant a network refresh. A missing
+/// cache is always stale; a present one is stale once it is older than the
+/// check interval.
+fn cache_is_stale(cache: Option<(u64, String)>, now: u64) -> bool {
+    match cache {
+        Some((ts, _)) => now.saturating_sub(ts) >= CHECK_INTERVAL_SECS,
+        None => true,
+    }
+}
+
 /// Print an update notice from cached data only. No network, no async.
 /// Called synchronously before the command runs so output never interleaves.
 pub fn print_cached_update_notice() {
     if let Some((_, cached_version)) = read_update_check() {
         let current = env!("CARGO_PKG_VERSION");
         if is_newer(current, &cached_version) {
-            eprintln!(
-                "\nA new version of clickhousectl is available: v{} (current: v{})",
-                cached_version, current
+            use std::io::Write;
+            // Not `eprintln!`, which panics on a closed stderr — see
+            // `telemetry::print_first_run_notice`.
+            let _ = writeln!(
+                std::io::stderr(),
+                "\nThere is a new version of clickhousectl. Update with `clickhousectl update`."
             );
-            eprintln!("Run `clickhousectl update` to upgrade.\n");
         }
     }
 }
 
-/// Refresh the update cache in the background if stale. Never prints.
-/// On any failure (timeout, network error, etc.), writes the current version
-/// to the cache so we don't retry for another 24 hours.
-pub async fn refresh_update_cache() {
-    // Only hit the network if cache is stale or missing
-    let needs_refresh = match read_update_check() {
-        Some((ts, _)) => now_secs().saturating_sub(ts) >= CHECK_INTERVAL_SECS,
-        None => true,
-    };
-    if !needs_refresh {
-        return;
-    }
-
+/// Hit the network, refresh the cache, and reset the staleness timer. Never
+/// prints. On any failure (timeout, network error, etc.) the timestamp is still
+/// reset so we back off for another 24h, but a previously-cached "update
+/// available" version is preserved so we don't hide a known update.
+async fn do_refresh_update_cache(timeout: std::time::Duration) {
     let current = env!("CARGO_PKG_VERSION");
-    let release = fetch_latest_release(BACKGROUND_TIMEOUT).await;
-    match release {
+    match fetch_latest_release(timeout).await {
         Ok(r) => {
             let latest = r.tag_name;
             let display = latest.strip_prefix('v').unwrap_or(&latest);
             let _ = save_update_check(display);
         }
         Err(_) => {
-            // Failed or timed out — write current version so we back off for 24h
-            let _ = save_update_check(current);
+            // Preserve any previously-cached latest version; fall back to the
+            // current version when there is nothing cached yet.
+            let version = read_update_check()
+                .map(|(_, v)| v)
+                .unwrap_or_else(|| current.to_string());
+            let _ = save_update_check(&version);
         }
     }
+}
+
+/// Refresh the update cache in the background if stale. Never prints. Skips the
+/// network entirely when the cache is still fresh (within 24h).
+pub async fn refresh_update_cache() {
+    if !cache_is_stale(read_update_check(), now_secs()) {
+        return;
+    }
+    do_refresh_update_cache(BACKGROUND_TIMEOUT).await;
+}
+
+/// Force a network check and refresh the cache + timer regardless of staleness.
+/// Used by explicit user actions (e.g. `--version`) that should always reflect
+/// the freshest state. Uses the longer explicit timeout. Never prints.
+pub async fn force_refresh_update_cache() {
+    do_refresh_update_cache(EXPLICIT_TIMEOUT).await;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn json_update_check_preserves_the_current_and_actual_latest_versions() {
+        for (latest, action) in [
+            ("v0.5.0", "update_available"),
+            ("v0.4.2", "up_to_date"),
+            ("v0.4.1", "up_to_date"),
+        ] {
+            let result = UpdateResult::checked("0.4.2", latest);
+            let mut output = Vec::new();
+            result.write(&mut output, true).unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+            assert_eq!(value["current_version"], "0.4.2");
+            assert_eq!(value["latest_version"], latest.trim_start_matches('v'));
+            assert_eq!(value["action"], action);
+        }
+    }
+
+    #[test]
+    fn json_update_completion_reports_the_upgrade() {
+        let mut result = UpdateResult::checked("0.4.2", "v0.5.0");
+        result.action = UpdateAction::Updated;
+        let mut output = Vec::new();
+        result.write(&mut output, true).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(value["action"], "updated");
+        assert_eq!(value["current_version"], "0.4.2");
+        assert_eq!(value["latest_version"], "0.5.0");
+    }
 
     #[test]
     fn test_parse_version() {
@@ -309,6 +433,30 @@ mod tests {
         assert!(!is_newer("0.1.17", "0.1.17"));
         assert!(!is_newer("0.1.17", "0.1.16"));
         assert!(!is_newer("0.2.0", "0.1.99"));
+    }
+
+    #[test]
+    fn test_cache_is_stale() {
+        let now = 1_000_000;
+        // Missing cache is always stale.
+        assert!(cache_is_stale(None, now));
+        // Fresh cache (just written) is not stale.
+        assert!(!cache_is_stale(Some((now, "0.2.0".into())), now));
+        // Cache one second short of the interval is not stale.
+        assert!(!cache_is_stale(
+            Some((now - (CHECK_INTERVAL_SECS - 1), "0.2.0".into())),
+            now
+        ));
+        // Cache exactly at the interval is stale.
+        assert!(cache_is_stale(
+            Some((now - CHECK_INTERVAL_SECS, "0.2.0".into())),
+            now
+        ));
+        // Older cache is stale.
+        assert!(cache_is_stale(
+            Some((now - 2 * CHECK_INTERVAL_SECS, "0.2.0".into())),
+            now
+        ));
     }
 
     #[test]
@@ -341,8 +489,7 @@ mod tests {
     #[test]
     fn extracts_clickhousectl_binary_from_release_archive() {
         let payload = b"\x7fELF fake binary contents".as_slice();
-        let archive =
-            build_release_archive("clickhousectl-aarch64-apple-darwin-v0.0.1", payload);
+        let archive = build_release_archive("clickhousectl-aarch64-apple-darwin-v0.0.1", payload);
 
         let extracted = extract_binary_from_archive(&archive).unwrap();
         assert_eq!(extracted, payload);

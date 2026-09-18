@@ -1,41 +1,89 @@
-use crate::cloud::client::CloudClient;
-use crate::cloud::cli::parse_datetime;
-use crate::cloud::commands::{parse_serde_enum, parse_tags, resolve_org_id};
-use clap::Subcommand;
+use crate::cloud::client::{
+    CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
+};
+use crate::cloud::output::{ABSENT, eprint_line, or_absent, print_human, print_line};
+use crate::cloud::shared::{NameSelector, NamedResource, SourceSelector};
+use crate::cloud::shared::{parse_datetime, parse_serde_enum, parse_tags, resolve_org_id};
+use clap::builder::TypedValueParser;
+use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
-    ApiResponse, PgConfig, PgHaType, PgProvider, PgVersion, PostgresInstanceConfig,
-    PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
+    ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultTransactionIsolation,
+    PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType, PgIdProperty, PgProvider,
+    PgSize, PgVersion, PostgresInstanceConfig, PostgresLogEntry, PostgresLogsGetListSortorder,
+    PostgresMetrics, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
     PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
     PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
-    ResourceTagsV1,
+    PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail, ResourceTagsV1,
+    ResourceTagsV1Response, SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
 };
 use serde::de::DeserializeOwned;
 use std::path::{Path, PathBuf};
 use tabled::{Table, Tabled, settings::Style};
 
-const KNOWN_PG_PROVIDERS: &[&str] = &["aws"];
-const KNOWN_PG_VERSIONS: &[&str] = &["18", "17"];
-const KNOWN_PG_HA_TYPES: &[&str] = &["none", "async", "sync"];
+const POSTGRES_LOG_SORT_ORDERS: &[&str] = &["asc", "desc"];
 
 #[derive(Subcommand)]
 pub enum PostgresCommands {
     /// List Postgres services in the organization
     List {
-        #[arg(long)]
-        org_id: Option<String>,
-        /// Filter results by field (e.g. --filter state=running)
-        #[arg(long)]
-        filter: Vec<String>,
+        /// Filter results client-side, repeatable (KEY=VALUE)
+        ///
+        /// Keys: state, region, name, provider, isPrimary. Every filter must
+        /// match, and a field the API omitted matches nothing.
+        #[arg(long, value_parser = parse_postgres_list_filter)]
+        filter: Vec<PostgresListFilter>,
     },
 
-    /// Get details for a single Postgres service
+    /// Get Postgres service details
     Get {
-        postgres_id: String,
-        #[arg(long)]
-        org_id: Option<String>,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
-    /// Create a new Postgres service
+    /// List Postgres server logs
+    Logs {
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+        /// Inclusive start of the time window (RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        from_date: String,
+        /// Inclusive end of the time window (RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        to_date: String,
+        /// Case-sensitive substring the log body must contain
+        #[arg(long)]
+        body_contains: Option<String>,
+        /// PostgreSQL severity, such as ERROR, WARNING, or LOG
+        #[arg(long)]
+        severity: Option<String>,
+        /// Sort order
+        #[arg(
+            long,
+            value_parser = clap::builder::PossibleValuesParser::new(
+                POSTGRES_LOG_SORT_ORDERS
+            ).try_map(parse_known_postgres_logs_sort_order)
+        )]
+        sort_order: Option<PostgresLogsGetListSortorder>,
+        /// Maximum number of log entries
+        #[arg(long, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(1..=2000))]
+        limit: Option<i64>,
+        /// Number of log entries to skip
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(i64).range(0..)
+        )]
+        offset: Option<i64>,
+    },
+
+    /// Create a Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The password and connection string are returned once, here — save them.
+  Treat `get` as never returning credentials; `reset-password` is the only way back.
+  Not usable until `cloud postgres get <id>` reports state=running.")]
     Create {
         /// Service name
         #[arg(long)]
@@ -43,17 +91,21 @@ pub enum PostgresCommands {
         /// Cloud region (e.g. us-east-1)
         #[arg(long)]
         region: String,
-        /// Instance size (e.g. m7i.2xlarge). Server validates — accepts any value.
+        /// Instance size (e.g. c6gd.xlarge); validated by the server
         #[arg(long)]
         size: String,
         /// Cloud provider
-        #[arg(long, default_value = "aws")]
+        #[arg(
+            long,
+            default_value = "aws",
+            value_parser = clap::builder::PossibleValuesParser::new(PgProvider::VALUES)
+        )]
         provider: String,
         /// Postgres major version
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(KNOWN_PG_VERSIONS))]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgVersion::VALUES))]
         pg_version: Option<String>,
         /// High-availability type
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(KNOWN_PG_HA_TYPES))]
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
         ha_type: Option<String>,
         /// Resource tag (repeatable), e.g. --tag env=prod
         #[arg(long)]
@@ -61,172 +113,368 @@ pub enum PostgresCommands {
         /// Path to a JSON file with a PgConfig object
         #[arg(long)]
         pg_config_file: Option<PathBuf>,
-        /// Path to a JSON file with a PgBouncerConfig object
+        /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
-    /// Update an existing Postgres service (metadata only)
+    /// Update a Postgres service's name, size, HA type or tags
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  --new-name also changes the service host name and its certificates: stored connection strings and
+  pinned CAs break, so re-read `cloud postgres get` and `cloud postgres certs get` afterwards.")]
     Update {
-        postgres_id: String,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+        /// New service name
+        #[arg(long = "new-name", id = "new_name")]
+        name: Option<String>,
+        /// New instance size (e.g. c6gd.xlarge); validated by the server
         #[arg(long)]
         size: Option<String>,
-        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(KNOWN_PG_HA_TYPES))]
+        /// New high-availability type
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(PgHaType::VALUES))]
         ha_type: Option<String>,
-        /// Add a tag (repeatable), e.g. --add-tag env=prod
-        #[arg(long)]
+        /// Add a tag (repeatable; conflicts with --clear-tags)
+        #[arg(long, conflicts_with = "clear_tags")]
         add_tag: Vec<String>,
-        /// Remove a tag by key (repeatable)
-        #[arg(long)]
+        /// Remove a tag by key (repeatable; conflicts with --clear-tags)
+        #[arg(long, conflicts_with = "clear_tags")]
         remove_tag: Vec<String>,
-        #[arg(long)]
-        org_id: Option<String>,
+        /// Remove all tags; conflicts with --add-tag and --remove-tag
+        #[arg(long, conflicts_with_all = ["add_tag", "remove_tag"])]
+        clear_tags: bool,
     },
 
     /// Delete a Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Irreversible: the service and its data cannot be recovered.
+  Deletes from any state, including running — no stop first, unlike `cloud service delete`.")]
     Delete {
-        postgres_id: String,
-        #[arg(long)]
-        org_id: Option<String>,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
-    /// Manage CA certificates
+    /// Manage Postgres CA certificates
     #[command(subcommand)]
     Certs(CertsCommands),
 
     /// Manage Postgres runtime configuration
-    #[command(subcommand)]
+    #[command(
+        subcommand,
+        after_help = "\
+CONTEXT FOR AGENTS:
+  `replace` sends the whole object — start from `config get --json` output, not a fragment.
+  `patch --set` only touches pgConfig; use --file to patch pgBouncerConfig.
+  Exit 0 from `patch` or `replace` means accepted; confirm stored values with `config get`.
+  If the response requires a restart, run `cloud postgres restart <id>` (or --name <name>),
+  then reconnect and use `SHOW <setting>` to confirm a Postgres setting is active."
+    )]
     Config(ConfigCommands),
 
     /// Reset the Postgres service password
+    #[command(
+        group(ArgGroup::new("password_source").required(true).args(["password", "generate"])),
+        after_help = "\
+CONTEXT FOR AGENTS:
+  The response contains no endpoint; use `cloud postgres get <id>` for host and username.
+  Prefer a psql password prompt; if a URI embeds the password, percent-encode it first."
+    )]
     ResetPassword {
-        postgres_id: String,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// New password (min 12, must include upper, lower, digit)
         #[arg(long, conflicts_with = "generate")]
         password: Option<String>,
-        /// Generate a random compliant password and print it
+        /// Generate a random compliant password and print it once
         #[arg(long, conflicts_with = "password")]
         generate: bool,
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
-    /// Manage read replicas
+    /// Manage Postgres read replicas
     #[command(name = "read-replica", subcommand)]
     ReadReplica(ReadReplicaCommands),
 
+    /// Get Postgres service metrics
+    Metrics {
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+        /// Start time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
+        from_date: String,
+        /// End time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
+        to_date: String,
+        /// Time bucket size in seconds; omit to let the API choose
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+        bucket_size_seconds: Option<i64>,
+    },
+
+    /// Inspect Postgres slow query patterns
+    #[command(name = "slow-queries", subcommand)]
+    SlowQueries(SlowQueryCommands),
+
+    /// Get raw Postgres Prometheus metrics
+    #[command(
+        subcommand,
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Human output is raw Prometheus exposition text.
+  --json, including automatic coding-agent mode, returns that text as a JSON string."
+    )]
+    Prometheus(PrometheusCommands),
+
     /// Restore a Postgres service to a point in time
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Creates a NEW service from the source's backups; the source is untouched.
+  --restore-target must fall inside the source's backup retention window.
+  The response has no password; use its ID with `get`, then reset it if no valid password is known.
+  Do not assume the source's current password matches the historical restore.")]
     Restore {
-        /// Source Postgres service ID
-        postgres_id: String,
+        /// Source Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: SourceSelector,
         /// Name for the restored service
         #[arg(long)]
         name: String,
         /// Point-in-time target (ISO 8601 / RFC 3339, e.g. 2026-04-16T12:00:00Z)
         #[arg(long, value_parser = parse_datetime)]
         restore_target: String,
+        /// Resource tag (repeatable), e.g. --tag env=prod
         #[arg(long)]
         tag: Vec<String>,
+        /// Path to a JSON file with a PgConfig object
         #[arg(long)]
         pg_config_file: Option<PathBuf>,
+        /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
-        #[arg(long)]
-        org_id: Option<String>,
     },
 
     /// Restart a Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Before restarting, record `SELECT pg_postmaster_start_time()` through psql.
+  Exit 0 means accepted, not completed; state=running or readiness alone does not prove a restart.
+  After connections recover, run it again; a later timestamp confirms a restart after the baseline.")]
     Restart {
-        postgres_id: String,
-        #[arg(long)]
-        org_id: Option<String>,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
     /// Promote a read replica to primary
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Exit 0 means accepted, not completed; promotion is asynchronous.
+  The replica becomes an independent primary service; its source remains primary.
+  Poll `cloud postgres get <replica-id> --json` until isPrimary=true.")]
     Promote {
-        postgres_id: String,
-        #[arg(long)]
-        org_id: Option<String>,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 
-    /// Switch over between primary and replica
+    /// Switch a primary over to an HA standby
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Exit 0 means accepted, not completed; switchover is asynchronous.
+  The standby takes over inside the same HA service.
+  Service isPrimary and state, plus database readiness, do not identify the active HA node.
+  Monitor client connectivity separately; these service fields expose no completion check.")]
     Switchover {
-        postgres_id: String,
-        #[arg(long)]
-        org_id: Option<String>,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
 }
 
 #[derive(Subcommand)]
 pub enum CertsCommands {
     /// Get the CA certificate bundle (PEM) for a Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Prints raw PEM to stdout; --json wraps it as {\"certificate\": ...}, and coding agents
+  get --json automatically — use --output to write a usable file.")]
     Get {
-        postgres_id: String,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Write PEM to the given file (mode 0600 on unix) instead of stdout
         #[arg(long)]
         output: Option<PathBuf>,
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 pub enum ConfigCommands {
-    /// Get current runtime configuration (pgConfig + pgBouncerConfig)
+    /// Get the runtime configuration (pgConfig + pgBouncerConfig)
     Get {
-        postgres_id: String,
-        #[arg(long)]
-        org_id: Option<String>,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
     },
-    /// Replace the entire runtime configuration
+    /// Replace the whole runtime configuration from a file
     Replace {
-        postgres_id: String,
-        /// JSON file with a full PostgresInstanceConfig object
-        #[arg(long)]
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+        /// JSON file with a complete PostgresInstanceConfig object
+        ///
+        /// Not a fragment: use a document obtained from `config get --json`.
+        #[arg(long, value_name = "PATH")]
         file: PathBuf,
-        #[arg(long)]
-        org_id: Option<String>,
     },
-    /// Patch selected runtime configuration fields
+    /// Change selected runtime configuration fields
+    #[command(
+        group(ArgGroup::new("patch_source").required(true).args(["sets", "file"]))
+    )]
     Patch {
-        postgres_id: String,
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
         /// Set a pgConfig field (repeatable), e.g. --set max_connections=500
+        ///
+        /// Values parse as JSON first, falling back to a string
+        /// (statement_timeout=5s). Last value wins on a duplicate key.
         #[arg(long = "set", conflicts_with = "file")]
         sets: Vec<String>,
-        /// JSON file with a partial PostgresInstanceConfig object
-        #[arg(long, conflicts_with = "sets")]
+        /// JSON file with explicit pgConfig and pgBouncerConfig objects
+        #[arg(long, value_name = "PATH", conflicts_with = "sets")]
         file: Option<PathBuf>,
-        #[arg(long)]
-        org_id: Option<String>,
     },
 }
 
 #[derive(Subcommand)]
 pub enum ReadReplicaCommands {
     /// Create a read replica of an existing Postgres service
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The replica inherits the source's provider, region, size and version.
+  The response has no password; use its ID with `get` for the replica endpoint.
+  Do not assume the source's password works on the replica.
+  Next: `cloud postgres promote <replica-id>` to make it primary.")]
     Create {
-        /// Source Postgres service ID
-        postgres_id: String,
+        /// Source Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: SourceSelector,
         /// Name for the new replica
         #[arg(long)]
         name: String,
+        /// Resource tag (repeatable), e.g. --tag env=prod
         #[arg(long)]
         tag: Vec<String>,
+        /// Path to a JSON file with a PgConfig object
         #[arg(long)]
         pg_config_file: Option<PathBuf>,
+        /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PrometheusCommands {
+    /// Get metrics for one Postgres service
+    Service {
+        /// Postgres service ID (from `cloud postgres list`)
+        #[command(flatten)]
+        postgres_id: NameSelector,
+    },
+    /// Get metrics for all Postgres services in an organization
+    Org,
+}
+
+#[derive(Subcommand)]
+pub enum SlowQueryCommands {
+    /// List slow query patterns
+    List {
+        /// Postgres service ID (from `cloud postgres list`)
+        postgres_id: String,
+        /// Inclusive start time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
+        from_date: String,
+        /// Exclusive end time (RFC 3339, at most millisecond precision)
+        #[arg(long, value_parser = parse_postgres_window_datetime)]
+        to_date: String,
+        /// Filter by database name
         #[arg(long)]
-        org_id: Option<String>,
+        db_name: Option<String>,
+        /// Filter by database user
+        #[arg(long)]
+        db_user: Option<String>,
+        /// Filter by database operation
+        #[arg(long)]
+        db_operation: Option<String>,
+        /// Filter by application name
+        #[arg(long)]
+        app: Option<String>,
+        /// Field used to sort results
+        #[arg(
+            long,
+            value_parser = clap::builder::PossibleValuesParser::new(
+                SlowQueryPatternsGetListSortby::VALUES
+            )
+        )]
+        sort_by: Option<String>,
+        /// Sort order
+        #[arg(
+            long,
+            value_parser = clap::builder::PossibleValuesParser::new(
+                SlowQueryPatternsGetListSortorder::VALUES
+            )
+        )]
+        sort_order: Option<String>,
+        /// Maximum number of patterns to return
+        #[arg(long, allow_hyphen_values = true, value_parser = clap::value_parser!(i64).range(1..=500))]
+        limit: Option<i64>,
+        /// Number of patterns to skip
+        #[arg(
+            long,
+            allow_hyphen_values = true,
+            value_parser = clap::value_parser!(i64).range(0..)
+        )]
+        offset: Option<i64>,
+    },
+    /// Get a slow query pattern with recent executions
+    Get {
+        /// Postgres service ID (from `cloud postgres list`)
+        postgres_id: String,
+        /// Stable query pattern ID (from `slow-queries list`)
+        query_id: String,
+        /// Database name from the list result
+        #[arg(long)]
+        db_name: String,
+        /// Database user from the list result
+        #[arg(long)]
+        db_user: String,
+        /// Database operation from the list result
+        #[arg(long)]
+        db_operation: String,
+        /// Application name from the list result
+        #[arg(long)]
+        app: Option<String>,
+        /// Timestamp of a specific execution (ISO 8601 / RFC 3339)
+        #[arg(long, value_parser = parse_datetime)]
+        timestamp: Option<String>,
     },
 }
 
 impl PostgresCommands {
     pub fn is_write(&self) -> bool {
         match self {
-            PostgresCommands::List { .. } | PostgresCommands::Get { .. } => false,
+            PostgresCommands::List { .. }
+            | PostgresCommands::Get { .. }
+            | PostgresCommands::Metrics { .. }
+            | PostgresCommands::Logs { .. }
+            | PostgresCommands::SlowQueries(_)
+            | PostgresCommands::Prometheus(_) => false,
             PostgresCommands::Certs(CertsCommands::Get { .. }) => false,
             PostgresCommands::Config(ConfigCommands::Get { .. }) => false,
 
@@ -245,25 +493,442 @@ impl PostgresCommands {
     }
 }
 
+pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) -> CloudResult<()> {
+    match command {
+        PostgresCommands::List { filter } => postgres_list(client, &filter, json).await,
+        PostgresCommands::Get { postgres_id } => {
+            postgres_get(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Logs {
+            postgres_id,
+            from_date,
+            to_date,
+            body_contains,
+            severity,
+            sort_order,
+            limit,
+            offset,
+        } => {
+            let query = build_postgres_logs_query(
+                &from_date,
+                &to_date,
+                body_contains.as_deref(),
+                severity.as_deref(),
+                sort_order.as_ref(),
+                limit,
+                offset,
+            )?;
+            postgres_logs(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                &query,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Create {
+            name,
+            region,
+            size,
+            provider,
+            pg_version,
+            ha_type,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+        } => {
+            let opts = PostgresCreateOptions {
+                name: &name,
+                region: &region,
+                size: &size,
+                provider: &provider,
+                pg_version: pg_version.as_deref(),
+                ha_type: ha_type.as_deref(),
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+            };
+            postgres_create(client, opts, json).await
+        }
+        PostgresCommands::Update {
+            postgres_id,
+            name,
+            size,
+            ha_type,
+            add_tag,
+            remove_tag,
+            clear_tags,
+        } => {
+            let opts = PostgresUpdateOptions {
+                name: name.as_deref(),
+                size: size.as_deref(),
+                ha_type: ha_type.as_deref(),
+                add_tag: &add_tag,
+                remove_tag: &remove_tag,
+                clear_tags,
+            };
+            postgres_update(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                opts,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Delete { postgres_id } => {
+            postgres_delete(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Certs(CertsCommands::Get {
+            postgres_id,
+            output,
+        }) => {
+            postgres_certs_get(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                output.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Config(ConfigCommands::Get { postgres_id }) => {
+            postgres_config_get(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Config(ConfigCommands::Replace { postgres_id, file }) => {
+            postgres_config_replace(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                &file,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Config(ConfigCommands::Patch {
+            postgres_id,
+            sets,
+            file,
+        }) => {
+            postgres_config_patch(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                &sets,
+                file.as_deref(),
+                json,
+            )
+            .await
+        }
+        PostgresCommands::ResetPassword {
+            postgres_id,
+            password,
+            generate,
+        } => {
+            postgres_reset_password(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                password.as_deref(),
+                generate,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::ReadReplica(ReadReplicaCommands::Create {
+            postgres_id,
+            name,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+        }) => {
+            let opts = PostgresReadReplicaOptions {
+                name: &name,
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+            };
+            postgres_read_replica_create(client, &postgres_id.resolve(client).await?, opts, json)
+                .await
+        }
+        PostgresCommands::Metrics {
+            postgres_id,
+            from_date,
+            to_date,
+            bucket_size_seconds,
+        } => {
+            postgres_metrics(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                &from_date,
+                &to_date,
+                bucket_size_seconds,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::SlowQueries(SlowQueryCommands::List {
+            postgres_id,
+            from_date,
+            to_date,
+            db_name,
+            db_user,
+            db_operation,
+            app,
+            sort_by,
+            sort_order,
+            limit,
+            offset,
+        }) => {
+            let input = SlowQueryListInput {
+                from_date: &from_date,
+                to_date: &to_date,
+                db_name: db_name.as_deref(),
+                db_user: db_user.as_deref(),
+                db_operation: db_operation.as_deref(),
+                app: app.as_deref(),
+                sort_by: sort_by.as_deref(),
+                sort_order: sort_order.as_deref(),
+                limit,
+                offset,
+            };
+            postgres_slow_queries_list(client, &postgres_id, input, json).await
+        }
+        PostgresCommands::SlowQueries(SlowQueryCommands::Get {
+            postgres_id,
+            query_id,
+            db_name,
+            db_user,
+            db_operation,
+            app,
+            timestamp,
+        }) => {
+            let input = SlowQueryDetailInput {
+                db_name: &db_name,
+                db_user: &db_user,
+                db_operation: &db_operation,
+                app: app.as_deref(),
+                timestamp: timestamp.as_deref(),
+            };
+            postgres_slow_query_get(client, &postgres_id, &query_id, input, json).await
+        }
+        PostgresCommands::Prometheus(PrometheusCommands::Service { postgres_id }) => {
+            postgres_prometheus_service(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Prometheus(PrometheusCommands::Org) => {
+            postgres_prometheus_org(client, json).await
+        }
+        PostgresCommands::Restore {
+            postgres_id,
+            name,
+            restore_target,
+            tag,
+            pg_config_file,
+            pg_bouncer_config_file,
+        } => {
+            let opts = PostgresRestoreOptions {
+                name: &name,
+                restore_target: &restore_target,
+                tags: &tag,
+                pg_config_file: pg_config_file.as_deref(),
+                pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+            };
+            postgres_restore(client, &postgres_id.resolve(client).await?, opts, json).await
+        }
+        PostgresCommands::Restart { postgres_id } => {
+            postgres_state_change(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                PostgresServiceSetStateCommand::Restart,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Promote { postgres_id } => {
+            postgres_role_change(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                PostgresRoleCommand::Promote,
+                json,
+            )
+            .await
+        }
+        PostgresCommands::Switchover { postgres_id } => {
+            postgres_role_change(
+                client,
+                &postgres_id.resolve(client, NamedResource::Postgres).await?,
+                PostgresRoleCommand::Switchover,
+                json,
+            )
+            .await
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-fn unwrap_api<T>(resp: ApiResponse<T>) -> Result<T, Box<dyn std::error::Error>> {
-    resp.result
-        .ok_or_else(|| "API response was missing a result body".into())
+/// Every Postgres path reports an empty body the same way the rest of the
+/// cloud surface does, so moving one onto a `CloudClient` wrapper cannot
+/// change the message a caller sees.
+fn unwrap_api<T>(resp: ApiResponse<T>) -> CloudResult<T> {
+    CloudClient::unwrap_response(resp)
 }
 
-fn parse_pg_size(value: &str) -> Result<clickhouse_cloud_api::models::PgSize, Box<dyn std::error::Error>> {
+fn parse_pg_size(value: &str) -> CloudResult<clickhouse_cloud_api::models::PgSize> {
     serde_json::from_value(serde_json::Value::String(value.to_string()))
-        .map_err(|e| format!("invalid size '{}': {}", value, e).into())
+        .map_err(|e| CloudError::new(format!("invalid size '{}': {}", value, e)))
 }
 
-fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<T, Box<dyn std::error::Error>> {
+fn load_json_file<T: DeserializeOwned>(path: &Path) -> CloudResult<T> {
     let contents = std::fs::read_to_string(path)
-        .map_err(|e| format!("failed to read {}: {}", path.display(), e))?;
+        .map_err(|e| CloudError::new(format!("failed to read {}: {}", path.display(), e)))?;
     serde_json::from_str(&contents)
-        .map_err(|e| format!("failed to parse {} as JSON: {}", path.display(), e).into())
+        .map_err(|e| CloudError::new(format!("failed to parse {} as JSON: {}", path.display(), e)))
+}
+
+/// The closed set of Postgres GUCs accepted by the Cloud API's `pgConfig`
+/// schema. The library stays tolerant when reading responses, so write inputs
+/// are checked here before serde can discard a misspelled field.
+const PG_CONFIG_KEYS: [&str; 31] = [
+    "autovacuum_analyze_scale_factor",
+    "autovacuum_max_workers",
+    "autovacuum_naptime",
+    "autovacuum_vacuum_cost_delay",
+    "autovacuum_vacuum_cost_limit",
+    "autovacuum_vacuum_insert_scale_factor",
+    "autovacuum_vacuum_scale_factor",
+    "autovacuum_work_mem",
+    "default_transaction_isolation",
+    "effective_cache_size",
+    "effective_io_concurrency",
+    "idle_in_transaction_session_timeout",
+    "idle_session_timeout",
+    "lock_timeout",
+    "maintenance_work_mem",
+    "max_connections",
+    "max_parallel_maintenance_workers",
+    "max_parallel_workers",
+    "max_parallel_workers_per_gather",
+    "max_slot_wal_keep_size",
+    "max_wal_size",
+    "max_worker_processes",
+    "min_wal_size",
+    "random_page_cost",
+    "ssl_min_protocol_version",
+    "statement_timeout",
+    "transaction_timeout",
+    "wal_compression",
+    "wal_keep_size",
+    "wal_sender_timeout",
+    "work_mem",
+];
+
+fn validate_pg_config(doc: &serde_json::Value) -> CloudResult<()> {
+    let config = doc
+        .as_object()
+        .ok_or_else(|| CloudError::new("pgConfig must be a JSON object"))?;
+
+    for (key, value) in config {
+        if !PG_CONFIG_KEYS.contains(&key.as_str()) {
+            return Err(CloudError::new(format!(
+                "unknown pgConfig key '{key}'; expected one of: {}",
+                PG_CONFIG_KEYS.join(", ")
+            )));
+        }
+
+        if value.is_null() {
+            return Err(CloudError::new(format!(
+                "invalid pgConfig value for '{key}': null is not supported"
+            )));
+        }
+
+        let allowed = match key.as_str() {
+            "default_transaction_isolation" => Some(PgConfigDefaultTransactionIsolation::VALUES),
+            "ssl_min_protocol_version" => Some(PgConfigSslMinProtocolVersion::VALUES),
+            "wal_compression" => Some(PgConfigWalCompression::VALUES),
+            _ => None,
+        };
+        if let Some(allowed) = allowed {
+            let Some(value) = value.as_str() else {
+                return Err(CloudError::new(format!(
+                    "invalid pgConfig value for '{key}': expected one of: {}",
+                    allowed.join(", ")
+                )));
+            };
+            if !allowed.contains(&value) {
+                return Err(CloudError::new(format!(
+                    "invalid pgConfig value '{value}' for '{key}'; expected one of: {}",
+                    allowed.join(", ")
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn pg_config_from_json(doc: serde_json::Value) -> CloudResult<PgConfig> {
+    validate_pg_config(&doc).map_err(|e| CloudError::new(format!("invalid pgConfig: {e}")))?;
+    serde_json::from_value(doc).map_err(|e| CloudError::new(format!("invalid pgConfig: {e}")))
+}
+
+fn load_pg_config_file(path: &Path) -> CloudResult<PgConfig> {
+    let doc = load_json_file::<serde_json::Value>(path)?;
+    pg_config_from_json(doc)
+        .map_err(|e| CloudError::new(format!("invalid PgConfig file {}: {e}", path.display())))
+}
+
+/// Builds the `postgres config` write body from a user-supplied JSON document.
+///
+/// The document root must be a JSON object; anything else (a scalar, an array,
+/// `null`) is rejected rather than read as "no sections", which would send an
+/// empty body and reset the configuration.
+///
+/// The API schema requires both `pgConfig` and `pgBouncerConfig`. Require each
+/// section explicitly so a missing section cannot be mistaken for an intentional
+/// empty object.
+fn instance_config_from_json(doc: &serde_json::Value) -> CloudResult<PostgresInstanceConfig> {
+    let root = doc
+        .as_object()
+        .ok_or_else(|| CloudError::new("configuration document must be a JSON object"))?;
+    for key in root.keys() {
+        if key != "pgConfig" && key != "pgBouncerConfig" {
+            return Err(CloudError::new(format!(
+                "unknown configuration section '{key}'; expected pgConfig and pgBouncerConfig"
+            )));
+        }
+    }
+    let pg_config = root.get("pgConfig").ok_or_else(|| {
+        CloudError::new(
+            "configuration document is missing required 'pgConfig' section; use {} to make it explicitly empty",
+        )
+    })?;
+    let pg_bouncer_config = root.get("pgBouncerConfig").ok_or_else(|| {
+        CloudError::new(
+            "configuration document is missing required 'pgBouncerConfig' section; use {} to make it explicitly empty",
+        )
+    })?;
+    Ok(PostgresInstanceConfig {
+        pg_config: pg_config_from_json(pg_config.clone())?,
+        pg_bouncer_config: serde_json::from_value(pg_bouncer_config.clone())
+            .map_err(|e| CloudError::new(format!("invalid pgBouncerConfig: {e}")))?,
+    })
 }
 
 /// Parse `--set key=value` overrides into a JSON object.
@@ -272,20 +937,24 @@ fn load_json_file<T: DeserializeOwned>(path: &Path) -> Result<T, Box<dyn std::er
 /// falling back to a string if JSON parsing fails (`statement_timeout=5s`).
 pub(super) fn parse_pg_config_overrides(
     sets: &[String],
-) -> Result<serde_json::Map<String, serde_json::Value>, Box<dyn std::error::Error>> {
+) -> CloudResult<serde_json::Map<String, serde_json::Value>> {
     let mut out = serde_json::Map::new();
     for entry in sets {
-        let (key, val) = entry
-            .split_once('=')
-            .ok_or_else(|| format!("invalid --set '{}': expected key=value", entry))?;
+        let (key, val) = entry.split_once('=').ok_or_else(|| {
+            CloudError::new(format!("invalid --set '{}': expected key=value", entry))
+        })?;
         let key = key.trim();
         if key.is_empty() {
-            return Err(format!("invalid --set '{}': key cannot be empty", entry).into());
+            return Err(CloudError::new(format!(
+                "invalid --set '{}': key cannot be empty",
+                entry
+            )));
         }
         let parsed = serde_json::from_str::<serde_json::Value>(val)
             .unwrap_or_else(|_| serde_json::Value::String(val.to_string()));
         out.insert(key.to_string(), parsed);
     }
+    validate_pg_config(&serde_json::Value::Object(out.clone()))?;
     Ok(out)
 }
 
@@ -297,22 +966,22 @@ fn generate_compliant_password() -> String {
     format!("A1{}{}", u1, u2)
 }
 
-fn validate_password(pw: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn validate_password(pw: &str) -> CloudResult<()> {
     if pw.len() < 12 {
-        return Err("password must be at least 12 characters".into());
+        return Err(CloudError::new("password must be at least 12 characters"));
     }
     let has_lower = pw.chars().any(|c| c.is_ascii_lowercase());
     let has_upper = pw.chars().any(|c| c.is_ascii_uppercase());
     let has_digit = pw.chars().any(|c| c.is_ascii_digit());
     if !(has_lower && has_upper && has_digit) {
-        return Err(
-            "password must include at least one lowercase, one uppercase, and one digit".into(),
-        );
+        return Err(CloudError::new(
+            "password must include at least one lowercase, one uppercase, and one digit",
+        ));
     }
     Ok(())
 }
 
-fn write_pem_file(path: &Path, pem: &str) -> Result<(), Box<dyn std::error::Error>> {
+fn write_pem_file(path: &Path, pem: &str) -> CloudResult<()> {
     use std::io::Write;
     #[cfg(unix)]
     {
@@ -333,64 +1002,191 @@ fn write_pem_file(path: &Path, pem: &str) -> Result<(), Box<dyn std::error::Erro
     Ok(())
 }
 
-fn apply_filter(item: &PostgresServiceListItem, filters: &[String]) -> bool {
-    for filter in filters {
-        let Some((key, val)) = filter.split_once('=') else {
-            continue;
-        };
-        let matches = match key.trim() {
-            "state" => format!("{:?}", item.state).eq_ignore_ascii_case(val),
-            "region" => item.region == val,
-            "name" => item.name == val,
-            "provider" => format!("{:?}", item.provider).eq_ignore_ascii_case(val),
-            _ => true,
-        };
-        if !matches {
-            return false;
-        }
+/// A parsed, validated `cloud postgres list --filter KEY=VALUE` predicate.
+///
+/// `--filter` is applied client-side over the list response, so an unsupported
+/// key cannot be rejected by the API. Parsing into this closed set at clap time
+/// is what makes an unknown key a usage error (exit 2) instead of a silently
+/// unfiltered full listing (issue #603).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PostgresListFilter {
+    /// Matched case-insensitively against the `state` wire value.
+    State(String),
+    /// Matched exactly against the region ID the API returned.
+    Region(String),
+    /// Matched exactly: service names are case-sensitive.
+    Name(String),
+    /// Matched case-insensitively against the `provider` wire value.
+    Provider(String),
+    /// Matched against the `isPrimary` boolean shown in the `Primary` column.
+    IsPrimary(bool),
+}
+
+/// The supported filter keys, in the order they are listed to the user. Spelled
+/// as the API's wire field names, which is what `--json` output shows.
+const POSTGRES_LIST_FILTER_KEYS: [&str; 5] = ["state", "region", "name", "provider", "isPrimary"];
+
+fn postgres_list_filter_keys() -> String {
+    POSTGRES_LIST_FILTER_KEYS.join(", ")
+}
+
+/// Parses one `KEY=VALUE` filter. Every rejection is a clap `value_parser`
+/// error, so the process exits 2 with the valid keys listed.
+fn parse_postgres_list_filter(raw: &str) -> std::result::Result<PostgresListFilter, String> {
+    let Some((key, value)) = raw.split_once('=') else {
+        return Err(format!(
+            "invalid filter '{raw}': expected KEY=VALUE, where KEY is one of {}",
+            postgres_list_filter_keys()
+        ));
+    };
+    let key = key.trim();
+    let value = value.trim();
+    // Keys are matched case-insensitively so `isprimary` works alongside the
+    // documented `isPrimary`; values keep their case for the per-key rules.
+    let canonical = POSTGRES_LIST_FILTER_KEYS
+        .into_iter()
+        .find(|candidate| candidate.eq_ignore_ascii_case(key))
+        .ok_or_else(|| {
+            format!(
+                "unknown filter key '{key}': expected one of {}",
+                postgres_list_filter_keys()
+            )
+        })?;
+    if value.is_empty() {
+        return Err(format!(
+            "filter '{canonical}' requires a value: expected {canonical}=VALUE"
+        ));
     }
-    true
+    Ok(match canonical {
+        "state" => PostgresListFilter::State(value.to_string()),
+        "region" => PostgresListFilter::Region(value.to_string()),
+        "name" => PostgresListFilter::Name(value.to_string()),
+        "provider" => PostgresListFilter::Provider(value.to_string()),
+        "isPrimary" => PostgresListFilter::IsPrimary(parse_filter_bool(canonical, value)?),
+        other => unreachable!("unhandled filter key '{other}'"),
+    })
 }
 
-fn state_label(s: &clickhouse_cloud_api::models::PgStateProperty) -> String {
-    serde_json::to_value(s)
-        .ok()
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_else(|| format!("{:?}", s))
+/// `yes`/`no` are accepted because that is how the `Primary` column renders.
+fn parse_filter_bool(key: &str, value: &str) -> std::result::Result<bool, String> {
+    match value.to_ascii_lowercase().as_str() {
+        "true" | "yes" => Ok(true),
+        "false" | "no" => Ok(false),
+        _ => Err(format!(
+            "invalid value '{value}' for filter '{key}': expected true or false"
+        )),
+    }
 }
 
-fn enum_label<T: serde::Serialize>(v: &T) -> String {
-    serde_json::to_value(v)
-        .ok()
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .unwrap_or_default()
+fn apply_filter(item: &PostgresServiceListItem, filters: &[PostgresListFilter]) -> bool {
+    // A response field the API omitted matches no filter value.
+    filters.iter().all(|filter| match filter {
+        // Compared against the serde wire value (`Display`), not the Rust
+        // Debug form: the latter never matches an `Unknown(..)` state.
+        PostgresListFilter::State(want) => item
+            .state
+            .as_ref()
+            .is_some_and(|state| state.to_string().eq_ignore_ascii_case(want)),
+        PostgresListFilter::Region(want) => item.region.as_deref() == Some(want.as_str()),
+        PostgresListFilter::Name(want) => item.name.as_deref() == Some(want.as_str()),
+        PostgresListFilter::Provider(want) => item
+            .provider
+            .as_ref()
+            .is_some_and(|provider| provider.to_string().eq_ignore_ascii_case(want)),
+        PostgresListFilter::IsPrimary(want) => item.is_primary == Some(*want),
+    })
 }
 
+fn state_label(s: Option<&clickhouse_cloud_api::models::PgStateProperty>) -> String {
+    match s {
+        Some(s) => serde_json::to_value(s)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_else(|| format!("{:?}", s)),
+        None => ABSENT.to_string(),
+    }
+}
+
+fn enum_label<T: serde::Serialize>(v: Option<&T>) -> String {
+    match v {
+        Some(v) => serde_json::to_value(v)
+            .ok()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .unwrap_or_default(),
+        None => ABSENT.to_string(),
+    }
+}
+
+// `print_line`, not `println!`: a closed stdout must not turn a completed
+// operation into a panic (#598).
 fn render_postgres_service(svc: &PostgresService) {
-    println!("  ID: {}", svc.id);
-    println!("  Name: {}", svc.name);
-    println!("  State: {}", state_label(&svc.state));
-    println!("  Provider: {}", enum_label(&svc.provider));
-    println!("  Region: {}", svc.region);
-    println!("  Size: {}", enum_label(&svc.size));
-    println!("  Storage (GB): {}", svc.storage_size);
-    println!("  PG version: {}", enum_label(&svc.postgres_version));
-    println!("  HA type: {}", enum_label(&svc.ha_type));
-    println!("  Primary: {}", svc.is_primary);
-    println!("  Host: {}", svc.hostname);
-    println!("  Username: {}", svc.username);
-    println!("  Created: {}", svc.created_at.to_rfc3339());
-    if !svc.tags.is_empty() {
-        let tags: Vec<String> = svc
-            .tags
+    print_line(format!("  ID: {}", or_absent(svc.id.as_ref())));
+    print_line(format!("  Name: {}", or_absent(svc.name.as_deref())));
+    print_line(format!("  State: {}", state_label(svc.state.as_ref())));
+    print_line(format!("  Provider: {}", enum_label(svc.provider.as_ref())));
+    print_line(format!("  Region: {}", or_absent(svc.region.as_deref())));
+    print_line(format!("  Size: {}", enum_label(svc.size.as_ref())));
+    print_line(format!("  Storage (GB): {}", or_absent(svc.storage_size)));
+    print_line(format!(
+        "  PG version: {}",
+        enum_label(svc.postgres_version.as_ref())
+    ));
+    print_line(format!("  HA type: {}", enum_label(svc.ha_type.as_ref())));
+    print_line(format!("  Primary: {}", or_absent(svc.is_primary)));
+    print_line(format!("  Host: {}", or_absent(svc.hostname.as_deref())));
+    print_line(format!(
+        "  Username: {}",
+        or_absent(svc.username.as_deref())
+    ));
+    print_line(format!(
+        "  Created: {}",
+        or_absent(svc.created_at.map(|c| c.to_rfc3339()))
+    ));
+    if let Some(svc_tags) = svc.tags.as_ref().filter(|t| !t.is_empty()) {
+        let tags: Vec<String> = svc_tags
             .iter()
-            .map(|t| match &t.value {
-                Some(v) => format!("{}={}", t.key, v),
-                None => t.key.clone(),
+            .map(|t| match (t.key.as_deref(), t.value.as_deref()) {
+                (key, Some(value)) => format!("{}={}", or_absent(key), value),
+                (key, None) => or_absent(key).to_string(),
             })
             .collect();
-        println!("  Tags: {}", tags.join(", "));
+        print_line(format!("  Tags: {}", tags.join(", ")));
     }
+}
+
+/// Print a short connection handoff without putting a password in argv or a URI.
+///
+/// The API does not expose port or database fields. They are stable service
+/// defaults documented by ClickHouse Managed Postgres. Sparse asynchronous
+/// responses can also omit host and username, so those fields retain explicit
+/// placeholders until `get` supplies them.
+fn render_postgres_connection_guidance(svc: &PostgresService) {
+    let postgres_id = svc
+        .id
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| "<postgres-id>".to_string());
+    let host = svc
+        .hostname
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<host-from-get>");
+    let username = svc
+        .username
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .unwrap_or("<username-from-get>");
+
+    print_line("");
+    print_line(format!(
+        "Connection: host={host} port=5432 database=postgres user={username}; TLS required"
+    ));
+    print_line(format!(
+        "Next: clickhousectl cloud postgres get {postgres_id} (wait for state=running and fill any placeholders)"
+    ));
+    print_line(format!(
+        "Verified TLS: clickhousectl cloud postgres certs get {postgres_id} --output ca.pem; see README for psql"
+    ));
 }
 
 fn merge_tags(
@@ -410,6 +1206,33 @@ fn merge_tags(
     merged
 }
 
+/// Preserves or merges the tag list a GET returned before every update.
+///
+/// An omitted `tags` in the response is indistinguishable from a field the API
+/// dropped, so a read-modify-write must not proceed on it: `tags` is replaced
+/// wholesale by the PATCH, so merging against an assumed empty set would delete
+/// every tag the service still has. A returned tag without a key cannot be sent
+/// back either, so say so rather than dropping it from the merged set.
+fn merge_response_tags(
+    current: Option<Vec<ResourceTagsV1Response>>,
+    add: &[ResourceTagsV1],
+    remove_keys: &[String],
+) -> CloudResult<Vec<ResourceTagsV1>> {
+    let current = current.ok_or_else(|| {
+        CloudError::new(
+            "the API response omitted the tags field or returned null, so the update cannot preserve \
+             tags safely: an update replaces the tag set wholesale, and assuming an empty set \
+             would delete any tags the service already has",
+        )
+    })?;
+    let existing = current
+        .into_iter()
+        .map(ResourceTagsV1::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CloudError::new(error.to_string()))?;
+    Ok(merge_tags(&existing, add, remove_keys))
+}
+
 // ---------------------------------------------------------------------------
 // Option structs (for commands with many args)
 // ---------------------------------------------------------------------------
@@ -424,15 +1247,15 @@ pub struct PostgresCreateOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
-    pub org_id: Option<&'a str>,
 }
 
 pub struct PostgresUpdateOptions<'a> {
+    pub name: Option<&'a str>,
     pub size: Option<&'a str>,
     pub ha_type: Option<&'a str>,
     pub add_tag: &'a [String],
     pub remove_tag: &'a [String],
-    pub org_id: Option<&'a str>,
+    pub clear_tags: bool,
 }
 
 pub struct PostgresReadReplicaOptions<'a> {
@@ -440,7 +1263,6 @@ pub struct PostgresReadReplicaOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
-    pub org_id: Option<&'a str>,
 }
 
 pub struct PostgresRestoreOptions<'a> {
@@ -449,25 +1271,117 @@ pub struct PostgresRestoreOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
-    pub org_id: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct PostgresLogsQuery {
+    from_date: String,
+    to_date: String,
+    body_contains: Option<String>,
+    severity: Option<String>,
+    sort_order: Option<PostgresLogsGetListSortorder>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_postgres_logs_query(
+    from_date: &str,
+    to_date: &str,
+    body_contains: Option<&str>,
+    severity: Option<&str>,
+    sort_order: Option<&PostgresLogsGetListSortorder>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> CloudResult<PostgresLogsQuery> {
+    let from = chrono::DateTime::parse_from_rfc3339(from_date)
+        .map_err(|error| CloudError::new(format!("invalid from-date: {error}")))?;
+    let to = chrono::DateTime::parse_from_rfc3339(to_date)
+        .map_err(|error| CloudError::new(format!("invalid to-date: {error}")))?;
+    if to <= from {
+        return Err(CloudError::new("to-date must be after from-date"));
+    }
+    if to.signed_duration_since(from) > chrono::Duration::days(30) {
+        return Err(CloudError::new(
+            "the Postgres log time window must not exceed 30 days",
+        ));
+    }
+    if !matches!(limit, None | Some(1..=2000)) {
+        return Err(CloudError::new("limit must be between 1 and 2000"));
+    }
+    if offset.is_some_and(|value| value < 0) {
+        return Err(CloudError::new("offset must be at least 0"));
+    }
+
+    let sort_order = sort_order
+        .cloned()
+        .map(validate_postgres_logs_sort_order)
+        .transpose()
+        .map_err(CloudError::new)?;
+
+    Ok(PostgresLogsQuery {
+        from_date: from_date.to_string(),
+        to_date: to_date.to_string(),
+        body_contains: body_contains.map(str::to_string),
+        severity: severity.map(str::to_string),
+        sort_order,
+        limit,
+        offset,
+    })
+}
+
+fn parse_postgres_logs_sort_order(value: &str) -> Result<PostgresLogsGetListSortorder, String> {
+    let parsed = serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|error| format!("invalid sort order '{value}': {error}"))?;
+    validate_postgres_logs_sort_order(parsed)
+}
+
+fn parse_known_postgres_logs_sort_order(
+    value: String,
+) -> Result<PostgresLogsGetListSortorder, String> {
+    parse_postgres_logs_sort_order(&value)
+}
+
+fn validate_postgres_logs_sort_order(
+    value: PostgresLogsGetListSortorder,
+) -> Result<PostgresLogsGetListSortorder, String> {
+    match value {
+        PostgresLogsGetListSortorder::Unknown(value) => Err(format!(
+            "invalid sort order '{value}': expected a value supported by the Cloud API"
+        )),
+        known => Ok(known),
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Handlers
 // ---------------------------------------------------------------------------
 
+impl CloudClient {
+    pub(super) async fn list_postgres_services(
+        &self,
+        org_id: &str,
+    ) -> CloudResult<Vec<PostgresServiceListItem>> {
+        let response = self
+            .api()
+            .postgres_service_get_list(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+}
+
 pub async fn postgres_list(
     client: &CloudClient,
-    org_id: Option<&str>,
-    filters: &[String],
+    filters: &[PostgresListFilter],
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_service_get_list(&org_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let items = unwrap_api(resp)?;
     let filtered: Vec<PostgresServiceListItem> = items
         .into_iter()
@@ -492,6 +1406,8 @@ pub async fn postgres_list(
         id: String,
         #[tabled(rename = "State")]
         state: String,
+        #[tabled(rename = "Provider")]
+        provider: String,
         #[tabled(rename = "Region")]
         region: String,
         #[tabled(rename = "Size")]
@@ -507,14 +1423,19 @@ pub async fn postgres_list(
     let rows: Vec<Row> = filtered
         .into_iter()
         .map(|i| Row {
-            name: i.name.clone(),
-            id: i.id.to_string(),
-            state: state_label(&i.state),
-            region: i.region.clone(),
-            size: enum_label(&i.size),
-            pg: enum_label(&i.postgres_version),
-            ha: enum_label(&i.ha_type),
-            primary: if i.is_primary { "yes" } else { "no" }.to_string(),
+            name: or_absent(i.name.as_deref()),
+            id: or_absent(i.id.as_ref()),
+            state: state_label(i.state.as_ref()),
+            provider: enum_label(i.provider.as_ref()),
+            region: or_absent(i.region.as_deref()),
+            size: enum_label(i.size.as_ref()),
+            pg: enum_label(i.postgres_version.as_ref()),
+            ha: enum_label(i.ha_type.as_ref()),
+            primary: match i.is_primary {
+                Some(true) => "yes".to_string(),
+                Some(false) => "no".to_string(),
+                None => ABSENT.to_string(),
+            },
         })
         .collect();
 
@@ -522,56 +1443,152 @@ pub async fn postgres_list(
     Ok(())
 }
 
-pub async fn postgres_get(
-    client: &CloudClient,
-    postgres_id: &str,
-    org_id: Option<&str>,
-    json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-    let resp = client
-        .api()
-        .postgres_service_get(&org_id, postgres_id)
-        .await
-        .map_err(|e| client.convert_error(e))?;
-    let svc = unwrap_api(resp)?;
+pub async fn postgres_get(client: &CloudClient, postgres_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let svc = client.get_postgres_service(&org_id, postgres_id).await?;
 
     if json {
         println!("{}", serde_json::to_string_pretty(&svc)?);
     } else {
+        // No connection string here: the get endpoint stops returning
+        // credentials on July 31, 2026 — they are only available from
+        // `postgres create` and `postgres reset-password`.
         render_postgres_service(&svc);
-        if !svc.connection_string.is_empty() {
-            println!("  Connection string: {}", svc.connection_string);
-        }
+        render_postgres_connection_guidance(&svc);
     }
     Ok(())
+}
+
+async fn postgres_logs(
+    client: &CloudClient,
+    postgres_id: &str,
+    query: &PostgresLogsQuery,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let logs = client
+        .list_postgres_logs(&org_id, postgres_id, query)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&logs)?);
+    } else if logs.is_empty() {
+        println!("No Postgres logs found");
+    } else {
+        println!("{}", render_postgres_logs_table(&logs));
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Tabled)]
+struct PostgresLogRow {
+    #[tabled(rename = "Timestamp")]
+    timestamp: String,
+    #[tabled(rename = "Severity")]
+    severity: String,
+    #[tabled(rename = "Message")]
+    message: String,
+}
+
+fn render_postgres_logs_table(logs: &[PostgresLogEntry]) -> String {
+    let rows = logs.iter().map(postgres_log_row);
+    Table::new(rows).with(Style::markdown()).to_string()
+}
+
+fn postgres_log_row(log: &PostgresLogEntry) -> PostgresLogRow {
+    PostgresLogRow {
+        timestamp: or_absent(
+            log.timestamp
+                .as_ref()
+                .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)),
+        ),
+        severity: or_absent(log.severity.as_deref()),
+        message: postgres_log_message(log.body.as_deref()),
+    }
+}
+
+/// Extract the useful message from the JSON document carried in `body`.
+///
+/// The API model deliberately keeps `body` as a string. Returning that string
+/// unchanged for every other shape avoids hiding data when the provider sends
+/// plain text, malformed JSON, a missing message, or a future message type.
+fn postgres_log_message(body: Option<&str>) -> String {
+    let Some(body) = body else {
+        return ABSENT.to_string();
+    };
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| body.to_string())
+}
+
+/// The post-create credentials block, or the warning that replaces it.
+///
+/// The password is returned once, so a placeholder in its place would be read
+/// as the credential itself. An absent password therefore gets the omission
+/// plus the command that mints a usable one; the create succeeded and the
+/// password is recoverable, so this is a warning rather than an error. An empty
+/// string is a password the API sent.
+///
+/// `connection_string` is the non-empty connection string the same response
+/// carried, if any: the spec says it embeds the service password, so when it is
+/// present the credential is not actually lost and telling the user to reset
+/// would rotate a working password for nothing.
+fn postgres_credentials_block(
+    username: Option<&str>,
+    password: Option<&str>,
+    connection_string: Option<&str>,
+    postgres_id: Option<&PgIdProperty>,
+) -> String {
+    match (password, connection_string, postgres_id) {
+        (Some(password), _, _) => format!(
+            "Credentials (save these — password shown only once):\n  Username: {}\n  Password: {}",
+            or_absent(username),
+            password
+        ),
+        (None, Some(_), _) => "WARNING: the API response omitted the `password` field, so the \
+                               password cannot be shown on its own.\nThe connection string below \
+                               embeds it, so no password reset is needed."
+            .to_string(),
+        (None, None, Some(id)) => format!(
+            "WARNING: the API response omitted the one-time password, so it cannot be shown.\n\
+             The service was created; reset the password to get a usable credential:\n  \
+             clickhousectl cloud postgres reset-password {} --generate",
+            id
+        ),
+        (None, None, None) => "WARNING: the API response omitted the one-time password, so it \
+                               cannot be shown.\nThe service was created; once you have its id, \
+                               reset the password with `clickhousectl cloud postgres \
+                               reset-password <postgres-id> --generate` to get a usable credential."
+            .to_string(),
+    }
 }
 
 pub async fn postgres_create(
     client: &CloudClient,
     opts: PostgresCreateOptions<'_>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
-
-    let provider: PgProvider = parse_serde_enum(opts.provider, "provider", KNOWN_PG_PROVIDERS)?;
+) -> CloudResult<()> {
+    let provider: PgProvider = parse_serde_enum(opts.provider, "provider", PgProvider::VALUES)?;
     let size = parse_pg_size(opts.size)?;
     let pg_version: Option<PgVersion> = opts
         .pg_version
-        .map(|v| parse_serde_enum(v, "pg-version", KNOWN_PG_VERSIONS))
+        .map(|v| parse_serde_enum(v, "pg-version", PgVersion::VALUES))
         .transpose()?;
     let ha_type: Option<PgHaType> = opts
         .ha_type
-        .map(|v| parse_serde_enum(v, "ha-type", KNOWN_PG_HA_TYPES))
+        .map(|v| parse_serde_enum(v, "ha-type", PgHaType::VALUES))
         .transpose()?;
     let tags = parse_tags(opts.tags)?;
-    let pg_config = opts
-        .pg_config_file
-        .map(load_json_file::<PgConfig>)
-        .transpose()?;
+    let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
-        .map(load_json_file::<clickhouse_cloud_api::models::PgBouncerConfig>)
+        .map(load_json_file::<PgBouncerConfig>)
         .transpose()?;
 
     let req = PostgresServicePostRequest {
@@ -586,11 +1603,12 @@ pub async fn postgres_create(
         pg_bouncer_config,
     };
 
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_service_create(&org_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -600,14 +1618,41 @@ pub async fn postgres_create(
         println!();
         render_postgres_service(&svc);
         println!();
-        println!("Credentials (save these — password shown only once):");
-        println!("  Username: {}", svc.username);
-        println!("  Password: {}", svc.password);
-        if !svc.connection_string.is_empty() {
-            println!("  Connection string: {}", svc.connection_string);
+        let connection_string = svc
+            .connection_string
+            .as_deref()
+            .filter(|conn| !conn.is_empty());
+        println!(
+            "{}",
+            postgres_credentials_block(
+                svc.username.as_deref(),
+                svc.password.as_deref(),
+                connection_string,
+                svc.id.as_ref()
+            )
+        );
+        if let Some(conn) = connection_string {
+            println!("  Connection string: {}", conn);
         }
     }
     Ok(())
+}
+
+/// Builds the `postgres update` PATCH body from the already-parsed pieces
+/// (name, size, HA type, merged tags). Kept separate from `postgres_update`
+/// so the shape sent on the wire is unit-testable without a mock server.
+fn build_postgres_update_request(
+    name: Option<&str>,
+    size: Option<PgSize>,
+    ha_type: Option<PgHaType>,
+    tags: Option<Vec<ResourceTagsV1>>,
+) -> PostgresServicePatchRequest {
+    PostgresServicePatchRequest {
+        name: name.map(str::to_string),
+        size,
+        ha_type,
+        tags,
+    }
 }
 
 pub async fn postgres_update(
@@ -615,40 +1660,38 @@ pub async fn postgres_update(
     postgres_id: &str,
     opts: PostgresUpdateOptions<'_>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
 
     let size = opts.size.map(parse_pg_size).transpose()?;
     let ha_type = opts
         .ha_type
-        .map(|v| parse_serde_enum::<PgHaType>(v, "ha-type", KNOWN_PG_HA_TYPES))
+        .map(|v| parse_serde_enum::<PgHaType>(v, "ha-type", PgHaType::VALUES))
         .transpose()?;
 
-    // Merge tag add/remove against current tags if any tag changes requested.
-    let tags = if !opts.add_tag.is_empty() || !opts.remove_tag.is_empty() {
+    // Clearing is already a complete replacement, so it never needs a GET.
+    // The API clears tags when PATCH omits them, even for a rename or resize.
+    // Every other update must preserve a complete current tag snapshot.
+    let tags = if opts.clear_tags {
+        Some(Vec::new())
+    } else {
         let current = client
             .api()
             .postgres_service_get(&org_id, postgres_id)
             .await
-            .map_err(|e| client.convert_error(e))?;
+            .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
         let current = unwrap_api(current)?;
         let add = parse_tags(opts.add_tag)?.unwrap_or_default();
-        Some(merge_tags(&current.tags, &add, opts.remove_tag))
-    } else {
-        None
+        Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
     };
 
-    let req = PostgresServicePatchRequest {
-        size,
-        ha_type,
-        tags,
-    };
+    let req = build_postgres_update_request(opts.name, size, ha_type, tags);
 
     let resp = client
         .api()
         .postgres_service_patch(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -664,20 +1707,37 @@ pub async fn postgres_update(
 pub async fn postgres_delete(
     client: &CloudClient,
     postgres_id: &str,
-    org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-    let resp = client
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+
+    // The delete endpoint itself only ever returns the raw API envelope
+    // (`ApiResponse<serde_json::Value>`, no resource in `result`), so fetch the
+    // resource before deleting it and render that instead: `--json` output must
+    // stay consistent with every other `cloud postgres` subcommand, which emits
+    // the resource object rather than `{"status":...,"requestId":...}` (#614).
+    let svc = client.get_postgres_service(&org_id, postgres_id).await?;
+
+    client
         .api()
         .postgres_service_delete(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|error| {
+            client.convert_error_for_lookup(
+                error,
+                ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, &org_id),
+            )
+        })?;
 
+    // The service is already gone by here, so a closed stdout must not turn a
+    // completed deletion into a panic — see `print_line` and #598.
     if json {
-        println!("{}", serde_json::to_string_pretty(&resp)?);
+        print_line(serde_json::to_string_pretty(&svc)?);
     } else {
-        println!("Postgres service {} deletion initiated", postgres_id);
+        print_line(format!(
+            "Postgres service {} deletion initiated",
+            postgres_id
+        ));
     }
     Ok(())
 }
@@ -686,15 +1746,14 @@ pub async fn postgres_certs_get(
     client: &CloudClient,
     postgres_id: &str,
     output: Option<&Path>,
-    org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let pem = client
         .api()
         .postgres_service_certs_get(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
 
     if let Some(path) = output {
         write_pem_file(path, &pem)?;
@@ -728,18 +1787,20 @@ pub async fn postgres_certs_get(
 pub async fn postgres_config_get(
     client: &CloudClient,
     postgres_id: &str,
-    org_id: Option<&str>,
-    _json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_config_get(&org_id, postgres_id)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let cfg = unwrap_api(resp)?;
-    // Config is a flat 20+ field object — always emit as JSON (pretty).
-    println!("{}", serde_json::to_string_pretty(&cfg)?);
+    if json {
+        println!("{}", serde_json::to_string_pretty(&cfg)?);
+    } else {
+        print_human(&cfg)?;
+    }
     Ok(())
 }
 
@@ -747,16 +1808,15 @@ pub async fn postgres_config_replace(
     client: &CloudClient,
     postgres_id: &str,
     file: &Path,
-    org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
-    let cfg: PostgresInstanceConfig = load_json_file(file)?;
+) -> CloudResult<()> {
+    let cfg = instance_config_from_json(&load_json_file::<serde_json::Value>(file)?)?;
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_config_post(&org_id, postgres_id, &cfg)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let out = unwrap_api(resp)?;
 
     if json {
@@ -775,35 +1835,32 @@ pub async fn postgres_config_patch(
     postgres_id: &str,
     sets: &[String],
     file: Option<&Path>,
-    org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
+) -> CloudResult<()> {
+    debug_assert!(
+        !sets.is_empty() || file.is_some(),
+        "clap ArgGroup(\"patch_source\") requires --set or --file"
+    );
 
-    if sets.is_empty() && file.is_none() {
-        return Err("provide --set key=value... or --file PATH".into());
-    }
-
-    let cfg: PostgresInstanceConfig = if let Some(path) = file {
-        load_json_file(path)?
+    let cfg = if let Some(path) = file {
+        instance_config_from_json(&load_json_file::<serde_json::Value>(path)?)?
     } else {
-        // Build a PostgresInstanceConfig from --set entries by constructing
-        // a JSON object { "pgConfig": { ... overrides ... }, "pgBouncerConfig": {} }
-        // and deserializing, which merges with #[serde(default)] field defaults.
+        // Build the request body from --set entries: the overrides become the
+        // pgConfig object, and pgBouncerConfig resolves to `{}`.
         let overrides = parse_pg_config_overrides(sets)?;
-        let wrapper = serde_json::json!({
+        instance_config_from_json(&serde_json::json!({
             "pgConfig": serde_json::Value::Object(overrides),
             "pgBouncerConfig": {},
-        });
-        serde_json::from_value(wrapper)
-            .map_err(|e| format!("failed to build config from --set entries: {}", e))?
+        }))
+        .map_err(|e| CloudError::new(format!("failed to build config from --set entries: {}", e)))?
     };
 
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_config_patch(&org_id, postgres_id, &cfg)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let out = unwrap_api(resp)?;
 
     if json {
@@ -822,10 +1879,9 @@ pub async fn postgres_reset_password(
     postgres_id: &str,
     password: Option<&str>,
     generate: bool,
-    org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
 
     let pw = match (password, generate) {
         (Some(p), false) => {
@@ -833,7 +1889,9 @@ pub async fn postgres_reset_password(
             p.to_string()
         }
         (None, true) => generate_compliant_password(),
-        (None, false) => return Err("provide --password VALUE or --generate".into()),
+        (None, false) => {
+            unreachable!("clap ArgGroup(\"password_source\") requires --password or --generate")
+        }
         (Some(_), true) => unreachable!("clap conflicts_with prevents this"),
     };
 
@@ -844,16 +1902,17 @@ pub async fn postgres_reset_password(
         .api()
         .postgres_service_set_password(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let out = unwrap_api(resp)?;
+    // Emit what the user now needs to use: the API echoes the password back, but
+    // fall back to the one we sent if the response omits it.
+    let password = out.password.unwrap_or(pw);
 
     if json {
-        // Return the password that was set (the API also echoes it back, but always
-        // emit what the user now needs to use).
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "password": out.password,
+                "password": password,
             }))?
         );
     } else {
@@ -861,8 +1920,10 @@ pub async fn postgres_reset_password(
         if generate {
             println!();
             println!("Generated password (save this — not recoverable):");
-            println!("  {}", out.password);
+            println!("  {}", password);
         }
+        println!();
+        println!("Connection details: clickhousectl cloud postgres get {postgres_id}");
     }
     Ok(())
 }
@@ -872,16 +1933,12 @@ pub async fn postgres_read_replica_create(
     postgres_id: &str,
     opts: PostgresReadReplicaOptions<'_>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+) -> CloudResult<()> {
     let tags = parse_tags(opts.tags)?;
-    let pg_config = opts
-        .pg_config_file
-        .map(load_json_file::<PgConfig>)
-        .transpose()?;
+    let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
-        .map(load_json_file::<clickhouse_cloud_api::models::PgBouncerConfig>)
+        .map(load_json_file::<PgBouncerConfig>)
         .transpose()?;
 
     let req = PostgresServiceReadReplicaRequest {
@@ -891,11 +1948,12 @@ pub async fn postgres_read_replica_create(
         pg_bouncer_config,
     };
 
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_create_read_replica(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -904,6 +1962,7 @@ pub async fn postgres_read_replica_create(
         println!("Read replica created");
         println!();
         render_postgres_service(&svc);
+        render_postgres_connection_guidance(&svc);
     }
     Ok(())
 }
@@ -913,19 +1972,15 @@ pub async fn postgres_restore(
     postgres_id: &str,
     opts: PostgresRestoreOptions<'_>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, opts.org_id).await?;
+) -> CloudResult<()> {
     let tags = parse_tags(opts.tags)?;
-    let pg_config = opts
-        .pg_config_file
-        .map(load_json_file::<PgConfig>)
-        .transpose()?;
+    let pg_config = opts.pg_config_file.map(load_pg_config_file).transpose()?;
     let pg_bouncer_config = opts
         .pg_bouncer_config_file
-        .map(load_json_file::<clickhouse_cloud_api::models::PgBouncerConfig>)
+        .map(load_json_file::<PgBouncerConfig>)
         .transpose()?;
     let restore_target = chrono::DateTime::parse_from_rfc3339(opts.restore_target)
-        .map_err(|e| format!("invalid restore-target: {}", e))?
+        .map_err(|e| CloudError::new(format!("invalid restore-target: {}", e)))?
         .with_timezone(&chrono::Utc);
 
     let req = PostgresServiceRestoreRequest {
@@ -936,11 +1991,12 @@ pub async fn postgres_restore(
         pg_bouncer_config,
     };
 
+    let org_id = resolve_org_id(client).await?;
     let resp = client
         .api()
         .postgres_instance_restore(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -949,24 +2005,25 @@ pub async fn postgres_restore(
         println!("Postgres service restore initiated");
         println!();
         render_postgres_service(&svc);
+        render_postgres_connection_guidance(&svc);
     }
     Ok(())
 }
 
+/// Issues a state command that does not need operation-specific guidance.
 pub async fn postgres_state_change(
     client: &CloudClient,
     postgres_id: &str,
     cmd: PostgresServiceSetStateCommand,
-    org_id: Option<&str>,
     json: bool,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let org_id = resolve_org_id(client, org_id).await?;
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
     let req = PostgresServiceSetState { command: cmd };
     let resp = client
         .api()
         .postgres_service_patch_state(&org_id, postgres_id, &req)
         .await
-        .map_err(|e| client.convert_error(e))?;
+        .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
     let svc = unwrap_api(resp)?;
 
     if json {
@@ -979,43 +2036,833 @@ pub async fn postgres_state_change(
     Ok(())
 }
 
+// These endpoints accept UTC timestamps with exactly three fractional digits.
+// Check the original fraction: chrono discards digits beyond nanosecond precision.
+fn parse_postgres_window_datetime(value: &str) -> Result<String, String> {
+    let timestamp = chrono::DateTime::parse_from_rfc3339(value)
+        .map_err(|_| format!("invalid datetime '{value}': expected ISO 8601 / RFC 3339"))?;
+    if value.split_once('.').is_some_and(|(_, fraction)| {
+        fraction
+            .bytes()
+            .take_while(u8::is_ascii_digit)
+            .skip(3)
+            .any(|digit| digit != b'0')
+    }) {
+        return Err(format!(
+            "invalid datetime '{value}': Postgres time windows support at most millisecond precision"
+        ));
+    }
+    Ok(timestamp
+        .with_timezone(&chrono::Utc)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+}
+
+fn validate_datetime_range(from_date: &str, to_date: &str) -> CloudResult<()> {
+    let from = chrono::DateTime::parse_from_rfc3339(from_date)
+        .map_err(|_| CloudError::new("invalid --from-date: expected ISO 8601 / RFC 3339"))?;
+    let to = chrono::DateTime::parse_from_rfc3339(to_date)
+        .map_err(|_| CloudError::new("invalid --to-date: expected ISO 8601 / RFC 3339"))?;
+    if from > to {
+        return Err(CloudError::new(
+            "invalid date range: --from-date must not be after --to-date",
+        ));
+    }
+    Ok(())
+}
+
+fn postgres_metric_timestamp(timestamp: Option<i64>) -> String {
+    timestamp
+        .and_then(|timestamp| chrono::DateTime::from_timestamp(timestamp, 0))
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        // The wire type permits epoch values outside chrono's calendar range.
+        // Keep such a value visible rather than dropping its data point.
+        .unwrap_or_else(|| match timestamp {
+            Some(timestamp) => format!("{timestamp} (outside displayable date range)"),
+            None => ABSENT.to_string(),
+        })
+}
+
+/// Compact human view for the nested metrics response.
+///
+/// The view starts from the response's serde representation, retaining source
+/// field order and the same field-hiding behavior as JSON. Only data points are
+/// condensed: each becomes a numbered RFC 3339/value line. Numbering preserves
+/// duplicate points and API order. Missing collections become `-`, while empty
+/// arrays stay `[]`.
+fn postgres_metrics_human_view(
+    metrics: &PostgresMetrics,
+) -> Result<serde_json::Value, serde_json::Error> {
+    let mut view = serde_json::to_value(metrics)?;
+    let root = view
+        .as_object_mut()
+        .expect("PostgresMetrics serializes as an object");
+    let Some(source_metrics) = metrics.metrics.as_ref() else {
+        root.insert(
+            "metrics".to_string(),
+            serde_json::Value::String(ABSENT.to_string()),
+        );
+        return Ok(view);
+    };
+    let view_metrics = root["metrics"]
+        .as_array_mut()
+        .expect("a present metrics field serializes as an array");
+
+    for (source_metric, view_metric) in source_metrics.iter().zip(view_metrics) {
+        let view_metric = view_metric
+            .as_object_mut()
+            .expect("PostgresMetric serializes as an object");
+        let Some(source_series) = source_metric.series.as_ref() else {
+            view_metric.insert(
+                "series".to_string(),
+                serde_json::Value::String(ABSENT.to_string()),
+            );
+            continue;
+        };
+        let view_series = view_metric["series"]
+            .as_array_mut()
+            .expect("a present series field serializes as an array");
+
+        for (source_series, view_series) in source_series.iter().zip(view_series) {
+            let view_series = view_series
+                .as_object_mut()
+                .expect("PostgresMetricSeries serializes as an object");
+            let Some(source_points) = source_series.data_points.as_ref() else {
+                view_series.insert(
+                    "dataPoints".to_string(),
+                    serde_json::Value::String(ABSENT.to_string()),
+                );
+                continue;
+            };
+            if source_points.is_empty() {
+                continue;
+            }
+
+            let mut point_lines = serde_json::Map::new();
+            for (index, point) in source_points.iter().enumerate() {
+                let timestamp = postgres_metric_timestamp(point.timestamp);
+                let value = point
+                    .value
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| ABSENT.to_string());
+                let value = match (source_metric.unit.as_deref(), point.value) {
+                    (Some(unit), Some(_)) => format!("{value} {unit}"),
+                    _ => value,
+                };
+                point_lines.insert(
+                    (index + 1).to_string(),
+                    serde_json::Value::String(format!("{timestamp}  {value}")),
+                );
+            }
+            view_series.insert(
+                "dataPoints".to_string(),
+                serde_json::Value::Object(point_lines),
+            );
+        }
+    }
+    Ok(view)
+}
+
+pub async fn postgres_metrics(
+    client: &CloudClient,
+    postgres_id: &str,
+    from_date: &str,
+    to_date: &str,
+    bucket_size_seconds: Option<i64>,
+    json: bool,
+) -> CloudResult<()> {
+    validate_datetime_range(from_date, to_date)?;
+    let org_id = resolve_org_id(client).await?;
+    let metrics = client
+        .get_postgres_metrics(
+            &org_id,
+            postgres_id,
+            from_date,
+            to_date,
+            bucket_size_seconds,
+        )
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&metrics)?);
+    } else {
+        print_human(&postgres_metrics_human_view(&metrics)?)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SlowQueryListInput<'a> {
+    from_date: &'a str,
+    to_date: &'a str,
+    db_name: Option<&'a str>,
+    db_user: Option<&'a str>,
+    db_operation: Option<&'a str>,
+    app: Option<&'a str>,
+    sort_by: Option<&'a str>,
+    sort_order: Option<&'a str>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlowQueryListQuery<'a> {
+    from_date: &'a str,
+    to_date: &'a str,
+    db_name: Option<&'a str>,
+    db_user: Option<&'a str>,
+    db_operation: Option<&'a str>,
+    app: Option<&'a str>,
+    sort_by: Option<SlowQueryPatternsGetListSortby>,
+    sort_order: Option<SlowQueryPatternsGetListSortorder>,
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+fn build_slow_query_list_query(
+    input: SlowQueryListInput<'_>,
+) -> CloudResult<SlowQueryListQuery<'_>> {
+    validate_datetime_range(input.from_date, input.to_date)?;
+    if input.limit.is_some_and(|limit| !(1..=500).contains(&limit)) {
+        return Err(CloudError::new(
+            "invalid --limit: expected a value from 1 to 500",
+        ));
+    }
+    if input.offset.is_some_and(|offset| offset < 0) {
+        return Err(CloudError::new(
+            "invalid --offset: expected a non-negative value",
+        ));
+    }
+
+    Ok(SlowQueryListQuery {
+        from_date: input.from_date,
+        to_date: input.to_date,
+        db_name: input.db_name,
+        db_user: input.db_user,
+        db_operation: input.db_operation,
+        app: input.app,
+        sort_by: input
+            .sort_by
+            .map(|value| parse_serde_enum(value, "sort_by", SlowQueryPatternsGetListSortby::VALUES))
+            .transpose()?,
+        sort_order: input
+            .sort_order
+            .map(|value| {
+                parse_serde_enum(
+                    value,
+                    "sort_order",
+                    SlowQueryPatternsGetListSortorder::VALUES,
+                )
+            })
+            .transpose()?,
+        limit: input.limit,
+        offset: input.offset,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SlowQueryDetailInput<'a> {
+    db_name: &'a str,
+    db_user: &'a str,
+    db_operation: &'a str,
+    app: Option<&'a str>,
+    timestamp: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SlowQueryDetailQuery<'a> {
+    db_name: &'a str,
+    db_user: &'a str,
+    db_operation: &'a str,
+    app: Option<&'a str>,
+    timestamp: Option<&'a str>,
+}
+
+fn build_slow_query_detail_query(
+    input: SlowQueryDetailInput<'_>,
+) -> CloudResult<SlowQueryDetailQuery<'_>> {
+    if let Some(timestamp) = input.timestamp {
+        chrono::DateTime::parse_from_rfc3339(timestamp)
+            .map_err(|_| CloudError::new("invalid --timestamp: expected ISO 8601 / RFC 3339"))?;
+    }
+    Ok(SlowQueryDetailQuery {
+        db_name: input.db_name,
+        db_user: input.db_user,
+        db_operation: input.db_operation,
+        app: input.app,
+        timestamp: input.timestamp,
+    })
+}
+
+async fn postgres_slow_queries_list(
+    client: &CloudClient,
+    postgres_id: &str,
+    input: SlowQueryListInput<'_>,
+    json: bool,
+) -> CloudResult<()> {
+    let query = build_slow_query_list_query(input)?;
+    let org_id = resolve_org_id(client).await?;
+    let patterns = client
+        .list_postgres_slow_query_patterns(&org_id, postgres_id, &query)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&patterns)?);
+        return Ok(());
+    }
+
+    if patterns.is_empty() {
+        println!("No Postgres slow query patterns found");
+        return Ok(());
+    }
+
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Query ID")]
+        query_id: String,
+        #[tabled(rename = "Query")]
+        query: String,
+        #[tabled(rename = "Calls")]
+        calls: String,
+        #[tabled(rename = "Avg duration (µs)")]
+        avg_duration_us: String,
+        #[tabled(rename = "Total duration (µs)")]
+        total_duration_us: String,
+    }
+
+    let rows = patterns.into_iter().map(|pattern| Row {
+        query_id: or_absent(pattern.query_id),
+        query: or_absent(pattern.query_text),
+        calls: or_absent(pattern.call_count),
+        avg_duration_us: or_absent(pattern.avg_duration_us),
+        total_duration_us: or_absent(pattern.total_duration_us),
+    });
+    println!("{}", Table::new(rows).with(Style::markdown()));
+    Ok(())
+}
+
+async fn postgres_slow_query_get(
+    client: &CloudClient,
+    postgres_id: &str,
+    query_id: &str,
+    input: SlowQueryDetailInput<'_>,
+    json: bool,
+) -> CloudResult<()> {
+    let query = build_slow_query_detail_query(input)?;
+    let org_id = resolve_org_id(client).await?;
+    let pattern = client
+        .get_postgres_slow_query_pattern(&org_id, postgres_id, query_id, &query)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&pattern)?);
+    } else {
+        print_human(&pattern)?;
+    }
+    Ok(())
+}
+
+fn print_prometheus(metrics: &str, json: bool) -> CloudResult<()> {
+    if json {
+        print_line(serde_json::to_string_pretty(metrics)?);
+    } else {
+        use std::io::Write;
+        std::io::stdout().lock().write_all(metrics.as_bytes())?;
+    }
+    Ok(())
+}
+
+async fn postgres_prometheus_service(
+    client: &CloudClient,
+    postgres_id: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let metrics = client.get_postgres_prometheus(&org_id, postgres_id).await?;
+    print_prometheus(&metrics, json)
+}
+
+async fn postgres_prometheus_org(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let metrics = client.get_postgres_org_prometheus(&org_id).await?;
+    print_prometheus(&metrics, json)
+}
+
+// ---------------------------------------------------------------------------
+// Role changes: promote / switchover
+// ---------------------------------------------------------------------------
+
+impl CloudClient {
+    /// Fetch raw Prometheus exposition text for a Postgres service.
+    pub async fn get_postgres_prometheus(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<String> {
+        self.api()
+            .postgres_instance_prometheus_get(org_id, postgres_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))
+    }
+
+    /// Fetch raw Prometheus exposition text for all Postgres services in an organization.
+    pub async fn get_postgres_org_prometheus(&self, org_id: &str) -> CloudResult<String> {
+        self.api()
+            .postgres_org_prometheus_get(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))
+    }
+
+    /// Fetch time-bucketed metrics for a Postgres service.
+    pub async fn get_postgres_metrics(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        from_date: &str,
+        to_date: &str,
+        bucket_size_seconds: Option<i64>,
+    ) -> CloudResult<PostgresMetrics> {
+        let response = self
+            .api()
+            .postgres_instance_metrics_get(
+                org_id,
+                postgres_id,
+                from_date,
+                to_date,
+                bucket_size_seconds,
+            )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    /// Fetch aggregate slow query patterns for a Postgres service.
+    pub async fn list_postgres_slow_query_patterns(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        query: &SlowQueryListQuery<'_>,
+    ) -> CloudResult<Vec<PostgresSlowQueryPattern>> {
+        let response = self
+            .api()
+            .slow_query_patterns_get_list(
+                org_id,
+                postgres_id,
+                query.from_date,
+                query.to_date,
+                query.db_name,
+                query.db_user,
+                query.db_operation,
+                query.app,
+                query.sort_by.as_ref(),
+                query.sort_order.as_ref(),
+                query.limit,
+                query.offset,
+            )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    /// Fetch one slow query pattern and its recent executions.
+    pub async fn get_postgres_slow_query_pattern(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        query_id: &str,
+        query: &SlowQueryDetailQuery<'_>,
+    ) -> CloudResult<PostgresSlowQueryPatternDetail> {
+        let response = self
+            .api()
+            .slow_query_pattern_get(
+                org_id,
+                postgres_id,
+                query_id,
+                query.db_name,
+                query.db_user,
+                query.db_operation,
+                query.app,
+                query.timestamp,
+            )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    /// Fetch a single Postgres service.
+    pub async fn get_postgres_service(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+    ) -> CloudResult<PostgresService> {
+        let response = self
+            .api()
+            .postgres_service_get(org_id, postgres_id)
+            .await
+            .map_err(|error| {
+                // This path identifies the Postgres service itself.
+                self.convert_error_for_lookup(
+                    error,
+                    ResourceLookup::in_org(ResourceKind::PostgresService, postgres_id, org_id),
+                )
+            })?;
+        Self::unwrap_response(response)
+    }
+
+    /// Fetch Postgres server logs for a validated time window.
+    async fn list_postgres_logs(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        query: &PostgresLogsQuery,
+    ) -> CloudResult<Vec<PostgresLogEntry>> {
+        let response = self
+            .api()
+            .postgres_logs_get_list(
+                org_id,
+                postgres_id,
+                &query.from_date,
+                &query.to_date,
+                query.body_contains.as_deref(),
+                query.severity.as_deref(),
+                query.sort_order.as_ref(),
+                query.limit,
+                query.offset,
+            )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    /// Issue a `restart`/`promote`/`switchover` command against a Postgres service.
+    pub async fn set_postgres_service_state(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        command: PostgresServiceSetStateCommand,
+    ) -> CloudResult<PostgresService> {
+        let request = PostgresServiceSetState { command };
+        let response = self
+            .api()
+            .postgres_service_patch_state(org_id, postgres_id, &request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+}
+
+/// The `cloud postgres` commands that initiate primary-role operations.
+///
+/// `restart` is not one of them: it keeps going through
+/// [`postgres_state_change`], which needs no role bookkeeping.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostgresRoleCommand {
+    Promote,
+    Switchover,
+}
+
+impl PostgresRoleCommand {
+    fn api_command(self) -> PostgresServiceSetStateCommand {
+        match self {
+            Self::Promote => PostgresServiceSetStateCommand::Promote,
+            Self::Switchover => PostgresServiceSetStateCommand::Switchover,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Promote => "promote",
+            Self::Switchover => "switchover",
+        }
+    }
+}
+
+/// stderr notes for a role change, in print order.
+fn role_change_notes(cmd: PostgresRoleCommand, postgres_id: &str) -> Vec<String> {
+    match cmd {
+        PostgresRoleCommand::Promote => vec![format!(
+            "Promotion is asynchronous. Postgres service {postgres_id} becomes an independent \
+             primary and its source remains primary; poll `clickhousectl cloud postgres get \
+             {postgres_id} --json` until isPrimary is true."
+        )],
+        PostgresRoleCommand::Switchover => vec![format!(
+            "Switchover is asynchronous inside Postgres service {postgres_id}. Service isPrimary \
+             and state, plus database readiness, do not identify the active HA node or confirm \
+             completion. Monitor client connectivity separately; these service fields expose no \
+             completion check."
+        )],
+    }
+}
+
+/// Handles `cloud postgres promote` and `cloud postgres switchover`.
+///
+/// The command is issued as-is and returns the API acknowledgment. Completion
+/// is asynchronous and must be verified according to the operation.
+pub async fn postgres_role_change(
+    client: &CloudClient,
+    postgres_id: &str,
+    cmd: PostgresRoleCommand,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let svc = client
+        .set_postgres_service_state(&org_id, postgres_id, cmd.api_command())
+        .await?;
+
+    for note in role_change_notes(cmd, postgres_id) {
+        eprint_line(note);
+    }
+
+    // `print_line`, not `println!`: a closed pipe must not turn an accepted
+    // role change into a panic (#598).
+    if json {
+        print_line(serde_json::to_string_pretty(&svc)?);
+    } else {
+        print_line(format!("{} accepted", cmd.label()));
+        print_line("");
+        render_postgres_service(&svc);
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tests (CLI parsing + helpers)
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::cli::{Cli, Commands};
-    use crate::cloud::cli::CloudCommands;
-    use clap::Parser;
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "postgres", "config", "replace", "pg-1"],
+            "file",
+            &[],
+        );
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "postgres", "config", "patch", "pg-1"],
+            "file",
+            &[],
+        );
+    }
 
-    fn parse_cloud(args: &[&str]) -> CloudCommands {
-        let cli = Cli::try_parse_from(args).expect("parse");
-        match cli.command {
-            Commands::Cloud(a) => a.command,
-            _ => panic!("expected cloud command"),
-        }
+    use super::*;
+    use crate::cli::Cli;
+    use clap::Parser;
+    use clickhouse_cloud_api::models::{
+        PostgresMetric, PostgresMetricDataPoint, PostgresMetricSeries,
+    };
+
+    #[derive(Parser)]
+    struct PostgresCli {
+        #[command(subcommand)]
+        command: PostgresCommands,
     }
 
     fn parse_postgres(args: &[&str]) -> PostgresCommands {
-        match parse_cloud(args) {
-            CloudCommands::Postgres { command } => command,
-            _ => panic!("expected postgres command"),
-        }
+        let cli = Cli::try_parse_from(args).expect("parse");
+        let crate::cli::Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
+        let crate::cloud::cli::CloudCommands::Postgres { command } = cloud.command else {
+            panic!("expected postgres command");
+        };
+        command
+    }
+
+    #[test]
+    fn metrics_human_view_preserves_series_points_labels_and_units() {
+        let metrics = PostgresMetrics {
+            metrics: Some(vec![
+                PostgresMetric {
+                    key: Some("cpu".to_string()),
+                    name: Some("CPU usage".to_string()),
+                    description: Some("Average CPU usage".to_string()),
+                    unit: Some("percent".to_string()),
+                    series: Some(vec![
+                        PostgresMetricSeries {
+                            label: Some("{role=\"primary\",zone=\"eu-west-1\"}".to_string()),
+                            data_points: Some(vec![
+                                PostgresMetricDataPoint {
+                                    timestamp: Some(1_776_337_200),
+                                    value: Some(12.5),
+                                },
+                                PostgresMetricDataPoint {
+                                    timestamp: Some(1_776_337_200),
+                                    value: None,
+                                },
+                            ]),
+                        },
+                        PostgresMetricSeries {
+                            label: Some("line one\nline two".to_string()),
+                            data_points: Some(Vec::new()),
+                        },
+                    ]),
+                },
+                PostgresMetric {
+                    key: Some("replication-lag".to_string()),
+                    series: None,
+                    ..Default::default()
+                },
+            ]),
+        };
+
+        assert_eq!(
+            postgres_metrics_human_view(&metrics).unwrap(),
+            serde_json::json!({
+                "metrics": [{
+                    "description": "Average CPU usage",
+                    "key": "cpu",
+                    "name": "CPU usage",
+                    "series": [{
+                        "dataPoints": {
+                            "1": "2026-04-16T11:00:00Z  12.5 percent",
+                            "2": "2026-04-16T11:00:00Z  -"
+                        },
+                        "label": "{role=\"primary\",zone=\"eu-west-1\"}"
+                    }, {
+                        "dataPoints": [],
+                        "label": "line one\nline two"
+                    }],
+                    "unit": "percent"
+                }, {
+                    "key": "replication-lag",
+                    "series": "-"
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn metrics_human_view_distinguishes_absent_empty_and_unrepresentable_timestamps() {
+        assert_eq!(
+            postgres_metrics_human_view(&PostgresMetrics::default()).unwrap(),
+            serde_json::json!({"metrics": "-"})
+        );
+        assert_eq!(
+            postgres_metrics_human_view(&PostgresMetrics {
+                metrics: Some(Vec::new())
+            })
+            .unwrap(),
+            serde_json::json!({"metrics": []})
+        );
+
+        let metrics = PostgresMetrics {
+            metrics: Some(vec![PostgresMetric {
+                series: Some(vec![PostgresMetricSeries {
+                    data_points: Some(vec![PostgresMetricDataPoint {
+                        timestamp: Some(i64::MAX),
+                        value: Some(1.0),
+                    }]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }]),
+        };
+        let output = postgres_metrics_human_view(&metrics).unwrap();
+        assert_eq!(
+            output.pointer("/metrics/0/series/0/dataPoints/1"),
+            Some(&serde_json::Value::String(
+                "9223372036854775807 (outside displayable date range)  1".to_string()
+            ))
+        );
     }
 
     #[test]
     fn parses_postgres_list_with_filters() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "list",
-            "--filter", "state=running",
-            "--filter", "region=us-east-1",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "list",
+            "--filter",
+            "state=running",
+            "--filter",
+            "region=us-east-1",
+            "--filter",
+            "isPrimary=false",
         ]);
         let PostgresCommands::List { filter, .. } = cmd else {
             panic!("expected list");
         };
-        assert_eq!(filter, vec!["state=running", "region=us-east-1"]);
+        assert_eq!(
+            filter,
+            vec![
+                PostgresListFilter::State("running".to_string()),
+                PostgresListFilter::Region("us-east-1".to_string()),
+                PostgresListFilter::IsPrimary(false),
+            ]
+        );
+    }
+
+    fn list_filter_error(filter: &str) -> String {
+        let err = PostgresCli::try_parse_from(["clickhousectl", "list", "--filter", filter])
+            .err()
+            .expect("expected parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+        assert_eq!(err.exit_code(), 2, "filter errors must be usage errors");
+        err.to_string()
+    }
+
+    #[test]
+    fn rejects_an_unknown_postgres_list_filter_key() {
+        let message = list_filter_error("bogus=1");
+        assert!(message.contains("unknown filter key 'bogus'"), "{message}");
+        // The valid keys are listed so the user can correct the invocation.
+        for key in ["state", "region", "name", "provider", "isPrimary"] {
+            assert!(message.contains(key), "{key} missing from: {message}");
+        }
+    }
+
+    #[test]
+    fn rejects_a_postgres_list_filter_without_a_value() {
+        let message = list_filter_error("state=");
+        assert!(
+            message.contains("filter 'state' requires a value"),
+            "{message}"
+        );
+        // Whitespace-only is empty too.
+        let message = list_filter_error("name=   ");
+        assert!(
+            message.contains("filter 'name' requires a value"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_postgres_list_filter_without_an_equals_sign() {
+        let message = list_filter_error("state");
+        assert!(
+            message.contains("invalid filter 'state': expected KEY=VALUE"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_non_boolean_is_primary_postgres_list_filter() {
+        let message = list_filter_error("isPrimary=maybe");
+        assert!(
+            message.contains("invalid value 'maybe' for filter 'isPrimary'"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn parses_postgres_list_filter_keys_case_insensitively() {
+        assert_eq!(
+            parse_postgres_list_filter("ISPRIMARY=YES"),
+            Ok(PostgresListFilter::IsPrimary(true))
+        );
+        assert_eq!(
+            parse_postgres_list_filter(" state = running "),
+            Ok(PostgresListFilter::State("running".to_string()))
+        );
+        // `no`/`false` both read as false, matching the `Primary` column.
+        assert_eq!(
+            parse_postgres_list_filter("isPrimary=no"),
+            Ok(PostgresListFilter::IsPrimary(false))
+        );
+        assert_eq!(
+            parse_postgres_list_filter("isPrimary=false"),
+            Ok(PostgresListFilter::IsPrimary(false))
+        );
     }
 
     #[test]
@@ -1024,19 +2871,324 @@ mod tests {
         let PostgresCommands::Get { postgres_id, .. } = cmd else {
             panic!("expected get");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
+    }
+
+    #[test]
+    fn parses_postgres_logs_minimal() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "logs",
+            "pg-1",
+            "--from-date",
+            "2026-08-01T00:00:00Z",
+            "--to-date",
+            "2026-08-02T00:00:00Z",
+        ]);
+        let PostgresCommands::Logs {
+            postgres_id,
+            from_date,
+            to_date,
+            body_contains,
+            severity,
+            sort_order,
+            limit,
+            offset,
+            ..
+        } = &cmd
+        else {
+            panic!("expected logs");
+        };
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
+        assert_eq!(from_date, "2026-08-01T00:00:00Z");
+        assert_eq!(to_date, "2026-08-02T00:00:00Z");
+        assert_eq!(body_contains, &None);
+        assert_eq!(severity, &None);
+        assert_eq!(sort_order, &None);
+        assert_eq!(limit, &None);
+        assert_eq!(offset, &None);
+        assert!(!cmd.is_write());
+    }
+
+    #[test]
+    fn parses_postgres_logs_maximal() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "logs",
+            "pg-1",
+            "--from-date",
+            "2026-08-01T00:00:00+01:00",
+            "--to-date",
+            "2026-08-02T00:00:00+01:00",
+            "--body-contains",
+            "checkpoint complete",
+            "--severity",
+            "LOG",
+            "--sort-order",
+            "asc",
+            "--limit",
+            "2000",
+            "--offset",
+            "0",
+            "--org-id",
+            "org-1",
+        ]);
+        let PostgresCommands::Logs {
+            body_contains,
+            severity,
+            sort_order,
+            limit,
+            offset,
+            ..
+        } = cmd
+        else {
+            panic!("expected logs");
+        };
+        assert_eq!(body_contains.as_deref(), Some("checkpoint complete"));
+        assert_eq!(severity.as_deref(), Some("LOG"));
+        assert_eq!(sort_order, Some(PostgresLogsGetListSortorder::Asc));
+        assert_eq!(limit, Some(2000));
+        assert_eq!(offset, Some(0));
+    }
+
+    #[test]
+    fn postgres_logs_sort_order_exposes_every_supported_value() {
+        use clap::CommandFactory;
+
+        let command = PostgresCli::command();
+        let sort_order = command
+            .get_subcommands()
+            .find(|subcommand| subcommand.get_name() == "logs")
+            .and_then(|logs| {
+                logs.get_arguments()
+                    .find(|arg| arg.get_id() == "sort_order")
+            })
+            .expect("logs --sort-order argument");
+        let possible_values: Vec<_> = sort_order
+            .get_possible_values()
+            .into_iter()
+            .map(|value| value.get_name().to_string())
+            .collect();
+        assert_eq!(possible_values, POSTGRES_LOG_SORT_ORDERS);
+
+        for &value in POSTGRES_LOG_SORT_ORDERS {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "logs",
+                "pg-1",
+                "--from-date",
+                "2026-08-01T00:00:00Z",
+                "--to-date",
+                "2026-08-02T00:00:00Z",
+                "--sort-order",
+                value,
+            ]);
+            let PostgresCommands::Logs { sort_order, .. } = cmd else {
+                panic!("expected logs");
+            };
+            assert_eq!(
+                sort_order.as_ref().map(ToString::to_string).as_deref(),
+                Some(value)
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_postgres_logs_flag_values() {
+        let invalid_datetime = PostgresCli::try_parse_from([
+            "clickhousectl",
+            "logs",
+            "pg-1",
+            "--from-date",
+            "yesterday",
+            "--to-date",
+            "2026-08-02T00:00:00Z",
+        ])
+        .err()
+        .expect("expected invalid datetime");
+        assert_eq!(
+            invalid_datetime.kind(),
+            clap::error::ErrorKind::ValueValidation
+        );
+
+        for (flag, value, expected_kind) in [
+            (
+                "--sort-order",
+                "newest",
+                clap::error::ErrorKind::InvalidValue,
+            ),
+            ("--limit", "-1", clap::error::ErrorKind::ValueValidation),
+            ("--limit", "0", clap::error::ErrorKind::ValueValidation),
+            ("--limit", "2001", clap::error::ErrorKind::ValueValidation),
+            ("--offset", "-1", clap::error::ErrorKind::ValueValidation),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "logs",
+                "pg-1",
+                "--from-date",
+                "2026-08-01T00:00:00Z",
+                "--to-date",
+                "2026-08-02T00:00:00Z",
+            ];
+            args.extend([flag, value]);
+            let error = PostgresCli::try_parse_from(args)
+                .err()
+                .expect("expected invalid logs option");
+            assert_eq!(error.kind(), expected_kind);
+        }
+    }
+
+    #[test]
+    fn builds_minimal_postgres_logs_query() {
+        let query = build_postgres_logs_query(
+            "2026-08-01T00:00:00Z",
+            "2026-08-02T00:00:00Z",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(query.from_date, "2026-08-01T00:00:00Z");
+        assert_eq!(query.to_date, "2026-08-02T00:00:00Z");
+        assert_eq!(query.body_contains, None);
+        assert_eq!(query.severity, None);
+        assert_eq!(query.sort_order, None);
+        assert_eq!(query.limit, None);
+        assert_eq!(query.offset, None);
+    }
+
+    #[test]
+    fn builds_maximal_postgres_logs_query() {
+        let query = build_postgres_logs_query(
+            "2026-08-01T00:00:00Z",
+            "2026-08-31T00:00:00Z",
+            Some("checkpoint"),
+            Some("LOG"),
+            Some(&PostgresLogsGetListSortorder::Asc),
+            Some(2000),
+            Some(0),
+        )
+        .unwrap();
+        assert_eq!(query.body_contains.as_deref(), Some("checkpoint"));
+        assert_eq!(query.severity.as_deref(), Some("LOG"));
+        assert_eq!(query.sort_order, Some(PostgresLogsGetListSortorder::Asc));
+        assert_eq!(query.limit, Some(2000));
+        assert_eq!(query.offset, Some(0));
+    }
+
+    #[test]
+    fn postgres_log_row_extracts_a_string_message_and_formats_utc() {
+        let log = PostgresLogEntry {
+            timestamp: Some("2026-08-01T12:00:00.123Z".parse().unwrap()),
+            severity: Some("LOG".to_string()),
+            body: Some(
+                serde_json::json!({
+                    "message": "checkpoint complete",
+                    "detail": "all buffers written"
+                })
+                .to_string(),
+            ),
+        };
+
+        assert_eq!(
+            postgres_log_row(&log),
+            PostgresLogRow {
+                timestamp: "2026-08-01T12:00:00.123Z".to_string(),
+                severity: "LOG".to_string(),
+                message: "checkpoint complete".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn postgres_log_message_preserves_raw_and_unusual_bodies() {
+        let long_message = "x".repeat(4096);
+        for body in [
+            "recovery complete",
+            r#"{"message":42,"detail":"kept"}"#,
+            r#"{"detail":"message absent"}"#,
+            r#"{"message":"unfinished""#,
+            "null",
+            long_message.as_str(),
+        ] {
+            assert_eq!(postgres_log_message(Some(body)), body);
+        }
+        assert_eq!(postgres_log_message(None), ABSENT);
+        assert_eq!(postgres_log_message(Some("")), "");
+    }
+
+    #[test]
+    fn rejects_invalid_postgres_logs_time_windows() {
+        for (from, to, message) in [
+            (
+                "2026-08-02T00:00:00Z",
+                "2026-08-01T00:00:00Z",
+                "to-date must be after from-date",
+            ),
+            (
+                "2026-08-01T00:00:00Z",
+                "2026-08-01T00:00:00Z",
+                "to-date must be after from-date",
+            ),
+            (
+                "2026-08-01T00:00:00Z",
+                "2026-09-01T00:00:01Z",
+                "must not exceed 30 days",
+            ),
+        ] {
+            let error =
+                build_postgres_logs_query(from, to, None, None, None, None, None).unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+    }
+
+    #[test]
+    fn rejects_unknown_typed_postgres_logs_sort_order() {
+        let unknown = PostgresLogsGetListSortorder::Unknown("future".to_string());
+        let error = build_postgres_logs_query(
+            "2026-08-01T00:00:00Z",
+            "2026-08-02T00:00:00Z",
+            None,
+            None,
+            Some(&unknown),
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("invalid sort order 'future'"));
     }
 
     #[test]
     fn parses_postgres_create_minimal() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "create",
-            "--name", "pg1",
-            "--region", "us-east-1",
-            "--size", "m7i.2xlarge",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "m7i.2xlarge",
         ]);
         let PostgresCommands::Create {
-            name, region, size, provider, pg_version, ha_type, ..
+            name,
+            region,
+            size,
+            provider,
+            pg_version,
+            ha_type,
+            ..
         } = cmd
         else {
             panic!("expected create");
@@ -1050,18 +3202,87 @@ mod tests {
     }
 
     #[test]
+    fn postgres_create_provider_uses_the_api_value_set() {
+        for provider in PgProvider::VALUES {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "create",
+                "--name",
+                "pg1",
+                "--region",
+                "us-east-1",
+                "--size",
+                "m7i.2xlarge",
+                "--provider",
+                provider,
+            ]);
+            let PostgresCommands::Create {
+                provider: parsed, ..
+            } = cmd
+            else {
+                panic!("expected create");
+            };
+            assert_eq!(parsed, *provider);
+        }
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "m7i.2xlarge",
+            "--provider",
+            "azure",
+        ])
+        .err()
+        .expect("invalid provider must be rejected by clap");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        assert_eq!(error.exit_code(), 2);
+        let message = error.to_string();
+        for provider in PgProvider::VALUES {
+            assert!(
+                message.contains(provider),
+                "missing `{provider}`: {message}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_postgres_create_with_all_flags() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "create",
-            "--name", "pg1",
-            "--region", "us-east-1",
-            "--size", "m7i.2xlarge",
-            "--pg-version", "17",
-            "--ha-type", "sync",
-            "--tag", "env=prod",
-            "--tag", "owner=data",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "m7i.2xlarge",
+            "--pg-version",
+            "17",
+            "--ha-type",
+            "sync",
+            "--tag",
+            "env=prod",
+            "--tag",
+            "owner=data",
         ]);
-        let PostgresCommands::Create { pg_version, ha_type, tag, .. } = cmd else {
+        let PostgresCommands::Create {
+            pg_version,
+            ha_type,
+            tag,
+            ..
+        } = cmd
+        else {
             panic!("expected create");
         };
         assert_eq!(pg_version.as_deref(), Some("17"));
@@ -1072,70 +3293,184 @@ mod tests {
     #[test]
     fn rejects_postgres_create_missing_required() {
         let err = Cli::try_parse_from([
-            "clickhousectl", "cloud", "postgres", "create",
-            "--name", "pg1",
-            "--region", "us-east-1",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
             // missing --size
         ])
-        .err().expect("expected parse error");
+        .err()
+        .expect("expected parse error");
         assert!(err.to_string().contains("--size"));
     }
 
     #[test]
     fn rejects_postgres_create_invalid_pg_version() {
         let err = Cli::try_parse_from([
-            "clickhousectl", "cloud", "postgres", "create",
-            "--name", "pg1",
-            "--region", "us-east-1",
-            "--size", "m7i.2xlarge",
-            "--pg-version", "15",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "m7i.2xlarge",
+            "--pg-version",
+            "15",
         ])
-        .err().expect("expected parse error");
+        .err()
+        .expect("expected parse error");
         assert!(err.to_string().contains("invalid value"));
     }
 
     #[test]
     fn rejects_postgres_create_pg_version_16() {
         let err = Cli::try_parse_from([
-            "clickhousectl", "cloud", "postgres", "create",
-            "--name", "pg1",
-            "--region", "us-east-1",
-            "--size", "m7i.2xlarge",
-            "--pg-version", "16",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "m7i.2xlarge",
+            "--pg-version",
+            "16",
         ])
-        .err().expect("expected parse error");
+        .err()
+        .expect("expected parse error");
         assert!(err.to_string().contains("invalid value"));
     }
 
     #[test]
     fn parses_postgres_update_tag_diff_flags() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "update", "pg-1",
-            "--size", "c6gd.large",
-            "--add-tag", "env=prod",
-            "--add-tag", "team=data",
-            "--remove-tag", "old",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "update",
+            "pg-1",
+            "--size",
+            "c6gd.large",
+            "--add-tag",
+            "env=prod",
+            "--add-tag",
+            "team=data",
+            "--remove-tag",
+            "old",
         ]);
         let PostgresCommands::Update {
-            postgres_id, size, add_tag, remove_tag, ..
+            postgres_id,
+            size,
+            add_tag,
+            remove_tag,
+            clear_tags,
+            ..
         } = cmd
         else {
             panic!("expected update");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(size.as_deref(), Some("c6gd.large"));
         assert_eq!(add_tag, vec!["env=prod", "team=data"]);
         assert_eq!(remove_tag, vec!["old"]);
+        assert!(!clear_tags);
     }
 
     #[test]
     fn parses_postgres_update_no_fields() {
         let cmd = parse_postgres(&["clickhousectl", "cloud", "postgres", "update", "pg-1"]);
-        let PostgresCommands::Update { postgres_id, size, .. } = cmd else {
+        let PostgresCommands::Update {
+            postgres_id,
+            name,
+            size,
+            add_tag,
+            remove_tag,
+            clear_tags,
+            ..
+        } = cmd
+        else {
             panic!("expected update");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
+        assert!(name.is_none());
         assert!(size.is_none());
+        assert!(add_tag.is_empty());
+        assert!(remove_tag.is_empty());
+        assert!(!clear_tags);
+    }
+
+    #[test]
+    fn parses_postgres_update_clear_tags() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "update",
+            "pg-1",
+            "--clear-tags",
+        ]);
+        let PostgresCommands::Update {
+            add_tag,
+            remove_tag,
+            clear_tags,
+            ..
+        } = cmd
+        else {
+            panic!("expected update");
+        };
+        assert!(add_tag.is_empty());
+        assert!(remove_tag.is_empty());
+        assert!(clear_tags);
+    }
+
+    #[test]
+    fn rejects_conflicting_postgres_tag_changes() {
+        for flags in [
+            ["--add-tag", "env=prod", "--clear-tags"],
+            ["--clear-tags", "--add-tag", "env=prod"],
+            ["--remove-tag", "env", "--clear-tags"],
+            ["--clear-tags", "--remove-tag", "env"],
+        ] {
+            let result = Cli::try_parse_from(
+                ["clickhousectl", "cloud", "postgres", "update", "pg-1"]
+                    .into_iter()
+                    .chain(flags),
+            );
+            let Err(error) = result else {
+                panic!("tag diff and clear flags must conflict");
+            };
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    #[test]
+    fn parses_postgres_update_name() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "update",
+            "pg-1",
+            "--new-name",
+            "renamed-pg",
+        ]);
+        let PostgresCommands::Update {
+            postgres_id, name, ..
+        } = cmd
+        else {
+            panic!("expected update");
+        };
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
+        assert_eq!(name.as_deref(), Some("renamed-pg"));
     }
 
     #[test]
@@ -1144,7 +3479,7 @@ mod tests {
         let PostgresCommands::Delete { postgres_id, .. } = cmd else {
             panic!("expected delete");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
     }
 
     #[test]
@@ -1156,8 +3491,14 @@ mod tests {
         assert!(output.is_none());
 
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "certs", "get", "pg-1",
-            "--output", "/tmp/ca.pem",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "certs",
+            "get",
+            "pg-1",
+            "--output",
+            "/tmp/ca.pem",
         ]);
         let PostgresCommands::Certs(CertsCommands::Get { output, .. }) = cmd else {
             panic!("expected certs get");
@@ -1167,7 +3508,14 @@ mod tests {
 
     #[test]
     fn parses_postgres_config_get() {
-        let cmd = parse_postgres(&["clickhousectl", "cloud", "postgres", "config", "get", "pg-1"]);
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "config",
+            "get",
+            "pg-1",
+        ]);
         assert!(matches!(
             cmd,
             PostgresCommands::Config(ConfigCommands::Get { .. })
@@ -1177,8 +3525,14 @@ mod tests {
     #[test]
     fn parses_postgres_config_replace_requires_file() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "config", "replace", "pg-1",
-            "--file", "/tmp/cfg.json",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "config",
+            "replace",
+            "pg-1",
+            "--file",
+            "/tmp/cfg.json",
         ]);
         let PostgresCommands::Config(ConfigCommands::Replace { file, .. }) = cmd else {
             panic!("expected replace");
@@ -1186,18 +3540,31 @@ mod tests {
         assert_eq!(file, PathBuf::from("/tmp/cfg.json"));
 
         let err = Cli::try_parse_from([
-            "clickhousectl", "cloud", "postgres", "config", "replace", "pg-1",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "config",
+            "replace",
+            "pg-1",
         ])
-        .err().expect("expected parse error");
+        .err()
+        .expect("expected parse error");
         assert!(err.to_string().contains("--file"));
     }
 
     #[test]
     fn parses_postgres_config_patch_with_set_entries() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "config", "patch", "pg-1",
-            "--set", "max_connections=500",
-            "--set", "random_page_cost=1.1",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "config",
+            "patch",
+            "pg-1",
+            "--set",
+            "max_connections=500",
+            "--set",
+            "random_page_cost=1.1",
         ]);
         let PostgresCommands::Config(ConfigCommands::Patch { sets, file, .. }) = cmd else {
             panic!("expected patch");
@@ -1209,8 +3576,14 @@ mod tests {
     #[test]
     fn parses_postgres_config_patch_with_file() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "config", "patch", "pg-1",
-            "--file", "/tmp/p.json",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "config",
+            "patch",
+            "pg-1",
+            "--file",
+            "/tmp/p.json",
         ]);
         let PostgresCommands::Config(ConfigCommands::Patch { sets, file, .. }) = cmd else {
             panic!("expected patch");
@@ -1222,31 +3595,69 @@ mod tests {
     #[test]
     fn rejects_postgres_config_patch_set_and_file_together() {
         let err = Cli::try_parse_from([
-            "clickhousectl", "cloud", "postgres", "config", "patch", "pg-1",
-            "--set", "max_connections=500",
-            "--file", "/tmp/p.json",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "config",
+            "patch",
+            "pg-1",
+            "--set",
+            "max_connections=500",
+            "--file",
+            "/tmp/p.json",
         ])
-        .err().expect("expected parse error");
+        .err()
+        .expect("expected parse error");
         assert!(err.to_string().contains("cannot be used"));
+    }
+
+    #[test]
+    fn rejects_postgres_config_patch_without_set_or_file() {
+        let err = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "config",
+            "patch",
+            "pg-1",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
     }
 
     #[test]
     fn parses_postgres_reset_password_with_password_and_generate() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "reset-password", "pg-1",
-            "--password", "Hunter2345678",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "reset-password",
+            "pg-1",
+            "--password",
+            "Hunter2345678",
         ]);
-        let PostgresCommands::ResetPassword { password, generate, .. } = cmd else {
+        let PostgresCommands::ResetPassword {
+            password, generate, ..
+        } = cmd
+        else {
             panic!("expected reset-password");
         };
         assert_eq!(password.as_deref(), Some("Hunter2345678"));
         assert!(!generate);
 
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "reset-password", "pg-1",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "reset-password",
+            "pg-1",
             "--generate",
         ]);
-        let PostgresCommands::ResetPassword { password, generate, .. } = cmd else {
+        let PostgresCommands::ResetPassword {
+            password, generate, ..
+        } = cmd
+        else {
             panic!("expected reset-password");
         };
         assert!(password.is_none());
@@ -1254,24 +3665,58 @@ mod tests {
     }
 
     #[test]
+    fn rejects_postgres_reset_password_without_password_or_generate() {
+        let err = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "reset-password",
+            "pg-1",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(err.kind(), clap::error::ErrorKind::MissingRequiredArgument);
+        let message = err.to_string();
+        assert!(message.contains("--password <PASSWORD>"), "{message}");
+        assert!(message.contains("--generate"), "{message}");
+    }
+
+    #[test]
     fn rejects_postgres_reset_password_both() {
         let err = Cli::try_parse_from([
-            "clickhousectl", "cloud", "postgres", "reset-password", "pg-1",
-            "--password", "abc",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "reset-password",
+            "pg-1",
+            "--password",
+            "abc",
             "--generate",
         ])
-        .err().expect("expected parse error");
+        .err()
+        .expect("expected parse error");
         assert!(err.to_string().contains("cannot be used"));
     }
 
     #[test]
     fn parses_postgres_restore_valid_rfc3339() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "restore", "pg-1",
-            "--name", "restored",
-            "--restore-target", "2026-04-16T12:00:00Z",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "restore",
+            "pg-1",
+            "--name",
+            "restored",
+            "--restore-target",
+            "2026-04-16T12:00:00Z",
         ]);
-        let PostgresCommands::Restore { name, restore_target, .. } = cmd else {
+        let PostgresCommands::Restore {
+            name,
+            restore_target,
+            ..
+        } = cmd
+        else {
             panic!("expected restore");
         };
         assert_eq!(name, "restored");
@@ -1281,25 +3726,668 @@ mod tests {
     #[test]
     fn rejects_postgres_restore_invalid_datetime() {
         let err = Cli::try_parse_from([
-            "clickhousectl", "cloud", "postgres", "restore", "pg-1",
-            "--name", "restored",
-            "--restore-target", "yesterday",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "restore",
+            "pg-1",
+            "--name",
+            "restored",
+            "--restore-target",
+            "yesterday",
         ])
-        .err().expect("expected parse error");
+        .err()
+        .expect("expected parse error");
         assert!(err.to_string().contains("invalid datetime"));
+    }
+
+    #[test]
+    fn parses_postgres_metrics_with_all_query_inputs() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "metrics",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00+01:00",
+            "--to-date",
+            "2026-04-16T13:00:00+01:00",
+            "--bucket-size-seconds",
+            "60",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!cmd.is_write());
+        let PostgresCommands::Metrics {
+            postgres_id,
+            from_date,
+            to_date,
+            bucket_size_seconds,
+        } = cmd
+        else {
+            panic!("expected metrics");
+        };
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
+        assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
+        assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
+        assert_eq!(bucket_size_seconds, Some(60));
+    }
+
+    #[test]
+    fn postgres_metrics_requires_dates_without_defaulting_bucket_size() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "metrics",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+            "--to-date",
+            "2026-04-16T13:00:00Z",
+        ]);
+        let PostgresCommands::Metrics {
+            bucket_size_seconds,
+            ..
+        } = cmd
+        else {
+            panic!("expected metrics");
+        };
+        assert_eq!(bucket_size_seconds, None);
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "metrics",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn postgres_metrics_rejects_invalid_dates_and_bucket_sizes() {
+        for (flag, value) in [
+            ("--from-date", "yesterday"),
+            ("--to-date", "tomorrow"),
+            ("--from-date", "2026-04-16T12:00:00.123456Z"),
+            ("--to-date", "2026-04-16T13:00:00.123456789Z"),
+            ("--from-date", "2026-04-16T12:00:00.0000000001Z"),
+            ("--bucket-size-seconds", "0"),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "metrics",
+                "pg-1",
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+            ];
+            let position = args.iter().position(|arg| *arg == flag);
+            if let Some(position) = position {
+                args[position + 1] = value;
+            } else {
+                args.extend([flag, value]);
+            }
+            let error = Cli::try_parse_from(args)
+                .err()
+                .expect("expected parse error");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn postgres_metrics_normalizes_without_changing_the_instant() {
+        for (input, expected) in [
+            ("2026-04-16T12:00:00Z", "2026-04-16T12:00:00.000Z"),
+            ("2026-04-16T12:00:00.000Z", "2026-04-16T12:00:00.000Z"),
+            ("2026-04-16T12:00:00+00:00", "2026-04-16T12:00:00.000Z"),
+            ("2026-04-16T12:00:00.1Z", "2026-04-16T12:00:00.100Z"),
+            ("2026-04-16T12:00:00.12Z", "2026-04-16T12:00:00.120Z"),
+            ("2026-04-16T00:00:00.123+05:30", "2026-04-15T18:30:00.123Z"),
+            ("2026-04-16T23:00:00.999-02:30", "2026-04-17T01:30:00.999Z"),
+            (
+                "2026-04-16T12:00:00.1230000000Z",
+                "2026-04-16T12:00:00.123Z",
+            ),
+        ] {
+            let normalized = parse_postgres_window_datetime(input).unwrap();
+            assert_eq!(normalized, expected, "{input}");
+            assert_eq!(
+                chrono::DateTime::parse_from_rfc3339(input).unwrap(),
+                chrono::DateTime::parse_from_rfc3339(&normalized).unwrap(),
+                "normalization changed {input}"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_metrics_validates_chronological_range() {
+        assert!(
+            validate_datetime_range("2026-04-16T12:00:00+01:00", "2026-04-16T11:00:00Z").is_ok()
+        );
+        let error =
+            validate_datetime_range("2026-04-16T12:00:01Z", "2026-04-16T12:00:00Z").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "invalid date range: --from-date must not be after --to-date"
+        );
+    }
+
+    #[test]
+    fn parses_slow_query_list_with_all_query_inputs_as_read() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00+01:00",
+            "--to-date",
+            "2026-04-16T13:00:00+01:00",
+            "--db-name",
+            "app db",
+            "--db-user",
+            "reader+worker",
+            "--db-operation",
+            "SELECT",
+            "--app",
+            "reporting/api",
+            "--sort-by",
+            "p95_duration",
+            "--sort-order",
+            "asc",
+            "--limit",
+            "500",
+            "--offset",
+            "0",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!cmd.is_write());
+        let PostgresCommands::SlowQueries(SlowQueryCommands::List {
+            postgres_id,
+            from_date,
+            to_date,
+            db_name,
+            db_user,
+            db_operation,
+            app,
+            sort_by,
+            sort_order,
+            limit,
+            offset,
+        }) = cmd
+        else {
+            panic!("expected slow-query list");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(from_date, "2026-04-16T11:00:00.000Z");
+        assert_eq!(to_date, "2026-04-16T12:00:00.000Z");
+        assert_eq!(db_name.as_deref(), Some("app db"));
+        assert_eq!(db_user.as_deref(), Some("reader+worker"));
+        assert_eq!(db_operation.as_deref(), Some("SELECT"));
+        assert_eq!(app.as_deref(), Some("reporting/api"));
+        assert_eq!(sort_by.as_deref(), Some("p95_duration"));
+        assert_eq!(sort_order.as_deref(), Some("asc"));
+        assert_eq!(limit, Some(500));
+        assert_eq!(offset, Some(0));
+    }
+
+    #[test]
+    fn slow_query_list_accepts_zero_and_positive_offsets() {
+        for (value, expected) in [("0", 0), ("37", 37)] {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "slow-queries",
+                "list",
+                "pg-1",
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+                "--offset",
+                value,
+            ]);
+            let PostgresCommands::SlowQueries(SlowQueryCommands::List { offset, .. }) = cmd else {
+                panic!("expected slow-query list");
+            };
+            assert_eq!(offset, Some(expected));
+        }
+    }
+
+    #[test]
+    fn slow_query_list_requires_dates_and_validates_schema_bounds() {
+        let missing_date = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(
+            missing_date.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+
+        for (flag, value, expected_kind) in [
+            (
+                "--from-date",
+                "yesterday",
+                clap::error::ErrorKind::ValueValidation,
+            ),
+            (
+                "--to-date",
+                "tomorrow",
+                clap::error::ErrorKind::ValueValidation,
+            ),
+            (
+                "--sort-by",
+                "duration",
+                clap::error::ErrorKind::InvalidValue,
+            ),
+            (
+                "--sort-order",
+                "sideways",
+                clap::error::ErrorKind::InvalidValue,
+            ),
+            ("--limit", "-1", clap::error::ErrorKind::ValueValidation),
+            ("--limit", "0", clap::error::ErrorKind::ValueValidation),
+            ("--limit", "501", clap::error::ErrorKind::ValueValidation),
+            ("--offset", "-1", clap::error::ErrorKind::ValueValidation),
+        ] {
+            let mut args = vec![
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "slow-queries",
+                "list",
+                "pg-1",
+                "--from-date",
+                "2026-04-16T12:00:00Z",
+                "--to-date",
+                "2026-04-16T13:00:00Z",
+            ];
+            let position = args.iter().position(|arg| *arg == flag);
+            if let Some(position) = position {
+                args[position + 1] = value;
+            } else {
+                args.extend([flag, value]);
+            }
+            let error = Cli::try_parse_from(args)
+                .err()
+                .expect("expected parse error");
+            assert_eq!(error.kind(), expected_kind);
+        }
+
+        let negative_offset_equals = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "list",
+            "pg-1",
+            "--from-date",
+            "2026-04-16T12:00:00Z",
+            "--to-date",
+            "2026-04-16T13:00:00Z",
+            "--offset=-1",
+        ])
+        .err()
+        .expect("negative offset should fail during clap parsing");
+        assert_eq!(
+            negative_offset_equals.kind(),
+            clap::error::ErrorKind::ValueValidation
+        );
+        assert_eq!(negative_offset_equals.exit_code(), 2);
+    }
+
+    #[test]
+    fn negative_limits_use_range_validation_with_both_flag_forms() {
+        for command in [vec!["logs"], vec!["slow-queries", "list"]] {
+            for limit_args in [vec!["--limit", "-1"], vec!["--limit=-1"]] {
+                let mut args = vec!["clickhousectl", "cloud", "postgres"];
+                args.extend(command.iter().copied());
+                args.extend([
+                    "pg-1",
+                    "--from-date",
+                    "2026-04-16T12:00:00Z",
+                    "--to-date",
+                    "2026-04-16T13:00:00Z",
+                ]);
+                args.extend(limit_args);
+                let error = Cli::try_parse_from(args).err().expect("negative limit");
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                assert_eq!(error.exit_code(), 2);
+            }
+        }
+    }
+
+    #[test]
+    fn slow_query_list_builder_uses_every_library_sort_value() {
+        for &sort_by in SlowQueryPatternsGetListSortby::VALUES {
+            let query = build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                db_name: None,
+                db_user: None,
+                db_operation: None,
+                app: None,
+                sort_by: Some(sort_by),
+                sort_order: Some("desc"),
+                limit: Some(1),
+                offset: Some(0),
+            })
+            .unwrap();
+            assert_eq!(query.sort_by.as_ref().unwrap().to_string(), sort_by);
+            assert_eq!(
+                query.sort_order,
+                Some(SlowQueryPatternsGetListSortorder::Desc)
+            );
+        }
+        for &sort_order in SlowQueryPatternsGetListSortorder::VALUES {
+            let query = build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                db_name: None,
+                db_user: None,
+                db_operation: None,
+                app: None,
+                sort_by: None,
+                sort_order: Some(sort_order),
+                limit: None,
+                offset: None,
+            })
+            .unwrap();
+            assert_eq!(query.sort_order.as_ref().unwrap().to_string(), sort_order);
+        }
+    }
+
+    #[test]
+    fn slow_query_list_builder_rejects_invalid_ranges_and_typed_values() {
+        let input = SlowQueryListInput {
+            from_date: "2026-04-16T13:00:00Z",
+            to_date: "2026-04-16T12:00:00Z",
+            db_name: None,
+            db_user: None,
+            db_operation: None,
+            app: None,
+            sort_by: None,
+            sort_order: None,
+            limit: None,
+            offset: None,
+        };
+        assert!(
+            build_slow_query_list_query(input)
+                .unwrap_err()
+                .to_string()
+                .contains("--from-date must not be after --to-date")
+        );
+        assert!(
+            build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                sort_by: Some("future_sort"),
+                ..input
+            })
+            .unwrap_err()
+            .to_string()
+            .contains("invalid sort_by")
+        );
+        assert!(
+            build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                limit: Some(501),
+                ..input
+            })
+            .is_err()
+        );
+        assert!(
+            build_slow_query_list_query(SlowQueryListInput {
+                from_date: "2026-04-16T12:00:00Z",
+                to_date: "2026-04-16T13:00:00Z",
+                offset: Some(-1),
+                ..input
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn slow_query_builders_preserve_minimal_and_maximal_queries() {
+        let minimal = build_slow_query_list_query(SlowQueryListInput {
+            from_date: "2026-04-16T12:00:00Z",
+            to_date: "2026-04-16T13:00:00Z",
+            db_name: None,
+            db_user: None,
+            db_operation: None,
+            app: None,
+            sort_by: None,
+            sort_order: None,
+            limit: None,
+            offset: None,
+        })
+        .unwrap();
+        assert_eq!(minimal.from_date, "2026-04-16T12:00:00Z");
+        assert_eq!(minimal.to_date, "2026-04-16T13:00:00Z");
+        assert_eq!(minimal.db_name, None);
+        assert_eq!(minimal.sort_by, None);
+        assert_eq!(minimal.limit, None);
+        assert_eq!(minimal.offset, None);
+
+        let detail = build_slow_query_detail_query(SlowQueryDetailInput {
+            db_name: "app db",
+            db_user: "reader",
+            db_operation: "SELECT",
+            app: Some("reporter"),
+            timestamp: Some("2026-04-16T12:30:00+01:00"),
+        })
+        .unwrap();
+        assert_eq!(detail.db_name, "app db");
+        assert_eq!(detail.db_user, "reader");
+        assert_eq!(detail.db_operation, "SELECT");
+        assert_eq!(detail.app, Some("reporter"));
+        assert_eq!(detail.timestamp, Some("2026-04-16T12:30:00+01:00"));
+
+        assert!(
+            build_slow_query_detail_query(SlowQueryDetailInput {
+                db_name: "app",
+                db_user: "reader",
+                db_operation: "SELECT",
+                app: None,
+                timestamp: Some("now"),
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn parses_slow_query_detail_with_its_distinct_inputs_as_read() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "query-1",
+            "--db-name",
+            "app",
+            "--db-user",
+            "reader",
+            "--db-operation",
+            "SELECT",
+            "--app",
+            "reporter",
+            "--timestamp",
+            "2026-04-16T12:30:00Z",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!cmd.is_write());
+        let PostgresCommands::SlowQueries(SlowQueryCommands::Get {
+            postgres_id,
+            query_id,
+            db_name,
+            db_user,
+            db_operation,
+            app,
+            timestamp,
+        }) = cmd
+        else {
+            panic!("expected slow-query detail");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(query_id, "query-1");
+        assert_eq!(db_name, "app");
+        assert_eq!(db_user, "reader");
+        assert_eq!(db_operation, "SELECT");
+        assert_eq!(app.as_deref(), Some("reporter"));
+        assert_eq!(timestamp.as_deref(), Some("2026-04-16T12:30:00Z"));
+    }
+
+    #[test]
+    fn slow_query_detail_requires_identity_filters_and_validates_timestamp() {
+        let missing_operation = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "query-1",
+            "--db-name",
+            "app",
+            "--db-user",
+            "reader",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(
+            missing_operation.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let invalid_timestamp = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "slow-queries",
+            "get",
+            "pg-1",
+            "query-1",
+            "--db-name",
+            "app",
+            "--db-user",
+            "reader",
+            "--db-operation",
+            "SELECT",
+            "--timestamp",
+            "now",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(
+            invalid_timestamp.kind(),
+            clap::error::ErrorKind::ValueValidation
+        );
+    }
+
+    #[test]
+    fn parses_postgres_prometheus_service_and_org_scopes_as_reads() {
+        let service = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "prometheus",
+            "service",
+            "pg-1",
+            "--org-id",
+            "org-1",
+        ]);
+        assert!(!service.is_write());
+        let PostgresCommands::Prometheus(PrometheusCommands::Service { postgres_id }) = service
+        else {
+            panic!("expected service prometheus");
+        };
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
+
+        let org = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "prometheus",
+            "org",
+            "--org-id",
+            "org-2",
+        ]);
+        assert!(!org.is_write());
+        let PostgresCommands::Prometheus(PrometheusCommands::Org) = org else {
+            panic!("expected organization prometheus");
+        };
+    }
+
+    #[test]
+    fn postgres_prometheus_does_not_advertise_unsupported_filters() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "prometheus",
+            "service",
+            "pg-1",
+            "--filtered-metrics",
+            "false",
+        ])
+        .err()
+        .expect("expected parse error");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
     }
 
     #[test]
     fn parses_postgres_read_replica_create() {
         let cmd = parse_postgres(&[
-            "clickhousectl", "cloud", "postgres", "read-replica", "create", "pg-1",
-            "--name", "replica1",
-            "--tag", "role=read",
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "read-replica",
+            "create",
+            "pg-1",
+            "--name",
+            "replica1",
+            "--tag",
+            "role=read",
         ]);
-        let PostgresCommands::ReadReplica(ReadReplicaCommands::Create { postgres_id, name, tag, .. }) = cmd else {
+        let PostgresCommands::ReadReplica(ReadReplicaCommands::Create {
+            postgres_id,
+            name,
+            tag,
+            ..
+        }) = cmd
+        else {
             panic!("expected read-replica create");
         };
-        assert_eq!(postgres_id, "pg-1");
+        assert_eq!(postgres_id.id.as_deref(), Some("pg-1"));
         assert_eq!(name, "replica1");
         assert_eq!(tag, vec!["role=read"]);
     }
@@ -1318,6 +4406,31 @@ mod tests {
             parse_postgres(&["clickhousectl", "cloud", "postgres", "switchover", "pg-1"]),
             PostgresCommands::Switchover { .. }
         ));
+    }
+
+    // --- role change (promote / switchover) parsing, issue #834 ---
+
+    #[test]
+    fn promote_and_switchover_reject_removed_wait_flags() {
+        for command in ["promote", "switchover"] {
+            for args in [["--wait", ""], ["--wait-timeout", "30"]] {
+                let mut argv = vec!["clickhousectl", command, "pg-1", args[0]];
+                if !args[1].is_empty() {
+                    argv.push(args[1]);
+                }
+                let err = match PostgresCli::try_parse_from(argv) {
+                    Ok(_) => panic!("{command} {} must be rejected", args[0]),
+                    Err(err) => err,
+                };
+                assert_eq!(
+                    err.kind(),
+                    clap::error::ErrorKind::UnknownArgument,
+                    "{command} {}: {err}",
+                    args[0]
+                );
+                assert_eq!(err.exit_code(), 2, "{command} {}: {err}", args[0]);
+            }
+        }
     }
 
     // --- helper unit tests ---
@@ -1342,6 +4455,35 @@ mod tests {
     fn parse_pg_config_overrides_rejects_malformed() {
         assert!(parse_pg_config_overrides(&["no_equals".into()]).is_err());
         assert!(parse_pg_config_overrides(&["=value".into()]).is_err());
+    }
+
+    #[test]
+    fn parse_pg_config_overrides_rejects_unknown_keys_and_enum_values() {
+        let err = parse_pg_config_overrides(&["max_conections=500".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unknown pgConfig key 'max_conections'"),
+            "{err}"
+        );
+        assert!(err.contains("max_connections"), "{err}");
+
+        for entry in [
+            "default_transaction_isolation=read uncommitted",
+            "ssl_min_protocol_version=SSLv3",
+            "wal_compression=gzip",
+        ] {
+            let err = parse_pg_config_overrides(&[entry.into()])
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("invalid pgConfig value"), "{entry}: {err}");
+            assert!(err.contains("expected one of"), "{entry}: {err}");
+        }
+
+        let err = parse_pg_config_overrides(&["work_mem=null".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("null is not supported"), "{err}");
     }
 
     #[test]
@@ -1390,5 +4532,429 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].key, "env");
         assert_eq!(out[0].value.as_deref(), Some("prod"));
+    }
+
+    #[test]
+    fn merge_response_tags_refuses_absent_tags() {
+        let add = vec![ResourceTagsV1 {
+            key: "env".into(),
+            value: Some("prod".into()),
+        }];
+        let err = merge_response_tags(None, &add, &[])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("omitted the tags field"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn merge_response_tags_merges_an_empty_tag_list() {
+        // `Some(vec![])` is the API saying "no tags", which is safe to merge on.
+        let add = vec![ResourceTagsV1 {
+            key: "env".into(),
+            value: Some("prod".into()),
+        }];
+        let out = merge_response_tags(Some(vec![]), &add, &[]).unwrap();
+        assert_eq!(out, add);
+    }
+
+    #[test]
+    fn build_postgres_update_request_omits_name_when_not_given() {
+        let req = build_postgres_update_request(None, None, None, None);
+        assert!(req.name.is_none());
+        assert!(req.size.is_none());
+        assert!(req.ha_type.is_none());
+        assert!(req.tags.is_none());
+    }
+
+    #[test]
+    fn build_postgres_update_request_clears_tags_explicitly() {
+        let req = build_postgres_update_request(None, None, None, Some(Vec::new()));
+
+        assert_eq!(req.tags, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(req).unwrap(),
+            serde_json::json!({"tags": []})
+        );
+    }
+
+    #[test]
+    fn build_postgres_update_request_sets_name_when_given() {
+        let req = build_postgres_update_request(
+            Some("renamed-pg"),
+            Some(PgSize::C6gd_large),
+            Some(PgHaType::Sync),
+            Some(vec![ResourceTagsV1 {
+                key: "env".into(),
+                value: Some("prod".into()),
+            }]),
+        );
+        assert_eq!(req.name.as_deref(), Some("renamed-pg"));
+        assert!(req.size.is_some());
+        assert_eq!(req.ha_type, Some(PgHaType::Sync));
+        assert_eq!(req.tags.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn merge_response_tags_merges_returned_tags() {
+        let current = vec![
+            ResourceTagsV1Response {
+                key: Some("env".into()),
+                value: Some("dev".into()),
+            },
+            ResourceTagsV1Response {
+                key: Some("team".into()),
+                value: Some("data".into()),
+            },
+        ];
+        let add = vec![ResourceTagsV1 {
+            key: "env".into(),
+            value: Some("prod".into()),
+        }];
+        let out = merge_response_tags(Some(current), &add, &["team".to_string()]).unwrap();
+        assert_eq!(out, add);
+    }
+
+    #[test]
+    fn merge_response_tags_refuses_a_returned_tag_without_a_key() {
+        let current = vec![ResourceTagsV1Response {
+            key: None,
+            value: Some("dev".into()),
+        }];
+        let err = merge_response_tags(Some(current), &[], &[])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("key"), "unexpected error: {err}");
+    }
+
+    fn pg_test_id() -> PgIdProperty {
+        PgIdProperty::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap()
+    }
+
+    #[test]
+    fn postgres_credentials_block_shows_the_password_the_api_sent() {
+        assert_eq!(
+            postgres_credentials_block(Some("pg_user"), Some("s3cret"), None, Some(&pg_test_id())),
+            "Credentials (save these — password shown only once):\n  Username: pg_user\n  \
+             Password: s3cret"
+        );
+    }
+
+    #[test]
+    fn postgres_credentials_block_treats_an_empty_password_as_sent() {
+        assert_eq!(
+            postgres_credentials_block(None, Some(""), None, None),
+            format!(
+                "Credentials (save these — password shown only once):\n  Username: {ABSENT}\n  \
+                 Password: "
+            )
+        );
+    }
+
+    #[test]
+    fn postgres_credentials_block_points_at_the_connection_string_instead_of_a_reset() {
+        // The connection string embeds the password, so the credential isn't
+        // lost and a reset would rotate a working password for nothing.
+        let block = postgres_credentials_block(
+            Some("pg_user"),
+            None,
+            Some("postgresql://pg_user:s3cret@host:5432/postgres"),
+            Some(&pg_test_id()),
+        );
+        assert!(
+            !block.contains("reset-password"),
+            "a recoverable password must not be reset: {block}"
+        );
+        assert!(
+            block.contains("connection string below embeds it"),
+            "the warning should point at the connection string: {block}"
+        );
+    }
+
+    #[test]
+    fn postgres_credentials_block_warns_with_the_reset_command_when_the_password_is_absent() {
+        let block = postgres_credentials_block(Some("pg_user"), None, None, Some(&pg_test_id()));
+        assert!(
+            !block.contains(&format!("Password: {ABSENT}")),
+            "an absent password must not render a placeholder credential: {block}"
+        );
+        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
+        assert!(
+            block.contains(
+                "clickhousectl cloud postgres reset-password \
+                 a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6 --generate"
+            ),
+            "the warning should name the exact recovery command: {block}"
+        );
+    }
+
+    #[test]
+    fn postgres_credentials_block_warns_generically_when_the_service_id_is_absent() {
+        let block = postgres_credentials_block(Some("pg_user"), None, None, None);
+        assert!(block.starts_with("WARNING: the API response omitted the one-time password"));
+        assert!(
+            block.contains("clickhousectl cloud postgres reset-password <postgres-id> --generate"),
+            "without an id the warning should stay generic: {block}"
+        );
+    }
+
+    #[test]
+    fn instance_config_from_json_requires_explicit_sections() {
+        for (document, missing) in [
+            (serde_json::json!({}), "pgConfig"),
+            (
+                serde_json::json!({ "pgConfig": { "max_connections": 500 } }),
+                "pgBouncerConfig",
+            ),
+            (
+                serde_json::json!({ "pgBouncerConfig": { "default_pool_size": "16" } }),
+                "pgConfig",
+            ),
+        ] {
+            let err = instance_config_from_json(&document)
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("missing required"), "{err}");
+            assert!(err.contains(missing), "{err}");
+            assert!(err.contains("explicitly empty"), "{err}");
+        }
+
+        let empty = instance_config_from_json(
+            &serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} }),
+        )
+        .unwrap();
+        assert_eq!(empty.pg_config, PgConfig::default());
+        assert_eq!(empty.pg_bouncer_config, PgBouncerConfig::default());
+    }
+
+    #[test]
+    fn instance_config_from_json_accepts_both_sections() {
+        let cfg = instance_config_from_json(&serde_json::json!({
+            "pgConfig": { "max_connections": 500, "work_mem": "64MB" },
+            "pgBouncerConfig": { "default_pool_size": "16", "future_parameter": "on" },
+        }))
+        .unwrap();
+        assert_eq!(cfg.pg_config.max_connections, Some(serde_json::json!(500)));
+        assert_eq!(cfg.pg_config.work_mem, Some(serde_json::json!("64MB")));
+        assert_eq!(cfg.pg_bouncer_config["default_pool_size"], "16");
+        assert_eq!(cfg.pg_bouncer_config["future_parameter"], "on");
+    }
+
+    #[test]
+    fn instance_config_from_json_refuses_a_non_object_root() {
+        // A non-object root must not read as "no sections": that would send
+        // `{"pgConfig": {}, "pgBouncerConfig": {}}` and reset the config.
+        for root in [
+            serde_json::Value::Null,
+            serde_json::json!([{ "pgConfig": {} }]),
+            serde_json::json!("pgConfig"),
+            serde_json::json!(7),
+            serde_json::json!(true),
+        ] {
+            let err = instance_config_from_json(&root).unwrap_err().to_string();
+            assert_eq!(err, "configuration document must be a JSON object");
+        }
+    }
+
+    #[test]
+    fn instance_config_from_json_reports_an_invalid_section() {
+        let err =
+            instance_config_from_json(&serde_json::json!({ "pgConfig": 7, "pgBouncerConfig": {} }))
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("invalid pgConfig"), "unexpected error: {err}");
+
+        let err = instance_config_from_json(
+            &serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": [] }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("invalid pgBouncerConfig"),
+            "unexpected error: {err}"
+        );
+
+        let err = instance_config_from_json(&serde_json::json!({
+            "pgConfig": {},
+            "pgBouncerConfig": {},
+            "pgBouncerConfigs": {}
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("unknown configuration section 'pgBouncerConfigs'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn pg_config_validation_preserves_every_known_key_and_value() {
+        let mut values = serde_json::Map::new();
+        for key in PG_CONFIG_KEYS {
+            let value = match key {
+                "default_transaction_isolation" => serde_json::json!("repeatable read"),
+                "ssl_min_protocol_version" => serde_json::json!("TLSv1.3"),
+                "wal_compression" => serde_json::json!("zstd"),
+                "autovacuum_analyze_scale_factor" => serde_json::json!(false),
+                _ => serde_json::json!(0),
+            };
+            values.insert(key.to_string(), value);
+        }
+        let input = serde_json::Value::Object(values);
+        let parsed = pg_config_from_json(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), input);
+    }
+
+    #[test]
+    fn absent_response_fields_render_as_a_dash() {
+        let item = PostgresServiceListItem::default();
+        assert_eq!(or_absent(item.name.as_deref()), ABSENT);
+        assert_eq!(state_label(item.state.as_ref()), ABSENT);
+        assert_eq!(enum_label(item.size.as_ref()), ABSENT);
+    }
+
+    fn filters(raw: &[&str]) -> Vec<PostgresListFilter> {
+        raw.iter()
+            .map(|f| parse_postgres_list_filter(f).expect("valid filter"))
+            .collect()
+    }
+
+    #[test]
+    fn apply_filter_does_not_match_absent_response_fields() {
+        let absent = PostgresServiceListItem::default();
+        for filter in [
+            "region=us-east-1",
+            "state=running",
+            "name=my-pg",
+            "provider=aws",
+            "isPrimary=true",
+            "isPrimary=false",
+        ] {
+            assert!(
+                !apply_filter(&absent, &filters(&[filter])),
+                "absent field must not match {filter}"
+            );
+        }
+
+        let present = PostgresServiceListItem {
+            region: Some("us-east-1".to_string()),
+            state: Some(clickhouse_cloud_api::models::PgStateProperty::Running),
+            name: Some("my-pg".to_string()),
+            provider: Some(clickhouse_cloud_api::models::PgProvider::Aws),
+            is_primary: Some(true),
+            ..Default::default()
+        };
+        assert!(apply_filter(
+            &present,
+            &filters(&[
+                "region=us-east-1",
+                "state=running",
+                "name=my-pg",
+                "provider=aws",
+                "isPrimary=true",
+            ])
+        ));
+        // Every filter must hold: one mismatch drops the item.
+        assert!(!apply_filter(
+            &present,
+            &filters(&["region=us-east-1", "isPrimary=false"])
+        ));
+    }
+
+    #[test]
+    fn apply_filter_compares_states_by_wire_value_not_debug_form() {
+        use clickhouse_cloud_api::models::PgStateProperty;
+
+        // Multi-word wire values and the `Unknown` catch-all both matched
+        // nothing while the comparison used `format!("{:?}")` (issue #603).
+        let restoring = PostgresServiceListItem {
+            state: Some(PgStateProperty::Restoring_backup),
+            ..Default::default()
+        };
+        assert!(apply_filter(
+            &restoring,
+            &filters(&["state=restoring_backup"])
+        ));
+        assert!(apply_filter(
+            &restoring,
+            &filters(&["state=RESTORING_BACKUP"])
+        ));
+        assert!(!apply_filter(&restoring, &filters(&["state=running"])));
+
+        let unknown = PostgresServiceListItem {
+            state: Some(PgStateProperty::Unknown("hibernating".to_string())),
+            ..Default::default()
+        };
+        assert!(apply_filter(&unknown, &filters(&["state=hibernating"])));
+        assert!(!apply_filter(&unknown, &filters(&["state=running"])));
+    }
+
+    #[test]
+    fn apply_filter_compares_providers_by_wire_value() {
+        use clickhouse_cloud_api::models::PgProvider;
+
+        let gcp = PostgresServiceListItem {
+            provider: Some(PgProvider::Gcp),
+            ..Default::default()
+        };
+        assert!(apply_filter(&gcp, &filters(&["provider=gcp"])));
+        assert!(!apply_filter(&gcp, &filters(&["provider=aws"])));
+
+        let unknown = PostgresServiceListItem {
+            provider: Some(PgProvider::Unknown("azure".to_string())),
+            ..Default::default()
+        };
+        assert!(apply_filter(&unknown, &filters(&["provider=azure"])));
+    }
+
+    #[test]
+    fn apply_filter_with_no_filters_keeps_every_item() {
+        assert!(apply_filter(&PostgresServiceListItem::default(), &[]));
+    }
+
+    /// `--org-id` is a shared flag, so every `cloud postgres` screen must
+    /// describe it identically, and the `<POSTGRES_ID>` positional must always
+    /// carry a description. Both properties are structural: the assertions
+    /// compare occurrences to each other, never to a fixed sentence.
+    #[test]
+    fn postgres_screens_describe_org_id_consistently_and_document_the_positional() {
+        use clap::CommandFactory;
+
+        fn walk(cmd: &clap::Command, path: &str, org_id: &mut Option<(String, String)>) {
+            for arg in cmd.get_arguments() {
+                let help = arg.get_help().map(|h| h.to_string()).unwrap_or_default();
+                match arg.get_id().as_str() {
+                    "org_id" => {
+                        assert!(!help.is_empty(), "{path}: --org-id has no help text");
+                        match org_id {
+                            Some((first_path, first_help)) => assert_eq!(
+                                &help, first_help,
+                                "{path}: --org-id help differs from {first_path}"
+                            ),
+                            None => *org_id = Some((path.to_string(), help)),
+                        }
+                    }
+                    "postgres_id" => {
+                        assert!(!help.is_empty(), "{path}: <POSTGRES_ID> has no help text")
+                    }
+                    _ => {}
+                }
+            }
+            for sub in cmd.get_subcommands() {
+                walk(sub, &format!("{path} {}", sub.get_name()), org_id);
+            }
+        }
+
+        let mut cli = Cli::command();
+        cli.build();
+        let cloud = cli.find_subcommand("cloud").expect("cloud command");
+        let postgres = cloud
+            .find_subcommand("postgres")
+            .expect("cloud postgres command");
+        let mut org_id = None;
+        walk(postgres, "cloud postgres", &mut org_id);
+        assert!(org_id.is_some());
     }
 }

@@ -2,17 +2,63 @@
 
 Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/cloud/manage/openapi).
 
+## Updated Cloud API surface
+
+The beta `snapshot_get_list` and `snapshot_get` methods return service `Snapshot`
+records, including the `throttled` status and full snapshot type. Snapshot response
+fields tolerate missing and null values; provider-specific bucket properties and
+unknown status/type values remain lossless.
+
+The beta `snapshot_configuration_get` and `snapshot_configuration_update` methods
+read and update scheduled snapshots using `SnapshotConfiguration` and
+`SnapshotConfigurationPatchRequest`. `gap` and `time_frame` are measured in
+minutes. Updates require an ADMIN API key and at least one field; `None` omits a
+field to leave it unchanged, while `Some(false)` explicitly disables scheduling.
+The API rejects null and validates supported enabled cadence pairs: gap/time-frame
+values of `(30, 1440)` or `(60, 2880)`. Response fields tolerate absence and null.
+
+ClickPipes requests now include destination-table `ttl`, MongoDB
+`initial_load_parallelism`, and `start_paused`. Empty TTL and false `start_paused`
+values are omitted to preserve existing create behavior; set a nonempty TTL SQL
+expression or `start_paused: true` to send them. Starting paused is unsupported
+for database ClickPipes. `UdfArgumentOutput` matches the newly named UDF response
+schema; `UdfArgumentResponse` remains a compatible alias.
+
+The live snapshot adds `credit_balances_get` (trial and prepaid credit balances), `service_profiles_list` (region and optional BYOC infrastructure), and `click_pipes_service_context_get` (GCP workload identity readiness and principal).
+
+BigQuery and Pub/Sub source models now distinguish service-account and workload-identity authentication with typed unions. Build `ClickPipePostBigQueryServiceAccountSource` or `ClickPipePostPubSubServiceAccountSource` and call `.into()` for existing service-account flows; workload-identity variants omit customer credentials. BigQuery settings and table mappings now permit the optional fields the API accepts. Kafka requests gain optional `protobuf_schema`, which is only supported for Protobuf without a schema registry; MySQL table mappings gain `partition_by_expr`.
+
+`ServiceProfile` now represents the profile discovery response (`profile`, `cpu_cores`, `memory_gi`); the former `Service.profile` value enum is named `ServiceProfileName`. Dynamic profile names remain lossless through its `Unknown(String)` variant.
+
+ClickStack models now include alert channel lists, 30-second alert intervals, query-timeout errors, chart formulas and series limits, dashboard variables and broadcast filters, service-version expressions, and typed SQL/variable saved-filter unions. New formula and saved-filter response/request pairs support explicit fallible write-back through `TryFrom`; absent nested required fields return their wire names. UDF responses include `deterministic`. UDF request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation.
+
+The current alert request schemas have no `required` array or optional marker on either `channel` or `channels`, so both fields remain strict in the Rust request models. This mirrors the documented requiredness policy; it does not establish whether the server accepts a channels-only request. Supply the channel list explicitly rather than relying on the empty `Default` value (the API specifies 1–10 channels).
+
+Postgres slow-query aggregate durations (`*DurationUs`) and execution `durationUs` use `Option<f64>` to preserve fractional microseconds returned by the API. Counts remain integral. The analyzer tracks the upstream integer-schema discrepancy with response-only, stale-checked exceptions ([#758](https://github.com/ClickHouse/clickhousectl/issues/758)).
+
+Kinesis source format enums now include `Protobuf`. Set `ClickPipePostKinesisSource.protobuf_schema` to the base64-encoded `.proto` source or serialized `FileDescriptorSet` for that format; omit it for other formats. Organization Prometheus discovery has graduated from beta and is no longer listed in `BETA_OPERATIONS`.
+
+The beta Query API endpoint management methods are `query_api_endpoint_create`, `query_api_endpoint_get`, `query_api_endpoint_list`, `query_api_endpoint_update`, and `query_api_endpoint_delete`. Create and update take `PublicQueryApiEndpointRequest`; list accepts an optional cursor and limit (1–100) and returns `items` with `pagination.next_cursor`. User-owned endpoints can be listed and read, but cannot be updated or deleted through this API.
+
+### ClickHouse settings models
+
+`ServiceClickhouseSettingsPatchRequest` uses a map of setting names to JSON values, and `ServiceClickhouseSettingsPatchResponse.settings` returns the applied map. The published OpenAPI now describes both fields as nonempty objects with string or integer values. Use `ServiceClickhouseSettingsPatchRequest<ServiceClickhouseSettingsMap>` and `ServiceClickhouseSettingValue` for typed requests; the default JSON-value map remains source-compatible with existing callers. Explicit `ServiceClickhouseSettingsPatchRequest<String>` callers remain supported: encoded objects are validated and serialized as objects before sending.
+
+`ServiceClickhouseSetting.value` is `Option<serde_json::Value>`: the published contract permits strings and integers. The response aliases `ServiceClickhouseSettingValueResponse` and `ServiceClickhouseSettingsMapResponse` retain arbitrary JSON to tolerate future response types. Values retain their JSON types; missing and null values remain absent.
+
 ## Development
 
 ### Structure
 
 | Path | Purpose |
 |------|---------|
-| `src/client.rs` | `Client` struct with an async method per API endpoint |
-| `src/models.rs` | Request/response types matching the OpenAPI spec |
+| `src/client.rs`, `src/client/*.rs` | `Client`, shared HTTP machinery, and per-domain endpoint methods |
+| `src/models.rs`, `src/models/*.rs` | Public facade/macro and private per-domain request/response models |
+| `src/convert.rs`, `src/convert/*.rs` | Conversion error and per-domain response-to-request conversions |
 | `src/error.rs` | Error types (`Http`, `Json`, `Api`) |
 | `clickhouse_cloud_openapi.json` | Checked-in copy of the spec (used by tests) |
-| `tests/spec_coverage_test.rs` | Validates client methods, model types, and field optionality match the spec |
+| `tests/spec_coverage_test.rs` | Thin snapshot/live-spec consumer of the shared drift analyzer |
+| `../clickhouse-openapi-analyzer` | Canonical Rust/OpenAPI parsing, comparison, report, and exemptions |
 
 ### Field optionality
 
@@ -20,13 +66,16 @@ The OpenAPI spec uses two conventions for marking fields required vs optional:
 
 - **Schemas with a `required` array** (newer/beta endpoints) use standard OpenAPI semantics.
 - **Schemas without `required`** (GA/legacy endpoints) treat fields whose description starts with `"Optional"` as optional. Everything else is implicitly required.
+- **Known partial `required` arrays** use the union of that array and the description heuristic, as configured by the analyzer.
 
 Additional rules:
 
 - **PATCH request schemas** (name contains `Patch` and ends with `Request`) are always all-optional.
 - **Nullable fields** (`type: ["string", "null"]` or `oneOf` with null) are always `Option<T>`, even if required.
 
-In `models.rs`, required non-nullable fields use bare types (`T`) and optional/nullable fields use `Option<T>`. All fields keep `#[serde(default)]` so deserialization is tolerant of partial data.
+In `src/models/<domain>.rs`, request fields follow those rules: required non-nullable fields use `T`, while optional or nullable fields use `Option<T>`. Every response field uses `Option<T>` plus `skip_serializing_if`, so missing keys and explicit `null` deserialize natively to `None` and absent fields are omitted when serialized. `#[serde(default)]` is banned because it can fabricate required request values and is redundant for `Option` response fields.
+
+API key PATCH expiry uses `Option<Option<DateTime<Utc>>>`: `None` leaves the current expiry unchanged, `Some(Some(time))` sets it, and `Some(None)` removes it. These three states survive serialization and deserialization. API key creation still uses `Option<DateTime<Utc>>`, where omission creates a key without an expiry.
 
 ### Deprecated fields
 
@@ -41,19 +90,23 @@ python3 scripts/resolve-field-requirements.py
 # Regenerate the DEPRECATED_FIELDS constant from the snapshot
 python3 scripts/regenerate-deprecated-fields.py
 
+# Regenerate the BETA_OPERATIONS constant from the snapshot
+python3 scripts/regenerate-beta-lists.py
+
 # Check for drift between the live spec and the library (dry run)
 python3 scripts/check-openapi-drift.py --dry-run
 ```
 
-Field optionality is maintained by hand — edit `models.rs` directly when the drift check flags a mismatch.
+Field optionality is maintained by hand. Edit the owning model domain file when the drift check flags a mismatch, and add new domain types to the private module and facade re-exports in `models.rs`.
 
 ### Testing
 
 ```bash
 cargo test -p clickhouse-cloud-api          # all tests
-cargo test --test spec_coverage_test        # spec coverage + field optionality only
-cargo test --test client_test               # wiremock-based client tests
-cargo test --test models_test               # serde round-trip tests
+cargo test -p clickhouse-openapi-analyzer   # analyzer fixtures + executable parity
+cargo test -p clickhouse-cloud-api --test spec_coverage_test # shared snapshot report
+cargo test -p clickhouse-cloud-api --test client_test        # wiremock client tests
+cargo test -p clickhouse-cloud-api --test models_test        # serde round trips
 ```
 
 Live-API lifecycle suites are `#[ignore]`d by default (they provision real resources):
@@ -73,23 +126,62 @@ cargo test --test clickpipe_kinesis_test -- --ignored --nocapture        # per-s
 cargo test --test clickpipe_mongo_test -- --ignored --nocapture          # per-source: MongoDB
 cargo test --test clickpipe_mysql_test -- --ignored --nocapture          # per-source: MySQL
 cargo test --test clickpipe_postgres_ec2_test -- --ignored --nocapture   # per-source: Postgres-on-EC2
-cargo test --test clickpipe_postgres_cdc_test -- --ignored --nocapture   # CHC-managed Postgres CDC
+cargo test --test clickpipe_postgres_cli_cdc_test -- --ignored --nocapture # CHC-managed Postgres CDC via CLI
 cargo test --test clickpipe_smoke_test -- --ignored --nocapture          # create-only smoke against a shared service
 ```
 
 All require `CLICKHOUSE_CLOUD_API_KEY`, `CLICKHOUSE_CLOUD_API_SECRET`, `CLICKHOUSE_CLOUD_TEST_ORG_ID`, `CLICKHOUSE_CLOUD_TEST_PROVIDER`, and `CLICKHOUSE_CLOUD_TEST_REGION` in the environment, and are wired into the scheduled `Cloud Integration` GitHub Actions workflow. The ClickPipes E2E suites additionally need AWS credentials and an `eu-west-1` region quota; `clickpipe_smoke_test` reads a pre-provisioned service ID from `CLICKHOUSE_CLOUD_TEST_CLICKPIPE_SERVICE_ID`.
 
-The `spec_coverage_test` suite checks three things against the checked-in spec:
+The managed-Postgres target invokes the real CLI and requires `CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN` to point to a built `clickhousectl` binary. From the workspace root, build and run it with:
 
-1. Every OpenAPI operation has a matching `pub async fn` in `client.rs`
-2. Every OpenAPI schema has a matching `pub struct`/`pub enum` in `models.rs`
-3. Every field's `Option<T>` vs `T` matches the spec's required/optional semantics
-4. `DEPRECATED_FIELDS` matches the spec's `deprecated: true` fields (request- and response-side), and each one carries the `#[cfg(feature = "deprecated-fields")]` marker in `models.rs`
+```bash
+cargo build -p clickhousectl
+CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN=target/debug/clickhousectl \
+  cargo test -p clickhouse-cloud-api --test clickpipe_postgres_cli_cdc_test -- --ignored --nocapture
+```
 
-There are also `#[ignore]`d variants that run the same checks against the live spec.
+The trusted planner runs automatically on every same-repository PR push and selects suites from that PR's merge-base-to-head diff; it is read-only and never receives Cloud secrets. When it selects no live suites, the `Cloud integration decision` check turns green with no action needed. When live suites are selected, the decision check names them and stays `action_required` until `run-cloud-integration` is applied — the labeled event is the one-shot, exact-SHA authorization that admits the environment-bearing job, so re-apply the label after any push. Unknown API source or test paths select all suites, and changes to the classifier, its tests, or the workflow also select all suites through an independent workflow guard. Manual `Cloud Integration` dispatches accept `scope=all`, `service`, `postgres`, `organization`, or `clickpipes`. The focused scopes run only their corresponding suite; `clickpipes` runs Postgres CDC plus the fixture-gated smoke test, while `all` runs all four mandatory suites plus that optional smoke test. Because stacked-PR diffs exclude inherited changes, manually run `scope=all` against the top stack branch for full-stack validation.
+
+`spec_coverage_test` sends the checked-in sources and snapshot through the
+private `clickhouse-openapi-analyzer` crate. The analyzer recursively traverses
+the module trees rooted at `client.rs`, `models.rs`, and `meta.rs`, including
+private per-domain files. That same analyzer powers the scheduled live-spec
+issue, so operation, model, field, optionality, beta, deprecation, enum,
+snapshot, and stale-exemption findings share one implementation. The single
+ignored test runs the same report against the live spec. The analyzer also checks
+inline union payload fields and request requiredness.
 
 ### Optionality exemptions
 
-Occasionally the spec marks a field as required but the API actually treats it as optional (e.g. sending an empty string triggers a `400 BAD_REQUEST`). In these cases we override the field to `Option<T>` in `models.rs` and add the field to the `OPTIONALITY_EXEMPTIONS` list in `spec_coverage_test.rs`.
+Occasionally the spec cannot be followed literally because verified API
+behavior differs. All such policy lives in
+`crates/clickhouse-openapi-analyzer/src/config.rs`, including optionality,
+extra-field, deprecated-field, extra-enum-value, non-OpenAPI-method, partial
+required-schema, and unsupported-enum configuration.
 
-The test prints a `NOTE:` line for every exemption that fires, and **fails** if an exemption becomes stale (i.e. the spec was corrected upstream and the override is no longer needed). To add a new exemption, add a `("RustStructName", "specFieldName")` entry to the constant with a comment explaining why.
+Add an exemption only for a deliberate runtime behavior and document why the
+spec cannot be followed. New unsupported-enum acknowledgements also require a
+tracking issue. The analyzer reports stale field/enum exemptions and vanished
+unsupported locations so obsolete entries are removed during normal drift
+remediation. Acknowledged locations also report changed enum values against
+the snapshot, including numeric and mixed values; unchanged sets remain
+acknowledged. See the repository `AGENTS.md` for exact key formats and the full
+remediation and verification procedure.
+
+### ClickStack list pagination
+
+`click_stack_list_alerts`, `click_stack_list_webhooks`, and
+`click_stack_list_saved_searches` take `limit: Option<i64>` and
+`offset: Option<i64>` after the organization and service IDs. Pass `None, None`
+for the server defaults (1,000 records, offset zero). For a complete inventory,
+request pages with an explicit limit from 1 to 1,000 and advance the offset
+until the returned page is shorter than that limit. Existing callers upgrading
+to 0.5.0 should add `None, None` to preserve their current request behavior.
+
+### UDF attachment errors
+
+Rust callers receive `Error::UdfAttachmentUnavailable` for a structured attachment failure (HTTP 424); its `UdfAttachResponse424` payload preserves the error code, service state, wake eligibility, and request ID. Fields tolerate absence and null, and enums retain unknown values. Malformed responses remain `Error::Api` with the original error message.
+
+### OpenAPI response coverage
+
+The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 8.

@@ -1,8 +1,9 @@
 //! Resolution and listing of custom server config files.
 //!
 //! Users drop named ClickHouse config files into `~/.clickhouse/configs/` and
-//! reference them by name with `clickhousectl local server start --config-file
-//! <NAME>`. The file is passed to ClickHouse as `--config-file`; the launcher
+//! reference them by name with `clickhousectl local server start --config
+//! <NAME>`. The file is staged into the server's `config.d/` directory, so it
+//! is merged as an overlay on ClickHouse's built-in defaults; the launcher
 //! still forces `--path=./` and the ports as command-line overrides (which beat
 //! config-file values), so the managed server lifecycle is preserved regardless
 //! of what the config file contains.
@@ -140,7 +141,7 @@ pub fn list_configs() -> Result<Vec<String>> {
 /// directory with its built-in defaults, so a partial override file takes
 /// effect without replacing the whole config. We own a single file there named
 /// `chctl-config.<ext>`; any previously staged overlay (in any recognized
-/// extension) is removed first, so restarting a server without `--config-file`
+/// extension) is removed first, so restarting a server without `--config`
 /// reverts cleanly to plain defaults.
 pub fn apply_config_overlay(data_dir: &Path, source: Option<&Path>) -> Result<()> {
     let config_d = data_dir.join("config.d");
@@ -249,10 +250,7 @@ mod tests {
         std::fs::create_dir(&configs).unwrap();
 
         let err = resolve_config_in(&configs, "../outside").unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidConfigName(_)),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidConfigName(_)), "got: {err:?}");
     }
 
     #[test]
@@ -264,10 +262,7 @@ mod tests {
         std::fs::create_dir(&configs).unwrap();
 
         let err = resolve_config_in(&configs, "../outside.xml").unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidConfigName(_)),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidConfigName(_)), "got: {err:?}");
     }
 
     #[test]
@@ -277,20 +272,14 @@ mod tests {
         // Absolute path would make `dir.join` discard the configs dir entirely.
         let abs = tmp.path().join("dev.xml");
         let err = resolve_config_in(tmp.path(), abs.to_str().unwrap()).unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidConfigName(_)),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidConfigName(_)), "got: {err:?}");
     }
 
     #[test]
     fn rejects_dotdot() {
         let tmp = tempfile::tempdir().unwrap();
         let err = resolve_config_in(tmp.path(), "..").unwrap_err();
-        assert!(
-            matches!(err, Error::InvalidConfigName(_)),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, Error::InvalidConfigName(_)), "got: {err:?}");
     }
 
     #[test]
@@ -338,7 +327,12 @@ mod tests {
 
         apply_config_overlay(&data_dir, Some(&src)).unwrap();
 
-        assert!(data_dir.join("config.d").join("chctl-config.yaml").is_file());
+        assert!(
+            data_dir
+                .join("config.d")
+                .join("chctl-config.yaml")
+                .is_file()
+        );
     }
 
     #[test]

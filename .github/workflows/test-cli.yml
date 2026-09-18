@@ -6,10 +6,16 @@ on:
     paths:
       - "crates/clickhousectl/**"
       - "Cargo.lock"
+      - "scripts/classify-install-integration.py"
+      - "scripts/tests/test_classify_install_integration.py"
+      - ".github/workflows/test-install.yml"
       - ".github/workflows/test-cli.yml"
 
 permissions:
   contents: read
+
+env:
+  DO_NOT_TRACK: "1"
 
 jobs:
   test:
@@ -29,5 +35,15 @@ jobs:
       - name: Clippy
         run: cargo clippy -p clickhousectl -- -D warnings
 
+      # Telemetry must compile out entirely for distro packagers.
+      - name: Check without default features (telemetry compiled out)
+        run: cargo check -p clickhousectl --no-default-features
+
+      - name: Clippy without default features
+        run: cargo clippy -p clickhousectl --all-targets --no-default-features -- -D warnings
+
       - name: Test
         run: cargo test -p clickhousectl
+
+      - name: Verify install workflow path mapping
+        run: python3 scripts/tests/test_classify_install_integration.py

@@ -10,9 +10,15 @@ Cargo feature is enabled, so callers can neither read a deprecated response
 field nor send a deprecated request field by default.
 
 Run this whenever the snapshot is refreshed. Paste the output into meta.rs.
-The `deprecated_fields_match_spec` test fails until the constant matches,
-and `deprecated_fields_hidden` fails until each field also carries the
-`#[cfg(feature = "deprecated-fields")]` marker in models.rs.
+The shared OpenAPI analyzer reports drift until the constant matches and each
+field also carries the `#[cfg(feature = "deprecated-fields")]` marker in
+models.rs.
+
+Struct names come from spec schema names alone. A schema modeled as both a
+request and a response type is split into `{Name}` and `{Name}Response` in
+models.rs, and the analyzer expects one entry per Rust type, so re-add the
+`{Name}Response` entries by hand after pasting (see meta.rs). Deriving them
+here would mean parsing models.rs, which belongs to the analyzer, not Python.
 
 Usage:
     python3 scripts/regenerate-deprecated-fields.py

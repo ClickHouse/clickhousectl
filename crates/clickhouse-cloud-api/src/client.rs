@@ -3,7 +3,17 @@
 //! Auto-generated from the OpenAPI specification.
 
 use crate::error::Error;
-use crate::models::*;
+
+mod activity;
+mod api_keys;
+mod backups;
+mod clickpipes;
+mod clickstack;
+mod organizations;
+mod postgres;
+mod query_api_endpoints;
+mod services;
+mod udfs;
 
 /// Authentication mode for the API client.
 #[derive(Debug, Clone)]
@@ -52,11 +62,83 @@ fn derive_query_host(base_url: &str) -> Option<String> {
     let parsed = url::Url::parse(base_url).ok()?;
     let rest = parsed.host_str()?.strip_prefix("api.")?;
     let rest = rest.strip_prefix("control-plane.").unwrap_or(rest);
-    let port = parsed
-        .port()
-        .map(|p| format!(":{p}"))
-        .unwrap_or_default();
+    let port = parsed.port().map(|p| format!(":{p}")).unwrap_or_default();
     Some(format!("{}://queries.{}{}", parsed.scheme(), rest, port))
+}
+
+/// The ClickHouse error code and details a Query API failure body carries, or
+/// `None` when the body is not a SQL-level error report.
+fn query_api_sql_error(body: &str) -> Option<(String, String)> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let error = value.get("error")?;
+    let code = match error.get("code")? {
+        serde_json::Value::String(code) if !code.is_empty() => code.clone(),
+        serde_json::Value::Number(code) => code.to_string(),
+        _ => return None,
+    };
+    let details = error.get("details")?.as_str()?;
+    if details.is_empty() {
+        return None;
+    }
+    Some((code, details.to_string()))
+}
+
+/// Classify a Query API failure body: a SQL-level rejection becomes
+/// [`Error::Sql`], anything else stays an [`Error::Api`]. The rendered text is
+/// identical to what the single `Api` variant produced before, so callers that
+/// only print the error see no change; callers that need to know *what kind of
+/// failure this was* read the variant instead of the message.
+fn query_api_error(status: reqwest::StatusCode, body: &str) -> Error {
+    if query_api_reports_timeout(status, body) {
+        return Error::QueryTimeout;
+    }
+    if let Some((code, details)) = query_api_sql_error(body) {
+        return Error::Sql {
+            status: status.as_u16(),
+            code,
+            details,
+        };
+    }
+    Error::Api {
+        status: status.as_u16(),
+        message: if body.is_empty() {
+            format!("Query API returned HTTP {status} with an empty response body")
+        } else {
+            format!("Query API returned HTTP {status}: {body}")
+        },
+    }
+}
+
+/// Whether a Query API failure is the gateway giving up on the statement:
+/// HTTP 500 whose body is exactly `{"error": "Timeout error."}`.
+///
+/// The body is parsed as JSON and the `error` field compared in full, the same
+/// shape as [`query_api_reports_stopped_service`]. A substring match on
+/// `Timeout` would also fire on a ClickHouse error *about* a timeout that the
+/// service itself reported, which is a different failure with a different
+/// remedy.
+fn query_api_reports_timeout(status: reqwest::StatusCode, body: &str) -> bool {
+    const TIMEOUT_MESSAGE: &str = "Timeout error.";
+
+    status == reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                value.get("error").and_then(serde_json::Value::as_str) == Some(TIMEOUT_MESSAGE)
+            })
+}
+
+fn query_api_reports_stopped_service(status: reqwest::StatusCode, body: &str) -> bool {
+    const STOPPED_SERVICE_MESSAGE: &str =
+        "ClickHouse service is currently unavailable. Please try again later.";
+
+    status == reqwest::StatusCode::NOT_FOUND
+        && serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .is_some_and(|value| {
+                value.get("error").and_then(serde_json::Value::as_str)
+                    == Some(STOPPED_SERVICE_MESSAGE)
+            })
 }
 
 impl Client {
@@ -83,10 +165,7 @@ impl Client {
     }
 
     /// Create a new client with Bearer token authentication and a custom base URL.
-    pub fn with_bearer_token(
-        base_url: impl Into<String>,
-        token: impl Into<String>,
-    ) -> Self {
+    pub fn with_bearer_token(base_url: impl Into<String>, token: impl Into<String>) -> Self {
         Self {
             http: reqwest::Client::new(),
             base_url: base_url.into().trim_end_matches('/').to_string(),
@@ -165,16 +244,26 @@ impl Client {
         self
     }
 
+    /// The Query API host this client would use, when one is actually
+    /// configured: the explicit override, else the `CLICKHOUSE_CLOUD_QUERY_HOST`
+    /// env var, else the host derived from the base URL. `None` means none of
+    /// those apply and a query would go to the production default. A caller
+    /// that talks to a non-production control plane (a local mock, say) can
+    /// use that to avoid sending anything to production by accident.
+    pub fn configured_query_host(&self) -> Option<String> {
+        if let Some(host) = &self.query_host {
+            return Some(host.clone());
+        }
+        if let Ok(host) = std::env::var("CLICKHOUSE_CLOUD_QUERY_HOST") {
+            return Some(host);
+        }
+        derive_query_host(&self.base_url)
+    }
+
     /// Resolve the Query API host: explicit override, then env var, then
     /// derivation from the base URL, then the production default.
     fn resolved_query_host(&self) -> String {
-        if let Some(host) = &self.query_host {
-            return host.clone();
-        }
-        if let Ok(host) = std::env::var("CLICKHOUSE_CLOUD_QUERY_HOST") {
-            return host;
-        }
-        derive_query_host(&self.base_url)
+        self.configured_query_host()
             .unwrap_or_else(|| "https://queries.clickhouse.cloud".to_string())
     }
 
@@ -325,7 +414,12 @@ impl Client {
         // wake confirmation to wake it and run the query), `Service is
         // stopped` for one that must be started explicitly.
         if status.as_u16() == 206 {
-            let body_text = response.text().await.unwrap_or_default();
+            let body_text = response.text().await.map_err(|error| Error::Api {
+                status: status.as_u16(),
+                message: format!(
+                    "Query API returned HTTP {status}, but its response body could not be read: {error}"
+                ),
+            })?;
             #[derive(serde::Deserialize)]
             struct StateBody {
                 data: Option<String>,
@@ -336,2541 +430,29 @@ impl Client {
             return Err(match data.as_deref() {
                 Some("Confirm wake service") => Error::ServiceIdle,
                 Some("Service is stopped") => Error::ServiceStopped,
-                _ => Error::Api {
-                    status: 206,
-                    message: body_text,
-                },
+                _ => query_api_error(status, &body_text),
             });
         }
         if !status.is_success() {
-            let body_text = response.text().await.unwrap_or_default();
-            return Err(Error::Api {
+            let body_text = response.text().await.map_err(|error| Error::Api {
                 status: status.as_u16(),
-                message: if body_text.is_empty() {
-                    format!("Query API returned {status}")
-                } else {
-                    body_text
-                },
-            });
+                message: format!(
+                    "Query API returned HTTP {status}, but its response body could not be read: {error}"
+                ),
+            })?;
+            if query_api_reports_stopped_service(status, &body_text) {
+                return Err(Error::ServiceStopped);
+            }
+            return Err(query_api_error(status, &body_text));
         }
 
         Ok(response)
     }
-
-    /// Get list of available organizations
-    pub async fn organization_get_list(
-        &self,
-    ) -> Result<ApiResponse<Vec<Organization>>, Error> {
-        let path = "/v1/organizations".to_string();
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get organization details
-    pub async fn organization_get(
-        &self,
-        organization_id: &str,
-    ) -> Result<ApiResponse<Organization>, Error> {
-        let path = format!("/v1/organizations/{organization_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update organization details
-    pub async fn organization_update(
-        &self,
-        organization_id: &str,
-        body: &OrganizationPatchRequest,
-    ) -> Result<ApiResponse<Organization>, Error> {
-        let path = format!("/v1/organizations/{organization_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// List of organization activities
-    pub async fn activity_get_list(
-        &self,
-        organization_id: &str,
-        from_date: Option<&str>,
-        to_date: Option<&str>,
-    ) -> Result<ApiResponse<Vec<Activity>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/activities");
-        let mut req = self.request(reqwest::Method::GET, &path);
-        if let Some(v) = from_date {
-            req = req.query(&[("from_date", v)]);
-        }
-        if let Some(v) = to_date {
-            req = req.query(&[("to_date", v)]);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Organization activity
-    pub async fn activity_get(
-        &self,
-        organization_id: &str,
-        activity_id: &str,
-    ) -> Result<ApiResponse<Activity>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/activities/{activity_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create BYOC Infrastructure
-    pub async fn organization_byoc_infrastructure_create(
-        &self,
-        organization_id: &str,
-        body: &ByocInfrastructurePostRequest,
-    ) -> Result<ApiResponse<ByocConfig>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/byocInfrastructure");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Remove a BYOC infrastructure
-    pub async fn organization_byoc_infrastructure_delete(
-        &self,
-        organization_id: &str,
-        byoc_infrastructure_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update BYOC Infrastructure
-    pub async fn organization_byoc_infrastructure_update(
-        &self,
-        organization_id: &str,
-        byoc_infrastructure_id: &str,
-        body: &ByocInfrastructurePatchRequest,
-    ) -> Result<ApiResponse<ByocConfig>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// List all invitations
-    pub async fn invitation_get_list(
-        &self,
-        organization_id: &str,
-    ) -> Result<ApiResponse<Vec<Invitation>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/invitations");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create an invitation
-    pub async fn invitation_create(
-        &self,
-        organization_id: &str,
-        body: &InvitationPostRequest,
-    ) -> Result<ApiResponse<Invitation>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/invitations");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get invitation details
-    pub async fn invitation_get(
-        &self,
-        organization_id: &str,
-        invitation_id: &str,
-    ) -> Result<ApiResponse<Invitation>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/invitations/{invitation_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete organization invitation
-    pub async fn invitation_delete(
-        &self,
-        organization_id: &str,
-        invitation_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/invitations/{invitation_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get list of all keys
-    pub async fn openapi_key_get_list(
-        &self,
-        organization_id: &str,
-    ) -> Result<ApiResponse<Vec<ApiKey>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create key
-    pub async fn openapi_key_create(
-        &self,
-        organization_id: &str,
-        body: &ApiKeyPostRequest,
-    ) -> Result<ApiResponse<ApiKeyPostResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get key details
-    pub async fn openapi_key_get(
-        &self,
-        organization_id: &str,
-        key_id: &str,
-    ) -> Result<ApiResponse<ApiKey>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys/{key_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update key
-    pub async fn openapi_key_update(
-        &self,
-        organization_id: &str,
-        key_id: &str,
-        body: &ApiKeyPatchRequest,
-    ) -> Result<ApiResponse<ApiKey>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys/{key_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete key
-    pub async fn openapi_key_delete(
-        &self,
-        organization_id: &str,
-        key_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/keys/{key_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// List organization members
-    pub async fn member_get_list(
-        &self,
-        organization_id: &str,
-    ) -> Result<ApiResponse<Vec<Member>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/members");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get member details
-    pub async fn member_get(
-        &self,
-        organization_id: &str,
-        user_id: &str,
-    ) -> Result<ApiResponse<Member>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/members/{user_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update organization member
-    pub async fn member_update(
-        &self,
-        organization_id: &str,
-        user_id: &str,
-        body: &MemberPatchRequest,
-    ) -> Result<ApiResponse<Member>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/members/{user_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Remove an organization member
-    pub async fn member_delete(
-        &self,
-        organization_id: &str,
-        user_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/members/{user_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// List all available roles for an organization
-    pub async fn organization_roles_get_list(
-        &self,
-        organization_id: &str,
-    ) -> Result<ApiResponse<Vec<RBACRole>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create a new role
-    pub async fn organization_role_post(
-        &self,
-        organization_id: &str,
-        body: &RoleCreateRequest,
-    ) -> Result<ApiResponse<RBACRole>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get role details
-    pub async fn organization_role_get(
-        &self,
-        organization_id: &str,
-        role_id: &str,
-    ) -> Result<ApiResponse<RBACRole>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update a role
-    pub async fn organization_role_patch(
-        &self,
-        organization_id: &str,
-        role_id: &str,
-        body: &RoleUpdateRequest,
-    ) -> Result<ApiResponse<RBACRole>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete a role
-    pub async fn organization_role_delete(
-        &self,
-        organization_id: &str,
-        role_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/roles/{role_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create new Postgres service
-    pub async fn postgres_service_create(
-        &self,
-        organization_id: &str,
-        body: &PostgresServicePostRequest,
-    ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// List of organization Postgres services
-    pub async fn postgres_service_get_list(
-        &self,
-        organization_id: &str,
-    ) -> Result<ApiResponse<Vec<PostgresServiceListItem>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get PostgreSQL service details
-    pub async fn postgres_service_get(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-    ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete a PostgreSQL service
-    pub async fn postgres_service_delete(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update a PostgreSQL service
-    pub async fn postgres_service_patch(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-        body: &PostgresServicePatchRequest,
-    ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get Postgres CA certs
-    pub async fn postgres_service_certs_get(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-    ) -> Result<String, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/caCertificates");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(body_text)
-    }
-
-    /// Get PostgreSQL service configuration
-    pub async fn postgres_instance_config_get(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-    ) -> Result<ApiResponse<PostgresInstanceConfig>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/config");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Replace Postgres service configuration
-    pub async fn postgres_instance_config_post(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-        body: &PostgresInstanceConfig,
-    ) -> Result<ApiResponse<PostgresInstanceUpdateConfigResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/config");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update Postgres service configuration
-    pub async fn postgres_instance_config_patch(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-        body: &PostgresInstanceConfig,
-    ) -> Result<ApiResponse<PostgresInstanceUpdateConfigResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/config");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update Postgres superuser password
-    pub async fn postgres_service_set_password(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-        body: &PostgresServiceSetPassword,
-    ) -> Result<ApiResponse<PostgresServicePasswordResource>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/password");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create a read replica for a Postgres service
-    pub async fn postgres_instance_create_read_replica(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-        body: &PostgresServiceReadReplicaRequest,
-    ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/readReplica");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get PostgreSQL service metrics
-    pub async fn postgres_instance_prometheus_get(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-    ) -> Result<String, Error> {
-        let path =
-            format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/prometheus");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text),
-            });
-        }
-        Ok(resp.text().await?)
-    }
-
-    /// Get organization PostgreSQL metrics
-    pub async fn postgres_org_prometheus_get(
-        &self,
-        organization_id: &str,
-    ) -> Result<String, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/prometheus");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text),
-            });
-        }
-        Ok(resp.text().await?)
-    }
-
-    /// Restore a Postgres service
-    pub async fn postgres_instance_restore(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-        body: &PostgresServiceRestoreRequest,
-    ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/restoredService");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update Postgres service state
-    pub async fn postgres_service_patch_state(
-        &self,
-        organization_id: &str,
-        postgres_id: &str,
-        body: &PostgresServiceSetState,
-    ) -> Result<ApiResponse<PostgresService>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/state");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get private endpoint configuration for region within cloud provider for an organization
-    #[deprecated]
-    #[allow(deprecated)]
-    pub async fn organization_private_endpoint_config_get_list(
-        &self,
-        organization_id: &str,
-        cloud_provider: &str,
-        region_id: &str,
-    ) -> Result<ApiResponse<OrganizationCloudRegionPrivateEndpointConfig>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/privateEndpointConfig");
-        let mut req = self.request(reqwest::Method::GET, &path);
-        req = req.query(&[("cloud_provider", cloud_provider)]);
-        req = req.query(&[("region_id", region_id)]);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get organization metrics
-    pub async fn organization_prometheus_get(
-        &self,
-        organization_id: &str,
-        filtered_metrics: Option<&str>,
-    ) -> Result<String, Error> {
-        let path = format!("/v1/organizations/{organization_id}/prometheus");
-        let mut req = self.request(reqwest::Method::GET, &path);
-        if let Some(v) = filtered_metrics {
-            req = req.query(&[("filtered_metrics", v)]);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text),
-            });
-        }
-        Ok(resp.text().await?)
-    }
-
-    /// List of organization services
-    pub async fn instance_get_list(
-        &self,
-        organization_id: &str,
-        filters: &[&str],
-    ) -> Result<ApiResponse<Vec<Service>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services");
-        let mut req = self.request(reqwest::Method::GET, &path);
-        for f in filters {
-            req = req.query(&[("filter", f)]);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create new service
-    pub async fn instance_create(
-        &self,
-        organization_id: &str,
-        body: &ServicePostRequest,
-    ) -> Result<ApiResponse<ServicePostResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get service details
-    pub async fn instance_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<Service>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update service basic details
-    pub async fn instance_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ServicePatchRequest,
-    ) -> Result<ApiResponse<Service>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete service
-    pub async fn instance_delete(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get service backup bucket
-    pub async fn backup_bucket_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<BackupBucket>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create service backup bucket
-    pub async fn backup_bucket_create(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &BackupBucketPostRequest,
-    ) -> Result<ApiResponse<BackupBucket>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update service backup bucket
-    pub async fn backup_bucket_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &BackupBucketPatchRequest,
-    ) -> Result<ApiResponse<BackupBucket>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete service backup bucket
-    pub async fn backup_bucket_delete(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupBucket");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get service backup configuration
-    pub async fn backup_configuration_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<BackupConfiguration>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupConfiguration");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update service backup configuration
-    pub async fn backup_configuration_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &BackupConfigurationPatchRequest,
-    ) -> Result<ApiResponse<BackupConfiguration>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backupConfiguration");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// List of service backups
-    pub async fn backup_get_list(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<Vec<Backup>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backups");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get backup details
-    pub async fn backup_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        backup_id: &str,
-    ) -> Result<ApiResponse<Backup>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/backups/{backup_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// List ClickPipes
-    pub async fn click_pipe_get_list(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<Vec<ClickPipe>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create ClickPipe
-    pub async fn click_pipe_create(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ClickPipePostRequest,
-    ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get ClickPipe
-    pub async fn click_pipe_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_pipe_id: &str,
-    ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update ClickPipe
-    pub async fn click_pipe_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_pipe_id: &str,
-        body: &ClickPipePatchRequest,
-    ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete ClickPipe
-    pub async fn click_pipe_delete(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_pipe_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update ClickPipe scaling
-    pub async fn click_pipe_scaling_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_pipe_id: &str,
-        body: &ClickPipeScalingPatchRequest,
-    ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/scaling");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get ClickPipe settings
-    pub async fn click_pipe_settings_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_pipe_id: &str,
-    ) -> Result<ApiResponse<ClickPipeSettings>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update ClickPipe settings
-    pub async fn click_pipe_settings_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_pipe_id: &str,
-        body: &ClickPipeSettingsPutRequest,
-    ) -> Result<ApiResponse<ClickPipeSettings>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/settings");
-        let mut req = self.request(reqwest::Method::PUT, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update ClickPipe state
-    pub async fn click_pipe_state_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_pipe_id: &str,
-        body: &ClickPipeStatePatchRequest,
-    ) -> Result<ApiResponse<ClickPipe>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipes/{click_pipe_id}/state");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get CDC ClickPipes scaling
-    pub async fn click_pipe_cdc_scaling_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<ClickPipesCdcScaling>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesCdcScaling");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update CDC ClickPipes scaling
-    pub async fn click_pipe_cdc_scaling_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ClickPipesCdcScalingPatchRequest,
-    ) -> Result<ApiResponse<ClickPipesCdcScaling>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesCdcScaling");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// List reverse private endpoints
-    pub async fn click_pipe_reverse_private_endpoint_get_list(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<Vec<ReversePrivateEndpoint>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create reverse private endpoint
-    pub async fn click_pipe_reverse_private_endpoint_create(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &CreateReversePrivateEndpoint,
-    ) -> Result<ApiResponse<ReversePrivateEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get reverse private endpoint
-    pub async fn click_pipe_reverse_private_endpoint_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        reverse_private_endpoint_id: &str,
-    ) -> Result<ApiResponse<ReversePrivateEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete reverse private endpoint
-    pub async fn click_pipe_reverse_private_endpoint_delete(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        reverse_private_endpoint_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickpipesReversePrivateEndpoints/{reverse_private_endpoint_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: List Alerts
-    pub async fn click_stack_list_alerts(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<Vec<ClickStackAlertResponse>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: Create Alert
-    pub async fn click_stack_create_alert(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ClickStackCreateAlertRequest,
-    ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: Get Alert
-    pub async fn click_stack_get_alert(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_stack_alert_id: &str,
-    ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: Update Alert
-    pub async fn click_stack_update_alert(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_stack_alert_id: &str,
-        body: &ClickStackUpdateAlertRequest,
-    ) -> Result<ApiResponse<ClickStackAlertResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}");
-        let mut req = self.request(reqwest::Method::PUT, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: Delete Alert
-    pub async fn click_stack_delete_alert(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_stack_alert_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/alerts/{click_stack_alert_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: List Dashboards
-    pub async fn click_stack_list_dashboards(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<Vec<ClickStackDashboardResponse>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: Create Dashboard
-    pub async fn click_stack_create_dashboard(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ClickStackCreateDashboardRequest,
-    ) -> Result<ApiResponse<ClickStackDashboardResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: Get Dashboard
-    pub async fn click_stack_get_dashboard(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_stack_dashboard_id: &str,
-    ) -> Result<ApiResponse<ClickStackDashboardResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: Update Dashboard
-    pub async fn click_stack_update_dashboard(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_stack_dashboard_id: &str,
-        body: &ClickStackUpdateDashboardRequest,
-    ) -> Result<ApiResponse<ClickStackDashboardResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}");
-        let mut req = self.request(reqwest::Method::PUT, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: Delete Dashboard
-    pub async fn click_stack_delete_dashboard(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        click_stack_dashboard_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/dashboards/{click_stack_dashboard_id}");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: List Sources
-    pub async fn click_stack_list_sources(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<Vec<ClickStackSource>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/sources");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// ClickStack: List Webhooks
-    pub async fn click_stack_list_webhooks(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<Vec<ClickStackWebhook>>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickstack/webhooks");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update service password
-    pub async fn instance_password_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ServicePasswordPatchRequest,
-    ) -> Result<ApiResponse<ServicePasswordPatchResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/password");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create a private endpoint
-    pub async fn instance_private_endpoint_create(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ServicPrivateEndpointePostRequest,
-    ) -> Result<ApiResponse<InstancePrivateEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/privateEndpoint");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get private endpoint configuration
-    pub async fn instance_private_endpoint_config_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<PrivateEndpointConfig>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/privateEndpointConfig");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get service metrics
-    pub async fn instance_prometheus_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        filtered_metrics: Option<&str>,
-    ) -> Result<String, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/prometheus");
-        let mut req = self.request(reqwest::Method::GET, &path);
-        if let Some(v) = filtered_metrics {
-            req = req.query(&[("filtered_metrics", v)]);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body_text = resp.text().await?;
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text),
-            });
-        }
-        Ok(resp.text().await?)
-    }
-
-    /// Update service auto scaling settings
-    pub async fn instance_replica_scaling_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ServiceReplicaScalingPatchRequest,
-    ) -> Result<ApiResponse<ServiceScalingPatchResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/replicaScaling");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update service auto scaling settings
-    #[deprecated]
-    #[allow(deprecated)]
-    pub async fn instance_scaling_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ServiceScalingPatchRequest,
-    ) -> Result<ApiResponse<Service>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/scaling");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get service autoscaling schedule
-    pub async fn scaling_schedule_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<ScalingSchedule>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Create or replace service autoscaling schedule
-    pub async fn scaling_schedule_upsert(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ScalingSchedulePostRequest,
-    ) -> Result<ApiResponse<ScalingSchedule>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete service scheduled scaling
-    pub async fn scaling_schedule_delete(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/scalingSchedule");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get service upgrade window
-    pub async fn upgrade_window_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<UpgradeWindow>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Set service upgrade window
-    pub async fn upgrade_window_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &UpgradeWindowPutRequest,
-    ) -> Result<ApiResponse<UpgradeWindow>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
-        let mut req = self.request(reqwest::Method::PUT, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete service upgrade window
-    pub async fn upgrade_window_delete(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/upgradeWindow");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get the service query endpoint for a given instance
-    pub async fn instance_query_endpoint_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<ServiceQueryAPIEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Delete the service query endpoint for a given instance
-    pub async fn instance_query_endpoint_delete(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<serde_json::Value>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint");
-        let req = self.request(reqwest::Method::DELETE, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Upsert the service query endpoint for a given instance
-    pub async fn instance_query_endpoint_upsert(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &InstanceServiceQueryApiEndpointsPostRequest,
-    ) -> Result<ApiResponse<ServiceQueryAPIEndpoint>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/serviceQueryEndpoint");
-        let mut req = self.request(reqwest::Method::POST, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update service state
-    pub async fn instance_state_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ServiceStatePatchRequest,
-    ) -> Result<ApiResponse<Service>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/state");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get organization usage costs
-    pub async fn usage_cost_get(
-        &self,
-        organization_id: &str,
-        from_date: &str,
-        to_date: &str,
-        filters: &[&str],
-    ) -> Result<ApiResponse<UsageCost>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/usageCost");
-        let mut req = self.request(reqwest::Method::GET, &path);
-        req = req.query(&[("from_date", from_date)]);
-        req = req.query(&[("to_date", to_date)]);
-        for f in filters {
-            req = req.query(&[("filter", f)]);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// List ClickHouse settings
-    pub async fn service_clickhouse_settings_list_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<ServiceClickhouseSettingsList>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Update ClickHouse settings
-    pub async fn service_clickhouse_settings_update(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        body: &ServiceClickhouseSettingsPatchRequest,
-    ) -> Result<ApiResponse<ServiceClickhouseSettingsPatchResponse>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings");
-        let mut req = self.request(reqwest::Method::PATCH, &path);
-        req = req.json(body);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get ClickHouse settings schema
-    pub async fn service_clickhouse_settings_schema_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-    ) -> Result<ApiResponse<ServiceClickhouseSettingsSchema>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/schema");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
-    /// Get ClickHouse setting
-    pub async fn service_clickhouse_setting_get(
-        &self,
-        organization_id: &str,
-        service_id: &str,
-        setting_name: &str,
-    ) -> Result<ApiResponse<ServiceClickhouseSetting>, Error> {
-        let path = format!("/v1/organizations/{organization_id}/services/{service_id}/clickhouseSettings/{setting_name}");
-        let req = self.request(reqwest::Method::GET, &path);
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body_text = resp.text().await?;
-        if !status.is_success() {
-            return Err(Error::Api {
-                status: status.as_u16(),
-                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
-                    .ok()
-                    .and_then(|r| r.error)
-                    .unwrap_or(body_text.clone()),
-            });
-        }
-        Ok(serde_json::from_str(&body_text)?)
-    }
-
 }
 
 #[cfg(test)]
 mod tests {
-    use super::derive_query_host;
+    use super::{Error, derive_query_host, query_api_error};
 
     #[test]
     fn derive_query_host_prod() {
@@ -2927,5 +509,136 @@ mod tests {
             derive_query_host("https://api.clickhouse.cloud:443").as_deref(),
             Some("https://queries.clickhouse.cloud")
         );
+    }
+
+    #[test]
+    fn query_api_error_extracts_documented_sql_error() {
+        let body = r#"{"error":{"code":"62","details":"Syntax error","extra":"ignored"}}"#;
+        let error = query_api_error(reqwest::StatusCode::BAD_REQUEST, body);
+        assert!(
+            matches!(
+                &error,
+                Error::Sql { status: 400, code, details }
+                    if code == "62" && details == "Syntax error"
+            ),
+            "expected a typed SQL error, got {error:?}"
+        );
+        // The rendered text is what it always was, so nothing user-facing
+        // changes with the variant split.
+        assert_eq!(error.to_string(), "SQL error 62: Syntax error");
+    }
+
+    #[test]
+    fn query_api_error_accepts_numeric_codes() {
+        let body = r#"{"error":{"code":241,"details":"Memory limit exceeded"}}"#;
+        let error = query_api_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body);
+        assert!(
+            matches!(
+                &error,
+                Error::Sql { status: 500, code, details }
+                    if code == "241" && details == "Memory limit exceeded"
+            ),
+            "expected a typed SQL error, got {error:?}"
+        );
+        assert_eq!(error.to_string(), "SQL error 241: Memory limit exceeded");
+    }
+
+    #[test]
+    fn query_api_error_preserves_status_and_unrecognized_body() {
+        let malformed = r#"{"error":{"code":"62","details":"truncated"#;
+        let error = query_api_error(reqwest::StatusCode::BAD_REQUEST, malformed);
+        assert!(
+            matches!(&error, Error::Api { status: 400, .. }),
+            "a body that is not a SQL error report must stay an API error: {error:?}"
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("API error (status 400): Query API returned HTTP 400 Bad Request: {malformed}")
+        );
+
+        let error = query_api_error(reqwest::StatusCode::BAD_GATEWAY, "upstream failed");
+        assert!(matches!(&error, Error::Api { status: 502, .. }));
+        assert_eq!(
+            error.to_string(),
+            "API error (status 502): Query API returned HTTP 502 Bad Gateway: upstream failed"
+        );
+    }
+
+    #[test]
+    fn query_api_error_recognizes_the_gateway_timeout() {
+        let error = query_api_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":"Timeout error."}"#,
+        );
+        assert!(
+            matches!(&error, Error::QueryTimeout),
+            "the gateway timeout must be its own variant, got {error:?}"
+        );
+        // The text is what a user sees, so it is pinned: it says the response
+        // was lost, not that the statement was.
+        assert_eq!(
+            error.to_string(),
+            "the query timed out at the Query API gateway; the statement may still be running on \
+             the service"
+        );
+    }
+
+    #[test]
+    fn query_api_error_keeps_other_500s_generic() {
+        for body in [
+            // A different gateway message.
+            r#"{"error":"Internal error."}"#,
+            // A body that merely mentions a timeout: the service reported it,
+            // the gateway did not give up.
+            r#"{"error":"Timeout exceeded while reading from socket"}"#,
+            // Right message, wrong shape.
+            r#"{"error":{"message":"Timeout error."}}"#,
+            // Not JSON at all.
+            "Timeout error.",
+            "",
+        ] {
+            let error = query_api_error(reqwest::StatusCode::INTERNAL_SERVER_ERROR, body);
+            assert!(
+                matches!(&error, Error::Api { status: 500, .. }),
+                "only the exact gateway timeout body may become QueryTimeout: {body} -> {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn query_api_error_only_reads_the_timeout_out_of_a_500() {
+        // The same body under any other status is not the gateway timeout.
+        for status in [
+            reqwest::StatusCode::PARTIAL_CONTENT,
+            reqwest::StatusCode::BAD_REQUEST,
+            reqwest::StatusCode::BAD_GATEWAY,
+            reqwest::StatusCode::GATEWAY_TIMEOUT,
+        ] {
+            let error = query_api_error(status, r#"{"error":"Timeout error."}"#);
+            assert!(
+                matches!(&error, Error::Api { .. }),
+                "status {status} must not produce QueryTimeout: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn query_api_error_needs_both_code_and_details_to_be_sql() {
+        for body in [
+            r#"{"error":{"code":"62"}}"#,
+            r#"{"error":{"details":"Syntax error"}}"#,
+            r#"{"error":{"code":"","details":"Syntax error"}}"#,
+            r#"{"error":{"code":"62","details":""}}"#,
+            r#"{"error":"ClickHouse service is currently unavailable."}"#,
+            "",
+        ] {
+            assert!(
+                matches!(
+                    query_api_error(reqwest::StatusCode::BAD_REQUEST, body),
+                    Error::Api { .. }
+                ),
+                "partial SQL error body must not become Error::Sql: {body}"
+            );
+        }
     }
 }

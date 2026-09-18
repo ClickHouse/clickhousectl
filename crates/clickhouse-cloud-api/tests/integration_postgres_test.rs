@@ -1,7 +1,10 @@
 mod common;
 
+use std::env;
+
 use clickhouse_cloud_api::models::*;
 use common::support::*;
+use serde_json::json;
 
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
@@ -34,7 +37,12 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                             .ok_or("postgres list returned no result")?;
                         let leftover: Vec<_> = services
                             .into_iter()
-                            .filter(|s| filters_match_tags(&filters, &s.tags))
+                            .filter(|s| {
+                                filters_match_tags(
+                                    &filters,
+                                    s.tags.as_deref().unwrap_or_default(),
+                                )
+                            })
                             .collect();
                         Ok(leftover)
                     }
@@ -74,9 +82,32 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             .await?
             .expect("blocking steps always return a value");
 
-        let postgres_id = created.id.to_string();
+        let postgres_id = created
+            .id
+            .ok_or("postgres create returned no id")?
+            .to_string();
         eprintln!("postgres_id: <redacted>");
         cleanup.register_postgres(postgres_id.clone());
+
+        // The create response is the only API surface guaranteed to return
+        // credentials: from July 31, 2026 the get endpoint stops echoing
+        // `password` and `connectionString`, so assert them here rather
+        // than on the polled get below.
+        assert!(
+            created.username.as_deref().is_some_and(|v| !v.is_empty()),
+            "postgres create returned no username"
+        );
+        assert!(
+            created.password.as_deref().is_some_and(|v| !v.is_empty()),
+            "postgres create returned no password"
+        );
+        assert!(
+            created
+                .connection_string
+                .as_deref()
+                .is_some_and(|v| !v.is_empty()),
+            "postgres create returned no connection string"
+        );
 
         let ready = failures
             .run(
@@ -103,7 +134,9 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                                     let svc = resp
                                         .result
                                         .ok_or("postgres get returned no result")?;
-                                    if svc.state.to_string() == "running" {
+                                    if svc.state.as_ref().is_some_and(|state| {
+                                        state.to_string() == "running"
+                                    }) {
                                         Ok(Some(svc))
                                     } else {
                                         Ok(None)
@@ -118,17 +151,19 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             .await?
             .expect("blocking steps always return a value");
 
-        assert_eq!(ready.name, ctx.postgres_service_name());
-        assert_eq!(ready.size.to_string(), size.to_string());
-        assert_eq!(ready.region, ctx.region);
-        assert_eq!(ready.provider.to_string(), ctx.provider);
-        assert!(
-            !ready.hostname.is_empty(),
-            "running postgres service returned empty hostname"
+        assert_eq!(ready.name.as_deref(), Some(ctx.postgres_service_name().as_str()));
+        assert_eq!(
+            ready.size.as_ref().map(ToString::to_string),
+            Some(size.to_string())
+        );
+        assert_eq!(ready.region.as_deref(), Some(ctx.region.as_str()));
+        assert_eq!(
+            ready.provider.as_ref().map(ToString::to_string),
+            Some(ctx.provider.clone())
         );
         assert!(
-            !ready.connection_string.is_empty(),
-            "running postgres service returned empty connection string"
+            ready.hostname.as_deref().is_some_and(|v| !v.is_empty()),
+            "running postgres service returned no hostname"
         );
 
         let listed = failures
@@ -149,7 +184,9 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             .await?
             .expect("blocking steps always return a value");
         assert!(
-            listed.iter().any(|s| s.id.to_string() == postgres_id),
+            listed
+                .iter()
+                .any(|s| s.id.is_some_and(|id| id.to_string() == postgres_id)),
             "created postgres service was not visible in list"
         );
 
@@ -183,21 +220,13 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             .await?;
 
         // ── Runtime Config ──────────────────────────────────────────
-        //
-        // PATCH is intentionally not exercised end-to-end here: the generated
-        // PgConfig struct has non-Option `serde_json::Value` fields that
-        // serialize as `null`, which the live API rejects with
-        // `Validation failed for following fields: pg_config.*`. Once the
-        // OpenAPI spec marks these fields as optional (or the generator
-        // emits Option<Value>) we can extend this phase to round-trip a
-        // change to max_connections and verify via GET.
 
         log_phase("Runtime Config");
-        failures
+        let baseline = failures
             .run(
                 &ctx,
                 StepKind::NonBlocking,
-                "get postgres runtime config",
+                "get postgres runtime config baseline",
                 || {
                     let client = client.clone();
                     let org_id = ctx.org_id.clone();
@@ -206,14 +235,169 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         let resp = client
                             .postgres_instance_config_get(&org_id, &postgres_id)
                             .await?;
-                        if resp.result.is_none() {
-                            return Err("postgres config get returned no result".into());
-                        }
-                        Ok(())
+                        resp.result
+                            .ok_or_else(|| "postgres config get returned no result".into())
                     }
                 },
             )
             .await?;
+
+        // Behaviour-matrix probe — gated on env var so it doesn't run on
+        // every integration test invocation. Captures the 6 × 2 scenarios
+        // from #163's follow-up comment for the upstream spec issue.
+        if env::var("CLICKHOUSE_CLOUD_POSTGRES_CONFIG_PROBE")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .is_some()
+        {
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "capture pgConfig behaviour matrix",
+                    || {
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        async move { run_pg_config_probe(&org_id, &postgres_id).await }
+                    },
+                )
+                .await?;
+        }
+
+        // Round-trip pgConfig fields: PATCH max_connections and
+        // autovacuum_max_workers to new values, poll-until GET reflects
+        // them, then PATCH back. GET
+        // returns numeric pgConfig values wrapped in JSON strings (the spec
+        // types them string-or-number), so extract via pg_config_value_as_i64
+        // and compare tolerantly.
+        if let Some(baseline) = baseline {
+            let baseline_max = baseline
+                .pg_config
+                .as_ref()
+                .and_then(|c| c.max_connections.as_ref())
+                .and_then(pg_config_value_as_i64)
+                .unwrap_or(100);
+            let target = baseline_max + 7;
+            // Postgres defaults autovacuum_max_workers to 3; the per-run
+            // service is deleted at the end, so drift on reset is harmless.
+            let baseline_autovacuum = baseline
+                .pg_config
+                .as_ref()
+                .and_then(|c| c.autovacuum_max_workers.as_ref())
+                .and_then(pg_config_value_as_i64)
+                .unwrap_or(3);
+            let autovacuum_target = baseline_autovacuum + 1;
+
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "patch pgConfig.max_connections/autovacuum_max_workers",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        async move {
+                            let body = PostgresInstanceConfig {
+                                pg_config: PgConfig {
+                                    max_connections: Some(serde_json::json!(target)),
+                                    autovacuum_max_workers: Some(serde_json::json!(
+                                        autovacuum_target
+                                    )),
+                                    ..Default::default()
+                                },
+                                pg_bouncer_config: PgBouncerConfig::default(),
+                            };
+                            client
+                                .postgres_instance_config_patch(&org_id, &postgres_id, &body)
+                                .await?;
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "verify pgConfig.max_connections patch visible",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        let timeout = ctx.steady_state_timeout;
+                        let interval = ctx.poll_interval;
+                        async move {
+                            poll_until(
+                                "pg_config.max_connections/autovacuum_max_workers == targets",
+                                timeout,
+                                interval,
+                                || {
+                                    let client = client.clone();
+                                    let org_id = org_id.clone();
+                                    let postgres_id = postgres_id.clone();
+                                    async move {
+                                        let resp = client
+                                            .postgres_instance_config_get(&org_id, &postgres_id)
+                                            .await?;
+                                        let pg_config = resp
+                                            .result
+                                            .and_then(|r| r.pg_config)
+                                            .unwrap_or_default();
+                                        let observed = pg_config
+                                            .max_connections
+                                            .as_ref()
+                                            .and_then(pg_config_value_as_i64);
+                                        let observed_autovacuum = pg_config
+                                            .autovacuum_max_workers
+                                            .as_ref()
+                                            .and_then(pg_config_value_as_i64);
+                                        if observed == Some(target)
+                                            && observed_autovacuum == Some(autovacuum_target)
+                                        {
+                                            Ok(Some(()))
+                                        } else {
+                                            Ok(None)
+                                        }
+                                    }
+                                },
+                            )
+                            .await
+                        }
+                    },
+                )
+                .await?;
+
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "reset pgConfig.max_connections to baseline",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let postgres_id = postgres_id.clone();
+                        async move {
+                            let body = PostgresInstanceConfig {
+                                pg_config: PgConfig {
+                                    max_connections: Some(serde_json::json!(baseline_max)),
+                                    autovacuum_max_workers: Some(serde_json::json!(
+                                        baseline_autovacuum
+                                    )),
+                                    ..Default::default()
+                                },
+                                pg_bouncer_config: PgBouncerConfig::default(),
+                            };
+                            client
+                                .postgres_instance_config_patch(&org_id, &postgres_id, &body)
+                                .await?;
+                            Ok(())
+                        }
+                    },
+                )
+                .await?;
+        }
 
         // ── Patch (tags) ────────────────────────────────────────────
         //
@@ -263,8 +447,9 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                             .postgres_service_get(&org_id, &postgres_id)
                             .await?;
                         let svc = resp.result.ok_or("postgres get returned no result")?;
-                        let has_phase_tag = svc.tags.iter().any(|t| {
-                            t.key == "phase" && t.value.as_deref() == Some("patched")
+                        let has_phase_tag = svc.tags.iter().flatten().any(|t| {
+                            t.key.as_deref() == Some("phase")
+                                && t.value.as_deref() == Some("patched")
                         });
                         if !has_phase_tag {
                             return Err("patched `phase=patched` tag not present on service after PATCH".into());
@@ -338,7 +523,11 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                             let svc = resp
                                 .result
                                 .ok_or("postgres get returned no result")?;
-                            if svc.state.to_string() == "running" {
+                            if svc
+                                .state
+                                .as_ref()
+                                .is_some_and(|state| state.to_string() == "running")
+                            {
                                 Ok(Some(()))
                             } else {
                                 Ok(None)
@@ -352,6 +541,23 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             .await?;
 
         // ── Read Replica ────────────────────────────────────────────
+        //
+        // The replica create is retried for up to the steady-state timeout:
+        // the live API rejects a read-replica create against a primary that
+        // hasn't taken its first backup yet (`400 ... no backups, yet.` /
+        // `... not ready for read replicas`), and that backup lands some
+        // time after the primary reaches `running`. Without the retry the
+        // flake just moves from the wait-for-running step to the create
+        // step.
+        //
+        // The test does NOT poll the replica to `running`. Provisioning a
+        // replica can take longer than the steady-state timeout (observed
+        // 30+ min when the API accepts a create against a backup-less
+        // primary), and the test only needs to prove the API surface works,
+        // not that provisioning completes. So we assert the create response
+        // shape, that the replica is visible in list/get (in any state),
+        // and then tear it down — deleting a still-provisioning replica is
+        // proven safe (prior failed runs deleted stuck replicas in ~11s).
         //
         // Cleanup-order note: the live API refuses to delete a primary while
         // any read replica still references it, so the replica MUST be torn
@@ -392,14 +598,31 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         tags: Some(replica_tags.clone()),
                         ..Default::default()
                     };
+                    let timeout = ctx.steady_state_timeout;
+                    let interval = ctx.poll_interval;
                     async move {
-                        let resp = client
-                            .postgres_instance_create_read_replica(
-                                &org_id,
-                                &postgres_id,
-                                &body,
-                            )
-                            .await?;
+                        let resp = retry_api_call(
+                            "create postgres read replica",
+                            timeout,
+                            interval,
+                            || {
+                                let client = client.clone();
+                                let org_id = org_id.clone();
+                                let postgres_id = postgres_id.clone();
+                                let body = body.clone();
+                                async move {
+                                    client
+                                        .postgres_instance_create_read_replica(
+                                            &org_id,
+                                            &postgres_id,
+                                            &body,
+                                        )
+                                        .await
+                                }
+                            },
+                            is_no_backups_yet_error,
+                        )
+                        .await?;
                         resp.result.ok_or_else(|| {
                             "postgres read replica create returned no result".into()
                         })
@@ -409,87 +632,55 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             .await?
             .expect("blocking steps always return a value");
 
-        let replica_id = replica.id.to_string();
+        let replica_id = replica
+            .id
+            .ok_or("postgres read replica create returned no id")?
+            .to_string();
         eprintln!("postgres_replica_id: <redacted>");
         // Register before any further interaction so a panic in a later
         // step cannot leak the replica.
         cleanup.register_postgres_replica(replica_id.clone());
 
-        // The create response should mark the new service as a replica.
-        // Soft-assert via the FailureRecorder so spec drift on this single
-        // field doesn't take the whole run down.
-        let replica_was_primary_on_create = replica.is_primary;
-        let replica_name_on_create = replica.name.clone();
+        // The create response should mark the new service as a replica with
+        // the requested name and a non-empty state. Soft-assert via the
+        // FailureRecorder so spec drift on a single field doesn't take the
+        // whole run down. We deliberately do NOT wait for `running`: see the
+        // phase header comment.
+        let replica_is_primary_on_create = replica.is_primary;
+        let replica_name_on_create = replica.name.clone().unwrap_or_default();
+        let replica_state_on_create = replica
+            .state
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let expected_replica_name = ctx.postgres_replica_name();
         failures
             .run(
                 &ctx,
                 StepKind::NonBlocking,
-                "verify replica create response marks is_primary=false",
+                "verify replica create response shape",
                 || async move {
-                    if replica_was_primary_on_create {
+                    if replica_is_primary_on_create != Some(false) {
                         return Err(format!(
                             "expected replica `{replica_name_on_create}` to have isPrimary=false on create response"
                         )
                         .into());
                     }
+                    if replica_name_on_create != expected_replica_name {
+                        return Err(format!(
+                            "replica name `{replica_name_on_create}` did not match expected `{expected_replica_name}`"
+                        )
+                        .into());
+                    }
+                    if replica_state_on_create.is_empty() {
+                        return Err(
+                            "replica create response returned empty state".into(),
+                        );
+                    }
                     Ok(())
                 },
             )
             .await?;
-
-        let replica_ready = failures
-            .run(
-                &ctx,
-                StepKind::Blocking,
-                "wait for postgres read replica running",
-                || {
-                    let client = client.clone();
-                    let org_id = ctx.org_id.clone();
-                    let replica_id = replica_id.clone();
-                    async move {
-                        poll_until(
-                            "postgres replica running state",
-                            ctx.steady_state_timeout,
-                            ctx.poll_interval,
-                            || {
-                                let client = client.clone();
-                                let org_id = org_id.clone();
-                                let replica_id = replica_id.clone();
-                                async move {
-                                    let resp = client
-                                        .postgres_service_get(&org_id, &replica_id)
-                                        .await?;
-                                    let svc = resp
-                                        .result
-                                        .ok_or("postgres replica get returned no result")?;
-                                    if svc.state.to_string() == "running" {
-                                        Ok(Some(svc))
-                                    } else {
-                                        Ok(None)
-                                    }
-                                }
-                            },
-                        )
-                        .await
-                    }
-                },
-            )
-            .await?
-            .expect("blocking steps always return a value");
-
-        assert_eq!(replica_ready.name, ctx.postgres_replica_name());
-        assert!(
-            !replica_ready.is_primary,
-            "running read replica reported isPrimary=true"
-        );
-        assert!(
-            !replica_ready.hostname.is_empty(),
-            "running postgres replica returned empty hostname"
-        );
-        assert!(
-            !replica_ready.connection_string.is_empty(),
-            "running postgres replica returned empty connection string"
-        );
 
         failures
             .run(
@@ -506,11 +697,12 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                         let services = resp
                             .result
                             .ok_or("postgres list returned no result")?;
-                        let primary_seen =
-                            services.iter().any(|s| s.id.to_string() == primary_id);
+                        let primary_seen = services
+                            .iter()
+                            .any(|s| s.id.is_some_and(|id| id.to_string() == primary_id));
                         let replica_entry = services
                             .iter()
-                            .find(|s| s.id.to_string() == replica_id);
+                            .find(|s| s.id.is_some_and(|id| id.to_string() == replica_id));
                         if !primary_seen {
                             return Err(
                                 "primary postgres service no longer visible in list after replica create"
@@ -523,7 +715,7 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                                     .into(),
                             );
                         };
-                        if replica_entry.is_primary {
+                        if replica_entry.is_primary != Some(false) {
                             return Err(
                                 "replica entry in list reported isPrimary=true".into(),
                             );
@@ -546,32 +738,41 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
                     let expected_provider = ctx.provider.clone();
                     let expected_region = ctx.region.clone();
                     async move {
+                        // The replica may still be provisioning at this point —
+                        // we deliberately don't wait for `running` (see the
+                        // phase header). provider/region are inherited from the
+                        // primary and present regardless of state; isPrimary
+                        // is set at create time.
                         let resp = client
                             .postgres_service_get(&org_id, &replica_id)
                             .await?;
                         let svc = resp
                             .result
                             .ok_or("postgres replica get returned no result")?;
-                        if svc.is_primary {
+                        if svc.is_primary != Some(false) {
                             return Err(
-                                "GET on replica id returned isPrimary=true".into(),
+                                "GET on replica id did not return isPrimary=false".into(),
                             );
                         }
                         // A read replica inherits provider+region from its
                         // primary. These are the closest "primary reference"
                         // signals the current API surface exposes on the
                         // PostgresService model.
-                        if svc.provider.to_string() != expected_provider {
+                        let provider = svc
+                            .provider
+                            .as_ref()
+                            .map(ToString::to_string)
+                            .unwrap_or_default();
+                        if provider != expected_provider {
                             return Err(format!(
-                                "replica provider `{}` did not match primary `{}`",
-                                svc.provider, expected_provider
+                                "replica provider `{provider}` did not match primary `{expected_provider}`"
                             )
                             .into());
                         }
-                        if svc.region != expected_region {
+                        let region = svc.region.clone().unwrap_or_default();
+                        if region != expected_region {
                             return Err(format!(
-                                "replica region `{}` did not match primary `{}`",
-                                svc.region, expected_region
+                                "replica region `{region}` did not match primary `{expected_region}`"
                             )
                             .into());
                         }
@@ -584,7 +785,10 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
         // Explicit replica teardown BEFORE the primary Delete phase. This is
         // Blocking: if it fails the primary delete will fail too, which is
         // a cleanup-order failure that would leak resources. The replica is
-        // also tracked by the cleanup registry as a safety net.
+        // also tracked by the cleanup registry as a safety net. Deleting a
+        // still-provisioning replica is safe (prior failed runs deleted
+        // stuck replicas in ~11s); we don't need it to reach `running`
+        // first.
         failures
             .run(
                 &ctx,
@@ -716,7 +920,13 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
     .await;
 
     let cleanup_result = cleanup
-        .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval, None)
+        .cleanup(
+            &client,
+            &ctx.org_id,
+            ctx.delete_timeout,
+            ctx.poll_interval,
+            None,
+        )
         .await;
 
     match (test_result, cleanup_result) {
@@ -729,15 +939,128 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
     }
 }
 
-fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1]) -> bool {
+// pgConfig numeric values come back from GET wrapped in JSON strings (e.g.
+// `"max_connections": "100"`), while PATCH accepts plain numbers. The spec
+// types these fields as string-or-number, so extract an i64 from either
+// representation.
+fn pg_config_value_as_i64(value: &serde_json::Value) -> Option<i64> {
+    match value {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) => s.trim().parse().ok(),
+        _ => None,
+    }
+}
+
+fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1Response]) -> bool {
     filters.iter().all(|filter| {
         let Some(expr) = filter.strip_prefix("tag:") else {
             return true;
         };
         let Some((key, value)) = expr.split_once('=') else {
-            return tags.iter().any(|t| t.key == expr);
+            return tags.iter().any(|t| t.key.as_deref() == Some(expr));
         };
         tags.iter()
-            .any(|t| t.key == key && t.value.as_deref() == Some(value))
+            .any(|t| t.key.as_deref() == Some(key) && t.value.as_deref() == Some(value))
     })
+}
+
+/// Predicate for [`retry_api_call`]: is this the "primary has no backups yet"
+/// 400 that blocks read-replica creation?
+///
+/// The live API rejects a read-replica create against a primary that hasn't
+/// taken its first backup with a 400 whose message contains one of:
+///   - `no backups`        — `"Parent server is not ready for read replicas.
+///                             There are no backups, yet."`
+///   - `not ready for read replicas` — same response, alternate phrasing.
+///
+/// Matching on substrings (rather than `status == 400` alone) avoids masking
+/// unrelated validation 400s that should fail the test, not retry.
+fn is_no_backups_yet_error(error: &clickhouse_cloud_api::Error) -> bool {
+    match error {
+        clickhouse_cloud_api::Error::Api {
+            status: 400,
+            message,
+        } => {
+            let lower = message.to_ascii_lowercase();
+            lower.contains("no backups") || lower.contains("not ready for read replicas")
+        }
+        _ => false,
+    }
+}
+
+// Sends the 6 body shapes from #163's follow-up comment to both PATCH and
+// POST `/v1/organizations/{org}/postgres/{id}/config` using raw reqwest, so
+// shapes the typed `PostgresInstanceConfig` cannot represent (e.g. omitted
+// `pgBouncerConfig`, explicit nulls) are sent verbatim. Prints a markdown
+// table on stderr for direct copy into the upstream spec issue.
+async fn run_pg_config_probe(org_id: &str, postgres_id: &str) -> TestResult<()> {
+    let key = required_env("CLICKHOUSE_CLOUD_API_KEY")?;
+    let secret = required_env("CLICKHOUSE_CLOUD_API_SECRET")?;
+    let base_url = env::var("CLICKHOUSE_CLOUD_API_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "https://api.clickhouse.cloud".to_string())
+        .trim_end_matches('/')
+        .to_string();
+    let url = format!("{base_url}/v1/organizations/{org_id}/postgres/{postgres_id}/config");
+
+    let valid_pg_config = json!({ "max_connections": 200 });
+    let scenarios: Vec<(&str, serde_json::Value)> = vec![
+        (
+            "1: pgConfig only (omit pgBouncerConfig)",
+            json!({ "pgConfig": valid_pg_config }),
+        ),
+        (
+            "2: pgConfig + pgBouncerConfig: {}",
+            json!({ "pgConfig": valid_pg_config, "pgBouncerConfig": {} }),
+        ),
+        (
+            "3: pgConfig + pgBouncerConfig: null",
+            json!({ "pgConfig": valid_pg_config, "pgBouncerConfig": null }),
+        ),
+        (
+            "4: pgBouncerConfig only (omit pgConfig)",
+            json!({ "pgBouncerConfig": { "default_pool_size": "10" } }),
+        ),
+        (
+            "5: pgConfig single-field partial",
+            json!({ "pgConfig": { "max_connections": 200 } }),
+        ),
+        (
+            "6: pgConfig single-field explicit null",
+            json!({ "pgConfig": { "max_connections": null } }),
+        ),
+    ];
+
+    let http = reqwest::Client::new();
+    let mut rows: Vec<(String, String, u16, String)> = Vec::new();
+
+    for method in [reqwest::Method::PATCH, reqwest::Method::POST] {
+        for (label, body) in &scenarios {
+            let resp = http
+                .request(method.clone(), &url)
+                .basic_auth(&key, Some(&secret))
+                .json(body)
+                .send()
+                .await
+                .map_err(|e| format!("{method} {label}: {e}"))?;
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
+            let snippet: String = text
+                .chars()
+                .take(180)
+                .collect::<String>()
+                .replace('\n', " ");
+            rows.push((method.to_string(), label.to_string(), status, snippet));
+        }
+    }
+
+    eprintln!("\n## Postgres config behaviour matrix\n");
+    eprintln!("| Method | Body shape | Status | Response (≤180 chars) |");
+    eprintln!("|--------|------------|--------|------------------------|");
+    for (method, label, status, snippet) in &rows {
+        eprintln!("| {method} | {label} | {status} | `{snippet}` |");
+    }
+    eprintln!();
+    Ok(())
 }

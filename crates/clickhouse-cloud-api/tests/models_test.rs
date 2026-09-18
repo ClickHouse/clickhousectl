@@ -1,6 +1,315 @@
 use clickhouse_cloud_api::models::*;
 
 #[test]
+fn snapshot_configuration_tolerates_missing_null_and_extra_fields() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "enabled": null, "gap": null, "timeFrame": null, "futureProperty": 1
+        }),
+    ] {
+        let configuration: SnapshotConfiguration = serde_json::from_value(wire).unwrap();
+        assert_eq!(configuration, SnapshotConfiguration::default());
+        assert_eq!(
+            serde_json::to_value(configuration).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[test]
+fn snapshot_configuration_preserves_false_zero_and_fractional_numbers() {
+    let configuration: SnapshotConfiguration = serde_json::from_value(serde_json::json!({
+        "enabled": false, "gap": 0, "timeFrame": 1440.5
+    }))
+    .unwrap();
+    assert_eq!(configuration.enabled, Some(false));
+    assert_eq!(configuration.gap, Some(0.0));
+    assert_eq!(configuration.time_frame, Some(1440.5));
+    assert_eq!(
+        serde_json::to_value(configuration).unwrap(),
+        serde_json::json!({"enabled": false, "gap": 0.0, "timeFrame": 1440.5})
+    );
+}
+
+#[test]
+fn snapshot_configuration_patch_omits_none_and_preserves_provided_values() {
+    for (request, expected) in [
+        (
+            SnapshotConfigurationPatchRequest::default(),
+            serde_json::json!({}),
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(false),
+                ..Default::default()
+            },
+            serde_json::json!({"enabled": false}),
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: None,
+                gap: Some(0.0),
+                time_frame: Some(1440.5),
+            },
+            serde_json::json!({"gap": 0.0, "timeFrame": 1440.5}),
+        ),
+        (
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(true),
+                gap: Some(30.0),
+                time_frame: Some(1440.0),
+            },
+            serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+        ),
+    ] {
+        let serialized = serde_json::to_value(&request).unwrap();
+        assert_eq!(serialized, expected);
+        assert_eq!(
+            serde_json::from_value::<SnapshotConfigurationPatchRequest>(serialized).unwrap(),
+            request
+        );
+    }
+}
+
+#[test]
+fn snapshot_round_trips_complete_response_and_unknown_bucket_properties() {
+    let value = serde_json::json!({
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "status": "done", "type": "full", "serviceId": "svc-1",
+        "startedAt": "2026-09-15T01:00:00Z", "finishedAt": "2026-09-15T01:00:01Z",
+        "sizeInBytes": 2048.0, "durationInSeconds": 1.5, "backupName": "snapshot-1",
+        "bucket": {"bucketProvider": "FUTURE", "newProperty": {"region": "test"}}
+    });
+    let snapshot: Snapshot = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(snapshot.status, Some(SnapshotStatus::Done));
+    assert_eq!(snapshot.r#type, Some(SnapshotType::Full));
+    assert_eq!(snapshot.duration_in_seconds, Some(1.5));
+    assert_eq!(serde_json::to_value(snapshot).unwrap(), value);
+}
+
+#[test]
+fn snapshot_tolerates_missing_null_and_extra_fields() {
+    let dropped: Snapshot = serde_json::from_str("{}").unwrap();
+    let nulled: Snapshot = serde_json::from_value(serde_json::json!({
+        "id": null, "status": null, "type": null, "serviceId": null,
+        "startedAt": null, "finishedAt": null, "sizeInBytes": null,
+        "durationInSeconds": null, "backupName": null, "bucket": null,
+        "futureProperty": 1
+    }))
+    .unwrap();
+    assert_eq!(dropped, Snapshot::default());
+    assert_eq!(nulled, Snapshot::default());
+    assert_eq!(serde_json::to_value(nulled).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn snapshot_enums_preserve_known_and_unknown_values() {
+    for (wire, expected) in [
+        ("done", SnapshotStatus::Done),
+        ("error", SnapshotStatus::Error),
+        ("in_progress", SnapshotStatus::InProgress),
+        ("throttled", SnapshotStatus::Throttled),
+        ("queued", SnapshotStatus::Unknown("queued".to_string())),
+    ] {
+        let parsed: SnapshotStatus = serde_json::from_value(serde_json::json!(wire)).unwrap();
+        assert_eq!(parsed, expected);
+        assert_eq!(parsed.to_string(), wire);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+    for (wire, expected) in [
+        ("full", SnapshotType::Full),
+        ("future", SnapshotType::Unknown("future".to_string())),
+    ] {
+        let parsed: SnapshotType = serde_json::from_value(serde_json::json!(wire)).unwrap();
+        assert_eq!(parsed, expected);
+        assert_eq!(parsed.to_string(), wire);
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn clickpipe_new_request_fields_preserve_omission_and_wire_names() {
+    let mut request = ClickPipePostRequest::default();
+    assert!(
+        serde_json::to_value(&request)
+            .unwrap()
+            .get("startPaused")
+            .is_none()
+    );
+    request.start_paused = true;
+    assert_eq!(serde_json::to_value(&request).unwrap()["startPaused"], true);
+
+    let mut table = ClickPipeDestinationTableDefinition::default();
+    assert!(serde_json::to_value(&table).unwrap().get("ttl").is_none());
+    table.ttl = "event_time + INTERVAL 30 DAY".to_string();
+    let serialized = serde_json::to_value(&table).unwrap();
+    assert_eq!(serialized["ttl"], table.ttl);
+
+    let mut settings = ClickPipeMongoDBPipeSettings::default();
+    assert!(
+        serde_json::to_value(&settings)
+            .unwrap()
+            .get("initialLoadParallelism")
+            .is_none()
+    );
+    settings.initial_load_parallelism = Some(4);
+    let serialized = serde_json::to_value(&settings).unwrap();
+    assert_eq!(serialized["initialLoadParallelism"], 4);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMongoDBPipeSettings>(serialized).unwrap(),
+        settings
+    );
+}
+
+#[test]
+fn clickpipe_new_response_fields_tolerate_missing_and_null() {
+    for value in [serde_json::json!({}), serde_json::json!({"ttl": null})] {
+        let response: ClickPipeDestinationTableDefinitionResponse =
+            serde_json::from_value(value).unwrap();
+        assert_eq!(response.ttl, None);
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({"initialLoadParallelism": null}),
+    ] {
+        let response: ClickPipeMongoDBPipeSettingsResponse = serde_json::from_value(value).unwrap();
+        assert_eq!(response.initial_load_parallelism, None);
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    let table: ClickPipeDestinationTableDefinitionResponse =
+        serde_json::from_value(serde_json::json!({"ttl": "event_time + INTERVAL 30 DAY"})).unwrap();
+    assert_eq!(table.ttl.as_deref(), Some("event_time + INTERVAL 30 DAY"));
+    let settings: ClickPipeMongoDBPipeSettingsResponse =
+        serde_json::from_value(serde_json::json!({"initialLoadParallelism": 4})).unwrap();
+    assert_eq!(settings.initial_load_parallelism, Some(4));
+}
+
+#[test]
+fn udf_argument_output_preserves_response_tolerance_and_old_name() {
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({"name": null, "type": null}),
+    ] {
+        let argument: UdfArgumentOutput = serde_json::from_value(value).unwrap();
+        let old_name: UdfArgumentResponse = argument.clone();
+        assert_eq!(old_name, UdfArgumentOutput::default());
+        assert_eq!(
+            serde_json::to_value(argument).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    let value = serde_json::json!({"name": "x", "type": "UInt64"});
+    let argument: UdfArgumentOutput = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(serde_json::to_value(argument).unwrap(), value);
+    for invalid in [
+        serde_json::json!({}),
+        serde_json::json!({"name": "x"}),
+        serde_json::json!({"type": "UInt64"}),
+    ] {
+        assert!(serde_json::from_value::<UdfArgument>(invalid).is_err());
+    }
+}
+
+/// Shared assertion for the discriminated-union `Unknown` catch-all: an
+/// unrecognized payload must deserialize into the union's lossless `Unknown`
+/// variant (confirmed by `is_unknown`) and re-serialize to the byte-identical
+/// JSON object it came from.
+fn assert_unknown_variant_round_trips<T>(json: &str, is_unknown: impl FnOnce(&T) -> bool)
+where
+    T: serde::Serialize + serde::de::DeserializeOwned,
+{
+    let original: serde_json::Value = serde_json::from_str(json).unwrap();
+    let parsed: T = serde_json::from_str(json).unwrap();
+    assert!(
+        is_unknown(&parsed),
+        "payload did not deserialize to the Unknown variant"
+    );
+    let reserialized = serde_json::to_value(&parsed).unwrap();
+    assert_eq!(reserialized, original);
+    assert!(reserialized.is_object());
+}
+
+/// Every `discriminated_union!` enum with a `Default` is reachable from a
+/// response that drops a field carrying that union, so its default must be a
+/// fixed point of its own `Deserialize`: it has to come back as the same
+/// variant. It is not automatic — variants of one union can share the same
+/// inline `enum` values for the discriminating field (both alert channels
+/// declare `["webhook", "email"]`), so a variant defaulting its discriminator to
+/// another variant's value would silently retype the value on the next
+/// deserialize. The covered list is enforced structurally, not by convention:
+/// it must equal the set of hand-written `impl Default for` blocks in the model
+/// module tree (via the analyzer's `model_types_with_manual_default_impl`), so a
+/// new union gaining a `Default` without a list entry fails this test.
+#[test]
+fn discriminated_union_defaults_round_trip_to_the_same_variant() {
+    let mut covered: Vec<&str> = Vec::new();
+
+    macro_rules! assert_default_round_trips {
+        ($($union:ty),+ $(,)?) => {
+            $({
+                covered.push(stringify!($union));
+                let default = <$union>::default();
+                let json = serde_json::to_string(&default).unwrap();
+                let parsed: $union = serde_json::from_str(&json).unwrap();
+                assert_eq!(
+                    parsed,
+                    default,
+                    "{} default deserialized as another variant from {json}",
+                    stringify!($union),
+                );
+            })+
+        };
+    }
+
+    assert_default_round_trips!(
+        BackupBucket,
+        BackupBucketPatchRequest,
+        BackupBucketPostRequest,
+        BackupBucketProperties,
+        ClickPipeBigQuerySource,
+        ClickPipeMutateBigQuerySource,
+        ClickPipePostPubSubSource,
+        ClickStackSavedFilterValue,
+        ClickStackSavedFilterValueResponse,
+        ClickStackAlertChannel,
+        ClickStackBarChartConfig,
+        ClickStackCategoricalBarChartConfig,
+        ClickStackDashboardChartSeries,
+        ClickStackLineChartConfig,
+        ClickStackNumberChartConfig,
+        ClickStackOnClick,
+        ClickStackOnClickTarget,
+        ClickStackPieChartConfig,
+        ClickStackSource,
+        ClickStackTableChartConfig,
+        ClickStackTileConfig,
+        ClickStackWebhook,
+    );
+
+    covered.sort_unstable();
+    let manual_default_impls = clickhouse_openapi_analyzer::model_types_with_manual_default_impl(
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+    )
+    .unwrap();
+    assert_eq!(
+        covered,
+        manual_default_impls
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        "the covered list must equal the manual `impl Default for` blocks in the model tree"
+    );
+}
+
+#[test]
 fn deserialize_organization() {
     let json = r#"{
         "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
@@ -11,29 +320,31 @@ fn deserialize_organization() {
         "enableCoreDumps": false
     }"#;
     let org: Organization = serde_json::from_str(json).unwrap();
-    assert_eq!(org.name, "My Organization");
+    assert_eq!(org.name.as_deref(), Some("My Organization"));
     assert_eq!(
         org.id,
-        "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-            .parse::<uuid::Uuid>()
-            .unwrap()
+        Some(
+            "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                .parse::<uuid::Uuid>()
+                .unwrap()
+        )
     );
-    assert!(!org.enable_core_dumps);
+    assert_eq!(org.enable_core_dumps, Some(false));
 }
 
 #[test]
 fn serialize_organization() {
     let org = Organization {
-        id: "a1b2c3d4-e5f6-7890-abcd-ef1234567890".parse().unwrap(),
-        name: "Test Org".to_string(),
+        id: Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890".parse().unwrap()),
+        name: Some("Test Org".to_string()),
         ..Default::default()
     };
     let json = serde_json::to_value(&org).unwrap();
     assert_eq!(json["name"], "Test Org");
     assert_eq!(json["id"], "a1b2c3d4-e5f6-7890-abcd-ef1234567890");
-    // Default fields are still serialized (no skip_serializing_if on required fields)
-    assert!(json.get("createdAt").is_some());
-    assert!(json.get("enableCoreDumps").is_some());
+    // Absent response fields are omitted, not emitted as `null`.
+    assert!(json.get("createdAt").is_none());
+    assert!(json.get("enableCoreDumps").is_none());
 }
 
 #[test]
@@ -53,12 +364,12 @@ fn deserialize_api_response_with_org_list() {
         ]
     }"#;
     let resp: ApiResponse<Vec<Organization>> = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
     assert_eq!(resp.request_id, Some("req-uuid-123".to_string()));
     let result = resp.result.unwrap();
     assert_eq!(result.len(), 2);
-    assert_eq!(result[0].name, "Org 1");
-    assert_eq!(result[1].name, "Org 2");
+    assert_eq!(result[0].name.as_deref(), Some("Org 1"));
+    assert_eq!(result[1].name.as_deref(), Some("Org 2"));
 }
 
 #[test]
@@ -69,7 +380,7 @@ fn deserialize_api_response_error() {
         "requestId": "req-uuid-456"
     }"#;
     let resp: ApiResponse<serde_json::Value> = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.status, Some(401.0));
+    assert_eq!(resp.status, Some(401));
     assert_eq!(resp.error, Some("Unauthorized".to_string()));
     assert!(resp.result.is_none());
 }
@@ -108,15 +419,15 @@ fn deserialize_service() {
         "tags": []
     }"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.name, "my-service");
-    assert_eq!(svc.provider, ServiceProvider::Aws);
-    assert_eq!(svc.region, ServiceRegion::Us_east_1);
-    assert_eq!(svc.state, ServiceState::Running);
+    assert_eq!(svc.name.as_deref(), Some("my-service"));
+    assert_eq!(svc.provider, Some(ServiceProvider::Aws));
+    assert_eq!(svc.region, Some(ServiceRegion::Us_east_1));
+    assert_eq!(svc.state, Some(ServiceState::Running));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(svc.tier, ServiceTier::Production);
-    assert_eq!(svc.num_replicas, 3.0);
-    assert!(svc.idle_scaling);
-    assert!(svc.is_primary);
+    assert_eq!(svc.tier, Some(ServiceTier::Production));
+    assert_eq!(svc.num_replicas, Some(3));
+    assert_eq!(svc.idle_scaling, Some(true));
+    assert_eq!(svc.is_primary, Some(true));
 }
 
 #[test]
@@ -131,7 +442,7 @@ fn serialize_service_post_request() {
         min_total_memory_gb: Some(24.0),
         #[cfg(feature = "deprecated-fields")]
         max_total_memory_gb: Some(48.0),
-        num_replicas: Some(3.0),
+        num_replicas: Some(3),
         idle_scaling: Some(true),
         idle_timeout_minutes: Some(5.0),
         ip_access_list: vec![IpAccessListEntry {
@@ -152,6 +463,28 @@ fn serialize_service_post_request() {
 }
 
 #[test]
+fn serialize_service_post_request_horizontal_autoscaling() {
+    let req = ServicePostRequest {
+        name: "horizontal-service".to_string(),
+        autoscaling_mode: Some(AutoscalingMode::Horizontal),
+        min_replicas: Some(1),
+        max_replicas: Some(5),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["autoscalingMode"], "horizontal");
+    assert_eq!(json["minReplicas"], 1);
+    assert_eq!(json["maxReplicas"], 5);
+
+    // Omitted entirely when unset — mutually exclusive with the vertical
+    // scaling fields, so they must not serialize as null/defaults.
+    let json = serde_json::to_value(ServicePostRequest::default()).unwrap();
+    assert!(json.get("minReplicas").is_none());
+    assert!(json.get("maxReplicas").is_none());
+    assert!(json.get("autoscalingMode").is_none());
+}
+
+#[test]
 fn deserialize_backup() {
     let json = r#"{
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
@@ -165,10 +498,10 @@ fn deserialize_backup() {
         "backupName": "backup-2024-06-01"
     }"#;
     let backup: Backup = serde_json::from_str(json).unwrap();
-    assert_eq!(backup.status, BackupStatus::Done);
-    assert_eq!(backup.r#type, BackupType::Full);
-    assert_eq!(backup.size_in_bytes, 1073741824.0);
-    assert_eq!(backup.duration_in_seconds, 300.0);
+    assert_eq!(backup.status, Some(BackupStatus::Done));
+    assert_eq!(backup.r#type, Some(BackupType::Full));
+    assert_eq!(backup.size_in_bytes, Some(1073741824.0));
+    assert_eq!(backup.duration_in_seconds, Some(300.0));
 }
 
 #[test]
@@ -182,8 +515,8 @@ fn deserialize_api_key() {
         "expireAt": "2025-01-01T00:00:00Z"
     }"#;
     let key: ApiKey = serde_json::from_str(json).unwrap();
-    assert_eq!(key.name, "My API Key");
-    assert_eq!(key.state, ApiKeyState::Enabled);
+    assert_eq!(key.name.as_deref(), Some("My API Key"));
+    assert_eq!(key.state, Some(ApiKeyState::Enabled));
 }
 
 #[test]
@@ -197,8 +530,8 @@ fn deserialize_clickpipe() {
         "updatedAt": "2024-06-01T01:00:00Z"
     }"#;
     let pipe: ClickPipe = serde_json::from_str(json).unwrap();
-    assert_eq!(pipe.name, "my-pipe");
-    assert_eq!(pipe.state, ClickPipeState::Running);
+    assert_eq!(pipe.name.as_deref(), Some("my-pipe"));
+    assert_eq!(pipe.state, Some(ClickPipeState::Running));
 }
 
 #[test]
@@ -211,10 +544,10 @@ fn deserialize_member() {
         "joinedAt": "2024-01-01T00:00:00Z"
     }"#;
     let member: Member = serde_json::from_str(json).unwrap();
-    assert_eq!(member.name, "John Doe");
-    assert_eq!(member.email, "john@example.com");
+    assert_eq!(member.name.as_deref(), Some("John Doe"));
+    assert_eq!(member.email.as_deref(), Some("john@example.com"));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(member.role, MemberRole::Admin);
+    assert_eq!(member.role, Some(MemberRole::Admin));
 }
 
 #[test]
@@ -226,9 +559,9 @@ fn deserialize_invitation() {
         "createdAt": "2024-06-01T00:00:00Z"
     }"#;
     let inv: Invitation = serde_json::from_str(json).unwrap();
-    assert_eq!(inv.email, "new@example.com");
+    assert_eq!(inv.email.as_deref(), Some("new@example.com"));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(inv.role, InvitationRole::Developer);
+    assert_eq!(inv.role, Some(InvitationRole::Developer));
 }
 
 #[test]
@@ -239,9 +572,9 @@ fn deserialize_backup_configuration() {
         "backupStartTime": "02:00"
     }"#;
     let config: BackupConfiguration = serde_json::from_str(json).unwrap();
-    assert_eq!(config.backup_period_in_hours, 24.0);
-    assert_eq!(config.backup_retention_period_in_hours, 168.0);
-    assert_eq!(config.backup_start_time, "02:00");
+    assert_eq!(config.backup_period_in_hours, Some(24.0));
+    assert_eq!(config.backup_retention_period_in_hours, Some(168.0));
+    assert_eq!(config.backup_start_time.as_deref(), Some("02:00"));
 }
 
 #[test]
@@ -264,7 +597,7 @@ fn deserialize_usage_cost() {
         "grandTotalCHC": 50.25
     }"#;
     let cost: UsageCost = serde_json::from_str(json).unwrap();
-    assert_eq!(cost.grand_total_chc, 50.25);
+    assert_eq!(cost.grand_total_chc, Some(50.25));
 }
 
 #[test]
@@ -272,12 +605,14 @@ fn deserialize_clickpipe_settings() {
     let json = r#"{
         "streaming_max_insert_wait_ms": 5000,
         "object_storage_concurrency": null,
-        "clickhouse_max_threads": 4
+        "clickhouse_max_threads": 4,
+        "kafka_read_committed": true
     }"#;
     let settings: ClickPipeSettings = serde_json::from_str(json).unwrap();
     assert_eq!(settings.streaming_max_insert_wait_ms, Some(5000));
     assert_eq!(settings.object_storage_concurrency, None);
     assert_eq!(settings.clickhouse_max_threads, Some(4));
+    assert_eq!(settings.kafka_read_committed, Some(true));
 }
 
 #[test]
@@ -287,20 +622,22 @@ fn deserialize_private_endpoint_config() {
         "privateDnsHostname": "abc.vpce.clickhouse.cloud"
     }"#;
     let config: PrivateEndpointConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.endpoint_service_id, "vpce-svc-123456");
+    assert_eq!(
+        config.endpoint_service_id.as_deref(),
+        Some("vpce-svc-123456")
+    );
 }
 
 #[test]
-fn required_fields_always_serialized() {
+fn absent_response_fields_are_omitted_when_serialized() {
     let org = Organization {
-        name: "Test".to_string(),
+        name: Some("Test".to_string()),
         ..Default::default()
     };
     let json = serde_json::to_value(&org).unwrap();
-    // Required fields are always present (even with default values)
-    assert!(json.get("id").is_some());
-    assert!(json.get("createdAt").is_some());
-    assert_eq!(json["name"], "Test");
+    // Absent means absent: a field the API did not return is omitted from
+    // `--json` output rather than emitted as `null`.
+    assert_eq!(json, serde_json::json!({ "name": "Test" }));
 }
 
 #[test]
@@ -311,9 +648,106 @@ fn deserialize_service_endpoint() {
         "port": 9440
     }"#;
     let ep: ServiceEndpoint = serde_json::from_str(json).unwrap();
-    assert_eq!(ep.protocol, ServiceEndpointProtocol::Nativesecure);
-    assert_eq!(ep.host, "abc123.clickhouse.cloud");
-    assert_eq!(ep.port, 9440.0);
+    assert_eq!(ep.protocol, Some(ServiceEndpointProtocol::Nativesecure));
+    assert_eq!(ep.host.as_deref(), Some("abc123.clickhouse.cloud"));
+    assert_eq!(ep.port, Some(9440));
+}
+
+#[test]
+fn api_integer_fields_round_trip_as_json_integers() {
+    let response: ApiResponse<Service> = serde_json::from_value(serde_json::json!({
+        "status": 200,
+        "result": {
+            "numReplicas": 3,
+            "minReplicas": 1,
+            "maxReplicas": 5,
+            "endpoints": [{"port": 9440}]
+        }
+    }))
+    .unwrap();
+
+    let rendered = serde_json::to_string(&response).unwrap();
+    assert!(
+        !rendered.contains(".0"),
+        "unexpected float JSON: {rendered}"
+    );
+    let json = serde_json::to_value(response).unwrap();
+    assert!(json["status"].is_i64());
+    assert!(json["result"]["numReplicas"].is_i64());
+    assert!(json["result"]["minReplicas"].is_i64());
+    assert!(json["result"]["maxReplicas"].is_i64());
+    assert!(json["result"]["endpoints"][0]["port"].is_i64());
+    assert_eq!(json["status"], 200);
+    assert_eq!(json["result"]["numReplicas"], 3);
+    assert_eq!(json["result"]["endpoints"][0]["port"], 9440);
+}
+
+#[test]
+fn api_integer_fields_tolerate_missing_and_null_values() {
+    let missing: ApiResponse<Service> = serde_json::from_str("{}").unwrap();
+    assert_eq!(
+        serde_json::to_value(missing).unwrap(),
+        serde_json::json!({})
+    );
+    let missing_endpoint: ServiceEndpoint = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing_endpoint.port, None);
+
+    let nulled: ApiResponse<Service> = serde_json::from_value(serde_json::json!({
+        "status": null,
+        "result": {
+            "numReplicas": null,
+            "minReplicas": null,
+            "maxReplicas": null,
+            "endpoints": [{"port": null}]
+        }
+    }))
+    .unwrap();
+    assert_eq!(nulled.status, None);
+    let service = nulled.result.as_ref().unwrap();
+    assert_eq!(service.num_replicas, None);
+    assert_eq!(service.min_replicas, None);
+    assert_eq!(service.max_replicas, None);
+    assert_eq!(service.endpoints.as_ref().unwrap()[0].port, None);
+    assert_eq!(
+        serde_json::to_value(nulled).unwrap(),
+        serde_json::json!({"result": {"endpoints": [{}]}})
+    );
+}
+
+#[test]
+fn de_facto_integer_fields_accept_integral_float_syntax() {
+    let response: ApiResponse<Service> = serde_json::from_value(serde_json::json!({
+        "status": 200.0,
+        "result": {"endpoints": [{"port": 9440.0}]}
+    }))
+    .unwrap();
+    assert_eq!(response.status, Some(200));
+    assert_eq!(
+        response
+            .result
+            .as_ref()
+            .unwrap()
+            .endpoints
+            .as_ref()
+            .unwrap()[0]
+            .port,
+        Some(9440)
+    );
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"status": 200, "result": {"endpoints": [{"port": 9440}]}})
+    );
+
+    assert!(
+        serde_json::from_value::<ApiResponse<Service>>(serde_json::json!({"status": 200.5}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ServiceEndpoint>(serde_json::json!({"port": 9440.5})).is_err()
+    );
+    assert!(
+        serde_json::from_str::<ApiResponse<Service>>(r#"{"status":9007199254740993.0}"#).is_err()
+    );
 }
 
 #[test]
@@ -337,7 +771,7 @@ fn deserialize_clickstack_dashboard_response() {
         "updatedAt": "2024-01-02T00:00:00Z"
     }"#;
     let dash: ClickStackDashboardResponse = serde_json::from_str(json).unwrap();
-    assert_eq!(dash.name, "My Dashboard");
+    assert_eq!(dash.name.as_deref(), Some("My Dashboard"));
 }
 
 #[test]
@@ -360,8 +794,7 @@ fn service_state_enum_roundtrip() {
         ("idle", ServiceState::Idle),
     ];
     for (json_val, expected) in states {
-        let parsed: ServiceState =
-            serde_json::from_str(&format!(r#""{json_val}""#)).unwrap();
+        let parsed: ServiceState = serde_json::from_str(&format!(r#""{json_val}""#)).unwrap();
         assert_eq!(parsed, expected);
 
         let serialized = serde_json::to_string(&expected).unwrap();
@@ -386,13 +819,64 @@ fn clickpipe_state_all_variants() {
         "Pausing",
         "Modifying",
         "Resync",
+        "Degraded",
     ];
     for s in states {
-        let parsed: ClickPipeState =
-            serde_json::from_str(&format!(r#""{s}""#)).unwrap();
+        let parsed: ClickPipeState = serde_json::from_str(&format!(r#""{s}""#)).unwrap();
         let serialized = serde_json::to_string(&parsed).unwrap();
         assert_eq!(serialized, format!(r#""{s}""#));
     }
+}
+
+#[test]
+fn postgres_table_mapping_table_engines_round_trip_and_match_values() {
+    // The CLI validates `--table-mapping-json`'s `tableEngine` against
+    // `VALUES`, so the const must stay equal to the wire values the enum
+    // actually accepts.
+    assert_eq!(
+        ClickPipePostgresPipeTableMappingTableengine::VALUES,
+        &["MergeTree", "ReplacingMergeTree", "Null"]
+    );
+    for value in ClickPipePostgresPipeTableMappingTableengine::VALUES {
+        let parsed: ClickPipePostgresPipeTableMappingTableengine =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(
+                parsed,
+                ClickPipePostgresPipeTableMappingTableengine::Unknown(_)
+            ),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            format!(r#""{value}""#)
+        );
+    }
+}
+
+#[test]
+fn database_table_mapping_table_engines_round_trip_and_match_values() {
+    macro_rules! assert_values {
+        ($engine:ty) => {{
+            assert_eq!(
+                <$engine>::VALUES,
+                &["MergeTree", "ReplacingMergeTree", "Null"]
+            );
+            for value in <$engine>::VALUES {
+                let parsed: $engine = serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+                assert_eq!(parsed.to_string(), *value);
+                assert_eq!(
+                    serde_json::to_string(&parsed).unwrap(),
+                    format!(r#""{value}""#)
+                );
+            }
+        }};
+    }
+
+    assert_values!(ClickPipeMySQLPipeTableMappingTableengine);
+    assert_values!(ClickPipeMongoDBPipeTableMappingTableengine);
+    assert_values!(ClickPipeBigQueryPipeTableMappingTableengine);
 }
 
 #[test]
@@ -403,16 +887,18 @@ fn deserialize_activity() {
         "createdAt": "2024-06-01T00:00:00Z"
     }"#;
     let activity: Activity = serde_json::from_str(json).unwrap();
-    assert_eq!(activity.actor_type, ActivityActortype::Api);
+    assert_eq!(activity.actor_type, Some(ActivityActortype::Api));
 }
 
 #[test]
-fn default_struct_has_defaults() {
+fn default_response_struct_has_no_values() {
+    // A response model's `Default` means "nothing was returned", not a set of
+    // fabricated zero values.
     let svc = Service::default();
-    assert_eq!(svc.id, uuid::Uuid::default());
-    assert_eq!(svc.name, "");
-    assert_eq!(svc.provider, ServiceProvider::default());
-    assert_eq!(svc.state, ServiceState::default());
+    assert_eq!(svc.id, None);
+    assert_eq!(svc.name, None);
+    assert_eq!(svc.provider, None);
+    assert_eq!(svc.state, None);
 }
 
 #[test]
@@ -425,7 +911,146 @@ fn deserialize_postgres_service() {
         "state": "running"
     }"#;
     let pg: PostgresService = serde_json::from_str(json).unwrap();
-    assert_eq!(pg.name, "my-postgres");
+    assert_eq!(pg.name.as_deref(), Some("my-postgres"));
+}
+
+#[test]
+fn postgres_gcp_provider_roundtrips() {
+    let provider: PgProvider = serde_json::from_str(r#""gcp""#).unwrap();
+    assert_eq!(provider, PgProvider::Gcp);
+    assert_eq!(provider.to_string(), "gcp");
+    assert_eq!(serde_json::to_string(&provider).unwrap(), r#""gcp""#);
+    assert_eq!(PgProvider::VALUES, &["aws", "gcp"]);
+}
+
+#[test]
+fn postgres_config_enum_values_roundtrip_and_match_values() {
+    for value in PgConfigDefaultTransactionIsolation::VALUES {
+        let parsed: PgConfigDefaultTransactionIsolation =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigDefaultTransactionIsolation::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in PgConfigSslMinProtocolVersion::VALUES {
+        let parsed: PgConfigSslMinProtocolVersion =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigSslMinProtocolVersion::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in PgConfigWalCompression::VALUES {
+        let parsed: PgConfigWalCompression =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, PgConfigWalCompression::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+}
+
+#[test]
+fn postgres_slow_query_sort_values_roundtrip_as_known_variants() {
+    for value in SlowQueryPatternsGetListSortby::VALUES {
+        let parsed: SlowQueryPatternsGetListSortby =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, SlowQueryPatternsGetListSortby::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+    for value in SlowQueryPatternsGetListSortorder::VALUES {
+        let parsed: SlowQueryPatternsGetListSortorder =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, SlowQueryPatternsGetListSortorder::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+    }
+}
+
+#[test]
+fn postgres_gcp_sizes_roundtrip_as_known_variants() {
+    let sizes = [
+        "c4a-highmem-4",
+        "c4a-highmem-8",
+        "c4a-highmem-16",
+        "c4a-highmem-32",
+        "c4a-highmem-48",
+        "c4a-highmem-64",
+        "c4a-highmem-72",
+        "c4a-standard-4",
+        "c4a-standard-8",
+        "c4a-standard-16",
+        "c4a-standard-32",
+        "c4a-standard-48",
+        "c4a-standard-64",
+        "c4a-standard-72",
+        "c4-highmem-4",
+        "c4-highmem-8",
+        "c4-highmem-16",
+        "c4-highmem-24",
+        "c4-highmem-32",
+        "c4-highmem-48",
+        "c4-highmem-96",
+        "c4-highmem-144",
+        "c4-highmem-192",
+        "c4-highmem-288",
+        "c4-standard-4",
+        "c4-standard-8",
+        "c4-standard-16",
+        "c4-standard-24",
+        "c4-standard-32",
+        "c4-standard-48",
+        "c4-standard-96",
+        "c4-standard-144",
+        "c4-standard-192",
+        "c4-standard-288",
+        "c4d-highmem-8",
+        "c4d-highmem-16",
+        "c4d-highmem-32",
+        "c4d-highmem-48",
+        "c4d-highmem-64",
+        "c4d-highmem-96",
+        "c4d-highmem-192",
+        "c4d-highmem-384",
+        "c4d-standard-8",
+        "c4d-standard-16",
+        "c4d-standard-32",
+        "c4d-standard-48",
+        "c4d-standard-64",
+        "c4d-standard-96",
+        "c4d-standard-192",
+        "c4d-standard-384",
+        "z3-highlssd-8",
+        "z3-highlssd-16",
+        "z3-highlssd-22",
+        "z3-highlssd-32",
+        "z3-highlssd-44",
+        "z3-highlssd-88",
+        "z3-standardlssd-14",
+        "z3-standardlssd-22",
+        "z3-standardlssd-44",
+        "z3-standardlssd-88",
+        "z3-standardlssd-176",
+    ];
+
+    for wire_value in sizes {
+        let size: PgSize = serde_json::from_value(wire_value.into()).unwrap();
+        assert!(
+            !matches!(&size, PgSize::Unknown(_)),
+            "{wire_value} deserialized through the catch-all"
+        );
+        assert_eq!(size.to_string(), wire_value);
+        assert_eq!(serde_json::to_value(&size).unwrap(), wire_value);
+    }
 }
 
 #[test]
@@ -433,7 +1058,10 @@ fn unknown_enum_variant_deserializes() {
     // An unknown service state from the API should deserialize into Unknown(String)
     let json = r#"{"state": "brand-new-state"}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.state, ServiceState::Unknown("brand-new-state".to_string()));
+    assert_eq!(
+        svc.state,
+        Some(ServiceState::Unknown("brand-new-state".to_string()))
+    );
 }
 
 #[test]
@@ -455,7 +1083,10 @@ fn known_enum_variant_still_deserializes() {
 #[test]
 fn unknown_enum_display() {
     assert_eq!(ServiceState::Running.to_string(), "running");
-    assert_eq!(ServiceState::Unknown("brand-new".to_string()).to_string(), "brand-new");
+    assert_eq!(
+        ServiceState::Unknown("brand-new".to_string()).to_string(),
+        "brand-new"
+    );
 }
 
 // ===========================================================================
@@ -466,7 +1097,7 @@ fn unknown_enum_display() {
 fn api_response_result_explicitly_null() {
     let json = r#"{"status": 200, "requestId": "req-1", "result": null}"#;
     let resp: ApiResponse<Vec<Organization>> = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
     assert!(resp.result.is_none());
 }
 
@@ -490,9 +1121,9 @@ fn api_response_extra_fields_ignored() {
         "nestedExtra": {"a": 1}
     }"#;
     let resp: ApiResponse<Organization> = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.status, Some(200.0));
+    assert_eq!(resp.status, Some(200));
     let org = resp.result.unwrap();
-    assert_eq!(org.name, "Test");
+    assert_eq!(org.name.as_deref(), Some("Test"));
 }
 
 #[test]
@@ -549,17 +1180,17 @@ fn serialize_service_state_patch_request_stop() {
 #[test]
 fn serialize_service_replica_scaling_patch_request() {
     let req = ServiceReplicaScalingPatchRequest {
-        num_replicas: Some(5.0),
+        num_replicas: Some(5),
         min_replicas: None,
         max_replicas: None,
         min_replica_memory_gb: Some(16.0),
         max_replica_memory_gb: Some(64.0),
-        replica_memory_gb: None,
         idle_scaling: Some(true),
         idle_timeout_minutes: Some(10.0),
+        ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["numReplicas"], 5.0);
+    assert_eq!(json["numReplicas"], 5);
     assert_eq!(json["minReplicaMemoryGb"], 16.0);
     assert_eq!(json["maxReplicaMemoryGb"], 64.0);
     assert_eq!(json["idleScaling"], true);
@@ -569,7 +1200,7 @@ fn serialize_service_replica_scaling_patch_request() {
 #[test]
 fn serialize_service_scaling_patch_request() {
     let req = ServiceScalingPatchRequest {
-        num_replicas: Some(3.0),
+        num_replicas: Some(3),
         #[cfg(feature = "deprecated-fields")]
         min_total_memory_gb: Some(24.0),
         #[cfg(feature = "deprecated-fields")]
@@ -577,7 +1208,7 @@ fn serialize_service_scaling_patch_request() {
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["numReplicas"], 3.0);
+    assert_eq!(json["numReplicas"], 3);
     #[cfg(feature = "deprecated-fields")]
     assert_eq!(json["minTotalMemoryGb"], 24.0);
     #[cfg(feature = "deprecated-fields")]
@@ -624,12 +1255,40 @@ fn serialize_backup_configuration_patch_request() {
     let req = BackupConfigurationPatchRequest {
         backup_period_in_hours: Some(12.0),
         backup_retention_period_in_hours: Some(336.0),
-        backup_start_time: Some("03:00".to_string()),
+        backup_start_time: Some(Some("03:00".to_string())),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["backupPeriodInHours"], 12.0);
     assert_eq!(json["backupRetentionPeriodInHours"], 336.0);
     assert_eq!(json["backupStartTime"], "03:00");
+}
+
+/// The three states of `backupStartTime` are what let a caller both set and
+/// unset the start time: only an explicit `null` clears the stored value, and
+/// omitting the key must leave it untouched.
+#[test]
+fn serialize_backup_configuration_patch_request_omits_an_untouched_start_time() {
+    let req = BackupConfigurationPatchRequest {
+        backup_period_in_hours: Some(12.0),
+        backup_retention_period_in_hours: None,
+        backup_start_time: None,
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json, serde_json::json!({ "backupPeriodInHours": 12.0 }));
+}
+
+#[test]
+fn serialize_backup_configuration_patch_request_clears_the_start_time_with_null() {
+    let req = BackupConfigurationPatchRequest {
+        backup_period_in_hours: Some(12.0),
+        backup_retention_period_in_hours: None,
+        backup_start_time: Some(None),
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({ "backupPeriodInHours": 12.0, "backupStartTime": null })
+    );
 }
 
 #[test]
@@ -638,14 +1297,14 @@ fn serialize_postgres_service_post_request() {
         name: "pg-new".to_string(),
         provider: PgProvider::Aws,
         region: "us-east-1".to_string(),
-        size: PgSize::C6gd_medium,
+        size: PgSize::C6gd_large,
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["name"], "pg-new");
     assert_eq!(json["provider"], "aws");
     assert_eq!(json["region"], "us-east-1");
-    assert_eq!(json["size"], "c6gd.medium");
+    assert_eq!(json["size"], "c6gd.large");
     assert!(json.get("storageSize").is_none());
     // Optional fields omitted
     assert!(json.get("haType").is_none());
@@ -687,12 +1346,34 @@ fn serialize_postgres_read_replica_request() {
 fn serialize_byoc_infrastructure_post_request() {
     let req = ByocInfrastructurePostRequest {
         account_id: "123456789012".to_string(),
+        availability_zone_suffixes: vec![
+            ByocAvailabilityZoneSuffix::A,
+            ByocAvailabilityZoneSuffix::B,
+            ByocAvailabilityZoneSuffix::C,
+            ByocAvailabilityZoneSuffix::D,
+            ByocAvailabilityZoneSuffix::E,
+            ByocAvailabilityZoneSuffix::F,
+        ],
         display_name: "My BYOC".to_string(),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["accountId"], "123456789012");
+    assert_eq!(
+        json["availabilityZoneSuffixes"],
+        serde_json::json!(["a", "b", "c", "d", "e", "f"])
+    );
     assert_eq!(json["displayName"], "My BYOC");
+}
+
+#[test]
+fn byoc_availability_zone_suffix_preserves_unknown_values() {
+    let suffix: ByocAvailabilityZoneSuffix = serde_json::from_str(r#""future""#).unwrap();
+    assert_eq!(
+        suffix,
+        ByocAvailabilityZoneSuffix::Unknown("future".to_string())
+    );
+    assert_eq!(serde_json::to_string(&suffix).unwrap(), r#""future""#);
 }
 
 #[test]
@@ -740,22 +1421,21 @@ fn deprecated_request_fields_absent_by_default() {
     let member = MemberPatchRequest {
         assigned_role_ids: Some(vec!["admin".to_string()]),
     };
-    assert!(serde_json::to_value(&member)
-        .unwrap()
-        .get("role")
-        .is_none());
+    assert!(serde_json::to_value(&member).unwrap().get("role").is_none());
 
     let invitation = InvitationPostRequest {
         email: "alice@example.com".to_string(),
         assigned_role_ids: vec!["admin".to_string()],
     };
-    assert!(serde_json::to_value(&invitation)
-        .unwrap()
-        .get("role")
-        .is_none());
+    assert!(
+        serde_json::to_value(&invitation)
+            .unwrap()
+            .get("role")
+            .is_none()
+    );
 
     let scaling = ServiceScalingPatchRequest {
-        num_replicas: Some(3.0),
+        num_replicas: Some(3),
         ..Default::default()
     };
     let scaling = serde_json::to_value(&scaling).unwrap();
@@ -789,12 +1469,39 @@ fn serialize_create_reverse_private_endpoint() {
 fn serialize_instance_query_endpoint_post_request() {
     let req = InstanceServiceQueryApiEndpointsPostRequest {
         allowed_origins: "https://example.com".to_string(),
-        roles: vec!["reader".to_string()],
+        roles: vec![QueryEndpointRole::SqlConsoleReadOnly],
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["allowedOrigins"], "https://example.com");
-    assert_eq!(json["roles"], serde_json::json!(["reader"]));
+    assert_eq!(json["roles"], serde_json::json!(["sql_console_read_only"]));
+}
+
+#[test]
+fn deserialize_query_endpoint_roles_tolerates_unknown_values() {
+    let endpoint: ServiceQueryAPIEndpoint = serde_json::from_value(serde_json::json!({
+        "roles": ["sql_console_admin", "future_role"]
+    }))
+    .unwrap();
+
+    assert_eq!(
+        endpoint.roles,
+        Some(vec![
+            QueryEndpointRole::SqlConsoleAdmin,
+            QueryEndpointRole::Unknown("future_role".to_string()),
+        ])
+    );
+}
+
+#[test]
+fn slow_query_sort_enums_preserve_unknown_values() {
+    let sort_by: SlowQueryPatternsGetListSortby =
+        serde_json::from_str(r#""future_metric""#).unwrap();
+    let sort_order: SlowQueryPatternsGetListSortorder =
+        serde_json::from_str(r#""future_order""#).unwrap();
+
+    assert_eq!(sort_by.to_string(), "future_metric");
+    assert_eq!(sort_order.to_string(), "future_order");
 }
 
 #[test]
@@ -812,14 +1519,134 @@ fn serialize_servic_private_endpointe_post_request() {
 fn serialize_postgres_instance_config() {
     let config = PostgresInstanceConfig {
         pg_config: PgConfig {
-            max_connections: 200,
+            max_connections: Some(serde_json::json!(200)),
+            autovacuum_max_workers: Some(serde_json::json!(5)),
             ..Default::default()
         },
-        pg_bouncer_config: PgBouncerConfig {},
+        pg_bouncer_config: PgBouncerConfig::default(),
     };
     let json = serde_json::to_value(&config).unwrap();
     assert_eq!(json["pgConfig"]["max_connections"], 200);
+    assert_eq!(json["pgConfig"]["autovacuum_max_workers"], 5);
     assert!(json.get("pgBouncerConfig").is_some());
+}
+
+#[test]
+fn serialize_postgres_instance_config_always_includes_both_nested() {
+    // The live API rejects PATCH/POST bodies that omit either `pgConfig` or
+    // `pgBouncerConfig` with `BAD_REQUEST: ... 'undefined'`, so the envelope
+    // always serializes both — defaulting to `{}` — while inner pgConfig
+    // fields stay opt-in. See #163 for the matrix evidence.
+    let config = PostgresInstanceConfig {
+        pg_config: PgConfig {
+            max_connections: Some(serde_json::json!(200)),
+            ..Default::default()
+        },
+        pg_bouncer_config: PgBouncerConfig::default(),
+    };
+    let json = serde_json::to_value(&config).unwrap();
+    assert!(
+        json.get("pgBouncerConfig").is_some(),
+        "pgBouncerConfig must always be present"
+    );
+    assert_eq!(json["pgBouncerConfig"], serde_json::json!({}));
+    assert_eq!(json["pgConfig"]["max_connections"], 200);
+    let pg = json["pgConfig"].as_object().unwrap();
+    assert_eq!(
+        pg.len(),
+        1,
+        "PgConfig should only serialize the one set field, got {pg:?}"
+    );
+}
+
+#[test]
+fn serialize_clickpipe_object_storage_ingestion_controls() {
+    let source = ClickPipePostObjectStorageSource {
+        url: "https://bucket.s3.amazonaws.com/events/*.json".to_string(),
+        skip_initial_load: Some(true),
+        start_after: Some("events/2026-06-01/".to_string()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&source).unwrap();
+    assert_eq!(json["skipInitialLoad"], true);
+    assert_eq!(json["startAfter"], "events/2026-06-01/");
+
+    // Omitted from the wire when unset.
+    let json = serde_json::to_value(ClickPipePostObjectStorageSource::default()).unwrap();
+    assert!(json.get("skipInitialLoad").is_none());
+    assert!(json.get("startAfter").is_none());
+}
+
+#[test]
+fn serialize_clickpipe_mutate_postgres_source_omits_absent_credentials() {
+    // IAM_ROLE authentication has no username or password: `iamRole` is the
+    // whole credential, so the `credentials` object must not reach the wire.
+    let iam_role = ClickPipeMutatePostgresSource {
+        authentication: ClickPipeMutatePostgresSourceAuthentication::IAM_ROLE,
+        credentials: None,
+        iam_role: Some("arn:aws:iam::123456789012:role/clickpipe".to_string()),
+        host: "postgres.example".to_string(),
+        port: 5432,
+        database: "source-db".to_string(),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&iam_role).unwrap();
+    assert!(
+        json.get("credentials").is_none(),
+        "credentials must be omitted, got {json}"
+    );
+    assert_eq!(json["iamRole"], "arn:aws:iam::123456789012:role/clickpipe");
+    assert_eq!(json["authentication"], "IAM_ROLE");
+
+    // Basic auth still sends the pair verbatim.
+    let basic = ClickPipeMutatePostgresSource {
+        authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
+        credentials: Some(PLAIN {
+            username: "user".to_string(),
+            password: "secret".to_string(),
+        }),
+        ..iam_role.clone()
+    };
+    let json = serde_json::to_value(&basic).unwrap();
+    assert_eq!(json["credentials"]["username"], "user");
+    assert_eq!(json["credentials"]["password"], "secret");
+}
+
+#[test]
+fn deserialize_scaling_schedule_entry_fixed_scaling_fields() {
+    let json = r#"{
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "name": "weekday-peak",
+        "weekdays": [1, 2, 3, 4, 5],
+        "startHourUtc": 8,
+        "endHourUtc": 18,
+        "isActiveNow": false,
+        "autoscalingMode": "vertical",
+        "minReplicaMemoryGb": 16,
+        "maxReplicaMemoryGb": 32
+    }"#;
+    let entry: ScalingScheduleEntry = serde_json::from_str(json).unwrap();
+    assert_eq!(entry.autoscaling_mode, Some(AutoscalingMode::Vertical));
+    assert_eq!(entry.min_replica_memory_gb, Some(16.0));
+    assert_eq!(entry.max_replica_memory_gb, Some(32.0));
+
+    // Writing a fetched entry back goes through the explicit conversion, which
+    // resolves the fields the request requires.
+    let req = ScalingScheduleEntryRequest::try_from(entry).unwrap();
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["autoscalingMode"], "vertical");
+    assert_eq!(json["minReplicaMemoryGb"], 16.0);
+    assert_eq!(json["maxReplicaMemoryGb"], 32.0);
+}
+
+#[test]
+fn serialize_postgres_instance_config_default_envelope() {
+    // Default envelope serializes to the minimal accepted body shape.
+    let json = serde_json::to_value(PostgresInstanceConfig::default()).unwrap();
+    assert_eq!(
+        json,
+        serde_json::json!({ "pgConfig": {}, "pgBouncerConfig": {} })
+    );
 }
 
 // ===========================================================================
@@ -830,75 +1657,75 @@ fn serialize_postgres_instance_config() {
 fn organization_ignores_extra_fields() {
     let json = r#"{"name":"Test","brandNewField":"surprise","anotherNew":42}"#;
     let org: Organization = serde_json::from_str(json).unwrap();
-    assert_eq!(org.name, "Test");
+    assert_eq!(org.name.as_deref(), Some("Test"));
 }
 
 #[test]
 fn service_ignores_extra_fields() {
     let json = r#"{"name":"svc","state":"running","futureField":"v2","nested":{"a":1}}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.name, "svc");
-    assert_eq!(svc.state, ServiceState::Running);
+    assert_eq!(svc.name.as_deref(), Some("svc"));
+    assert_eq!(svc.state, Some(ServiceState::Running));
 }
 
 #[test]
 fn clickpipe_ignores_extra_fields() {
     let json = r#"{"name":"pipe","state":"Running","newFeatureFlag":true}"#;
     let pipe: ClickPipe = serde_json::from_str(json).unwrap();
-    assert_eq!(pipe.name, "pipe");
-    assert_eq!(pipe.state, ClickPipeState::Running);
+    assert_eq!(pipe.name.as_deref(), Some("pipe"));
+    assert_eq!(pipe.state, Some(ClickPipeState::Running));
 }
 
 #[test]
 fn backup_ignores_extra_fields() {
     let json = r#"{"status":"done","type":"full","compressionRatio":0.85}"#;
     let backup: Backup = serde_json::from_str(json).unwrap();
-    assert_eq!(backup.status, BackupStatus::Done);
+    assert_eq!(backup.status, Some(BackupStatus::Done));
 }
 
 #[test]
 fn api_key_ignores_extra_fields() {
     let json = r#"{"name":"key","state":"enabled","rotationPolicy":"weekly"}"#;
     let key: ApiKey = serde_json::from_str(json).unwrap();
-    assert_eq!(key.name, "key");
-    assert_eq!(key.state, ApiKeyState::Enabled);
+    assert_eq!(key.name.as_deref(), Some("key"));
+    assert_eq!(key.state, Some(ApiKeyState::Enabled));
 }
 
 #[test]
 fn member_ignores_extra_fields() {
     let json = r#"{"name":"Alice","role":"admin","department":"eng","mfa":true}"#;
     let m: Member = serde_json::from_str(json).unwrap();
-    assert_eq!(m.name, "Alice");
+    assert_eq!(m.name.as_deref(), Some("Alice"));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(m.role, MemberRole::Admin);
+    assert_eq!(m.role, Some(MemberRole::Admin));
 }
 
 #[test]
 fn invitation_ignores_extra_fields() {
     let json = r#"{"email":"a@b.com","role":"developer","expiresIn":"7d"}"#;
     let inv: Invitation = serde_json::from_str(json).unwrap();
-    assert_eq!(inv.email, "a@b.com");
+    assert_eq!(inv.email.as_deref(), Some("a@b.com"));
 }
 
 #[test]
 fn postgres_service_ignores_extra_fields() {
     let json = r#"{"name":"pg","state":"running","maintenanceWindow":"sun-02:00"}"#;
     let pg: PostgresService = serde_json::from_str(json).unwrap();
-    assert_eq!(pg.name, "pg");
+    assert_eq!(pg.name.as_deref(), Some("pg"));
 }
 
 #[test]
 fn activity_ignores_extra_fields() {
     let json = r#"{"actorType":"user","sourceIp":"1.2.3.4"}"#;
     let a: Activity = serde_json::from_str(json).unwrap();
-    assert_eq!(a.actor_type, ActivityActortype::User);
+    assert_eq!(a.actor_type, Some(ActivityActortype::User));
 }
 
 #[test]
 fn backup_configuration_ignores_extra_fields() {
     let json = r#"{"backupPeriodInHours":24,"backupRetentionPeriodInHours":168,"compressionEnabled":true}"#;
     let c: BackupConfiguration = serde_json::from_str(json).unwrap();
-    assert_eq!(c.backup_period_in_hours, 24.0);
+    assert_eq!(c.backup_period_in_hours, Some(24.0));
 }
 
 // ===========================================================================
@@ -911,15 +1738,18 @@ fn service_minimal_response() {
     let svc: Service = serde_json::from_str(json).unwrap();
     assert_eq!(
         svc.id,
-        "11111111-2222-3333-4444-555555555555"
-            .parse::<uuid::Uuid>()
-            .unwrap()
+        Some(
+            "11111111-2222-3333-4444-555555555555"
+                .parse::<uuid::Uuid>()
+                .unwrap()
+        )
     );
-    // Missing fields get their default values
-    assert_eq!(svc.name, "");
-    assert_eq!(svc.provider, ServiceProvider::default());
-    assert_eq!(svc.state, ServiceState::default());
-    assert!(svc.endpoints.is_empty());
+    // Every response field is `Option<T>`: an omitted key is `None`, not a
+    // fabricated zero value.
+    assert_eq!(svc.name, None);
+    assert_eq!(svc.provider, None);
+    assert_eq!(svc.state, None);
+    assert_eq!(svc.endpoints, None);
 }
 
 #[cfg(feature = "deprecated-fields")]
@@ -930,8 +1760,8 @@ fn service_deserializes_deprecated_fields() {
     // the struct entirely (see `deprecated_fields_absent_by_default`).
     let json = r#"{"tier":"production","minTotalMemoryGb":24,"maxTotalMemoryGb":48}"#;
     let svc: Service = serde_json::from_str(json).unwrap();
-    assert_eq!(svc.min_total_memory_gb, 24.0);
-    assert_eq!(svc.max_total_memory_gb, 48.0);
+    assert_eq!(svc.min_total_memory_gb, Some(24.0));
+    assert_eq!(svc.max_total_memory_gb, Some(48.0));
 }
 
 /// In the default build (no `deprecated-fields` feature) deprecated response
@@ -988,54 +1818,485 @@ fn service_shows_deprecated_fields_with_feature() {
 #[test]
 fn service_empty_object() {
     let svc: Service = serde_json::from_str("{}").unwrap();
-    assert_eq!(svc.id, uuid::Uuid::default());
-    assert_eq!(svc.name, "");
+    assert_eq!(svc, Service::default());
+    assert_eq!(svc.id, None);
+    assert_eq!(svc.name, None);
 }
 
 #[test]
 fn organization_minimal_response() {
     let org: Organization = serde_json::from_str(r#"{"name":"X"}"#).unwrap();
-    assert_eq!(org.name, "X");
-    assert_eq!(org.id, uuid::Uuid::default());
-    assert_eq!(org.created_at, chrono::DateTime::<chrono::Utc>::default());
+    assert_eq!(org.name.as_deref(), Some("X"));
+    assert_eq!(org.id, None);
+    assert_eq!(org.created_at, None);
 }
 
 #[test]
 fn clickpipe_minimal_response() {
     let pipe: ClickPipe = serde_json::from_str("{}").unwrap();
-    assert_eq!(pipe.id, uuid::Uuid::default());
-    assert_eq!(pipe.name, "");
-    assert_eq!(pipe.state, ClickPipeState::default());
+    assert_eq!(pipe, ClickPipe::default());
+    assert_eq!(pipe.id, None);
+    assert_eq!(pipe.name, None);
+    assert_eq!(pipe.state, None);
+}
+
+#[test]
+fn schema_discovery_response_tolerates_dropped_and_null_meta() {
+    let dropped: ClickPipeSchemaDiscoveryResponse = serde_json::from_str("{}").unwrap();
+    let nulled: ClickPipeSchemaDiscoveryResponse =
+        serde_json::from_str(r#"{"fields":null,"meta":null}"#).unwrap();
+
+    assert_eq!(dropped, ClickPipeSchemaDiscoveryResponse::default());
+    assert_eq!(nulled, ClickPipeSchemaDiscoveryResponse::default());
+    assert_eq!(serde_json::to_value(nulled).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn udf_responses_tolerate_dropped_and_null_fields() {
+    let dropped: Udf = serde_json::from_str("{}").unwrap();
+    let nulled: Udf = serde_json::from_str(
+        r#"{"functionName":null,"runtime":null,"arguments":null,"createdAt":null,"memoryLimitMib":null}"#,
+    )
+    .unwrap();
+
+    assert_eq!(dropped, Udf::default());
+    assert_eq!(nulled, Udf::default());
+    assert_eq!(serde_json::to_value(nulled).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn udf_response_models_tolerate_absent_and_null_fields() {
+    // These models are reached only from Client response types. A dropped key
+    // and an explicit null must therefore both deserialize to None, and None
+    // must be omitted again when rendered as JSON.
+    macro_rules! assert_tolerant_response {
+        ($response:ty, $null_payload:literal) => {{
+            let dropped: $response = serde_json::from_str("{}").unwrap();
+            let nulled: $response = serde_json::from_str($null_payload).unwrap();
+            assert_eq!(dropped, <$response>::default());
+            assert_eq!(nulled, <$response>::default());
+            assert_eq!(serde_json::to_value(nulled).unwrap(), serde_json::json!({}));
+        }};
+    }
+
+    assert_tolerant_response!(
+        Pagination,
+        r#"{"totalRecords":null,"currentCursor":null,"nextCursor":null,"limit":null}"#
+    );
+    assert_tolerant_response!(
+        UdfAttachment,
+        r#"{"functionName":null,"serviceId":null,"status":null,"version":null}"#
+    );
+    assert_tolerant_response!(
+        UdfAttachmentListResponse,
+        r#"{"items":null,"pagination":null}"#
+    );
+    assert_tolerant_response!(UdfListResponse, r#"{"items":null,"pagination":null}"#);
+    assert_tolerant_response!(
+        UdfUploadSession,
+        r#"{"uploadId":null,"uploadUrl":null,"expiresAt":null}"#
+    );
+    assert_tolerant_response!(
+        UdfVersionListResponse,
+        r#"{"items":null,"pagination":null}"#
+    );
+}
+
+#[test]
+fn scim_user_enterprise_extension_uses_the_exact_wire_name() {
+    let user = ScimUser {
+        enterprise_user: Some(ScimEnterpriseUser::default()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&user).unwrap();
+    let extension = "urn:ietf:params:scim:schemas:extension:enterprise:2.0:User";
+    assert!(json.get(extension).is_some());
+    assert_eq!(
+        serde_json::from_value::<ScimUser>(json)
+            .unwrap()
+            .enterprise_user,
+        user.enterprise_user
+    );
+}
+
+#[test]
+fn udf_create_request_variants_keep_required_fields_strict() {
+    // The discriminator is intentionally lossless at the union boundary. Once
+    // it selects a known request shape, serde rejects a body missing a required
+    // field rather than inventing a default value.
+    assert!(
+        serde_json::from_str::<UdfCreateRequestV1>(
+            r#"{"arguments":[],"functionName":"my_udf","returnType":"String","runtime":"native","type":"executable"}"#,
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_str::<UdfCreateRequestV2>(
+            r#"{"arguments":[],"functionName":"my_udf","returnType":"String","runtime":"native","type":"executable_pool"}"#,
+        )
+        .is_err()
+    );
+
+    let request = UdfCreateRequestV1 {
+        arguments: vec![UdfArgument {
+            name: "x".to_string(),
+            r#type: "UInt64".to_string(),
+        }],
+        function_name: "my_udf".to_string(),
+        return_type: "UInt64".to_string(),
+        runtime: UdfRuntime::Native,
+        r#type: UdfCreateRequestV1Type::Executable,
+        upload_id: "upload-1".to_string(),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({
+            "arguments": [{"name": "x", "type": "UInt64"}],
+            "functionName": "my_udf",
+            "returnType": "UInt64",
+            "runtime": "native",
+            "type": "executable",
+            "uploadId": "upload-1",
+        })
+    );
 }
 
 #[test]
 fn postgres_service_minimal_response() {
-    let pg: PostgresService = serde_json::from_str(r#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#).unwrap();
-    assert_eq!(pg.name, "");
-    assert_eq!(pg.state, PgStateProperty::default());
+    let pg: PostgresService =
+        serde_json::from_str(r#"{"id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}"#).unwrap();
+    // Every response field is `Option<T>`: an omitted key is `None`, not a
+    // fabricated zero value.
+    assert_eq!(pg.name, None);
+    assert_eq!(pg.state, None);
+}
+
+#[test]
+fn postgres_service_response_tolerates_dropped_and_null_fields() {
+    // A response field the API stops sending, and one it sends as an explicit
+    // `null`, must both land as `None` rather than failing the response. `null`
+    // is the case `#[serde(default)]` never covered: it only fills a missing
+    // key.
+    let dropped: PostgresService = serde_json::from_str("{}").unwrap();
+    let nulled: PostgresService = serde_json::from_str(
+        r#"{"id":null,"name":null,"state":null,"tags":null,"storageSize":null,"createdAt":null}"#,
+    )
+    .unwrap();
+    assert_eq!(dropped, PostgresService::default());
+    assert_eq!(nulled, PostgresService::default());
+    assert_eq!(nulled.tags, None);
+    assert_eq!(nulled.storage_size, None);
+}
+
+#[test]
+fn postgres_service_response_omits_absent_fields_when_serialized() {
+    // Absent means absent: a response field that was not returned is omitted
+    // from `--json` output rather than emitted as `null`.
+    let pg = PostgresService {
+        name: Some("pg-1".to_string()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&pg).unwrap();
+    assert_eq!(json, serde_json::json!({ "name": "pg-1" }));
+}
+
+#[test]
+fn postgres_instance_config_response_converts_back_into_a_request_body() {
+    let response = PostgresInstanceConfigResponse {
+        pg_config: Some(PgConfigResponse {
+            max_connections: Some(serde_json::json!(200)),
+            ..Default::default()
+        }),
+        pg_bouncer_config: Some(PgBouncerConfigResponse::from([
+            ("default_pool_size".to_string(), "16".to_string()),
+            ("future_parameter".to_string(), "on".to_string()),
+        ])),
+    };
+    let request = PostgresInstanceConfig::try_from(response).unwrap();
+    assert_eq!(
+        request.pg_config.max_connections,
+        Some(serde_json::json!(200))
+    );
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({ "pgConfig": { "max_connections": 200 }, "pgBouncerConfig": {"default_pool_size": "16", "future_parameter": "on"} })
+    );
+}
+
+#[test]
+fn postgres_instance_config_response_conversion_reports_missing_required_fields() {
+    // Both nested objects are required in a write body, so the write-back
+    // conversion must fail loudly instead of inventing empty objects.
+    let missing_bouncer = PostgresInstanceConfig::try_from(PostgresInstanceConfigResponse {
+        pg_config: Some(PgConfigResponse::default()),
+        pg_bouncer_config: None,
+    })
+    .unwrap_err();
+    assert_eq!(missing_bouncer.fields(), ["pgBouncerConfig"]);
+
+    let missing_both =
+        PostgresInstanceConfig::try_from(PostgresInstanceConfigResponse::default()).unwrap_err();
+    assert_eq!(missing_both.fields(), ["pgBouncerConfig", "pgConfig"]);
+    assert_eq!(
+        missing_both.to_string(),
+        "the API response is missing required field(s): pgBouncerConfig, pgConfig"
+    );
 }
 
 #[test]
 fn backup_minimal_response() {
     let b: Backup = serde_json::from_str("{}").unwrap();
-    assert_eq!(b.id, uuid::Uuid::default());
-    assert_eq!(b.status, BackupStatus::default());
-    assert_eq!(b.size_in_bytes, 0.0);
+    assert_eq!(b.id, None);
+    assert_eq!(b.status, None);
+    assert_eq!(b.size_in_bytes, None);
 }
 
 #[test]
 fn api_key_minimal_response() {
     let k: ApiKey = serde_json::from_str(r#"{"name":"k"}"#).unwrap();
-    assert_eq!(k.name, "k");
-    assert_eq!(k.id, uuid::Uuid::default());
-    assert_eq!(k.state, ApiKeyState::default());
+    assert_eq!(k.name.as_deref(), Some("k"));
+    assert_eq!(k.id, None);
+    assert_eq!(k.state, None);
+}
+
+#[test]
+fn service_response_tolerates_dropped_and_null_fields() {
+    // A response field the API stops sending, and one it sends as an explicit
+    // `null`, must both land as `None` rather than failing the response. `null`
+    // is the case `#[serde(default)]` never covered: it only fills a missing
+    // key.
+    let dropped: Service = serde_json::from_str("{}").unwrap();
+    let nulled: Service = serde_json::from_str(
+        r#"{"id":null,"name":null,"state":null,"endpoints":null,"ipAccessList":null,
+            "tags":null,"currentScaling":null,"scalingSchedule":null,"numReplicas":null}"#,
+    )
+    .unwrap();
+    assert_eq!(dropped, Service::default());
+    assert_eq!(nulled, Service::default());
+    assert_eq!(nulled.endpoints, None);
+    assert_eq!(nulled.ip_access_list, None);
+    assert_eq!(nulled.tags, None);
+}
+
+#[test]
+fn service_response_omits_absent_fields_when_serialized() {
+    // Absent means absent, at every level of the response tree: a field that
+    // was not returned is omitted from `--json` output, never emitted as
+    // `null`.
+    let svc = Service {
+        name: Some("svc".to_string()),
+        ip_access_list: Some(vec![IpAccessListEntryResponse {
+            source: Some("0.0.0.0/0".to_string()),
+            description: None,
+        }]),
+        tags: Some(vec![ResourceTagsV1Response {
+            key: Some("env".to_string()),
+            value: None,
+        }]),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&svc).unwrap(),
+        serde_json::json!({
+            "name": "svc",
+            "ipAccessList": [{ "source": "0.0.0.0/0" }],
+            "tags": [{ "key": "env" }],
+        })
+    );
+}
+
+#[test]
+fn shared_leaves_stay_strict_on_the_request_side() {
+    // `ipAccessListEntry` and `resourceTagsV1` are sent as well as returned, so
+    // each splits: the request variant keeps the schema's required fields as
+    // `T`, and only the response variant is all-`Option`.
+    let entry = IpAccessListEntry {
+        source: "0.0.0.0/0".to_string(),
+        description: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap(),
+        serde_json::json!({ "source": "0.0.0.0/0" })
+    );
+    // A request payload missing a required field is rejected, not defaulted.
+    assert!(serde_json::from_str::<IpAccessListEntry>("{}").is_err());
+    assert!(serde_json::from_str::<ResourceTagsV1>("{}").is_err());
+    // The response variants accept the same payload.
+    assert_eq!(
+        serde_json::from_str::<IpAccessListEntryResponse>("{}").unwrap(),
+        IpAccessListEntryResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ResourceTagsV1Response>("{}").unwrap(),
+        ResourceTagsV1Response::default()
+    );
+}
+
+#[test]
+fn infrastructure_responses_tolerate_dropped_and_null_fields() {
+    // Reverse private endpoints and quotas are response-only, so every field is
+    // `Option<T>`: a dropped key and an explicit `null` both land as `None`.
+    // `null` is the case `#[serde(default)]` never covered.
+    let dropped: ReversePrivateEndpoint = serde_json::from_str("{}").unwrap();
+    let nulled: ReversePrivateEndpoint = serde_json::from_str(
+        r#"{"id":null,"description":null,"status":null,"type":null,"dnsNames":null,
+            "privateDnsNames":null,"endpointId":null,"serviceId":null,
+            "customPrivateDnsMappings":null}"#,
+    )
+    .unwrap();
+    assert_eq!(dropped, ReversePrivateEndpoint::default());
+    assert_eq!(nulled, ReversePrivateEndpoint::default());
+    // A `null` on a list field is the residual case the previous
+    // `#[serde(default)]` policy still failed on.
+    assert_eq!(nulled.dns_names, None);
+    assert_eq!(nulled.custom_private_dns_mappings, None);
+
+    let quota: OrganizationQuota = serde_json::from_str(r#"{"name":"Services"}"#).unwrap();
+    assert_eq!(quota.name.as_deref(), Some("Services"));
+    assert_eq!(quota.quota_code, None);
+    assert_eq!(quota.value, None);
+    assert_eq!(quota.adjustable, None);
+}
+
+#[test]
+fn reverse_private_endpoint_omits_absent_fields_when_serialized() {
+    // Absence stays absent in `--json` output, including inside the nested
+    // response variant of the shared `customPrivateDnsMapping` schema.
+    let rpe = ReversePrivateEndpoint {
+        description: Some("MSK endpoint".to_string()),
+        custom_private_dns_mappings: Some(vec![CustomPrivateDnsMappingResponse {
+            private_dns_name: None,
+        }]),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&rpe).unwrap(),
+        serde_json::json!({
+            "description": "MSK endpoint",
+            "customPrivateDnsMappings": [{}],
+        })
+    );
+}
+
+#[test]
+fn infrastructure_shared_leaves_stay_strict_on_the_request_side() {
+    // `customPrivateDnsMapping` and `RBACPolicyTags` are sent as well as
+    // returned, so each splits: only the `{Name}Response` variant is used by a
+    // response type, and neither variant fabricates a value for a missing key.
+    let mapping = CustomPrivateDnsMapping {
+        private_dns_name: Some("db.internal".to_string()),
+    };
+    assert_eq!(
+        serde_json::to_value(&mapping).unwrap(),
+        serde_json::json!({ "privateDnsName": "db.internal" })
+    );
+    // Both schemas are all-optional upstream, so the request variants accept an
+    // empty object too — what the split guarantees is that the response variant
+    // can never regain a required field.
+    assert_eq!(
+        serde_json::from_str::<CustomPrivateDnsMappingResponse>("{}").unwrap(),
+        CustomPrivateDnsMappingResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<RBACPolicyTagsResponse>(r#"{"grants":null,"roleV2":null}"#).unwrap(),
+        RBACPolicyTagsResponse::default()
+    );
+    let policy: RBACPolicy = serde_json::from_str(r#"{"tags":{"grants":["select"]}}"#).unwrap();
+    assert_eq!(
+        policy.tags,
+        Some(RBACPolicyTagsResponse {
+            grants: Some(vec!["select".to_string()]),
+            role_v2: None,
+        })
+    );
+}
+
+#[test]
+fn reverse_private_endpoint_request_rejects_a_missing_required_field() {
+    // The request side is strict: without `#[serde(default)]` a payload missing
+    // `description` or `type` is rejected rather than silently defaulted.
+    assert!(serde_json::from_str::<CreateReversePrivateEndpoint>("{}").is_err());
+    let body = CreateReversePrivateEndpoint {
+        description: "New RPE".to_string(),
+        r#type: CreateReversePrivateEndpointType::MSK_MULTI_VPC,
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&body).unwrap(),
+        serde_json::json!({ "description": "New RPE", "type": "MSK_MULTI_VPC" })
+    );
+}
+
+#[test]
+fn resource_tag_response_converts_back_into_a_request_tag() {
+    let tag = ResourceTagsV1::try_from(ResourceTagsV1Response {
+        key: Some("env".to_string()),
+        value: Some("dev".to_string()),
+    })
+    .unwrap();
+    assert_eq!(tag.key, "env");
+    assert_eq!(tag.value.as_deref(), Some("dev"));
+
+    // A tag is identified by its key, so a keyless response tag cannot be
+    // written back.
+    let missing = ResourceTagsV1::try_from(ResourceTagsV1Response {
+        key: None,
+        value: Some("dev".to_string()),
+    })
+    .unwrap_err();
+    assert_eq!(missing.fields(), ["key"]);
+}
+
+#[test]
+fn scaling_schedule_entry_response_converts_back_into_a_request_entry() {
+    let entry = ScalingScheduleEntry {
+        name: Some("weekday-peak".to_string()),
+        weekdays: Some(vec![1, 2, 3]),
+        start_hour_utc: Some(8),
+        end_hour_utc: Some(18),
+        autoscaling_mode: Some(AutoscalingMode::Vertical),
+        min_replica_memory_gb: Some(16.0),
+        ..Default::default()
+    };
+    let request = ScalingScheduleEntryRequest::try_from(entry).unwrap();
+    assert_eq!(request.name, "weekday-peak");
+    assert_eq!(request.weekdays, vec![1, 2, 3]);
+    assert_eq!(request.start_hour_utc, 8);
+    assert_eq!(request.end_hour_utc, 18);
+    assert_eq!(request.min_replica_memory_gb, Some(16.0));
+
+    // An upsert replaces the whole schedule, so an entry the API returned
+    // without its window bounds, weekdays or name cannot be re-sent.
+    let missing =
+        ScalingScheduleEntryRequest::try_from(ScalingScheduleEntry::default()).unwrap_err();
+    assert_eq!(
+        missing.fields(),
+        ["endHourUtc", "name", "startHourUtc", "weekdays"]
+    );
+}
+
+#[test]
+fn upgrade_window_response_converts_back_into_a_put_body() {
+    let request = UpgradeWindowPutRequest::try_from(UpgradeWindow {
+        // `duration` is response-only and does not cross over.
+        duration: Some(UpgradeWindowDuration::SixHours),
+        start_hour_utc: Some(UpgradeWindowStartHourUtc::Hour6),
+        weekday: Some(2),
+    })
+    .unwrap();
+    assert_eq!(request.start_hour_utc, UpgradeWindowStartHourUtc::Hour6);
+    assert_eq!(request.weekday, 2);
+
+    let missing = UpgradeWindowPutRequest::try_from(UpgradeWindow::default()).unwrap_err();
+    assert_eq!(missing.fields(), ["startHourUtc", "weekday"]);
 }
 
 #[test]
 fn clickstack_dashboard_minimal_response() {
     let d: ClickStackDashboardResponse = serde_json::from_str("{}").unwrap();
-    assert_eq!(d.id, "");
-    assert_eq!(d.name, "");
+    assert_eq!(d.id, None);
+    assert_eq!(d.name, None);
 }
 
 // ===========================================================================
@@ -1051,8 +2312,11 @@ fn deserialize_aws_backup_bucket() {
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
     let b: AwsBackupBucket = serde_json::from_str(json).unwrap();
-    assert_eq!(b.bucket_path, "s3://my-bucket/prefix");
-    assert_eq!(b.iam_role_arn, "arn:aws:iam::123:role/backup");
+    assert_eq!(b.bucket_path.as_deref(), Some("s3://my-bucket/prefix"));
+    assert_eq!(
+        b.iam_role_arn.as_deref(),
+        Some("arn:aws:iam::123:role/backup")
+    );
 }
 
 #[test]
@@ -1066,8 +2330,11 @@ fn deserialize_backup_bucket_dispatches_aws() {
     let b: BackupBucket = serde_json::from_str(json).unwrap();
     assert!(matches!(b, BackupBucket::AwsBackupBucket(_)));
     if let BackupBucket::AwsBackupBucket(aws) = b {
-        assert_eq!(aws.bucket_path, "s3://my-bucket/prefix");
-        assert_eq!(aws.iam_role_arn, "arn:aws:iam::123:role/backup");
+        assert_eq!(aws.bucket_path.as_deref(), Some("s3://my-bucket/prefix"));
+        assert_eq!(
+            aws.iam_role_arn.as_deref(),
+            Some("arn:aws:iam::123:role/backup")
+        );
     }
 }
 
@@ -1082,8 +2349,11 @@ fn deserialize_backup_bucket_dispatches_gcp() {
     let b: BackupBucket = serde_json::from_str(json).unwrap();
     assert!(matches!(b, BackupBucket::GcpBackupBucket(_)));
     if let BackupBucket::GcpBackupBucket(gcp) = b {
-        assert_eq!(gcp.access_key_id, "GOOG1234567890");
-        assert_eq!(gcp.bucket_path, "gs://my-gcp-bucket/prefix");
+        assert_eq!(gcp.access_key_id.as_deref(), Some("GOOG1234567890"));
+        assert_eq!(
+            gcp.bucket_path.as_deref(),
+            Some("gs://my-gcp-bucket/prefix")
+        );
     }
 }
 
@@ -1097,19 +2367,64 @@ fn deserialize_backup_bucket_dispatches_azure() {
     let b: BackupBucket = serde_json::from_str(json).unwrap();
     assert!(matches!(b, BackupBucket::AzureBackupBucket(_)));
     if let BackupBucket::AzureBackupBucket(azure) = b {
-        assert_eq!(azure.container_name, "my-container");
+        assert_eq!(azure.container_name.as_deref(), Some("my-container"));
     }
 }
 
 #[test]
 fn deserialize_backup_bucket_unknown_provider() {
+    // The Unknown payload round-trips losslessly as the original object, not a
+    // JSON string.
     let json = r#"{
         "bucketProvider": "NEW_PROVIDER",
         "somefield": "somevalue",
         "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     }"#;
+    assert_unknown_variant_round_trips(json, |b: &BackupBucket| {
+        matches!(b, BackupBucket::Unknown(_))
+    });
+}
+
+#[test]
+fn backup_bucket_patch_request_unknown_provider_round_trips() {
+    let json = r#"{
+        "bucketProvider": "NEW_PROVIDER",
+        "somefield": "somevalue"
+    }"#;
+    assert_unknown_variant_round_trips(json, |b: &BackupBucketPatchRequest| {
+        matches!(b, BackupBucketPatchRequest::Unknown(_))
+    });
+}
+
+#[test]
+fn backup_bucket_post_request_unknown_provider_round_trips() {
+    let json = r#"{
+        "bucketProvider": "NEW_PROVIDER",
+        "somefield": "somevalue"
+    }"#;
+    assert_unknown_variant_round_trips(json, |b: &BackupBucketPostRequest| {
+        matches!(b, BackupBucketPostRequest::Unknown(_))
+    });
+}
+
+#[test]
+fn backup_bucket_properties_unknown_provider_round_trips() {
+    let json = r#"{
+        "bucketProvider": "NEW_PROVIDER",
+        "somefield": "somevalue"
+    }"#;
+    assert_unknown_variant_round_trips(json, |b: &BackupBucketProperties| {
+        matches!(b, BackupBucketProperties::Unknown(_))
+    });
+}
+
+#[test]
+fn backup_bucket_unknown_display_emits_compact_json() {
+    let json = r#"{"bucketProvider":"NEW_PROVIDER","somefield":"somevalue"}"#;
     let b: BackupBucket = serde_json::from_str(json).unwrap();
-    assert!(matches!(b, BackupBucket::Unknown(_)));
+    let value: serde_json::Value = serde_json::from_str(json).unwrap();
+    // Display emits the raw compact-JSON payload carried by the Unknown variant.
+    assert_eq!(b.to_string(), value.to_string());
 }
 
 #[test]
@@ -1123,9 +2438,10 @@ fn deserialize_service_post_response() {
         "password": "gen-pw-123"
     }"#;
     let resp: ServicePostResponse = serde_json::from_str(json).unwrap();
-    assert_eq!(resp.password, "gen-pw-123");
-    assert_eq!(resp.service.name, "new-svc");
-    assert_eq!(resp.service.state, ServiceState::Provisioning);
+    assert_eq!(resp.password.as_deref(), Some("gen-pw-123"));
+    let service = resp.service.unwrap();
+    assert_eq!(service.name.as_deref(), Some("new-svc"));
+    assert_eq!(service.state, Some(ServiceState::Provisioning));
 }
 
 #[test]
@@ -1144,8 +2460,8 @@ fn deserialize_usage_cost_with_records() {
         "grandTotalCHC": 35.5
     }"#;
     let cost: UsageCost = serde_json::from_str(json).unwrap();
-    assert_eq!(cost.grand_total_chc, 35.5);
-    assert_eq!(cost.costs.len(), 2);
+    assert_eq!(cost.grand_total_chc, Some(35.5));
+    assert_eq!(cost.costs.as_deref().map(<[_]>::len), Some(2));
 }
 
 #[test]
@@ -1157,8 +2473,41 @@ fn deserialize_postgres_instance_config() {
         },
         "pgBouncerConfig": {}
     }"#;
-    let config: PostgresInstanceConfig = serde_json::from_str(json).unwrap();
-    assert_eq!(config.pg_config.max_connections, 200);
+    let config: PostgresInstanceConfigResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        config.pg_config.unwrap().max_connections,
+        Some(serde_json::json!(200))
+    );
+}
+
+#[test]
+fn deserialize_postgres_instance_config_string_wrapped_numbers() {
+    // The live GET endpoint returns numeric pgConfig values wrapped in JSON
+    // strings (e.g. "max_connections": "100"). The spec types these fields
+    // as string-or-number, so they are modelled as serde_json::Value and
+    // both representations must deserialize.
+    let json = r#"{
+        "pgConfig": {
+            "max_connections": "100",
+            "random_page_cost": "1.1",
+            "max_worker_processes": 8,
+            "autovacuum_naptime": "5s",
+            "autovacuum_vacuum_scale_factor": "0.2",
+            "autovacuum_max_workers": 3
+        },
+        "pgBouncerConfig": {}
+    }"#;
+    let config: PostgresInstanceConfigResponse = serde_json::from_str(json).unwrap();
+    let pg_config = config.pg_config.expect("pgConfig present in the payload");
+    assert_eq!(pg_config.max_connections, Some(serde_json::json!("100")));
+    assert_eq!(pg_config.random_page_cost, Some(serde_json::json!("1.1")));
+    assert_eq!(pg_config.max_worker_processes, Some(serde_json::json!(8)));
+    assert_eq!(pg_config.autovacuum_naptime, Some(serde_json::json!("5s")));
+    assert_eq!(
+        pg_config.autovacuum_vacuum_scale_factor,
+        Some(serde_json::json!("0.2"))
+    );
+    assert_eq!(pg_config.autovacuum_max_workers, Some(serde_json::json!(3)));
 }
 
 #[test]
@@ -1169,8 +2518,11 @@ fn deserialize_reverse_private_endpoint() {
         "status": "available"
     }"#;
     let rpe: ReversePrivateEndpoint = serde_json::from_str(json).unwrap();
-    assert_eq!(rpe.description, "MSK endpoint");
-    assert_eq!(rpe.status, ReversePrivateEndpointStatus::Other("available".to_string()));
+    assert_eq!(rpe.description.as_deref(), Some("MSK endpoint"));
+    assert_eq!(
+        rpe.status,
+        Some(ReversePrivateEndpointStatus::Other("available".to_string()))
+    );
 }
 
 #[test]
@@ -1182,8 +2534,8 @@ fn deserialize_clickpipe_kafka_source() {
         "securityProtocol": "SASL_SSL"
     }"#;
     let src: ClickPipeKafkaSource = serde_json::from_str(json).unwrap();
-    assert_eq!(src.brokers, "broker1:9092,broker2:9092");
-    assert_eq!(src.topics, "my-topic");
+    assert_eq!(src.brokers.as_deref(), Some("broker1:9092,broker2:9092"));
+    assert_eq!(src.topics.as_deref(), Some("my-topic"));
 }
 
 #[test]
@@ -1198,10 +2550,11 @@ fn deserialize_clickpipe_destination() {
         ]
     }"#;
     let dest: ClickPipeDestination = serde_json::from_str(json).unwrap();
-    assert_eq!(dest.database, "default");
-    assert_eq!(dest.table, "events");
-    assert_eq!(dest.columns.len(), 2);
-    assert_eq!(dest.columns[0].name, "id");
+    assert_eq!(dest.database.as_deref(), Some("default"));
+    assert_eq!(dest.table.as_deref(), Some("events"));
+    let columns = dest.columns.expect("columns should populate");
+    assert_eq!(columns.len(), 2);
+    assert_eq!(columns[0].name.as_deref(), Some("id"));
 }
 
 #[test]
@@ -1210,10 +2563,10 @@ fn deserialize_clickpipe_scaling() {
         "replicas": 3,
         "concurrency": 2
     }"#;
-    let s: ClickPipeScaling = serde_json::from_str(json).unwrap();
-    assert_eq!(s.replicas, 3);
+    let s: ClickPipeScalingResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(s.replicas, Some(3));
     #[cfg(feature = "deprecated-fields")]
-    assert_eq!(s.concurrency, 2);
+    assert_eq!(s.concurrency, Some(2));
 }
 
 // ===========================================================================
@@ -1225,24 +2578,68 @@ fn deserialize_upgrade_window() {
     let json = r#"{
         "weekday": 2,
         "startHourUtc": 6,
-        "duration": 21600
+        "duration": 6
     }"#;
     let w: UpgradeWindow = serde_json::from_str(json).unwrap();
-    assert_eq!(w.weekday, 2);
-    assert_eq!(w.start_hour_utc, 6);
-    assert_eq!(w.duration, 21600);
+    assert_eq!(w.weekday, Some(2));
+    assert_eq!(w.start_hour_utc, Some(UpgradeWindowStartHourUtc::Hour6));
+    assert_eq!(w.duration, Some(UpgradeWindowDuration::SixHours));
 
     let round_tripped = serde_json::to_value(&w).unwrap();
     assert_eq!(round_tripped["startHourUtc"], 6);
     assert_eq!(round_tripped["weekday"], 2);
-    assert_eq!(round_tripped["duration"], 21600);
+    assert_eq!(round_tripped["duration"], 6);
+}
+
+#[test]
+fn upgrade_window_numeric_enums_round_trip_every_known_value() {
+    for (wire, value) in [
+        (0, UpgradeWindowStartHourUtc::Hour0),
+        (6, UpgradeWindowStartHourUtc::Hour6),
+        (12, UpgradeWindowStartHourUtc::Hour12),
+        (18, UpgradeWindowStartHourUtc::Hour18),
+    ] {
+        assert_eq!(serde_json::to_value(value).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<UpgradeWindowStartHourUtc>(wire.into()).unwrap(),
+            value
+        );
+    }
+
+    assert_eq!(
+        serde_json::to_value(UpgradeWindowDuration::SixHours).unwrap(),
+        6
+    );
+    assert_eq!(
+        serde_json::from_value::<UpgradeWindowDuration>(serde_json::json!(6)).unwrap(),
+        UpgradeWindowDuration::SixHours
+    );
+}
+
+#[test]
+fn deserialize_upgrade_window_tolerates_unknown_numeric_values() {
+    let window: UpgradeWindow = serde_json::from_value(serde_json::json!({
+        "startHourUtc": 3,
+        "duration": 21600
+    }))
+    .unwrap();
+
+    assert_eq!(
+        window.start_hour_utc,
+        Some(UpgradeWindowStartHourUtc::Unknown(3))
+    );
+    assert_eq!(window.duration, Some(UpgradeWindowDuration::Unknown(21600)));
+    assert_eq!(
+        serde_json::to_value(window).unwrap(),
+        serde_json::json!({"startHourUtc": 3, "duration": 21600})
+    );
 }
 
 #[test]
 fn serialize_upgrade_window_put_request() {
     let req = UpgradeWindowPutRequest {
         weekday: 5,
-        start_hour_utc: 18,
+        start_hour_utc: UpgradeWindowStartHourUtc::Hour18,
     };
     let v = serde_json::to_value(&req).unwrap();
     assert_eq!(v["weekday"], 5);
@@ -1267,11 +2664,14 @@ fn deserialize_clickpipe_pubsub_source() {
         "filter": "attribute.foo = \"bar\""
     }"#;
     let src: ClickPipePubSubSource = serde_json::from_str(json).unwrap();
-    assert_eq!(src.topic, "projects/p/topics/t");
-    assert_eq!(src.project_id, "my-project");
-    assert_eq!(src.authentication, ClickPipePubSubSourceAuthentication::ServiceAccount);
-    assert_eq!(src.format, ClickPipePubSubSourceFormat::JSONEachRow);
-    assert_eq!(src.seek_type, ClickPipePubSubSourceSeektype::Latest);
+    assert_eq!(src.topic.as_deref(), Some("projects/p/topics/t"));
+    assert_eq!(src.project_id.as_deref(), Some("my-project"));
+    assert_eq!(
+        src.authentication,
+        Some(ClickPipePubSubSourceAuthentication::ServiceAccount)
+    );
+    assert_eq!(src.format, Some(ClickPipePubSubSourceFormat::JSONEachRow));
+    assert_eq!(src.seek_type, Some(ClickPipePubSubSourceSeektype::Latest));
     assert_eq!(src.ack_deadline, Some(60));
     assert_eq!(src.enable_ordering, Some(true));
 }
@@ -1289,9 +2689,28 @@ fn deserialize_clickpipe_post_pubsub_source_required_fields() {
         }
     }"#;
     let src: ClickPipePostPubSubSource = serde_json::from_str(json).unwrap();
+    let ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(src) = src else {
+        panic!("expected service-account source")
+    };
     assert_eq!(src.topic, "projects/p/topics/t");
     assert_eq!(src.seek_type, ClickPipePostPubSubSourceSeektype::Earliest);
-    assert_eq!(src.service_account_key.service_account_file, "/path/to/key.json");
+    assert_eq!(
+        src.service_account_key.service_account_file,
+        "/path/to/key.json"
+    );
+}
+
+#[test]
+fn serialize_clickpipe_patch_pubsub_source_omits_absent_credentials() {
+    let empty = serde_json::to_value(ClickPipePatchPubSubSource::default()).unwrap();
+    assert_eq!(empty, serde_json::json!({}));
+
+    let ack_deadline_only = serde_json::to_value(ClickPipePatchPubSubSource {
+        ack_deadline: Some(30),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(ack_deadline_only, serde_json::json!({"ackDeadline": 30}));
 }
 
 #[test]
@@ -1307,12 +2726,15 @@ fn deserialize_clickpipe_source_with_pubsub() {
     }"#;
     let src: ClickPipeSource = serde_json::from_str(json).unwrap();
     let pubsub = src.pubsub.expect("pubsub field should populate");
-    assert_eq!(pubsub.topic, "projects/p/topics/t");
-    assert_eq!(pubsub.format, ClickPipePubSubSourceFormat::JSONEachRow);
+    assert_eq!(pubsub.topic.as_deref(), Some("projects/p/topics/t"));
+    assert_eq!(
+        pubsub.format,
+        Some(ClickPipePubSubSourceFormat::JSONEachRow)
+    );
 }
 
 // ===========================================================================
-// ClickStack dashboard containers, heatmap, on-click (issue #203 drift)
+// ClickStack dashboard containers, on-click (issue #203 drift)
 // ===========================================================================
 
 #[test]
@@ -1344,34 +2766,13 @@ fn deserialize_clickstack_dashboard_with_containers() {
     let dash: ClickStackDashboardResponse = serde_json::from_str(json).unwrap();
     let containers = dash.containers.expect("containers should populate");
     assert_eq!(containers.len(), 1);
-    assert_eq!(containers[0].id, "c-1");
-    assert!(!containers[0].collapsed);
+    assert_eq!(containers[0].id.as_deref(), Some("c-1"));
+    assert_eq!(containers[0].collapsed, Some(false));
     let tabs = containers[0].tabs.as_ref().expect("tabs populated");
-    assert_eq!(tabs[0].title, "Tab 1");
-    assert_eq!(dash.tiles[0].container_id.as_deref(), Some("c-1"));
-    assert_eq!(dash.tiles[0].tab_id.as_deref(), Some("t-1"));
-}
-
-#[test]
-fn deserialize_clickstack_tile_config_heatmap_variant() {
-    // Untagged-enum dispatch must reach the new ClickStackHeatmapChartConfig
-    // arm. The discriminator is `displayType: "heatmap"` plus the heatmap-
-    // specific `select` shape with `valueExpression`.
-    let json = r#"{
-        "displayType": "heatmap",
-        "sourceId": "src-1",
-        "select": [{"valueExpression": "latency_ms"}]
-    }"#;
-    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
-    match cfg {
-        ClickStackTileConfig::ClickStackHeatmapChartConfig(h) => {
-            assert_eq!(h.source_id, "src-1");
-            assert_eq!(h.display_type, ClickStackHeatmapChartConfigDisplaytype::Heatmap);
-            assert_eq!(h.select.len(), 1);
-            assert_eq!(h.select[0].value_expression, "latency_ms");
-        }
-        other => panic!("expected heatmap variant, got {other}"),
-    }
+    assert_eq!(tabs[0].title.as_deref(), Some("Tab 1"));
+    let tiles = dash.tiles.expect("tiles should populate");
+    assert_eq!(tiles[0].container_id.as_deref(), Some("c-1"));
+    assert_eq!(tiles[0].tab_id.as_deref(), Some("t-1"));
 }
 
 #[test]
@@ -1393,17 +2794,21 @@ fn deserialize_clickstack_on_click_search_variant() {
 
 #[test]
 fn deserialize_clickstack_on_click_dashboard_struct() {
-    // We deserialize directly into ClickStackOnClickDashboard rather than the
-    // untagged parent because the parent's first variant catches anything
-    // with the search/dashboard shape (both inline `type` enums have an
-    // Unknown(String) catch-all).
+    // Regression: Search and Dashboard are structurally identical (both require
+    // `target` + `type`), so before manual discriminator dispatch a
+    // `type: "dashboard"` payload misdispatched to the Search variant. The union
+    // now routes on the `type` discriminator.
     let json = r#"{
         "type": "dashboard",
         "target": {"mode": "template", "template": "{{x}}"},
         "whereLanguage": "sql",
         "whereTemplate": "x = {{y}}"
     }"#;
-    let dash: ClickStackOnClickDashboard = serde_json::from_str(json).unwrap();
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    let dash = match on_click {
+        ClickStackOnClick::ClickStackOnClickDashboard(dash) => dash,
+        other => panic!("expected dashboard variant, got {other}"),
+    };
     assert_eq!(dash.r#type, ClickStackOnClickDashboardType::Dashboard);
     assert_eq!(dash.where_template.as_deref(), Some("x = {{y}}"));
     match dash.target {
@@ -1441,6 +2846,204 @@ fn deserialize_clickstack_on_click_target_template_variant() {
 }
 
 #[test]
+fn deserialize_clickstack_on_click_target_unknown_shape_round_trips() {
+    // A payload matching neither the id nor template variant must land in the
+    // lossless Unknown catch-all and re-serialize to the same JSON object rather
+    // than erroring on deserialize.
+    let json = r#"{
+        "mode": "future_mode",
+        "foo": 1
+    }"#;
+    assert_unknown_variant_round_trips(json, |t: &ClickStackOnClickTarget| {
+        matches!(t, ClickStackOnClickTarget::Unknown(_))
+    });
+}
+
+#[test]
+fn deserialize_clickstack_on_click_external_round_trip() {
+    let json = r#"{"type": "external", "urlTemplate": "https://example.com/{{ServiceName}}"}"#;
+    let ext: ClickStackOnClickExternal = serde_json::from_str(json).unwrap();
+    assert_eq!(ext.r#type, ClickStackOnClickExternalType::External);
+    assert_eq!(ext.url_template, "https://example.com/{{ServiceName}}");
+    let v = serde_json::to_value(&ext).unwrap();
+    assert_eq!(v["type"], "external");
+    assert_eq!(v["urlTemplate"], "https://example.com/{{ServiceName}}");
+}
+
+#[test]
+fn deserialize_clickstack_on_click_dispatches_external() {
+    // An "external" on-click payload has no `target`, so it cannot match the
+    // Search or Dashboard variants (both require `target`) and dispatches
+    // through the untagged union to the External variant.
+    let json = r#"{"type": "external", "urlTemplate": "https://example.com/{{value}}"}"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match &on_click {
+        ClickStackOnClick::ClickStackOnClickExternal(ext) => {
+            assert_eq!(ext.r#type, ClickStackOnClickExternalType::External);
+            assert_eq!(ext.url_template, "https://example.com/{{value}}");
+        }
+        other => panic!("expected external variant, got {other}"),
+    }
+    // Round-trips back to the same wire shape through the union.
+    let v = serde_json::to_value(&on_click).unwrap();
+    assert_eq!(v["type"], "external");
+    assert_eq!(v["urlTemplate"], "https://example.com/{{value}}");
+}
+
+#[test]
+fn deserialize_clickstack_on_click_dispatches_search() {
+    // Regression: adding the External variant must not steal the Search shape.
+    let json = r#"{
+        "type": "search",
+        "target": {"mode": "id", "id": "search-1"}
+    }"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match on_click {
+        ClickStackOnClick::ClickStackOnClickSearch(s) => {
+            assert_eq!(s.r#type, ClickStackOnClickSearchType::Search);
+        }
+        other => panic!("expected search variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_dashboard_still_parses() {
+    // Regression: a `type: "dashboard"` payload dispatches to the Dashboard
+    // variant through the union rather than being greedily absorbed by the
+    // structurally identical Search variant.
+    let json = r#"{
+        "type": "dashboard",
+        "target": {"mode": "template", "template": "{{x}}"}
+    }"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match on_click {
+        ClickStackOnClick::ClickStackOnClickDashboard(dash) => {
+            assert_eq!(dash.r#type, ClickStackOnClickDashboardType::Dashboard);
+        }
+        other => panic!("expected dashboard variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_on_click_unknown_type_round_trip() {
+    // An unrecognized `type` discriminator falls back to the Unknown variant,
+    // which stores the raw JSON so it round-trips faithfully.
+    let json = r#"{"type":"popover","payload":{"nested":[1,2,3]}}"#;
+    let on_click: ClickStackOnClick = serde_json::from_str(json).unwrap();
+    match &on_click {
+        ClickStackOnClick::Unknown(v) => {
+            assert_eq!(v["type"], "popover");
+            assert_eq!(v["payload"]["nested"][2], 3);
+        }
+        other => panic!("expected unknown variant, got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&on_click).unwrap(), expected);
+}
+
+#[test]
+fn clickstack_alert_channel_known_variants_deserialize() {
+    let email_json = r#"{"emailRecipients": ["a@b.com"], "type": "email"}"#;
+    let email: ClickStackAlertChannel = serde_json::from_str(email_json).unwrap();
+    match email {
+        ClickStackAlertChannel::ClickStackAlertChannelEmail(v) => {
+            assert_eq!(v.email_recipients, vec!["a@b.com".to_string()]);
+            assert_eq!(v.r#type, ClickStackAlertChannelEmailType::Email);
+        }
+        other => panic!("expected email variant, got {other}"),
+    }
+
+    let webhook_json = r#"{"webhookId": "wh-1", "type": "webhook"}"#;
+    let webhook: ClickStackAlertChannel = serde_json::from_str(webhook_json).unwrap();
+    match webhook {
+        ClickStackAlertChannel::ClickStackAlertChannelWebhook(v) => {
+            assert_eq!(v.webhook_id, "wh-1");
+            assert_eq!(v.r#type, ClickStackAlertChannelWebhookType::Webhook);
+        }
+        other => panic!("expected webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_alert_channel_response_known_type_sparse_payload_is_tolerant() {
+    // A recognized `type` dispatches hard to its variant, and the response
+    // variant's all-`Option` fields are tolerant: a server that drops
+    // `emailRecipients` surfaces `None` rather than failing the response.
+    let json = r#"{"type":"email"}"#;
+    let channel: ClickStackAlertChannelResponse = serde_json::from_str(json).unwrap();
+    match channel {
+        ClickStackAlertChannelResponse::ClickStackAlertChannelEmail(v) => {
+            assert_eq!(v.r#type, Some(ClickStackAlertChannelEmailType::Email));
+            assert_eq!(v.email_recipients, None);
+        }
+        other => panic!("expected email variant, got {other}"),
+    }
+    // The request variant stays strict: the same sparse payload is not a valid
+    // channel to *send*.
+    assert!(serde_json::from_str::<ClickStackAlertChannelEmail>(r#"{"type":"email"}"#).is_err());
+}
+
+#[test]
+fn clickstack_alert_channel_missing_type_key_is_unknown() {
+    // This union has no arm for an absent `type` key, in deliberate contrast to
+    // the chart-config unions where absence means the Builder variant, so a
+    // payload without the discriminator lands in the lossless Unknown catch-all.
+    let json = r#"{"webhookId":"wh-1"}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackAlertChannel| {
+        matches!(c, ClickStackAlertChannel::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_alert_channel_unknown_shape_round_trips() {
+    // An unrecognized `type` value must land in the lossless Unknown catch-all
+    // and re-serialize to the same JSON object rather than erroring on
+    // deserialize.
+    let json = r#"{
+        "type": "future_channel",
+        "foo": 1
+    }"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackAlertChannel| {
+        matches!(c, ClickStackAlertChannel::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_alert_channel_changed_field_shape_is_unknown() {
+    // A recognized `type` whose payload no longer fits the variant — here
+    // `emailRecipients` as a string instead of an array — must not fail the
+    // response. `list_alerts` returns a Vec, so one such element would otherwise
+    // take down the whole call; instead the element lands in Unknown intact.
+    let json = r#"{"type":"email","emailRecipients":"a@b.c"}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackAlertChannel| {
+        matches!(c, ClickStackAlertChannel::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_alert_channel_default_round_trips_to_the_same_variant() {
+    // Both alert-channel variants declare the same `enum: ["webhook", "email"]`
+    // for their discriminating `type`, so the email variant's default must name
+    // `email`: `channel` is defaulted on the alert response, and a default that
+    // named `webhook` would come back from its own union as the webhook variant
+    // and could be PUT back as a webhook channel with no `webhookId`.
+    let default = ClickStackAlertChannel::default();
+    assert!(matches!(
+        default,
+        ClickStackAlertChannel::ClickStackAlertChannelEmail(_)
+    ));
+    let json = serde_json::to_string(&default).unwrap();
+    assert_eq!(json, r#"{"emailRecipients":[],"type":"email"}"#);
+    let round_tripped: ClickStackAlertChannel = serde_json::from_str(&json).unwrap();
+    assert_eq!(round_tripped, default);
+
+    // A response that drops `channel` entirely surfaces the absence instead of
+    // fabricating a default channel.
+    let response: ClickStackAlertResponse = serde_json::from_str(r#"{"name":"my-alert"}"#).unwrap();
+    assert_eq!(response.channel, None);
+}
+
+#[test]
 fn deserialize_clickstack_log_source_with_metadata_materialized_views() {
     let json = r#"{
         "id": "src-1",
@@ -1456,13 +3059,896 @@ fn deserialize_clickstack_log_source_with_metadata_materialized_views() {
             "kvRollupTable": "logs_kv_1h"
         }
     }"#;
-    let src: ClickStackLogSource = serde_json::from_str(json).unwrap();
+    let src: ClickStackLogSourceResponse = serde_json::from_str(json).unwrap();
     let mv = src
         .metadata_materialized_views
         .expect("metadataMaterializedViews should populate");
-    assert_eq!(mv.granularity, "1 hour");
-    assert_eq!(mv.key_rollup_table, "logs_keys_1h");
-    assert_eq!(mv.kv_rollup_table, "logs_kv_1h");
+    assert_eq!(mv.granularity.as_deref(), Some("1 hour"));
+    assert_eq!(mv.key_rollup_table.as_deref(), Some("logs_keys_1h"));
+    assert_eq!(mv.kv_rollup_table.as_deref(), Some("logs_kv_1h"));
+}
+
+#[test]
+fn deserialize_clickstack_log_source_without_id() {
+    // `id` is server-generated and omitted from create/update request payloads;
+    // it must deserialize to None and be dropped on serialize.
+    let json = r#"{
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts"
+    }"#;
+    let src: ClickStackLogSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.id, None);
+    let v = serde_json::to_value(&src).unwrap();
+    assert!(v.get("id").is_none(), "id must be omitted when None");
+}
+
+#[test]
+fn deserialize_clickstack_trace_source_default_table_select_expression() {
+    let json = r#"{
+        "id": "trace-1",
+        "kind": "trace",
+        "name": "traces",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "Timestamp, SpanName",
+        "from": {"databaseName": "default", "tableName": "traces"},
+        "timestampValueExpression": "Timestamp",
+        "durationExpression": "Duration",
+        "durationPrecision": 9,
+        "traceIdExpression": "TraceId",
+        "spanIdExpression": "SpanId",
+        "parentSpanIdExpression": "ParentSpanId",
+        "spanNameExpression": "SpanName",
+        "spanKindExpression": "SpanKind"
+    }"#;
+    let src: ClickStackTraceSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.default_table_select_expression, "Timestamp, SpanName");
+    let v = serde_json::to_value(&src).unwrap();
+    assert_eq!(v["defaultTableSelectExpression"], "Timestamp, SpanName");
+
+    // `defaultTableSelectExpression` is in the spec `required[]` for trace
+    // sources, so the request variant types it as `String`. Responses stay
+    // tolerant of a server-side field drop through the response variant, where
+    // it is `Option<String>`: a missing field lands as `None` instead of
+    // failing the whole payload (and, via the `kind`-dispatched
+    // `ClickStackSourceResponse` union, the whole list response).
+    let missing = r#"{
+        "id": "trace-1",
+        "kind": "trace",
+        "name": "traces",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "traces"},
+        "timestampValueExpression": "Timestamp",
+        "durationExpression": "Duration",
+        "durationPrecision": 9,
+        "traceIdExpression": "TraceId",
+        "spanIdExpression": "SpanId",
+        "parentSpanIdExpression": "ParentSpanId",
+        "spanNameExpression": "SpanName",
+        "spanKindExpression": "SpanKind"
+    }"#;
+    let src: ClickStackTraceSourceResponse = serde_json::from_str(missing).unwrap();
+    assert_eq!(src.default_table_select_expression, None);
+    match serde_json::from_str::<ClickStackSourceResponse>(missing).unwrap() {
+        ClickStackSourceResponse::ClickStackTraceSource(src) => {
+            assert_eq!(src.default_table_select_expression, None);
+        }
+        other => panic!("expected trace variant, got {other:?}"),
+    }
+    // The dropped field is absent from the re-serialized payload rather than
+    // sent back as `null`.
+    let v = serde_json::to_value(&src).unwrap();
+    assert!(v.get("defaultTableSelectExpression").is_none());
+}
+
+#[test]
+fn round_trip_clickstack_log_source_new_fields() {
+    let json = r#"{
+        "id": "src-1",
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts",
+        "section": "Billing",
+        "disabled": false,
+        "knownColumnsListExpression": "Timestamp, Body, ServiceName",
+        "useTextIndexForImplicitColumn": "auto"
+    }"#;
+    let src: ClickStackLogSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.section.as_deref(), Some("Billing"));
+    assert_eq!(src.disabled, Some(false));
+    assert_eq!(
+        src.known_columns_list_expression.as_deref(),
+        Some("Timestamp, Body, ServiceName")
+    );
+    assert_eq!(
+        src.use_text_index_for_implicit_column,
+        Some(ClickStackLogSourceUsetextindexforimplicitcolumn::Auto)
+    );
+    let v = serde_json::to_value(&src).unwrap();
+    assert_eq!(v["section"], "Billing");
+    assert_eq!(v["disabled"], false);
+    assert_eq!(
+        v["knownColumnsListExpression"],
+        "Timestamp, Body, ServiceName"
+    );
+    assert_eq!(v["useTextIndexForImplicitColumn"], "auto");
+}
+
+#[test]
+fn clickstack_source_dispatches_promql_variant() {
+    let json = r#"{
+        "id": "src-1",
+        "kind": "promql",
+        "name": "Prometheus Metrics",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "metrics"},
+        "timestampValueExpression": "timestamp"
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackPromqlSource(src) => {
+            assert_eq!(src.kind, ClickStackPromqlSourceKind::Promql);
+            assert_eq!(src.name, "Prometheus Metrics");
+            assert_eq!(src.connection, "conn-1");
+            assert_eq!(src.id.as_deref(), Some("src-1"));
+        }
+        other => panic!("expected Promql source, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_source_dispatches_log_variant() {
+    // Regression: a log-source payload must not be swallowed by the new Promql
+    // variant and must still resolve to the log-source variant.
+    let json = r#"{
+        "id": "src-1",
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts"
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackLogSource(src) => {
+            assert_eq!(src.kind, ClickStackLogSourceKind::Log);
+            assert_eq!(src.name, "logs");
+        }
+        other => panic!("expected log source, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_source_dispatches_trace_variant() {
+    // Regression (PR #311 review P1-1): a spec-valid trace payload shares every
+    // Log-required field (defaultTableSelectExpression et al.), so untagged
+    // matching would greedily resolve it to the Log variant and drop trace-only
+    // fields. Discriminator dispatch on `kind` must route it to the Trace
+    // variant with its trace-only fields intact.
+    let json = r#"{
+        "id": "trace-1",
+        "kind": "trace",
+        "name": "traces",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "traces"},
+        "timestampValueExpression": "Timestamp",
+        "defaultTableSelectExpression": "Timestamp, SpanName",
+        "durationExpression": "Duration",
+        "durationPrecision": 9,
+        "parentSpanIdExpression": "ParentSpanId",
+        "spanIdExpression": "SpanId",
+        "spanKindExpression": "SpanKind",
+        "spanNameExpression": "SpanName",
+        "traceIdExpression": "TraceId"
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackTraceSource(src) => {
+            assert_eq!(src.kind, ClickStackTraceSourceKind::Trace);
+            assert_eq!(src.name, "traces");
+            assert_eq!(src.default_table_select_expression, "Timestamp, SpanName");
+            assert_eq!(src.duration_expression, "Duration");
+            assert_eq!(src.duration_precision, 9);
+            assert_eq!(src.parent_span_id_expression, "ParentSpanId");
+            assert_eq!(src.span_id_expression, "SpanId");
+            assert_eq!(src.span_kind_expression, "SpanKind");
+            assert_eq!(src.span_name_expression, "SpanName");
+            assert_eq!(src.trace_id_expression, "TraceId");
+        }
+        other => panic!("expected trace source, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_source_dispatches_metric_variant() {
+    let json = r#"{
+        "id": "metric-1",
+        "kind": "metric",
+        "name": "metrics",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "metrics"},
+        "timestampValueExpression": "TimeUnix",
+        "resourceAttributesExpression": "ResourceAttributes",
+        "metricTables": {
+            "gauge": "otel_metrics_gauge",
+            "histogram": "otel_metrics_histogram",
+            "sum": "otel_metrics_sum",
+            "summary": "otel_metrics_summary",
+            "exponential histogram": "otel_metrics_exponential_histogram"
+        }
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackMetricSource(src) => {
+            assert_eq!(src.kind, ClickStackMetricSourceKind::Metric);
+            assert_eq!(src.name, "metrics");
+            assert_eq!(src.resource_attributes_expression, "ResourceAttributes");
+            assert_eq!(src.metric_tables.gauge, "otel_metrics_gauge");
+        }
+        other => panic!("expected metric source, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_source_dispatches_session_variant() {
+    let json = r#"{
+        "id": "session-1",
+        "kind": "session",
+        "name": "sessions",
+        "connection": "conn-1",
+        "from": {"databaseName": "default", "tableName": "sessions"},
+        "traceSourceId": "trace-1"
+    }"#;
+    let source: ClickStackSource = serde_json::from_str(json).unwrap();
+    match source {
+        ClickStackSource::ClickStackSessionSource(src) => {
+            assert_eq!(src.kind, ClickStackSessionSourceKind::Session);
+            assert_eq!(src.name, "sessions");
+            assert_eq!(src.trace_source_id, "trace-1");
+        }
+        other => panic!("expected session source, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_source_unknown_kind_round_trips() {
+    let json = r#"{"kind":"future_kind","name":"x"}"#;
+    assert_unknown_variant_round_trips(json, |s: &ClickStackSource| {
+        matches!(s, ClickStackSource::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_source_serializes_as_inner_log_struct() {
+    let log = ClickStackLogSource {
+        kind: ClickStackLogSourceKind::Log,
+        name: "logs".to_string(),
+        connection: "conn-1".to_string(),
+        default_table_select_expression: "*".to_string(),
+        from: ClickStackSourceFrom {
+            database_name: "default".to_string(),
+            table_name: "logs".to_string(),
+        },
+        timestamp_value_expression: "ts".to_string(),
+        ..Default::default()
+    };
+    let source = ClickStackSource::ClickStackLogSource(log.clone());
+    assert_eq!(
+        serde_json::to_value(&source).unwrap(),
+        serde_json::to_value(&log).unwrap()
+    );
+}
+
+#[test]
+fn clickstack_source_response_dispatches_on_kind_alone() {
+    // The response variants are all-`Option`, so every one of them matches any
+    // JSON object: under `untagged` shape matching the first arm would swallow
+    // all five kinds. Dispatch reads `kind` off the raw JSON instead, so a
+    // payload carrying nothing but its discriminator still resolves to the right
+    // variant.
+    for (kind, expected) in [
+        ("log", "ClickStackLogSource"),
+        ("trace", "ClickStackTraceSource"),
+        ("metric", "ClickStackMetricSource"),
+        ("session", "ClickStackSessionSource"),
+        ("promql", "ClickStackPromqlSource"),
+    ] {
+        let json = format!(r#"{{"kind":"{kind}"}}"#);
+        let source: ClickStackSourceResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(source.to_string(), expected, "wrong variant for {kind}");
+    }
+}
+
+#[test]
+fn clickstack_source_response_treats_dropped_and_null_fields_as_absent() {
+    // Both halves of the tolerance contract on one payload: `connection` is sent
+    // as an explicit `null` (which `serde(default)` would not have absorbed) and
+    // every other field of the schema is dropped outright.
+    let json = r#"{"kind":"log","connection":null,"name":"logs"}"#;
+    let source: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let ClickStackSourceResponse::ClickStackLogSource(log) = source else {
+        panic!("expected the log variant");
+    };
+    assert_eq!(log.connection, None);
+    assert_eq!(log.from, None);
+    assert_eq!(log.timestamp_value_expression, None);
+    assert_eq!(log.name.as_deref(), Some("logs"));
+
+    // Absent fields are omitted on the way out, not re-emitted as `null`.
+    let v = serde_json::to_value(&log).unwrap();
+    assert_eq!(v, serde_json::json!({"kind": "log", "name": "logs"}));
+}
+
+#[test]
+fn clickstack_source_response_unknown_kind_round_trips() {
+    let json = r#"{"kind":"future_kind","name":"x"}"#;
+    assert_unknown_variant_round_trips(json, |s: &ClickStackSourceResponse| {
+        matches!(s, ClickStackSourceResponse::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_source_response_nested_objects_are_tolerant() {
+    // The nested objects of a source are response variants too, so a dropped
+    // field inside `from`, `filterSettings` or `materializedViews` does not fail
+    // the source.
+    let json = r#"{
+        "kind": "log",
+        "from": {"databaseName": "default"},
+        "filterSettings": {"columns": [{"name": "ServiceName"}]},
+        "materializedViews": [{"tableName": "logs_1h", "aggregatedColumns": [{"aggFn": "sum"}]}],
+        "querySettings": [{"setting": "max_threads"}]
+    }"#;
+    let source: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let ClickStackSourceResponse::ClickStackLogSource(log) = source else {
+        panic!("expected the log variant");
+    };
+    let from = log.from.expect("from present");
+    assert_eq!(from.database_name.as_deref(), Some("default"));
+    assert_eq!(from.table_name, None);
+    let filter_settings = log.filter_settings.expect("filterSettings present");
+    assert_eq!(filter_settings.table_name, None);
+    let columns = filter_settings.columns.expect("columns present");
+    assert_eq!(columns[0].name.as_deref(), Some("ServiceName"));
+    assert_eq!(columns[0].label, None);
+    let views = log.materialized_views.expect("materializedViews present");
+    assert_eq!(views[0].min_granularity, None);
+    let aggregated = views[0]
+        .aggregated_columns
+        .as_deref()
+        .expect("aggregatedColumns present");
+    assert_eq!(aggregated[0].agg_fn.as_deref(), Some("sum"));
+    assert_eq!(aggregated[0].mv_column, None);
+    let query_settings = log.query_settings.expect("querySettings present");
+    assert_eq!(query_settings[0].value, None);
+}
+
+#[test]
+fn clickstack_source_try_from_response_converts_every_kind() {
+    // One spec-complete payload per kind, each carrying the nested objects that
+    // kind owns, so every conversion in the source tree is exercised: a source
+    // fetched and written back unchanged must produce the JSON it came from.
+    let payloads = [
+        serde_json::json!({
+            "kind": "log",
+            "name": "logs",
+            "connection": "conn-1",
+            "defaultTableSelectExpression": "*",
+            "from": {"databaseName": "default", "tableName": "logs"},
+            "timestampValueExpression": "ts",
+            "filterSettings": {
+                "columns": [{"label": "Service", "name": "ServiceName"}],
+                "databaseName": "default",
+                "tableName": "logs_filters",
+            },
+            "highlightedRowAttributeExpressions": [{"sqlExpression": "ServiceName"}],
+            "materializedViews": [{
+                "aggregatedColumns": [{"aggFn": "sum", "mvColumn": "count"}],
+                "databaseName": "default",
+                "dimensionColumns": "ServiceName",
+                "minGranularity": "1 hour",
+                "tableName": "logs_1h",
+                "timestampColumn": "ts",
+            }],
+            "metadataMaterializedViews": {
+                "granularity": "1 hour",
+                "keyRollupTable": "logs_keys_1h",
+                "kvRollupTable": "logs_kv_1h",
+            },
+            "querySettings": [{"setting": "max_threads", "value": "4"}],
+        }),
+        serde_json::json!({
+            "kind": "trace",
+            "name": "traces",
+            "connection": "conn-1",
+            "defaultTableSelectExpression": "*",
+            "durationExpression": "Duration",
+            "durationPrecision": 9,
+            "from": {"databaseName": "default", "tableName": "traces"},
+            "parentSpanIdExpression": "ParentSpanId",
+            "spanIdExpression": "SpanId",
+            "spanKindExpression": "SpanKind",
+            "spanNameExpression": "SpanName",
+            "timestampValueExpression": "Timestamp",
+            "traceIdExpression": "TraceId",
+            "metadataMaterializedViews": {
+                "granularity": "1 hour",
+                "keyRollupTable": "traces_keys_1h",
+                "kvRollupTable": "traces_kv_1h",
+            },
+        }),
+        serde_json::json!({
+            "kind": "metric",
+            "name": "metrics",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "metricTables": {
+                "exponential histogram": "otel_metrics_exponential_histogram",
+                "gauge": "otel_metrics_gauge",
+                "histogram": "otel_metrics_histogram",
+                "sum": "otel_metrics_sum",
+                "summary": "otel_metrics_summary",
+            },
+            "resourceAttributesExpression": "ResourceAttributes",
+            "timestampValueExpression": "TimeUnix",
+        }),
+        serde_json::json!({
+            "kind": "session",
+            "name": "sessions",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "sessions"},
+            "traceSourceId": "trace-1",
+        }),
+        serde_json::json!({
+            "kind": "promql",
+            "name": "prometheus",
+            "connection": "conn-1",
+            "from": {"databaseName": "default", "tableName": "metrics"},
+            "timestampValueExpression": "timestamp",
+        }),
+    ];
+
+    for payload in payloads {
+        let response: ClickStackSourceResponse = serde_json::from_value(payload.clone()).unwrap();
+        let request = ClickStackSource::try_from(response)
+            .unwrap_or_else(|e| panic!("{} should convert: {e}", payload["kind"]));
+        assert_eq!(serde_json::to_value(&request).unwrap(), payload);
+    }
+}
+
+#[test]
+fn clickstack_source_try_from_response_converts_a_complete_source() {
+    let json = r#"{
+        "id": "src-1",
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts",
+        "querySettings": [{"setting": "max_threads", "value": "4"}]
+    }"#;
+    let response: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let request = ClickStackSource::try_from(response).expect("conversion should succeed");
+    let ClickStackSource::ClickStackLogSource(log) = &request else {
+        panic!("expected the log variant");
+    };
+    assert_eq!(log.connection, "conn-1");
+    assert_eq!(log.from.table_name, "logs");
+    assert_eq!(
+        log.query_settings.as_deref(),
+        Some(
+            [ClickStackQuerySetting {
+                setting: "max_threads".to_string(),
+                value: "4".to_string(),
+            }]
+            .as_slice()
+        )
+    );
+    // A write-back of an untouched source is byte-identical to what was fetched.
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::from_str::<serde_json::Value>(json).unwrap()
+    );
+}
+
+#[test]
+fn clickstack_source_try_from_response_names_every_missing_required_field() {
+    let response: ClickStackSourceResponse =
+        serde_json::from_str(r#"{"kind":"log","name":"logs"}"#).unwrap();
+    let error = ClickStackSource::try_from(response).expect_err("conversion should fail");
+    assert_eq!(
+        error.fields(),
+        [
+            "connection",
+            "defaultTableSelectExpression",
+            "from",
+            "timestampValueExpression"
+        ]
+    );
+    assert_eq!(
+        error.to_string(),
+        "the API response is missing required field(s): connection, \
+         defaultTableSelectExpression, from, timestampValueExpression"
+    );
+}
+
+#[test]
+fn clickstack_source_try_from_response_reports_a_nested_missing_field() {
+    // A nested object reports its own wire name: `from` is present, so the
+    // failure is `tableName` inside it.
+    let json = r#"{
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default"},
+        "timestampValueExpression": "ts"
+    }"#;
+    let response: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let error = ClickStackSource::try_from(response).expect_err("conversion should fail");
+    assert_eq!(error.fields(), ["tableName"]);
+
+    // The same holds for an element of a nested list.
+    let json = r#"{
+        "kind": "log",
+        "name": "logs",
+        "connection": "conn-1",
+        "defaultTableSelectExpression": "*",
+        "from": {"databaseName": "default", "tableName": "logs"},
+        "timestampValueExpression": "ts",
+        "querySettings": [{"setting": "max_threads"}]
+    }"#;
+    let response: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let error = ClickStackSource::try_from(response).expect_err("conversion should fail");
+    assert_eq!(error.fields(), ["value"]);
+}
+
+#[test]
+fn clickstack_source_try_from_response_passes_an_unknown_kind_through() {
+    // A source kind this crate does not model must still be writable back: the
+    // request union's `Unknown` arm holds the raw payload and serializes it
+    // verbatim.
+    let json = r#"{"kind":"future_kind","name":"x"}"#;
+    let response: ClickStackSourceResponse = serde_json::from_str(json).unwrap();
+    let request = ClickStackSource::try_from(response).expect("Unknown converts losslessly");
+    assert!(matches!(request, ClickStackSource::Unknown(_)));
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::from_str::<serde_json::Value>(json).unwrap()
+    );
+}
+
+#[test]
+fn shared_clickstack_source_types_stay_strict_on_the_request_side() {
+    // Sources are sent as well as returned, so each type in the source tree
+    // splits: the request variant keeps the schema's required fields as `T` and
+    // rejects a payload that omits one, while the response variant accepts any
+    // object.
+    macro_rules! assert_split_strictness {
+        ($($request:ty => $response:ty),+ $(,)?) => {
+            $(
+                assert!(
+                    serde_json::from_str::<$request>("{}").is_err(),
+                    "{} accepted a payload missing its required fields",
+                    stringify!($request),
+                );
+                assert_eq!(
+                    serde_json::from_str::<$response>("{}").unwrap(),
+                    <$response>::default(),
+                    "{} rejected an empty payload",
+                    stringify!($response),
+                );
+            )+
+        };
+    }
+
+    assert_split_strictness!(
+        ClickStackAggregatedColumn => ClickStackAggregatedColumnResponse,
+        ClickStackCASLPermission => ClickStackCASLPermissionResponse,
+        ClickStackFilter => ClickStackFilterResponse,
+        ClickStackFilterSettingsColumn => ClickStackFilterSettingsColumnResponse,
+        ClickStackHighlightedAttributeExpression => ClickStackHighlightedAttributeExpressionResponse,
+        ClickStackLogSource => ClickStackLogSourceResponse,
+        ClickStackLogSourceMetadataMaterializedViews => ClickStackLogSourceMetadataMaterializedViewsResponse,
+        ClickStackMaterializedView => ClickStackMaterializedViewResponse,
+        ClickStackMetricSource => ClickStackMetricSourceResponse,
+        ClickStackMetricSourceFrom => ClickStackMetricSourceFromResponse,
+        ClickStackMetricTables => ClickStackMetricTablesResponse,
+        ClickStackPromqlSource => ClickStackPromqlSourceResponse,
+        ClickStackQuerySetting => ClickStackQuerySettingResponse,
+        ClickStackSqlSavedFilterValue => ClickStackSqlSavedFilterValueResponse,
+        ClickStackVariableSavedFilterValue => ClickStackVariableSavedFilterValueResponse,
+        ClickStackFormula => ClickStackFormulaResponse,
+        ClickStackSavedSearchFilter => ClickStackSavedSearchFilterResponse,
+        ClickStackSessionSource => ClickStackSessionSourceResponse,
+        ClickStackSourceFilterSettings => ClickStackSourceFilterSettingsResponse,
+        ClickStackSourceFrom => ClickStackSourceFromResponse,
+        ClickStackTraceSource => ClickStackTraceSourceResponse,
+        ClickStackTraceSourceMetadataMaterializedViews => ClickStackTraceSourceMetadataMaterializedViewsResponse,
+    );
+}
+
+#[test]
+fn clickstack_response_only_models_accept_an_empty_payload() {
+    // Connections, roles and saved searches are only ever returned — the create
+    // and update bodies are separate schemas — so they are all-`Option` in place
+    // instead of splitting, and none of their fields can fail a response.
+    assert_eq!(
+        serde_json::from_str::<ClickStackConnection>("{}").unwrap(),
+        ClickStackConnection::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackRole>("{}").unwrap(),
+        ClickStackRole::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickStackSavedSearch>("{}").unwrap(),
+        ClickStackSavedSearch::default()
+    );
+    // Their request counterparts stay strict.
+    assert!(serde_json::from_str::<ClickStackCreateConnectionRequest>("{}").is_err());
+    assert!(serde_json::from_str::<ClickStackCreateRoleRequest>("{}").is_err());
+    assert!(serde_json::from_str::<ClickStackSavedSearchInput>("{}").is_err());
+}
+
+#[test]
+fn shared_clickstack_dashboard_types_stay_strict_on_the_request_side() {
+    // Dashboard containers, tiles' chart configs, select items, number formats,
+    // color conditions, on-click targets and alert channels are sent as well as
+    // returned, so each splits: the request variant keeps the schema's required
+    // fields as `T` and rejects a payload that omits one, while the response
+    // variant accepts any object.
+    macro_rules! assert_split_strictness {
+        ($($request:ty => $response:ty),+ $(,)?) => {
+            $(
+                assert!(
+                    serde_json::from_str::<$request>("{}").is_err(),
+                    "{} accepted a payload missing its required fields",
+                    stringify!($request),
+                );
+                assert_eq!(
+                    serde_json::from_str::<$response>("{}").unwrap(),
+                    <$response>::default(),
+                    "{} rejected an empty payload",
+                    stringify!($response),
+                );
+            )+
+        };
+    }
+
+    assert_split_strictness!(
+        ClickStackAlertChannelEmail => ClickStackAlertChannelEmailResponse,
+        ClickStackAlertChannelWebhook => ClickStackAlertChannelWebhookResponse,
+        ClickStackBackgroundChart => ClickStackBackgroundChartResponse,
+        ClickStackBarBuilderChartConfig => ClickStackBarBuilderChartConfigResponse,
+        ClickStackBarRawSqlChartConfig => ClickStackBarRawSqlChartConfigResponse,
+        ClickStackBetweenColorCondition => ClickStackBetweenColorConditionResponse,
+        ClickStackCategoricalBarBuilderChartConfig => ClickStackCategoricalBarBuilderChartConfigResponse,
+        ClickStackCategoricalBarRawSqlChartConfig => ClickStackCategoricalBarRawSqlChartConfigResponse,
+        ClickStackDashboardContainer => ClickStackDashboardContainerResponse,
+        ClickStackDashboardContainerTab => ClickStackDashboardContainerTabResponse,
+        ClickStackEqualityColorCondition => ClickStackEqualityColorConditionResponse,
+        ClickStackEventPatternsChartConfig => ClickStackEventPatternsChartConfigResponse,
+        ClickStackHeatmapChartConfig => ClickStackHeatmapChartConfigResponse,
+        ClickStackHeatmapSelectItem => ClickStackHeatmapSelectItemResponse,
+        ClickStackLineBuilderChartConfig => ClickStackLineBuilderChartConfigResponse,
+        ClickStackLineRawSqlChartConfig => ClickStackLineRawSqlChartConfigResponse,
+        ClickStackMarkdownChartConfig => ClickStackMarkdownChartConfigResponse,
+        ClickStackNumberBuilderChartConfig => ClickStackNumberBuilderChartConfigResponse,
+        ClickStackNumberFormat => ClickStackNumberFormatResponse,
+        ClickStackNumberRawSqlChartConfig => ClickStackNumberRawSqlChartConfigResponse,
+        ClickStackNumericColorCondition => ClickStackNumericColorConditionResponse,
+        ClickStackOnClickDashboard => ClickStackOnClickDashboardResponse,
+        ClickStackOnClickExternal => ClickStackOnClickExternalResponse,
+        ClickStackOnClickFilterTemplate => ClickStackOnClickFilterTemplateResponse,
+        ClickStackOnClickSearch => ClickStackOnClickSearchResponse,
+        ClickStackOnClickTargetIdVariant => ClickStackOnClickTargetIdVariantResponse,
+        ClickStackOnClickTargetTemplateVariant => ClickStackOnClickTargetTemplateVariantResponse,
+        ClickStackPieBuilderChartConfig => ClickStackPieBuilderChartConfigResponse,
+        ClickStackPieRawSqlChartConfig => ClickStackPieRawSqlChartConfigResponse,
+        ClickStackSearchChartConfig => ClickStackSearchChartConfigResponse,
+        ClickStackSelectItem => ClickStackSelectItemResponse,
+        ClickStackTableBuilderChartConfig => ClickStackTableBuilderChartConfigResponse,
+        ClickStackTableRawSqlChartConfig => ClickStackTableRawSqlChartConfigResponse,
+    );
+}
+
+#[test]
+fn clickstack_alert_and_dashboard_response_models_accept_an_empty_payload() {
+    // Alerts, dashboards, tiles, validation results and webhooks are only ever
+    // returned — their request bodies are separate schemas — so they are
+    // all-`Option` in place instead of splitting, and none of their fields can
+    // fail a response.
+    macro_rules! assert_accepts_empty {
+        ($($model:ty),+ $(,)?) => {
+            $(
+                assert_eq!(
+                    serde_json::from_str::<$model>("{}").unwrap(),
+                    <$model>::default(),
+                    "{} rejected an empty payload",
+                    stringify!($model),
+                );
+            )+
+        };
+    }
+
+    assert_accepts_empty!(
+        ClickStackAlertExecutionError,
+        ClickStackAlertResponse,
+        ClickStackAlertSilenced,
+        ClickStackDashboardResponse,
+        ClickStackGenericWebhook,
+        ClickStackIncidentIOWebhook,
+        ClickStackPagerDutyAPIWebhook,
+        ClickStackSlackAPIWebhook,
+        ClickStackSlackWebhook,
+        ClickStackTileOutput,
+        ClickStackValidateDashboardError,
+        ClickStackValidateDashboardResponse,
+    );
+}
+
+#[test]
+fn clickstack_dashboard_response_null_fields_deserialize_to_none() {
+    // An explicit JSON `null` — not just a missing key — must land as `None`:
+    // `Option<T>` absorbs it natively, which `serde(default)` never did.
+    let json = r#"{"id":null,"name":null,"tiles":null,"filters":null,"tags":null}"#;
+    let dash: ClickStackDashboardResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(dash, ClickStackDashboardResponse::default());
+    // Absent fields are omitted on serialize, not emitted as `null`.
+    assert_eq!(serde_json::to_value(&dash).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn clickstack_tile_config_response_raw_sql_body_without_config_type_falls_to_sub_union_unknown() {
+    // Every field of a response builder variant is `Option`, so the builder arm
+    // is total and would absorb a raw-SQL payload whose server dropped
+    // `configType`, silently retyping it and losing `connectionId` and
+    // `sqlTemplate`. The `none unless` guard routes it to Unknown, which keeps
+    // the payload verbatim.
+    let json = r#"{"displayType":"line","connectionId":"conn-1","sqlTemplate":"SELECT 1"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfigResponse| {
+        matches!(
+            cfg,
+            ClickStackTileConfigResponse::ClickStackLineChartConfig(
+                ClickStackLineChartConfigResponse::Unknown(_)
+            )
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_response_dispatches_raw_sql_variant() {
+    // A `configType: "sql"` payload dispatches to the raw-SQL response variant
+    // even when the raw-SQL-required fields are missing: response tolerance is
+    // per-field, not per-variant.
+    let json = r#"{"displayType":"line","configType":"sql"}"#;
+    let cfg: ClickStackTileConfigResponse = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfigResponse::ClickStackLineChartConfig(
+            ClickStackLineChartConfigResponse::ClickStackLineRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, None);
+            assert_eq!(r.sql_template, None);
+        }
+        other => panic!("expected line raw-SQL variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_response_changed_field_shape_falls_to_sub_union_unknown() {
+    // A recognized discriminator whose payload no longer fits the variant —
+    // here `sqlTemplate` as a number — must not fail the response: the element
+    // lands in the lossless Unknown catch-all and round-trips verbatim.
+    let json = r#"{"displayType":"line","configType":"sql","sqlTemplate":5}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfigResponse| {
+        matches!(
+            cfg,
+            ClickStackTileConfigResponse::ClickStackLineChartConfig(
+                ClickStackLineChartConfigResponse::Unknown(_)
+            )
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_response_unknown_display_type_round_trips() {
+    let json = r#"{"displayType":"hologram","select":[]}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfigResponse| {
+        matches!(cfg, ClickStackTileConfigResponse::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_alert_channel_response_dispatches_and_absorbs_changed_shapes() {
+    // Known discriminators dispatch to their response variants.
+    let email: ClickStackAlertChannelResponse =
+        serde_json::from_str(r#"{"type":"email","emailRecipients":["a@b.c"]}"#).unwrap();
+    match email {
+        ClickStackAlertChannelResponse::ClickStackAlertChannelEmail(v) => {
+            assert_eq!(
+                v.email_recipients.as_deref(),
+                Some(&["a@b.c".to_string()][..])
+            );
+        }
+        other => panic!("expected email variant, got {other}"),
+    }
+    // A recognized `type` whose payload no longer fits the variant — here
+    // `emailRecipients` as a string — lands in Unknown intact.
+    let json = r#"{"type":"email","emailRecipients":"a@b.c"}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackAlertChannelResponse| {
+        matches!(c, ClickStackAlertChannelResponse::Unknown(_))
+    });
+    // As does an unrecognized `type`.
+    let json = r#"{"type":"future_channel","foo":1}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackAlertChannelResponse| {
+        matches!(c, ClickStackAlertChannelResponse::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_on_click_response_dispatches_on_type_and_mode() {
+    let json = r#"{"type":"external","urlTemplate":"https://example.com/{{id}}"}"#;
+    let on_click: ClickStackOnClickResponse = serde_json::from_str(json).unwrap();
+    match on_click {
+        ClickStackOnClickResponse::ClickStackOnClickExternal(e) => {
+            assert_eq!(
+                e.url_template.as_deref(),
+                Some("https://example.com/{{id}}")
+            );
+        }
+        other => panic!("expected external variant, got {other}"),
+    }
+    // A search on-click whose server dropped `target` still dispatches; the
+    // absence is a `None`, not a failure.
+    let json = r#"{"type":"search"}"#;
+    let on_click: ClickStackOnClickResponse = serde_json::from_str(json).unwrap();
+    match on_click {
+        ClickStackOnClickResponse::ClickStackOnClickSearch(s) => assert_eq!(s.target, None),
+        other => panic!("expected search variant, got {other}"),
+    }
+    let json = r#"{"mode":"template","template":"{{rowId}}"}"#;
+    let target: ClickStackOnClickTargetResponse = serde_json::from_str(json).unwrap();
+    match target {
+        ClickStackOnClickTargetResponse::ClickStackOnClickTargetTemplateVariant(t) => {
+            assert_eq!(t.template.as_deref(), Some("{{rowId}}"));
+        }
+        other => panic!("expected template variant, got {other}"),
+    }
+    // Missing discriminators land in Unknown: these unions have no absence arm.
+    let json = r#"{"urlTemplate":"https://example.com"}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackOnClickResponse| {
+        matches!(c, ClickStackOnClickResponse::Unknown(_))
+    });
+    let json = r#"{"template":"{{rowId}}"}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackOnClickTargetResponse| {
+        matches!(c, ClickStackOnClickTargetResponse::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_response_dispatches_on_operator() {
+    let json = r#"{"operator":"between","value":[1.0, 2.0]}"#;
+    let cond: ClickStackNumberTileColorConditionResponse = serde_json::from_str(json).unwrap();
+    match cond {
+        ClickStackNumberTileColorConditionResponse::ClickStackBetweenColorCondition(b) => {
+            assert_eq!(b.value.as_deref(), Some(&[1.0, 2.0][..]));
+            assert_eq!(b.color, None);
+        }
+        other => panic!("expected between variant, got {other}"),
+    }
+    let json = r#"{"operator":"someday","value":7}"#;
+    assert_unknown_variant_round_trips(json, |c: &ClickStackNumberTileColorConditionResponse| {
+        matches!(c, ClickStackNumberTileColorConditionResponse::Unknown(_))
+    });
 }
 
 #[test]
@@ -1478,4 +3964,3232 @@ fn deserialize_clickstack_alert_with_note() {
     // its skip_serializing_if=None gate must let Some(_) through).
     let v = serde_json::to_value(&alert).unwrap();
     assert_eq!(v["note"], "investigate runaway queries");
+}
+
+#[test]
+fn autoscaling_mode_round_trip() {
+    let v = serde_json::to_value(AutoscalingMode::Vertical).unwrap();
+    assert_eq!(v, "vertical");
+    let v = serde_json::to_value(AutoscalingMode::Horizontal).unwrap();
+    assert_eq!(v, "horizontal");
+    let parsed: AutoscalingMode = serde_json::from_str("\"vertical\"").unwrap();
+    assert_eq!(parsed, AutoscalingMode::Vertical);
+    let parsed: AutoscalingMode = serde_json::from_str("\"horizontal\"").unwrap();
+    assert_eq!(parsed, AutoscalingMode::Horizontal);
+    assert_eq!(AutoscalingMode::default(), AutoscalingMode::Vertical);
+    assert_eq!(AutoscalingMode::Vertical.to_string(), "vertical");
+    assert_eq!(AutoscalingMode::Horizontal.to_string(), "horizontal");
+}
+
+#[test]
+fn autoscaling_mode_unknown_catch_all() {
+    let parsed: AutoscalingMode = serde_json::from_str("\"crystal\"").unwrap();
+    assert_eq!(parsed, AutoscalingMode::Unknown("crystal".to_string()));
+    assert_eq!(parsed.to_string(), "crystal");
+}
+
+#[test]
+fn pg_state_property_stopped() {
+    let parsed: PgStateProperty = serde_json::from_str("\"stopped\"").unwrap();
+    assert_eq!(parsed, PgStateProperty::Stopped);
+    assert_eq!(parsed.to_string(), "stopped");
+}
+
+#[test]
+fn service_region_ca_central_1() {
+    let parsed: ServiceRegion = serde_json::from_str("\"ca-central-1\"").unwrap();
+    assert_eq!(parsed, ServiceRegion::Ca_central_1);
+    assert_eq!(parsed.to_string(), "ca-central-1");
+}
+
+#[test]
+fn byoc_config_regionid_ca_central_1() {
+    let parsed: ByocConfigRegionid = serde_json::from_str("\"ca-central-1\"").unwrap();
+    assert_eq!(parsed, ByocConfigRegionid::Ca_central_1);
+    assert_eq!(parsed.to_string(), "ca-central-1");
+}
+
+#[test]
+fn click_pipe_schema_discovery_response_round_trip() {
+    let json = r#"{
+        "fields": [
+            {"name": "user_id", "type": "Int64", "optional": false},
+            {"name": "event", "type": "String", "optional": true}
+        ]
+    }"#;
+    let resp: ClickPipeSchemaDiscoveryResponse = serde_json::from_str(json).unwrap();
+    let fields = resp.fields.clone().expect("fields should populate");
+    assert_eq!(fields.len(), 2);
+    assert_eq!(fields[0].name.as_deref(), Some("user_id"));
+    assert_eq!(fields[0].r#type.as_deref(), Some("Int64"));
+    assert_eq!(fields[0].optional, Some(false));
+    assert_eq!(fields[1].optional, Some(true));
+
+    let v = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["fields"][0]["name"], "user_id");
+    assert_eq!(v["fields"][0]["type"], "Int64");
+    assert_eq!(v["fields"][1]["optional"], true);
+}
+
+#[test]
+fn click_pipe_schema_discovery_request_kafka_source() {
+    let req = ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            kafka: Some(ClickPipePostKafkaSource::default()),
+            kinesis: None,
+            object_storage: None,
+            pubsub: None,
+        },
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert!(v["source"]["kafka"].is_object());
+    assert!(v["source"].get("kinesis").is_none());
+    assert!(v["source"].get("objectStorage").is_none());
+    assert!(v["source"].get("pubsub").is_none());
+}
+
+// A Kafka broker with no authentication has no spec enum value; absence of the
+// `authentication` key is the wire representation, so `None` must be omitted
+// rather than serialized as a mechanism or as `null`.
+#[test]
+fn click_pipe_post_kafka_source_omits_absent_authentication() {
+    let no_auth = ClickPipePostKafkaSource {
+        brokers: "broker1:9092".to_string(),
+        topics: "events".to_string(),
+        authentication: None,
+        credentials: serde_json::Value::Null,
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&no_auth).unwrap();
+    assert!(
+        v.get("authentication").is_none(),
+        "absent authentication must be omitted, got {v}"
+    );
+    assert_eq!(v["brokers"], "broker1:9092");
+
+    let plain = ClickPipePostKafkaSource {
+        authentication: Some(ClickPipePostKafkaSourceAuthentication::PLAIN),
+        credentials: serde_json::json!({"username": "u", "password": "p"}),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&plain).unwrap();
+    assert_eq!(v["authentication"], "PLAIN");
+    assert_eq!(v["credentials"]["username"], "u");
+}
+
+// `kafka_read_committed` is only supported for Kafka pipes, so a settings PUT
+// for any other source must leave the key off the wire entirely — not send
+// `false` and not send `null`.
+#[test]
+fn click_pipe_settings_put_request_omits_absent_kafka_read_committed() {
+    let non_kafka = ClickPipeSettingsPutRequest {
+        object_storage_max_file_count: Some(200),
+        kafka_read_committed: None,
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&non_kafka).unwrap();
+    assert!(
+        v.get("kafka_read_committed").is_none(),
+        "absent kafka_read_committed must be omitted, got {v}"
+    );
+    assert_eq!(
+        v,
+        serde_json::json!({ "object_storage_max_file_count": 200 })
+    );
+
+    let kafka = ClickPipeSettingsPutRequest {
+        streaming_max_insert_wait_ms: Some(1000),
+        kafka_read_committed: Some(true),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&kafka).unwrap();
+    assert_eq!(v["kafka_read_committed"], true);
+    assert_eq!(v["streaming_max_insert_wait_ms"], 1000);
+}
+
+#[test]
+fn click_pipe_schema_discovery_request_supports_new_sources() {
+    let object_storage = ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            object_storage: Some(ClickPipePostObjectStorageSource::default()),
+            ..Default::default()
+        },
+    };
+    let pubsub = ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            pubsub: Some(ClickPipePostPubSubSource::default()),
+            ..Default::default()
+        },
+    };
+
+    assert!(serde_json::to_value(object_storage).unwrap()["source"]["objectStorage"].is_object());
+    assert!(serde_json::to_value(pubsub).unwrap()["source"]["pubsub"].is_object());
+}
+
+#[test]
+fn click_pipe_schema_discovery_request_default_omits_sources() {
+    let v = serde_json::to_value(ClickPipeSchemaDiscoveryRequest::default()).unwrap();
+    assert!(v["source"].get("kafka").is_none());
+    assert!(v["source"].get("kinesis").is_none());
+}
+
+#[test]
+fn click_pipe_schema_discovery_field_nullable_optional() {
+    let json = r#"{"name": "col", "type": "Nullable(String)", "optional": null}"#;
+    let field: ClickPipeSchemaDiscoveryField = serde_json::from_str(json).unwrap();
+    assert_eq!(field.optional, None);
+    let v = serde_json::to_value(&field).unwrap();
+    assert!(v.get("optional").is_none());
+}
+
+#[test]
+fn mysql_source_server_id_optional() {
+    let json = r#"{"host": "h", "port": 3306, "settings": {"replicationMode": "gtid"}, "tableMappings": [], "serverId": 4242}"#;
+    let src: ClickPipeMySQLSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.server_id, Some(4242));
+
+    let json = r#"{"host": "h", "port": 3306, "settings": {"replicationMode": "gtid"}, "tableMappings": []}"#;
+    let src: ClickPipeMySQLSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.server_id, None);
+
+    let v = serde_json::to_value(ClickPipeMySQLSource {
+        server_id: Some(99),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(v["serverId"], 99);
+    let v = serde_json::to_value(ClickPipeMySQLSource::default()).unwrap();
+    assert!(v.get("serverId").is_none());
+}
+
+#[test]
+fn mysql_patch_source_server_id_nullable() {
+    let json = r#"{"serverId": null}"#;
+    let src: ClickPipePatchMySQLSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.server_id, None);
+
+    let json = r#"{"serverId": 100}"#;
+    let src: ClickPipePatchMySQLSource = serde_json::from_str(json).unwrap();
+    assert_eq!(src.server_id, Some(100));
+}
+
+#[test]
+fn clickstack_alert_num_consecutive_windows_present_and_absent() {
+    let json = r#"{
+        "id": "alert-1",
+        "name": "High CPU",
+        "numConsecutiveWindows": 3
+    }"#;
+    let alert: ClickStackAlertResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(alert.num_consecutive_windows, Some(3));
+    let v = serde_json::to_value(&alert).unwrap();
+    assert_eq!(v["numConsecutiveWindows"], 3);
+
+    // Absent -> None -> dropped by skip_serializing_if.
+    let alert = ClickStackAlertResponse::default();
+    assert_eq!(alert.num_consecutive_windows, None);
+    let v = serde_json::to_value(&alert).unwrap();
+    assert!(v.get("numConsecutiveWindows").is_none());
+}
+
+#[test]
+fn clickstack_create_alert_num_consecutive_windows_round_trip() {
+    let v = serde_json::to_value(ClickStackCreateAlertRequest {
+        num_consecutive_windows: Some(5),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(v["numConsecutiveWindows"], 5);
+    let v = serde_json::to_value(ClickStackCreateAlertRequest::default()).unwrap();
+    assert!(v.get("numConsecutiveWindows").is_none());
+}
+
+#[test]
+fn clickstack_update_alert_num_consecutive_windows_round_trip() {
+    let v = serde_json::to_value(ClickStackUpdateAlertRequest {
+        num_consecutive_windows: Some(7),
+        ..Default::default()
+    })
+    .unwrap();
+    assert_eq!(v["numConsecutiveWindows"], 7);
+    let v = serde_json::to_value(ClickStackUpdateAlertRequest::default()).unwrap();
+    assert!(v.get("numConsecutiveWindows").is_none());
+}
+
+#[test]
+fn clickstack_filter_applies_to_source_ids_round_trip() {
+    let json = r#"{
+        "expression": "level = 'error'",
+        "id": "f-1",
+        "name": "errors",
+        "sourceId": "src-1",
+        "type": "sql",
+        "appliesToSourceIds": ["src-1", "src-2"]
+    }"#;
+    let filter: ClickStackFilter = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        filter.applies_to_source_ids,
+        Some(vec!["src-1".to_string(), "src-2".to_string()])
+    );
+    let v = serde_json::to_value(&filter).unwrap();
+    assert_eq!(v["appliesToSourceIds"][0], "src-1");
+    assert_eq!(v["appliesToSourceIds"][1], "src-2");
+
+    // Absent -> None -> dropped.
+    let filter = ClickStackFilter::default();
+    assert_eq!(filter.applies_to_source_ids, None);
+    let v = serde_json::to_value(&filter).unwrap();
+    assert!(v.get("appliesToSourceIds").is_none());
+}
+
+#[test]
+fn clickstack_filter_input_applies_to_source_ids_round_trip() {
+    let json = r#"{
+        "expression": "level = 'error'",
+        "name": "errors",
+        "sourceId": "src-1",
+        "type": "sql",
+        "appliesToSourceIds": ["src-9"]
+    }"#;
+    let filter: ClickStackFilterInput = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        filter.applies_to_source_ids,
+        Some(vec!["src-9".to_string()])
+    );
+    let v = serde_json::to_value(&filter).unwrap();
+    assert_eq!(v["appliesToSourceIds"][0], "src-9");
+
+    let v = serde_json::to_value(ClickStackFilterInput::default()).unwrap();
+    assert!(v.get("appliesToSourceIds").is_none());
+}
+
+#[test]
+fn clickpipe_postgres_table_mapping_partition_by_expr_round_trip() {
+    // `partitionByExpr` is required and non-nullable, so the request variant
+    // types it as `String` and always sends it.
+    let mapping = ClickPipePostgresPipeTableMapping {
+        partition_by_expr: "toYYYYMM(created_at)".to_string(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&mapping).unwrap();
+    assert_eq!(v["partitionByExpr"], "toYYYYMM(created_at)");
+
+    // The response variant types it as `Option<String>`: present, dropped, and
+    // explicitly `null` all deserialize.
+    let mapping: ClickPipePostgresPipeTableMappingResponse =
+        serde_json::from_str(r#"{"partitionByExpr": "toYYYYMM(created_at)"}"#).unwrap();
+    assert_eq!(
+        mapping.partition_by_expr.as_deref(),
+        Some("toYYYYMM(created_at)")
+    );
+    let mapping: ClickPipePostgresPipeTableMappingResponse =
+        serde_json::from_str(r#"{"partitionByExpr": null}"#).unwrap();
+    assert_eq!(mapping.partition_by_expr, None);
+    let mapping: ClickPipePostgresPipeTableMappingResponse = serde_json::from_str("{}").unwrap();
+    assert_eq!(mapping.partition_by_expr, None);
+}
+
+#[test]
+fn clickpipe_response_tolerates_dropped_and_null_fields() {
+    // The whole ClickPipe response tree is all-`Option`, so a dropped key and
+    // an explicit `null` both land as `None` — at the top level and inside the
+    // nested source/destination/scaling/settings shapes.
+    let dropped: ClickPipe = serde_json::from_str("{}").unwrap();
+    let nulled: ClickPipe = serde_json::from_str(
+        r#"{"id":null,"serviceId":null,"name":null,"state":null,"createdAt":null,
+            "updatedAt":null,"scaling":null,"settings":null,"source":null,
+            "destination":null,"fieldMappings":null}"#,
+    )
+    .unwrap();
+    assert_eq!(dropped, ClickPipe::default());
+    assert_eq!(nulled, ClickPipe::default());
+    // `null` on a list field is the residual case the previous
+    // `#[serde(default)]` policy still failed on.
+    assert_eq!(nulled.field_mappings, None);
+
+    let nested: ClickPipe = serde_json::from_str(
+        r#"{"source":{"postgres":{"host":"pg.example","settings":null,
+            "tableMappings":null}},
+            "destination":{"columns":null,"tableDefinition":{"engine":null,
+            "sortingKey":null}},
+            "scaling":{},"settings":{}}"#,
+    )
+    .unwrap();
+    let postgres = nested
+        .source
+        .and_then(|source| source.postgres)
+        .expect("postgres source should populate");
+    assert_eq!(postgres.host.as_deref(), Some("pg.example"));
+    assert_eq!(postgres.settings, None);
+    assert_eq!(postgres.table_mappings, None);
+    let destination = nested.destination.expect("destination should populate");
+    assert_eq!(destination.columns, None);
+    assert_eq!(
+        destination.table_definition,
+        Some(ClickPipeDestinationTableDefinitionResponse::default())
+    );
+    assert_eq!(nested.scaling, Some(ClickPipeScalingResponse::default()));
+    assert_eq!(nested.settings, Some(ClickPipeSettingsResponse::default()));
+}
+
+#[test]
+fn clickpipe_response_omits_absent_fields_when_serialized() {
+    // Absence stays absent in `--json` output, including inside the response
+    // variants of the shared nested pipe schemas.
+    let pipe = ClickPipe {
+        name: Some("my-pipe".to_string()),
+        scaling: Some(ClickPipeScalingResponse {
+            replicas: Some(2),
+            ..Default::default()
+        }),
+        field_mappings: Some(vec![ClickPipeFieldMappingResponse {
+            source_field: Some("id".to_string()),
+            destination_field: None,
+        }]),
+        destination: Some(ClickPipeDestination {
+            table: Some("events".to_string()),
+            table_definition: Some(ClickPipeDestinationTableDefinitionResponse {
+                engine: Some(ClickPipeDestinationTableEngineResponse {
+                    r#type: Some(ClickPipeDestinationTableEngineType::MergeTree),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&pipe).unwrap(),
+        serde_json::json!({
+            "name": "my-pipe",
+            "scaling": { "replicas": 2 },
+            "fieldMappings": [{ "sourceField": "id" }],
+            "destination": {
+                "table": "events",
+                "tableDefinition": { "engine": { "type": "MergeTree" } },
+            },
+        })
+    );
+}
+
+#[test]
+fn shared_clickpipe_nested_types_stay_strict_on_the_request_side() {
+    // The pipe settings, table mappings, destination shapes, field mappings and
+    // scaling blocks are sent as well as returned, so each splits: the request
+    // variant keeps the schema's required fields as `T`, and only the response
+    // variant is all-`Option`.
+    let mapping = ClickPipeFieldMapping {
+        source_field: "id".to_string(),
+        destination_field: "row_id".to_string(),
+    };
+    assert_eq!(
+        serde_json::to_value(&mapping).unwrap(),
+        serde_json::json!({ "sourceField": "id", "destinationField": "row_id" })
+    );
+    // A request payload missing a required field is rejected, not defaulted.
+    assert!(serde_json::from_str::<ClickPipeFieldMapping>("{}").is_err());
+    assert!(serde_json::from_str::<ClickPipeDestinationColumn>("{}").is_err());
+    assert!(serde_json::from_str::<ClickPipeScaling>("{}").is_err());
+    assert!(serde_json::from_str::<ClickPipePostgresPipeTableMapping>("{}").is_err());
+    // The response variants accept the same payload.
+    assert_eq!(
+        serde_json::from_str::<ClickPipeFieldMappingResponse>("{}").unwrap(),
+        ClickPipeFieldMappingResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipeDestinationColumnResponse>("{}").unwrap(),
+        ClickPipeDestinationColumnResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipeScalingResponse>("{}").unwrap(),
+        ClickPipeScalingResponse::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipePostgresPipeTableMappingResponse>("{}").unwrap(),
+        ClickPipePostgresPipeTableMappingResponse::default()
+    );
+    // Source-conditional create values stay absent unless the caller supplies
+    // them, while explicit false remains distinguishable from omission.
+    assert_eq!(
+        serde_json::from_str::<ClickPipeSettings>("{}").unwrap(),
+        ClickPipeSettings::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipePostSource>("{}").unwrap(),
+        ClickPipePostSource::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipeSettingsPutRequest>("{}").unwrap(),
+        ClickPipeSettingsPutRequest::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipeSettingsResponse>("{}").unwrap(),
+        ClickPipeSettingsResponse::default()
+    );
+}
+
+#[test]
+fn clickpipe_create_optional_controls_omit_absence_and_preserve_false() {
+    let source = ClickPipePostSource::default();
+    let settings = ClickPipeSettings::default();
+    assert_eq!(
+        serde_json::to_value(&source).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        serde_json::to_value(&settings).unwrap(),
+        serde_json::json!({})
+    );
+
+    let source = ClickPipePostSource {
+        validate_samples: Some(false),
+        ..Default::default()
+    };
+    let settings = ClickPipeSettings {
+        kafka_read_committed: Some(false),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&source).unwrap(),
+        serde_json::json!({ "validateSamples": false })
+    );
+    assert_eq!(
+        serde_json::to_value(&settings).unwrap(),
+        serde_json::json!({ "kafka_read_committed": false })
+    );
+}
+
+#[test]
+fn clickpipe_patch_remove_table_mapping_partition_by_expr_round_trip() {
+    let json = r#"{"partitionByExpr": "toDate(ts)"}"#;
+    let mapping: ClickPipePatchPostgresPipeRemoveTableMapping = serde_json::from_str(json).unwrap();
+    assert_eq!(mapping.partition_by_expr.as_deref(), Some("toDate(ts)"));
+    let v = serde_json::to_value(&mapping).unwrap();
+    assert_eq!(v["partitionByExpr"], "toDate(ts)");
+
+    let v = serde_json::to_value(ClickPipePatchPostgresPipeRemoveTableMapping::default()).unwrap();
+    assert!(v.get("partitionByExpr").is_none());
+}
+
+#[test]
+fn activity_type_new_wire_values_deserialize_to_typed_variants() {
+    let cases = [
+        (
+            "organization_member_update_roles",
+            ActivityType::Organization_member_update_roles,
+        ),
+        (
+            "organization_saml_connection_create",
+            ActivityType::Organization_saml_connection_create,
+        ),
+        (
+            "organization_saml_connection_update",
+            ActivityType::Organization_saml_connection_update,
+        ),
+        (
+            "service_update_snapshot_configuration",
+            ActivityType::Service_update_snapshot_configuration,
+        ),
+        ("backup_bucket_create", ActivityType::Backup_bucket_create),
+        ("role_update", ActivityType::Role_update),
+        ("service_mcp_enabled", ActivityType::Service_mcp_enabled),
+        ("udf_create", ActivityType::Udf_create),
+    ];
+    for (wire, expected) in cases {
+        let parsed: ActivityType = serde_json::from_str(&format!("\"{wire}\"")).unwrap();
+        assert_eq!(parsed, expected, "{wire} should not be Unknown");
+        assert_eq!(parsed.to_string(), wire);
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn clickstack_alert_response_state_pending() {
+    let parsed: ClickStackAlertResponseState = serde_json::from_str("\"PENDING\"").unwrap();
+    assert_eq!(parsed, ClickStackAlertResponseState::PENDING);
+    assert_eq!(parsed.to_string(), "PENDING");
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), "PENDING");
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_numeric_variant() {
+    // The manual `operator`-keyed dispatch routes `gt`/`gte`/`lt`/`lte` to the
+    // numeric variant.
+    let json = r#"{"operator": "gt", "value": 100, "color": "chart-red"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match cond {
+        ClickStackNumberTileColorCondition::ClickStackNumericColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackNumericColorConditionOperator::Gt);
+            assert_eq!(c.value, 100.0);
+            assert_eq!(c.color, ClickStackChartColor::Chart_red);
+        }
+        other => panic!("expected numeric variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_between_variant() {
+    // The manual dispatch routes the `between` operator, with its inclusive
+    // [min, max] array value, to the between variant.
+    let json = r#"{"operator": "between", "value": [100, 500], "color": "chart-warning"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match cond {
+        ClickStackNumberTileColorCondition::ClickStackBetweenColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackBetweenColorConditionOperator::Between);
+            assert_eq!(c.value, vec![100.0, 500.0]);
+            assert_eq!(c.color, ClickStackChartColor::Chart_warning);
+        }
+        other => panic!("expected between variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_equality_string_value() {
+    // The manual dispatch routes `eq` to the equality variant, whose value
+    // accepts strings as well as numbers.
+    let json =
+        r#"{"operator": "eq", "value": "healthy", "color": "chart-success", "label": "Healthy"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match cond {
+        ClickStackNumberTileColorCondition::ClickStackEqualityColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackEqualityColorConditionOperator::Eq);
+            assert_eq!(c.value, serde_json::json!("healthy"));
+            assert_eq!(c.color, ClickStackChartColor::Chart_success);
+            assert_eq!(c.label.as_deref(), Some("Healthy"));
+        }
+        other => panic!("expected equality variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_equality_numeric_value() {
+    // A numeric-valued `eq` is structurally identical to a numeric condition;
+    // only the `operator`-keyed dispatch routes it to the equality variant
+    // rather than the numeric one.
+    let json = r#"{"operator": "eq", "value": 42, "color": "chart-error"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match cond {
+        ClickStackNumberTileColorCondition::ClickStackEqualityColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackEqualityColorConditionOperator::Eq);
+            assert_eq!(c.value.as_f64(), Some(42.0));
+            assert_eq!(c.color, ClickStackChartColor::Chart_error);
+        }
+        other => panic!("expected equality variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_dispatches_every_operator() {
+    // Exhaustive guard over the `operator`-keyed dispatch: every wire value in the
+    // discriminated_union! invocation must route to its concrete variant, never the
+    // Unknown catch-all. A typo in any operator literal in the macro ("gte"/"lt"/
+    // "lte"/"neq"/...) would silently misroute a valid payload to Unknown, and this
+    // table would fail on that operator. The seven values are cross-checked against
+    // the enum members of the three constituent schemas in the OpenAPI snapshot.
+    #[derive(Debug, PartialEq)]
+    enum Variant {
+        Numeric,
+        Between,
+        Equality,
+    }
+
+    let cases: &[(&str, serde_json::Value, Variant)] = &[
+        ("gt", serde_json::json!(100), Variant::Numeric),
+        ("gte", serde_json::json!(100), Variant::Numeric),
+        ("lt", serde_json::json!(100), Variant::Numeric),
+        ("lte", serde_json::json!(100), Variant::Numeric),
+        ("between", serde_json::json!([100, 500]), Variant::Between),
+        ("eq", serde_json::json!(42), Variant::Equality),
+        ("neq", serde_json::json!("healthy"), Variant::Equality),
+    ];
+
+    for (operator, value, expected) in cases {
+        let json = serde_json::json!({
+            "operator": operator,
+            "value": value,
+            "color": "chart-red",
+        });
+        let cond: ClickStackNumberTileColorCondition = serde_json::from_value(json)
+            .unwrap_or_else(|e| panic!("operator {operator:?} failed to deserialize: {e}"));
+        match (&cond, expected) {
+            (
+                ClickStackNumberTileColorCondition::ClickStackNumericColorCondition(c),
+                Variant::Numeric,
+            ) => assert_eq!(c.operator.to_string(), *operator),
+            (
+                ClickStackNumberTileColorCondition::ClickStackBetweenColorCondition(c),
+                Variant::Between,
+            ) => assert_eq!(c.operator.to_string(), *operator),
+            (
+                ClickStackNumberTileColorCondition::ClickStackEqualityColorCondition(c),
+                Variant::Equality,
+            ) => assert_eq!(c.operator.to_string(), *operator),
+            (other, _) => {
+                panic!("operator {operator:?} expected {expected:?} variant, got {other}")
+            }
+        }
+        assert!(
+            !matches!(cond, ClickStackNumberTileColorCondition::Unknown(_)),
+            "operator {operator:?} misrouted to the Unknown catch-all"
+        );
+    }
+}
+
+#[test]
+fn clickstack_number_tile_color_condition_unknown_operator_round_trip() {
+    // An unrecognized `operator` discriminator falls back to the Unknown
+    // variant, which now stores the raw JSON object and round-trips faithfully.
+    let json = r#"{"operator":"contains","value":"warn","color":"chart-red"}"#;
+    let cond: ClickStackNumberTileColorCondition = serde_json::from_str(json).unwrap();
+    match &cond {
+        ClickStackNumberTileColorCondition::Unknown(v) => {
+            assert_eq!(v["operator"], "contains");
+            assert_eq!(v["value"], "warn");
+        }
+        other => panic!("expected unknown variant, got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&cond).unwrap(), expected);
+}
+
+#[test]
+fn clickstack_tile_config_categorical_bar_builder_variant() {
+    // `displayType: "bar"` must dispatch to the categorical bar variant, not the
+    // stacked bar variant (whose discriminator is "stacked_bar").
+    let json = r#"{
+        "displayType": "bar",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackCategoricalBarChartConfig(
+            ClickStackCategoricalBarChartConfig::ClickStackCategoricalBarBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackCategoricalBarBuilderChartConfigDisplaytype::Bar
+            );
+            assert_eq!(b.select.len(), 1);
+        }
+        other => panic!("expected categorical bar builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_categorical_bar_raw_sql_variant() {
+    // The Raw SQL categorical bar (configType "sql") also dispatches to the
+    // categorical bar variant rather than the stacked bar Raw SQL variant.
+    let json = r#"{
+        "displayType": "bar",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT count() FROM t GROUP BY service"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackCategoricalBarChartConfig(
+            ClickStackCategoricalBarChartConfig::ClickStackCategoricalBarRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(r.sql_template, "SELECT count() FROM t GROUP BY service");
+            assert_eq!(
+                r.display_type,
+                ClickStackCategoricalBarRawSqlChartConfigDisplaytype::Bar
+            );
+        }
+        other => panic!("expected categorical bar raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_stacked_bar_not_categorical_bar() {
+    // The manual `displayType`-keyed dispatch routes "stacked_bar" to the
+    // stacked-bar variant, never to the structurally identical categorical
+    // bar variant (whose displayType is "bar").
+    let json = r#"{
+        "displayType": "stacked_bar",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    assert!(
+        !matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackCategoricalBarChartConfig(_)
+        ),
+        "stacked_bar must not dispatch to the categorical bar variant, got {cfg}"
+    );
+}
+
+#[test]
+fn clickstack_tile_config_event_patterns_variant() {
+    // `displayType: "event_patterns"` dispatches to the event-patterns variant.
+    let json = r#"{
+        "displayType": "event_patterns",
+        "sourceId": "src-9",
+        "where": "level:error",
+        "whereLanguage": "lucene"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackEventPatternsChartConfig(e) => {
+            assert_eq!(e.source_id, "src-9");
+            assert_eq!(
+                e.display_type,
+                ClickStackEventPatternsChartConfigDisplaytype::Event_patterns
+            );
+            assert_eq!(e.r#where.as_deref(), Some("level:error"));
+            assert_eq!(
+                e.where_language,
+                Some(ClickStackEventPatternsChartConfigWherelanguage::Lucene)
+            );
+        }
+        other => panic!("expected event patterns variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_line_variant() {
+    // `displayType: "line"` must dispatch to the line variant with a typed
+    // display_type, not be swallowed as an Unknown displayType by another
+    // structurally-identical builder variant.
+    let json = r#"{
+        "displayType": "line",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackLineChartConfig(
+            ClickStackLineChartConfig::ClickStackLineBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackLineBuilderChartConfigDisplaytype::Line
+            );
+        }
+        other => panic!("expected line builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_stacked_bar_builder_variant() {
+    // `displayType: "stacked_bar"` must dispatch to the (stacked) bar variant
+    // with a typed display_type.
+    let json = r#"{
+        "displayType": "stacked_bar",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackBarChartConfig(
+            ClickStackBarChartConfig::ClickStackBarBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackBarBuilderChartConfigDisplaytype::Stacked_bar
+            );
+        }
+        other => panic!("expected stacked bar builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_table_variant() {
+    // `displayType: "table"` must dispatch to the table variant with a typed
+    // display_type (the legacy misdispatch parsed it as the first-listed
+    // variant with an Unknown display_type).
+    let json = r#"{
+        "displayType": "table",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackTableChartConfig(
+            ClickStackTableChartConfig::ClickStackTableBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackTableBuilderChartConfigDisplaytype::Table
+            );
+        }
+        other => panic!("expected table builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_number_variant() {
+    // `displayType: "number"` must dispatch to the number variant with a typed
+    // display_type.
+    let json = r#"{
+        "displayType": "number",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackNumberChartConfig(
+            ClickStackNumberChartConfig::ClickStackNumberBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackNumberBuilderChartConfigDisplaytype::Number
+            );
+        }
+        other => panic!("expected number builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_pie_variant() {
+    // `displayType: "pie"` must dispatch to the pie variant with a typed
+    // display_type.
+    let json = r#"{
+        "displayType": "pie",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackPieChartConfig(
+            ClickStackPieChartConfig::ClickStackPieBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, "src-1");
+            assert_eq!(
+                b.display_type,
+                ClickStackPieBuilderChartConfigDisplaytype::Pie
+            );
+        }
+        other => panic!("expected pie builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_search_variant() {
+    // `displayType: "search"` must dispatch to the search variant with a typed
+    // display_type.
+    let json = r#"{
+        "displayType": "search",
+        "sourceId": "src-1",
+        "select": "*",
+        "whereLanguage": "lucene"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackSearchChartConfig(s) => {
+            assert_eq!(s.source_id, "src-1");
+            assert_eq!(s.select, "*");
+            assert_eq!(
+                s.display_type,
+                ClickStackSearchChartConfigDisplaytype::Search
+            );
+        }
+        other => panic!("expected search variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_markdown_variant() {
+    // `displayType: "markdown"` must dispatch to the markdown variant with a
+    // typed display_type rather than being absorbed by an earlier variant.
+    let json = r#"{
+        "displayType": "markdown",
+        "markdown": "hello world"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackMarkdownChartConfig(m) => {
+            assert_eq!(m.markdown.as_deref(), Some("hello world"));
+            assert_eq!(
+                m.display_type,
+                ClickStackMarkdownChartConfigDisplaytype::Markdown
+            );
+        }
+        other => panic!("expected markdown variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_heatmap_variant() {
+    // `displayType: "heatmap"` is the only discriminator that reaches the
+    // ClickStackHeatmapChartConfig arm; the heatmap-specific `select` shape with
+    // `valueExpression` is then parsed by that variant, not used to select it.
+    let json = r#"{
+        "displayType": "heatmap",
+        "sourceId": "src-1",
+        "select": [{"valueExpression": "latency_ms"}]
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackHeatmapChartConfig(h) => {
+            assert_eq!(h.source_id, "src-1");
+            assert_eq!(
+                h.display_type,
+                ClickStackHeatmapChartConfigDisplaytype::Heatmap
+            );
+            assert_eq!(h.select.len(), 1);
+            assert_eq!(h.select[0].value_expression, "latency_ms");
+        }
+        other => panic!("expected heatmap variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_unknown_display_type_round_trips() {
+    // An unrecognized `displayType` falls to the Unknown catch-all, which now
+    // stores the raw object and round-trips it faithfully.
+    let json = r#"{"displayType":"sankey","sourceId":"src-1"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(cfg, ClickStackTileConfig::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_tile_config_response_line_novel_shape_dispatches_to_builder() {
+    // A known `displayType` carrying no `configType` dispatches to the builder
+    // variant: the novel member is ignored and the builder's all-`Option`
+    // response fields surface `None` instead of failing the response.
+    let json = r#"{"displayType":"line","somethingNew":true}"#;
+    let cfg: ClickStackTileConfigResponse = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfigResponse::ClickStackLineChartConfig(
+            ClickStackLineChartConfigResponse::ClickStackLineBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, None);
+            assert_eq!(b.select, None);
+        }
+        other => panic!("expected line builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_response_line_minimal_body_dispatches_to_builder() {
+    // The bare discriminator with no `configType` key at all: key absence is the
+    // builder discriminator, and every other builder response field is absent.
+    let json = r#"{"displayType":"line"}"#;
+    let cfg: ClickStackTileConfigResponse = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfigResponse::ClickStackLineChartConfig(
+            ClickStackLineChartConfigResponse::ClickStackLineBuilderChartConfig(b),
+        ) => {
+            assert_eq!(
+                b,
+                ClickStackLineBuilderChartConfigResponse {
+                    display_type: Some(ClickStackLineBuilderChartConfigDisplaytype::Line),
+                    ..ClickStackLineBuilderChartConfigResponse::default()
+                }
+            );
+        }
+        other => panic!("expected line builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_response_non_string_config_type_dispatches_to_builder() {
+    // A non-string `configType` is deliberately conflated with an absent one:
+    // both dispatch to the builder variant rather than to Unknown.
+    let json = r#"{"displayType":"line","configType":123,"sourceId":"src-1"}"#;
+    let cfg: ClickStackTileConfigResponse = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfigResponse::ClickStackLineChartConfig(
+            ClickStackLineChartConfigResponse::ClickStackLineBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id.as_deref(), Some("src-1"));
+        }
+        other => panic!("expected line builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_line_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` reaches the line sub-union's
+    // Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"line","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(_))
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_raw_sql_body_without_config_type_falls_to_sub_union_unknown() {
+    // `configType` is spec-required on the Raw SQL configs, so a server that
+    // stops sending it must not silently retype the tile: the builder variant is
+    // total and would otherwise absorb the body and drop `connectionId` and
+    // `sqlTemplate`. The `unless` guard routes it to Unknown, which keeps the
+    // payload verbatim.
+    let json = r#"{"displayType":"line","connectionId":"conn-1","sqlTemplate":"SELECT 1"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(_))
+        )
+    });
+
+    // Either guard key on its own disqualifies the builder variant, and the
+    // guard is wired on every chart-config sub-union, not just the line one.
+    let json = r#"{"displayType":"number","connectionId":"conn-1"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackNumberChartConfig(
+                ClickStackNumberChartConfig::Unknown(_)
+            )
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_changed_field_shape_falls_to_sub_union_unknown() {
+    // Field-level tolerance only covers a field the API stops sending. A field
+    // whose *shape* changes cannot deserialize into the dispatched variant, so
+    // the union hands the payload to its lossless Unknown catch-all rather than
+    // failing the whole dashboard response.
+    let builder = r#"{"displayType":"line","sourceId":123}"#;
+    assert_unknown_variant_round_trips(builder, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(_))
+        )
+    });
+
+    let raw_sql = r#"{"displayType":"line","configType":"sql","sqlTemplate":123}"#;
+    assert_unknown_variant_round_trips(raw_sql, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackLineChartConfig(ClickStackLineChartConfig::Unknown(_))
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_line_raw_sql_variant() {
+    // The Raw SQL line config (configType "sql") dispatches to the line
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "line",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT count() FROM t GROUP BY toStartOfMinute(ts)"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackLineChartConfig(
+            ClickStackLineChartConfig::ClickStackLineRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(
+                r.sql_template,
+                "SELECT count() FROM t GROUP BY toStartOfMinute(ts)"
+            );
+            assert_eq!(
+                r.display_type,
+                ClickStackLineRawSqlChartConfigDisplaytype::Line
+            );
+        }
+        other => panic!("expected line raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_stacked_bar_raw_sql_variant() {
+    // The Raw SQL (stacked) bar config (configType "sql") dispatches to the bar
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "stacked_bar",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT count() FROM t GROUP BY service"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackBarChartConfig(
+            ClickStackBarChartConfig::ClickStackBarRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(r.sql_template, "SELECT count() FROM t GROUP BY service");
+            assert_eq!(
+                r.display_type,
+                ClickStackBarRawSqlChartConfigDisplaytype::Stacked_bar
+            );
+        }
+        other => panic!("expected stacked bar raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_table_raw_sql_variant() {
+    // The Raw SQL table config (configType "sql") dispatches to the table
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "table",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT service, count() FROM t GROUP BY service"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackTableChartConfig(
+            ClickStackTableChartConfig::ClickStackTableRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(
+                r.sql_template,
+                "SELECT service, count() FROM t GROUP BY service"
+            );
+            assert_eq!(
+                r.display_type,
+                ClickStackTableRawSqlChartConfigDisplaytype::Table
+            );
+        }
+        other => panic!("expected table raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_number_raw_sql_variant() {
+    // The Raw SQL number config (configType "sql") dispatches to the number
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "number",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT count() FROM t"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackNumberChartConfig(
+            ClickStackNumberChartConfig::ClickStackNumberRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(r.sql_template, "SELECT count() FROM t");
+            assert_eq!(
+                r.display_type,
+                ClickStackNumberRawSqlChartConfigDisplaytype::Number
+            );
+        }
+        other => panic!("expected number raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_pie_raw_sql_variant() {
+    // The Raw SQL pie config (configType "sql") dispatches to the pie
+    // sub-union's Raw SQL variant, not its builder or Unknown variant.
+    let json = r#"{
+        "displayType": "pie",
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "sqlTemplate": "SELECT service, count() FROM t GROUP BY service"
+    }"#;
+    let cfg: ClickStackTileConfig = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfig::ClickStackPieChartConfig(
+            ClickStackPieChartConfig::ClickStackPieRawSqlChartConfig(r),
+        ) => {
+            assert_eq!(r.connection_id, "conn-1");
+            assert_eq!(
+                r.sql_template,
+                "SELECT service, count() FROM t GROUP BY service"
+            );
+            assert_eq!(
+                r.display_type,
+                ClickStackPieRawSqlChartConfigDisplaytype::Pie
+            );
+        }
+        other => panic!("expected pie raw sql variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_response_categorical_bar_novel_shape_dispatches_to_builder() {
+    // A "bar" body with no `configType` dispatches to the categorical bar builder
+    // variant, whose all-`Option` response fields surface `None` rather than
+    // failing the response.
+    let json = r#"{"displayType":"bar","somethingNew":true}"#;
+    let cfg: ClickStackTileConfigResponse = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfigResponse::ClickStackCategoricalBarChartConfig(
+            ClickStackCategoricalBarChartConfigResponse::ClickStackCategoricalBarBuilderChartConfig(
+                b,
+            ),
+        ) => {
+            assert_eq!(b.source_id, None);
+            assert_eq!(b.select, None);
+        }
+        other => panic!("expected categorical bar builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_categorical_bar_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` reaches the categorical bar
+    // sub-union's Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"bar","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackCategoricalBarChartConfig(
+                ClickStackCategoricalBarChartConfig::Unknown(_)
+            )
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_response_stacked_bar_novel_shape_dispatches_to_builder() {
+    // A "stacked_bar" body with no `configType` dispatches to the bar builder
+    // variant, whose all-`Option` response fields surface `None` rather than
+    // failing the response.
+    let json = r#"{"displayType":"stacked_bar","somethingNew":true}"#;
+    let cfg: ClickStackTileConfigResponse = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfigResponse::ClickStackBarChartConfig(
+            ClickStackBarChartConfigResponse::ClickStackBarBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, None);
+            assert_eq!(b.select, None);
+        }
+        other => panic!("expected bar builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_stacked_bar_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` reaches the bar sub-union's
+    // Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"stacked_bar","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackBarChartConfig(ClickStackBarChartConfig::Unknown(_))
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_response_table_novel_shape_dispatches_to_builder() {
+    // A "table" body with no `configType` dispatches to the table builder
+    // variant, whose all-`Option` response fields surface `None` rather than
+    // failing the response.
+    let json = r#"{"displayType":"table","somethingNew":true}"#;
+    let cfg: ClickStackTileConfigResponse = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfigResponse::ClickStackTableChartConfig(
+            ClickStackTableChartConfigResponse::ClickStackTableBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, None);
+            assert_eq!(b.select, None);
+        }
+        other => panic!("expected table builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_table_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` reaches the table sub-union's
+    // Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"table","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackTableChartConfig(ClickStackTableChartConfig::Unknown(
+                _
+            ))
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_response_number_novel_shape_dispatches_to_builder() {
+    // A "number" body with no `configType` dispatches to the number builder
+    // variant, whose all-`Option` response fields surface `None` rather than
+    // failing the response.
+    let json = r#"{"displayType":"number","somethingNew":true}"#;
+    let cfg: ClickStackTileConfigResponse = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfigResponse::ClickStackNumberChartConfig(
+            ClickStackNumberChartConfigResponse::ClickStackNumberBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, None);
+            assert_eq!(b.select, None);
+        }
+        other => panic!("expected number builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_number_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` reaches the number sub-union's
+    // Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"number","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackNumberChartConfig(
+                ClickStackNumberChartConfig::Unknown(_)
+            )
+        )
+    });
+}
+
+#[test]
+fn clickstack_tile_config_response_pie_novel_shape_dispatches_to_builder() {
+    // A "pie" body with no `configType` dispatches to the pie builder
+    // variant, whose all-`Option` response fields surface `None` rather than
+    // failing the response.
+    let json = r#"{"displayType":"pie","somethingNew":true}"#;
+    let cfg: ClickStackTileConfigResponse = serde_json::from_str(json).unwrap();
+    match cfg {
+        ClickStackTileConfigResponse::ClickStackPieChartConfig(
+            ClickStackPieChartConfigResponse::ClickStackPieBuilderChartConfig(b),
+        ) => {
+            assert_eq!(b.source_id, None);
+            assert_eq!(b.select, None);
+        }
+        other => panic!("expected pie builder variant, got {other}"),
+    }
+}
+
+#[test]
+fn clickstack_tile_config_pie_unrecognized_config_type_falls_to_sub_union_unknown() {
+    // An unrecognized *string* `configType` reaches the pie sub-union's
+    // Unknown(Value); it round-trips losslessly.
+    let json = r#"{"displayType":"pie","configType":"future"}"#;
+    assert_unknown_variant_round_trips(json, |cfg: &ClickStackTileConfig| {
+        matches!(
+            cfg,
+            ClickStackTileConfig::ClickStackPieChartConfig(ClickStackPieChartConfig::Unknown(_))
+        )
+    });
+}
+
+#[test]
+fn clickstack_chart_color_known_and_unknown_round_trip() {
+    // A known palette token maps to its typed variant and back.
+    let known: ClickStackChartColor = serde_json::from_str("\"chart-light-blue\"").unwrap();
+    assert_eq!(known, ClickStackChartColor::Chart_light_blue);
+    assert_eq!(known.to_string(), "chart-light-blue");
+    assert_eq!(serde_json::to_value(&known).unwrap(), "chart-light-blue");
+
+    // An unrecognized token round-trips through the Unknown(String) catch-all.
+    let unknown: ClickStackChartColor = serde_json::from_str("\"chart-teal\"").unwrap();
+    assert_eq!(
+        unknown,
+        ClickStackChartColor::Unknown("chart-teal".to_string())
+    );
+    assert_eq!(unknown.to_string(), "chart-teal");
+    assert_eq!(serde_json::to_value(&unknown).unwrap(), "chart-teal");
+}
+
+#[test]
+fn clickstack_background_chart_round_trip() {
+    let json = r#"{"type": "area", "color": "chart-blue"}"#;
+    let bg: ClickStackBackgroundChart = serde_json::from_str(json).unwrap();
+    assert_eq!(bg.r#type, ClickStackBackgroundChartType::Area);
+    assert_eq!(bg.color, Some(ClickStackChartColor::Chart_blue));
+    let v = serde_json::to_value(&bg).unwrap();
+    assert_eq!(v["type"], "area");
+    assert_eq!(v["color"], "chart-blue");
+
+    // color is optional and dropped when absent.
+    let json = r#"{"type": "line"}"#;
+    let bg: ClickStackBackgroundChart = serde_json::from_str(json).unwrap();
+    assert_eq!(bg.r#type, ClickStackBackgroundChartType::Line);
+    assert_eq!(bg.color, None);
+    let v = serde_json::to_value(&bg).unwrap();
+    assert!(v.get("color").is_none());
+}
+
+#[test]
+fn clickstack_number_builder_chart_config_color_fields_round_trip() {
+    let json = r#"{
+        "displayType": "number",
+        "sourceId": "src-1",
+        "select": [{"aggFn": "count"}],
+        "color": "chart-blue",
+        "colorRules": [
+            {"operator": "gt", "value": 100, "color": "chart-red"}
+        ],
+        "backgroundChart": {"type": "line", "color": "chart-green"}
+    }"#;
+    let cfg: ClickStackNumberBuilderChartConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.color, Some(ClickStackChartColor::Chart_blue));
+    let rules = cfg.color_rules.as_ref().unwrap();
+    assert_eq!(rules.len(), 1);
+    match &rules[0] {
+        ClickStackNumberTileColorCondition::ClickStackNumericColorCondition(c) => {
+            assert_eq!(c.operator, ClickStackNumericColorConditionOperator::Gt);
+        }
+        other => panic!("expected numeric rule, got {other}"),
+    }
+    let bg = cfg.background_chart.as_ref().unwrap();
+    assert_eq!(bg.r#type, ClickStackBackgroundChartType::Line);
+
+    let v = serde_json::to_value(&cfg).unwrap();
+    assert_eq!(v["color"], "chart-blue");
+    assert_eq!(v["colorRules"][0]["operator"], "gt");
+    assert_eq!(v["backgroundChart"]["type"], "line");
+
+    // The three new fields are optional and dropped when absent.
+    let v = serde_json::to_value(ClickStackNumberBuilderChartConfig::default()).unwrap();
+    assert!(v.get("color").is_none());
+    assert!(v.get("colorRules").is_none());
+    assert!(v.get("backgroundChart").is_none());
+}
+
+#[test]
+fn clickstack_number_raw_sql_chart_config_color_round_trip() {
+    let json = r#"{
+        "configType": "sql",
+        "connectionId": "conn-1",
+        "displayType": "number",
+        "sqlTemplate": "SELECT count() FROM t",
+        "color": "chart-purple"
+    }"#;
+    let cfg: ClickStackNumberRawSqlChartConfig = serde_json::from_str(json).unwrap();
+    assert_eq!(cfg.color, Some(ClickStackChartColor::Chart_purple));
+    let v = serde_json::to_value(&cfg).unwrap();
+    assert_eq!(v["color"], "chart-purple");
+
+    let v = serde_json::to_value(ClickStackNumberRawSqlChartConfig::default()).unwrap();
+    assert!(v.get("color").is_none());
+}
+
+#[test]
+fn deserialize_clickstack_connection_with_null_prefix() {
+    let json = r#"{
+        "id": "507f1f77bcf86cd799439012",
+        "name": "Production ClickHouse",
+        "host": "https://clickhouse.example.com:8443",
+        "username": "default",
+        "hyperdxSettingPrefix": null,
+        "isPrometheusEndpoint": false,
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let conn: ClickStackConnection = serde_json::from_str(json).unwrap();
+    assert_eq!(conn.id.as_deref(), Some("507f1f77bcf86cd799439012"));
+    assert_eq!(conn.name.as_deref(), Some("Production ClickHouse"));
+    assert_eq!(
+        conn.host.as_deref(),
+        Some("https://clickhouse.example.com:8443")
+    );
+    assert_eq!(conn.username.as_deref(), Some("default"));
+    assert_eq!(conn.hyperdx_setting_prefix, None);
+    assert_eq!(conn.is_prometheus_endpoint, Some(false));
+    assert!(conn.created_at.is_some());
+    assert!(conn.updated_at.is_some());
+}
+
+#[test]
+fn serialize_clickstack_create_connection_request_omits_none() {
+    let req = ClickStackCreateConnectionRequest {
+        name: "Production ClickHouse".to_string(),
+        host: "https://clickhouse.example.com:8443".to_string(),
+        username: "default".to_string(),
+        password: Some("my-secret-password".to_string()),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["name"], "Production ClickHouse");
+    assert_eq!(v["host"], "https://clickhouse.example.com:8443");
+    assert_eq!(v["username"], "default");
+    assert_eq!(v["password"], "my-secret-password");
+    assert!(
+        v.get("hyperdxSettingPrefix").is_none(),
+        "hyperdxSettingPrefix must be omitted when None"
+    );
+    assert!(
+        v.get("isPrometheusEndpoint").is_none(),
+        "isPrometheusEndpoint must be omitted when None"
+    );
+}
+
+#[test]
+fn deserialize_clickstack_role_with_nested_conditions() {
+    let json = r#"{
+        "id": "role-1",
+        "name": "Deploy Bot",
+        "description": "Manages dashboards via Terraform",
+        "isPredefined": false,
+        "permissions": [
+            {
+                "action": "read",
+                "subject": "dashboard",
+                "inverted": false,
+                "integration": "mongodb",
+                "conditions": {
+                    "teamId": "team-1",
+                    "tags": ["prod", "eu"]
+                }
+            }
+        ]
+    }"#;
+    let role: ClickStackRole = serde_json::from_str(json).unwrap();
+    assert_eq!(role.id.as_deref(), Some("role-1"));
+    assert_eq!(role.name.as_deref(), Some("Deploy Bot"));
+    assert_eq!(role.is_predefined, Some(false));
+    let permissions = role.permissions.as_deref().expect("permissions present");
+    assert_eq!(permissions.len(), 1);
+
+    let perm = &permissions[0];
+    assert_eq!(perm.action.as_deref(), Some("read"));
+    assert_eq!(perm.subject.as_deref(), Some("dashboard"));
+    assert_eq!(perm.inverted, Some(false));
+    assert_eq!(perm.integration, Some("mongodb".to_string()));
+
+    // Free-form conditions land as serde_json::Value with the nested content intact.
+    let conditions = perm.conditions.as_ref().unwrap();
+    assert_eq!(conditions["teamId"], "team-1");
+    assert_eq!(conditions["tags"][0], "prod");
+    assert_eq!(conditions["tags"][1], "eu");
+}
+
+#[test]
+fn clickstack_role_round_trip() {
+    let role = ClickStackRole {
+        id: Some("role-1".to_string()),
+        name: Some("Deploy Bot".to_string()),
+        is_predefined: Some(false),
+        permissions: Some(vec![ClickStackCASLPermissionResponse {
+            action: Some("manage".to_string()),
+            subject: Some("all".to_string()),
+            conditions: Some(serde_json::json!({ "teamId": "team-1" })),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&role).unwrap();
+    assert_eq!(v["id"], "role-1");
+    assert_eq!(v["isPredefined"], false);
+    assert_eq!(v["permissions"][0]["action"], "manage");
+    assert_eq!(v["permissions"][0]["subject"], "all");
+    assert_eq!(v["permissions"][0]["conditions"]["teamId"], "team-1");
+
+    // Optional fields dropped when None.
+    assert!(v.get("description").is_none());
+    assert!(v.get("createdAt").is_none());
+    assert!(v.get("updatedAt").is_none());
+
+    let back: ClickStackRole = serde_json::from_value(v).unwrap();
+    assert_eq!(back, role);
+}
+
+#[test]
+fn serialize_clickstack_casl_permission_omits_none() {
+    let perm = ClickStackCASLPermission {
+        action: "read".to_string(),
+        subject: "dashboard".to_string(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&perm).unwrap();
+    assert_eq!(v["action"], "read");
+    assert_eq!(v["subject"], "dashboard");
+    assert!(v.get("inverted").is_none());
+    assert!(v.get("integration").is_none());
+    assert!(v.get("conditions").is_none());
+}
+
+#[test]
+fn serialize_clickstack_create_role_request_omits_none() {
+    let req = ClickStackCreateRoleRequest {
+        name: "Deploy Bot".to_string(),
+        permissions: vec![ClickStackCASLPermission {
+            action: "read".to_string(),
+            subject: "dashboard".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["name"], "Deploy Bot");
+    assert_eq!(v["permissions"][0]["action"], "read");
+    assert!(v.get("description").is_none());
+}
+
+#[test]
+fn serialize_clickstack_update_role_request_omits_none() {
+    let req = ClickStackUpdateRoleRequest {
+        permissions: vec![ClickStackCASLPermission {
+            action: "manage".to_string(),
+            subject: "all".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&req).unwrap();
+    assert_eq!(v["permissions"][0]["action"], "manage");
+    assert!(v.get("name").is_none());
+    assert!(v.get("description").is_none());
+}
+
+#[test]
+fn deserialize_clickstack_saved_search_full_round_trip() {
+    let json = r#"{
+        "id": "507f1f77bcf86cd799439011",
+        "name": "Production Errors",
+        "sourceId": "507f1f77bcf86cd799439012",
+        "select": "Timestamp, ServiceName, Body",
+        "where": "SeverityText:ERROR",
+        "whereLanguage": "lucene",
+        "orderBy": "Timestamp DESC",
+        "tags": ["production", "errors"],
+        "filters": [
+            {"type": "sql", "condition": "ServiceName IN ('checkout', 'payments')"}
+        ],
+        "teamId": "507f1f77bcf86cd799439013",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let search: ClickStackSavedSearch = serde_json::from_str(json).unwrap();
+    assert_eq!(search.id.as_deref(), Some("507f1f77bcf86cd799439011"));
+    assert_eq!(search.name.as_deref(), Some("Production Errors"));
+    assert_eq!(
+        search.source_id.as_deref(),
+        Some("507f1f77bcf86cd799439012")
+    );
+    assert_eq!(
+        search.where_language,
+        Some(ClickStackSavedSearchWherelanguage::Lucene)
+    );
+    let filters = search.filters.clone().unwrap();
+    assert_eq!(filters.len(), 1);
+    assert_eq!(
+        filters[0].r#type,
+        Some(ClickStackSavedSearchFilterType::Sql)
+    );
+    assert_eq!(
+        filters[0].condition.as_deref(),
+        Some("ServiceName IN ('checkout', 'payments')")
+    );
+    assert_eq!(search.team_id, Some("507f1f77bcf86cd799439013".to_string()));
+
+    let v = serde_json::to_value(&search).unwrap();
+    assert_eq!(v["whereLanguage"], "lucene");
+    assert_eq!(v["filters"][0]["type"], "sql");
+    assert_eq!(v["orderBy"], "Timestamp DESC");
+    assert_eq!(v["tags"][0], "production");
+
+    let round: ClickStackSavedSearch = serde_json::from_value(v).unwrap();
+    assert_eq!(round, search);
+}
+
+#[test]
+fn serialize_clickstack_saved_search_input_minimal_omits_optionals() {
+    let input = ClickStackSavedSearchInput {
+        name: "Production Errors".to_string(),
+        source_id: "507f1f77bcf86cd799439012".to_string(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&input).unwrap();
+    assert_eq!(v["name"], "Production Errors");
+    assert_eq!(v["sourceId"], "507f1f77bcf86cd799439012");
+    assert!(v.get("select").is_none());
+    assert!(v.get("where").is_none());
+    assert!(v.get("whereLanguage").is_none());
+    assert!(v.get("orderBy").is_none());
+    assert!(v.get("tags").is_none());
+    assert!(v.get("filters").is_none());
+}
+
+#[test]
+fn clickstack_webhook_input_headers_and_query_params_round_trip() {
+    let json = r#"{
+        "name": "Production Alerts",
+        "service": "incidentio",
+        "url": "https://api.incident.io/v2/alert_events/http/xyz",
+        "description": "Sends critical alerts",
+        "body": "{\"alert\": \"{{title}}\"}",
+        "headers": {"Authorization": "Bearer token", "X-Custom": "value"},
+        "queryParams": {"source": "clickstack", "env": "prod"}
+    }"#;
+    let input: ClickStackWebhookInput = serde_json::from_str(json).unwrap();
+    assert_eq!(input.name, "Production Alerts");
+    assert_eq!(input.service, ClickStackWebhookInputService::Incidentio);
+    assert_eq!(
+        input.url,
+        "https://api.incident.io/v2/alert_events/http/xyz"
+    );
+
+    let headers = input.headers.clone().unwrap();
+    assert_eq!(
+        headers.get("Authorization"),
+        Some(&"Bearer token".to_string())
+    );
+    assert_eq!(headers.get("X-Custom"), Some(&"value".to_string()));
+    let query_params = input.query_params.clone().unwrap();
+    assert_eq!(query_params.get("source"), Some(&"clickstack".to_string()));
+    assert_eq!(query_params.get("env"), Some(&"prod".to_string()));
+
+    // Maps serialize back as JSON objects, and the enum keeps its wire value.
+    let v = serde_json::to_value(&input).unwrap();
+    assert_eq!(v["service"], "incidentio");
+    assert!(v["headers"].is_object());
+    assert_eq!(v["headers"]["Authorization"], "Bearer token");
+    assert!(v["queryParams"].is_object());
+    assert_eq!(v["queryParams"]["source"], "clickstack");
+
+    let back: ClickStackWebhookInput = serde_json::from_value(v).unwrap();
+    assert_eq!(back, input);
+}
+
+#[test]
+fn serialize_clickstack_webhook_input_minimal_omits_optionals() {
+    let input = ClickStackWebhookInput {
+        name: "Slack Alerts".to_string(),
+        service: ClickStackWebhookInputService::Slack,
+        url: "https://hooks.slack.com/services/T/B/X".to_string(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&input).unwrap();
+    assert_eq!(v["name"], "Slack Alerts");
+    assert_eq!(v["service"], "slack");
+    assert_eq!(v["url"], "https://hooks.slack.com/services/T/B/X");
+    assert!(v.get("description").is_none());
+    assert!(v.get("body").is_none());
+    assert!(v.get("headers").is_none());
+    assert!(v.get("queryParams").is_none());
+}
+
+#[test]
+fn deserialize_clickstack_webhook_dispatches_slack() {
+    let json = r#"{
+        "id": "webhook-1",
+        "name": "Slack Alerts",
+        "service": "slack",
+        "url": "https://hooks.slack.com/services/T/B/X",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackSlackWebhook(s) => {
+            assert_eq!(s.id.as_deref(), Some("webhook-1"));
+            assert_eq!(s.name.as_deref(), Some("Slack Alerts"));
+        }
+        other => panic!("expected Slack webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_dispatches_incidentio() {
+    let json = r#"{
+        "id": "webhook-2",
+        "name": "Incident Alerts",
+        "service": "incidentio",
+        "url": "https://api.incident.io/v2/alert_events/http/abc",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackIncidentIOWebhook(i) => {
+            assert_eq!(i.id.as_deref(), Some("webhook-2"));
+            assert_eq!(i.name.as_deref(), Some("Incident Alerts"));
+        }
+        other => panic!("expected IncidentIO webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_dispatches_generic_preserves_body() {
+    let json = r#"{
+        "id": "webhook-3",
+        "name": "Generic Alerts",
+        "service": "generic",
+        "url": "https://example.com/hook",
+        "body": "{\"text\": \"{{ message }}\"}",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackGenericWebhook(g) => {
+            assert_eq!(g.id.as_deref(), Some("webhook-3"));
+            assert_eq!(g.body.as_deref(), Some("{\"text\": \"{{ message }}\"}"));
+        }
+        other => panic!("expected Generic webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_dispatches_slack_api() {
+    let json = r#"{
+        "id": "webhook-4",
+        "name": "Slack API Alerts",
+        "service": "slack_api",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackSlackAPIWebhook(s) => {
+            assert_eq!(s.id.as_deref(), Some("webhook-4"));
+            assert_eq!(s.name.as_deref(), Some("Slack API Alerts"));
+        }
+        other => panic!("expected SlackAPI webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_dispatches_pagerduty_api() {
+    let json = r#"{
+        "id": "webhook-5",
+        "name": "PagerDuty Alerts",
+        "service": "pagerduty_api",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    let w: ClickStackWebhook = serde_json::from_str(json).unwrap();
+    match w {
+        ClickStackWebhook::ClickStackPagerDutyAPIWebhook(p) => {
+            assert_eq!(p.id.as_deref(), Some("webhook-5"));
+            assert_eq!(p.name.as_deref(), Some("PagerDuty Alerts"));
+        }
+        other => panic!("expected PagerDutyAPI webhook variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_webhook_unknown_service_round_trips() {
+    let json = r#"{
+        "id": "webhook-6",
+        "name": "Future Alerts",
+        "service": "future_service",
+        "extraField": "kept",
+        "createdAt": "2025-01-01T00:00:00.000Z",
+        "updatedAt": "2025-06-15T10:30:00.000Z"
+    }"#;
+    assert_unknown_variant_round_trips(json, |w: &ClickStackWebhook| {
+        matches!(w, ClickStackWebhook::Unknown(_))
+    });
+}
+
+#[test]
+fn clickstack_validate_dashboard_response_round_trip() {
+    let json = r#"{
+        "valid": false,
+        "errors": [
+            {"path": "tiles.0.config", "message": "Required"},
+            {"path": "", "message": "Top-level error"}
+        ],
+        "normalized": {"name": "My Dashboard", "tiles": [{"id": "t1"}]}
+    }"#;
+    let resp: ClickStackValidateDashboardResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(resp.valid, Some(false));
+    let errors = resp.errors.as_ref().expect("errors should populate");
+    assert_eq!(errors.len(), 2);
+    assert_eq!(errors[0].path.as_deref(), Some("tiles.0.config"));
+    assert_eq!(errors[0].message.as_deref(), Some("Required"));
+    assert_eq!(errors[1].path.as_deref(), Some(""));
+
+    // `normalized` is a free-form Value; its arbitrary payload is preserved.
+    let normalized = resp.normalized.as_ref().unwrap();
+    assert_eq!(normalized["name"], "My Dashboard");
+    assert_eq!(normalized["tiles"][0]["id"], "t1");
+
+    let v = serde_json::to_value(&resp).unwrap();
+    assert_eq!(v["valid"], false);
+    assert_eq!(v["errors"][0]["path"], "tiles.0.config");
+    assert_eq!(v["normalized"]["name"], "My Dashboard");
+
+    let back: ClickStackValidateDashboardResponse = serde_json::from_value(v).unwrap();
+    assert_eq!(back, resp);
+}
+
+#[test]
+fn clickstack_validate_dashboard_response_valid_null_normalized() {
+    let json = r#"{"valid": true, "errors": [], "normalized": null}"#;
+    let resp: ClickStackValidateDashboardResponse = serde_json::from_str(json).unwrap();
+    assert_eq!(resp.valid, Some(true));
+    assert_eq!(resp.errors.as_deref(), Some(&[][..]));
+    assert_eq!(resp.normalized, None);
+
+    // An explicit `null` lands as `None` and, like every absent response
+    // field, is omitted on the way out rather than re-emitted as `null`.
+    let v = serde_json::to_value(&resp).unwrap();
+    assert!(
+        v.get("normalized").is_none(),
+        "absent response fields must be omitted from --json output"
+    );
+}
+
+#[test]
+fn organization_quota_typed_enums_round_trip() {
+    let json = r#"{
+        "quotaCode": "replicas-per-warehouse",
+        "name": "Replicas per warehouse",
+        "description": "Limits each warehouse individually.",
+        "scope": "warehouse",
+        "value": 20,
+        "usage": 3,
+        "adjustable": true
+    }"#;
+    let quota: OrganizationQuota = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        quota.quota_code,
+        Some(OrganizationQuotaQuotacode::Replicas_per_warehouse)
+    );
+    assert_eq!(quota.scope, Some(OrganizationQuotaScope::Warehouse));
+    assert_eq!(quota.value, Some(20));
+    assert_eq!(quota.usage, Some(3));
+    assert_eq!(quota.adjustable, Some(true));
+
+    let v = serde_json::to_value(&quota).unwrap();
+    assert_eq!(v["quotaCode"], "replicas-per-warehouse");
+    assert_eq!(v["scope"], "warehouse");
+    assert_eq!(v["value"], 20);
+    assert_eq!(v["usage"], 3);
+
+    let back: OrganizationQuota = serde_json::from_value(v).unwrap();
+    assert_eq!(back, quota);
+}
+
+#[test]
+fn organization_api_key_quota_code_round_trips() {
+    let parsed: OrganizationQuotaQuotacode =
+        serde_json::from_str("\"api-keys-per-organization\"").unwrap();
+    assert_eq!(
+        parsed,
+        OrganizationQuotaQuotacode::Api_keys_per_organization
+    );
+    assert_eq!(parsed.to_string(), "api-keys-per-organization");
+    assert_eq!(
+        serde_json::to_value(parsed).unwrap(),
+        "api-keys-per-organization"
+    );
+}
+
+#[test]
+fn new_response_models_tolerate_absent_and_null_fields() {
+    let balances: ActiveBalances =
+        serde_json::from_str(r#"{"totalRemainingPrepaidCredits":null,"prepaidBalances":null}"#)
+            .unwrap();
+    let balance: ActiveBalance = serde_json::from_str(
+        r#"{"id":null,"remainingPrepaidCredits":null,"totalAmount":null,"amountSpent":null,"startDate":null,"expirationDate":null}"#,
+    )
+    .unwrap();
+    let labels: PrometheusDiscoveryLabels = serde_json::from_str(
+        r#"{"__scheme__":null,"__metrics_path__":null,"__param_filtered_metrics":null,"clickhouse_org_id":null,"clickhouse_service_id":null,"clickhouse_discovery_service_name":null}"#,
+    )
+    .unwrap();
+    let group: PrometheusDiscoveryTargetGroup =
+        serde_json::from_str(r#"{"targets":null,"labels":null}"#).unwrap();
+    let log: PostgresLogEntry =
+        serde_json::from_str(r#"{"timestamp":null,"severity":null,"body":null}"#).unwrap();
+
+    assert_eq!(balances, ActiveBalances::default());
+    assert_eq!(balance, ActiveBalance::default());
+    assert_eq!(labels, PrometheusDiscoveryLabels::default());
+    assert_eq!(group, PrometheusDiscoveryTargetGroup::default());
+    assert_eq!(log, PostgresLogEntry::default());
+    assert_eq!(
+        serde_json::to_value(balances).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(serde_json::to_value(log).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn organization_quota_usage_optional_omitted() {
+    let json = r#"{
+        "quotaCode": "services-per-organization",
+        "name": "Services per organization",
+        "description": "Limits services.",
+        "scope": "organization",
+        "value": 20,
+        "adjustable": false
+    }"#;
+    let quota: OrganizationQuota = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        quota.quota_code,
+        Some(OrganizationQuotaQuotacode::Services_per_organization)
+    );
+    assert_eq!(quota.scope, Some(OrganizationQuotaScope::Organization));
+    assert_eq!(quota.usage, None);
+
+    let v = serde_json::to_value(&quota).unwrap();
+    assert!(v.get("usage").is_none(), "usage must be omitted when None");
+}
+
+#[test]
+fn organization_quota_tolerates_explicit_null_fields() {
+    // `OrganizationQuota` is response-only, so every field is `Option<T>` and an
+    // explicit `null` lands as `None` exactly like a dropped key — the case the
+    // superseded `#[serde(default)]` policy never covered.
+    let quota: OrganizationQuota = serde_json::from_str(
+        r#"{"quotaCode":null,"name":null,"description":null,"scope":null,
+            "value":null,"usage":null,"adjustable":null}"#,
+    )
+    .unwrap();
+    assert_eq!(quota, OrganizationQuota::default());
+
+    // Absence is omitted on the way out, never re-emitted as `null`.
+    assert_eq!(
+        serde_json::to_value(&quota).unwrap(),
+        serde_json::json!({}),
+        "absent response fields must be omitted from --json output"
+    );
+}
+
+#[test]
+fn scim_request_models_stay_strict() {
+    // The spec defines the SCIM schemas but no SCIM path, so the family is in
+    // neither direction's tree and stays strict (see the comment above
+    // `ScimEnterpriseManager` in models.rs and
+    // `scim_models_are_outside_the_response_tree` in spec_coverage_test.rs).
+    // Required fields are therefore `T` and a dropped one is a hard error.
+    let err = serde_json::from_str::<ScimGroupPostRequest>(r#"{"schemas":[]}"#).unwrap_err();
+    assert!(
+        err.to_string().contains("displayName"),
+        "unexpected error: {err}"
+    );
+
+    // Absent optional fields are still omitted rather than sent as `null`.
+    let group = ScimGroupPostRequest {
+        display_name: "Engineering".to_string(),
+        external_id: None,
+        members: None,
+        schemas: vec!["urn:ietf:params:scim:schemas:core:2.0:Group".to_string()],
+    };
+    let v = serde_json::to_value(&group).unwrap();
+    assert_eq!(v["displayName"], "Engineering");
+    assert_eq!(
+        v["schemas"][0],
+        "urn:ietf:params:scim:schemas:core:2.0:Group"
+    );
+    assert!(v.get("externalId").is_none());
+    assert!(v.get("members").is_none());
+}
+
+#[test]
+fn organization_quota_quota_code_unknown_catch_all() {
+    let parsed: OrganizationQuotaQuotacode =
+        serde_json::from_str("\"queries-per-second\"").unwrap();
+    assert_eq!(
+        parsed,
+        OrganizationQuotaQuotacode::Unknown("queries-per-second".to_string())
+    );
+    assert_eq!(parsed.to_string(), "queries-per-second");
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), "queries-per-second");
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_time() {
+    // The manual `type`-keyed dispatch routes "time" to the time-series variant.
+    let json = r#"{
+        "aggFn": "count",
+        "groupBy": ["service"],
+        "sourceId": "src-1",
+        "type": "time",
+        "where": "x = 1",
+        "whereLanguage": "sql"
+    }"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackTimeChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackTimeChartSeriesType::Time);
+            assert_eq!(s.agg_fn, ClickStackTimeChartSeriesAggfn::Count);
+        }
+        other => panic!("expected time variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_table() {
+    // Regression: Time and Table share every required field (aggFn, groupBy,
+    // sourceId, type, where, whereLanguage), so before manual discriminator
+    // dispatch a `type: "table"` payload greedily resolved to the Time variant
+    // and silently dropped table-only fields like `sortOrder`. The union now
+    // routes on the `type` discriminator and preserves `sortOrder`.
+    let json = r#"{
+        "aggFn": "count",
+        "groupBy": ["service"],
+        "sortOrder": "desc",
+        "sourceId": "src-2",
+        "type": "table",
+        "where": "y = 2",
+        "whereLanguage": "sql"
+    }"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackTableChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackTableChartSeriesType::Table);
+            assert_eq!(
+                s.sort_order,
+                Some(ClickStackTableChartSeriesSortorder::Desc)
+            );
+        }
+        other => panic!("expected table variant, got {other}"),
+    }
+    // The table-only `sortOrder` survives the round-trip through the union.
+    let v = serde_json::to_value(&series).unwrap();
+    assert_eq!(v["type"], "table");
+    assert_eq!(v["sortOrder"], "desc");
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_number() {
+    // The manual `type`-keyed dispatch routes "number" to the number-series variant.
+    let json = r#"{
+        "aggFn": "count",
+        "sourceId": "src-3",
+        "type": "number",
+        "where": "z = 3",
+        "whereLanguage": "sql"
+    }"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackNumberChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackNumberChartSeriesType::Number);
+        }
+        other => panic!("expected number variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_search() {
+    // The manual `type`-keyed dispatch routes "search" to the search-series variant.
+    let json = r#"{
+        "fields": ["message"],
+        "sourceId": "src-4",
+        "type": "search",
+        "where": "w = 4",
+        "whereLanguage": "sql"
+    }"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackSearchChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackSearchChartSeriesType::Search);
+            assert_eq!(s.fields, vec!["message".to_string()]);
+        }
+        other => panic!("expected search variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_dispatches_markdown() {
+    // The manual `type`-keyed dispatch routes "markdown" to the markdown-series variant.
+    let json = r##"{"content": "# Title", "type": "markdown"}"##;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::ClickStackMarkdownChartSeries(s) => {
+            assert_eq!(s.r#type, ClickStackMarkdownChartSeriesType::Markdown);
+            assert_eq!(s.content, "# Title");
+        }
+        other => panic!("expected markdown variant, got {other}"),
+    }
+}
+
+#[test]
+fn deserialize_clickstack_dashboard_chart_series_unknown_type_round_trip() {
+    // An unrecognized `type` discriminator falls back to the Unknown variant,
+    // which stores the raw JSON so it round-trips faithfully.
+    let json = r#"{"type":"heatmap","payload":{"nested":[1,2,3]}}"#;
+    let series: ClickStackDashboardChartSeries = serde_json::from_str(json).unwrap();
+    match &series {
+        ClickStackDashboardChartSeries::Unknown(v) => {
+            assert_eq!(v["type"], "heatmap");
+            assert_eq!(v["payload"]["nested"][2], 3);
+        }
+        other => panic!("expected unknown variant, got {other}"),
+    }
+    let expected: serde_json::Value = serde_json::from_str(json).unwrap();
+    assert_eq!(serde_json::to_value(&series).unwrap(), expected);
+}
+
+#[test]
+fn reverse_private_endpoint_create_enums_round_trip_and_match_values() {
+    // The CLI validates `reverse-private-endpoint create --type` and
+    // `--msk-authentication` against `VALUES`, so each const must stay equal
+    // to the wire values its enum actually accepts.
+    assert_eq!(
+        CreateReversePrivateEndpointType::VALUES,
+        &[
+            "VPC_ENDPOINT_SERVICE",
+            "VPC_RESOURCE",
+            "MSK_MULTI_VPC",
+            "GCP_PSC_SERVICE_ATTACHMENT",
+        ]
+    );
+    for value in CreateReversePrivateEndpointType::VALUES {
+        let parsed: CreateReversePrivateEndpointType =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(parsed, CreateReversePrivateEndpointType::Unknown(_)),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            format!(r#""{value}""#)
+        );
+    }
+
+    assert_eq!(
+        CreateReversePrivateEndpointMskauthentication::VALUES,
+        &["SASL_IAM", "SASL_SCRAM"]
+    );
+    for value in CreateReversePrivateEndpointMskauthentication::VALUES {
+        let parsed: CreateReversePrivateEndpointMskauthentication =
+            serde_json::from_str(&format!(r#""{value}""#)).unwrap();
+        assert!(
+            !matches!(
+                parsed,
+                CreateReversePrivateEndpointMskauthentication::Unknown(_)
+            ),
+            "{value} fell through to the catch-all"
+        );
+        assert_eq!(parsed.to_string(), *value);
+        assert_eq!(
+            serde_json::to_string(&parsed).unwrap(),
+            format!(r#""{value}""#)
+        );
+    }
+}
+
+/// The endpoint's own model is a response type: a key the API drops and a key
+/// it sends as `null` both have to land as `None`, and neither is emitted back.
+#[test]
+fn reverse_private_endpoint_tolerates_missing_and_null_fields() {
+    let sparse: ReversePrivateEndpoint = serde_json::from_str(r#"{"description":"warehouse"}"#)
+        .expect("a response with one key must deserialize");
+    assert_eq!(sparse.description.as_deref(), Some("warehouse"));
+    assert_eq!(sparse.dns_names, None);
+    assert_eq!(sparse.status, None);
+    assert_eq!(sparse.id, None);
+
+    let explicit_nulls: ReversePrivateEndpoint = serde_json::from_str(
+        r#"{"description":null,"dnsNames":null,"status":null,"id":null,"type":null}"#,
+    )
+    .expect("explicit nulls must deserialize");
+    assert_eq!(explicit_nulls, ReversePrivateEndpoint::default());
+    assert_eq!(
+        serde_json::to_string(&explicit_nulls).unwrap(),
+        "{}",
+        "absent fields must be omitted, never serialized as null"
+    );
+}
+
+#[test]
+fn new_response_models_preserve_missing_and_null_fields() {
+    macro_rules! tolerant {
+        ($model:ty, [$($field:literal),+]) => {{
+            let empty: $model = serde_json::from_value(serde_json::json!({})).unwrap();
+            let nulls: $model = serde_json::from_value(serde_json::json!({$($field: null),+})).unwrap();
+            assert_eq!(empty, nulls);
+            assert_eq!(serde_json::to_value(empty).unwrap(), serde_json::json!({}));
+        }};
+    }
+    tolerant!(
+        CreditBalance,
+        [
+            "id",
+            "type",
+            "remainingCredits",
+            "totalAmount",
+            "amountSpent",
+            "startDate",
+            "expirationDate"
+        ]
+    );
+    tolerant!(CreditBalances, ["totalRemainingCredits", "balances"]);
+    tolerant!(ServiceProfile, ["profile", "cpuCores", "memoryGi"]);
+    tolerant!(
+        ClickPipeBigQueryServiceAccountSource,
+        [
+            "snapshotStagingPath",
+            "settings",
+            "tableMappings",
+            "authentication",
+            "projectId"
+        ]
+    );
+    tolerant!(
+        ClickPipeBigQueryWorkloadIdentitySource,
+        [
+            "snapshotStagingPath",
+            "settings",
+            "tableMappings",
+            "authentication",
+            "projectId"
+        ]
+    );
+    tolerant!(
+        ClickPipesGcpWorkloadIdentityContext,
+        ["supported", "ready", "principal"]
+    );
+    tolerant!(ClickPipesServiceContext, ["gcpWorkloadIdentity"]);
+    tolerant!(
+        ClickStackFormulaResponse,
+        ["expression", "alias", "numberFormat"]
+    );
+    tolerant!(ClickStackSqlSavedFilterValueResponse, ["type", "condition"]);
+    tolerant!(
+        ClickStackVariableSavedFilterValueResponse,
+        ["type", "name", "values"]
+    );
+}
+
+#[test]
+fn clickpipes_workload_identity_sources_round_trip_without_credentials() {
+    let bigquery = serde_json::json!({
+        "authentication": "SERVICE_ACCOUNT_WORKLOAD_IDENTITY", "projectId": "project",
+        "snapshotStagingPath": "gs://bucket/staging", "settings": {"replicationMode": "snapshot"},
+        "tableMappings": [{"sourceDatasetName": "dataset", "sourceTable": "source", "targetTable": "target"}]
+    });
+    let parsed: ClickPipeMutateBigQuerySource = serde_json::from_value(bigquery.clone()).unwrap();
+    assert!(matches!(
+        parsed,
+        ClickPipeMutateBigQuerySource::ClickPipePostBigQueryWorkloadIdentitySource(_)
+    ));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), bigquery);
+    let pubsub = serde_json::json!({
+        "authentication": "SERVICE_ACCOUNT_WORKLOAD_IDENTITY", "projectId": "project",
+        "topic": "topic", "format": "JSONEachRow", "seekType": "earliest"
+    });
+    let parsed: ClickPipePostPubSubSource = serde_json::from_value(pubsub.clone()).unwrap();
+    assert!(matches!(
+        parsed,
+        ClickPipePostPubSubSource::ClickPipePostPubSubWorkloadIdentitySource(_)
+    ));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), pubsub);
+    assert!(
+        serde_json::from_value::<ClickPipePostBigQueryWorkloadIdentitySource>(
+            serde_json::json!({})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ClickPipePostPubSubWorkloadIdentitySource>(serde_json::json!({}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ClickPipePostBigQueryServiceAccountSource>(serde_json::json!({}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<ClickPipePostPubSubServiceAccountSource>(serde_json::json!({}))
+            .is_err()
+    );
+}
+
+#[test]
+fn bigquery_service_account_allows_omitted_authentication() {
+    let json = serde_json::json!({
+        "snapshotStagingPath": "gs://bucket/staging", "settings": {"replicationMode": "snapshot"},
+        "tableMappings": [], "credentials": {"serviceAccountFile": "encoded-key"}
+    });
+    let parsed: ClickPipeMutateBigQuerySource = serde_json::from_value(json.clone()).unwrap();
+    assert!(matches!(
+        parsed,
+        ClickPipeMutateBigQuerySource::ClickPipePostBigQueryServiceAccountSource(_)
+    ));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), json);
+}
+
+#[test]
+fn new_source_and_saved_filter_unions_preserve_unknown_payloads() {
+    assert_unknown_variant_round_trips::<ClickPipeMutateBigQuerySource>(
+        r#"{"authentication":"FUTURE","newField":1}"#,
+        |v| matches!(v, ClickPipeMutateBigQuerySource::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickPipeBigQuerySource>(
+        r#"{"authentication":"FUTURE","newField":1}"#,
+        |v| matches!(v, ClickPipeBigQuerySource::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickPipePostPubSubSource>(
+        r#"{"authentication":"FUTURE","newField":1}"#,
+        |v| matches!(v, ClickPipePostPubSubSource::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickStackSavedFilterValueResponse>(
+        r#"{"type":"future","values":["keep"]}"#,
+        |v| matches!(v, ClickStackSavedFilterValueResponse::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickStackSavedFilterValueResponse>(
+        r#"{"name":"service","values":["keep"]}"#,
+        |v| matches!(v, ClickStackSavedFilterValueResponse::Unknown(_)),
+    );
+    assert_unknown_variant_round_trips::<ClickPipeBigQuerySource>(
+        r#"{"authentication":"SERVICE_ACCOUNT","settings":"new-shape"}"#,
+        |v| matches!(v, ClickPipeBigQuerySource::Unknown(_)),
+    );
+}
+
+#[test]
+fn saved_filter_and_formula_writeback_reports_required_wire_fields() {
+    let sql: ClickStackSavedFilterValueResponse =
+        serde_json::from_value(serde_json::json!({"condition": "x = 1"})).unwrap();
+    let request = ClickStackSavedFilterValue::try_from(sql).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"condition": "x = 1"})
+    );
+    let variable = serde_json::json!({"type": "variable", "name": "service", "values": ["api"]});
+    let response: ClickStackSavedFilterValueResponse =
+        serde_json::from_value(variable.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_value(ClickStackSavedFilterValue::try_from(response).unwrap()).unwrap(),
+        variable
+    );
+    assert_eq!(
+        ClickStackSqlSavedFilterValue::try_from(ClickStackSqlSavedFilterValueResponse::default())
+            .unwrap_err()
+            .fields(),
+        &["condition"]
+    );
+    assert_eq!(
+        ClickStackVariableSavedFilterValue::try_from(
+            ClickStackVariableSavedFilterValueResponse::default()
+        )
+        .unwrap_err()
+        .fields(),
+        &["type", "name", "values"]
+    );
+    assert_eq!(
+        ClickStackFormula::try_from(ClickStackFormulaResponse::default())
+            .unwrap_err()
+            .fields(),
+        &["expression"]
+    );
+    let formula = ClickStackFormula::try_from(ClickStackFormulaResponse {
+        expression: Some("A / B".into()),
+        alias: Some("Rate".into()),
+        number_format: None,
+    })
+    .unwrap();
+    assert_eq!(formula.expression, "A / B");
+    assert_eq!(formula.alias.as_deref(), Some("Rate"));
+    let invalid = ClickStackFormulaResponse {
+        expression: Some("A".into()),
+        number_format: Some(ClickStackNumberFormatResponse::default()),
+        ..Default::default()
+    };
+    assert!(
+        ClickStackFormula::try_from(invalid)
+            .unwrap_err()
+            .fields()
+            .contains(&"currencySymbol")
+    );
+}
+
+#[test]
+fn kafka_inline_protobuf_schema_and_schema_registry_are_independent_options() {
+    let json_source = ClickPipePostKafkaSource {
+        format: ClickPipePostKafkaSourceFormat::JSONEachRow,
+        ..Default::default()
+    };
+    assert!(
+        serde_json::to_value(json_source)
+            .unwrap()
+            .get("protobufSchema")
+            .is_none()
+    );
+    let inline = ClickPipePostKafkaSource {
+        format: ClickPipePostKafkaSourceFormat::Protobuf,
+        protobuf_schema: Some("c3ludGF4".into()),
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(inline).unwrap();
+    assert_eq!(wire["protobufSchema"], "c3ludGF4");
+    assert!(wire.get("schemaRegistry").is_none());
+    let registry = ClickPipePostKafkaSource {
+        format: ClickPipePostKafkaSourceFormat::Protobuf,
+        schema_registry: Some(ClickPipeMutateKafkaSchemaRegistry::default()),
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(registry).unwrap();
+    assert!(wire.get("protobufSchema").is_none());
+    assert!(wire.get("schemaRegistry").is_some());
+}
+
+#[test]
+fn new_clickstack_channels_and_chart_fields_round_trip() {
+    let request = ClickStackCreateAlertRequest {
+        interval: ClickStackCreateAlertRequestInterval::Value30s,
+        channels: vec![ClickStackAlertChannel::default()],
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(&request).unwrap();
+    assert_eq!(wire["channels"].as_array().unwrap().len(), 1);
+    assert_eq!(wire["interval"], "30s");
+    assert!(wire.get("channel").is_some());
+    assert_eq!(
+        serde_json::from_value::<ClickStackCreateAlertRequest>(wire).unwrap(),
+        request
+    );
+    let chart: ClickStackLineBuilderChartConfigResponse =
+        serde_json::from_value(serde_json::json!({
+            "formulas": [{"expression": "A / B", "alias": "Rate"}], "seriesLimit": 15,
+            "showOperandSeries": false
+        }))
+        .unwrap();
+    assert_eq!(chart.series_limit, Some(15));
+    assert_eq!(chart.show_operand_series, Some(false));
+    assert_eq!(
+        chart.formulas.unwrap()[0].expression.as_deref(),
+        Some("A / B")
+    );
+}
+
+#[test]
+fn clickstack_nested_writeback_preserves_number_format_and_source_expressions() {
+    let formula = serde_json::json!({
+        "expression": "A / B", "alias": "Success rate", "numberFormat": {
+            "average": false, "currencySymbol": "$", "decimalBytes": true,
+            "factor": 100.0, "mantissa": 2, "numericUnit": "bytes_si",
+            "output": "percent", "thousandSeparated": true, "unit": "%"
+        }
+    });
+    let response: ClickStackFormulaResponse = serde_json::from_value(formula.clone()).unwrap();
+    let request = ClickStackFormula::try_from(response).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), formula);
+
+    let log = serde_json::json!({
+        "kind": "log", "connection": "connection-1", "name": "Application logs",
+        "defaultTableSelectExpression": "*", "timestampValueExpression": "Timestamp",
+        "from": {"databaseName": "default", "tableName": "otel_logs"},
+        "serviceVersionExpression": "ResourceAttributes['service.version']",
+        "filterSettings": {
+            "databaseName": "default", "tableName": "service_names",
+            "columns": [{"name": "ServiceName", "label": "Service", "allowAll": true,
+                "valueExpression": "lower(service_name)"}]
+        }
+    });
+    let response: ClickStackSourceResponse = serde_json::from_value(log.clone()).unwrap();
+    let request = ClickStackSource::try_from(response).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), log);
+
+    let mut trace = log;
+    trace["kind"] = "trace".into();
+    trace["name"] = "Application traces".into();
+    trace["from"]["tableName"] = "otel_traces".into();
+    trace["durationExpression"] = "Duration".into();
+    trace["durationPrecision"] = 9.into();
+    trace["parentSpanIdExpression"] = "ParentSpanId".into();
+    trace["spanIdExpression"] = "SpanId".into();
+    trace["spanKindExpression"] = "SpanKind".into();
+    trace["spanNameExpression"] = "SpanName".into();
+    trace["traceIdExpression"] = "TraceId".into();
+    let response: ClickStackSourceResponse = serde_json::from_value(trace.clone()).unwrap();
+    let request = ClickStackSource::try_from(response).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), trace);
+}
+
+#[test]
+fn pgbouncer_map_round_trips_arbitrary_string_parameters() {
+    let document = serde_json::json!({
+        "default_pool_size": "16", "future_parameter": "on", "empty": ""
+    });
+    let request: PgBouncerConfig = serde_json::from_value(document.clone()).unwrap();
+    let response: PgBouncerConfigResponse = serde_json::from_value(document.clone()).unwrap();
+    assert_eq!(request, response);
+    assert_eq!(serde_json::to_value(request).unwrap(), document);
+    assert_eq!(serde_json::to_value(response).unwrap(), document);
+}
+
+#[test]
+fn pgbouncer_requests_reject_non_string_values() {
+    for value in [
+        serde_json::json!(16),
+        serde_json::json!(true),
+        serde_json::json!(null),
+        serde_json::json!([]),
+        serde_json::json!({}),
+    ] {
+        assert!(
+            serde_json::from_value::<PgBouncerConfig>(
+                serde_json::json!({"default_pool_size": value})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn pgbouncer_parent_responses_preserve_missing_null_and_empty_sections() {
+    for document in [
+        serde_json::json!({}),
+        serde_json::json!({"pgBouncerConfig": null}),
+    ] {
+        let config: PostgresInstanceConfigResponse =
+            serde_json::from_value(document.clone()).unwrap();
+        assert!(config.pg_bouncer_config.is_none());
+        assert_eq!(serde_json::to_value(config).unwrap(), serde_json::json!({}));
+        let update: PostgresInstanceUpdateConfigResponse =
+            serde_json::from_value(document).unwrap();
+        assert!(update.pg_bouncer_config.is_none());
+        assert_eq!(serde_json::to_value(update).unwrap(), serde_json::json!({}));
+    }
+    let config: PostgresInstanceConfigResponse = serde_json::from_value(
+        serde_json::json!({"pgBouncerConfig": {}, "futureField": "ignored"}),
+    )
+    .unwrap();
+    assert_eq!(config.pg_bouncer_config, Some(PgBouncerConfig::new()));
+    assert_eq!(
+        serde_json::to_value(config).unwrap(),
+        serde_json::json!({"pgBouncerConfig": {}})
+    );
+}
+
+#[test]
+fn api_key_patch_expiry_preserves_omit_set_and_clear() {
+    let timestamp = chrono::DateTime::parse_from_rfc3339("2030-01-02T03:04:05Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    for (expire_at, wire) in [
+        (None, serde_json::json!({})),
+        (
+            Some(Some(timestamp)),
+            serde_json::json!({"expireAt": "2030-01-02T03:04:05Z"}),
+        ),
+        (Some(None), serde_json::json!({"expireAt": null})),
+    ] {
+        let request = ApiKeyPatchRequest {
+            expire_at,
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ApiKeyPatchRequest>(wire).unwrap(),
+            request
+        );
+    }
+}
+
+#[test]
+fn api_key_patch_deserialization_preserves_other_fields_and_ignores_unknowns() {
+    let wire = serde_json::json!({
+        "expireAt": null,
+        "assignedRoleIds": ["aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"],
+        "ipAccessList": [{"source": "10.0.0.0/8", "description": "private"}],
+        "name": "renamed",
+        "state": "disabled"
+    });
+    let mut extended = wire.clone();
+    extended["newServerField"] = serde_json::json!({"nested": true});
+    let request: ApiKeyPatchRequest = serde_json::from_value(extended).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+    let nulls: ApiKeyPatchRequest = serde_json::from_value(serde_json::json!({
+        "assignedRoleIds": null, "ipAccessList": null, "name": null, "state": null
+    }))
+    .unwrap();
+    assert_eq!(nulls, ApiKeyPatchRequest::default());
+}
+
+#[test]
+fn api_key_patch_deserialization_rejects_invalid_recognized_fields() {
+    for wire in [
+        serde_json::json!({"expireAt": "tomorrow"}),
+        serde_json::json!({"expireAt": 42}),
+        serde_json::json!({"assignedRoleIds": ["invalid"]}),
+        serde_json::json!({"ipAccessList": [{}]}),
+        serde_json::json!({"name": false}),
+        serde_json::json!({"state": {}}),
+        serde_json::json!(null),
+        serde_json::json!([]),
+    ] {
+        assert!(
+            serde_json::from_value::<ApiKeyPatchRequest>(wire.clone()).is_err(),
+            "accepted {wire}"
+        );
+    }
+}
+
+#[test]
+fn kafka_patch_source_preserves_partial_and_explicit_list_updates() {
+    let partial: ClickPipePatchKafkaSource = serde_json::from_value(serde_json::json!({
+        "caCertificate": "new-ca"
+    }))
+    .unwrap();
+    assert!(partial.credentials.is_none());
+    assert!(partial.reverse_private_endpoint_ids.is_none());
+    assert_eq!(
+        serde_json::to_value(partial).unwrap(),
+        serde_json::json!({"caCertificate": "new-ca"})
+    );
+
+    let cleared: ClickPipePatchKafkaSource = serde_json::from_value(serde_json::json!({
+        "reversePrivateEndpointIds": []
+    }))
+    .unwrap();
+    assert_eq!(cleared.reverse_private_endpoint_ids, Some(vec![]));
+    assert_eq!(
+        serde_json::to_value(cleared).unwrap(),
+        serde_json::json!({"reversePrivateEndpointIds": []})
+    );
+
+    let nulls: ClickPipePatchKafkaSource = serde_json::from_value(serde_json::json!({
+        "credentials": null,
+        "reversePrivateEndpointIds": null
+    }))
+    .unwrap();
+    assert_eq!(nulls, ClickPipePatchKafkaSource::default());
+    assert_eq!(serde_json::to_value(nulls).unwrap(), serde_json::json!({}));
+}
+
+#[test]
+fn clickpipe_patch_nested_objects_preserve_omission_and_explicit_empty_values() {
+    let partial = serde_json::json!({
+        "source": {
+            "postgres": {"host": "postgres.example.com"}
+        }
+    });
+    let request: ClickPipePatchRequest = serde_json::from_value(partial.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), partial);
+
+    let explicit = serde_json::json!({
+        "destination": {"columns": []},
+        "source": {
+            "postgres": {
+                "tableMappingsToAdd": [],
+                "tableMappingsToRemove": []
+            },
+            "validateSamples": false
+        }
+    });
+    let request: ClickPipePatchRequest = serde_json::from_value(explicit.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), explicit);
+
+    let nulls: ClickPipePatchRequest = serde_json::from_value(serde_json::json!({
+        "source": {
+            "postgres": {
+                "credentials": null,
+                "settings": null,
+                "tableMappingsToAdd": null,
+                "tableMappingsToRemove": null
+            },
+            "validateSamples": null
+        }
+    }))
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(nulls).unwrap(),
+        serde_json::json!({"source": {"postgres": {}}})
+    );
+}
+
+#[cfg(feature = "deprecated-fields")]
+#[test]
+fn api_key_patch_deserialization_preserves_deprecated_roles() {
+    let wire = serde_json::json!({"expireAt": null, "roles": ["admin"]});
+    let request: ApiKeyPatchRequest = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), wire);
+}
+
+#[test]
+fn role_update_request_omits_fields_that_are_not_being_changed() {
+    let request = RoleUpdateRequest {
+        name: Some("auditor".to_string()),
+        actors: None,
+        policies: None,
+    };
+
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"name": "auditor"})
+    );
+}
+
+#[test]
+fn udf_request_inline_variants_preserve_determinism_and_memory() {
+    fn check<T: serde::de::DeserializeOwned + serde::Serialize>(kind: &str, create: bool) {
+        let mut input = serde_json::json!({"uploadId": "upload-1", "runtime": "native",
+            "arguments": [], "returnType": "UInt64", "type": kind});
+        if create {
+            input["functionName"] = serde_json::json!("my_udf");
+        }
+        let minimal: T = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(minimal).unwrap(), input);
+        input["deterministic"] = serde_json::json!(false);
+        input["memoryLimitMib"] = serde_json::json!(128);
+        let full: T = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(full).unwrap(), input);
+        input["memoryLimitMib"] = serde_json::Value::Null;
+        let nullable: T = serde_json::from_value(input.clone()).unwrap();
+        input.as_object_mut().unwrap().remove("memoryLimitMib");
+        assert_eq!(serde_json::to_value(nullable).unwrap(), input);
+        input.as_object_mut().unwrap().remove("runtime");
+        assert!(serde_json::from_value::<T>(input).is_err());
+    }
+    check::<UdfCreateRequestV1>("executable", true);
+    check::<UdfCreateRequestV2>("executable_pool", true);
+    check::<UdfVersionCreateRequestV1>("executable", false);
+    check::<UdfVersionCreateRequestV2>("executable_pool", false);
+}
+
+#[test]
+fn postgres_slow_query_durations_preserve_fractions_and_integral_counts() {
+    let aggregate = serde_json::json!({
+        "avgDurationUs": 1190.8419405320817,
+        "maxDurationUs": 2000.75,
+        "p50DurationUs": 1100.25,
+        "p95DurationUs": 1800.5,
+        "p99DurationUs": 1950.125,
+        "totalDurationUs": 3572.525821596245,
+        "callCount": 3, "errorCount": 0, "totalRows": 9007199254740993_i64,
+        "totalSharedBlksHit": 10, "totalSharedBlksRead": 2,
+        "totalCpuTimeUs": 2000, "totalWalBytes": 128
+    });
+    let list: Vec<PostgresSlowQueryPattern> =
+        serde_json::from_value(serde_json::json!([aggregate])).unwrap();
+    assert_eq!(list[0].avg_duration_us, Some(1190.8419405320817));
+    assert_eq!(list[0].total_rows, Some(9007199254740993));
+    assert_eq!(
+        serde_json::to_value(&list).unwrap(),
+        serde_json::json!([aggregate])
+    );
+
+    let detail = serde_json::json!({
+        "aggregate": aggregate,
+        "recentExecutions": [{"durationUs": 1234.56789, "rows": 9007199254740993_i64,
+            "cpuSysTimeUs": 12, "jitFunctions": 2, "sharedBlksHit": 3, "walBytes": 128}]
+    });
+    let parsed: PostgresSlowQueryPatternDetail = serde_json::from_value(detail.clone()).unwrap();
+    assert_eq!(
+        parsed.recent_executions.as_ref().unwrap()[0].duration_us,
+        Some(1234.56789)
+    );
+    assert_eq!(serde_json::to_value(parsed).unwrap(), detail);
+
+    // Existing integer-valued measurements remain accepted as durations.
+    let integer: PostgresQueryExecution =
+        serde_json::from_value(serde_json::json!({"durationUs": 1234})).unwrap();
+    assert_eq!(integer.duration_us, Some(1234.0));
+    let integer: PostgresSlowQueryPattern = serde_json::from_value(serde_json::json!({
+        "avgDurationUs": 1, "maxDurationUs": 2, "p50DurationUs": 1,
+        "p95DurationUs": 2, "p99DurationUs": 2, "totalDurationUs": 3
+    }))
+    .unwrap();
+    assert_eq!(integer.avg_duration_us, Some(1.0));
+    for field in [
+        "callCount",
+        "errorCount",
+        "totalRows",
+        "totalSharedBlksHit",
+        "totalSharedBlksRead",
+        "totalWalBytes",
+    ] {
+        assert!(
+            serde_json::from_value::<PostgresSlowQueryPattern>(serde_json::json!({field: 1.5}))
+                .is_err(),
+            "{field} must remain integral"
+        );
+    }
+    for field in ["rows", "jitFunctions", "sharedBlksHit", "walBytes"] {
+        assert!(
+            serde_json::from_value::<PostgresQueryExecution>(serde_json::json!({field: 1.5}))
+                .is_err(),
+            "{field} must remain integral"
+        );
+    }
+}
+
+#[test]
+fn postgres_slow_query_durations_allow_missing_and_null() {
+    for aggregate in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "avgDurationUs": null, "maxDurationUs": null, "p50DurationUs": null,
+            "p95DurationUs": null, "p99DurationUs": null, "totalDurationUs": null
+        }),
+    ] {
+        let parsed: PostgresSlowQueryPattern = serde_json::from_value(aggregate.clone()).unwrap();
+        assert_eq!(parsed, PostgresSlowQueryPattern::default());
+        assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::json!({}));
+        let detail: PostgresSlowQueryPatternDetail = serde_json::from_value(serde_json::json!({
+            "aggregate": aggregate, "recentExecutions": [{}, {"durationUs": null}]
+        }))
+        .unwrap();
+        assert_eq!(detail.aggregate, Some(PostgresSlowQueryPattern::default()));
+        assert_eq!(
+            detail.recent_executions,
+            Some(vec![PostgresQueryExecution::default(); 2])
+        );
+        assert_eq!(
+            serde_json::to_value(detail).unwrap(),
+            serde_json::json!({"aggregate": {}, "recentExecutions": [{}, {}]})
+        );
+    }
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({"aggregate": null, "recentExecutions": null}),
+    ] {
+        let parsed: PostgresSlowQueryPatternDetail = serde_json::from_value(value).unwrap();
+        assert_eq!(parsed, PostgresSlowQueryPatternDetail::default());
+        assert_eq!(serde_json::to_value(parsed).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn service_clickhouse_settings_typed_request_preserves_native_values() {
+    let settings = serde_json::json!({
+        "compatibility": "26.2", "max_query_size": 262146,
+        "mark_cache_ram_ratio": "0.5", "signed": -42,
+        "unsigned": u64::MAX
+    });
+    let map: ServiceClickhouseSettingsMap = serde_json::from_value(settings.clone()).unwrap();
+    assert_eq!(
+        map["compatibility"],
+        ServiceClickhouseSettingValue::String("26.2".into())
+    );
+    assert_eq!(
+        map["max_query_size"],
+        ServiceClickhouseSettingValue::Integer(262146)
+    );
+    assert_eq!(
+        map["unsigned"],
+        ServiceClickhouseSettingValue::UnsignedInteger(u64::MAX)
+    );
+    let request = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(map),
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+    let empty = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(ServiceClickhouseSettingsMap::new()),
+    };
+    assert!(serde_json::to_value(empty).is_err());
+}
+
+#[test]
+fn service_clickhouse_settings_typed_request_rejects_unsupported_value_types() {
+    for value in [
+        serde_json::json!(true),
+        serde_json::Value::Null,
+        serde_json::json!(1.5),
+        serde_json::json!({"nested": true}),
+        serde_json::json!([1]),
+    ] {
+        assert!(
+            serde_json::from_value::<ServiceClickhouseSettingsMap>(
+                serde_json::json!({"setting": value})
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn service_clickhouse_settings_preserves_dynamic_json_values() {
+    let settings = serde_json::json!({
+        "string": "26.2", "integer": 262144, "boolean": false, "null": null,
+        "array": [1, "two"], "future": {"nested": true}
+    });
+    let request: ServiceClickhouseSettingsPatchRequest =
+        serde_json::from_value(serde_json::json!({"settings": settings})).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+    let response: ServiceClickhouseSettingsPatchResponse =
+        serde_json::from_value(serde_json::json!({"settings": settings})).unwrap();
+    assert_eq!(
+        serde_json::to_value(response).unwrap(),
+        serde_json::json!({"settings": settings})
+    );
+    for sparse in [
+        serde_json::json!({}),
+        serde_json::json!({"settings": null, "warnings": null}),
+    ] {
+        let response: ServiceClickhouseSettingsPatchResponse =
+            serde_json::from_value(sparse).unwrap();
+        assert!(response.settings.is_none());
+        assert!(response.warnings.is_none());
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    let empty = ServiceClickhouseSettingsPatchRequest {
+        settings: Some(std::collections::BTreeMap::<String, serde_json::Value>::new()),
+    };
+    assert!(serde_json::to_value(empty).is_err());
+}
+
+#[test]
+fn service_clickhouse_setting_preserves_json_value_types() {
+    for value in [
+        serde_json::json!(262146),
+        serde_json::json!(18446744073709551615_u64),
+        serde_json::json!(-42),
+        serde_json::json!(1.25),
+        serde_json::json!("26.2"),
+        serde_json::json!("262146"),
+        serde_json::json!(false),
+        serde_json::json!({"future": [1, true]}),
+    ] {
+        let wire = serde_json::json!({"name": "setting", "value": value});
+        let setting: ServiceClickhouseSetting = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(setting.value.as_ref(), Some(&value));
+        assert_eq!(serde_json::to_value(&setting).unwrap(), wire);
+        let list_wire = serde_json::json!({"settings": [wire]});
+        let list: ServiceClickhouseSettingsList =
+            serde_json::from_value(list_wire.clone()).unwrap();
+        assert_eq!(serde_json::to_value(list).unwrap(), list_wire);
+    }
+}
+
+#[test]
+fn service_clickhouse_setting_missing_and_null_values_remain_absent() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"name": null, "value": null}),
+    ] {
+        let setting: ServiceClickhouseSetting = serde_json::from_value(wire).unwrap();
+        assert_eq!(setting.name, None);
+        assert_eq!(setting.value, None);
+        assert_eq!(
+            serde_json::to_value(setting).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[test]
+fn kinesis_protobuf_schema_round_trips_and_other_formats_omit_it() {
+    let json_source = ClickPipePostKinesisSource::default();
+    let wire = serde_json::to_value(&json_source).unwrap();
+    assert!(wire.get("protobufSchema").is_none());
+    assert_eq!(
+        serde_json::from_value::<ClickPipePostKinesisSource>(wire).unwrap(),
+        json_source
+    );
+
+    let protobuf = ClickPipePostKinesisSource {
+        format: ClickPipePostKinesisSourceFormat::Protobuf,
+        protobuf_schema: Some("c3ludGF4".into()),
+        ..Default::default()
+    };
+    let wire = serde_json::to_value(&protobuf).unwrap();
+    assert_eq!(wire["format"], "Protobuf");
+    assert_eq!(wire["protobufSchema"], "c3ludGF4");
+    assert_eq!(
+        serde_json::from_value::<ClickPipePostKinesisSource>(wire).unwrap(),
+        protobuf
+    );
+    assert_eq!(protobuf.format.to_string(), "Protobuf");
+
+    let response: ClickPipeKinesisSource =
+        serde_json::from_value(serde_json::json!({"format": "Protobuf"})).unwrap();
+    assert_eq!(
+        response.format,
+        Some(ClickPipeKinesisSourceFormat::Protobuf)
+    );
+    assert_eq!(response.format.unwrap().to_string(), "Protobuf");
+    assert!(
+        matches!(serde_json::from_str::<ClickPipeKinesisSourceFormat>("\"FutureFormat\"").unwrap(), ClickPipeKinesisSourceFormat::Unknown(value) if value == "FutureFormat")
+    );
+}
+
+#[test]
+fn query_api_endpoint_request_is_strict_and_omits_optional_fields() {
+    let required = serde_json::json!({
+        "name": "orders",
+        "sql": "SELECT * FROM orders WHERE id = {id:String}",
+        "database": "default",
+        "apiKeyIds": ["11111111-2222-3333-8444-555555555555"],
+        "roles": ["query_api"]
+    });
+    let request: PublicQueryApiEndpointRequest = serde_json::from_value(required.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), required);
+
+    for field in ["name", "sql", "database", "apiKeyIds", "roles"] {
+        let mut missing = required.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<PublicQueryApiEndpointRequest>(missing).is_err(),
+            "missing required field {field} must fail"
+        );
+    }
+}
+
+#[test]
+fn query_api_endpoint_responses_tolerate_missing_and_null_fields() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "id": null,
+            "name": null,
+            "sql": null,
+            "database": null,
+            "parameters": null,
+            "apiKeyIds": null,
+            "roles": null,
+            "allowedOrigins": null,
+            "url": null,
+            "ownerType": null
+        }),
+    ] {
+        let endpoint: PublicQueryApiEndpoint = serde_json::from_value(wire).unwrap();
+        assert_eq!(endpoint, PublicQueryApiEndpoint::default());
+        assert_eq!(
+            serde_json::to_value(endpoint).unwrap(),
+            serde_json::json!({})
+        );
+    }
+
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "id": null,
+            "name": null,
+            "database": null,
+            "apiKeyIds": null,
+            "roles": null,
+            "allowedOrigins": null,
+            "url": null,
+            "ownerType": null
+        }),
+    ] {
+        let item: PublicQueryApiEndpointListItem = serde_json::from_value(wire).unwrap();
+        assert_eq!(item, PublicQueryApiEndpointListItem::default());
+        assert_eq!(serde_json::to_value(item).unwrap(), serde_json::json!({}));
+    }
+
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"items": null, "pagination": null}),
+    ] {
+        let list: QueryApiEndpointListResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(list, QueryApiEndpointListResponse::default());
+        assert_eq!(serde_json::to_value(list).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn query_api_endpoint_owner_types_preserve_unknown_values() {
+    let owner: PublicQueryApiEndpointOwnertype = serde_json::from_str("\"futureOwner\"").unwrap();
+    assert_eq!(
+        owner,
+        PublicQueryApiEndpointOwnertype::Unknown("futureOwner".into())
+    );
+    assert_eq!(owner.to_string(), "futureOwner");
+    assert_eq!(serde_json::to_string(&owner).unwrap(), "\"futureOwner\"");
+
+    let list_owner: PublicQueryApiEndpointListItemOwnertype =
+        serde_json::from_str("\"futureOwner\"").unwrap();
+    assert_eq!(
+        list_owner,
+        PublicQueryApiEndpointListItemOwnertype::Unknown("futureOwner".into())
+    );
+    assert_eq!(list_owner.to_string(), "futureOwner");
+    assert_eq!(
+        serde_json::to_string(&list_owner).unwrap(),
+        "\"futureOwner\""
+    );
 }

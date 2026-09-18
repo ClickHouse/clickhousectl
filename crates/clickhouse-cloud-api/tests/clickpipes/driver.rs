@@ -65,8 +65,8 @@ impl E2eHarness {
             .filter(|s| !s.is_empty())
         {
             Some(service_id) => {
-                let password = std::env::var("CLICKHOUSE_CLOUD_TEST_SERVICE_PASSWORD")
-                    .map_err(|_| {
+                let password =
+                    std::env::var("CLICKHOUSE_CLOUD_TEST_SERVICE_PASSWORD").map_err(|_| {
                         "CLICKHOUSE_CLOUD_TEST_SERVICE_ID set but \
                          CLICKHOUSE_CLOUD_TEST_SERVICE_PASSWORD missing"
                     })?;

@@ -1,10 +1,17 @@
 use crate::error::Result;
+use std::io::Write;
 use std::path::PathBuf;
 
 pub fn local_dir() -> PathBuf {
     std::env::current_dir()
         .expect("failed to get current directory")
         .join(".clickhouse")
+}
+
+/// The physical directory whose project-local state is selected by this
+/// invocation. Local commands intentionally do not search parent directories.
+pub fn canonical_project_dir() -> Result<PathBuf> {
+    Ok(std::env::current_dir()?.canonicalize()?)
 }
 
 pub fn project_dir() -> PathBuf {
@@ -19,34 +26,74 @@ pub fn postgres_project_dir() -> PathBuf {
         .join("postgres")
 }
 
-pub fn is_initialized() -> bool {
-    local_dir().exists()
+/// Which project-local paths `init()` created during this invocation. The
+/// caller renders this in both the human-readable and `--json` output, so
+/// `init()` itself prints nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct InitResult {
+    pub clickhouse_dir_created: bool,
+    pub runtime_gitignore_created: bool,
+    pub clickhouse_scaffold_created: bool,
+    pub postgres_scaffold_created: bool,
 }
 
-pub fn init() -> Result<()> {
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RuntimeIgnoreResult {
+    pub directory_created: bool,
+    pub gitignore_created: bool,
+}
+
+/// Ensure project-local runtime state is ignored without replacing a custom
+/// ignore file. The create-new write also preserves a file created by a
+/// concurrent process, and every other I/O failure reaches the caller.
+pub fn ensure_runtime_gitignore() -> Result<RuntimeIgnoreResult> {
     let dir = local_dir();
+    let directory_created = !dir.exists();
+    std::fs::create_dir_all(&dir)?;
 
-    if is_initialized() {
-        eprintln!("Already initialized at {}", dir.display());
-    } else {
-        std::fs::create_dir_all(&dir)?;
-        std::fs::write(dir.join(".gitignore"), "*\n")?;
-        eprintln!("Initialized ClickHouse project in {}", dir.display());
-    }
+    let gitignore = dir.join(".gitignore");
+    let gitignore_created = match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&gitignore)
+    {
+        Ok(mut file) => {
+            file.write_all(b"*\n")?;
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && gitignore.is_file() => {
+            false
+        }
+        Err(error) => return Err(error.into()),
+    };
 
-    create_project_scaffold(
+    Ok(RuntimeIgnoreResult {
+        directory_created,
+        gitignore_created,
+    })
+}
+
+pub fn init() -> Result<InitResult> {
+    let runtime_ignore = ensure_runtime_gitignore()?;
+
+    let clickhouse_scaffold_created = create_project_scaffold(
         project_dir(),
         &["tables", "materialized_views", "queries", "seed"],
     )?;
-    create_project_scaffold(
+    let postgres_scaffold_created = create_project_scaffold(
         postgres_project_dir(),
         &["tables", "views", "functions", "queries", "seed"],
     )?;
 
-    Ok(())
+    Ok(InitResult {
+        clickhouse_dir_created: runtime_ignore.directory_created,
+        runtime_gitignore_created: runtime_ignore.gitignore_created,
+        clickhouse_scaffold_created,
+        postgres_scaffold_created,
+    })
 }
 
-fn create_project_scaffold(dir: PathBuf, subdirs: &[&str]) -> Result<()> {
+fn create_project_scaffold(dir: PathBuf, subdirs: &[&str]) -> Result<bool> {
     let mut created = false;
     for subdir in subdirs {
         let path = dir.join(subdir);
@@ -57,15 +104,7 @@ fn create_project_scaffold(dir: PathBuf, subdirs: &[&str]) -> Result<()> {
         }
     }
 
-    if created {
-        eprintln!(
-            "Created project scaffold in {}/ ({})",
-            dir.display(),
-            subdirs.join(", ")
-        );
-    }
-
-    Ok(())
+    Ok(created)
 }
 
 /// Returns CLI flags that point ClickHouse data into the current directory.
@@ -83,7 +122,8 @@ mod tests {
         let dir = tmp.path().join("postgres");
         let subdirs = ["tables", "materialized_views", "queries", "seed"];
 
-        create_project_scaffold(dir.clone(), &subdirs).unwrap();
+        let created = create_project_scaffold(dir.clone(), &subdirs).unwrap();
+        assert!(created);
 
         for subdir in &subdirs {
             let path = dir.join(subdir);
@@ -102,9 +142,10 @@ mod tests {
         let dir = tmp.path().join("clickhouse");
         let subdirs = ["tables", "queries"];
 
-        create_project_scaffold(dir.clone(), &subdirs).unwrap();
-        // Running again over an existing scaffold must not error.
-        create_project_scaffold(dir.clone(), &subdirs).unwrap();
+        assert!(create_project_scaffold(dir.clone(), &subdirs).unwrap());
+        // Running again over an existing scaffold must not error, and must
+        // report that nothing new was created.
+        assert!(!create_project_scaffold(dir.clone(), &subdirs).unwrap());
 
         assert!(dir.join("tables").join(".gitkeep").is_file());
     }

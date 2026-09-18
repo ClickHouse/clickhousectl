@@ -114,7 +114,10 @@ mod tests {
         write_env(dir.path(), "CLICKHOUSE_CLOUD_API_KEY=k\n");
         let loaded = load_from(dir.path());
         assert_eq!(loaded.get("CLICKHOUSE_CLOUD_API_KEY"), Some("k"));
-        assert_eq!(loaded.source_path(), Some(dir.path().join(".env").as_path()));
+        assert_eq!(
+            loaded.source_path(),
+            Some(dir.path().join(".env").as_path())
+        );
     }
 
     #[test]
@@ -142,10 +145,7 @@ mod tests {
     #[test]
     fn filters_non_clickhouse_keys() {
         let dir = tempfile::tempdir().unwrap();
-        write_env(
-            dir.path(),
-            "OPENAI_KEY=foo\nCLICKHOUSE_CLOUD_API_KEY=bar\n",
-        );
+        write_env(dir.path(), "OPENAI_KEY=foo\nCLICKHOUSE_CLOUD_API_KEY=bar\n");
         let loaded = load_from(dir.path());
         assert_eq!(loaded.get("CLICKHOUSE_CLOUD_API_KEY"), Some("bar"));
         assert!(loaded.get("OPENAI_KEY").is_none());

@@ -1,7 +1,16 @@
+//! Live managed-Postgres CDC coverage through the real `clickhousectl` binary.
+//!
+//! The managed source uses a private CA, so this test cannot cover successful
+//! creation without `--ca-certificate`. Success against a publicly trusted
+//! PostgreSQL source remains a residual gap until CI provides such a fixture.
+
 #[path = "../common/mod.rs"]
 mod common;
 mod support;
 
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output};
 use std::str::FromStr;
 use std::time::Duration;
 
@@ -19,16 +28,23 @@ const POST_SEED_ROW_COUNT: i64 = 8;
 
 const DEFAULT_CLICKPIPE_READY_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_CDC_LAG_TIMEOUT_SECS: u64 = 300;
+const CLICKHOUSECTL_BIN_ENV: &str = "CLICKHOUSE_CLOUD_TEST_CLICKHOUSECTL_BIN";
+const PRIVATE_CA_API_ERROR: &str = "x509: certificate signed by unknown authority";
 
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
-async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
+async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
     // rustls 0.23 requires a default CryptoProvider be installed before any
     // ClientConfig is constructed. install_default returns an Err if one was
     // already set by another test in the same process, which is harmless here.
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let ctx = TestContext::from_env()?;
+    let clickhousectl = clickhousectl_binary()?;
+    let cli_workspace = tempfile::tempdir()?;
+    let cli_home = cli_workspace.path().join("home");
+    std::fs::create_dir(&cli_home)?;
+    let cli_api_url = clickhouse_cloud_api_url();
     let clickpipe_ready_timeout = duration_from_env_or(
         "CLICKHOUSE_CLOUD_TEST_TIMEOUT_CLICKPIPE_READY_SECS",
         DEFAULT_CLICKPIPE_READY_TIMEOUT_SECS,
@@ -42,7 +58,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
     let mut cleanup = CleanupRegistry::default();
 
     let test_result = async {
-        log_run_header("cloud_clickpipe_postgres_cdc", &ctx);
+        log_run_header("cloud_clickpipe_postgres_cli_cdc", &ctx);
         let mut failures = FailureRecorder::default();
 
         // ── Preflight ───────────────────────────────────────────────
@@ -87,7 +103,9 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                         let services = resp.result.ok_or("postgres list returned no result")?;
                         let leftover: Vec<_> = services
                             .into_iter()
-                            .filter(|s| filters_match_tags(&filters, &s.tags))
+                            .filter(|s| {
+                                filters_match_tags(&filters, s.tags.as_deref().unwrap_or_default())
+                            })
                             .collect();
                         Ok(leftover)
                     }
@@ -119,9 +137,10 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             region: ServicePostRequestRegion::Unknown(ctx.region.clone()),
             min_replica_memory_gb: Some(8.0),
             max_replica_memory_gb: Some(8.0),
-            num_replicas: Some(1.0),
-            idle_scaling: Some(true),
-            idle_timeout_minutes: Some(5.0),
+            num_replicas: Some(1),
+            // ClickPipe creation requires a running destination. Keep this
+            // short-lived owned fixture awake through source configuration.
+            idle_scaling: Some(false),
             // Test runner needs to query the service to verify CDC results;
             // the provisioned IPs are unknown ahead of time and the resource
             // is short-lived + tagged for this run only.
@@ -151,15 +170,41 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         let pg_created = pg_create_resp?
             .result
             .ok_or("postgres create returned no result")?;
-        let postgres_id = pg_created.id.to_string();
+        let postgres_id = pg_created
+            .id
+            .ok_or("postgres create returned no id")?
+            .to_string();
+        // The create response is the only API surface guaranteed to return
+        // credentials: from July 31, 2026 the get endpoint stops echoing
+        // `password` and `connectionString`, so capture everything
+        // credential-derived here rather than from the polled get below.
+        let pg_username = pg_created.username.clone().unwrap_or_default();
+        let pg_password = pg_created.password.clone().unwrap_or_default();
+        let pg_connection_string = pg_created.connection_string.clone().unwrap_or_default();
+        assert!(
+            !pg_connection_string.is_empty(),
+            "postgres create returned no connection string"
+        );
+        let pg_port = parse_pg_port(&pg_connection_string).unwrap_or(5432);
+        let pg_database =
+            parse_pg_database(&pg_connection_string).unwrap_or_else(|| "postgres".to_string());
+        assert!(
+            !pg_username.is_empty(),
+            "postgres create returned no username"
+        );
+        assert!(
+            !pg_password.is_empty(),
+            "postgres create returned no password"
+        );
         cleanup.register_postgres(postgres_id.clone());
         eprintln!("  provisioned postgres id <redacted>");
 
         let ch_created = ch_create_resp?
             .result
             .ok_or("service create returned no result")?;
-        let clickhouse_id = ch_created.service.id.to_string();
-        let clickhouse_password = ch_created.password.clone();
+        let clickhouse_service = require_field(ch_created.service, "service")?;
+        let clickhouse_id = require_field(clickhouse_service.id, "service.id")?.to_string();
+        let clickhouse_password = require_field(ch_created.password.clone(), "password")?;
         cleanup.register_service(clickhouse_id.clone());
         eprintln!("  provisioned clickhouse id <redacted>");
 
@@ -176,7 +221,11 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                 async move {
                     let resp = client.postgres_service_get(&org_id, &postgres_id).await?;
                     let svc = resp.result.ok_or("postgres get returned no result")?;
-                    if svc.state.to_string() == "running" {
+                    if svc
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.to_string() == "running")
+                    {
                         Ok(Some(svc))
                     } else {
                         Ok(None)
@@ -185,7 +234,7 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
             },
         );
         let ch_ready_fut = poll_until(
-            "clickhouse steady state",
+            "clickhouse running state",
             ctx.steady_state_timeout,
             ctx.poll_interval,
             || {
@@ -195,8 +244,8 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                 async move {
                     let resp = client.instance_get(&org_id, &clickhouse_id).await?;
                     let svc = resp.result.ok_or("service get returned no result")?;
-                    let state = svc.state.to_string();
-                    if matches!(state.as_str(), "running" | "idle") {
+                    let state = service_state(&svc);
+                    if state == "running" {
                         Ok(Some(svc))
                     } else {
                         Ok(None)
@@ -206,14 +255,9 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
         );
         let (pg_ready, ch_ready) = tokio::try_join!(pg_ready_fut, ch_ready_fut)?;
 
-        assert!(!pg_ready.connection_string.is_empty(), "empty pg connection string");
-        assert!(!pg_ready.hostname.is_empty(), "empty pg hostname");
-        let ch_endpoint = ch_ready
-            .endpoints
-            .iter()
-            .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
-            .ok_or("ClickHouse service has no https endpoint")?
-            .clone();
+        let pg_hostname = pg_ready.hostname.clone().unwrap_or_default();
+        assert!(!pg_hostname.is_empty(), "postgres get returned no hostname");
+        let ch_endpoint = https_endpoint(&ch_ready)?;
         let ch_username = ch_endpoint
             .username
             .clone()
@@ -225,76 +269,100 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
 
         let pg_ca_pem = client
             .postgres_service_certs_get(&ctx.org_id, &postgres_id)
-            .await
-            .ok();
-        let pg_client = connect_postgres(&pg_ready.connection_string, pg_ca_pem.as_deref()).await?;
+            .await?;
+        assert!(
+            !pg_ca_pem.trim().is_empty(),
+            "postgres certificates endpoint returned an empty CA bundle"
+        );
+        let pg_client = connect_postgres(
+            &pg_hostname,
+            pg_port,
+            &pg_database,
+            &pg_username,
+            &pg_password,
+            Some(&pg_ca_pem),
+        )
+        .await?;
         configure_pg_for_cdc(&pg_client).await?;
 
         // ── Create ClickPipe ────────────────────────────────────────
 
         log_phase("Create ClickPipe");
 
-        let pg_port = parse_pg_port(&pg_ready.connection_string).unwrap_or(5432);
-        let pipe_request = ClickPipePostRequest {
-            name: format!("cdc-{}", ctx.run_id),
-            destination: ClickPipeMutateDestination {
-                // Postgres is a "database pipe" — only `database` is valid at
-                // the top level. The per-mapping `targetTable` carries the
-                // destination table name.
-                database: "default".to_string(),
-                ..Default::default()
-            },
-            source: ClickPipePostSource {
-                postgres: Some(ClickPipeMutatePostgresSource {
-                    authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
-                    ca_certificate: pg_ca_pem.clone(),
-                    credentials: PLAIN {
-                        username: pg_ready.username.clone(),
-                        password: pg_ready.password.clone(),
-                    },
-                    database: parse_pg_database(&pg_ready.connection_string)
-                        .unwrap_or_else(|| "postgres".to_string()),
-                    host: pg_ready.hostname.clone(),
-                    port: pg_port as i64,
-                    settings: ClickPipePostgresPipeSettings {
-                        // `cdc` does snapshot + ongoing replication. The API
-                        // manages the replication slot itself in this mode and
-                        // rejects an explicit replicationSlotName.
-                        replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Cdc,
-                        publication_name: Some(PUBLICATION.to_string()),
-                        // The API rejects 0 for numeric fields ("Value must be >= 1");
-                        // the Default impl gives every i64 a 0, so we set sensible
-                        // values explicitly. (Same issue exists in the CLI's
-                        // clickpipe create postgres handler — track separately.)
-                        sync_interval_seconds: Some(60),
-                        pull_batch_size: Some(100_000),
-                        initial_load_parallelism: Some(4),
-                        snapshot_num_rows_per_partition: Some(100_000),
-                        snapshot_number_of_parallel_tables: Some(4),
-                        ..Default::default()
-                    },
-                    table_mappings: vec![ClickPipePostgresPipeTableMapping {
-                        source_schema_name: SOURCE_SCHEMA.to_string(),
-                        source_table: SOURCE_TABLE.to_string(),
-                        target_table: TARGET_TABLE.to_string(),
-                        table_engine:
-                            ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
-                        ..Default::default()
-                    }],
-                    r#type: Some(ClickPipeMutatePostgresSourceType::Postgres),
-                    ..Default::default()
-                }),
-                ..Default::default()
-            },
-            ..Default::default()
+        let ca_path = cli_workspace.path().join("postgres-ca.pem");
+        std::fs::write(&ca_path, &pg_ca_pem)?;
+        let cli_create = PostgresCliCreate {
+            api_url: &cli_api_url,
+            org_id: &ctx.org_id,
+            service_id: &clickhouse_id,
+            host: &pg_hostname,
+            port: pg_port,
+            database: &pg_database,
+            username: &pg_username,
+            password: &pg_password,
         };
 
-        let pipe = client
-            .click_pipe_create(&ctx.org_id, &clickhouse_id, &pipe_request)
-            .await?
-            .result
-            .ok_or("clickpipe create returned no result")?;
-        let clickpipe_id = pipe.id.to_string();
+        let no_ca_name = format!("cdc-no-ca-{}", ctx.run_id);
+        let no_ca_output = invoke_postgres_cli(
+            &clickhousectl,
+            cli_workspace.path(),
+            &cli_home,
+            &cli_create,
+            &no_ca_name,
+            None,
+        )?;
+        if no_ca_output.status.success() {
+            if let Ok(unexpected_pipe) = serde_json::from_slice::<ClickPipe>(&no_ca_output.stdout)
+                && let Ok(unexpected_id) = clickpipe_id(&unexpected_pipe)
+            {
+                cleanup.register_clickpipe(clickhouse_id.clone(), unexpected_id);
+            }
+            return Err("clickpipe creation without the private CA unexpectedly succeeded".into());
+        }
+        if no_ca_output.status.code() != Some(1) {
+            return Err(cli_failure("private-CA rejection", &no_ca_output).into());
+        }
+        let no_ca_stderr = String::from_utf8_lossy(&no_ca_output.stderr);
+        let api_error_position = no_ca_stderr.find(PRIVATE_CA_API_ERROR).ok_or_else(|| {
+            cli_failure(
+                "private-CA rejection did not preserve the API x509 error",
+                &no_ca_output,
+            )
+        })?;
+        let hint_position = no_ca_stderr
+            .find("Hint: The source certificate chain is not publicly trusted")
+            .ok_or_else(|| {
+                cli_failure(
+                    "private-CA rejection did not include the CLI guidance",
+                    &no_ca_output,
+                )
+            })?;
+        assert!(
+            api_error_position < hint_position,
+            "the original API error must be preserved before the CLI hint"
+        );
+        assert!(
+            no_ca_stderr.contains("--ca-certificate <PATH>"),
+            "private-CA guidance omitted the required flag: {no_ca_stderr}"
+        );
+
+        let pipe_name = format!("cdc-{}", ctx.run_id);
+        let create_output = invoke_postgres_cli(
+            &clickhousectl,
+            cli_workspace.path(),
+            &cli_home,
+            &cli_create,
+            &pipe_name,
+            Some(&ca_path),
+        )?;
+        if !create_output.status.success() {
+            return Err(cli_failure("create with the fetched CA", &create_output).into());
+        }
+        let pipe: ClickPipe = serde_json::from_slice(&create_output.stdout).map_err(|error| {
+            format!("clickhousectl create output was not a ClickPipe JSON object: {error}")
+        })?;
+        assert_eq!(pipe.name.as_deref(), Some(pipe_name.as_str()));
+        let clickpipe_id = clickpipe_id(&pipe)?;
         cleanup.register_clickpipe(clickhouse_id.clone(), clickpipe_id.clone());
         eprintln!("  provisioned clickpipe id <redacted>");
 
@@ -317,10 +385,13 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                         .await?;
                     let pipe = resp.result.ok_or("clickpipe get returned no result")?;
                     match pipe.state {
-                        ClickPipeState::Running => Ok(Some(pipe)),
-                        ClickPipeState::Failed | ClickPipeState::InternalError => {
-                            Err(format!("clickpipe entered terminal failure state {}", pipe.state)
-                                .into())
+                        Some(ClickPipeState::Running) => Ok(Some(pipe)),
+                        Some(ClickPipeState::Failed) | Some(ClickPipeState::InternalError) => {
+                            Err(format!(
+                                "clickpipe entered terminal failure state {}",
+                                clickpipe_state(&pipe)
+                            )
+                            .into())
                         }
                         _ => Ok(None),
                     }
@@ -333,7 +404,12 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
 
         log_phase("Verify seed rows in ClickHouse");
 
-        let ch_query = ClickHouseQuery::new(&ch_endpoint.host, ch_endpoint.port as u16, &ch_username, &clickhouse_password);
+        let ch_query = ClickHouseQuery::new(
+            &require_field(ch_endpoint.host.clone(), "endpoints[].host")?,
+            require_field(ch_endpoint.port, "endpoints[].port")? as u16,
+            &ch_username,
+            &clickhouse_password,
+        );
 
         poll_until(
             "seed row count in ClickHouse",
@@ -357,7 +433,11 @@ async fn cloud_clickpipe_postgres_cdc() -> TestResult<()> {
                 "SELECT name FROM default.{TARGET_TABLE} WHERE id = 1 LIMIT 1"
             ))
             .await?;
-        assert_eq!(alice_name.as_deref(), Some("alice"), "row id=1 spot-check failed");
+        assert_eq!(
+            alice_name.as_deref(),
+            Some("alice"),
+            "row id=1 spot-check failed"
+        );
 
         // ── Insert more rows and verify ongoing CDC ─────────────────
 
@@ -435,21 +515,208 @@ fn duration_from_env_or(name: &str, default_secs: u64) -> TestResult<Duration> {
     }
 }
 
-fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1]) -> bool {
+fn clickhousectl_binary() -> TestResult<PathBuf> {
+    let path = std::env::var_os(CLICKHOUSECTL_BIN_ENV)
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("{CLICKHOUSECTL_BIN_ENV} must point to the built clickhousectl"))?;
+    if !path.is_file() {
+        return Err(format!(
+            "{CLICKHOUSECTL_BIN_ENV} does not point to a file: {}",
+            path.display()
+        )
+        .into());
+    }
+    Ok(path)
+}
+
+fn clickhouse_cloud_api_url() -> String {
+    std::env::var("CLICKHOUSE_CLOUD_API_BASE_URL")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "https://api.clickhouse.cloud".to_string())
+}
+
+struct PostgresCliCreate<'a> {
+    api_url: &'a str,
+    org_id: &'a str,
+    service_id: &'a str,
+    host: &'a str,
+    port: u16,
+    database: &'a str,
+    username: &'a str,
+    password: &'a str,
+}
+
+impl PostgresCliCreate<'_> {
+    fn args(&self, name: &str, ca_certificate: Option<&Path>) -> Vec<OsString> {
+        let mut args = vec![
+            "cloud".into(),
+            "--url".into(),
+            self.api_url.into(),
+            "--json".into(),
+            "clickpipe".into(),
+            "create".into(),
+            "postgres".into(),
+            self.service_id.into(),
+            "--name".into(),
+            name.into(),
+            "--host".into(),
+            self.host.into(),
+            "--port".into(),
+            self.port.to_string().into(),
+            "--pg-database".into(),
+            self.database.into(),
+            "--username".into(),
+            self.username.into(),
+            format!("--password={}", self.password).into(),
+            "--auth".into(),
+            "basic".into(),
+            "--replication-mode".into(),
+            "cdc".into(),
+            "--publication-name".into(),
+            PUBLICATION.into(),
+            "--table-mapping".into(),
+            format!("{SOURCE_SCHEMA}.{SOURCE_TABLE}:{TARGET_TABLE}").into(),
+            "--org-id".into(),
+            self.org_id.into(),
+        ];
+        if let Some(path) = ca_certificate {
+            args.push("--ca-certificate".into());
+            args.push(path.as_os_str().to_owned());
+        }
+        args
+    }
+}
+
+fn invoke_postgres_cli(
+    binary: &Path,
+    workdir: &Path,
+    home: &Path,
+    create: &PostgresCliCreate<'_>,
+    name: &str,
+    ca_certificate: Option<&Path>,
+) -> TestResult<Output> {
+    Ok(Command::new(binary)
+        .current_dir(workdir)
+        .env("HOME", home)
+        .env("DO_NOT_TRACK", "1")
+        .args(create.args(name, ca_certificate))
+        .output()?)
+}
+
+fn cli_failure(action: &str, output: &Output) -> String {
+    format!(
+        "clickhousectl {action} exited {}\nstderr:\n{}",
+        output.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&output.stderr)
+    )
+}
+
+#[test]
+fn postgres_cli_args_only_pass_the_ca_path_when_requested() {
+    let create = PostgresCliCreate {
+        api_url: "https://api.example.test",
+        org_id: "org-id",
+        service_id: "service-id",
+        host: "postgres.example.test",
+        port: 5432,
+        database: "postgres",
+        username: "clickpipe",
+        password: "secret",
+    };
+
+    let without_ca = create.args("without-ca", None);
+    assert!(!without_ca.iter().any(|arg| arg == "--ca-certificate"));
+    assert_eq!(
+        without_ca,
+        vec![
+            "cloud",
+            "--url",
+            "https://api.example.test",
+            "--json",
+            "clickpipe",
+            "create",
+            "postgres",
+            "service-id",
+            "--name",
+            "without-ca",
+            "--host",
+            "postgres.example.test",
+            "--port",
+            "5432",
+            "--pg-database",
+            "postgres",
+            "--username",
+            "clickpipe",
+            "--password=secret",
+            "--auth",
+            "basic",
+            "--replication-mode",
+            "cdc",
+            "--publication-name",
+            PUBLICATION,
+            "--table-mapping",
+            "public.cdc_users:cdc_users",
+            "--org-id",
+            "org-id",
+        ]
+        .into_iter()
+        .map(OsString::from)
+        .collect::<Vec<_>>()
+    );
+
+    let ca_path = Path::new("/tmp/postgres-ca.pem");
+    let with_ca = create.args("with-ca", Some(ca_path));
+    assert_eq!(
+        &with_ca[with_ca.len() - 2..],
+        [OsString::from("--ca-certificate"), ca_path.into()]
+    );
+}
+
+#[test]
+fn postgres_cli_args_keep_a_leading_hyphen_password_attached_to_its_flag() {
+    let create = PostgresCliCreate {
+        api_url: "https://api.example.test",
+        org_id: "org-id",
+        service_id: "service-id",
+        host: "postgres.example.test",
+        port: 5432,
+        database: "postgres",
+        username: "clickpipe",
+        password: "-generated-secret",
+    };
+
+    let args = create.args("cdc", None);
+    assert!(
+        args.iter()
+            .any(|arg| arg == &OsString::from("--password=-generated-secret"))
+    );
+    assert!(!args.iter().any(|arg| arg == "--password"));
+    assert!(!args.iter().any(|arg| arg == "-generated-secret"));
+}
+
+fn filters_match_tags(filters: &[String], tags: &[ResourceTagsV1Response]) -> bool {
     filters.iter().all(|filter| {
         let Some(expr) = filter.strip_prefix("tag:") else {
             return true;
         };
         let Some((key, value)) = expr.split_once('=') else {
-            return tags.iter().any(|t| t.key == expr);
+            return tags.iter().any(|t| t.key.as_deref() == Some(expr));
         };
         tags.iter()
-            .any(|t| t.key == key && t.value.as_deref() == Some(value))
+            .any(|t| t.key.as_deref() == Some(key) && t.value.as_deref() == Some(value))
     })
 }
 
+// Takes discrete connection parts rather than a connection string: the get
+// endpoint stops echoing `connectionString` on July 31, 2026, so callers
+// assemble host/port/database/credentials from the create response + get.
 async fn connect_postgres(
-    connection_string: &str,
+    host: &str,
+    port: u16,
+    database: &str,
+    username: &str,
+    password: &str,
     extra_ca_pem: Option<&str>,
 ) -> TestResult<tokio_postgres::Client> {
     let mut roots = RootCertStore::empty();
@@ -468,8 +735,14 @@ async fn connect_postgres(
         .with_no_client_auth();
     let tls = MakeRustlsConnect::new(client_config);
 
-    let mut config = tokio_postgres::Config::from_str(connection_string)?;
-    // Connection strings returned by Cloud may not specify SSL mode; force require.
+    let mut config = tokio_postgres::Config::new();
+    config
+        .host(host)
+        .port(port)
+        .dbname(database)
+        .user(username)
+        .password(password);
+    // Cloud Postgres requires TLS; force require.
     config.ssl_mode(tokio_postgres::config::SslMode::Require);
     // tokio-postgres-rustls doesn't expose the TLS exporter material that
     // SCRAM-SHA-256-PLUS needs, so disable channel binding even if the Cloud
@@ -553,9 +826,11 @@ impl ClickHouseQuery {
     }
 
     async fn count_rows(&self, table: &str) -> TestResult<i64> {
+        // Cloud ClickPipes tables use SharedMergeTree storage, which rejects
+        // FINAL. This fixture inserts distinct IDs, so the raw count is exact.
         let body = self
             .run_query(&format!(
-                "SELECT count() FROM default.{table} FINAL FORMAT TabSeparated"
+                "SELECT count() FROM default.{table} FORMAT TabSeparated"
             ))
             .await?;
         Ok(body.trim().parse::<i64>()?)
@@ -573,4 +848,3 @@ impl ClickHouseQuery {
         }
     }
 }
-

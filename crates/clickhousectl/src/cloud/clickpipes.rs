@@ -1,0 +1,13783 @@
+use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::config::{config_source_label, deserialize_strict_config, read_config_value};
+use crate::cloud::output::{ABSENT, or_absent, print_human};
+use crate::cloud::shared::{NameSelector, select_named_id};
+use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
+use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
+use clap::{ArgGroup, Args, Subcommand};
+use clickhouse_cloud_api::models::{
+    ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipeBigQueryPipeTableMappingTableengine,
+    ClickPipeKafkaOffsetStrategy, ClickPipeMongoDBPipeSettingsReplicationmode,
+    ClickPipeMongoDBPipeTableMappingTableengine, ClickPipeMutateMongoDBSourceReadpreference,
+    ClickPipeMutateMySQLSourceAuthentication, ClickPipeMutateMySQLSourceType,
+    ClickPipeMySQLPipeSettingsReplicationmechanism, ClickPipeMySQLPipeSettingsReplicationmode,
+    ClickPipeMySQLPipeTableMappingTableengine, ClickPipePostKafkaSourceAuthentication,
+    ClickPipePostKafkaSourceFormat, ClickPipePostKafkaSourceType,
+    ClickPipePostgresPipeTableMapping, ClickPipePostgresPipeTableMappingTableengine,
+};
+use tabled::{Table, Tabled, settings::Style};
+
+// Valid wire values for each ClickPipe enum the CLI accepts as a string argument.
+// Kept in sync with the clickhouse-cloud-api library enums; extra variants are
+// rejected by clap at parse time with a `[possible values: …]` hint.
+const OBJECT_STORAGE_FORMATS: &[&str] = &[
+    "JSONEachRow",
+    "JSONAsObject",
+    "CSV",
+    "CSVWithNames",
+    "TabSeparated",
+    "TabSeparatedWithNames",
+    "Parquet",
+    "Avro",
+];
+const OBJECT_STORAGE_COMPRESSIONS: &[&str] = &[
+    "none", "gzip", "gz", "brotli", "br", "xz", "LZMA", "zstd", "auto",
+];
+const OBJECT_STORAGE_TYPES: &[&str] = &[
+    "s3",
+    "gcs",
+    "dospaces",
+    "azureblobstorage",
+    "cloudflarer2",
+    "ovhobjectstorage",
+];
+const KINESIS_FORMATS: &[&str] = &["JSONEachRow", "Avro", "AvroConfluent"];
+const KINESIS_AUTHS: &[&str] = &["IAM_ROLE", "IAM_USER"];
+const KINESIS_ITERATOR_TYPES: &[&str] = &["TRIM_HORIZON", "LATEST", "AT_TIMESTAMP"];
+const POSTGRES_TYPES: &[&str] = &[
+    "postgres",
+    "supabase",
+    "neon",
+    "alloydb",
+    "planetscale",
+    "rdspostgres",
+    "aurorapostgres",
+    "cloudsqlpostgres",
+    "azurepostgres",
+    "crunchybridge",
+    "tigerdata",
+];
+const DB_AUTHS: &[&str] = &["basic", "IAM_ROLE"];
+const REPLICATION_MODES: &[&str] = &["cdc", "snapshot", "cdc_only"];
+const PUBSUB_FORMATS: &[&str] = &["JSONEachRow", "Avro", "Protobuf"];
+const PUBSUB_SEEK_TYPES: &[&str] = &["latest", "earliest", "timestamp"];
+/// `maxLength` of the Pub/Sub subscription filter in the spec, so an over-long
+/// CEL expression is a usage error instead of a rejected request.
+const PUBSUB_FILTER_MAX_LENGTH: usize = 256;
+/// `maxLength` of the base64-encoded Kafka `protobufSchema` field.
+const PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH: usize = 1_048_576;
+
+fn parse_cdc_cpu_millicores(value: &str) -> Result<u32, String> {
+    let value = value
+        .parse::<u32>()
+        .map_err(|_| "must be an integer from 1000 to 32000".to_string())?;
+    if !(1000..=32000).contains(&value) || value % 1000 != 0 {
+        return Err("must be from 1000 to 32000 in increments of 1000".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_cdc_memory_gb(value: &str) -> Result<f64, String> {
+    let value = value
+        .parse::<f64>()
+        .map_err(|_| "must be a number from 4 to 128".to_string())?;
+    if !value.is_finite() || !(4.0..=128.0).contains(&value) || (value / 4.0).fract() != 0.0 {
+        return Err("must be from 4 to 128 in increments of 4".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_streaming_memory_gb(value: &str) -> Result<f64, String> {
+    let value = value
+        .parse::<f64>()
+        .map_err(|_| "must be a number from 0.5 to 8".to_string())?;
+    if !value.is_finite() || !(0.5..=8.0).contains(&value) {
+        return Err("must be from 0.5 to 8".to_string());
+    }
+    Ok(value)
+}
+
+fn parse_kafka_authentication(value: &str) -> CloudResult<ClickPipePostKafkaSourceAuthentication> {
+    let authentication = parse_serde_enum(
+        value,
+        "Kafka authentication",
+        ClickPipePostKafkaSourceAuthentication::VALUES,
+    )?;
+    match &authentication {
+        ClickPipePostKafkaSourceAuthentication::PLAIN
+        | ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_256
+        | ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_512
+        | ClickPipePostKafkaSourceAuthentication::IAM_ROLE
+        | ClickPipePostKafkaSourceAuthentication::IAM_USER
+        | ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS
+        | ClickPipePostKafkaSourceAuthentication::ServiceAccountWorkloadIdentity => {
+            Ok(authentication)
+        }
+        ClickPipePostKafkaSourceAuthentication::Unknown(value) => Err(CloudError::new(format!(
+            "unknown Kafka authentication method '{value}'"
+        ))),
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GcpAuthentication {
+    ServiceAccount,
+    WorkloadIdentity,
+}
+
+fn parse_pubsub_authentication(value: &str) -> CloudResult<GcpAuthentication> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostPubSubSourceAuthentication as ServiceAccountAuth,
+        ClickPipePostPubSubWorkloadIdentitySourceAuthentication as WorkloadIdentityAuth,
+    };
+
+    let json = serde_json::Value::String(value.to_string());
+    match serde_json::from_value::<ServiceAccountAuth>(json.clone())? {
+        ServiceAccountAuth::ServiceAccount => Ok(GcpAuthentication::ServiceAccount),
+        ServiceAccountAuth::Unknown(_) => {
+            match serde_json::from_value::<WorkloadIdentityAuth>(json)? {
+                WorkloadIdentityAuth::ServiceAccountWorkloadIdentity => {
+                    Ok(GcpAuthentication::WorkloadIdentity)
+                }
+                WorkloadIdentityAuth::Unknown(value) => Err(CloudError::new(format!(
+                    "unknown Pub/Sub authentication method '{value}'"
+                ))),
+            }
+        }
+    }
+}
+
+fn parse_supported_pubsub_auth(value: &str) -> Result<String, String> {
+    parse_pubsub_authentication(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
+}
+
+fn parse_bigquery_authentication(value: &str) -> CloudResult<GcpAuthentication> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostBigQueryServiceAccountSourceAuthentication as ServiceAccountAuth,
+        ClickPipePostBigQueryWorkloadIdentitySourceAuthentication as WorkloadIdentityAuth,
+    };
+
+    let json = serde_json::Value::String(value.to_string());
+    match serde_json::from_value::<ServiceAccountAuth>(json.clone())? {
+        ServiceAccountAuth::ServiceAccount => Ok(GcpAuthentication::ServiceAccount),
+        ServiceAccountAuth::Unknown(_) => {
+            match serde_json::from_value::<WorkloadIdentityAuth>(json)? {
+                WorkloadIdentityAuth::ServiceAccountWorkloadIdentity => {
+                    Ok(GcpAuthentication::WorkloadIdentity)
+                }
+                WorkloadIdentityAuth::Unknown(value) => Err(CloudError::new(format!(
+                    "unknown BigQuery authentication method '{value}'"
+                ))),
+            }
+        }
+    }
+}
+
+fn parse_supported_bigquery_auth(value: &str) -> Result<String, String> {
+    parse_bigquery_authentication(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
+}
+
+fn parse_object_storage_authentication(
+    value: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostObjectStorageSourceAuthentication> {
+    use clickhouse_cloud_api::models::ClickPipePostObjectStorageSourceAuthentication as Auth;
+
+    match serde_json::from_value::<Auth>(serde_json::Value::String(value.to_string()))? {
+        authentication @ (Auth::IAM_ROLE
+        | Auth::IAM_USER
+        | Auth::CONNECTION_STRING
+        | Auth::SERVICE_ACCOUNT
+        | Auth::ServiceAccountWorkloadIdentity) => Ok(authentication),
+        Auth::Unknown(value) => Err(CloudError::new(format!(
+            "unknown object-storage authentication method '{value}'"
+        ))),
+    }
+}
+
+fn parse_supported_object_storage_auth(value: &str) -> Result<String, String> {
+    parse_object_storage_authentication(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
+}
+
+fn parse_supported_kafka_auth(value: &str) -> Result<String, String> {
+    parse_kafka_authentication(value)
+        .map(|_| value.to_string())
+        .map_err(|error| error.message)
+}
+
+/// Expose canonical choices while retaining the existing authentication parser.
+#[derive(Clone)]
+struct AuthenticationValueParser {
+    parse: fn(&str) -> Result<String, String>,
+    values: &'static [&'static str],
+}
+
+impl TypedValueParser for AuthenticationValueParser {
+    type Value = String;
+
+    fn parse_ref(
+        &self,
+        command: &clap::Command,
+        argument: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        (self.parse).parse_ref(command, argument, value)
+    }
+
+    fn possible_values(&self) -> Option<Box<dyn Iterator<Item = PossibleValue> + '_>> {
+        Some(Box::new(
+            self.values.iter().copied().map(PossibleValue::new),
+        ))
+    }
+}
+
+#[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
+pub enum ClickPipeCommands {
+    /// List ClickPipes
+    List {
+        /// Service ID
+        service_id: String,
+    },
+
+    /// Get ClickPipe details
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
+    },
+
+    /// Update a ClickPipe
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The file is a typed PATCH body; omitted top-level fields remain unchanged.
+  Source updates support kafka, kinesis, objectStorage, pubsub, postgres, mysql,
+  and mongodb. BigQuery sources cannot be updated by this API.
+  For Postgres, MySQL, and MongoDB: stop -> get until Paused -> update --file.
+  Update does not stop or restart the pipe; run start after a successful update.
+  For object-storage, fieldMappings (including []) requires destination.columns.
+  Use `-` to read the JSON body from stdin.")]
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
+
+        /// JSON PATCH body path, or `-` for stdin
+        #[arg(
+            long = "file",
+            alias = "config-file",
+            value_name = "PATH",
+            required = true
+        )]
+        config_file: String,
+    },
+
+    /// Delete a ClickPipe
+    Delete {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
+    },
+
+    /// Start a ClickPipe
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Streaming and object-storage pipes use Stopped when halted; database CDC pipes
+  use Paused. Inspect the current state with `get` before requesting start.")]
+    Start {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
+    },
+
+    /// Stop a ClickPipe
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Streaming and object-storage pipes transition through Stopping to Stopped;
+  database CDC pipes transition through Pausing to Paused.")]
+    Stop {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
+    },
+
+    /// Resync a ClickPipe (Postgres and MySQL pipes only)
+    Resync {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
+    },
+
+    /// Update ClickPipe scaling
+    #[command(
+        group(ArgGroup::new("scale_target").required(true).multiple(true).args(["replicas", "cpu_millicores", "memory_gb"]))
+    )]
+    Scale {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
+
+        /// Number of replicas (1-40, streaming pipes)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..=40))]
+        replicas: Option<u32>,
+
+        /// CPU millicores per replica (125-2000, streaming pipes)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(125..=2000))]
+        cpu_millicores: Option<u32>,
+
+        /// Memory GB per replica (0.5-8, streaming pipes)
+        #[arg(long, value_parser = parse_streaming_memory_gb)]
+        memory_gb: Option<f64>,
+    },
+
+    /// Manage service-wide CDC scaling
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The allocation applies to database CDC ClickPipes on the service.
+  Omitted update values keep their current settings.
+  Typical flow: `get` -> `update` -> `get`.")]
+    CdcScaling {
+        #[command(subcommand)]
+        command: ClickPipeCdcScalingCommands,
+    },
+
+    /// Manage ingestion settings (streaming, object-storage pipes)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  CDC pipes (Postgres, MySQL, MongoDB, BigQuery) have no ingestion settings: their
+  sync interval and pull batch size are fields of `clickhousectl cloud clickpipe get`.")]
+    Settings {
+        #[command(subcommand)]
+        command: ClickPipeSettingsCommands,
+    },
+
+    /// Inspect GCP workload identity support and principal
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Only applies to ClickHouse Cloud services hosted on GCP.
+  Use `get` before create to verify readiness and obtain the service principal.
+  Grant that principal access to GCS, GCMK, Pub/Sub or BigQuery source resources.")]
+    Context {
+        #[command(subcommand)]
+        command: ClickPipeContextCommands,
+    },
+
+    /// Discover a source schema without creating a pipe (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Needs API key auth even though it only reads; OAuth is rejected here.
+  Output is one inferred name/type per field — pass them to `--column name:type` on
+  `clickhousectl cloud clickpipe create <source>`, which takes the same source flags.
+  GCP workload identity uses the principal from `clickpipe context get`.
+  Typical flow: `schema-discover <source> <service-id>` -> `create <source> <service-id>`.")]
+    SchemaDiscover {
+        #[command(subcommand)]
+        command: ClickPipeSchemaDiscoverCommands,
+    },
+
+    /// Manage reverse private endpoints
+    #[command(
+        name = "reverse-private-endpoint",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  A pipe can only use an endpoint whose status is Ready; an AWS PrivateLink endpoint
+  stays in PendingAcceptance until accepted in the account that owns the source.
+  Kafka: pass the endpoint's id to `clickpipe create kafka --reverse-private-endpoint-id`.
+  Postgres and MySQL CDC: pass one of the endpoint's DNS names as --host (see `get`).
+  Typical flow: `create` -> `get` until Ready -> `clickpipe create <source>`."
+    )]
+    ReversePrivateEndpoint {
+        #[command(subcommand)]
+        command: crate::cloud::clickpipe_endpoints::ReversePrivateEndpointCommands,
+    },
+
+    /// Create a ClickPipe
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  For kafka, kinesis, object-storage and pubsub, get --column from
+  `clickhousectl cloud clickpipe schema-discover <source> <service-id>`.
+  GCP workload identity is private preview for GCS, GCMK, Pub/Sub and BigQuery:
+  run `clickpipe context get`, grant its principal access, then pass --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY.
+  The source must be reachable from ClickPipes; allow the static egress IPs:
+  https://clickhouse.com/docs/integrations/clickpipes/networking/static-ips
+  Prints the pipe's name, ID and state; it is not ready to query yet.
+  Next: `clickpipe list <service-id>`, `clickpipe get <service-id> <clickpipe-id>`.")]
+    Create {
+        #[command(subcommand)]
+        command: ClickPipeCreateCommands,
+    },
+}
+
+impl ClickPipeCommands {
+    pub fn is_write(&self) -> bool {
+        match self {
+            ClickPipeCommands::List { .. } => false,
+            ClickPipeCommands::Get { .. } => false,
+            ClickPipeCommands::Update { .. } => true,
+            ClickPipeCommands::Delete { .. } => true,
+            ClickPipeCommands::Start { .. } => true,
+            ClickPipeCommands::Stop { .. } => true,
+            ClickPipeCommands::Resync { .. } => true,
+            ClickPipeCommands::Scale { .. } => true,
+            ClickPipeCommands::CdcScaling { command } => command.is_write(),
+            // Side-effect-free, but the API gateway rejects OAuth/JWT on
+            // POST /clickpipes/schemaDiscovery ("This endpoint is not
+            // available for JWT authentication"), so classify it as a
+            // write to fail fast with the API-key guidance.
+            ClickPipeCommands::SchemaDiscover { .. } => true,
+            ClickPipeCommands::Create { .. } => true,
+            ClickPipeCommands::Context { .. } => false,
+            ClickPipeCommands::Settings { command } => command.is_write(),
+            ClickPipeCommands::ReversePrivateEndpoint { command } => command.is_write(),
+        }
+    }
+
+    /// The `clickpipe create` validation message for a database source whose
+    /// flags cannot describe the chosen `--auth`, paired with the source
+    /// subcommand the usage error belongs to. clap cannot express "forbidden
+    /// for this value of another argument", so these checks run after parsing.
+    pub(crate) fn clickpipe_create_validation_error(&self) -> Option<(&'static str, String)> {
+        let ClickPipeCommands::Create { command } = self else {
+            return None;
+        };
+
+        // Exhaustive so every source runs common request validation before
+        // credentials, file reads, or HTTP. Database-specific validation runs
+        // after the common shape and compatibility checks.
+        let (source, error) = match command {
+            ClickPipeCreateCommands::ObjectStorage(args) => (
+                "object-storage",
+                build_create_request_args(&args.request, ClickPipeSourceKind::ObjectStorage).err(),
+            ),
+            ClickPipeCreateCommands::Kafka(args) => (
+                "kafka",
+                build_create_request_args(&args.request, ClickPipeSourceKind::Kafka).err(),
+            ),
+            ClickPipeCreateCommands::Kinesis(args) => (
+                "kinesis",
+                build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis).err(),
+            ),
+            ClickPipeCreateCommands::Postgres(args) => {
+                ("postgres", validate_postgres_create_args(args).err())
+            }
+            ClickPipeCreateCommands::MySQL(args) => {
+                ("mysql", validate_mysql_create_args(args).err())
+            }
+            ClickPipeCreateCommands::MongoDB(args) => {
+                ("mongodb", validate_mongodb_create_args(args).err())
+            }
+            ClickPipeCreateCommands::BigQuery(args) => {
+                ("bigquery", validate_bigquery_create_args(args).err())
+            }
+            ClickPipeCreateCommands::PubSub(args) => (
+                "pubsub",
+                build_create_request_args(&args.request, ClickPipeSourceKind::PubSub).err(),
+            ),
+        };
+
+        error.map(|error| (source, error.message))
+    }
+
+    pub(crate) fn reverse_private_endpoint_create_validation_error(&self) -> Option<String> {
+        let ClickPipeCommands::ReversePrivateEndpoint { command } = self else {
+            return None;
+        };
+
+        command.create_validation_error()
+    }
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeContextCommands {
+    /// Get GCP workload identity readiness and principal
+    Get {
+        /// Service ID
+        service_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeCdcScalingCommands {
+    /// Get CDC scaling
+    Get {
+        /// Service ID
+        service_id: String,
+    },
+
+    /// Update CDC scaling
+    #[command(
+        group(ArgGroup::new("cdc_scale_target").required(true).multiple(true).args(["cpu_millicores", "memory_gb"]))
+    )]
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// CPU millicores per replica (1000-32000, in increments of 1000)
+        #[arg(long, value_parser = parse_cdc_cpu_millicores)]
+        cpu_millicores: Option<u32>,
+
+        /// Memory GiB per replica (4-128, in increments of 4)
+        #[arg(long, value_parser = parse_cdc_memory_gb)]
+        memory_gb: Option<f64>,
+    },
+}
+
+impl ClickPipeCdcScalingCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            Self::Get { .. } => false,
+            Self::Update { .. } => true,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeSchemaDiscoverCommands {
+    /// Discover schema from a Kafka or Kafka-compatible source
+    Kafka(Box<KafkaSchemaDiscoverArgs>),
+
+    /// Discover schema from an Amazon Kinesis stream
+    Kinesis(Box<KinesisSchemaDiscoverArgs>),
+
+    /// Discover schema from object storage
+    #[command(
+        name = "object-storage",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Discovery runs on the destination service, which must be running."
+    )]
+    ObjectStorage(Box<ObjectStorageSchemaDiscoverArgs>),
+
+    /// Discover schema from Pub/Sub (limited preview)
+    #[command(name = "pubsub")]
+    PubSub(Box<PubSubSchemaDiscoverArgs>),
+}
+
+#[derive(Args)]
+pub struct KafkaSchemaDiscoverArgs {
+    /// Service ID
+    pub service_id: String,
+
+    #[command(flatten)]
+    pub source: KafkaSourceFields,
+}
+
+#[derive(Args)]
+pub struct KinesisSchemaDiscoverArgs {
+    /// Service ID
+    pub service_id: String,
+
+    #[command(flatten)]
+    pub source: KinesisSourceFields,
+}
+
+#[derive(Args)]
+pub struct ObjectStorageSchemaDiscoverArgs {
+    /// Service ID
+    pub service_id: String,
+
+    #[command(flatten)]
+    pub source: ObjectStorageSourceFields,
+}
+
+#[derive(Args)]
+pub struct PubSubSchemaDiscoverArgs {
+    /// Service ID
+    pub service_id: String,
+
+    #[command(flatten)]
+    pub source: PubSubSourceFields,
+}
+
+#[derive(Subcommand)]
+pub enum ClickPipeSettingsCommands {
+    /// Get ingestion settings (streaming, object-storage pipes)
+    Get {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
+    },
+
+    /// Update ingestion settings (streaming, object-storage pipes)
+    #[command(group(
+        ArgGroup::new("settings")
+            .required(true)
+            .multiple(true)
+            .args([
+                "streaming_max_insert_wait_ms",
+                "object_storage_concurrency",
+                "object_storage_polling_interval_ms",
+                "object_storage_max_insert_bytes",
+                "object_storage_max_file_count",
+                "clickhouse_max_threads",
+                "clickhouse_max_insert_threads",
+                "clickhouse_max_download_threads",
+                "clickhouse_min_insert_block_size_bytes",
+                "clickhouse_parallel_distributed_insert_select",
+                "kafka_read_committed",
+                "object_storage_use_cluster_function",
+                "clickhouse_parallel_view_processing",
+            ])
+    ), after_help = "\
+CONTEXT FOR AGENTS:
+  Omitted object-storage settings keep their current values.
+  Kafka read-committed is preserved unless explicitly changed.")]
+    Update {
+        /// Service ID
+        service_id: String,
+
+        /// ClickPipe ID
+        #[command(flatten)]
+        clickpipe_id: NameSelector,
+
+        #[command(flatten)]
+        settings: ClickPipeSettingsValues,
+    },
+}
+
+/// Ingestion settings shared by create and `settings update`.
+///
+/// Every field is optional so an omitted create sends no `settings` block and
+/// an update only changes the selected keys. `false` and zero remain distinct
+/// from omission because clap stores explicit values in `Option`.
+#[derive(Args, Debug, Clone, Default, PartialEq)]
+pub struct ClickPipeSettingsValues {
+    /// Max wait before inserting data (ms, 500-60000)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(500..=60000))]
+    streaming_max_insert_wait_ms: Option<u32>,
+
+    /// Concurrent file processing threads (1-35)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=35))]
+    object_storage_concurrency: Option<u32>,
+
+    /// Polling interval for continuous ingest (ms, 100-3600000)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(100..=3600000))]
+    object_storage_polling_interval_ms: Option<u32>,
+
+    /// Bytes per insert batch (524288000-10737418240)
+    #[arg(long, value_parser = clap::value_parser!(u64).range(524288000..=10737418240))]
+    object_storage_max_insert_bytes: Option<u64>,
+
+    /// Max files per insert batch (1-10000)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=10000))]
+    object_storage_max_file_count: Option<u32>,
+
+    /// Max concurrent threads for file processing (0-64)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=64))]
+    clickhouse_max_threads: Option<u32>,
+
+    /// Max concurrent insert threads (0-16)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=16))]
+    clickhouse_max_insert_threads: Option<u32>,
+
+    /// Max concurrent download threads (0-32)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=32))]
+    clickhouse_max_download_threads: Option<u32>,
+
+    /// Minimum insert block size in bytes (0-10737418240)
+    #[arg(long, value_parser = clap::value_parser!(u64).range(0..=10737418240))]
+    clickhouse_min_insert_block_size_bytes: Option<u64>,
+
+    /// Distributed INSERT SELECT mode (0-2)
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=2))]
+    clickhouse_parallel_distributed_insert_select: Option<u32>,
+
+    /// Read only committed messages (Kafka only)
+    #[arg(long)]
+    kafka_read_committed: Option<bool>,
+
+    /// Use ClickHouse cluster function
+    #[arg(long)]
+    object_storage_use_cluster_function: Option<bool>,
+
+    /// Push to attached views concurrently
+    #[arg(long)]
+    clickhouse_parallel_view_processing: Option<bool>,
+}
+
+impl ClickPipeSettingsCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            ClickPipeSettingsCommands::Get { .. } => false,
+            ClickPipeSettingsCommands::Update { .. } => true,
+        }
+    }
+}
+
+#[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)]
+pub enum ClickPipeCreateCommands {
+    /// Create a ClickPipe from object storage
+    #[command(
+        name = "object-storage",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  First run `clickpipe schema-discover object-storage <service-id>` with the same
+  source flags, then pass every desired field as `--column name:type`.
+  Auth is inferred from the credential flags, in order: --iam-role,
+  --access-key-id/--secret-key, --connection-string, --service-account-file.
+  GCS workload identity uses --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY without
+  credential flags.
+  With no credential flag nothing is sent, so the source must be public."
+    )]
+    ObjectStorage(ObjectStorageCreateArgs),
+
+    /// Create a ClickPipe from Kafka or Kafka-compatible source
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The selected broker credentials must allow topic discovery and consumption.
+  Avro and Protobuf need a schema registry; Protobuf can instead use
+  --protobuf-schema-file.
+  https://clickhouse.com/docs/integrations/clickpipes/kafka/create-kafka-clickpipe")]
+    Kafka(KafkaCreateArgs),
+
+    /// Create a ClickPipe from Amazon Kinesis
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The IAM role or access keys must allow ClickPipes to read the selected stream.
+  IAM role names must start with ClickHouseAccessRole- and trust the ClickHouse
+  service IAM role:
+  https://clickhouse.com/docs/integrations/clickpipes/kinesis/auth")]
+    Kinesis(KinesisCreateArgs),
+
+    /// Create a ClickPipe from PostgreSQL
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  For CDC the source needs logical replication, a publication containing every
+  mapped table, and REPLICATION on the source user:
+  https://clickhouse.com/docs/integrations/clickpipes/postgres
+  TLS and certificate verification are on by default; prefer --ca-certificate
+  over either security opt-out for a private source CA.
+  Managed Postgres: save its CA with `cloud postgres certs get <pg-id> --output ca.pem`,
+  then pass ca.pem to --ca-certificate.
+  Only --sync-interval-seconds and --pull-batch-size can change after creation.")]
+    Postgres(PostgresCreateArgs),
+
+    /// Create a ClickPipe from MySQL
+    #[command(
+        name = "mysql",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  For CDC enable ROW/FULL binlogs and retain them for at least 72 hours.
+  GTID is the default; use FILE_POS only for matching legacy replication.
+  Grant SELECT, REPLICATION CLIENT and REPLICATION SLAVE to the source user:
+  https://clickhouse.com/docs/integrations/clickpipes/mysql/source/generic"
+    )]
+    MySQL(MySqlCreateArgs),
+
+    /// Create a ClickPipe from MongoDB
+    #[command(
+        name = "mongodb",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  CDC requires MongoDB 5.1+ in a replica set or sharded cluster.
+  Keep at least 24 hours of oplog history; 72 hours or more is recommended.
+  Grant the source user readAnyDatabase and clusterMonitor:
+  https://clickhouse.com/docs/integrations/clickpipes/mongodb/source/generic"
+    )]
+    MongoDB(MongoDbCreateArgs),
+
+    /// Create a ClickPipe from BigQuery
+    #[command(
+        name = "bigquery",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Provision the GCS staging bucket before creating a BigQuery pipe.
+  The selected identity needs BigQuery table and export-job access plus read/write
+  access to staging objects:
+  https://clickhouse.com/blog/bigquery-clickpipe-private-preview"
+    )]
+    BigQuery(BigQueryCreateArgs),
+
+    /// Create a ClickPipe from Google Cloud Pub/Sub
+    #[command(
+        name = "pubsub",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  Pub/Sub ClickPipes are in limited preview: ask ClickHouse support to enable the
+  feature for the organization before creating a pipe."
+    )]
+    PubSub(PubSubCreateArgs),
+}
+
+/// Destination-permission flags shared by every `clickpipe create` subcommand.
+/// Flattened into each create args struct so `--role` and its help text have a
+/// single definition, the way `KafkaSourceFields` shares the Kafka source flags.
+#[derive(Args, Debug, Default)]
+pub struct DestinationRoleArgs {
+    /// Extra ClickHouse role to grant the ClickPipes destination user (repeatable)
+    ///
+    /// When omitted, ClickPipes grants that user the default role only. Each
+    /// --role adds a role on top of the default; nothing is taken away. The
+    /// API-reserved names `clickpipes` and `clickpipes_system` are rejected.
+    #[arg(long = "role", value_name = "ROLE", value_parser = parse_destination_role)]
+    pub roles: Vec<String>,
+}
+
+/// Sample validation shared by every `clickpipe create` source.
+#[derive(Args, Debug, Default)]
+pub struct ClickPipeCreateValidationArgs {
+    /// Validate source data samples, not only connectivity
+    #[arg(long, value_name = "true|false")]
+    pub validate_samples: Option<bool>,
+}
+
+/// Request controls shared by streaming and object-storage creates.
+#[derive(Args, Debug, Default)]
+pub struct ClickPipeCreateRequestArgs {
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
+
+    /// Initial number of replicas (1-40)
+    ///
+    /// Requires --cpu-millicores and --memory-gb.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..=40))]
+    pub replicas: Option<u32>,
+
+    /// Initial CPU millicores per replica (125-2000)
+    ///
+    /// Requires --replicas and --memory-gb.
+    #[arg(long, value_parser = clap::value_parser!(u32).range(125..=2000))]
+    pub cpu_millicores: Option<u32>,
+
+    /// Initial memory GB per replica (0.5-8)
+    ///
+    /// Requires --replicas and --cpu-millicores.
+    #[arg(long, value_parser = parse_streaming_memory_gb)]
+    pub memory_gb: Option<f64>,
+
+    /// Field mapping JSON with sourceField and destinationField (repeatable)
+    #[arg(long = "field-mapping", value_name = "JSON")]
+    pub field_mappings: Vec<String>,
+
+    #[command(flatten)]
+    settings: ClickPipeSettingsValues,
+}
+
+/// Destination-table controls shared by streaming ClickPipe creates.
+#[derive(Args, Debug)]
+pub struct StreamingDestinationTableArgs {
+    /// Whether ClickPipes manages the destination table
+    #[arg(
+        long,
+        default_value_t = true,
+        value_name = "true|false",
+        action = clap::ArgAction::Set
+    )]
+    pub managed_table: bool,
+
+    /// Complete destination table definition JSON path, or - for stdin
+    #[arg(long, value_name = "PATH|-")]
+    pub table_definition_file: Option<String>,
+}
+
+impl Default for StreamingDestinationTableArgs {
+    fn default() -> Self {
+        Self {
+            managed_table: true,
+            table_definition_file: None,
+        }
+    }
+}
+
+/// Destination database shared by database-source ClickPipe creates.
+#[derive(Args, Debug)]
+pub struct DatabaseDestinationArgs {
+    /// Destination ClickHouse database
+    #[arg(long, default_value = "default", value_name = "DATABASE")]
+    pub destination_database: String,
+}
+
+/// Source-connection fields for an object-storage ClickPipe source.
+/// Flattened into both `ObjectStorageCreateArgs` (pipe creation) and the
+/// schema-discover object-storage subcommand so the source field set has a
+/// single definition.
+#[derive(Args, Debug)]
+pub struct ObjectStorageSourceFields {
+    /// Source URL (e.g., https://bucket.s3.region.amazonaws.com/path/*.json)
+    #[arg(long)]
+    pub source_url: String,
+
+    /// Data format
+    #[arg(long, value_parser = PossibleValuesParser::new(OBJECT_STORAGE_FORMATS))]
+    pub format: String,
+
+    /// Storage type
+    #[arg(
+        long,
+        default_value = "s3",
+        value_parser = PossibleValuesParser::new(OBJECT_STORAGE_TYPES),
+    )]
+    pub storage_type: String,
+
+    /// Compression
+    #[arg(
+        long,
+        default_value = "auto",
+        value_parser = PossibleValuesParser::new(OBJECT_STORAGE_COMPRESSIONS),
+    )]
+    pub compression: String,
+
+    /// Authentication method
+    ///
+    /// Inferred from credential flags when omitted; with no credentials, no
+    /// authentication is sent. Workload identity is only valid for GCS.
+    #[arg(long, value_parser = AuthenticationValueParser { parse: parse_supported_object_storage_auth, values: &["IAM_ROLE", "IAM_USER", "CONNECTION_STRING", "SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] })]
+    pub auth: Option<String>,
+
+    /// Enable continuous ingestion
+    #[arg(long)]
+    pub continuous: bool,
+
+    /// SQS queue URL for continuous ingestion notifications
+    #[arg(long)]
+    pub queue_url: Option<String>,
+
+    /// Skip the initial load and ingest only queue-notification files
+    ///
+    /// Requires --queue-url.
+    #[arg(long, requires = "queue_url")]
+    pub skip_initial_load: bool,
+
+    /// Object key to start continuous ingestion after
+    ///
+    /// Mutually exclusive with --skip-initial-load.
+    #[arg(long, conflicts_with = "skip_initial_load")]
+    pub start_after: Option<String>,
+
+    /// CSV delimiter character (e.g., ",")
+    #[arg(long)]
+    pub delimiter: Option<String>,
+
+    /// IAM role ARN (selects IAM_ROLE auth)
+    #[arg(long)]
+    pub iam_role: Option<String>,
+
+    /// Access key ID (selects IAM_USER auth; requires --secret-key)
+    #[arg(long, requires = "secret_key")]
+    pub access_key_id: Option<String>,
+
+    /// Secret key (requires --access-key-id)
+    #[arg(long, requires = "access_key_id")]
+    pub secret_key: Option<String>,
+
+    /// Azure connection string (selects CONNECTION_STRING auth)
+    #[arg(long)]
+    pub connection_string: Option<String>,
+
+    /// Azure container name
+    #[arg(long)]
+    pub azure_container_name: Option<String>,
+
+    /// Object storage path (for Azure)
+    #[arg(long)]
+    pub path: Option<String>,
+
+    /// Path to a GCP service account JSON key file, or - to read it from stdin
+    #[arg(long, value_name = "PATH")]
+    pub service_account_file: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ObjectStorageCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub request: ClickPipeCreateRequestArgs,
+
+    #[command(flatten)]
+    pub source: ObjectStorageSourceFields,
+
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination column as name:type (required, repeatable)
+    #[arg(
+        long = "column",
+        required = true,
+        value_name = "NAME:TYPE",
+        value_parser = parse_destination_column
+    )]
+    pub columns: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_table: StreamingDestinationTableArgs,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+}
+
+/// Source-connection fields for a Kafka / Kafka-compatible ClickPipe source.
+/// Flattened into both `KafkaCreateArgs` (pipe creation) and the schema-discover
+/// Kafka subcommand so the source field set has a single definition.
+#[derive(Args, Debug)]
+pub struct KafkaSourceFields {
+    /// Kafka broker(s) (e.g., "broker1:9092,broker2:9092")
+    #[arg(long)]
+    pub brokers: String,
+
+    /// Topic(s) to consume from
+    #[arg(long)]
+    pub topics: String,
+
+    /// Data format
+    #[arg(
+        long,
+        value_parser = PossibleValuesParser::new(ClickPipePostKafkaSourceFormat::VALUES)
+    )]
+    pub format: String,
+
+    /// Kafka type
+    #[arg(
+        long,
+        default_value = "kafka",
+        value_parser = PossibleValuesParser::new(ClickPipePostKafkaSourceType::VALUES),
+    )]
+    pub kafka_type: String,
+
+    /// Consumer group name
+    #[arg(long)]
+    pub consumer_group: Option<String>,
+
+    /// Authentication method
+    ///
+    /// Inferred from the credential flags when omitted; with no credential flag
+    /// at all, no authentication is sent.
+    #[arg(long, value_parser = AuthenticationValueParser { parse: parse_supported_kafka_auth, values: ClickPipePostKafkaSourceAuthentication::VALUES })]
+    pub auth: Option<String>,
+
+    /// Azure Event Hubs connection string
+    #[arg(
+        long,
+        value_name = "CONNECTION_STRING",
+        conflicts_with_all = [
+            "username",
+            "password",
+            "iam_role",
+            "access_key_id",
+            "secret_key",
+            "client_certificate",
+            "client_key"
+        ]
+    )]
+    pub event_hubs_connection_string: Option<String>,
+
+    /// Username for PLAIN/SCRAM authentication
+    #[arg(long, requires = "password")]
+    pub username: Option<String>,
+
+    /// Password for PLAIN/SCRAM authentication
+    #[arg(long, requires = "username")]
+    pub password: Option<String>,
+
+    /// IAM role ARN for MSK IAM authentication
+    #[arg(long)]
+    pub iam_role: Option<String>,
+
+    /// Access key ID for IAM_USER authentication
+    #[arg(long, requires = "secret_key")]
+    pub access_key_id: Option<String>,
+
+    /// Secret key for IAM_USER authentication
+    #[arg(long, requires = "access_key_id")]
+    pub secret_key: Option<String>,
+
+    /// Offset strategy
+    #[arg(
+        long,
+        default_value = "from_beginning",
+        value_parser = PossibleValuesParser::new(ClickPipeKafkaOffsetStrategy::VALUES),
+    )]
+    pub offset: String,
+
+    /// Timestamp for from_timestamp offset (e.g., "2021-01-01T00:00")
+    #[arg(long)]
+    pub offset_timestamp: Option<String>,
+
+    /// Schema registry URL (for Avro/Protobuf formats)
+    #[arg(long)]
+    pub schema_registry_url: Option<String>,
+
+    /// Schema registry username
+    #[arg(long)]
+    pub schema_registry_username: Option<String>,
+
+    /// Schema registry password
+    #[arg(long)]
+    pub schema_registry_password: Option<String>,
+
+    /// Path to a .proto file or FileDescriptorSet, or - to read stdin
+    #[arg(
+        long,
+        value_name = "PATH",
+        conflicts_with_all = [
+            "schema_registry_url",
+            "schema_registry_username",
+            "schema_registry_password",
+            "schema_registry_ca_certificate"
+        ]
+    )]
+    pub protobuf_schema_file: Option<String>,
+
+    /// Path to a PEM CA bundle for the broker
+    #[arg(long, value_name = "PATH")]
+    pub ca_certificate: Option<String>,
+
+    /// Path to client certificate file (for MUTUAL_TLS auth; requires --client-key)
+    #[arg(long, requires = "client_key")]
+    pub client_certificate: Option<String>,
+
+    /// Path to client private key file (for MUTUAL_TLS auth; requires --client-certificate)
+    #[arg(long, requires = "client_certificate")]
+    pub client_key: Option<String>,
+
+    /// Path to schema registry CA certificate file
+    #[arg(long)]
+    pub schema_registry_ca_certificate: Option<String>,
+
+    /// Reverse private endpoint IDs (repeatable)
+    #[arg(long = "reverse-private-endpoint-id")]
+    pub reverse_private_endpoint_ids: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct KafkaCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub request: ClickPipeCreateRequestArgs,
+
+    #[command(flatten)]
+    pub source: KafkaSourceFields,
+
+    /// Enable exactly-once delivery
+    #[arg(long, value_name = "true|false")]
+    pub exactly_once: Option<bool>,
+
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+    #[arg(long = "column", value_parser = parse_destination_column)]
+    pub columns: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_table: StreamingDestinationTableArgs,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+}
+
+/// Source-connection fields for an Amazon Kinesis ClickPipe source.
+/// Flattened into both `KinesisCreateArgs` (pipe creation) and the schema-discover
+/// Kinesis subcommand so the source field set has a single definition.
+#[derive(Args, Debug)]
+pub struct KinesisSourceFields {
+    /// Kinesis stream name
+    #[arg(long)]
+    pub stream_name: String,
+
+    /// AWS region (e.g., us-east-1)
+    #[arg(long)]
+    pub region: String,
+
+    /// Data format
+    #[arg(long, value_parser = PossibleValuesParser::new(KINESIS_FORMATS))]
+    pub format: String,
+
+    /// Authentication method
+    #[arg(
+        long,
+        default_value = "IAM_ROLE",
+        value_parser = PossibleValuesParser::new(KINESIS_AUTHS),
+    )]
+    pub auth: String,
+
+    /// IAM role ARN (with --auth IAM_ROLE)
+    #[arg(long)]
+    pub iam_role: Option<String>,
+
+    /// Access key ID for IAM_USER authentication
+    #[arg(long, requires = "secret_key")]
+    pub access_key_id: Option<String>,
+
+    /// Secret key for IAM_USER authentication
+    #[arg(long, requires = "access_key_id")]
+    pub secret_key: Option<String>,
+
+    /// Iterator type
+    #[arg(
+        long,
+        default_value = "TRIM_HORIZON",
+        value_parser = PossibleValuesParser::new(KINESIS_ITERATOR_TYPES),
+    )]
+    pub iterator_type: String,
+
+    /// Unix timestamp for AT_TIMESTAMP iterator type
+    #[arg(long)]
+    pub iterator_timestamp: Option<u64>,
+
+    /// Enable enhanced fan-out
+    #[arg(long)]
+    pub enhanced_fan_out: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct KinesisCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub request: ClickPipeCreateRequestArgs,
+
+    #[command(flatten)]
+    pub source: KinesisSourceFields,
+
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+    #[arg(long = "column", value_parser = parse_destination_column)]
+    pub columns: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_table: StreamingDestinationTableArgs,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+}
+
+/// The two table-mapping flags are one required "at least one of" group, so
+/// clap names both in the missing-argument error and either alone is enough.
+#[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("postgres_table_mappings")
+        .required(true)
+        .multiple(true)
+        .args(["table_mappings", "table_mappings_json"])
+))]
+pub struct PostgresCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
+
+    /// PostgreSQL host
+    #[arg(long)]
+    pub host: String,
+
+    /// PostgreSQL port (1-65535)
+    #[arg(
+        long,
+        default_value = "5432",
+        value_parser = clap::value_parser!(u16).range(1..=65535)
+    )]
+    pub port: u16,
+
+    /// Source database name
+    #[arg(long)]
+    pub pg_database: String,
+
+    /// Username (required with --auth basic; invalid with --auth IAM_ROLE)
+    #[arg(long, requires = "password")]
+    pub username: Option<String>,
+
+    /// Password (required with --auth basic; invalid with --auth IAM_ROLE)
+    #[arg(long, requires = "username")]
+    pub password: Option<String>,
+
+    /// Table mappings as schema.table:target_table (repeatable)
+    ///
+    /// Leaves every other per-table option at the ClickPipes default.
+    #[arg(
+        long = "table-mapping",
+        value_name = "SCHEMA.TABLE:TARGET_TABLE",
+        value_parser = parse_postgres_table_mapping
+    )]
+    pub table_mappings: Vec<String>,
+
+    /// Full table mapping as a JSON object (repeatable)
+    ///
+    /// Takes the API's table mapping object verbatim, for the per-table
+    /// options the simple form cannot express: excludedColumns, sortingKeys,
+    /// useCustomSortingKey, partitionByExpr, partitionKey and tableEngine.
+    /// Combinable with --table-mapping; unknown fields are rejected.
+    #[arg(long = "table-mapping-json", value_name = "JSON")]
+    pub table_mappings_json: Vec<String>,
+
+    /// Postgres type
+    #[arg(
+        long,
+        default_value = "postgres",
+        value_parser = PossibleValuesParser::new(POSTGRES_TYPES),
+    )]
+    pub postgres_type: String,
+
+    /// Replication mode
+    #[arg(
+        long,
+        default_value = "cdc",
+        value_parser = PossibleValuesParser::new(REPLICATION_MODES),
+    )]
+    pub replication_mode: String,
+
+    /// Authentication method
+    #[arg(
+        long,
+        default_value = "basic",
+        value_parser = PossibleValuesParser::new(DB_AUTHS),
+    )]
+    pub auth: String,
+
+    /// IAM role ARN (required with --auth IAM_ROLE; invalid with basic auth)
+    #[arg(long, required_if_eq("auth", "IAM_ROLE"))]
+    pub iam_role: Option<String>,
+
+    /// Certificate hostname override (defaults to --host)
+    #[arg(long, value_name = "HOSTNAME")]
+    pub tls_host: Option<String>,
+
+    /// Path to a PEM CA bundle for a private or self-signed source certificate
+    #[arg(long, value_name = "PATH")]
+    pub ca_certificate: Option<String>,
+
+    /// Disable TLS and send source traffic unencrypted (unsafe)
+    #[arg(
+        long,
+        conflicts_with_all = ["tls_host", "ca_certificate", "skip_cert_verification"]
+    )]
+    pub disable_tls: bool,
+
+    /// Skip certificate verification (unsafe; prefer --ca-certificate)
+    #[arg(long)]
+    pub skip_cert_verification: bool,
+
+    /// Postgres publication name
+    #[arg(long)]
+    pub publication_name: Option<String>,
+
+    /// Replication slot name (only with --replication-mode cdc_only)
+    #[arg(long)]
+    pub replication_slot_name: Option<String>,
+
+    /// Interval in seconds to sync data from Postgres during CDC replication
+    #[arg(long, value_name = "SECONDS")]
+    pub sync_interval_seconds: Option<i64>,
+
+    /// Number of rows to pull in each batch during CDC replication
+    #[arg(long, value_name = "ROWS")]
+    pub pull_batch_size: Option<i64>,
+
+    /// Parallel workers per table in the initial snapshot phase (create-time only)
+    #[arg(long, value_name = "WORKERS")]
+    pub initial_load_parallelism: Option<i64>,
+
+    /// Number of rows per partition during the snapshot phase (create-time only)
+    #[arg(long, value_name = "ROWS")]
+    pub snapshot_rows_per_partition: Option<i64>,
+
+    /// Tables to snapshot in parallel during the initial load phase (create-time only)
+    #[arg(long, value_name = "TABLES")]
+    pub snapshot_parallel_tables: Option<i64>,
+
+    /// Preserve Postgres nullability; defaults to false (create-time only)
+    #[arg(long, value_name = "true|false")]
+    pub allow_nullable_columns: Option<bool>,
+
+    /// Enable PG17+ slot failover; defaults to false (create-time only)
+    ///
+    /// Applies only when ClickPipes creates the slot.
+    #[arg(long, value_name = "true|false")]
+    pub enable_failover_slots: Option<bool>,
+
+    /// Hard-delete Postgres DELETEs; defaults to false (create-time only)
+    #[arg(long, value_name = "true|false")]
+    pub delete_on_merge: Option<bool>,
+
+    #[command(flatten)]
+    pub destination: DatabaseDestinationArgs,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+}
+
+#[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("mysql_table_mappings")
+        .required(true)
+        .multiple(true)
+        .args(["table_mappings", "table_mappings_json"])
+))]
+pub struct MySqlCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
+
+    /// MySQL host
+    #[arg(long)]
+    pub host: String,
+
+    /// MySQL port (1-65535)
+    #[arg(
+        long,
+        default_value = "3306",
+        value_parser = clap::value_parser!(u16).range(1..=65535)
+    )]
+    pub port: u16,
+
+    /// Username (required with --auth basic; invalid with --auth IAM_ROLE)
+    #[arg(long, requires = "password")]
+    pub username: Option<String>,
+
+    /// Password (required with --auth basic; invalid with --auth IAM_ROLE)
+    #[arg(long, requires = "username")]
+    pub password: Option<String>,
+
+    /// Table mappings as schema.table:target_table (repeatable)
+    ///
+    /// Leaves every other per-table option at the ClickPipes default.
+    #[arg(
+        long = "table-mapping",
+        value_name = "SCHEMA.TABLE:TARGET_TABLE",
+        value_parser = parse_postgres_table_mapping
+    )]
+    pub table_mappings: Vec<String>,
+
+    /// Full table mapping as a JSON object (repeatable)
+    ///
+    /// Supports excludedColumns, sortingKeys, useCustomSortingKey,
+    /// partitionKey, partitionByExpr and tableEngine. Combinable with
+    /// --table-mapping; unknown fields are rejected.
+    #[arg(long = "table-mapping-json", value_name = "JSON")]
+    pub table_mappings_json: Vec<String>,
+
+    /// MySQL type
+    #[arg(
+        long,
+        default_value = "mysql",
+        value_parser = PossibleValuesParser::new(ClickPipeMutateMySQLSourceType::VALUES),
+    )]
+    pub mysql_type: String,
+
+    /// Replication mode
+    #[arg(
+        long,
+        default_value = "cdc",
+        value_parser = PossibleValuesParser::new(ClickPipeMySQLPipeSettingsReplicationmode::VALUES),
+    )]
+    pub replication_mode: String,
+
+    /// Replication mechanism
+    #[arg(
+        long,
+        default_value = "GTID",
+        value_parser = PossibleValuesParser::new(ClickPipeMySQLPipeSettingsReplicationmechanism::VALUES),
+    )]
+    pub replication_mechanism: String,
+
+    /// Authentication method
+    #[arg(
+        long,
+        default_value = "basic",
+        value_parser = PossibleValuesParser::new(ClickPipeMutateMySQLSourceAuthentication::VALUES),
+    )]
+    pub auth: String,
+
+    /// IAM role ARN (required with --auth IAM_ROLE; invalid with basic auth)
+    ///
+    /// IAM_ROLE applies to RDS and Aurora MySQL sources only.
+    #[arg(long, required_if_eq("auth", "IAM_ROLE"))]
+    pub iam_role: Option<String>,
+
+    /// Certificate hostname override (defaults to --host)
+    #[arg(long, value_name = "HOSTNAME")]
+    pub tls_host: Option<String>,
+
+    /// Path to a PEM CA bundle for a private or self-signed source certificate
+    #[arg(long, value_name = "PATH")]
+    pub ca_certificate: Option<String>,
+
+    /// Disable TLS and send source traffic unencrypted (unsafe)
+    #[arg(
+        long,
+        conflicts_with_all = ["tls_host", "ca_certificate", "skip_cert_verification"]
+    )]
+    pub disable_tls: bool,
+
+    /// Skip certificate verification (unsafe; prefer --ca-certificate)
+    #[arg(long)]
+    pub skip_cert_verification: bool,
+
+    /// MySQL server_id used in the replication topology (1-4294967295)
+    ///
+    /// Must be unique across every replica connected to the source. Assigned
+    /// automatically when omitted.
+    #[arg(long, value_parser = clap::value_parser!(u64).range(1..=4294967295))]
+    pub server_id: Option<u64>,
+
+    /// Interval in seconds to sync data during CDC replication
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub sync_interval_seconds: Option<i64>,
+
+    /// Number of rows to pull in each CDC batch
+    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub pull_batch_size: Option<i64>,
+
+    /// Parallel workers per table in the initial snapshot phase
+    #[arg(long, value_name = "WORKERS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub initial_load_parallelism: Option<i64>,
+
+    /// Number of rows per partition during the snapshot phase
+    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1000..))]
+    pub snapshot_rows_per_partition: Option<i64>,
+
+    /// Tables to snapshot in parallel during the initial load phase
+    #[arg(long, value_name = "TABLES", value_parser = clap::value_parser!(i64).range(1..))]
+    pub snapshot_parallel_tables: Option<i64>,
+
+    /// Preserve MySQL nullability in destination columns
+    #[arg(long, value_name = "true|false")]
+    pub allow_nullable_columns: Option<bool>,
+
+    /// Enable hard deletes in ReplacingMergeTree for MySQL DELETEs
+    #[arg(long, value_name = "true|false")]
+    pub delete_on_merge: Option<bool>,
+
+    /// Enable compression for the MySQL connection
+    #[arg(long, value_name = "true|false")]
+    pub use_compression: Option<bool>,
+
+    #[command(flatten)]
+    pub destination: DatabaseDestinationArgs,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+}
+
+#[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("mongodb_table_mappings")
+        .required(true)
+        .multiple(true)
+        .args(["table_mappings", "table_mappings_json"])
+))]
+pub struct MongoDbCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
+
+    /// MongoDB connection URI (e.g., mongodb+srv://cluster0.example.mongodb.net/mydb)
+    #[arg(long)]
+    pub uri: String,
+
+    /// Username
+    #[arg(long)]
+    pub username: String,
+
+    /// Password
+    #[arg(long)]
+    pub password: String,
+
+    /// Table mappings as database.collection:target_table (repeatable)
+    #[arg(
+        long = "table-mapping",
+        value_name = "DATABASE.COLLECTION:TARGET_TABLE",
+        value_parser = parse_mongodb_table_mapping
+    )]
+    pub table_mappings: Vec<String>,
+
+    /// Full table mapping as a JSON object (repeatable)
+    ///
+    /// Supports tableEngine. Combinable with --table-mapping; unknown fields
+    /// are rejected.
+    #[arg(long = "table-mapping-json", value_name = "JSON")]
+    pub table_mappings_json: Vec<String>,
+
+    /// Replication mode
+    #[arg(
+        long,
+        default_value = "cdc",
+        value_parser = PossibleValuesParser::new(ClickPipeMongoDBPipeSettingsReplicationmode::VALUES),
+    )]
+    pub replication_mode: String,
+
+    /// Read preference
+    #[arg(
+        long,
+        default_value = "secondaryPreferred",
+        value_parser = PossibleValuesParser::new(ClickPipeMutateMongoDBSourceReadpreference::VALUES),
+    )]
+    pub read_preference: String,
+
+    /// Certificate hostname override (defaults to the --uri host)
+    #[arg(long, value_name = "HOSTNAME")]
+    pub tls_host: Option<String>,
+
+    /// Path to a PEM CA bundle for a private or self-signed source certificate
+    #[arg(long, value_name = "PATH")]
+    pub ca_certificate: Option<String>,
+
+    /// Disable TLS and send source traffic unencrypted (unsafe)
+    #[arg(
+        long,
+        conflicts_with_all = ["tls_host", "ca_certificate", "skip_cert_verification"]
+    )]
+    pub disable_tls: bool,
+
+    /// Skip certificate verification (unsafe; prefer --ca-certificate)
+    #[arg(long)]
+    pub skip_cert_verification: bool,
+
+    /// Interval in seconds to sync data during CDC replication
+    #[arg(long, value_name = "SECONDS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub sync_interval_seconds: Option<i64>,
+
+    /// Number of rows to pull in each CDC batch
+    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub pull_batch_size: Option<i64>,
+
+    /// Number of rows per partition during the snapshot phase
+    #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1000..))]
+    pub snapshot_rows_per_partition: Option<i64>,
+
+    /// Collections to snapshot in parallel during the initial load phase
+    #[arg(long, value_name = "COLLECTIONS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub snapshot_parallel_collections: Option<i64>,
+
+    /// Enable hard deletes in ReplacingMergeTree for MongoDB DELETEs
+    #[arg(long, value_name = "true|false")]
+    pub delete_on_merge: Option<bool>,
+
+    /// Store JSON values in the native ClickHouse JSON format
+    #[arg(long, value_name = "true|false")]
+    pub use_json_native_format: Option<bool>,
+
+    #[command(flatten)]
+    pub destination: DatabaseDestinationArgs,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+}
+
+#[derive(Args, Debug)]
+#[command(group(
+    ArgGroup::new("bigquery_table_mappings")
+        .required(true)
+        .multiple(true)
+        .args(["table_mappings", "table_mappings_json"])
+))]
+pub struct BigQueryCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub validation: ClickPipeCreateValidationArgs,
+
+    /// Authentication method
+    #[arg(
+        long,
+        default_value = "SERVICE_ACCOUNT",
+        value_parser = AuthenticationValueParser { parse: parse_supported_bigquery_auth, values: &["SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] },
+    )]
+    pub auth: String,
+
+    /// Path to a GCP service account JSON key file, or - to read it from stdin
+    ///
+    /// Required with --auth SERVICE_ACCOUNT and invalid with workload identity.
+    #[arg(long, value_name = "PATH")]
+    pub service_account_file: Option<String>,
+
+    /// GCP project ID that owns the BigQuery resources
+    ///
+    /// Required with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY.
+    #[arg(long)]
+    pub project_id: Option<String>,
+
+    /// GCS staging path for snapshot data
+    #[arg(long)]
+    pub staging_path: String,
+
+    /// Table mappings as dataset.table:target_table (repeatable)
+    ///
+    /// Leaves every other per-table option at the ClickPipes default.
+    #[arg(
+        long = "table-mapping",
+        value_name = "DATASET.TABLE:TARGET_TABLE",
+        value_parser = parse_postgres_table_mapping
+    )]
+    pub table_mappings: Vec<String>,
+
+    /// Full table mapping as a JSON object (repeatable)
+    ///
+    /// Supports excludedColumns, sortingKeys, useCustomSortingKey and
+    /// tableEngine. Combinable with --table-mapping; unknown fields are
+    /// rejected.
+    #[arg(long = "table-mapping-json", value_name = "JSON")]
+    pub table_mappings_json: Vec<String>,
+
+    /// Replication mode
+    #[arg(
+        long,
+        default_value = "snapshot",
+        value_parser = PossibleValuesParser::new(ClickPipeBigQueryPipeSettingsReplicationmode::VALUES),
+    )]
+    pub replication_mode: String,
+
+    /// Preserve BigQuery nullability in destination columns
+    #[arg(long, value_name = "true|false")]
+    pub allow_nullable_columns: Option<bool>,
+
+    /// Parallel workers during the initial snapshot
+    #[arg(
+        long,
+        value_name = "WORKERS",
+        value_parser = parse_finite_f64,
+        allow_hyphen_values = true
+    )]
+    pub initial_load_parallelism: Option<f64>,
+
+    /// Rows per partition during the snapshot
+    #[arg(
+        long,
+        value_name = "ROWS",
+        value_parser = parse_finite_f64,
+        allow_hyphen_values = true
+    )]
+    pub snapshot_rows_per_partition: Option<f64>,
+
+    /// Tables to snapshot in parallel
+    #[arg(
+        long,
+        value_name = "TABLES",
+        value_parser = parse_finite_f64,
+        allow_hyphen_values = true
+    )]
+    pub snapshot_parallel_tables: Option<f64>,
+
+    #[command(flatten)]
+    pub destination: DatabaseDestinationArgs,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+}
+
+/// Source-connection fields for a Google Cloud Pub/Sub ClickPipe source.
+/// Flattened into both `PubSubCreateArgs` (pipe creation) and the
+/// schema-discover pubsub subcommand so the source field set has a single
+/// definition, the way `KafkaSourceFields` does for Kafka.
+///
+/// Requiredness follows the selected `ClickPipePostPubSubSource` union arm.
+#[derive(Args, Debug)]
+pub struct PubSubSourceFields {
+    /// Pub/Sub topic name (not the fully-qualified path)
+    #[arg(long)]
+    pub topic: String,
+
+    /// GCP project ID that owns the Pub/Sub topic
+    #[arg(long)]
+    pub project_id: String,
+
+    /// Format of messages in the Pub/Sub topic
+    #[arg(long, value_parser = PossibleValuesParser::new(PUBSUB_FORMATS))]
+    pub format: String,
+
+    /// Path to the GCP service account JSON key file, or - to read it from stdin
+    ///
+    /// Required with --auth SERVICE_ACCOUNT and invalid with workload identity.
+    #[arg(long, value_name = "PATH")]
+    pub service_account_file: Option<String>,
+
+    /// Starting position for consuming the subscription
+    #[arg(long, value_parser = PossibleValuesParser::new(PUBSUB_SEEK_TYPES))]
+    pub seek_type: String,
+
+    /// Timestamp to seek to (ISO 8601 / RFC 3339)
+    ///
+    /// Required with --seek-type timestamp, rejected with any other seek type.
+    #[arg(
+        long,
+        value_name = "TIMESTAMP",
+        value_parser = parse_datetime,
+        required_if_eq("seek_type", "timestamp"),
+    )]
+    pub seek_timestamp: Option<String>,
+
+    /// Authentication method
+    #[arg(
+        long,
+        default_value = "SERVICE_ACCOUNT",
+        value_parser = AuthenticationValueParser { parse: parse_supported_pubsub_auth, values: &["SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] },
+    )]
+    pub auth: String,
+
+    /// Pub/Sub subscription filter expression (CEL, at most 256 characters)
+    #[arg(long, value_parser = parse_pubsub_filter)]
+    pub filter: Option<String>,
+
+    /// Enable ordered delivery (needs messages published with ordering keys)
+    #[arg(long)]
+    pub enable_ordering: bool,
+
+    /// Acknowledgement deadline for messages, in seconds (10-600)
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(i64).range(10..=600),
+    )]
+    pub ack_deadline: Option<i64>,
+}
+
+#[derive(Args, Debug)]
+pub struct PubSubCreateArgs {
+    /// Service ID
+    pub service_id: String,
+
+    /// ClickPipe name
+    #[arg(long)]
+    pub name: String,
+
+    #[command(flatten)]
+    pub request: ClickPipeCreateRequestArgs,
+
+    #[command(flatten)]
+    pub source: PubSubSourceFields,
+
+    /// Destination database
+    #[arg(long)]
+    pub database: String,
+
+    /// Destination table
+    #[arg(long)]
+    pub table: String,
+
+    /// Destination columns as name:type pairs (e.g., --column "event_id:Int64")
+    #[arg(long = "column", value_parser = parse_destination_column)]
+    pub columns: Vec<String>,
+
+    #[command(flatten)]
+    pub destination_table: StreamingDestinationTableArgs,
+
+    #[command(flatten)]
+    pub destination_roles: DestinationRoleArgs,
+}
+
+pub async fn run(client: &CloudClient, command: ClickPipeCommands, json: bool) -> CloudResult<()> {
+    match command {
+        ClickPipeCommands::List { service_id } => clickpipe_list(client, &service_id, json).await,
+        ClickPipeCommands::Get {
+            service_id,
+            clickpipe_id,
+        } => {
+            clickpipe_get(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                json,
+            )
+            .await
+        }
+        ClickPipeCommands::Update {
+            service_id,
+            clickpipe_id,
+            config_file,
+        } => {
+            clickpipe_update(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                &config_file,
+                json,
+            )
+            .await
+        }
+        ClickPipeCommands::Delete {
+            service_id,
+            clickpipe_id,
+        } => {
+            clickpipe_delete(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                json,
+            )
+            .await
+        }
+        ClickPipeCommands::Start {
+            service_id,
+            clickpipe_id,
+        } => {
+            clickpipe_state(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                ClickPipeLifecycleCommand::Start,
+                json,
+            )
+            .await
+        }
+        ClickPipeCommands::Stop {
+            service_id,
+            clickpipe_id,
+        } => {
+            clickpipe_state(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                ClickPipeLifecycleCommand::Stop,
+                json,
+            )
+            .await
+        }
+        ClickPipeCommands::Resync {
+            service_id,
+            clickpipe_id,
+        } => {
+            clickpipe_state(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                ClickPipeLifecycleCommand::Resync,
+                json,
+            )
+            .await
+        }
+        ClickPipeCommands::Scale {
+            service_id,
+            clickpipe_id,
+            replicas,
+            cpu_millicores,
+            memory_gb,
+        } => {
+            clickpipe_scale(
+                client,
+                &service_id,
+                &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                replicas,
+                cpu_millicores,
+                memory_gb,
+                json,
+            )
+            .await
+        }
+        ClickPipeCommands::CdcScaling { command } => match command {
+            ClickPipeCdcScalingCommands::Get { service_id } => {
+                clickpipe_cdc_scaling_get(client, &service_id, json).await
+            }
+            ClickPipeCdcScalingCommands::Update {
+                service_id,
+                cpu_millicores,
+                memory_gb,
+            } => {
+                let values = CdcScalingValues {
+                    cpu_millicores,
+                    memory_gb,
+                };
+                clickpipe_cdc_scaling_update(client, &service_id, &values, json).await
+            }
+        },
+        ClickPipeCommands::Settings { command } => match command {
+            ClickPipeSettingsCommands::Get {
+                service_id,
+                clickpipe_id,
+            } => {
+                clickpipe_settings_get(
+                    client,
+                    &service_id,
+                    &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                    json,
+                )
+                .await
+            }
+            ClickPipeSettingsCommands::Update {
+                service_id,
+                clickpipe_id,
+                settings,
+            } => {
+                clickpipe_settings_update(
+                    client,
+                    &service_id,
+                    &resolve_clickpipe_id(client, &service_id, &clickpipe_id).await?,
+                    &settings,
+                    json,
+                )
+                .await
+            }
+        },
+        ClickPipeCommands::Context { command } => match command {
+            ClickPipeContextCommands::Get { service_id } => {
+                clickpipe_context_get(client, &service_id, json).await
+            }
+        },
+        ClickPipeCommands::SchemaDiscover { command } => {
+            clickpipe_schema_discover(client, &command, json).await
+        }
+        ClickPipeCommands::ReversePrivateEndpoint { command } => {
+            crate::cloud::clickpipe_endpoints::run(client, command, json).await
+        }
+        ClickPipeCommands::Create { command } => match command {
+            ClickPipeCreateCommands::ObjectStorage(args) => {
+                clickpipe_create_object_storage(client, &args, json).await
+            }
+            ClickPipeCreateCommands::Kafka(args) => {
+                clickpipe_create_kafka(client, &args, json).await
+            }
+            ClickPipeCreateCommands::Kinesis(args) => {
+                clickpipe_create_kinesis(client, &args, json).await
+            }
+            ClickPipeCreateCommands::Postgres(args) => {
+                clickpipe_create_postgres(client, &args, json).await
+            }
+            ClickPipeCreateCommands::MySQL(args) => {
+                clickpipe_create_mysql(client, &args, json).await
+            }
+            ClickPipeCreateCommands::MongoDB(args) => {
+                clickpipe_create_mongodb(client, &args, json).await
+            }
+            ClickPipeCreateCommands::BigQuery(args) => {
+                clickpipe_create_bigquery(client, &args, json).await
+            }
+            ClickPipeCreateCommands::PubSub(args) => {
+                clickpipe_create_pubsub(client, &args, json).await
+            }
+        },
+    }
+}
+
+async fn resolve_clickpipe_id(
+    client: &CloudClient,
+    service_id: &str,
+    selector: &NameSelector,
+) -> CloudResult<String> {
+    let name = match (&selector.id, &selector.name) {
+        (Some(id), None) => return Ok(id.clone()),
+        (None, Some(name)) => name,
+        _ => {
+            return Err(CloudError::new(
+                "supply exactly one positional ClickPipe ID or --name",
+            ));
+        }
+    };
+    let org = resolve_org_id(client).await?;
+    let rows = client.list_clickpipes(&org, service_id).await?;
+    select_named_id(
+        "ClickPipe",
+        name,
+        rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
+    )
+}
+
+async fn clickpipe_context_get(
+    client: &CloudClient,
+    service_id: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let context = client
+        .get_clickpipe_service_context(&org_id, service_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&context)?);
+    } else {
+        print_human(&context)?;
+    }
+    Ok(())
+}
+
+async fn clickpipe_list(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let clickpipes = client.list_clickpipes(&org_id, service_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipes)?);
+    } else if clickpipes.is_empty() {
+        println!("No ClickPipes found");
+    } else {
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "ID")]
+            id: String,
+            #[tabled(rename = "Source")]
+            source: &'static str,
+            #[tabled(rename = "Destination")]
+            destination: String,
+            #[tabled(rename = "State")]
+            state: String,
+        }
+        let rows = clickpipes.iter().map(|clickpipe| {
+            let destination = clickpipe.destination.as_ref();
+            let database = destination.and_then(|destination| destination.database.as_deref());
+            let table = destination.and_then(|destination| destination.table.as_deref());
+            Row {
+                name: or_absent(clickpipe.name.as_deref()),
+                id: or_absent(clickpipe.id.as_ref()),
+                source: match classify_clickpipe_source(clickpipe) {
+                    ClickPipeSourceKind::Kafka => "Kafka",
+                    ClickPipeSourceKind::Kinesis => "Kinesis",
+                    ClickPipeSourceKind::PubSub => "Pub/Sub",
+                    ClickPipeSourceKind::ObjectStorage => "Object storage",
+                    ClickPipeSourceKind::Postgres => "Postgres",
+                    ClickPipeSourceKind::MySql => "MySQL",
+                    ClickPipeSourceKind::MongoDb => "MongoDB",
+                    ClickPipeSourceKind::BigQuery => "BigQuery",
+                    ClickPipeSourceKind::Absent => ABSENT,
+                },
+                destination: match (database, table) {
+                    (Some(database), Some(table)) => format!("{database}.{table}"),
+                    (Some(database), None) => database.to_string(),
+                    (None, Some(table)) => table.to_string(),
+                    (None, None) => ABSENT.to_string(),
+                },
+                state: or_absent(clickpipe.state.as_ref()),
+            }
+        });
+        println!("{}", Table::new(rows).with(Style::markdown()));
+    }
+    Ok(())
+}
+
+/// Build a `ClickPipePostObjectStorageSource` from the CLI args, inferring the
+/// authentication mechanism from the credential flags and reading any GCP
+/// service-account file up front so bad invocations fail fast before any
+/// network call. Shared by the `clickpipe create object-storage` and
+/// `clickpipe schema-discover object-storage <SERVICE_ID>` handlers.
+fn build_object_storage_source(
+    args: &ObjectStorageSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostObjectStorageSource> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostObjectStorageSource, ClickPipePostObjectStorageSourceAuthentication,
+        ClickPipePostObjectStorageSourceType, MskIamUser,
+    };
+
+    let source_type: ClickPipePostObjectStorageSourceType = parse_enum(&args.storage_type)?;
+    if let ClickPipePostObjectStorageSourceType::Unknown(value) = &source_type {
+        return Err(CloudError::new(format!(
+            "unknown object-storage source type '{value}'"
+        )));
+    }
+
+    let credential_groups = [
+        args.iam_role.is_some(),
+        args.access_key_id.is_some() || args.secret_key.is_some(),
+        args.connection_string.is_some(),
+        args.service_account_file.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+    if credential_groups > 1 {
+        return Err(CloudError::new(
+            "object-storage credential flags select more than one authentication method",
+        ));
+    }
+
+    let authentication = match args.auth.as_deref() {
+        Some(value) => Some(parse_object_storage_authentication(value)?),
+        None if args.iam_role.is_some() => {
+            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE)
+        }
+        None if args.access_key_id.is_some() || args.secret_key.is_some() => {
+            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER)
+        }
+        None if args.connection_string.is_some() => {
+            Some(ClickPipePostObjectStorageSourceAuthentication::CONNECTION_STRING)
+        }
+        None if args.service_account_file.is_some() => {
+            Some(ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT)
+        }
+        None => None,
+    };
+
+    let has_iam_role = args.iam_role.is_some();
+    let has_access_key = args.access_key_id.is_some() && args.secret_key.is_some();
+    let has_connection_string = args.connection_string.is_some();
+    let has_service_account = args.service_account_file.is_some();
+    match authentication.as_ref() {
+        Some(ClickPipePostObjectStorageSourceAuthentication::IAM_ROLE) => {
+            if source_type != ClickPipePostObjectStorageSourceType::S3 {
+                return Err(CloudError::new(
+                    "IAM_ROLE authentication requires --storage-type s3",
+                ));
+            }
+            if !has_iam_role {
+                return Err(CloudError::new("--auth IAM_ROLE requires --iam-role"));
+            }
+            if credential_groups != 1 {
+                return Err(CloudError::new(
+                    "--auth IAM_ROLE accepts only --iam-role credentials",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER) => {
+            if !matches!(
+                source_type,
+                ClickPipePostObjectStorageSourceType::S3
+                    | ClickPipePostObjectStorageSourceType::Gcs
+                    | ClickPipePostObjectStorageSourceType::Dospaces
+            ) {
+                return Err(CloudError::new(
+                    "IAM_USER authentication requires --storage-type s3, gcs, or dospaces",
+                ));
+            }
+            if !has_access_key {
+                return Err(CloudError::new(
+                    "--auth IAM_USER requires --access-key-id and --secret-key",
+                ));
+            }
+            if credential_groups != 1 {
+                return Err(CloudError::new(
+                    "--auth IAM_USER accepts only access-key credentials",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::CONNECTION_STRING) => {
+            if source_type != ClickPipePostObjectStorageSourceType::Azureblobstorage {
+                return Err(CloudError::new(
+                    "CONNECTION_STRING authentication requires --storage-type azureblobstorage",
+                ));
+            }
+            if !has_connection_string {
+                return Err(CloudError::new(
+                    "--auth CONNECTION_STRING requires --connection-string",
+                ));
+            }
+            if credential_groups != 1 {
+                return Err(CloudError::new(
+                    "--auth CONNECTION_STRING accepts only --connection-string credentials",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT) => {
+            if source_type != ClickPipePostObjectStorageSourceType::Gcs {
+                return Err(CloudError::new(
+                    "SERVICE_ACCOUNT authentication requires --storage-type gcs",
+                ));
+            }
+            if !has_service_account {
+                return Err(CloudError::new(
+                    "--auth SERVICE_ACCOUNT requires --service-account-file",
+                ));
+            }
+            if credential_groups != 1 {
+                return Err(CloudError::new(
+                    "--auth SERVICE_ACCOUNT accepts only --service-account-file credentials",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::ServiceAccountWorkloadIdentity) => {
+            if source_type != ClickPipePostObjectStorageSourceType::Gcs {
+                return Err(CloudError::new(
+                    "SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication requires --storage-type gcs",
+                ));
+            }
+            if credential_groups != 0 {
+                return Err(CloudError::new(
+                    "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY cannot be combined with credential flags",
+                ));
+            }
+        }
+        Some(ClickPipePostObjectStorageSourceAuthentication::Unknown(value)) => {
+            return Err(CloudError::new(format!(
+                "unknown object-storage authentication method '{value}'"
+            )));
+        }
+        None => {}
+    }
+
+    let access_key = if has_access_key {
+        Some(MskIamUser {
+            access_key_id: args.access_key_id.clone().unwrap_or_default(),
+            secret_key: args.secret_key.clone().unwrap_or_default(),
+        })
+    } else {
+        None
+    };
+    let service_account_key = match (
+        authentication.as_ref(),
+        args.service_account_file.as_deref(),
+    ) {
+        (Some(ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT), Some(path)) => {
+            Some(read_gcp_service_account_file(path)?)
+        }
+        _ => None,
+    };
+
+    Ok(ClickPipePostObjectStorageSource {
+        r#type: source_type,
+        format: parse_enum(&args.format)?,
+        url: args.source_url.clone(),
+        compression: Some(parse_enum(&args.compression)?),
+        is_continuous: if args.continuous { Some(true) } else { None },
+        queue_url: args.queue_url.clone(),
+        delimiter: args.delimiter.clone(),
+        authentication,
+        iam_role: args.iam_role.clone(),
+        access_key,
+        connection_string: args.connection_string.clone(),
+        azure_container_name: args.azure_container_name.clone(),
+        path: args.path.clone(),
+        service_account_key,
+        skip_initial_load: if args.skip_initial_load {
+            Some(true)
+        } else {
+            None
+        },
+        start_after: args.start_after.clone(),
+    })
+}
+
+async fn clickpipe_create_object_storage(
+    client: &CloudClient,
+    args: &ObjectStorageCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
+
+    // Validate args and build the source before any network call so bad
+    // invocations fail fast.
+    let request_args =
+        build_create_request_args(&args.request, ClickPipeSourceKind::ObjectStorage)?;
+    let parsed_columns = parse_columns(&args.columns)?;
+    let source = build_object_storage_source(&args.source)?;
+    let destination = build_streaming_destination(
+        &args.database,
+        &args.table,
+        parsed_columns,
+        build_destination_roles(&args.destination_roles.roles),
+        &args.destination_table,
+    )?;
+    let org_id = resolve_org_id(client).await?;
+
+    let mut request = ClickPipePostRequest {
+        name: args.name.clone(),
+        source: ClickPipePostSource {
+            object_storage: Some(source),
+            ..Default::default()
+        },
+        destination,
+        ..Default::default()
+    };
+    apply_create_request_args(&mut request, request_args);
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+/// Infer the Kafka authentication mechanism from the credential flags that were
+/// passed when `--auth` is omitted. Returning `None` means "no authentication":
+/// the spec enum has no value for an unauthenticated broker, so the request
+/// omits `authentication` entirely (see `build_kafka_source`). Never default to
+/// a mechanism the user did not ask for — that used to reject no-auth brokers
+/// client-side with a bogus "PLAIN requires --username and --password".
+fn infer_kafka_authentication(
+    args: &KafkaSourceFields,
+) -> Option<clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication> {
+    use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+    if args.event_hubs_connection_string.is_some()
+        || (args.username.is_some() && args.password.is_some())
+    {
+        Some(Auth::PLAIN)
+    } else if args.access_key_id.is_some() && args.secret_key.is_some() {
+        Some(Auth::IAM_USER)
+    } else if args.iam_role.is_some() {
+        Some(Auth::IAM_ROLE)
+    } else if args.client_certificate.is_some() && args.client_key.is_some() {
+        Some(Auth::MUTUAL_TLS)
+    } else {
+        None
+    }
+}
+
+/// Build the Kafka `credentials` JSON body, whose shape is a `oneOf` determined
+/// by the auth mode (see the `ClickPipePostKafkaSource.credentials` schema).
+/// IAM_ROLE sends a null body — the role ARN flows through the separate
+/// top-level `iamRole` field on the source, not through credentials. An absent
+/// mechanism (no authentication) likewise sends a null body.
+///
+/// `mtls_contents` is the pre-read (certificate, privateKey) PEM bundle used
+/// only for MUTUAL_TLS; the caller reads these from disk so this function
+/// stays pure and testable.
+fn build_kafka_credentials(
+    authentication: Option<&clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication>,
+    args: &KafkaSourceFields,
+    mtls_contents: Option<(String, String)>,
+) -> CloudResult<serde_json::Value> {
+    use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+    let Some(authentication) = authentication else {
+        return Ok(serde_json::Value::Null);
+    };
+    match authentication {
+        Auth::PLAIN | Auth::SCRAM_SHA_256 | Auth::SCRAM_SHA_512 => {
+            if let Some(connection_string) = args.event_hubs_connection_string.as_deref() {
+                return Ok(serde_json::json!({ "connectionString": connection_string }));
+            }
+            match (args.username.as_deref(), args.password.as_deref()) {
+                (Some(username), Some(password)) => {
+                    Ok(serde_json::json!({ "username": username, "password": password }))
+                }
+                _ => Err(CloudError::new(format!(
+                    "{authentication} requires --username and --password"
+                ))),
+            }
+        }
+        Auth::IAM_USER => match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
+            (Some(access_key_id), Some(secret_key)) => Ok(serde_json::json!({
+                "accessKeyId": access_key_id,
+                "secretKey": secret_key
+            })),
+            _ => Err(CloudError::new(
+                "IAM_USER requires --access-key-id and --secret-key",
+            )),
+        },
+        Auth::IAM_ROLE => {
+            if args.iam_role.is_none() {
+                Err(CloudError::new("IAM_ROLE requires --iam-role"))
+            } else {
+                Ok(serde_json::Value::Null)
+            }
+        }
+        Auth::MUTUAL_TLS => match mtls_contents {
+            Some((certificate, private_key)) => Ok(serde_json::json!({
+                "certificate": certificate,
+                "privateKey": private_key
+            })),
+            None => Err(CloudError::new(
+                "MUTUAL_TLS requires --client-certificate and --client-key",
+            )),
+        },
+        Auth::ServiceAccountWorkloadIdentity => Ok(serde_json::Value::Null),
+        Auth::Unknown(value) => Err(CloudError::new(format!(
+            "unknown Kafka authentication method '{value}'"
+        ))),
+    }
+}
+
+fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+
+    let source_type: ClickPipePostKafkaSourceType = parse_serde_enum(
+        &args.kafka_type,
+        "Kafka source type",
+        ClickPipePostKafkaSourceType::VALUES,
+    )?;
+    let format: ClickPipePostKafkaSourceFormat = parse_serde_enum(
+        &args.format,
+        "Kafka format",
+        ClickPipePostKafkaSourceFormat::VALUES,
+    )?;
+
+    if args.protobuf_schema_file.is_some() && format != ClickPipePostKafkaSourceFormat::Protobuf {
+        return Err(CloudError::new(
+            "--protobuf-schema-file can only be used with --format Protobuf",
+        ));
+    }
+    if args.protobuf_schema_file.is_some()
+        && (args.schema_registry_url.is_some()
+            || args.schema_registry_username.is_some()
+            || args.schema_registry_password.is_some()
+            || args.schema_registry_ca_certificate.is_some())
+    {
+        return Err(CloudError::new(
+            "--protobuf-schema-file cannot be combined with schema registry flags",
+        ));
+    }
+
+    if args.event_hubs_connection_string.is_some()
+        && source_type != ClickPipePostKafkaSourceType::Azureeventhub
+    {
+        return Err(CloudError::new(
+            "--event-hubs-connection-string requires --kafka-type azureeventhub",
+        ));
+    }
+    if args.event_hubs_connection_string.is_some()
+        && args
+            .auth
+            .as_deref()
+            .is_some_and(|authentication| authentication != "PLAIN")
+    {
+        return Err(CloudError::new(
+            "--event-hubs-connection-string supports only --auth PLAIN",
+        ));
+    }
+    if args.event_hubs_connection_string.is_some()
+        && (args.username.is_some()
+            || args.password.is_some()
+            || args.iam_role.is_some()
+            || args.access_key_id.is_some()
+            || args.secret_key.is_some()
+            || args.client_certificate.is_some()
+            || args.client_key.is_some())
+    {
+        return Err(CloudError::new(
+            "--event-hubs-connection-string cannot be combined with other broker credentials",
+        ));
+    }
+
+    let credential_groups = [
+        args.event_hubs_connection_string.is_some(),
+        args.username.is_some() || args.password.is_some(),
+        args.iam_role.is_some(),
+        args.access_key_id.is_some() || args.secret_key.is_some(),
+        args.client_certificate.is_some() || args.client_key.is_some(),
+    ]
+    .into_iter()
+    .filter(|present| *present)
+    .count();
+
+    let authentication = args
+        .auth
+        .as_deref()
+        .map(parse_kafka_authentication)
+        .transpose()?;
+    match authentication.as_ref() {
+        Some(Auth::ServiceAccountWorkloadIdentity) => {
+            if source_type != ClickPipePostKafkaSourceType::Gcmk {
+                return Err(CloudError::new(
+                    "SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication requires --kafka-type gcmk",
+                ));
+            }
+            if credential_groups != 0 {
+                return Err(CloudError::new(
+                    "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY cannot be combined with broker credential flags",
+                ));
+            }
+        }
+        Some(Auth::PLAIN | Auth::SCRAM_SHA_256 | Auth::SCRAM_SHA_512) => {
+            let expected_groups = usize::from(args.event_hubs_connection_string.is_some())
+                + usize::from(args.username.is_some() || args.password.is_some());
+            if credential_groups != expected_groups {
+                return Err(CloudError::new(format!(
+                    "--auth {} cannot be combined with IAM or mutual-TLS credential flags",
+                    args.auth.as_deref().unwrap_or_default()
+                )));
+            }
+        }
+        Some(Auth::IAM_ROLE) => {
+            if credential_groups != usize::from(args.iam_role.is_some()) {
+                return Err(CloudError::new(
+                    "--auth IAM_ROLE accepts only --iam-role credentials",
+                ));
+            }
+        }
+        Some(Auth::IAM_USER) => {
+            if credential_groups
+                != usize::from(args.access_key_id.is_some() || args.secret_key.is_some())
+            {
+                return Err(CloudError::new(
+                    "--auth IAM_USER accepts only access-key credentials",
+                ));
+            }
+        }
+        Some(Auth::MUTUAL_TLS) => {
+            if credential_groups
+                != usize::from(args.client_certificate.is_some() || args.client_key.is_some())
+            {
+                return Err(CloudError::new(
+                    "--auth MUTUAL_TLS accepts only client-certificate credentials",
+                ));
+            }
+        }
+        Some(Auth::Unknown(value)) => {
+            return Err(CloudError::new(format!(
+                "unknown Kafka authentication method '{value}'"
+            )));
+        }
+        None if credential_groups > 1 => {
+            return Err(CloudError::new(
+                "Kafka broker credential flags select more than one authentication method",
+            ));
+        }
+        None => {}
+    }
+
+    Ok(())
+}
+
+fn read_protobuf_schema_file(path: &str) -> CloudResult<String> {
+    let contents = if path == "-" {
+        use std::io::Read as _;
+        let mut contents = Vec::new();
+        std::io::stdin().read_to_end(&mut contents)?;
+        contents
+    } else {
+        std::fs::read(path)?
+    };
+    if contents.is_empty() {
+        return Err(CloudError::new(if path == "-" {
+            "no Protobuf schema received on stdin".to_string()
+        } else {
+            format!("Protobuf schema file '{path}' was empty")
+        }));
+    }
+
+    let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, contents);
+    if encoded.len() > PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH {
+        return Err(CloudError::new(format!(
+            "Protobuf schema exceeds the encoded size limit of {PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH} bytes"
+        )));
+    }
+    Ok(encoded)
+}
+
+/// Build a `ClickPipePostKafkaSource` from the CLI args, performing all
+/// authentication/credential/schema-registry/CA validation up front so bad
+/// invocations fail fast before any network call. Shared by the
+/// `clickpipe create kafka` and `clickpipe schema-discover kafka <SERVICE_ID>`
+/// handlers.
+fn build_kafka_source_with_exactly_once(
+    args: &KafkaSourceFields,
+    exactly_once: Option<bool>,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKafkaSource> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeKafkaOffset, ClickPipeKafkaSchemaRegistryCredentials,
+        ClickPipeMutateKafkaSchemaRegistry, ClickPipePostKafkaSource,
+        ClickPipePostKafkaSourceAuthentication,
+    };
+
+    validate_kafka_source_args(args)?;
+
+    // An explicit `--auth` wins; otherwise infer the mechanism from the
+    // credential flags, and send no authentication at all when none were given
+    // so brokers that require none are reachable.
+    let authentication: Option<ClickPipePostKafkaSourceAuthentication> = match args.auth.as_deref()
+    {
+        Some(authentication) => Some(parse_kafka_authentication(authentication)?),
+        None => infer_kafka_authentication(args),
+    };
+
+    let mtls_cert_contents = match (
+        &authentication,
+        args.client_certificate.as_deref(),
+        args.client_key.as_deref(),
+    ) {
+        (
+            Some(ClickPipePostKafkaSourceAuthentication::MUTUAL_TLS),
+            Some(cert_path),
+            Some(key_path),
+        ) => Some((
+            std::fs::read_to_string(cert_path)?,
+            std::fs::read_to_string(key_path)?,
+        )),
+        _ => None,
+    };
+    let credentials = build_kafka_credentials(authentication.as_ref(), args, mtls_cert_contents)?;
+
+    let schema_registry = args
+        .schema_registry_url
+        .as_ref()
+        .map(|url| -> CloudResult<_> {
+            let credentials = match (
+                args.schema_registry_username.as_deref(),
+                args.schema_registry_password.as_deref(),
+            ) {
+                (Some(username), Some(password)) => ClickPipeKafkaSchemaRegistryCredentials {
+                    username: username.to_string(),
+                    password: password.to_string(),
+                },
+                _ => ClickPipeKafkaSchemaRegistryCredentials::default(),
+            };
+            let ca_certificate = match args.schema_registry_ca_certificate.as_deref() {
+                Some(path) => Some(std::fs::read_to_string(path)?),
+                None => None,
+            };
+            Ok(ClickPipeMutateKafkaSchemaRegistry {
+                url: url.clone(),
+                authentication: Default::default(),
+                credentials,
+                ca_certificate,
+            })
+        })
+        .transpose()?;
+
+    let ca_certificate = match args.ca_certificate.as_deref() {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+    let protobuf_schema = args
+        .protobuf_schema_file
+        .as_deref()
+        .map(read_protobuf_schema_file)
+        .transpose()?;
+
+    Ok(ClickPipePostKafkaSource {
+        r#type: parse_serde_enum(
+            &args.kafka_type,
+            "Kafka source type",
+            ClickPipePostKafkaSourceType::VALUES,
+        )?,
+        format: parse_serde_enum(
+            &args.format,
+            "Kafka format",
+            ClickPipePostKafkaSourceFormat::VALUES,
+        )?,
+        brokers: args.brokers.clone(),
+        topics: args.topics.clone(),
+        consumer_group: args.consumer_group.clone(),
+        exactly_once,
+        authentication,
+        credentials,
+        iam_role: args.iam_role.clone(),
+        offset: Some(ClickPipeKafkaOffset {
+            strategy: parse_serde_enum(
+                &args.offset,
+                "Kafka offset strategy",
+                ClickPipeKafkaOffsetStrategy::VALUES,
+            )?,
+            timestamp: args.offset_timestamp.clone(),
+        }),
+        schema_registry,
+        protobuf_schema,
+        ca_certificate,
+        reverse_private_endpoint_ids: args.reverse_private_endpoint_ids.clone(),
+    })
+}
+
+fn build_kafka_source(
+    args: &KafkaSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKafkaSource> {
+    build_kafka_source_with_exactly_once(args, None)
+}
+
+/// Build a `ClickPipePostKinesisSource` from the CLI args. Shared by the
+/// `clickpipe create kinesis` and `clickpipe schema-discover kinesis <SERVICE_ID>`
+/// handlers.
+fn build_kinesis_source(
+    args: &KinesisSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKinesisSource> {
+    use clickhouse_cloud_api::models::{ClickPipePostKinesisSource, MskIamUser};
+
+    let access_key = match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
+        (Some(access_key_id), Some(secret_key)) => Some(MskIamUser {
+            access_key_id: access_key_id.to_string(),
+            secret_key: secret_key.to_string(),
+        }),
+        _ => None,
+    };
+
+    Ok(ClickPipePostKinesisSource {
+        protobuf_schema: None,
+        format: parse_enum(&args.format)?,
+        stream_name: args.stream_name.clone(),
+        region: args.region.clone(),
+        authentication: parse_enum(&args.auth)?,
+        iam_role: args.iam_role.clone(),
+        access_key,
+        use_enhanced_fan_out: if args.enhanced_fan_out {
+            Some(true)
+        } else {
+            None
+        },
+        iterator_type: parse_enum(&args.iterator_type)?,
+        timestamp: args
+            .iterator_timestamp
+            .map(|timestamp| {
+                i64::try_from(timestamp).map_err(|_| {
+                    CloudError::new(format!("--iterator-timestamp {timestamp} is out of range"))
+                })
+            })
+            .transpose()?,
+    })
+}
+
+async fn clickpipe_create_kafka(
+    client: &CloudClient,
+    args: &KafkaCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
+
+    // Validate args and build the source before any network call so bad
+    // invocations fail fast.
+    let request_args = build_create_request_args(&args.request, ClickPipeSourceKind::Kafka)?;
+    let parsed_columns = parse_columns(&args.columns)?;
+    let source = build_kafka_source_with_exactly_once(&args.source, args.exactly_once)?;
+
+    let mut request = ClickPipePostRequest {
+        name: args.name.clone(),
+        source: ClickPipePostSource {
+            kafka: Some(source),
+            ..Default::default()
+        },
+        destination: build_streaming_destination(
+            &args.database,
+            &args.table,
+            parsed_columns,
+            build_destination_roles(&args.destination_roles.roles),
+            &args.destination_table,
+        )?,
+        ..Default::default()
+    };
+    apply_create_request_args(&mut request, request_args);
+
+    let org_id = resolve_org_id(client).await?;
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+async fn clickpipe_create_kinesis(
+    client: &CloudClient,
+    args: &KinesisCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
+
+    let request_args = build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis)?;
+    let parsed_columns = parse_columns(&args.columns)?;
+    let source = build_kinesis_source(&args.source)?;
+
+    let mut request = ClickPipePostRequest {
+        name: args.name.clone(),
+        source: ClickPipePostSource {
+            kinesis: Some(source),
+            ..Default::default()
+        },
+        destination: build_streaming_destination(
+            &args.database,
+            &args.table,
+            parsed_columns,
+            build_destination_roles(&args.destination_roles.roles),
+            &args.destination_table,
+        )?,
+        ..Default::default()
+    };
+    apply_create_request_args(&mut request, request_args);
+
+    let org_id = resolve_org_id(client).await?;
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+/// Validate a Pub/Sub subscription filter against the spec's 256-character
+/// limit, so an over-long CEL expression is a clap usage error instead of a
+/// request the API rejects. The message reports the length only, never the
+/// expression, which can name topic attributes.
+fn parse_pubsub_filter(value: &str) -> Result<String, String> {
+    let length = value.chars().count();
+    if length > PUBSUB_FILTER_MAX_LENGTH {
+        return Err(format!(
+            "filter is {length} characters; the Pub/Sub subscription filter limit is {PUBSUB_FILTER_MAX_LENGTH}"
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn parse_finite_f64(value: &str) -> Result<f64, String> {
+    let value = value
+        .parse::<f64>()
+        .map_err(|error| format!("expected a number: {error}"))?;
+    if value.is_finite() {
+        Ok(value)
+    } else {
+        Err("expected a finite number".into())
+    }
+}
+
+/// Parse `--seek-timestamp` into the library's UTC timestamp. clap already
+/// validates the format with `parse_datetime`, so this keeps the builder total
+/// rather than being a second gate the user can hit.
+fn parse_pubsub_seek_timestamp(value: &str) -> CloudResult<chrono::DateTime<chrono::Utc>> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|datetime| datetime.with_timezone(&chrono::Utc))
+        .map_err(|error| {
+            CloudError::new(format!(
+                "invalid --seek-timestamp '{value}': expected ISO 8601 / RFC 3339 format (e.g. 2026-04-10T12:00:00Z): {error}"
+            ))
+        })
+}
+
+/// Build a `ClickPipePostPubSubSource` from the CLI args, reading the GCP
+/// service-account key up front so a bad path or an unreadable key fails
+/// before any network call. Shared by the `clickpipe create pubsub` and
+/// `clickpipe schema-discover pubsub <SERVICE_ID>` handlers, so discovery and
+/// creation send an identical `pubsub` source.
+fn build_pubsub_source(
+    args: &PubSubSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostPubSubSource> {
+    use clickhouse_cloud_api::models::{
+        ClickPipePostPubSubServiceAccountSource, ClickPipePostPubSubSourceAuthentication,
+        ClickPipePostPubSubSourceSeektype, ClickPipePostPubSubWorkloadIdentitySource,
+        ClickPipePostPubSubWorkloadIdentitySourceAuthentication, ServiceAccount,
+    };
+
+    let seek_type: ClickPipePostPubSubSourceSeektype = parse_enum(&args.seek_type)?;
+    // The API rejects a seekTimestamp that does not match the seek type. clap
+    // can require the flag for `timestamp` but cannot forbid it for the other
+    // values, so the inverse relationship is checked here.
+    if args.seek_timestamp.is_some() && seek_type != ClickPipePostPubSubSourceSeektype::Timestamp {
+        return Err(CloudError::new(format!(
+            "--seek-timestamp can only be used with --seek-type timestamp, not --seek-type {}",
+            args.seek_type
+        )));
+    }
+
+    let authentication = parse_pubsub_authentication(&args.auth)?;
+    match (authentication, args.service_account_file.as_deref()) {
+        (GcpAuthentication::ServiceAccount, None) => Err(CloudError::new(
+            "--auth SERVICE_ACCOUNT requires --service-account-file",
+        )),
+        (GcpAuthentication::WorkloadIdentity, Some(_)) => Err(CloudError::new(
+            "--service-account-file cannot be used with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+        )),
+        (GcpAuthentication::ServiceAccount, Some(path)) => {
+            Ok(ClickPipePostPubSubServiceAccountSource {
+                topic: args.topic.clone(),
+                project_id: args.project_id.clone(),
+                format: parse_enum(&args.format)?,
+                authentication: ClickPipePostPubSubSourceAuthentication::ServiceAccount,
+                seek_type,
+                seek_timestamp: args
+                    .seek_timestamp
+                    .as_deref()
+                    .map(parse_pubsub_seek_timestamp)
+                    .transpose()?,
+                service_account_key: ServiceAccount {
+                    service_account_file: read_gcp_service_account_file(path)?,
+                },
+                filter: args.filter.clone(),
+                enable_ordering: args.enable_ordering.then_some(true),
+                ack_deadline: args.ack_deadline,
+            }
+            .into())
+        }
+        (GcpAuthentication::WorkloadIdentity, None) => {
+            Ok(ClickPipePostPubSubWorkloadIdentitySource {
+                topic: args.topic.clone(),
+                project_id: args.project_id.clone(),
+                format: parse_enum(&args.format)?,
+                authentication:
+                    ClickPipePostPubSubWorkloadIdentitySourceAuthentication::ServiceAccountWorkloadIdentity,
+                seek_type,
+                seek_timestamp: args
+                    .seek_timestamp
+                    .as_deref()
+                    .map(parse_pubsub_seek_timestamp)
+                    .transpose()?,
+                filter: args.filter.clone(),
+                enable_ordering: args.enable_ordering.then_some(true),
+                ack_deadline: args.ack_deadline,
+            }
+            .into())
+        }
+    }
+}
+
+/// Build the schema-discovery request body for a Pub/Sub source, from the same
+/// helper `clickpipe create pubsub` uses; every other source key is absent.
+fn build_pubsub_schema_discovery_request(
+    args: &PubSubSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryRequest> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeSchemaDiscoveryRequest, ClickPipeSchemaDiscoverySource,
+    };
+
+    Ok(ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            kafka: None,
+            kinesis: None,
+            object_storage: None,
+            pubsub: Some(build_pubsub_source(args)?),
+        },
+    })
+}
+
+async fn clickpipe_create_pubsub(
+    client: &CloudClient,
+    args: &PubSubCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{ClickPipePostRequest, ClickPipePostSource};
+
+    // Validate args and build the source before any network call so bad
+    // invocations fail fast.
+    let request_args = build_create_request_args(&args.request, ClickPipeSourceKind::PubSub)?;
+    let parsed_columns = parse_columns(&args.columns)?;
+    let source = build_pubsub_source(&args.source)?;
+
+    let mut request = ClickPipePostRequest {
+        name: args.name.clone(),
+        source: ClickPipePostSource {
+            pubsub: Some(source),
+            ..Default::default()
+        },
+        destination: build_streaming_destination(
+            &args.database,
+            &args.table,
+            parsed_columns,
+            build_destination_roles(&args.destination_roles.roles),
+            &args.destination_table,
+        )?,
+        ..Default::default()
+    };
+    apply_create_request_args(&mut request, request_args);
+
+    let org_id = resolve_org_id(client).await?;
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+/// Build the schema-discovery request body for an object-storage source. The
+/// source connection is built by the same helper `clickpipe create
+/// object-storage` uses, so discovery and creation send an identical
+/// `objectStorage` source; every other source key is left absent.
+fn build_object_storage_schema_discovery_request(
+    args: &ObjectStorageSourceFields,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryRequest> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeSchemaDiscoveryRequest, ClickPipeSchemaDiscoverySource,
+    };
+
+    Ok(ClickPipeSchemaDiscoveryRequest {
+        source: ClickPipeSchemaDiscoverySource {
+            kafka: None,
+            kinesis: None,
+            object_storage: Some(build_object_storage_source(args)?),
+            pubsub: None,
+        },
+    })
+}
+
+/// Discover the inferred schema for a Kafka, Kinesis, object-storage or
+/// Pub/Sub source without creating a ClickPipe (Beta). Side-effect-free, but
+/// the API gateway rejects OAuth/Bearer on this POST endpoint, so it is
+/// classified as a write command and requires API key auth.
+async fn clickpipe_schema_discover(
+    client: &CloudClient,
+    command: &ClickPipeSchemaDiscoverCommands,
+    json: bool,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeSchemaDiscoveryRequest, ClickPipeSchemaDiscoverySource,
+    };
+
+    let (service_id, request) = match command {
+        ClickPipeSchemaDiscoverCommands::Kafka(args) => (
+            &args.service_id,
+            ClickPipeSchemaDiscoveryRequest {
+                source: ClickPipeSchemaDiscoverySource {
+                    kafka: Some(build_kafka_source(&args.source)?),
+                    kinesis: None,
+                    object_storage: None,
+                    pubsub: None,
+                },
+            },
+        ),
+        ClickPipeSchemaDiscoverCommands::Kinesis(args) => (
+            &args.service_id,
+            ClickPipeSchemaDiscoveryRequest {
+                source: ClickPipeSchemaDiscoverySource {
+                    kafka: None,
+                    kinesis: Some(build_kinesis_source(&args.source)?),
+                    object_storage: None,
+                    pubsub: None,
+                },
+            },
+        ),
+        ClickPipeSchemaDiscoverCommands::ObjectStorage(args) => (
+            &args.service_id,
+            build_object_storage_schema_discovery_request(&args.source)?,
+        ),
+        ClickPipeSchemaDiscoverCommands::PubSub(args) => (
+            &args.service_id,
+            build_pubsub_schema_discovery_request(&args.source)?,
+        ),
+    };
+    let org_id = resolve_org_id(client).await?;
+    let response = client
+        .click_pipe_schema_discovery(&org_id, service_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&response)?);
+    } else {
+        #[derive(Tabled)]
+        struct Row {
+            #[tabled(rename = "Name")]
+            name: String,
+            #[tabled(rename = "Type")]
+            r#type: String,
+            #[tabled(rename = "Optional")]
+            optional: String,
+        }
+        let rows: Vec<Row> = response
+            .fields
+            .unwrap_or_default()
+            .into_iter()
+            .map(|field| Row {
+                name: or_absent(field.name),
+                r#type: or_absent(field.r#type),
+                optional: match field.optional {
+                    Some(true) => "true".to_string(),
+                    Some(false) => "false".to_string(),
+                    None => "".to_string(),
+                },
+            })
+            .collect();
+        if rows.is_empty() {
+            println!("No fields discovered");
+        } else {
+            println!("{}", Table::new(rows).with(Style::markdown()));
+        }
+    }
+    Ok(())
+}
+
+async fn clickpipe_get(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let clickpipe = client
+        .get_clickpipe(&org_id, service_id, clickpipe_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        print_human(&clickpipe)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KafkaPatchCredentialKind {
+    Plain,
+    IamUser,
+    AzureEventHub,
+    MutualTls,
+}
+
+fn parse_kafka_patch_credentials(
+    credentials: &serde_json::Value,
+    source: &str,
+) -> CloudResult<KafkaPatchCredentialKind> {
+    use clickhouse_cloud_api::models::{AzureEventHub, MskIamUser, MutualTLS, PLAIN};
+
+    let variants = [
+        (
+            KafkaPatchCredentialKind::Plain,
+            deserialize_strict_config::<PLAIN>(credentials.clone(), source).is_ok(),
+        ),
+        (
+            KafkaPatchCredentialKind::IamUser,
+            deserialize_strict_config::<MskIamUser>(credentials.clone(), source).is_ok(),
+        ),
+        (
+            KafkaPatchCredentialKind::AzureEventHub,
+            deserialize_strict_config::<AzureEventHub>(credentials.clone(), source).is_ok(),
+        ),
+        (
+            KafkaPatchCredentialKind::MutualTls,
+            deserialize_strict_config::<MutualTLS>(credentials.clone(), source).is_ok(),
+        ),
+    ];
+    let mut matches = variants
+        .into_iter()
+        .filter_map(|(kind, matched)| matched.then_some(kind));
+    match (matches.next(), matches.next()) {
+        (Some(kind), None) => Ok(kind),
+        _ => Err(CloudError::new(format!(
+            "invalid request body in config {source}: `source.kafka.credentials` must be exactly one supported credential object"
+        ))),
+    }
+}
+
+fn invalid_kafka_patch_auth(config_source: &str, message: &str) -> CloudError {
+    CloudError::new(format!(
+        "invalid request body in config {config_source}: {message}"
+    ))
+}
+
+fn require_patch_object_fields(
+    value: &serde_json::Value,
+    path: &str,
+    fields: &[&str],
+    config_source: &str,
+) -> CloudResult<()> {
+    let Some(object) = value.as_object() else {
+        return Ok(());
+    };
+    let missing = fields
+        .iter()
+        .filter(|field| !object.contains_key(**field))
+        .copied()
+        .collect::<Vec<_>>();
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: `{path}` is missing required field{} {}",
+            if missing.len() == 1 { "" } else { "s" },
+            missing
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )))
+    }
+}
+
+fn validate_clickpipe_patch_required_fields(
+    value: &serde_json::Value,
+    config_source: &str,
+) -> CloudResult<()> {
+    let Some(source) = value.get("source").and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+
+    if source.contains_key("bigquery") {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: `source.bigquery` cannot be updated by the ClickPipes API"
+        )));
+    }
+
+    if let Some(mysql) = source.get("mysql") {
+        require_patch_object_fields(mysql, "source.mysql", &["host", "port"], config_source)?;
+        if let Some(mappings) = mysql
+            .get("tableMappingsToRemove")
+            .and_then(serde_json::Value::as_array)
+        {
+            for mapping in mappings {
+                require_patch_object_fields(
+                    mapping,
+                    "source.mysql.tableMappingsToRemove[]",
+                    &["sourceSchemaName", "sourceTable", "targetTable"],
+                    config_source,
+                )?;
+            }
+        }
+    }
+
+    if let Some(mongodb) = source.get("mongodb") {
+        require_patch_object_fields(
+            mongodb,
+            "source.mongodb",
+            &["uri", "readPreference"],
+            config_source,
+        )?;
+        if let Some(mappings) = mongodb
+            .get("tableMappingsToRemove")
+            .and_then(serde_json::Value::as_array)
+        {
+            for mapping in mappings {
+                require_patch_object_fields(
+                    mapping,
+                    "source.mongodb.tableMappingsToRemove[]",
+                    &["sourceDatabaseName", "sourceCollection", "targetTable"],
+                    config_source,
+                )?;
+            }
+        }
+    }
+
+    if let Some(pubsub) = source.get("pubsub") {
+        require_patch_object_fields(pubsub, "source.pubsub", &["authentication"], config_source)?;
+    }
+
+    Ok(())
+}
+
+fn validate_clickpipe_patch_source(
+    patch: &clickhouse_cloud_api::models::ClickPipePatchSource,
+    config_source: &str,
+) -> CloudResult<()> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeMongoDBPipeTableMappingTableengine as MongoAddEngine,
+        ClickPipeMySQLPipeTableMappingTableengine as MySqlAddEngine,
+        ClickPipePatchKafkaSourceAuthentication as KafkaAuth,
+        ClickPipePatchKinesisSourceAuthentication as KinesisAuth,
+        ClickPipePatchMongoDBPipeRemoveTableMappingTableengine as MongoRemoveEngine,
+        ClickPipePatchMongoDBSourceReadpreference as MongoReadPreference,
+        ClickPipePatchMySQLPipeRemoveTableMappingTableengine as MySqlRemoveEngine,
+        ClickPipePatchMySQLSourceAuthentication as MySqlAuth,
+        ClickPipePatchObjectStorageSourceAuthentication as ObjectStorageAuth,
+        ClickPipePatchPostgresPipeRemoveTableMappingTableengine as PostgresRemoveEngine,
+        ClickPipePatchPubSubSourceAuthentication as PubSubAuth,
+        ClickPipePostgresPipeTableMappingTableengine as PostgresAddEngine,
+    };
+
+    let selected_sources = [
+        patch.kafka.is_some(),
+        patch.kinesis.is_some(),
+        patch.object_storage.is_some(),
+        patch.pubsub.is_some(),
+        patch.postgres.is_some(),
+        patch.mysql.is_some(),
+        patch.mongodb.is_some(),
+    ]
+    .into_iter()
+    .filter(|selected| *selected)
+    .count();
+    if selected_sources > 1 {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: `source` can update at most one provider"
+        )));
+    }
+
+    if let Some(source) = &patch.kafka {
+        if let Some(KafkaAuth::Unknown(value)) = &source.authentication {
+            return Err(CloudError::new(format!(
+                "invalid request body in config {config_source}: unknown `source.kafka.authentication` value `{value}`"
+            )));
+        }
+        let credentials = source
+            .credentials
+            .as_ref()
+            .map(|credentials| parse_kafka_patch_credentials(credentials, config_source))
+            .transpose()?;
+        match source.authentication.as_ref() {
+            None => {}
+            Some(KafkaAuth::PLAIN) => {
+                if credentials.is_some_and(|kind| {
+                    !matches!(
+                        kind,
+                        KafkaPatchCredentialKind::Plain | KafkaPatchCredentialKind::AzureEventHub
+                    )
+                }) || source.iam_role.is_some()
+                {
+                    return Err(invalid_kafka_patch_auth(
+                        config_source,
+                        "PLAIN authentication accepts only username/password or Event Hubs credentials",
+                    ));
+                }
+            }
+            Some(KafkaAuth::SCRAM_SHA_256 | KafkaAuth::SCRAM_SHA_512) => {
+                if credentials.is_some_and(|kind| kind != KafkaPatchCredentialKind::Plain)
+                    || source.iam_role.is_some()
+                {
+                    return Err(invalid_kafka_patch_auth(
+                        config_source,
+                        "SCRAM authentication accepts only username/password credentials",
+                    ));
+                }
+            }
+            Some(KafkaAuth::IAM_USER) => {
+                if credentials.is_some_and(|kind| kind != KafkaPatchCredentialKind::IamUser)
+                    || source.iam_role.is_some()
+                {
+                    return Err(invalid_kafka_patch_auth(
+                        config_source,
+                        "IAM_USER authentication accepts only access-key credentials",
+                    ));
+                }
+            }
+            Some(KafkaAuth::IAM_ROLE) => {
+                if source.iam_role.is_none() || credentials.is_some() {
+                    return Err(invalid_kafka_patch_auth(
+                        config_source,
+                        "IAM_ROLE authentication requires `iamRole` and no `credentials`",
+                    ));
+                }
+            }
+            Some(KafkaAuth::MUTUAL_TLS) => {
+                if credentials.is_some_and(|kind| kind != KafkaPatchCredentialKind::MutualTls)
+                    || source.iam_role.is_some()
+                {
+                    return Err(invalid_kafka_patch_auth(
+                        config_source,
+                        "MUTUAL_TLS authentication accepts only certificate/private-key credentials",
+                    ));
+                }
+            }
+            Some(KafkaAuth::ServiceAccountWorkloadIdentity) => {
+                if source.iam_role.is_some() || credentials.is_some() {
+                    return Err(invalid_kafka_patch_auth(
+                        config_source,
+                        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY accepts neither `iamRole` nor `credentials`",
+                    ));
+                }
+            }
+            Some(KafkaAuth::Unknown(_)) => unreachable!("unknown authentication rejected above"),
+        }
+    }
+
+    if let Some(source) = &patch.kinesis
+        && let Some(KinesisAuth::Unknown(value)) = &source.authentication
+    {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: unknown `source.kinesis.authentication` value `{value}`"
+        )));
+    }
+
+    if let Some(source) = &patch.object_storage
+        && let Some(ObjectStorageAuth::Unknown(value)) = &source.authentication
+    {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: unknown `source.objectStorage.authentication` value `{value}`"
+        )));
+    }
+
+    if let Some(source) = &patch.pubsub
+        && let Some(PubSubAuth::Unknown(value)) = &source.authentication
+    {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: unknown `source.pubsub.authentication` value `{value}`"
+        )));
+    }
+
+    if let Some(source) = &patch.postgres {
+        validate_clickpipe_patch_port(source.port, "source.postgres.port", config_source)?;
+        if let Some(mappings) = &source.table_mappings_to_add {
+            for mapping in mappings {
+                if let PostgresAddEngine::Unknown(value) = &mapping.table_engine {
+                    return Err(CloudError::new(format!(
+                        "invalid request body in config {config_source}: unknown `source.postgres.tableMappingsToAdd[].tableEngine` value `{value}`"
+                    )));
+                }
+            }
+        }
+        if let Some(mappings) = &source.table_mappings_to_remove {
+            for mapping in mappings {
+                if let Some(PostgresRemoveEngine::Unknown(value)) = &mapping.table_engine {
+                    return Err(CloudError::new(format!(
+                        "invalid request body in config {config_source}: unknown `source.postgres.tableMappingsToRemove[].tableEngine` value `{value}`"
+                    )));
+                }
+            }
+        }
+    }
+
+    if let Some(source) = &patch.mysql {
+        validate_clickpipe_patch_port(source.port, "source.mysql.port", config_source)?;
+        if let Some(MySqlAuth::Unknown(value)) = &source.authentication {
+            return Err(CloudError::new(format!(
+                "invalid request body in config {config_source}: unknown `source.mysql.authentication` value `{value}`"
+            )));
+        }
+        if let Some(mappings) = &source.table_mappings_to_add {
+            for mapping in mappings {
+                if let Some(MySqlAddEngine::Unknown(value)) = &mapping.table_engine {
+                    return Err(CloudError::new(format!(
+                        "invalid request body in config {config_source}: unknown `source.mysql.tableMappingsToAdd[].tableEngine` value `{value}`"
+                    )));
+                }
+            }
+        }
+        if let Some(mappings) = &source.table_mappings_to_remove {
+            for mapping in mappings {
+                if let Some(MySqlRemoveEngine::Unknown(value)) = &mapping.table_engine {
+                    return Err(CloudError::new(format!(
+                        "invalid request body in config {config_source}: unknown `source.mysql.tableMappingsToRemove[].tableEngine` value `{value}`"
+                    )));
+                }
+            }
+        }
+    }
+
+    if let Some(source) = &patch.mongodb {
+        if let Some(MongoReadPreference::Unknown(value)) = &source.read_preference {
+            return Err(CloudError::new(format!(
+                "invalid request body in config {config_source}: unknown `source.mongodb.readPreference` value `{value}`"
+            )));
+        }
+        if let Some(mappings) = &source.table_mappings_to_add {
+            for mapping in mappings {
+                if let Some(MongoAddEngine::Unknown(value)) = &mapping.table_engine {
+                    return Err(CloudError::new(format!(
+                        "invalid request body in config {config_source}: unknown `source.mongodb.tableMappingsToAdd[].tableEngine` value `{value}`"
+                    )));
+                }
+            }
+        }
+        if let Some(mappings) = &source.table_mappings_to_remove {
+            for mapping in mappings {
+                if let Some(MongoRemoveEngine::Unknown(value)) = &mapping.table_engine {
+                    return Err(CloudError::new(format!(
+                        "invalid request body in config {config_source}: unknown `source.mongodb.tableMappingsToRemove[].tableEngine` value `{value}`"
+                    )));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_clickpipe_patch_port(
+    port: Option<i64>,
+    path: &str,
+    config_source: &str,
+) -> CloudResult<()> {
+    if port.is_some_and(|port| !(1..=u16::MAX.into()).contains(&port)) {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: `{path}` must be in the range 1..=65535"
+        )));
+    }
+    Ok(())
+}
+
+fn build_clickpipe_update_request(
+    value: serde_json::Value,
+    config_source: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePatchRequest> {
+    validate_clickpipe_patch_required_fields(&value, config_source)?;
+    let request: clickhouse_cloud_api::models::ClickPipePatchRequest =
+        deserialize_strict_config(value, config_source)?;
+    if let Some(source) = &request.source {
+        validate_clickpipe_patch_source(source, config_source)?;
+    }
+
+    if request.name.is_none()
+        && request.source.is_none()
+        && request.destination.is_none()
+        && request.field_mappings.is_none()
+        && request.settings.is_none()
+    {
+        return Err(CloudError::new(format!(
+            "invalid request body in config {config_source}: at least one PATCH field is required"
+        )));
+    }
+
+    Ok(request)
+}
+
+async fn clickpipe_update(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    config_file: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let config_source = config_source_label(config_file);
+    let request = build_clickpipe_update_request(read_config_value(config_file)?, config_source)?;
+    let org_id = resolve_org_id(client).await?;
+    let clickpipe = client
+        .update_clickpipe(&org_id, service_id, clickpipe_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        print_human(&clickpipe)?;
+    }
+    Ok(())
+}
+
+async fn clickpipe_delete(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let deleted_name = client
+        .delete_clickpipe(&org_id, service_id, clickpipe_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::json!({ "deleted": clickpipe_id }));
+    } else {
+        println!(
+            "ClickPipe {} deleted",
+            deleted_name.as_deref().unwrap_or(clickpipe_id)
+        );
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum ClickPipeLifecycleCommand {
+    Start,
+    Stop,
+    Resync,
+}
+
+impl ClickPipeLifecycleCommand {
+    fn api_command(self) -> clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand {
+        use clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand;
+
+        match self {
+            Self::Start => ClickPipeStatePatchRequestCommand::Start,
+            Self::Stop => ClickPipeStatePatchRequestCommand::Stop,
+            Self::Resync => ClickPipeStatePatchRequestCommand::Resync,
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Stop => "stop",
+            Self::Resync => "resync",
+        }
+    }
+}
+
+async fn clickpipe_state(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    command: ClickPipeLifecycleCommand,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let clickpipe = client
+        .change_clickpipe_state(&org_id, service_id, clickpipe_id, command.api_command())
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        println!(
+            "ClickPipe {} {} request accepted (returned state: {})",
+            clickpipe
+                .name
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .unwrap_or(clickpipe_id),
+            command.label(),
+            or_absent(clickpipe.state.as_ref())
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn clickpipe_scale(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    replicas: Option<u32>,
+    cpu_millicores: Option<u32>,
+    memory_gb: Option<f64>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let request = clickhouse_cloud_api::models::ClickPipeScalingPatchRequest {
+        replicas: replicas.map(i64::from),
+        replica_cpu_millicores: cpu_millicores.map(i64::from),
+        replica_memory_gb: memory_gb,
+        #[cfg(feature = "deprecated-fields")]
+        concurrency: None,
+    };
+    let clickpipe = client
+        .update_clickpipe_scaling(&org_id, service_id, clickpipe_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&clickpipe)?);
+    } else {
+        let scaling = clickpipe.scaling.unwrap_or_default();
+        println!(
+            "ClickPipe {} scaling updated",
+            or_absent(clickpipe.name.as_deref())
+        );
+        println!("  Replicas: {}", or_absent(scaling.replicas));
+        println!("  CPU: {}m", or_absent(scaling.replica_cpu_millicores));
+        println!("  Memory: {} GB", or_absent(scaling.replica_memory_gb));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Default, PartialEq)]
+struct CdcScalingValues {
+    cpu_millicores: Option<u32>,
+    memory_gb: Option<f64>,
+}
+
+fn build_cdc_scaling_request(
+    values: &CdcScalingValues,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipesCdcScalingPatchRequest> {
+    if let (Some(cpu_millicores), Some(memory_gb)) = (values.cpu_millicores, values.memory_gb) {
+        let required_memory_gb = f64::from(cpu_millicores) / 250.0;
+        if memory_gb != required_memory_gb {
+            return Err(CloudError::new(format!(
+                "--memory-gb must be {required_memory_gb} when --cpu-millicores is {cpu_millicores}"
+            )));
+        }
+    }
+
+    Ok(
+        clickhouse_cloud_api::models::ClickPipesCdcScalingPatchRequest {
+            replica_cpu_millicores: values.cpu_millicores.map(i64::from),
+            replica_memory_gb: values.memory_gb,
+        },
+    )
+}
+
+async fn clickpipe_cdc_scaling_get(
+    client: &CloudClient,
+    service_id: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let scaling = client
+        .get_clickpipe_cdc_scaling(&org_id, service_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&scaling)?);
+    } else {
+        print_human(&scaling)?;
+    }
+    Ok(())
+}
+
+async fn clickpipe_cdc_scaling_update(
+    client: &CloudClient,
+    service_id: &str,
+    values: &CdcScalingValues,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_cdc_scaling_request(values)?;
+    let org_id = resolve_org_id(client).await?;
+    let scaling = client
+        .update_clickpipe_cdc_scaling(&org_id, service_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&scaling)?);
+    } else {
+        print_human(&scaling)?;
+    }
+    Ok(())
+}
+
+async fn clickpipe_settings_get(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    // The settings endpoint only exists for streaming and object-storage pipes,
+    // so the pipe is fetched first to classify its source and refuse a database
+    // CDC pipe with an applicability error rather than the API's NOT_FOUND.
+    let clickpipe = client
+        .get_clickpipe(&org_id, service_id, clickpipe_id)
+        .await?;
+    ensure_clickpipe_has_ingestion_settings(&clickpipe, service_id, clickpipe_id)?;
+    let settings = client
+        .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&settings)?);
+    } else {
+        print_human(&settings)?;
+    }
+    Ok(())
+}
+
+/// The settings a `clickpipe settings update` invocation carries, decoupled from
+/// clap so the request builder can be unit-tested.
+///
+/// Only explicitly requested settings enter the update. Kafka read-committed
+/// additionally preserves the current value when omitted; it is only ever sent
+/// after the source is confirmed to be Kafka.
+/// Which source a fetched pipe reads from, as a closed vocabulary.
+///
+/// Two decisions hang off this: whether the Kafka-only `kafka_read_committed`
+/// setting may appear in a settings PUT at all, and whether the ingestion
+/// settings endpoints exist for the pipe in the first place. The endpoints are
+/// only implemented for streaming and object-storage pipes, so a database CDC
+/// pipe gets `NOT_FOUND: ingestion for pipe "<id>" not found`, which reads like
+/// the pipe is gone (#643).
+///
+/// [`ClickPipeSourceKind::Absent`] covers a response that carries no `source`
+/// (or an unrecognized source arm). Settings commands proceed in that case
+/// unless the caller explicitly requests a Kafka-only setting: the API remains
+/// the authority for the other settings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClickPipeSourceKind {
+    Kafka,
+    Kinesis,
+    PubSub,
+    ObjectStorage,
+    Postgres,
+    MySql,
+    MongoDb,
+    BigQuery,
+    Absent,
+}
+
+impl ClickPipeSourceKind {
+    /// Kafka is the only source whose settings include `kafka_read_committed`.
+    fn is_kafka(self) -> bool {
+        self == Self::Kafka
+    }
+
+    /// The human label for a database CDC source, or `None` for a source that
+    /// does have ingestion settings.
+    ///
+    /// The label is a literal owned by this enum, never anything read out of an
+    /// API response body, so no response text can reach the error message.
+    fn database_source_label(self) -> Option<&'static str> {
+        match self {
+            Self::Postgres => Some("Postgres CDC"),
+            Self::MySql => Some("MySQL CDC"),
+            Self::MongoDb => Some("MongoDB CDC"),
+            Self::BigQuery => Some("BigQuery"),
+            Self::Kafka | Self::Kinesis | Self::PubSub | Self::ObjectStorage | Self::Absent => None,
+        }
+    }
+}
+
+impl ClickPipeSettingsValues {
+    fn has_any(&self) -> bool {
+        self.streaming_max_insert_wait_ms.is_some()
+            || self.object_storage_concurrency.is_some()
+            || self.object_storage_polling_interval_ms.is_some()
+            || self.object_storage_max_insert_bytes.is_some()
+            || self.object_storage_max_file_count.is_some()
+            || self.clickhouse_max_threads.is_some()
+            || self.clickhouse_max_insert_threads.is_some()
+            || self.clickhouse_max_download_threads.is_some()
+            || self.clickhouse_min_insert_block_size_bytes.is_some()
+            || self.clickhouse_parallel_distributed_insert_select.is_some()
+            || self.kafka_read_committed.is_some()
+            || self.object_storage_use_cluster_function.is_some()
+            || self.clickhouse_parallel_view_processing.is_some()
+    }
+
+    fn has_object_storage_setting(&self) -> bool {
+        self.object_storage_concurrency.is_some()
+            || self.object_storage_polling_interval_ms.is_some()
+            || self.object_storage_max_insert_bytes.is_some()
+            || self.object_storage_max_file_count.is_some()
+            || self.object_storage_use_cluster_function.is_some()
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ClickPipeFieldMappingJson {
+    #[serde(rename = "sourceField")]
+    source_field: String,
+    #[serde(rename = "destinationField")]
+    destination_field: String,
+}
+
+fn parse_create_field_mappings(
+    raw_mappings: &[String],
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeFieldMapping>> {
+    raw_mappings
+        .iter()
+        .enumerate()
+        .map(|(index, raw)| {
+            let mapping: ClickPipeFieldMappingJson =
+                serde_json::from_str(raw).map_err(|error| {
+                    CloudError::new(format!(
+                        "--field-mapping #{}: invalid JSON object: {error}",
+                        index + 1
+                    ))
+                })?;
+            if mapping.source_field.is_empty() {
+                return Err(CloudError::new(format!(
+                    "--field-mapping #{}: sourceField must not be empty",
+                    index + 1
+                )));
+            }
+            if mapping.destination_field.is_empty() {
+                return Err(CloudError::new(format!(
+                    "--field-mapping #{}: destinationField must not be empty",
+                    index + 1
+                )));
+            }
+            Ok(clickhouse_cloud_api::models::ClickPipeFieldMapping {
+                source_field: mapping.source_field,
+                destination_field: mapping.destination_field,
+            })
+        })
+        .collect()
+}
+
+#[derive(Debug)]
+struct BuiltCreateRequestArgs {
+    validate_samples: Option<bool>,
+    scaling: Option<clickhouse_cloud_api::models::ClickPipeScaling>,
+    settings: Option<clickhouse_cloud_api::models::ClickPipeSettings>,
+    field_mappings: Vec<clickhouse_cloud_api::models::ClickPipeFieldMapping>,
+}
+
+fn build_create_request_args(
+    args: &ClickPipeCreateRequestArgs,
+    source: ClickPipeSourceKind,
+) -> CloudResult<BuiltCreateRequestArgs> {
+    let scaling = match (args.replicas, args.cpu_millicores, args.memory_gb) {
+        (None, None, None) => None,
+        (Some(replicas), Some(cpu), Some(memory)) => {
+            if !(1..=40).contains(&replicas) {
+                return Err(CloudError::new("--replicas must be in the range 1..=40"));
+            }
+            if !(125..=2000).contains(&cpu) {
+                return Err(CloudError::new(
+                    "--cpu-millicores must be in the range 125..=2000",
+                ));
+            }
+            if !memory.is_finite() || !(0.5..=8.0).contains(&memory) {
+                return Err(CloudError::new("--memory-gb must be in the range 0.5..=8"));
+            }
+            Some(clickhouse_cloud_api::models::ClickPipeScaling {
+                replicas: i64::from(replicas),
+                replica_cpu_millicores: i64::from(cpu),
+                replica_memory_gb: memory,
+                #[cfg(feature = "deprecated-fields")]
+                concurrency: 0,
+            })
+        }
+        _ => {
+            return Err(CloudError::new(
+                "initial scaling requires --replicas, --cpu-millicores, and --memory-gb together",
+            ));
+        }
+    };
+
+    if args.settings.kafka_read_committed.is_some() && !source.is_kafka() {
+        return Err(CloudError::new(
+            "--kafka-read-committed can only be used with clickpipe create kafka",
+        ));
+    }
+    if args.settings.has_object_storage_setting() && source != ClickPipeSourceKind::ObjectStorage {
+        return Err(CloudError::new(
+            "--object-storage-* settings can only be used with clickpipe create object-storage",
+        ));
+    }
+    let settings =
+        args.settings
+            .has_any()
+            .then(|| clickhouse_cloud_api::models::ClickPipeSettings {
+                streaming_max_insert_wait_ms: args
+                    .settings
+                    .streaming_max_insert_wait_ms
+                    .map(i64::from),
+                object_storage_concurrency: args.settings.object_storage_concurrency.map(i64::from),
+                object_storage_polling_interval_ms: args
+                    .settings
+                    .object_storage_polling_interval_ms
+                    .map(i64::from),
+                object_storage_max_insert_bytes: args
+                    .settings
+                    .object_storage_max_insert_bytes
+                    .map(|value| value as i64),
+                object_storage_max_file_count: args
+                    .settings
+                    .object_storage_max_file_count
+                    .map(i64::from),
+                clickhouse_max_threads: args.settings.clickhouse_max_threads.map(i64::from),
+                clickhouse_max_insert_threads: args
+                    .settings
+                    .clickhouse_max_insert_threads
+                    .map(i64::from),
+                clickhouse_max_download_threads: args
+                    .settings
+                    .clickhouse_max_download_threads
+                    .map(i64::from),
+                clickhouse_min_insert_block_size_bytes: args
+                    .settings
+                    .clickhouse_min_insert_block_size_bytes
+                    .map(|value| value as i64),
+                clickhouse_parallel_distributed_insert_select: args
+                    .settings
+                    .clickhouse_parallel_distributed_insert_select
+                    .map(i64::from),
+                kafka_read_committed: args.settings.kafka_read_committed,
+                object_storage_use_cluster_function: args
+                    .settings
+                    .object_storage_use_cluster_function,
+                clickhouse_parallel_view_processing: args
+                    .settings
+                    .clickhouse_parallel_view_processing,
+            });
+
+    Ok(BuiltCreateRequestArgs {
+        validate_samples: args.validation.validate_samples,
+        scaling,
+        settings,
+        field_mappings: parse_create_field_mappings(&args.field_mappings)?,
+    })
+}
+
+fn build_create_validation_args(args: &ClickPipeCreateValidationArgs) -> BuiltCreateRequestArgs {
+    BuiltCreateRequestArgs {
+        validate_samples: args.validate_samples,
+        scaling: None,
+        settings: None,
+        field_mappings: Vec::new(),
+    }
+}
+
+fn apply_create_request_args(
+    request: &mut clickhouse_cloud_api::models::ClickPipePostRequest,
+    args: BuiltCreateRequestArgs,
+) {
+    request.source.validate_samples = args.validate_samples;
+    request.scaling = args.scaling;
+    request.settings = args.settings;
+    request.field_mappings = args.field_mappings;
+}
+
+/// Classify the source of a fetched pipe.
+///
+/// Exactly one arm of `source` is populated in practice. The streaming and
+/// object-storage arms are matched first anyway, so a response that somehow
+/// sets several arms resolves to the kind that keeps the settings commands
+/// working rather than to a refusal.
+fn classify_clickpipe_source(
+    clickpipe: &clickhouse_cloud_api::models::ClickPipe,
+) -> ClickPipeSourceKind {
+    let Some(source) = clickpipe.source.as_ref() else {
+        return ClickPipeSourceKind::Absent;
+    };
+    if source.kafka.is_some() {
+        ClickPipeSourceKind::Kafka
+    } else if source.kinesis.is_some() {
+        ClickPipeSourceKind::Kinesis
+    } else if source.pubsub.is_some() {
+        ClickPipeSourceKind::PubSub
+    } else if source.object_storage.is_some() {
+        ClickPipeSourceKind::ObjectStorage
+    } else if source.postgres.is_some() {
+        ClickPipeSourceKind::Postgres
+    } else if source.mysql.is_some() {
+        ClickPipeSourceKind::MySql
+    } else if source.mongodb.is_some() {
+        ClickPipeSourceKind::MongoDb
+    } else if source.bigquery.is_some() {
+        ClickPipeSourceKind::BigQuery
+    } else {
+        ClickPipeSourceKind::Absent
+    }
+}
+
+/// Refuse a `clickpipe settings` command that cannot apply to this pipe.
+///
+/// The ingestion settings endpoints exist for streaming and object-storage
+/// pipes only. Calling them for a database CDC pipe returns a bare `NOT_FOUND`
+/// about the pipe, so the CLI classifies the source first and explains
+/// applicability instead of relaying that (#643).
+fn ensure_clickpipe_has_ingestion_settings(
+    clickpipe: &clickhouse_cloud_api::models::ClickPipe,
+    service_id: &str,
+    clickpipe_id: &str,
+) -> CloudResult<()> {
+    let Some(label) = classify_clickpipe_source(clickpipe).database_source_label() else {
+        return Ok(());
+    };
+    Err(CloudError::new(format!(
+        "ClickPipe {clickpipe_id} is a {label} pipe; `clickpipe settings get` and \
+         `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
+         pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
+         itself: see `clickhousectl cloud clickpipe get {service_id} {clickpipe_id}`."
+    )))
+}
+
+/// Build the settings PUT body from the flags the user passed.
+///
+/// `kafka_read_committed` is Kafka-only: the API rejects the key for every other
+/// source, so callers reject an explicit Kafka-only flag on other sources and
+/// pass `None` for the preserved value. An explicitly requested value takes
+/// precedence over the current Kafka setting, including `false`.
+fn build_clickpipe_settings_request(
+    values: &ClickPipeSettingsValues,
+    kafka_read_committed: Option<bool>,
+) -> clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
+    clickhouse_cloud_api::models::ClickPipeSettingsPutRequest {
+        streaming_max_insert_wait_ms: values.streaming_max_insert_wait_ms.map(i64::from),
+        object_storage_concurrency: values.object_storage_concurrency.map(i64::from),
+        object_storage_polling_interval_ms: values
+            .object_storage_polling_interval_ms
+            .map(i64::from),
+        object_storage_max_insert_bytes: values
+            .object_storage_max_insert_bytes
+            .map(|value| value as i64),
+        object_storage_max_file_count: values.object_storage_max_file_count.map(i64::from),
+        clickhouse_max_threads: values.clickhouse_max_threads.map(i64::from),
+        clickhouse_max_insert_threads: values.clickhouse_max_insert_threads.map(i64::from),
+        object_storage_use_cluster_function: values.object_storage_use_cluster_function,
+        clickhouse_parallel_view_processing: values.clickhouse_parallel_view_processing,
+        kafka_read_committed: values.kafka_read_committed.or(kafka_read_committed),
+        clickhouse_max_download_threads: values.clickhouse_max_download_threads.map(i64::from),
+        clickhouse_min_insert_block_size_bytes: values
+            .clickhouse_min_insert_block_size_bytes
+            .map(|value| value as i64),
+        clickhouse_parallel_distributed_insert_select: values
+            .clickhouse_parallel_distributed_insert_select
+            .map(i64::from),
+    }
+}
+
+async fn clickpipe_settings_update(
+    client: &CloudClient,
+    service_id: &str,
+    clickpipe_id: &str,
+    values: &ClickPipeSettingsValues,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    // Live verification for #682 showed that object-storage PUT merges omitted
+    // keys, including nondefault values of the three previously hidden settings.
+    // Kafka-specific omission was not live-verified, so retain read-before-write
+    // preservation for its non-nullable boolean without fabricating a default.
+    let clickpipe = client
+        .get_clickpipe(&org_id, service_id, clickpipe_id)
+        .await?;
+    ensure_clickpipe_has_ingestion_settings(&clickpipe, service_id, clickpipe_id)?;
+    let source = classify_clickpipe_source(&clickpipe);
+    if values.kafka_read_committed.is_some() && !source.is_kafka() {
+        return Err(CloudError::new(
+            "--kafka-read-committed requires a ClickPipe with a confirmed Kafka source",
+        ));
+    }
+    let kafka_read_committed = if source.is_kafka() && values.kafka_read_committed.is_none() {
+        Some(
+            client
+                .get_clickpipe_settings(&org_id, service_id, clickpipe_id)
+                .await?
+                .kafka_read_committed
+                .ok_or_else(|| {
+                    CloudError::new(
+                        "Cannot preserve Kafka read-committed: the settings response omitted \
+                         kafka_read_committed; pass --kafka-read-committed true or false explicitly",
+                    )
+                })?,
+        )
+    } else {
+        None
+    };
+    let request = build_clickpipe_settings_request(values, kafka_read_committed);
+    let settings = client
+        .update_clickpipe_settings(&org_id, service_id, clickpipe_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&settings)?);
+    } else {
+        print_human(&settings)?;
+    }
+    Ok(())
+}
+
+/// Parse a CLI string into a library enum. Library enums have a
+/// `#[serde(untagged)] Unknown(String)` variant so unknown inputs are
+/// forwarded to the API (which returns the canonical validation error).
+fn parse_enum<T: serde::de::DeserializeOwned>(value: &str) -> CloudResult<T> {
+    serde_json::from_value(serde_json::Value::String(value.to_string()))
+        .map_err(|error| CloudError::new(format!("invalid value '{}': {}", value, error)))
+}
+
+/// Parse `name:type` column specifications into library destination columns.
+fn parse_columns(
+    columns: &[String],
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>> {
+    columns.iter().map(|column| parse_column(column)).collect()
+}
+
+fn parse_column(
+    column: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeDestinationColumn> {
+    let (name, column_type) = column.split_once(':').ok_or_else(|| {
+        CloudError::new(format!(
+            "Invalid column format '{}': expected name:type",
+            column
+        ))
+    })?;
+    Ok(clickhouse_cloud_api::models::ClickPipeDestinationColumn {
+        name: name.to_string(),
+        r#type: column_type.to_string(),
+    })
+}
+
+/// Validate the same grammar as the request builder before credential lookup.
+fn parse_destination_column(column: &str) -> Result<String, String> {
+    parse_column(column)
+        .map(|_| column.to_string())
+        .map_err(|error| error.message)
+}
+
+/// Role names the API reserves for ClickPipes itself and rejects in
+/// `destination.roles`. Caught client-side so the failure names the flag
+/// instead of relaying a server-side validation error.
+const RESERVED_DESTINATION_ROLES: &[&str] = &["clickpipes", "clickpipes_system"];
+
+/// Validate one `--role` value, returning the trimmed role name.
+fn parse_destination_role_name(role: &str) -> CloudResult<String> {
+    let trimmed = role.trim();
+    if trimmed.is_empty() {
+        return Err(CloudError::new("a role name must not be empty"));
+    }
+    if RESERVED_DESTINATION_ROLES
+        .iter()
+        .any(|reserved| reserved.eq_ignore_ascii_case(trimmed))
+    {
+        return Err(CloudError::new(format!(
+            "role names reserved by ClickPipes cannot be granted: {}",
+            RESERVED_DESTINATION_ROLES.join(", ")
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// clap `value_parser` wrapper for `--role`, so a bad name is a usage error
+/// (exit 2) formatted against the create subcommand that was invoked, before
+/// any credential lookup or network call.
+fn parse_destination_role(role: &str) -> Result<String, String> {
+    parse_destination_role_name(role).map_err(|error| error.message)
+}
+
+/// Resolve the repeatable `--role` values into `destination.roles`. Every value
+/// is already validated and trimmed by `parse_destination_role`; duplicates are
+/// dropped with declaration order preserved, and no flags at all leave the
+/// field absent from the request body.
+fn build_destination_roles(roles: &[String]) -> Option<Vec<String>> {
+    if roles.is_empty() {
+        return None;
+    }
+    let mut deduped: Vec<String> = Vec::with_capacity(roles.len());
+    for role in roles {
+        if !deduped.iter().any(|existing| existing == role) {
+            deduped.push(role.clone());
+        }
+    }
+    Some(deduped)
+}
+
+fn read_destination_table_definition(
+    config_file: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition> {
+    use clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType;
+
+    let mut value = read_config_value(config_file)?;
+    // TTL was added after table-definition files shipped. Preserve omission in
+    // existing files; the strict library request omits this empty sentinel when
+    // serialized. Explicit nulls or wrong types still fail strict parsing.
+    if let Some(object) = value.as_object_mut() {
+        object
+            .entry("ttl")
+            .or_insert_with(|| serde_json::Value::String(String::new()));
+    }
+    let definition: clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition =
+        deserialize_strict_config(value, config_file)?;
+    if let ClickPipeDestinationTableEngineType::Unknown(value) = &definition.engine.r#type {
+        return Err(CloudError::new(format!(
+            "invalid destination table definition in config {config_file}: unknown engine.type value `{value}`"
+        )));
+    }
+    Ok(definition)
+}
+
+/// Build the destination shared by Kafka, Kinesis, object-storage, and Pub/Sub.
+/// Omitting both new flags retains the historical managed MergeTree request.
+fn build_streaming_destination(
+    database: &str,
+    table: &str,
+    columns: Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>,
+    roles: Option<Vec<String>>,
+    options: &StreamingDestinationTableArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeMutateDestination> {
+    let table_definition = options
+        .table_definition_file
+        .as_deref()
+        .map(read_destination_table_definition)
+        .transpose()?
+        .unwrap_or_default();
+
+    Ok(clickhouse_cloud_api::models::ClickPipeMutateDestination {
+        database: database.to_string(),
+        table: Some(table.to_string()),
+        columns,
+        managed_table: Some(options.managed_table),
+        roles,
+        table_definition: Some(table_definition),
+    })
+}
+
+/// Build a managed-table destination with the default MergeTree engine.
+fn build_destination(
+    database: &str,
+    table: &str,
+    columns: Vec<clickhouse_cloud_api::models::ClickPipeDestinationColumn>,
+    roles: Option<Vec<String>>,
+) -> clickhouse_cloud_api::models::ClickPipeMutateDestination {
+    // Database pipes (Postgres/MySQL/BigQuery) carry the destination table on
+    // the per-mapping `targetTable` and reject any of {table, managedTable,
+    // tableDefinition, columns} at the top level. Detect that case via empty
+    // `table` and emit a destination with only `database` populated.
+    if table.is_empty() {
+        return clickhouse_cloud_api::models::ClickPipeMutateDestination {
+            database: database.to_string(),
+            // `roles` is not one of the four fields database pipes reject, so
+            // it is wired here too.
+            roles,
+            ..Default::default()
+        };
+    }
+    clickhouse_cloud_api::models::ClickPipeMutateDestination {
+        database: database.to_string(),
+        table: Some(table.to_string()),
+        columns,
+        managed_table: Some(true),
+        roles,
+        table_definition: Some(
+            clickhouse_cloud_api::models::ClickPipeDestinationTableDefinition::default(),
+        ),
+    }
+}
+
+/// Read a GCP service-account JSON key file from disk and return the
+/// base64-encoded contents. Used by the object-storage, BigQuery and Pub/Sub
+/// `create` handlers — the upstream API wants the encoded blob regardless
+/// of which source it ends up on.
+///
+/// A path of `-` reads the key from stdin, the same spelling
+/// `service query --queries-file -` uses, so a key held in a secret manager
+/// never has to be written to disk. An empty key is refused here rather than
+/// sent as an empty string; neither that error nor the io error names anything
+/// but the path, so the key itself cannot reach an error message.
+fn read_gcp_service_account_file(path: &str) -> CloudResult<String> {
+    let contents = if path == "-" {
+        use std::io::Read as _;
+        let mut contents = String::new();
+        std::io::stdin().read_to_string(&mut contents)?;
+        contents
+    } else {
+        std::fs::read_to_string(path)?
+    };
+    if contents.trim().is_empty() {
+        return Err(CloudError::new(if path == "-" {
+            "no service account key received on stdin".to_string()
+        } else {
+            format!("service account key file '{path}' was empty")
+        }));
+    }
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        contents.as_bytes(),
+    ))
+}
+
+/// Print the standard "created" confirmation for any create_* handler.
+fn print_created(
+    clickpipe: &clickhouse_cloud_api::models::ClickPipe,
+    json: bool,
+) -> CloudResult<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(clickpipe)?);
+    } else {
+        println!("ClickPipe created successfully!");
+        println!("  Name: {}", or_absent(clickpipe.name.as_deref()));
+        println!("  ID: {}", or_absent(clickpipe.id.as_ref()));
+        println!("  State: {}", or_absent(clickpipe.state.as_ref()));
+    }
+    Ok(())
+}
+
+fn parse_postgres_table_mapping_parts(mapping: &str) -> CloudResult<(String, String, String)> {
+    let (source, target) = mapping.split_once(':').ok_or_else(|| {
+        CloudError::new(format!(
+            "invalid table mapping '{}': expected schema.table:target_table",
+            mapping
+        ))
+    })?;
+    let (schema, table) = source.split_once('.').ok_or_else(|| {
+        CloudError::new(format!(
+            "invalid table mapping '{}': expected schema.table:target_table",
+            mapping
+        ))
+    })?;
+    if schema.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "invalid table mapping '{}': source schema must not be empty",
+            mapping
+        )));
+    }
+    if table.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "invalid table mapping '{}': source table must not be empty",
+            mapping
+        )));
+    }
+    if target.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "invalid table mapping '{}': target table must not be empty",
+            mapping
+        )));
+    }
+
+    Ok((
+        schema.trim().to_string(),
+        table.trim().to_string(),
+        target.trim().to_string(),
+    ))
+}
+
+fn parse_postgres_table_mapping(mapping: &str) -> Result<String, String> {
+    parse_postgres_table_mapping_parts(mapping)
+        .map(|_| mapping.to_string())
+        .map_err(|error| error.message)
+}
+
+fn parse_mongodb_table_mapping_parts(mapping: &str) -> CloudResult<(String, String, String)> {
+    let (source, target) = mapping.split_once(':').ok_or_else(|| {
+        CloudError::new(format!(
+            "invalid table mapping '{}': expected database.collection:target_table",
+            mapping
+        ))
+    })?;
+    let (database, collection) = source.split_once('.').ok_or_else(|| {
+        CloudError::new(format!(
+            "invalid table mapping '{}': expected database.collection:target_table",
+            mapping
+        ))
+    })?;
+    if database.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "invalid table mapping '{}': source database must not be empty",
+            mapping
+        )));
+    }
+    if collection.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "invalid table mapping '{}': source collection must not be empty",
+            mapping
+        )));
+    }
+    if target.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "invalid table mapping '{}': target table must not be empty",
+            mapping
+        )));
+    }
+
+    Ok((
+        database.trim().to_string(),
+        collection.trim().to_string(),
+        target.trim().to_string(),
+    ))
+}
+
+fn parse_mongodb_table_mapping(mapping: &str) -> Result<String, String> {
+    parse_mongodb_table_mapping_parts(mapping)
+        .map(|_| mapping.to_string())
+        .map_err(|error| error.message)
+}
+
+fn parse_strict_table_mapping_json<T>(position: usize, raw: &str, fields: &[&str]) -> CloudResult<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let invalid = |detail: String| CloudError::new(format!("{flag}: {detail}"));
+    let field_list = fields.join(", ");
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|error| invalid(format!("invalid JSON: {error}")))?;
+    let object = value.as_object().ok_or_else(|| {
+        invalid(format!(
+            "expected a JSON object with the fields {field_list}"
+        ))
+    })?;
+    let unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !fields.contains(key))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(invalid(format!(
+            "unknown field{} {}; valid fields are {field_list}",
+            if unknown.len() == 1 { "" } else { "s" },
+            unknown.join(", "),
+        )));
+    }
+
+    crate::cloud::config::deserialize_strict_config(value, &flag).map_err(|error| {
+        let prefix = format!("invalid request body in config {flag}: ");
+        invalid(
+            error
+                .message
+                .strip_prefix(&prefix)
+                .unwrap_or(&error.message)
+                .to_string(),
+        )
+    })
+}
+
+fn required_table_mapping_name(flag: &str, field: &str, value: String) -> CloudResult<String> {
+    if value.trim().is_empty() {
+        return Err(CloudError::new(format!(
+            "{flag}: {field} is required and must not be empty"
+        )));
+    }
+    Ok(value.trim().to_string())
+}
+
+fn validate_table_mapping_entries(
+    flag: &str,
+    field: &str,
+    values: Option<Vec<String>>,
+    unique: bool,
+) -> CloudResult<Option<Vec<String>>> {
+    values
+        .map(|values| {
+            let mut seen = std::collections::HashSet::new();
+            values
+                .into_iter()
+                .map(|entry| {
+                    let entry = entry.trim().to_string();
+                    if entry.is_empty() {
+                        return Err(CloudError::new(format!(
+                            "{flag}: {field} must not contain an empty entry"
+                        )));
+                    }
+                    if unique && !seen.insert(entry.clone()) {
+                        return Err(CloudError::new(format!(
+                            "{flag}: {field} must not contain duplicate entry '{entry}'"
+                        )));
+                    }
+                    Ok(entry)
+                })
+                .collect()
+        })
+        .transpose()
+}
+
+fn resolve_custom_sorting_key(
+    flag: &str,
+    sorting_keys: &Option<Vec<String>>,
+    use_custom_sorting_key: Option<bool>,
+) -> CloudResult<Option<bool>> {
+    let has_sorting_keys = sorting_keys
+        .as_ref()
+        .is_some_and(|sorting_keys| !sorting_keys.is_empty());
+    match use_custom_sorting_key {
+        Some(true) if !has_sorting_keys => Err(CloudError::new(format!(
+            "{flag}: useCustomSortingKey is true but sortingKeys is empty; list the destination \
+             ORDER BY columns in sortingKeys"
+        ))),
+        Some(false) if has_sorting_keys => Err(CloudError::new(format!(
+            "{flag}: sortingKeys is set but useCustomSortingKey is false, which would ignore the \
+             keys; omit useCustomSortingKey or set it to true"
+        ))),
+        None if has_sorting_keys => Ok(Some(true)),
+        explicit => Ok(explicit),
+    }
+}
+
+fn validate_table_mapping_engine<T>(
+    flag: &str,
+    table_engine: &Option<T>,
+    values: &[&str],
+) -> CloudResult<()>
+where
+    T: std::fmt::Display,
+{
+    let Some(table_engine) = table_engine else {
+        return Ok(());
+    };
+    let table_engine = table_engine.to_string();
+    if values.contains(&table_engine.as_str()) {
+        Ok(())
+    } else {
+        Err(CloudError::new(format!(
+            "{flag}: invalid tableEngine: unknown value '{table_engine}', expected one of: {}",
+            values.join(", ")
+        )))
+    }
+}
+
+const MYSQL_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
+    "sourceSchemaName",
+    "sourceTable",
+    "targetTable",
+    "excludedColumns",
+    "sortingKeys",
+    "useCustomSortingKey",
+    "partitionKey",
+    "partitionByExpr",
+    "tableEngine",
+];
+
+fn parse_mysql_table_mapping_json(
+    position: usize,
+    raw: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeMySQLPipeTableMapping> {
+    use clickhouse_cloud_api::models::ClickPipeMySQLPipeTableMapping;
+
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let mut mapping: ClickPipeMySQLPipeTableMapping =
+        parse_strict_table_mapping_json(position, raw, MYSQL_TABLE_MAPPING_JSON_FIELDS)?;
+    mapping.source_schema_name =
+        required_table_mapping_name(&flag, "sourceSchemaName", mapping.source_schema_name)?;
+    mapping.source_table = required_table_mapping_name(&flag, "sourceTable", mapping.source_table)?;
+    mapping.target_table = required_table_mapping_name(&flag, "targetTable", mapping.target_table)?;
+    mapping.excluded_columns =
+        validate_table_mapping_entries(&flag, "excludedColumns", mapping.excluded_columns, true)?;
+    mapping.sorting_keys =
+        validate_table_mapping_entries(&flag, "sortingKeys", mapping.sorting_keys, true)?;
+    mapping.use_custom_sorting_key =
+        resolve_custom_sorting_key(&flag, &mapping.sorting_keys, mapping.use_custom_sorting_key)?;
+    validate_table_mapping_engine(
+        &flag,
+        &mapping.table_engine,
+        ClickPipeMySQLPipeTableMappingTableengine::VALUES,
+    )?;
+    Ok(mapping)
+}
+
+const MONGODB_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
+    "sourceDatabaseName",
+    "sourceCollection",
+    "targetTable",
+    "tableEngine",
+];
+
+fn parse_mongodb_table_mapping_json(
+    position: usize,
+    raw: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMapping> {
+    use clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMapping;
+
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let mut mapping: ClickPipeMongoDBPipeTableMapping =
+        parse_strict_table_mapping_json(position, raw, MONGODB_TABLE_MAPPING_JSON_FIELDS)?;
+    mapping.source_database_name =
+        required_table_mapping_name(&flag, "sourceDatabaseName", mapping.source_database_name)?;
+    mapping.source_collection =
+        required_table_mapping_name(&flag, "sourceCollection", mapping.source_collection)?;
+    mapping.target_table = required_table_mapping_name(&flag, "targetTable", mapping.target_table)?;
+    validate_table_mapping_engine(
+        &flag,
+        &mapping.table_engine,
+        ClickPipeMongoDBPipeTableMappingTableengine::VALUES,
+    )?;
+    Ok(mapping)
+}
+
+const BIGQUERY_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
+    "sourceDatasetName",
+    "sourceTable",
+    "targetTable",
+    "excludedColumns",
+    "sortingKeys",
+    "useCustomSortingKey",
+    "tableEngine",
+];
+
+fn parse_bigquery_table_mapping_json(
+    position: usize,
+    raw: &str,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeBigQueryPipeTableMapping> {
+    use clickhouse_cloud_api::models::ClickPipeBigQueryPipeTableMapping;
+
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let mut mapping: ClickPipeBigQueryPipeTableMapping =
+        parse_strict_table_mapping_json(position, raw, BIGQUERY_TABLE_MAPPING_JSON_FIELDS)?;
+    mapping.source_dataset_name =
+        required_table_mapping_name(&flag, "sourceDatasetName", mapping.source_dataset_name)?;
+    mapping.source_table = required_table_mapping_name(&flag, "sourceTable", mapping.source_table)?;
+    mapping.target_table = required_table_mapping_name(&flag, "targetTable", mapping.target_table)?;
+    mapping.excluded_columns =
+        validate_table_mapping_entries(&flag, "excludedColumns", mapping.excluded_columns, false)?;
+    mapping.sorting_keys =
+        validate_table_mapping_entries(&flag, "sortingKeys", mapping.sorting_keys, false)?;
+    mapping.use_custom_sorting_key =
+        resolve_custom_sorting_key(&flag, &mapping.sorting_keys, mapping.use_custom_sorting_key)?;
+    validate_table_mapping_engine(
+        &flag,
+        &mapping.table_engine,
+        ClickPipeBigQueryPipeTableMappingTableengine::VALUES,
+    )?;
+    Ok(mapping)
+}
+
+/// Wire field names `ClickPipePostgresPipeTableMapping` accepts, in the order
+/// the help text and the error messages list them.
+const POSTGRES_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
+    "sourceSchemaName",
+    "sourceTable",
+    "targetTable",
+    "excludedColumns",
+    "sortingKeys",
+    "useCustomSortingKey",
+    "partitionByExpr",
+    "partitionKey",
+    "tableEngine",
+];
+
+/// One `--table-mapping-json` value, before validation.
+///
+/// The library's `ClickPipePostgresPipeTableMapping` is a request type and so
+/// strict: every field is required, which a hand-written mapping object is not
+/// expected to spell out. This mirror is all-`Option` so absence is
+/// representable, and each field is then resolved explicitly. It carries no
+/// `deny_unknown_fields`: unknown fields are reported against
+/// `POSTGRES_TABLE_MAPPING_JSON_FIELDS` instead, so the diagnostic names the
+/// wire fields rather than serde's view of this struct.
+#[derive(serde::Deserialize)]
+struct PostgresTableMappingJson {
+    #[serde(rename = "sourceSchemaName")]
+    source_schema_name: Option<String>,
+    #[serde(rename = "sourceTable")]
+    source_table: Option<String>,
+    #[serde(rename = "targetTable")]
+    target_table: Option<String>,
+    #[serde(rename = "excludedColumns")]
+    excluded_columns: Option<Vec<String>>,
+    #[serde(rename = "sortingKeys")]
+    sorting_keys: Option<Vec<String>>,
+    #[serde(rename = "useCustomSortingKey")]
+    use_custom_sorting_key: Option<bool>,
+    #[serde(rename = "partitionByExpr")]
+    partition_by_expr: Option<String>,
+    #[serde(rename = "partitionKey")]
+    partition_key: Option<String>,
+    #[serde(rename = "tableEngine")]
+    table_engine: Option<String>,
+}
+
+/// Parse and validate one `--table-mapping-json` value into the library's
+/// table mapping. `position` is the flag's zero-based occurrence, so an error
+/// names the offending value instead of the whole request.
+fn parse_postgres_table_mapping_json(
+    position: usize,
+    raw: &str,
+) -> CloudResult<ClickPipePostgresPipeTableMapping> {
+    let flag = format!("--table-mapping-json #{}", position + 1);
+    let invalid = |detail: String| CloudError::new(format!("{flag}: {detail}"));
+    let fields = POSTGRES_TABLE_MAPPING_JSON_FIELDS.join(", ");
+
+    let value: serde_json::Value =
+        serde_json::from_str(raw).map_err(|error| invalid(format!("invalid JSON: {error}")))?;
+    let object = value
+        .as_object()
+        .ok_or_else(|| invalid(format!("expected a JSON object with the fields {fields}")))?;
+    let unknown: Vec<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !POSTGRES_TABLE_MAPPING_JSON_FIELDS.contains(key))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(invalid(format!(
+            "unknown field{} {}; valid fields are {fields}",
+            if unknown.len() == 1 { "" } else { "s" },
+            unknown.join(", "),
+        )));
+    }
+    let mapping: PostgresTableMappingJson =
+        serde_json::from_value(value).map_err(|error| invalid(error.to_string()))?;
+
+    let required = |field: &str, value: Option<String>| -> CloudResult<String> {
+        let value = value.unwrap_or_default();
+        if value.trim().is_empty() {
+            return Err(invalid(format!(
+                "{field} is required and must not be empty"
+            )));
+        }
+        Ok(value.trim().to_string())
+    };
+    let entries = |field: &str, values: Option<Vec<String>>| -> CloudResult<Vec<String>> {
+        values
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| {
+                if entry.trim().is_empty() {
+                    return Err(invalid(format!("{field} must not contain an empty entry")));
+                }
+                Ok(entry.trim().to_string())
+            })
+            .collect()
+    };
+
+    let source_schema_name = required("sourceSchemaName", mapping.source_schema_name)?;
+    let source_table = required("sourceTable", mapping.source_table)?;
+    let target_table = required("targetTable", mapping.target_table)?;
+    let excluded_columns = entries("excludedColumns", mapping.excluded_columns)?;
+    let sorting_keys = entries("sortingKeys", mapping.sorting_keys)?;
+    // The API applies `sortingKeys` only when `useCustomSortingKey` is true,
+    // so keys on their own would be silently ignored: turn the flag on for the
+    // caller, and reject the two spellings that contradict each other.
+    let use_custom_sorting_key = match mapping.use_custom_sorting_key {
+        Some(true) if sorting_keys.is_empty() => {
+            return Err(invalid(
+                "useCustomSortingKey is true but sortingKeys is empty; list the destination \
+                 ORDER BY columns in sortingKeys"
+                    .to_string(),
+            ));
+        }
+        Some(false) if !sorting_keys.is_empty() => {
+            return Err(invalid(
+                "sortingKeys is set but useCustomSortingKey is false, which would ignore the \
+                 keys; omit useCustomSortingKey or set it to true"
+                    .to_string(),
+            ));
+        }
+        Some(explicit) => explicit,
+        None => !sorting_keys.is_empty(),
+    };
+    let table_engine = match mapping.table_engine {
+        Some(engine) => parse_serde_enum(
+            &engine,
+            "tableEngine",
+            ClickPipePostgresPipeTableMappingTableengine::VALUES,
+        )
+        .map_err(|error| invalid(error.message))?,
+        None => ClickPipePostgresPipeTableMappingTableengine::default(),
+    };
+
+    Ok(ClickPipePostgresPipeTableMapping {
+        source_schema_name,
+        source_table,
+        target_table,
+        excluded_columns,
+        sorting_keys,
+        use_custom_sorting_key,
+        partition_by_expr: mapping.partition_by_expr.unwrap_or_default(),
+        partition_key: mapping.partition_key.unwrap_or_default(),
+        table_engine,
+    })
+}
+
+/// Validate the cross-flag rules and resolve every table mapping, from both
+/// `--table-mapping` and `--table-mapping-json`, before any request is made.
+fn validate_postgres_create_args(
+    args: &PostgresCreateArgs,
+) -> CloudResult<Vec<ClickPipePostgresPipeTableMapping>> {
+    if args.port == 0 {
+        return Err(CloudError::new("--port must be in the range 1..=65535"));
+    }
+    if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
+        return Err(CloudError::new(
+            "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> or \
+             --table-mapping-json <JSON> is required",
+        ));
+    }
+    if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
+        return Err(CloudError::new(
+            "--auth IAM_ROLE requires --iam-role <IAM_ROLE>",
+        ));
+    }
+    if args.auth == "basic" && args.iam_role.is_some() {
+        return Err(CloudError::new(
+            "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE",
+        ));
+    }
+    // IAM_ROLE authentication has no username or password: the role ARN is the
+    // whole credential. Reject the pair rather than silently dropping it, the
+    // same way basic auth rejects --iam-role.
+    if args.auth == "IAM_ROLE" && (args.username.is_some() || args.password.is_some()) {
+        return Err(CloudError::new(
+            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
+        ));
+    }
+    // clap joins --username and --password with `requires`, so half a pair is
+    // already a usage error; this owns the "basic auth needs the pair at all"
+    // rule, which clap cannot express because it depends on --auth's value.
+    if args.auth == "basic" && (args.username.is_none() || args.password.is_none()) {
+        return Err(CloudError::new(
+            "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
+        ));
+    }
+    if args.replication_slot_name.is_some() && args.replication_mode != "cdc_only" {
+        return Err(CloudError::new(
+            "--replication-slot-name can only be used with --replication-mode cdc_only",
+        ));
+    }
+    if args.disable_tls && args.tls_host.is_some() {
+        return Err(CloudError::new(
+            "--tls-host cannot be used with --disable-tls",
+        ));
+    }
+    if args.disable_tls && args.ca_certificate.is_some() {
+        return Err(CloudError::new(
+            "--ca-certificate cannot be used with --disable-tls",
+        ));
+    }
+    if args.disable_tls && args.skip_cert_verification {
+        return Err(CloudError::new(
+            "--skip-cert-verification cannot be used with --disable-tls",
+        ));
+    }
+
+    // The simple mappings are sent first, then the JSON ones, each in the
+    // order given: clap's derive API does not expose argv indices, so
+    // interleaving the two flags is not observable here.
+    let mut mappings =
+        Vec::with_capacity(args.table_mappings.len() + args.table_mappings_json.len());
+    for mapping in &args.table_mappings {
+        let (source_schema_name, source_table, target_table) =
+            parse_postgres_table_mapping_parts(mapping)?;
+        mappings.push(ClickPipePostgresPipeTableMapping {
+            source_schema_name,
+            source_table,
+            target_table,
+            ..Default::default()
+        });
+    }
+    for (position, mapping) in args.table_mappings_json.iter().enumerate() {
+        mappings.push(parse_postgres_table_mapping_json(position, mapping)?);
+    }
+
+    Ok(mappings)
+}
+
+/// Build the Postgres pipe settings sent at create time.
+///
+/// Every field the API models is wired here, because the settings are
+/// create-time decisions: `ClickPipePatchPostgresPipeSettings` can only patch
+/// `syncIntervalSeconds` and `pullBatchSize`, so anything else not set now can
+/// never be applied to the pipe.
+///
+/// `allowNullableColumns`, `deleteOnMerge` and `enableFailoverSlots` are
+/// required by the schema and therefore always serialized: absence is not
+/// representable on the wire, so an omitted flag sends `false` — the request
+/// shape the CLI has always sent. Every other setting is omitted when its flag
+/// is omitted, via `skip_serializing_if`.
+fn build_postgres_pipe_settings(
+    args: &PostgresCreateArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostgresPipeSettings> {
+    Ok(
+        clickhouse_cloud_api::models::ClickPipePostgresPipeSettings {
+            replication_mode: parse_enum(&args.replication_mode)?,
+            publication_name: args.publication_name.clone(),
+            replication_slot_name: args.replication_slot_name.clone(),
+            sync_interval_seconds: args.sync_interval_seconds,
+            pull_batch_size: args.pull_batch_size,
+            initial_load_parallelism: args.initial_load_parallelism,
+            snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
+            snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
+            allow_nullable_columns: args.allow_nullable_columns.unwrap_or(false),
+            delete_on_merge: args.delete_on_merge.unwrap_or(false),
+            enable_failover_slots: args.enable_failover_slots.unwrap_or(false),
+        },
+    )
+}
+
+fn build_postgres_request(
+    args: &PostgresCreateArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeMutatePostgresSource, ClickPipeMutatePostgresSourceAuthentication,
+        ClickPipePostRequest, ClickPipePostSource, PLAIN,
+    };
+
+    let request_args = build_create_validation_args(&args.validation);
+    let table_mappings = validate_postgres_create_args(args)?;
+    let ca_certificate = args
+        .ca_certificate
+        .as_deref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
+    // Match the parsed authentication mode, not the raw `--auth` string, so a
+    // new mode added to the library enum is a compile error here rather than a
+    // silent credential-less create.
+    let authentication: ClickPipeMutatePostgresSourceAuthentication = parse_enum(&args.auth)?;
+    let credentials = match &authentication {
+        // `validate_postgres_create_args` has already required the pair for
+        // basic auth, so `zip` yields `Some` for every invocation that reaches
+        // here.
+        ClickPipeMutatePostgresSourceAuthentication::Basic => args
+            .username
+            .as_deref()
+            .zip(args.password.as_deref())
+            .map(|(username, password)| PLAIN {
+                username: username.to_string(),
+                password: password.to_string(),
+            }),
+        // The role ARN is the whole credential: the `credentials` object must
+        // stay off the wire entirely.
+        ClickPipeMutatePostgresSourceAuthentication::IAM_ROLE => None,
+        // Unreachable for parsed input, since --auth is restricted to
+        // DB_AUTHS; an unknown mode has no credential shape to send.
+        ClickPipeMutatePostgresSourceAuthentication::Unknown(_) => None,
+    };
+    let source = ClickPipeMutatePostgresSource {
+        r#type: Some(parse_enum(&args.postgres_type)?),
+        credentials,
+        host: args.host.clone(),
+        port: i64::from(args.port),
+        database: args.pg_database.clone(),
+        disable_tls: args.disable_tls,
+        skip_cert_verification: args.skip_cert_verification,
+        authentication,
+        iam_role: args.iam_role.clone(),
+        tls_host: args.tls_host.clone(),
+        ca_certificate,
+        settings: build_postgres_pipe_settings(args)?,
+        table_mappings,
+    };
+
+    let mut request = ClickPipePostRequest {
+        name: args.name.clone(),
+        source: ClickPipePostSource {
+            postgres: Some(source),
+            ..Default::default()
+        },
+        destination: build_destination(
+            &args.destination.destination_database,
+            "",
+            vec![],
+            build_destination_roles(&args.destination_roles.roles),
+        ),
+        ..Default::default()
+    };
+    apply_create_request_args(&mut request, request_args);
+    Ok(request)
+}
+
+fn postgres_tls_error_hint(message: &str) -> Option<&'static str> {
+    let message = message.to_ascii_lowercase();
+
+    if message.contains("x509: certificate signed by unknown authority") {
+        return Some(
+            "The source certificate chain is not publicly trusted. For a private or \
+             self-signed source CA, pass its PEM CA bundle with \
+             `--ca-certificate <PATH>`.",
+        );
+    }
+
+    if (message.contains("x509: certificate is valid for ") && message.contains(", not "))
+        || (message.contains("x509: cannot validate certificate for ")
+            && message.contains("because it doesn't contain any ip sans"))
+    {
+        return Some(
+            "The source certificate does not match `--host`. Pass the certificate's \
+             hostname with `--tls-host <HOSTNAME>`.",
+        );
+    }
+
+    None
+}
+
+fn add_postgres_tls_error_hint(mut error: CloudError) -> CloudError {
+    if let Some(hint) = postgres_tls_error_hint(&error.message) {
+        error.message.push_str("\n\nHint: ");
+        error.message.push_str(hint);
+    }
+    error
+}
+
+async fn clickpipe_create_postgres(
+    client: &CloudClient,
+    args: &PostgresCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_postgres_request(args)?;
+    let org_id = resolve_org_id(client).await?;
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await
+        .map_err(add_postgres_tls_error_hint)?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+/// Check the `clickpipe create mysql` flag relationships clap cannot express,
+/// because each one depends on the value of `--auth` rather than its presence.
+fn validate_mysql_create_args(args: &MySqlCreateArgs) -> CloudResult<()> {
+    resolve_mysql_table_mappings(args)?;
+    // Clap enforces this for parsed input via `required_if_eq`; hand-built
+    // args reach it here.
+    if args.auth == "IAM_ROLE" && args.iam_role.is_none() {
+        return Err(CloudError::new(
+            "--auth IAM_ROLE requires --iam-role <IAM_ROLE>",
+        ));
+    }
+    if args.auth == "basic" && args.iam_role.is_some() {
+        return Err(CloudError::new(
+            "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE",
+        ));
+    }
+    // IAM_ROLE authentication has no username or password: the role ARN is the
+    // whole credential. Reject the pair rather than silently dropping it, the
+    // same way basic auth rejects --iam-role.
+    if args.auth == "IAM_ROLE" && (args.username.is_some() || args.password.is_some()) {
+        return Err(CloudError::new(
+            "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic",
+        ));
+    }
+    // clap joins --username and --password with `requires`, so half a pair is
+    // already a usage error; this owns the "basic auth needs the pair at all"
+    // rule, which clap cannot express because it depends on --auth's value.
+    if args.auth == "basic" && (args.username.is_none() || args.password.is_none()) {
+        return Err(CloudError::new(
+            "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
+        ));
+    }
+    if args.disable_tls
+        && (args.tls_host.is_some() || args.ca_certificate.is_some() || args.skip_cert_verification)
+    {
+        return Err(CloudError::new(
+            "--disable-tls cannot be combined with --tls-host, --ca-certificate, or --skip-cert-verification",
+        ));
+    }
+    for (flag, value, minimum) in [
+        ("--sync-interval-seconds", args.sync_interval_seconds, 1),
+        ("--pull-batch-size", args.pull_batch_size, 1),
+        (
+            "--initial-load-parallelism",
+            args.initial_load_parallelism,
+            1,
+        ),
+        (
+            "--snapshot-rows-per-partition",
+            args.snapshot_rows_per_partition,
+            1000,
+        ),
+        (
+            "--snapshot-parallel-tables",
+            args.snapshot_parallel_tables,
+            1,
+        ),
+    ] {
+        if value.is_some_and(|value| value < minimum) {
+            return Err(CloudError::new(format!(
+                "{flag} must be at least {minimum}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_mysql_table_mappings(
+    args: &MySqlCreateArgs,
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeMySQLPipeTableMapping>> {
+    use clickhouse_cloud_api::models::ClickPipeMySQLPipeTableMapping;
+
+    if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
+        return Err(CloudError::new(
+            "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> or \
+             --table-mapping-json <JSON> is required",
+        ));
+    }
+    let mut mappings =
+        Vec::with_capacity(args.table_mappings.len() + args.table_mappings_json.len());
+    for mapping in &args.table_mappings {
+        let (source_schema_name, source_table, target_table) =
+            parse_postgres_table_mapping_parts(mapping)?;
+        mappings.push(ClickPipeMySQLPipeTableMapping {
+            source_schema_name,
+            source_table,
+            target_table,
+            ..Default::default()
+        });
+    }
+    for (position, mapping) in args.table_mappings_json.iter().enumerate() {
+        mappings.push(parse_mysql_table_mapping_json(position, mapping)?);
+    }
+    Ok(mappings)
+}
+
+fn build_mysql_request(
+    args: &MySqlCreateArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeMutateMySQLSource, ClickPipeMutateMySQLSourceAuthentication,
+        ClickPipeMySQLPipeSettings, ClickPipePostRequest, ClickPipePostSource, PLAIN,
+    };
+
+    let request_args = build_create_validation_args(&args.validation);
+    validate_mysql_create_args(args)?;
+    let source_type = parse_serde_enum(
+        &args.mysql_type,
+        "MySQL source type",
+        ClickPipeMutateMySQLSourceType::VALUES,
+    )?;
+    let replication_mode = parse_serde_enum(
+        &args.replication_mode,
+        "MySQL replication mode",
+        ClickPipeMySQLPipeSettingsReplicationmode::VALUES,
+    )?;
+    let replication_mechanism = parse_serde_enum(
+        &args.replication_mechanism,
+        "MySQL replication mechanism",
+        ClickPipeMySQLPipeSettingsReplicationmechanism::VALUES,
+    )?;
+    let authentication: ClickPipeMutateMySQLSourceAuthentication = parse_serde_enum(
+        &args.auth,
+        "MySQL authentication",
+        ClickPipeMutateMySQLSourceAuthentication::VALUES,
+    )?;
+    let table_mappings = resolve_mysql_table_mappings(args)?;
+
+    let ca_certificate = args
+        .ca_certificate
+        .as_deref()
+        .map(std::fs::read_to_string)
+        .transpose()?;
+
+    // Match the parsed authentication mode, not the raw `--auth` string, so a
+    // new mode added to the library enum is a compile error here rather than a
+    // silent credential-less create.
+    let credentials = match &authentication {
+        // `validate_mysql_create_args` has already required the pair for basic
+        // auth, so `zip` yields `Some` for every invocation that reaches here.
+        ClickPipeMutateMySQLSourceAuthentication::Basic => args
+            .username
+            .as_deref()
+            .zip(args.password.as_deref())
+            .map(|(username, password)| PLAIN {
+                username: username.to_string(),
+                password: password.to_string(),
+            }),
+        // The role ARN is the whole credential: the `credentials` object must
+        // stay off the wire entirely.
+        ClickPipeMutateMySQLSourceAuthentication::IAM_ROLE => None,
+        // Unreachable for parsed input, since --auth is restricted to
+        // DB_AUTHS; an unknown mode has no credential shape to send.
+        ClickPipeMutateMySQLSourceAuthentication::Unknown(_) => None,
+    };
+
+    let source = ClickPipeMutateMySQLSource {
+        r#type: Some(source_type),
+        credentials,
+        host: args.host.clone(),
+        port: i64::from(args.port),
+        authentication: Some(authentication),
+        iam_role: args.iam_role.clone(),
+        tls_host: args.tls_host.clone(),
+        ca_certificate,
+        disable_tls: if args.disable_tls { Some(true) } else { None },
+        skip_cert_verification: if args.skip_cert_verification {
+            Some(true)
+        } else {
+            None
+        },
+        server_id: args.server_id.map(|value| value as i64),
+        settings: ClickPipeMySQLPipeSettings {
+            replication_mode,
+            replication_mechanism: Some(replication_mechanism),
+            allow_nullable_columns: args.allow_nullable_columns,
+            delete_on_merge: args.delete_on_merge,
+            initial_load_parallelism: args.initial_load_parallelism,
+            pull_batch_size: args.pull_batch_size,
+            snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
+            snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
+            sync_interval_seconds: args.sync_interval_seconds,
+            use_compression: args.use_compression,
+        },
+        table_mappings,
+    };
+
+    let mut request = ClickPipePostRequest {
+        name: args.name.clone(),
+        source: ClickPipePostSource {
+            mysql: Some(source),
+            ..Default::default()
+        },
+        destination: build_destination(
+            &args.destination.destination_database,
+            "",
+            vec![],
+            build_destination_roles(&args.destination_roles.roles),
+        ),
+        ..Default::default()
+    };
+    apply_create_request_args(&mut request, request_args);
+    Ok(request)
+}
+
+async fn clickpipe_create_mysql(
+    client: &CloudClient,
+    args: &MySqlCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_mysql_request(args)?;
+    let org_id = resolve_org_id(client).await?;
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+fn validate_mongodb_create_args(args: &MongoDbCreateArgs) -> CloudResult<()> {
+    resolve_mongodb_table_mappings(args)?;
+    if args.disable_tls
+        && (args.tls_host.is_some() || args.ca_certificate.is_some() || args.skip_cert_verification)
+    {
+        return Err(CloudError::new(
+            "--disable-tls cannot be combined with --tls-host, --ca-certificate, or --skip-cert-verification",
+        ));
+    }
+    for (flag, value, minimum) in [
+        ("--sync-interval-seconds", args.sync_interval_seconds, 1),
+        ("--pull-batch-size", args.pull_batch_size, 1),
+        (
+            "--snapshot-rows-per-partition",
+            args.snapshot_rows_per_partition,
+            1000,
+        ),
+        (
+            "--snapshot-parallel-collections",
+            args.snapshot_parallel_collections,
+            1,
+        ),
+    ] {
+        if value.is_some_and(|value| value < minimum) {
+            return Err(CloudError::new(format!(
+                "{flag} must be at least {minimum}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_mongodb_table_mappings(
+    args: &MongoDbCreateArgs,
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMapping>> {
+    use clickhouse_cloud_api::models::ClickPipeMongoDBPipeTableMapping;
+
+    if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
+        return Err(CloudError::new(
+            "at least one --table-mapping <DATABASE.COLLECTION:TARGET_TABLE> or \
+             --table-mapping-json <JSON> is required",
+        ));
+    }
+    let mut mappings =
+        Vec::with_capacity(args.table_mappings.len() + args.table_mappings_json.len());
+    for mapping in &args.table_mappings {
+        let (source_database_name, source_collection, target_table) =
+            parse_mongodb_table_mapping_parts(mapping)?;
+        mappings.push(ClickPipeMongoDBPipeTableMapping {
+            source_database_name,
+            source_collection,
+            target_table,
+            ..Default::default()
+        });
+    }
+    for (position, mapping) in args.table_mappings_json.iter().enumerate() {
+        mappings.push(parse_mongodb_table_mapping_json(position, mapping)?);
+    }
+    Ok(mappings)
+}
+
+fn build_mongodb_request(
+    args: &MongoDbCreateArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeMongoDBPipeSettings, ClickPipeMutateMongoDBSource, ClickPipePostRequest,
+        ClickPipePostSource, PLAIN,
+    };
+
+    let request_args = build_create_validation_args(&args.validation);
+    validate_mongodb_create_args(args)?;
+    let read_preference = parse_serde_enum(
+        &args.read_preference,
+        "MongoDB read preference",
+        ClickPipeMutateMongoDBSourceReadpreference::VALUES,
+    )?;
+    let replication_mode = parse_serde_enum(
+        &args.replication_mode,
+        "MongoDB replication mode",
+        ClickPipeMongoDBPipeSettingsReplicationmode::VALUES,
+    )?;
+
+    let table_mappings = resolve_mongodb_table_mappings(args)?;
+
+    let ca_certificate = match args.ca_certificate.as_deref() {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+
+    let source = ClickPipeMutateMongoDBSource {
+        credentials: Some(PLAIN {
+            username: args.username.clone(),
+            password: args.password.clone(),
+        }),
+        uri: args.uri.clone(),
+        read_preference,
+        tls_host: args.tls_host.clone(),
+        ca_certificate,
+        disable_tls: if args.disable_tls { Some(true) } else { None },
+        skip_cert_verification: if args.skip_cert_verification {
+            Some(true)
+        } else {
+            None
+        },
+        settings: ClickPipeMongoDBPipeSettings {
+            initial_load_parallelism: None,
+            replication_mode,
+            delete_on_merge: args.delete_on_merge,
+            pull_batch_size: args.pull_batch_size,
+            snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
+            snapshot_number_of_parallel_tables: args.snapshot_parallel_collections,
+            sync_interval_seconds: args.sync_interval_seconds,
+            use_json_native_format: args.use_json_native_format,
+        },
+        table_mappings,
+    };
+
+    let mut request = ClickPipePostRequest {
+        name: args.name.clone(),
+        source: ClickPipePostSource {
+            mongodb: Some(source),
+            ..Default::default()
+        },
+        destination: build_destination(
+            &args.destination.destination_database,
+            "",
+            vec![],
+            build_destination_roles(&args.destination_roles.roles),
+        ),
+        ..Default::default()
+    };
+    apply_create_request_args(&mut request, request_args);
+
+    Ok(request)
+}
+
+async fn clickpipe_create_mongodb(
+    client: &CloudClient,
+    args: &MongoDbCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_mongodb_request(args)?;
+    let org_id = resolve_org_id(client).await?;
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+fn validate_bigquery_create_args(args: &BigQueryCreateArgs) -> CloudResult<()> {
+    for (flag, value) in [
+        ("--initial-load-parallelism", args.initial_load_parallelism),
+        (
+            "--snapshot-rows-per-partition",
+            args.snapshot_rows_per_partition,
+        ),
+        ("--snapshot-parallel-tables", args.snapshot_parallel_tables),
+    ] {
+        if value.is_some_and(|value| !value.is_finite()) {
+            return Err(CloudError::new(format!(
+                "invalid {flag}: expected a finite number"
+            )));
+        }
+    }
+
+    let authentication = parse_bigquery_authentication(&args.auth)?;
+    match (
+        authentication,
+        args.service_account_file.as_deref(),
+        args.project_id.as_deref(),
+    ) {
+        (GcpAuthentication::ServiceAccount, None, _) => {
+            return Err(CloudError::new(
+                "--auth SERVICE_ACCOUNT requires --service-account-file",
+            ));
+        }
+        (GcpAuthentication::WorkloadIdentity, Some(_), _) => {
+            return Err(CloudError::new(
+                "--service-account-file cannot be used with --auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            ));
+        }
+        (GcpAuthentication::WorkloadIdentity, None, None) => {
+            return Err(CloudError::new(
+                "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY requires --project-id",
+            ));
+        }
+        _ => {}
+    }
+
+    resolve_bigquery_table_mappings(args)?;
+    Ok(())
+}
+
+fn resolve_bigquery_table_mappings(
+    args: &BigQueryCreateArgs,
+) -> CloudResult<Vec<clickhouse_cloud_api::models::ClickPipeBigQueryPipeTableMapping>> {
+    use clickhouse_cloud_api::models::ClickPipeBigQueryPipeTableMapping;
+
+    if args.table_mappings.is_empty() && args.table_mappings_json.is_empty() {
+        return Err(CloudError::new(
+            "at least one --table-mapping <DATASET.TABLE:TARGET_TABLE> or \
+             --table-mapping-json <JSON> is required",
+        ));
+    }
+    let mut mappings =
+        Vec::with_capacity(args.table_mappings.len() + args.table_mappings_json.len());
+    for mapping in &args.table_mappings {
+        let (source_dataset_name, source_table, target_table) =
+            parse_postgres_table_mapping_parts(mapping)?;
+        mappings.push(ClickPipeBigQueryPipeTableMapping {
+            source_dataset_name,
+            source_table,
+            target_table,
+            ..Default::default()
+        });
+    }
+    for (position, mapping) in args.table_mappings_json.iter().enumerate() {
+        mappings.push(parse_bigquery_table_mapping_json(position, mapping)?);
+    }
+    Ok(mappings)
+}
+
+fn build_bigquery_request(
+    args: &BigQueryCreateArgs,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostRequest> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeBigQueryPipeSettings, ClickPipePostBigQueryServiceAccountSource,
+        ClickPipePostBigQueryWorkloadIdentitySource,
+        ClickPipePostBigQueryWorkloadIdentitySourceAuthentication, ClickPipePostRequest,
+        ClickPipePostSource, ServiceAccount,
+    };
+
+    let request_args = build_create_validation_args(&args.validation);
+    validate_bigquery_create_args(args)?;
+    let authentication = parse_bigquery_authentication(&args.auth)?;
+    let table_mappings = resolve_bigquery_table_mappings(args)?;
+
+    let settings = ClickPipeBigQueryPipeSettings {
+        replication_mode: parse_enum(&args.replication_mode)?,
+        allow_nullable_columns: args.allow_nullable_columns,
+        initial_load_parallelism: args.initial_load_parallelism,
+        snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
+        snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
+    };
+    let source = match authentication {
+        GcpAuthentication::ServiceAccount => {
+            let path = args.service_account_file.as_deref().ok_or_else(|| {
+                CloudError::new("--auth SERVICE_ACCOUNT requires --service-account-file")
+            })?;
+            ClickPipePostBigQueryServiceAccountSource {
+                authentication: None,
+                project_id: args.project_id.clone(),
+                credentials: ServiceAccount {
+                    service_account_file: read_gcp_service_account_file(path)?,
+                },
+                snapshot_staging_path: args.staging_path.clone(),
+                settings,
+                table_mappings,
+            }
+            .into()
+        }
+        GcpAuthentication::WorkloadIdentity => ClickPipePostBigQueryWorkloadIdentitySource {
+            authentication:
+                ClickPipePostBigQueryWorkloadIdentitySourceAuthentication::ServiceAccountWorkloadIdentity,
+            project_id: args.project_id.clone().ok_or_else(|| {
+                CloudError::new(
+                    "--auth SERVICE_ACCOUNT_WORKLOAD_IDENTITY requires --project-id",
+                )
+            })?,
+            snapshot_staging_path: args.staging_path.clone(),
+            settings,
+            table_mappings,
+        }
+        .into(),
+    };
+
+    let mut request = ClickPipePostRequest {
+        name: args.name.clone(),
+        source: ClickPipePostSource {
+            bigquery: Some(source),
+            ..Default::default()
+        },
+        destination: build_destination(
+            &args.destination.destination_database,
+            "",
+            vec![],
+            build_destination_roles(&args.destination_roles.roles),
+        ),
+        ..Default::default()
+    };
+    apply_create_request_args(&mut request, request_args);
+
+    Ok(request)
+}
+
+async fn clickpipe_create_bigquery(
+    client: &CloudClient,
+    args: &BigQueryCreateArgs,
+    json: bool,
+) -> CloudResult<()> {
+    let request = build_bigquery_request(args)?;
+    let org_id = resolve_org_id(client).await?;
+
+    let clickpipe = client
+        .create_clickpipe(&org_id, &args.service_id, &request)
+        .await?;
+    print_created(&clickpipe, json)?;
+    Ok(())
+}
+
+impl CloudClient {
+    pub async fn get_clickpipe_service_context(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipesServiceContext> {
+        let response = self
+            .api()
+            .click_pipes_service_context_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn list_clickpipes(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::ClickPipe>> {
+        let response = self
+            .api()
+            .click_pipe_get_list(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_clickpipe(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipe> {
+        let response = self
+            .api()
+            .click_pipe_get(org_id, service_id, clickpipe_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn create_clickpipe(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &clickhouse_cloud_api::models::ClickPipePostRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipe> {
+        let response = self
+            .api()
+            .click_pipe_create(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_clickpipe(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+        request: &clickhouse_cloud_api::models::ClickPipePatchRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipe> {
+        let response = self
+            .api()
+            .click_pipe_update(org_id, service_id, clickpipe_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn delete_clickpipe(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+    ) -> crate::cloud::client::Result<Option<String>> {
+        let response = self
+            .api()
+            .click_pipe_delete(org_id, service_id, clickpipe_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Ok(response.result.and_then(|result| {
+            result
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .filter(|name| !name.is_empty())
+                .map(str::to_owned)
+        }))
+    }
+
+    pub async fn change_clickpipe_state(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+        command: clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipe> {
+        use clickhouse_cloud_api::models::ClickPipeStatePatchRequest;
+        let request = ClickPipeStatePatchRequest {
+            command: Some(command),
+        };
+        let response = self
+            .api()
+            .click_pipe_state_update(org_id, service_id, clickpipe_id, &request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_clickpipe_scaling(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+        request: &clickhouse_cloud_api::models::ClickPipeScalingPatchRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipe> {
+        let response = self
+            .api()
+            .click_pipe_scaling_update(org_id, service_id, clickpipe_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_clickpipe_cdc_scaling(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipesCdcScaling> {
+        let response = self
+            .api()
+            .click_pipe_cdc_scaling_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_clickpipe_cdc_scaling(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &clickhouse_cloud_api::models::ClickPipesCdcScalingPatchRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipesCdcScaling> {
+        let response = self
+            .api()
+            .click_pipe_cdc_scaling_update(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_clickpipe_settings(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
+        let response = self
+            .api()
+            .click_pipe_settings_get(org_id, service_id, clickpipe_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_clickpipe_settings(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        clickpipe_id: &str,
+        request: &clickhouse_cloud_api::models::ClickPipeSettingsPutRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipeSettingsResponse> {
+        let response = self
+            .api()
+            .click_pipe_settings_update(org_id, service_id, clickpipe_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn click_pipe_schema_discovery(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryRequest,
+    ) -> crate::cloud::client::Result<clickhouse_cloud_api::models::ClickPipeSchemaDiscoveryResponse>
+    {
+        let response = self
+            .api()
+            .click_pipe_schema_discovery(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn primary_json_file_argument_contract() {
+        crate::cloud::config::assert_primary_json_input(
+            &["cloud", "clickpipe", "update", "svc-1", "pipe-1"],
+            "config_file",
+            &["config-file"],
+        );
+    }
+
+    use super::*;
+    use crate::cli::{Cli, Commands};
+    use crate::cloud::cli::CloudCommands;
+    use clap::Parser;
+
+    fn parse_cloud_command(args: &[&str]) -> CloudCommands {
+        let cli = Cli::try_parse_from(
+            ["clickhousectl", "cloud", "clickpipe"]
+                .into_iter()
+                .chain(args.iter().copied()),
+        )
+        .expect("ClickPipe command should parse");
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("expected cloud command");
+        };
+        crate::cloud::cli::tests::assert_org_selector(&cloud, args);
+        cloud.command
+    }
+
+    fn parse_clickpipe(args: &[&str]) -> ClickPipeCommands {
+        let CloudCommands::ClickPipe { command } = parse_cloud_command(args) else {
+            panic!("expected clickpipe command");
+        };
+        *command
+    }
+
+    /// The `clickpipe create` validation message for a parsed command,
+    /// dropping the source subcommand the usage error is reported against.
+    fn clickpipe_validation_message(command: &ClickPipeCommands) -> Option<String> {
+        command
+            .clickpipe_create_validation_error()
+            .map(|(_, message)| message)
+    }
+
+    fn assert_rejected(args: &[&str]) {
+        assert!(
+            Cli::try_parse_from(
+                ["clickhousectl", "cloud", "clickpipe"]
+                    .into_iter()
+                    .chain(args.iter().copied())
+            )
+            .is_err(),
+            "expected parse failure for: {}",
+            args.join(" ")
+        );
+    }
+
+    fn clickpipe_parse_error(args: &[&str]) -> clap::Error {
+        Cli::try_parse_from(
+            ["clickhousectl", "cloud", "clickpipe"]
+                .into_iter()
+                .chain(args.iter().copied()),
+        )
+        .err()
+        .unwrap_or_else(|| panic!("expected parse failure for: {}", args.join(" ")))
+    }
+
+    /// Minimal `clickpipe create kafka` invocation, before any auth flags.
+    fn kafka_create_cli_args() -> Vec<&'static str> {
+        vec![
+            "create",
+            "kafka",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ]
+    }
+
+    fn object_storage_create_cli_args() -> Vec<&'static str> {
+        vec![
+            "create",
+            "object-storage",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ]
+    }
+
+    /// Minimal `clickpipe schema-discover kafka <SERVICE_ID>` invocation, before
+    /// any auth flags. `KafkaSourceFields` is flattened into both commands, so
+    /// credential-pairing rules must hold for each.
+    fn kafka_discover_cli_args() -> Vec<&'static str> {
+        vec![
+            "schema-discover",
+            "kafka",
+            "svc-1",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+        ]
+    }
+
+    fn postgres_cli_args(mapping: Option<&str>) -> Vec<&str> {
+        let mut args = vec![
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--username",
+            "user",
+            "--password",
+            "password",
+        ];
+        if let Some(mapping) = mapping {
+            args.extend(["--table-mapping", mapping]);
+        }
+        args
+    }
+
+    fn assert_write(args: &[&str], expected: bool) {
+        assert_eq!(
+            parse_cloud_command(args).is_write_command(),
+            expected,
+            "wrong classification for: {}",
+            args.join(" ")
+        );
+    }
+
+    /// Write a service-account key file and return its directory (which the
+    /// caller keeps alive) plus the path to pass to --service-account-file.
+    fn service_account_key_file() -> (tempfile::TempDir, String) {
+        use std::io::Write as _;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("service-account.json");
+        std::fs::File::create(&path)
+            .expect("create service account file")
+            .write_all(br#"{"type":"service_account"}"#)
+            .expect("write service account file");
+        let path = path.to_str().expect("utf-8 temp path").to_string();
+        (dir, path)
+    }
+
+    /// base64 of the `service_account_key_file` contents, which is what the
+    /// request carries — the path is never sent.
+    const SERVICE_ACCOUNT_KEY_BASE64: &str = "eyJ0eXBlIjoic2VydmljZV9hY2NvdW50In0=";
+
+    /// The required Pub/Sub source flags, with a key path that is only read
+    /// when a request is built.
+    fn pubsub_source_flags(service_account_file: &str) -> Vec<&str> {
+        vec![
+            "--topic",
+            "events",
+            "--project-id",
+            "my-gcp-project",
+            "--format",
+            "JSONEachRow",
+            "--seek-type",
+            "earliest",
+            "--service-account-file",
+            service_account_file,
+        ]
+    }
+
+    /// Parse `create pubsub` args, so the builder tests exercise the real
+    /// clap defaults rather than hand-built structs.
+    fn parse_pubsub_create(flags: &[&str]) -> PubSubCreateArgs {
+        let mut args = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        args.extend(flags.iter().copied());
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::PubSub(args),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected pubsub create");
+        };
+        args
+    }
+
+    /// Parse `schema-discover pubsub` args and return the source fields.
+    fn parse_pubsub_discovery(flags: &[&str]) -> Box<PubSubSourceFields> {
+        let mut args = vec!["schema-discover", "pubsub", "svc-1"];
+        args.extend(flags.iter().copied());
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::PubSub(source),
+            ..
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected pubsub schema discovery");
+        };
+        Box::new(source.source)
+    }
+
+    fn assert_pubsub_value(flag: &str, value: &str) {
+        let mut flags = pubsub_source_flags("./sa-key.json");
+        // Replace the baseline value for a flag the minimal invocation already
+        // carries, so no flag is passed twice.
+        match flags.iter().position(|arg| *arg == flag) {
+            Some(index) => flags[index + 1] = value,
+            None => flags.extend([flag, value]),
+        }
+        parse_pubsub_create(&flags);
+    }
+
+    fn assert_object_storage_value(flag: &str, value: &str) {
+        if flag == "--format" {
+            parse_clickpipe(&[
+                "create",
+                "object-storage",
+                "--column",
+                "id:Int64",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--source-url",
+                "https://bucket.example/data",
+                "--format",
+                value,
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ]);
+            return;
+        }
+        parse_clickpipe(&[
+            "create",
+            "object-storage",
+            "--column",
+            "id:Int64",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            flag,
+            value,
+        ]);
+    }
+
+    fn assert_kafka_value(flag: &str, value: &str) {
+        if flag == "--format" {
+            parse_clickpipe(&[
+                "create",
+                "kafka",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--brokers",
+                "broker:9092",
+                "--topics",
+                "topic",
+                "--format",
+                value,
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ]);
+            return;
+        }
+        parse_clickpipe(&[
+            "create",
+            "kafka",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            flag,
+            value,
+        ]);
+    }
+
+    fn assert_kinesis_value(flag: &str, value: &str) {
+        if flag == "--format" {
+            parse_clickpipe(&[
+                "create",
+                "kinesis",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--stream-name",
+                "stream-1",
+                "--region",
+                "us-east-1",
+                "--format",
+                value,
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ]);
+            return;
+        }
+        parse_clickpipe(&[
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "stream-1",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            flag,
+            value,
+        ]);
+    }
+
+    fn assert_postgres_value(flag: &str, value: &str) {
+        let mut args = vec![
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--table-mapping",
+            "public.events:events",
+            flag,
+            value,
+        ];
+        // Each auth mode gets only its own credential flags: the CLI rejects
+        // --username/--password with IAM_ROLE, so pairing them here would
+        // assert an invocation the CLI refuses to run.
+        if flag == "--auth" && value == "IAM_ROLE" {
+            args.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
+        } else {
+            args.extend(["--username", "user", "--password", "password"]);
+        }
+        parse_clickpipe(&args);
+    }
+
+    fn assert_mysql_value(flag: &str, value: &str) {
+        let mut args = vec![
+            "create",
+            "mysql",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "mysql.example",
+            "--table-mapping",
+            "source.events:events",
+            flag,
+            value,
+        ];
+        // Each auth mode gets only its own credential flags: the CLI rejects
+        // --username/--password with IAM_ROLE, so pairing them here would
+        // assert an invocation the CLI refuses to run.
+        if flag == "--auth" && value == "IAM_ROLE" {
+            args.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
+        } else {
+            args.extend(["--username", "user", "--password", "password"]);
+        }
+        parse_clickpipe(&args);
+    }
+
+    fn assert_mongodb_value(flag: &str, value: &str) {
+        parse_clickpipe(&[
+            "create",
+            "mongodb",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--uri",
+            "mongodb://mongo.example/source",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--table-mapping",
+            "source.events:events",
+            flag,
+            value,
+        ]);
+    }
+
+    fn assert_bigquery_value(flag: &str, value: &str) {
+        parse_clickpipe(&[
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping",
+            "dataset.events:events",
+            flag,
+            value,
+        ]);
+    }
+
+    #[test]
+    fn parses_lifecycle_commands_and_flags() {
+        let ClickPipeCommands::List { service_id } =
+            parse_clickpipe(&["list", "svc-list", "--org-id", "org-list"])
+        else {
+            panic!("expected list");
+        };
+        assert_eq!(service_id, "svc-list");
+
+        let ClickPipeCommands::Get {
+            service_id,
+            clickpipe_id,
+        } = parse_clickpipe(&["get", "svc-get", "pipe-get", "--org-id", "org-get"])
+        else {
+            panic!("expected get");
+        };
+        assert_eq!(service_id, "svc-get");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-get"));
+
+        let ClickPipeCommands::Delete {
+            service_id,
+            clickpipe_id,
+        } = parse_clickpipe(&[
+            "delete",
+            "svc-delete",
+            "pipe-delete",
+            "--org-id",
+            "org-delete",
+        ])
+        else {
+            panic!("expected delete");
+        };
+        assert_eq!(service_id, "svc-delete");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-delete"));
+
+        let ClickPipeCommands::Start {
+            service_id,
+            clickpipe_id,
+        } = parse_clickpipe(&["start", "svc-start", "pipe-start", "--org-id", "org-start"])
+        else {
+            panic!("expected start");
+        };
+        assert_eq!(service_id, "svc-start");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-start"));
+
+        let ClickPipeCommands::Stop {
+            service_id,
+            clickpipe_id,
+        } = parse_clickpipe(&["stop", "svc-stop", "pipe-stop", "--org-id", "org-stop"])
+        else {
+            panic!("expected stop");
+        };
+        assert_eq!(service_id, "svc-stop");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-stop"));
+
+        let ClickPipeCommands::Resync {
+            service_id,
+            clickpipe_id,
+        } = parse_clickpipe(&[
+            "resync",
+            "svc-resync",
+            "pipe-resync",
+            "--org-id",
+            "org-resync",
+        ])
+        else {
+            panic!("expected resync");
+        };
+        assert_eq!(service_id, "svc-resync");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-resync"));
+    }
+
+    #[test]
+    fn parses_scale_flags_and_defaults() {
+        let ClickPipeCommands::Scale {
+            service_id,
+            clickpipe_id,
+            replicas,
+            cpu_millicores,
+            memory_gb,
+        } = parse_clickpipe(&[
+            "scale",
+            "svc-1",
+            "pipe-1",
+            "--replicas",
+            "4",
+            "--cpu-millicores",
+            "500",
+            "--memory-gb",
+            "1.5",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected scale");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-1"));
+        assert_eq!(replicas, Some(4));
+        assert_eq!(cpu_millicores, Some(500));
+        assert_eq!(memory_gb, Some(1.5));
+    }
+
+    #[test]
+    fn scale_accepts_inclusive_boundaries() {
+        for (replicas, cpu, memory) in [("1", "125", "0.5"), ("40", "2000", "8")] {
+            let ClickPipeCommands::Scale {
+                replicas: parsed_replicas,
+                cpu_millicores,
+                memory_gb,
+                ..
+            } = parse_clickpipe(&[
+                "scale",
+                "svc-1",
+                "pipe-1",
+                "--replicas",
+                replicas,
+                "--cpu-millicores",
+                cpu,
+                "--memory-gb",
+                memory,
+            ])
+            else {
+                panic!("expected scale");
+            };
+            assert_eq!(parsed_replicas, Some(replicas.parse().unwrap()));
+            assert_eq!(cpu_millicores, Some(cpu.parse().unwrap()));
+            assert_eq!(memory_gb, Some(memory.parse().unwrap()));
+        }
+    }
+
+    #[test]
+    fn scale_rejects_out_of_range_and_non_finite_values() {
+        for (flag, values) in [
+            ("replicas", &["0", "41", "-1"][..]),
+            ("cpu-millicores", &["0", "124", "2001", "-1"][..]),
+            (
+                "memory-gb",
+                &[
+                    "0",
+                    "0.49",
+                    "8.01",
+                    "9",
+                    "-1",
+                    "NaN",
+                    "inf",
+                    "+inf",
+                    "-inf",
+                    "infinity",
+                    "-infinity",
+                ][..],
+            ),
+        ] {
+            for value in values {
+                let argument = format!("--{flag}={value}");
+                let error = clickpipe_parse_error(&["scale", "svc-1", "pipe-1", &argument]);
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::ValueValidation,
+                    "{argument}"
+                );
+                assert_eq!(error.exit_code(), 2, "{argument}");
+            }
+        }
+    }
+
+    #[test]
+    fn scale_requires_at_least_one_of_replicas_cpu_or_memory() {
+        assert_rejected(&["scale", "svc-1", "pipe-1"]);
+    }
+
+    #[test]
+    fn scale_accepts_a_single_flag() {
+        let ClickPipeCommands::Scale {
+            replicas,
+            cpu_millicores,
+            memory_gb,
+            ..
+        } = parse_clickpipe(&["scale", "svc-1", "pipe-1", "--replicas", "4"])
+        else {
+            panic!("expected scale");
+        };
+        assert_eq!(replicas, Some(4));
+        assert_eq!(cpu_millicores, None);
+        assert_eq!(memory_gb, None);
+
+        let ClickPipeCommands::Scale {
+            replicas,
+            cpu_millicores,
+            memory_gb,
+            ..
+        } = parse_clickpipe(&["scale", "svc-1", "pipe-1", "--cpu-millicores", "500"])
+        else {
+            panic!("expected scale");
+        };
+        assert_eq!(replicas, None);
+        assert_eq!(cpu_millicores, Some(500));
+        assert_eq!(memory_gb, None);
+
+        let ClickPipeCommands::Scale {
+            replicas,
+            cpu_millicores,
+            memory_gb,
+            ..
+        } = parse_clickpipe(&["scale", "svc-1", "pipe-1", "--memory-gb", "1.5"])
+        else {
+            panic!("expected scale");
+        };
+        assert_eq!(replicas, None);
+        assert_eq!(cpu_millicores, None);
+        assert_eq!(memory_gb, Some(1.5));
+    }
+
+    #[test]
+    fn scale_accepts_any_combination_of_flags() {
+        let ClickPipeCommands::Scale {
+            replicas,
+            cpu_millicores,
+            memory_gb,
+            ..
+        } = parse_clickpipe(&[
+            "scale",
+            "svc-1",
+            "pipe-1",
+            "--replicas",
+            "4",
+            "--memory-gb",
+            "1.5",
+        ])
+        else {
+            panic!("expected scale");
+        };
+        assert_eq!(replicas, Some(4));
+        assert_eq!(cpu_millicores, None);
+        assert_eq!(memory_gb, Some(1.5));
+    }
+
+    #[test]
+    fn parses_cdc_scaling_get_and_update_flags() {
+        let ClickPipeCommands::CdcScaling {
+            command: ClickPipeCdcScalingCommands::Get { service_id },
+        } = parse_clickpipe(&["cdc-scaling", "get", "svc-get", "--org-id", "org-get"])
+        else {
+            panic!("expected CDC scaling get");
+        };
+        assert_eq!(service_id, "svc-get");
+
+        let ClickPipeCommands::CdcScaling {
+            command:
+                ClickPipeCdcScalingCommands::Update {
+                    service_id,
+                    cpu_millicores,
+                    memory_gb,
+                },
+        } = parse_clickpipe(&[
+            "cdc-scaling",
+            "update",
+            "svc-update",
+            "--cpu-millicores",
+            "32000",
+            "--memory-gb",
+            "128",
+            "--org-id",
+            "org-update",
+        ])
+        else {
+            panic!("expected CDC scaling update");
+        };
+        assert_eq!(service_id, "svc-update");
+        assert_eq!(cpu_millicores, Some(32000));
+        assert_eq!(memory_gb, Some(128.0));
+    }
+
+    #[test]
+    fn cdc_scaling_update_requires_a_target_and_enforces_schema_ranges() {
+        assert_rejected(&["cdc-scaling", "update", "svc-1"]);
+        for value in ["999", "1500", "33000"] {
+            assert_rejected(&["cdc-scaling", "update", "svc-1", "--cpu-millicores", value]);
+        }
+        for value in ["3", "6", "132", "NaN"] {
+            assert_rejected(&["cdc-scaling", "update", "svc-1", "--memory-gb", value]);
+        }
+    }
+
+    #[test]
+    fn build_cdc_scaling_request_preserves_omission() {
+        let request = build_cdc_scaling_request(&CdcScalingValues {
+            cpu_millicores: Some(1000),
+            memory_gb: None,
+        })
+        .unwrap();
+        assert_eq!(request.replica_cpu_millicores, Some(1000));
+        assert_eq!(request.replica_memory_gb, None);
+    }
+
+    #[test]
+    fn build_cdc_scaling_request_accepts_maximum_balanced_allocation() {
+        let request = build_cdc_scaling_request(&CdcScalingValues {
+            cpu_millicores: Some(32000),
+            memory_gb: Some(128.0),
+        })
+        .unwrap();
+        assert_eq!(request.replica_cpu_millicores, Some(32000));
+        assert_eq!(request.replica_memory_gb, Some(128.0));
+    }
+
+    #[test]
+    fn build_cdc_scaling_request_rejects_unbalanced_allocation() {
+        let error = build_cdc_scaling_request(&CdcScalingValues {
+            cpu_millicores: Some(2000),
+            memory_gb: Some(4.0),
+        })
+        .unwrap_err();
+        assert_eq!(
+            error.message,
+            "--memory-gb must be 8 when --cpu-millicores is 2000"
+        );
+    }
+
+    #[test]
+    fn object_storage_insert_size_boundaries_match_create_and_settings_update() {
+        for size in [
+            524_287_999_u64,
+            524_288_000,
+            536_870_912,
+            10_737_418_240,
+            10_737_418_241,
+            10_485_760,
+            53_687_091_200,
+        ] {
+            let size_arg = size.to_string();
+            for mut args in [
+                vec![
+                    "create",
+                    "object-storage",
+                    "--column",
+                    "id:Int64",
+                    "svc-1",
+                    "--name",
+                    "pipe-1",
+                    "--source-url",
+                    "https://example.test/data.csv",
+                    "--format",
+                    "CSVWithNames",
+                    "--database",
+                    "default",
+                    "--table",
+                    "events",
+                ],
+                vec!["settings", "update", "svc-1", "pipe-1"],
+            ] {
+                args.extend(["--object-storage-max-insert-bytes", &size_arg]);
+                let result = Cli::try_parse_from(
+                    ["chctl", "cloud", "clickpipe"]
+                        .into_iter()
+                        .chain(args.iter().copied()),
+                );
+                if [524_288_000, 536_870_912, 10_737_418_240].contains(&size) {
+                    assert!(result.is_ok(), "{args:?}");
+                    let settings = match parse_clickpipe(&args) {
+                        ClickPipeCommands::Create {
+                            command: ClickPipeCreateCommands::ObjectStorage(args),
+                        } => args.request.settings,
+                        ClickPipeCommands::Settings {
+                            command: ClickPipeSettingsCommands::Update { settings, .. },
+                        } => settings,
+                        _ => panic!("unexpected command"),
+                    };
+                    assert_eq!(settings.object_storage_max_insert_bytes, Some(size));
+                    let request = build_clickpipe_settings_request(&settings, None);
+                    assert_eq!(request.object_storage_max_insert_bytes, Some(size as i64));
+                } else {
+                    assert_eq!(
+                        result.err().expect("out-of-range size must fail").kind(),
+                        clap::error::ErrorKind::ValueValidation,
+                        "{args:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parses_settings_commands_flags_and_defaults() {
+        let ClickPipeCommands::Settings {
+            command:
+                ClickPipeSettingsCommands::Get {
+                    service_id,
+                    clickpipe_id,
+                },
+        } = parse_clickpipe(&["settings", "get", "svc-1", "pipe-1", "--org-id", "org-1"])
+        else {
+            panic!("expected settings get");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-1"));
+
+        let ClickPipeCommands::Settings {
+            command:
+                ClickPipeSettingsCommands::Update {
+                    service_id,
+                    clickpipe_id,
+                    settings,
+                },
+        } = parse_clickpipe(&[
+            "settings",
+            "update",
+            "svc-1",
+            "pipe-1",
+            "--streaming-max-insert-wait-ms",
+            "1000",
+            "--object-storage-concurrency",
+            "2",
+            "--object-storage-polling-interval-ms",
+            "3000",
+            "--object-storage-max-insert-bytes",
+            "524288000",
+            "--object-storage-max-file-count",
+            "5",
+            "--clickhouse-max-threads",
+            "6",
+            "--clickhouse-max-insert-threads",
+            "7",
+            "--clickhouse-max-download-threads",
+            "8",
+            "--clickhouse-min-insert-block-size-bytes",
+            "20971520",
+            "--clickhouse-parallel-distributed-insert-select",
+            "1",
+            "--kafka-read-committed",
+            "false",
+            "--object-storage-use-cluster-function",
+            "true",
+            "--clickhouse-parallel-view-processing",
+            "false",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected settings update");
+        };
+        assert_eq!(service_id, "svc-1");
+        assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-1"));
+        assert_eq!(settings.streaming_max_insert_wait_ms, Some(1000));
+        assert_eq!(settings.object_storage_concurrency, Some(2));
+        assert_eq!(settings.object_storage_polling_interval_ms, Some(3000));
+        assert_eq!(settings.object_storage_max_insert_bytes, Some(524_288_000));
+        assert_eq!(settings.object_storage_max_file_count, Some(5));
+        assert_eq!(settings.clickhouse_max_threads, Some(6));
+        assert_eq!(settings.clickhouse_max_insert_threads, Some(7));
+        assert_eq!(settings.clickhouse_max_download_threads, Some(8));
+        assert_eq!(
+            settings.clickhouse_min_insert_block_size_bytes,
+            Some(20971520)
+        );
+        assert_eq!(
+            settings.clickhouse_parallel_distributed_insert_select,
+            Some(1)
+        );
+        assert_eq!(settings.kafka_read_committed, Some(false));
+        assert_eq!(settings.object_storage_use_cluster_function, Some(true));
+        assert_eq!(settings.clickhouse_parallel_view_processing, Some(false));
+
+        let ClickPipeCommands::Settings {
+            command: ClickPipeSettingsCommands::Update { settings, .. },
+        } = parse_clickpipe(&[
+            "settings",
+            "update",
+            "svc-1",
+            "pipe-1",
+            "--object-storage-max-file-count",
+            "200",
+        ])
+        else {
+            panic!("expected settings update");
+        };
+        assert_eq!(settings.streaming_max_insert_wait_ms, None);
+        assert_eq!(settings.object_storage_concurrency, None);
+        assert_eq!(settings.object_storage_polling_interval_ms, None);
+        assert_eq!(settings.object_storage_max_insert_bytes, None);
+        assert_eq!(settings.object_storage_max_file_count, Some(200));
+        assert_eq!(settings.clickhouse_max_threads, None);
+        assert_eq!(settings.clickhouse_max_insert_threads, None);
+        assert_eq!(settings.clickhouse_max_download_threads, None);
+        assert_eq!(settings.clickhouse_min_insert_block_size_bytes, None);
+        assert_eq!(settings.clickhouse_parallel_distributed_insert_select, None);
+        assert_eq!(settings.kafka_read_committed, None);
+        assert_eq!(settings.object_storage_use_cluster_function, None);
+        assert_eq!(settings.clickhouse_parallel_view_processing, None);
+    }
+
+    #[test]
+    fn every_create_source_exposes_cross_source_request_flags() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        let create = command
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
+            .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
+            .expect("clickpipe create command");
+        for source in [
+            "object-storage",
+            "kafka",
+            "kinesis",
+            "postgres",
+            "mysql",
+            "mongodb",
+            "bigquery",
+            "pubsub",
+        ] {
+            let command = create.find_subcommand(source).expect("source subcommand");
+            assert!(
+                command
+                    .get_arguments()
+                    .any(|argument| argument.get_id() == "validate_samples"),
+                "clickpipe create {source} is missing sample validation"
+            );
+        }
+        for source in ["object-storage", "kafka", "kinesis", "pubsub"] {
+            let command = create.find_subcommand(source).expect("source subcommand");
+            for id in [
+                "replicas",
+                "cpu_millicores",
+                "memory_gb",
+                "field_mappings",
+                "streaming_max_insert_wait_ms",
+                "kafka_read_committed",
+            ] {
+                assert!(
+                    command
+                        .get_arguments()
+                        .any(|argument| argument.get_id() == id),
+                    "clickpipe create {source} is missing argument id {id}"
+                );
+            }
+        }
+        for source in ["postgres", "mysql", "mongodb", "bigquery"] {
+            let command = create.find_subcommand(source).expect("source subcommand");
+            for id in ["replicas", "cpu_millicores", "memory_gb", "field_mappings"] {
+                assert!(
+                    command
+                        .get_arguments()
+                        .all(|argument| argument.get_id() != id),
+                    "clickpipe create {source} unexpectedly exposes {id}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parses_cross_source_create_request_values() {
+        let mut args = kafka_create_cli_args();
+        args.extend([
+            "--validate-samples",
+            "false",
+            "--replicas",
+            "2",
+            "--cpu-millicores",
+            "500",
+            "--memory-gb",
+            "2",
+            "--field-mapping",
+            r#"{"sourceField":"source","destinationField":"destination"}"#,
+            "--clickhouse-max-threads",
+            "0",
+            "--kafka-read-committed",
+            "false",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(args),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected kafka create");
+        };
+
+        assert_eq!(args.request.validation.validate_samples, Some(false));
+        assert_eq!(args.request.replicas, Some(2));
+        assert_eq!(args.request.cpu_millicores, Some(500));
+        assert_eq!(args.request.memory_gb, Some(2.0));
+        assert_eq!(args.request.field_mappings.len(), 1);
+        assert_eq!(args.request.settings.clickhouse_max_threads, Some(0));
+        assert_eq!(args.request.settings.kafka_read_committed, Some(false));
+    }
+
+    #[test]
+    fn build_create_request_args_preserves_omission_and_explicit_values() {
+        let minimal = build_create_request_args(
+            &ClickPipeCreateRequestArgs::default(),
+            ClickPipeSourceKind::Kafka,
+        )
+        .unwrap();
+        assert_eq!(minimal.validate_samples, None);
+        assert_eq!(minimal.scaling, None);
+        assert_eq!(minimal.settings, None);
+        assert!(minimal.field_mappings.is_empty());
+
+        let maximal = build_create_request_args(
+            &ClickPipeCreateRequestArgs {
+                validation: ClickPipeCreateValidationArgs {
+                    validate_samples: Some(false),
+                },
+                replicas: Some(1),
+                cpu_millicores: Some(125),
+                memory_gb: Some(0.5),
+                field_mappings: vec![
+                    r#"{"sourceField":"source:a=b","destinationField":"destination:x=y"}"#.into(),
+                ],
+                settings: ClickPipeSettingsValues {
+                    streaming_max_insert_wait_ms: Some(500),
+                    clickhouse_max_threads: Some(0),
+                    clickhouse_max_insert_threads: Some(0),
+                    clickhouse_max_download_threads: Some(0),
+                    clickhouse_min_insert_block_size_bytes: Some(0),
+                    clickhouse_parallel_distributed_insert_select: Some(0),
+                    kafka_read_committed: Some(false),
+                    clickhouse_parallel_view_processing: Some(false),
+                    ..Default::default()
+                },
+            },
+            ClickPipeSourceKind::Kafka,
+        )
+        .unwrap();
+        assert_eq!(maximal.validate_samples, Some(false));
+        let scaling = maximal.scaling.unwrap();
+        assert_eq!(scaling.replicas, 1);
+        assert_eq!(scaling.replica_cpu_millicores, 125);
+        assert_eq!(scaling.replica_memory_gb, 0.5);
+        let settings = maximal.settings.unwrap();
+        assert_eq!(settings.clickhouse_max_threads, Some(0));
+        assert_eq!(settings.kafka_read_committed, Some(false));
+        assert_eq!(maximal.field_mappings.len(), 1);
+        assert_eq!(maximal.field_mappings[0].source_field, "source:a=b");
+        assert_eq!(
+            maximal.field_mappings[0].destination_field,
+            "destination:x=y"
+        );
+
+        let object_storage = build_create_request_args(
+            &ClickPipeCreateRequestArgs {
+                settings: ClickPipeSettingsValues {
+                    object_storage_concurrency: Some(1),
+                    object_storage_polling_interval_ms: Some(100),
+                    object_storage_max_insert_bytes: Some(524_288_000),
+                    object_storage_max_file_count: Some(1),
+                    object_storage_use_cluster_function: Some(false),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ClickPipeSourceKind::ObjectStorage,
+        )
+        .unwrap();
+        let settings = object_storage.settings.unwrap();
+        assert_eq!(settings.object_storage_concurrency, Some(1));
+        assert_eq!(settings.object_storage_use_cluster_function, Some(false));
+        assert_eq!(settings.kafka_read_committed, None);
+    }
+
+    #[test]
+    fn build_create_request_args_validates_shape_and_source_compatibility() {
+        let partial_scaling = ClickPipeCreateRequestArgs {
+            replicas: Some(1),
+            ..Default::default()
+        };
+        assert!(
+            build_create_request_args(&partial_scaling, ClickPipeSourceKind::Kafka)
+                .unwrap_err()
+                .message
+                .contains("requires --replicas, --cpu-millicores, and --memory-gb")
+        );
+
+        let unknown_mapping_field = ClickPipeCreateRequestArgs {
+            field_mappings: vec![
+                r#"{"sourceField":"source","destinationField":"target","typo":true}"#.into(),
+            ],
+            ..Default::default()
+        };
+        assert!(
+            build_create_request_args(&unknown_mapping_field, ClickPipeSourceKind::Kafka)
+                .unwrap_err()
+                .message
+                .contains("unknown field `typo`")
+        );
+
+        let non_kafka = ClickPipeCreateRequestArgs {
+            settings: ClickPipeSettingsValues {
+                kafka_read_committed: Some(false),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(
+            build_create_request_args(&non_kafka, ClickPipeSourceKind::PubSub)
+                .unwrap_err()
+                .message
+                .contains("only be used with clickpipe create kafka")
+        );
+    }
+
+    // A non-Kafka pipe must not carry `kafka_read_committed`: the API rejects
+    // the key for every other source, which broke every non-Kafka settings
+    // update (#602).
+    #[test]
+    fn builds_settings_request_without_kafka_only_settings_for_non_kafka_pipes() {
+        let values = ClickPipeSettingsValues {
+            object_storage_max_file_count: Some(200),
+            ..Default::default()
+        };
+        let request = build_clickpipe_settings_request(&values, None);
+        assert_eq!(request.kafka_read_committed, None);
+        assert_eq!(request.object_storage_max_file_count, Some(200));
+        assert_eq!(request.streaming_max_insert_wait_ms, None);
+        assert_eq!(request.object_storage_concurrency, None);
+        assert_eq!(request.object_storage_polling_interval_ms, None);
+        assert_eq!(request.object_storage_max_insert_bytes, None);
+        assert_eq!(request.clickhouse_max_threads, None);
+        assert_eq!(request.clickhouse_max_insert_threads, None);
+        assert_eq!(request.object_storage_use_cluster_function, None);
+        assert_eq!(request.clickhouse_parallel_view_processing, None);
+        assert_eq!(request.clickhouse_max_download_threads, None);
+        assert_eq!(request.clickhouse_min_insert_block_size_bytes, None);
+        assert_eq!(request.clickhouse_parallel_distributed_insert_select, None);
+    }
+
+    #[test]
+    fn builds_settings_request_with_every_flag_and_kafka_read_committed() {
+        let values = ClickPipeSettingsValues {
+            streaming_max_insert_wait_ms: Some(1000),
+            object_storage_concurrency: Some(2),
+            object_storage_polling_interval_ms: Some(3000),
+            object_storage_max_insert_bytes: Some(4000),
+            object_storage_max_file_count: Some(5),
+            clickhouse_max_threads: Some(6),
+            clickhouse_max_insert_threads: Some(7),
+            clickhouse_max_download_threads: Some(8),
+            clickhouse_min_insert_block_size_bytes: Some(20971520),
+            clickhouse_parallel_distributed_insert_select: Some(1),
+            kafka_read_committed: None,
+            object_storage_use_cluster_function: Some(true),
+            clickhouse_parallel_view_processing: Some(false),
+        };
+        let request = build_clickpipe_settings_request(&values, Some(true));
+        assert_eq!(request.streaming_max_insert_wait_ms, Some(1000));
+        assert_eq!(request.object_storage_concurrency, Some(2));
+        assert_eq!(request.object_storage_polling_interval_ms, Some(3000));
+        assert_eq!(request.object_storage_max_insert_bytes, Some(4000));
+        assert_eq!(request.object_storage_max_file_count, Some(5));
+        assert_eq!(request.clickhouse_max_threads, Some(6));
+        assert_eq!(request.clickhouse_max_insert_threads, Some(7));
+        assert_eq!(request.clickhouse_max_download_threads, Some(8));
+        assert_eq!(
+            request.clickhouse_min_insert_block_size_bytes,
+            Some(20971520)
+        );
+        assert_eq!(
+            request.clickhouse_parallel_distributed_insert_select,
+            Some(1)
+        );
+        assert_eq!(request.object_storage_use_cluster_function, Some(true));
+        assert_eq!(request.clickhouse_parallel_view_processing, Some(false));
+        assert_eq!(request.kafka_read_committed, Some(true));
+        // A Kafka pipe with the setting disabled still sends it explicitly, so
+        // the PUT does not silently flip it.
+        let request = build_clickpipe_settings_request(&values, Some(false));
+        assert_eq!(request.kafka_read_committed, Some(false));
+    }
+
+    #[test]
+    fn explicit_settings_zero_and_false_override_preserved_values() {
+        let values = ClickPipeSettingsValues {
+            clickhouse_max_download_threads: Some(0),
+            clickhouse_min_insert_block_size_bytes: Some(0),
+            clickhouse_parallel_distributed_insert_select: Some(0),
+            kafka_read_committed: Some(false),
+            ..Default::default()
+        };
+        let request = build_clickpipe_settings_request(&values, Some(true));
+        assert_eq!(request.clickhouse_max_download_threads, Some(0));
+        assert_eq!(request.clickhouse_min_insert_block_size_bytes, Some(0));
+        assert_eq!(
+            request.clickhouse_parallel_distributed_insert_select,
+            Some(0)
+        );
+        assert_eq!(request.kafka_read_committed, Some(false));
+    }
+
+    #[test]
+    fn settings_added_integer_flags_enforce_api_ranges() {
+        for (flag, maximum) in [
+            ("--clickhouse-max-download-threads", 32_u64),
+            ("--clickhouse-min-insert-block-size-bytes", 10737418240),
+            ("--clickhouse-parallel-distributed-insert-select", 2),
+        ] {
+            for value in [0, maximum] {
+                parse_clickpipe(&[
+                    "settings",
+                    "update",
+                    "svc",
+                    "pipe",
+                    flag,
+                    &value.to_string(),
+                ]);
+            }
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "clickpipe",
+                "settings",
+                "update",
+                "svc",
+                "pipe",
+                flag,
+                &(maximum + 1).to_string(),
+            ])
+            .err()
+            .expect("an out-of-range setting should fail parsing");
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+        }
+    }
+
+    #[test]
+    fn settings_update_requires_at_least_one_setting() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "clickpipe",
+            "settings",
+            "update",
+            "svc",
+            "pipe",
+        ])
+        .err()
+        .expect("an empty update should fail parsing");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn classifies_every_clickpipe_source_and_an_absent_one() {
+        use clickhouse_cloud_api::models::{
+            ClickPipe, ClickPipeBigQuerySource, ClickPipeKafkaSource, ClickPipeKinesisSource,
+            ClickPipeMongoDBSource, ClickPipeMySQLSource, ClickPipeObjectStorageSource,
+            ClickPipePostgresSource, ClickPipePubSubSource, ClickPipeSource,
+        };
+
+        fn pipe(source: ClickPipeSource) -> ClickPipe {
+            ClickPipe {
+                source: Some(source),
+                ..Default::default()
+            }
+        }
+
+        let cases: Vec<(ClickPipe, ClickPipeSourceKind)> = vec![
+            (
+                pipe(ClickPipeSource {
+                    kafka: Some(ClickPipeKafkaSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::Kafka,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    kinesis: Some(ClickPipeKinesisSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::Kinesis,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    pubsub: Some(ClickPipePubSubSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::PubSub,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    object_storage: Some(ClickPipeObjectStorageSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::ObjectStorage,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    postgres: Some(ClickPipePostgresSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::Postgres,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    mysql: Some(ClickPipeMySQLSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::MySql,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    mongodb: Some(ClickPipeMongoDBSource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::MongoDb,
+            ),
+            (
+                pipe(ClickPipeSource {
+                    bigquery: Some(ClickPipeBigQuerySource::default()),
+                    ..Default::default()
+                }),
+                ClickPipeSourceKind::BigQuery,
+            ),
+            // An absent source, and a source object with no arm set, are both
+            // unclassifiable: the API stays the authority for those.
+            (ClickPipe::default(), ClickPipeSourceKind::Absent),
+            (
+                pipe(ClickPipeSource::default()),
+                ClickPipeSourceKind::Absent,
+            ),
+        ];
+
+        for (clickpipe, expected) in &cases {
+            assert_eq!(classify_clickpipe_source(clickpipe), *expected);
+        }
+
+        // Only Kafka carries the Kafka-only settings key.
+        for (clickpipe, expected) in &cases {
+            assert_eq!(
+                classify_clickpipe_source(clickpipe).is_kafka(),
+                *expected == ClickPipeSourceKind::Kafka,
+            );
+        }
+    }
+
+    #[test]
+    fn only_database_sources_have_no_ingestion_settings() {
+        for (kind, label) in [
+            (ClickPipeSourceKind::Postgres, Some("Postgres CDC")),
+            (ClickPipeSourceKind::MySql, Some("MySQL CDC")),
+            (ClickPipeSourceKind::MongoDb, Some("MongoDB CDC")),
+            (ClickPipeSourceKind::BigQuery, Some("BigQuery")),
+            (ClickPipeSourceKind::Kafka, None),
+            (ClickPipeSourceKind::Kinesis, None),
+            (ClickPipeSourceKind::PubSub, None),
+            (ClickPipeSourceKind::ObjectStorage, None),
+            (ClickPipeSourceKind::Absent, None),
+        ] {
+            assert_eq!(kind.database_source_label(), label, "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn settings_refusal_names_the_source_and_points_at_clickpipe_get() {
+        use clickhouse_cloud_api::models::{
+            ClickPipe, ClickPipeMySQLSource, ClickPipeObjectStorageSource, ClickPipeSource,
+        };
+
+        let mysql = ClickPipe {
+            source: Some(ClickPipeSource {
+                mysql: Some(ClickPipeMySQLSource::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let error = ensure_clickpipe_has_ingestion_settings(&mysql, "svc-1", "pipe-1")
+            .expect_err("a MySQL CDC pipe has no ingestion settings");
+        assert_eq!(
+            error.message,
+            "ClickPipe pipe-1 is a MySQL CDC pipe; `clickpipe settings get` and \
+             `settings update` apply only to streaming (Kafka, Kinesis) and object-storage \
+             pipes. CDC pipe settings (sync interval, pull batch size) live on the pipe \
+             itself: see `clickhousectl cloud clickpipe get svc-1 pipe-1`."
+        );
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+
+        // Streaming, object-storage and unclassifiable pipes are not refused.
+        let object_storage = ClickPipe {
+            source: Some(ClickPipeSource {
+                object_storage: Some(ClickPipeObjectStorageSource::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(
+            ensure_clickpipe_has_ingestion_settings(&object_storage, "svc-1", "pipe-1").is_ok()
+        );
+        assert!(
+            ensure_clickpipe_has_ingestion_settings(&ClickPipe::default(), "svc-1", "pipe-1")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn object_storage_create_requires_columns_during_parsing() {
+        let error = clickpipe_parse_error(&object_storage_create_cli_args());
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(error.exit_code(), 2);
+        assert!(error.to_string().contains("--column <NAME:TYPE>"));
+
+        let mut args = object_storage_create_cli_args();
+        args.extend([
+            "--column",
+            "_path:LowCardinality(String)",
+            "--column",
+            "payload:Nullable(Tuple(id UInt64, label String))",
+        ]);
+        let command = parse_clickpipe(&args);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::ObjectStorage(args),
+        } = command
+        else {
+            panic!("expected object-storage create");
+        };
+        assert_eq!(
+            args.columns,
+            [
+                "_path:LowCardinality(String)",
+                "payload:Nullable(Tuple(id UInt64, label String))"
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_object_storage_flags_defaults_and_repeatability() {
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::ObjectStorage(args),
+        } = parse_clickpipe(&[
+            "create",
+            "object-storage",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data/*.csv",
+            "--format",
+            "CSV",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            "--column",
+            "id:UInt64",
+            "--column",
+            "name:String",
+            "--storage-type",
+            "gcs",
+            "--compression",
+            "gzip",
+            "--continuous",
+            "--queue-url",
+            "https://queue.example/q",
+            "--start-after",
+            "key-1",
+            "--delimiter",
+            ",",
+            "--iam-role",
+            "arn:role",
+            "--access-key-id",
+            "access",
+            "--secret-key",
+            "secret",
+            "--connection-string",
+            "connection",
+            "--azure-container-name",
+            "container",
+            "--path",
+            "path/*.csv",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected object-storage create");
+        };
+        assert_eq!(args.service_id, "svc-1");
+        assert_eq!(args.name, "pipe-1");
+        assert_eq!(args.source.source_url, "https://bucket.example/data/*.csv");
+        assert_eq!(args.source.format, "CSV");
+        assert_eq!(args.database, "db");
+        assert_eq!(args.table, "events");
+        assert_eq!(args.columns, ["id:UInt64", "name:String"]);
+        assert_eq!(args.source.storage_type, "gcs");
+        assert_eq!(args.source.compression, "gzip");
+        assert_eq!(args.source.auth, None);
+        assert!(args.source.continuous);
+        assert_eq!(
+            args.source.queue_url.as_deref(),
+            Some("https://queue.example/q")
+        );
+        assert!(!args.source.skip_initial_load);
+        assert_eq!(args.source.start_after.as_deref(), Some("key-1"));
+        assert_eq!(args.source.delimiter.as_deref(), Some(","));
+        assert_eq!(args.source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.source.access_key_id.as_deref(), Some("access"));
+        assert_eq!(args.source.secret_key.as_deref(), Some("secret"));
+        assert_eq!(args.source.connection_string.as_deref(), Some("connection"));
+        assert_eq!(
+            args.source.azure_container_name.as_deref(),
+            Some("container")
+        );
+        assert_eq!(args.source.path.as_deref(), Some("path/*.csv"));
+        assert_eq!(
+            args.source.service_account_file.as_deref(),
+            Some("/tmp/account.json")
+        );
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::ObjectStorage(args),
+        } = parse_clickpipe(&[
+            "create",
+            "object-storage",
+            "--column",
+            "id:Int64",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ])
+        else {
+            panic!("expected object-storage create");
+        };
+        assert_eq!(args.columns, ["id:Int64"]);
+        assert_eq!(args.source.storage_type, "s3");
+        assert_eq!(args.source.compression, "auto");
+        assert_eq!(args.source.auth, None);
+        assert!(!args.source.continuous);
+        assert_eq!(args.source.queue_url, None);
+        assert!(!args.source.skip_initial_load);
+        assert_eq!(args.source.start_after, None);
+        assert_eq!(args.source.delimiter, None);
+        assert_eq!(args.source.iam_role, None);
+        assert_eq!(args.source.access_key_id, None);
+        assert_eq!(args.source.secret_key, None);
+        assert_eq!(args.source.connection_string, None);
+        assert_eq!(args.source.azure_container_name, None);
+        assert_eq!(args.source.path, None);
+        assert_eq!(args.source.service_account_file, None);
+    }
+
+    #[test]
+    fn parses_object_storage_skip_initial_load_and_constraints() {
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::ObjectStorage(args),
+        } = parse_clickpipe(&[
+            "create",
+            "object-storage",
+            "--column",
+            "id:Int64",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            "--queue-url",
+            "https://queue.example/q",
+            "--skip-initial-load",
+        ])
+        else {
+            panic!("expected object-storage create");
+        };
+        assert!(args.source.skip_initial_load);
+
+        let base = [
+            "create",
+            "object-storage",
+            "--column",
+            "id:Int64",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        let mut missing_queue = base.to_vec();
+        missing_queue.push("--skip-initial-load");
+        assert_rejected(&missing_queue);
+
+        let mut conflict = base.to_vec();
+        conflict.extend([
+            "--queue-url",
+            "https://queue.example/q",
+            "--skip-initial-load",
+            "--start-after",
+            "key-1",
+        ]);
+        assert_rejected(&conflict);
+    }
+
+    #[test]
+    fn parses_kafka_flags_defaults_and_repeatability() {
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(args),
+        } = parse_clickpipe(&[
+            "create",
+            "kafka",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--brokers",
+            "broker-1:9092,broker-2:9092",
+            "--topics",
+            "topic-1,topic-2",
+            "--format",
+            "AvroConfluent",
+            "--kafka-type",
+            "msk",
+            "--consumer-group",
+            "group-1",
+            "--auth",
+            "PLAIN",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--iam-role",
+            "arn:role",
+            "--access-key-id",
+            "access",
+            "--secret-key",
+            "secret",
+            "--offset",
+            "from_timestamp",
+            "--offset-timestamp",
+            "2021-01-01T00:00",
+            "--schema-registry-url",
+            "https://registry.example",
+            "--schema-registry-username",
+            "registry-user",
+            "--schema-registry-password",
+            "registry-password",
+            "--ca-certificate",
+            "/tmp/broker-ca.pem",
+            "--client-certificate",
+            "/tmp/client.pem",
+            "--client-key",
+            "/tmp/client.key",
+            "--schema-registry-ca-certificate",
+            "/tmp/registry-ca.pem",
+            "--reverse-private-endpoint-id",
+            "endpoint-1",
+            "--reverse-private-endpoint-id",
+            "endpoint-2",
+            "--exactly-once",
+            "true",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            "--column",
+            "id:UInt64",
+            "--column",
+            "name:String",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected kafka create");
+        };
+        assert_eq!(args.service_id, "svc-1");
+        assert_eq!(args.name, "pipe-1");
+        assert_eq!(args.source.brokers, "broker-1:9092,broker-2:9092");
+        assert_eq!(args.source.topics, "topic-1,topic-2");
+        assert_eq!(args.source.format, "AvroConfluent");
+        assert_eq!(args.source.kafka_type, "msk");
+        assert_eq!(args.source.consumer_group.as_deref(), Some("group-1"));
+        assert_eq!(args.source.auth.as_deref(), Some("PLAIN"));
+        assert_eq!(args.source.event_hubs_connection_string, None);
+        assert_eq!(args.source.username.as_deref(), Some("user"));
+        assert_eq!(args.source.password.as_deref(), Some("password"));
+        assert_eq!(args.source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.source.access_key_id.as_deref(), Some("access"));
+        assert_eq!(args.source.secret_key.as_deref(), Some("secret"));
+        assert_eq!(args.source.offset, "from_timestamp");
+        assert_eq!(
+            args.source.offset_timestamp.as_deref(),
+            Some("2021-01-01T00:00")
+        );
+        assert_eq!(
+            args.source.schema_registry_url.as_deref(),
+            Some("https://registry.example")
+        );
+        assert_eq!(
+            args.source.schema_registry_username.as_deref(),
+            Some("registry-user")
+        );
+        assert_eq!(
+            args.source.schema_registry_password.as_deref(),
+            Some("registry-password")
+        );
+        assert_eq!(args.source.protobuf_schema_file, None);
+        assert_eq!(
+            args.source.ca_certificate.as_deref(),
+            Some("/tmp/broker-ca.pem")
+        );
+        assert_eq!(
+            args.source.client_certificate.as_deref(),
+            Some("/tmp/client.pem")
+        );
+        assert_eq!(args.source.client_key.as_deref(), Some("/tmp/client.key"));
+        assert_eq!(
+            args.source.schema_registry_ca_certificate.as_deref(),
+            Some("/tmp/registry-ca.pem")
+        );
+        assert_eq!(
+            args.source.reverse_private_endpoint_ids,
+            ["endpoint-1", "endpoint-2"]
+        );
+        assert_eq!(args.exactly_once, Some(true));
+        assert_eq!(args.database, "db");
+        assert_eq!(args.table, "events");
+        assert_eq!(args.columns, ["id:UInt64", "name:String"]);
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(args),
+        } = parse_clickpipe(&[
+            "create",
+            "kafka",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ])
+        else {
+            panic!("expected kafka create");
+        };
+        assert_eq!(args.source.kafka_type, "kafka");
+        assert_eq!(args.source.offset, "from_beginning");
+        assert_eq!(args.source.consumer_group, None);
+        assert_eq!(args.source.auth, None);
+        assert_eq!(args.source.event_hubs_connection_string, None);
+        assert_eq!(args.source.username, None);
+        assert_eq!(args.source.password, None);
+        assert_eq!(args.source.iam_role, None);
+        assert_eq!(args.source.access_key_id, None);
+        assert_eq!(args.source.secret_key, None);
+        assert_eq!(args.source.offset_timestamp, None);
+        assert_eq!(args.source.schema_registry_url, None);
+        assert_eq!(args.source.schema_registry_username, None);
+        assert_eq!(args.source.schema_registry_password, None);
+        assert_eq!(args.source.protobuf_schema_file, None);
+        assert_eq!(args.source.ca_certificate, None);
+        assert_eq!(args.source.client_certificate, None);
+        assert_eq!(args.source.client_key, None);
+        assert_eq!(args.source.schema_registry_ca_certificate, None);
+        assert!(args.source.reverse_private_endpoint_ids.is_empty());
+        assert_eq!(args.exactly_once, None);
+        assert!(args.columns.is_empty());
+    }
+
+    #[test]
+    fn parses_kafka_protobuf_and_event_hubs_fields_on_their_surfaces() {
+        for base in [kafka_create_cli_args(), kafka_discover_cli_args()] {
+            let mut args = base;
+            let format = args
+                .iter()
+                .position(|value| *value == "JSONEachRow")
+                .expect("minimal Kafka args contain a format");
+            args[format] = "Protobuf";
+            args.extend(["--protobuf-schema-file", "/tmp/events.proto"]);
+
+            match parse_clickpipe(&args) {
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kafka(parsed),
+                } => assert_eq!(
+                    parsed.source.protobuf_schema_file.as_deref(),
+                    Some("/tmp/events.proto")
+                ),
+                ClickPipeCommands::SchemaDiscover {
+                    command: ClickPipeSchemaDiscoverCommands::Kafka(parsed),
+                    ..
+                } => assert_eq!(
+                    parsed.source.protobuf_schema_file.as_deref(),
+                    Some("/tmp/events.proto")
+                ),
+                _ => panic!("expected a Kafka command"),
+            }
+        }
+
+        let mut args = kafka_create_cli_args();
+        args.extend([
+            "--kafka-type",
+            "azureeventhub",
+            "--event-hubs-connection-string",
+            "Endpoint=sb://events.example/;SharedAccessKey=secret",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected Kafka create");
+        };
+        assert_eq!(
+            parsed.source.event_hubs_connection_string.as_deref(),
+            Some("Endpoint=sb://events.example/;SharedAccessKey=secret")
+        );
+    }
+
+    #[test]
+    fn kafka_protobuf_and_event_hubs_conflicts_are_usage_errors() {
+        for (flag, value) in [
+            ("--schema-registry-url", "https://registry.example"),
+            ("--schema-registry-username", "registry-user"),
+            ("--schema-registry-password", "registry-password"),
+            ("--schema-registry-ca-certificate", "/tmp/registry-ca.pem"),
+        ] {
+            let mut protobuf = kafka_create_cli_args();
+            protobuf.extend(["--protobuf-schema-file", "/tmp/events.proto", flag, value]);
+            assert_eq!(
+                clickpipe_parse_error(&protobuf).kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{flag}"
+            );
+        }
+
+        let mut event_hubs = kafka_create_cli_args();
+        event_hubs.extend([
+            "--event-hubs-connection-string",
+            "Endpoint=sb://events.example/",
+            "--username",
+            "user",
+            "--password",
+            "password",
+        ]);
+        assert_eq!(
+            clickpipe_parse_error(&event_hubs).kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
+    }
+
+    #[test]
+    fn kafka_credential_flags_must_be_given_in_pairs() {
+        // Every Kafka credential pair is joined with clap `requires`. Half a
+        // pair must be a usage error: since `--auth` is now optional and the
+        // mechanism is inferred only from a *complete* pair, an unpaired flag
+        // would otherwise infer nothing and silently send an unauthenticated
+        // create that exits 0 (issue #606).
+        let bases: [fn() -> Vec<&'static str>; 2] =
+            [kafka_create_cli_args, kafka_discover_cli_args];
+        for base in bases {
+            for (half, missing) in [
+                (["--username", "user"], "--password"),
+                (["--password", "password"], "--username"),
+                (["--access-key-id", "access"], "--secret-key"),
+                (["--secret-key", "secret"], "--access-key-id"),
+                (["--client-certificate", "/tmp/client.pem"], "--client-key"),
+                (["--client-key", "/tmp/client.key"], "--client-certificate"),
+            ] {
+                let mut args = base();
+                args.extend(half);
+                let error = clickpipe_parse_error(&args);
+                assert_eq!(
+                    error.kind(),
+                    clap::error::ErrorKind::MissingRequiredArgument,
+                    "{}",
+                    args.join(" ")
+                );
+                assert_eq!(error.exit_code(), 2, "{}", args.join(" "));
+                assert!(error.to_string().contains(missing), "{error}");
+            }
+
+            for pair in [
+                ["--username", "user", "--password", "password"],
+                ["--access-key-id", "access", "--secret-key", "secret"],
+                [
+                    "--client-certificate",
+                    "/tmp/client.pem",
+                    "--client-key",
+                    "/tmp/client.key",
+                ],
+            ] {
+                let mut args = base();
+                args.extend(pair);
+                parse_clickpipe(&args);
+            }
+        }
+    }
+
+    #[test]
+    fn parses_kinesis_flags_defaults_and_repeatability() {
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kinesis(args),
+        } = parse_clickpipe(&[
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "stream-1",
+            "--region",
+            "us-east-1",
+            "--format",
+            "Avro",
+            "--auth",
+            "IAM_USER",
+            "--iam-role",
+            "arn:role",
+            "--access-key-id",
+            "access",
+            "--secret-key",
+            "secret",
+            "--iterator-type",
+            "AT_TIMESTAMP",
+            "--iterator-timestamp",
+            "1720000000",
+            "--enhanced-fan-out",
+            "--database",
+            "db",
+            "--table",
+            "events",
+            "--column",
+            "id:UInt64",
+            "--column",
+            "name:String",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected kinesis create");
+        };
+        assert_eq!(args.service_id, "svc-1");
+        assert_eq!(args.name, "pipe-1");
+        assert_eq!(args.source.stream_name, "stream-1");
+        assert_eq!(args.source.region, "us-east-1");
+        assert_eq!(args.source.format, "Avro");
+        assert_eq!(args.source.auth, "IAM_USER");
+        assert_eq!(args.source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.source.access_key_id.as_deref(), Some("access"));
+        assert_eq!(args.source.secret_key.as_deref(), Some("secret"));
+        assert_eq!(args.source.iterator_type, "AT_TIMESTAMP");
+        assert_eq!(args.source.iterator_timestamp, Some(1_720_000_000));
+        assert!(args.source.enhanced_fan_out);
+        assert_eq!(args.database, "db");
+        assert_eq!(args.table, "events");
+        assert_eq!(args.columns, ["id:UInt64", "name:String"]);
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kinesis(args),
+        } = parse_clickpipe(&[
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "stream-1",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ])
+        else {
+            panic!("expected kinesis create");
+        };
+        assert_eq!(args.source.auth, "IAM_ROLE");
+        assert_eq!(args.source.iam_role, None);
+        assert_eq!(args.source.access_key_id, None);
+        assert_eq!(args.source.secret_key, None);
+        assert_eq!(args.source.iterator_type, "TRIM_HORIZON");
+        assert_eq!(args.source.iterator_timestamp, None);
+        assert!(!args.source.enhanced_fan_out);
+        assert!(args.columns.is_empty());
+    }
+
+    #[test]
+    fn parses_schema_discovery_commands_and_flags() {
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::Kafka(args),
+        } = parse_clickpipe(&[
+            "schema-discover",
+            "kafka",
+            "--org-id",
+            "org-kafka",
+            "svc-kafka",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+        ])
+        else {
+            panic!("expected kafka schema discovery");
+        };
+        assert_eq!(args.service_id, "svc-kafka");
+        let args = args.source;
+        assert_eq!(args.brokers, "broker:9092");
+        assert_eq!(args.kafka_type, "kafka");
+        assert_eq!(args.offset, "from_beginning");
+
+        // Auth flags are all optional for discovery too, and an unauthenticated
+        // broker builds a source with no authentication at all (issue #606).
+        assert_eq!(args.auth, None);
+        assert_eq!(args.username, None);
+        assert_eq!(args.password, None);
+        let discovery_source = build_kafka_source(&args).expect("no-auth discovery source builds");
+        assert_eq!(discovery_source.authentication, None);
+        assert!(discovery_source.credentials.is_null());
+
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
+        } = parse_clickpipe(&[
+            "schema-discover",
+            "kinesis",
+            "--org-id",
+            "org-kinesis",
+            "svc-kinesis",
+            "--stream-name",
+            "stream-1",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+        ])
+        else {
+            panic!("expected kinesis schema discovery");
+        };
+        assert_eq!(args.service_id, "svc-kinesis");
+        let args = args.source;
+        assert_eq!(args.stream_name, "stream-1");
+        assert_eq!(args.auth, "IAM_ROLE");
+        assert_eq!(args.iterator_type, "TRIM_HORIZON");
+    }
+
+    fn schema_discovery_sources() -> [(&'static str, &'static [&'static str]); 4] {
+        [
+            (
+                "kafka",
+                &[
+                    "--brokers",
+                    "broker:9092",
+                    "--topics",
+                    "topic",
+                    "--format",
+                    "JSONEachRow",
+                ],
+            ),
+            (
+                "kinesis",
+                &[
+                    "--stream-name",
+                    "stream-1",
+                    "--region",
+                    "us-east-1",
+                    "--format",
+                    "JSONEachRow",
+                ],
+            ),
+            (
+                "object-storage",
+                &[
+                    "--source-url",
+                    "https://bucket.example/data/*.json",
+                    "--format",
+                    "JSONEachRow",
+                ],
+            ),
+            (
+                "pubsub",
+                &[
+                    "--topic",
+                    "events",
+                    "--project-id",
+                    "my-gcp-project",
+                    "--format",
+                    "JSONEachRow",
+                    "--seek-type",
+                    "earliest",
+                    "--service-account-file",
+                    "./sa-key.json",
+                ],
+            ),
+        ]
+    }
+
+    #[test]
+    fn every_schema_discovery_source_accepts_flags_around_service_id() {
+        for (source, source_args) in schema_discovery_sources() {
+            for service_position in (0..=source_args.len()).step_by(2) {
+                for org_position in [
+                    "before-source",
+                    "before-service",
+                    "after-service",
+                    "after-options",
+                ] {
+                    let mut args = vec!["schema-discover"];
+                    if org_position == "before-source" {
+                        args.extend(["--org-id", "org-1"]);
+                    }
+                    args.push(source);
+                    args.extend_from_slice(&source_args[..service_position]);
+                    if org_position == "before-service" {
+                        args.extend(["--org-id", "org-1"]);
+                    }
+                    args.push("svc-1");
+                    if org_position == "after-service" {
+                        args.extend(["--org-id", "org-1"]);
+                    }
+                    args.extend_from_slice(&source_args[service_position..]);
+                    if org_position == "after-options" {
+                        args.extend(["--org-id", "org-1"]);
+                    }
+
+                    let ClickPipeCommands::SchemaDiscover { command } = parse_clickpipe(&args)
+                    else {
+                        panic!("expected {source} schema discovery");
+                    };
+                    let (parsed_source, service_id) = match command {
+                        ClickPipeSchemaDiscoverCommands::Kafka(args) => ("kafka", args.service_id),
+                        ClickPipeSchemaDiscoverCommands::Kinesis(args) => {
+                            ("kinesis", args.service_id)
+                        }
+                        ClickPipeSchemaDiscoverCommands::ObjectStorage(args) => {
+                            ("object-storage", args.service_id)
+                        }
+                        ClickPipeSchemaDiscoverCommands::PubSub(args) => {
+                            ("pubsub", args.service_id)
+                        }
+                    };
+                    assert_eq!(parsed_source, source, "{args:?}");
+                    assert_eq!(service_id, "svc-1", "{args:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn every_schema_discovery_source_rejects_service_before_source() {
+        for (source, source_args) in schema_discovery_sources() {
+            let mut args = vec!["schema-discover", "svc-1", source];
+            args.extend_from_slice(source_args);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::InvalidSubcommand,
+                "{args:?}: {error}"
+            );
+            assert_eq!(error.exit_code(), 2, "{args:?}: {error}");
+
+            let mut missing_id = vec!["schema-discover", source];
+            missing_id.extend_from_slice(source_args);
+            let error = clickpipe_parse_error(&missing_id);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{missing_id:?}: {error}"
+            );
+            assert_eq!(error.exit_code(), 2, "{missing_id:?}: {error}");
+        }
+    }
+
+    #[test]
+    fn every_schema_discovery_source_exposes_org_id() {
+        use clap::CommandFactory;
+
+        let mut command = Cli::command();
+        command.build();
+        let schema_discover = command
+            .find_subcommand("cloud")
+            .and_then(|cloud| cloud.find_subcommand("clickpipe"))
+            .and_then(|clickpipe| clickpipe.find_subcommand("schema-discover"))
+            .expect("clickpipe schema-discover command");
+        assert_eq!(schema_discover.get_positionals().count(), 0);
+        for source in ["kafka", "kinesis", "object-storage", "pubsub"] {
+            let command = schema_discover
+                .find_subcommand(source)
+                .expect("schema-discover source subcommand");
+            assert!(
+                command
+                    .get_arguments()
+                    .any(|argument| argument.get_id() == "org_id" && argument.is_global_set()),
+                "clickpipe schema-discover {source} is missing global --org-id"
+            );
+            let positionals: Vec<_> = command.get_positionals().collect();
+            assert_eq!(positionals.len(), 1, "{source}");
+            assert_eq!(positionals[0].get_id(), "service_id", "{source}");
+            assert!(positionals[0].is_required_set(), "{source}");
+        }
+    }
+
+    /// `schema-discover object-storage` takes the same source flags as
+    /// `create object-storage`, minus the destination options, and keeps the
+    /// same `--storage-type`/`--compression` defaults (issue #588).
+    #[test]
+    fn parses_object_storage_schema_discovery_flags() {
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::ObjectStorage(args),
+        } = parse_clickpipe(&[
+            "schema-discover",
+            "object-storage",
+            "--org-id",
+            "org-object-storage",
+            "svc-object-storage",
+            "--source-url",
+            "https://bucket.example/data/*.csv",
+            "--format",
+            "CSV",
+            "--storage-type",
+            "gcs",
+            "--compression",
+            "gzip",
+            "--continuous",
+            "--queue-url",
+            "https://queue.example/q",
+            "--start-after",
+            "key-1",
+            "--delimiter",
+            ",",
+            "--iam-role",
+            "arn:role",
+            "--access-key-id",
+            "access",
+            "--secret-key",
+            "secret",
+            "--connection-string",
+            "connection",
+            "--azure-container-name",
+            "container",
+            "--path",
+            "path/*.csv",
+            "--service-account-file",
+            "/tmp/account.json",
+        ])
+        else {
+            panic!("expected object-storage schema discovery");
+        };
+        assert_eq!(args.service_id, "svc-object-storage");
+        let args = args.source;
+
+        assert_eq!(args.source_url, "https://bucket.example/data/*.csv");
+        assert_eq!(args.format, "CSV");
+        assert_eq!(args.storage_type, "gcs");
+        assert_eq!(args.compression, "gzip");
+        assert!(args.continuous);
+        assert_eq!(args.queue_url.as_deref(), Some("https://queue.example/q"));
+        assert!(!args.skip_initial_load);
+        assert_eq!(args.start_after.as_deref(), Some("key-1"));
+        assert_eq!(args.delimiter.as_deref(), Some(","));
+        assert_eq!(args.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.access_key_id.as_deref(), Some("access"));
+        assert_eq!(args.secret_key.as_deref(), Some("secret"));
+        assert_eq!(args.connection_string.as_deref(), Some("connection"));
+        assert_eq!(args.azure_container_name.as_deref(), Some("container"));
+        assert_eq!(args.path.as_deref(), Some("path/*.csv"));
+        assert_eq!(
+            args.service_account_file.as_deref(),
+            Some("/tmp/account.json")
+        );
+
+        // Only the source connection is required: no --name/--database/--table.
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::ObjectStorage(args),
+            ..
+        } = parse_clickpipe(&[
+            "schema-discover",
+            "object-storage",
+            "svc-object-storage",
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+        ])
+        else {
+            panic!("expected object-storage schema discovery");
+        };
+        let args = args.source;
+        assert_eq!(args.storage_type, "s3");
+        assert_eq!(args.compression, "auto");
+        assert!(!args.continuous);
+        assert_eq!(args.queue_url, None);
+        assert!(!args.skip_initial_load);
+        assert_eq!(args.start_after, None);
+        assert_eq!(args.delimiter, None);
+        assert_eq!(args.iam_role, None);
+        assert_eq!(args.access_key_id, None);
+        assert_eq!(args.secret_key, None);
+        assert_eq!(args.connection_string, None);
+        assert_eq!(args.azure_container_name, None);
+        assert_eq!(args.path, None);
+        assert_eq!(args.service_account_file, None);
+
+        // --skip-initial-load still requires --queue-url and still conflicts
+        // with --start-after, exactly as on `create object-storage`.
+        let base = [
+            "schema-discover",
+            "object-storage",
+            "svc-object-storage",
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+        ];
+        let mut rejected = base.to_vec();
+        rejected.push("--skip-initial-load");
+        assert_rejected(&rejected);
+        let mut rejected = base.to_vec();
+        rejected.extend([
+            "--queue-url",
+            "https://queue.example/q",
+            "--skip-initial-load",
+            "--start-after",
+            "key-1",
+        ]);
+        assert_rejected(&rejected);
+    }
+
+    #[test]
+    fn parses_postgres_flags_defaults_and_repeatability() {
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&[
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--port",
+            "5433",
+            "--pg-database",
+            "source-db",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--table-mapping",
+            "public.one:one",
+            "--table-mapping",
+            "public.two:two",
+            "--postgres-type",
+            "neon",
+            "--replication-mode",
+            "cdc_only",
+            "--auth",
+            "IAM_ROLE",
+            "--iam-role",
+            "arn:role",
+            "--tls-host",
+            "tls.example",
+            "--ca-certificate",
+            "/tmp/ca.pem",
+            "--skip-cert-verification",
+            "--publication-name",
+            "publication",
+            "--replication-slot-name",
+            "slot",
+            "--destination-database",
+            "analytics",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(args.service_id, "svc-1");
+        assert_eq!(args.name, "pipe-1");
+        assert_eq!(args.host, "postgres.example");
+        assert_eq!(args.port, 5433);
+        assert_eq!(args.pg_database, "source-db");
+        assert_eq!(args.username.as_deref(), Some("user"));
+        assert_eq!(args.password.as_deref(), Some("password"));
+        assert_eq!(args.table_mappings, ["public.one:one", "public.two:two"]);
+        assert_eq!(args.postgres_type, "neon");
+        assert_eq!(args.replication_mode, "cdc_only");
+        assert_eq!(args.auth, "IAM_ROLE");
+        assert_eq!(args.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.tls_host.as_deref(), Some("tls.example"));
+        assert_eq!(args.ca_certificate.as_deref(), Some("/tmp/ca.pem"));
+        assert!(!args.disable_tls);
+        assert!(args.skip_cert_verification);
+        assert_eq!(args.publication_name.as_deref(), Some("publication"));
+        assert_eq!(args.replication_slot_name.as_deref(), Some("slot"));
+        assert_eq!(args.destination.destination_database, "analytics");
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&[
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--table-mapping",
+            "public.events:events",
+        ])
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(args.port, 5432);
+        assert_eq!(args.table_mappings, ["public.events:events"]);
+        assert_eq!(args.postgres_type, "postgres");
+        assert_eq!(args.replication_mode, "cdc");
+        assert_eq!(args.auth, "basic");
+        assert_eq!(args.iam_role, None);
+        assert_eq!(args.tls_host, None);
+        assert_eq!(args.ca_certificate, None);
+        assert!(!args.disable_tls);
+        assert!(!args.skip_cert_verification);
+        assert_eq!(args.publication_name, None);
+        assert_eq!(args.replication_slot_name, None);
+        assert_eq!(args.sync_interval_seconds, None);
+        assert_eq!(args.pull_batch_size, None);
+        assert_eq!(args.initial_load_parallelism, None);
+        assert_eq!(args.snapshot_rows_per_partition, None);
+        assert_eq!(args.snapshot_parallel_tables, None);
+        assert_eq!(args.allow_nullable_columns, None);
+        assert_eq!(args.enable_failover_slots, None);
+        assert_eq!(args.delete_on_merge, None);
+        assert_eq!(args.destination.destination_database, "default");
+    }
+
+    #[test]
+    fn parses_postgres_cdc_settings_flags() {
+        let mut cli_args = postgres_cli_args(Some("public.events:events"));
+        cli_args.extend([
+            "--sync-interval-seconds",
+            "30",
+            "--pull-batch-size",
+            "50000",
+            "--initial-load-parallelism",
+            "4",
+            "--snapshot-rows-per-partition",
+            "1000000",
+            "--snapshot-parallel-tables",
+            "3",
+            "--allow-nullable-columns",
+            "true",
+            "--enable-failover-slots",
+            "false",
+            "--delete-on-merge",
+            "true",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&cli_args)
+        else {
+            panic!("expected postgres create");
+        };
+
+        assert_eq!(args.sync_interval_seconds, Some(30));
+        assert_eq!(args.pull_batch_size, Some(50_000));
+        assert_eq!(args.initial_load_parallelism, Some(4));
+        assert_eq!(args.snapshot_rows_per_partition, Some(1_000_000));
+        assert_eq!(args.snapshot_parallel_tables, Some(3));
+        // Tri-state booleans: an explicit `false` is distinguishable from an
+        // omitted flag at the clap layer.
+        assert_eq!(args.allow_nullable_columns, Some(true));
+        assert_eq!(args.enable_failover_slots, Some(false));
+        assert_eq!(args.delete_on_merge, Some(true));
+    }
+
+    #[test]
+    fn postgres_cdc_settings_booleans_require_an_explicit_value() {
+        let mut cli_args = postgres_cli_args(Some("public.events:events"));
+        cli_args.push("--allow-nullable-columns");
+        let error = clickpipe_parse_error(&cli_args);
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+        let message = error.to_string();
+        assert!(message.contains("--allow-nullable-columns"), "{message}");
+    }
+
+    #[test]
+    fn postgres_port_accepts_boundaries_and_rejects_out_of_range_values() {
+        for port in ["1", "65535"] {
+            let mut args = postgres_cli_args(Some("public.events:events"));
+            args.extend(["--port", port]);
+            parse_clickpipe(&args);
+        }
+
+        for port in ["0", "65536"] {
+            let mut args = postgres_cli_args(Some("public.events:events"));
+            args.extend(["--port", port]);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            let message = error.to_string();
+            assert!(message.contains("--port"), "{message}");
+        }
+    }
+
+    #[test]
+    fn postgres_requires_at_least_one_complete_table_mapping() {
+        let error = clickpipe_parse_error(&postgres_cli_args(None));
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert!(error.to_string().contains("--table-mapping"));
+
+        for (mapping, diagnostic) in [
+            ("public.events", "expected schema.table:target_table"),
+            ("events:target", "expected schema.table:target_table"),
+            (".events:target", "source schema must not be empty"),
+            ("public.:target", "source table must not be empty"),
+            ("public.events:", "target table must not be empty"),
+            (" .events:target", "source schema must not be empty"),
+            ("public. :target", "source table must not be empty"),
+            ("public.events: ", "target table must not be empty"),
+        ] {
+            let error = clickpipe_parse_error(&postgres_cli_args(Some(mapping)));
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            let message = error.to_string();
+            assert!(message.contains(diagnostic), "{message}");
+        }
+    }
+
+    /// One `--table-mapping-json` object with every field set, reused by the
+    /// clap, validation and builder tests.
+    const MAXIMAL_TABLE_MAPPING_JSON: &str = r#"{
+        "sourceSchemaName": "public",
+        "sourceTable": "users",
+        "targetTable": "users_raw",
+        "excludedColumns": ["ssn", "dob"],
+        "sortingKeys": ["created_at", "id"],
+        "useCustomSortingKey": true,
+        "partitionByExpr": "toYYYYMM(created_at)",
+        "partitionKey": "id",
+        "tableEngine": "ReplacingMergeTree"
+    }"#;
+
+    #[test]
+    fn parses_postgres_table_mapping_json_flag() {
+        let second =
+            r#"{"sourceSchemaName":"audit","sourceTable":"events","targetTable":"audit_events"}"#;
+
+        // JSON only: the simple form is not required when the JSON form is given.
+        let mut cli_args = postgres_cli_args(None);
+        cli_args.extend([
+            "--table-mapping-json",
+            MAXIMAL_TABLE_MAPPING_JSON,
+            "--table-mapping-json",
+            second,
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&cli_args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert!(args.table_mappings.is_empty());
+        assert_eq!(
+            args.table_mappings_json,
+            [MAXIMAL_TABLE_MAPPING_JSON, second]
+        );
+
+        // Both forms together: each flag keeps its own values, verbatim.
+        let mut cli_args = postgres_cli_args(Some("public.events:events"));
+        cli_args.extend(["--table-mapping-json", second]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&cli_args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(args.table_mappings, ["public.events:events"]);
+        assert_eq!(args.table_mappings_json, [second]);
+
+        // Simple form only: the JSON list stays empty.
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&postgres_cli_args(Some("public.events:events")))
+        else {
+            panic!("expected postgres create");
+        };
+        assert!(args.table_mappings_json.is_empty());
+    }
+
+    #[test]
+    fn postgres_missing_both_table_mapping_flags_names_both() {
+        let error = clickpipe_parse_error(&postgres_cli_args(None));
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let message = error.to_string();
+        assert!(message.contains("--table-mapping "), "{message}");
+        assert!(message.contains("--table-mapping-json"), "{message}");
+    }
+
+    #[test]
+    fn postgres_table_mapping_json_is_not_parsed_by_clap() {
+        // Content validation belongs to `validate_postgres_create_args`, which
+        // runs before any request; clap only collects the raw strings.
+        let mut cli_args = postgres_cli_args(None);
+        cli_args.extend(["--table-mapping-json", "{ not json"]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&cli_args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(args.table_mappings_json, ["{ not json"]);
+
+        let command = parse_clickpipe(&cli_args);
+        assert_eq!(
+            command
+                .clickpipe_create_validation_error()
+                .map(|(source, message)| (
+                    source,
+                    message.contains("--table-mapping-json #1: invalid JSON")
+                )),
+            Some(("postgres", true))
+        );
+    }
+
+    #[test]
+    fn postgres_iam_role_auth_requires_role_arn() {
+        let mut args = postgres_cli_args(Some("public.events:events"));
+        args.extend(["--auth", "IAM_ROLE"]);
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let message = error.to_string();
+        assert!(message.contains("--iam-role"), "{message}");
+
+        args.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
+        parse_clickpipe(&args);
+    }
+
+    #[test]
+    fn postgres_iam_role_auth_does_not_require_username_or_password() {
+        // IAM_ROLE authentication has no username or password: the role ARN is
+        // the whole credential, so clap must not demand the pair.
+        let mut args = vec![
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--table-mapping",
+            "public.events:events",
+            "--auth",
+            "IAM_ROLE",
+            "--iam-role",
+            "arn:aws:iam::123456789012:role/clickpipe",
+        ];
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(parsed.username, None);
+        assert_eq!(parsed.password, None);
+        assert_eq!(parsed.auth, "IAM_ROLE");
+
+        // The pair is rejected rather than silently dropped, the same way
+        // basic auth rejects --iam-role.
+        args.extend(["--username", "user", "--password", "password"]);
+        let command = parse_clickpipe(&args);
+        assert_eq!(
+            clickpipe_validation_message(&command).as_deref(),
+            Some("--username and --password cannot be used with --auth IAM_ROLE; use --auth basic")
+        );
+    }
+
+    #[test]
+    fn postgres_iam_role_only_error_names_the_role_flag_and_not_the_pair() {
+        // --username/--password used to be `required_unless_present =
+        // "iam_role"`, so `--auth IAM_ROLE` on its own made clap demand all
+        // three flags, and following that advice landed on the "cannot be
+        // used with --auth IAM_ROLE" rejection. Only --iam-role is missing.
+        let args = vec![
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--table-mapping",
+            "public.events:events",
+            "--auth",
+            "IAM_ROLE",
+        ];
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let message = error.to_string();
+        assert!(message.contains("--iam-role"), "{message}");
+        assert!(!message.contains("--username"), "{message}");
+        assert!(!message.contains("--password"), "{message}");
+    }
+
+    #[test]
+    fn postgres_basic_auth_without_any_credentials_is_a_validation_error() {
+        // clap only pairs the two flags now, so neither being present parses
+        // cleanly and `validate_postgres_create_args` owns the basic-auth
+        // rule: it depends on --auth's value, which clap cannot express.
+        let args = vec![
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--table-mapping",
+            "public.events:events",
+        ];
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(parsed.auth, "basic");
+        assert_eq!(parsed.username, None);
+        assert_eq!(parsed.password, None);
+
+        let command = parse_clickpipe(&args);
+        assert_eq!(
+            clickpipe_validation_message(&command).as_deref(),
+            Some("--auth basic requires --username <USERNAME> and --password <PASSWORD>")
+        );
+    }
+
+    #[test]
+    fn postgres_basic_auth_still_requires_username_and_password() {
+        // The two flags are joined with clap `requires`, the same pairing the
+        // Kafka credential flags use (issue #606), so half a pair is a usage
+        // error naming the missing half rather than the whole set.
+        for omitted in ["--username", "--password"] {
+            let args: Vec<&str> = [
+                "create",
+                "postgres",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--host",
+                "postgres.example",
+                "--pg-database",
+                "source-db",
+                "--table-mapping",
+                "public.events:events",
+                "--username",
+                "user",
+                "--password",
+                "password",
+            ]
+            .into_iter()
+            .collect();
+            let position = args.iter().position(|arg| *arg == omitted).unwrap();
+            let mut args = args;
+            args.drain(position..position + 2);
+
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "omitting {omitted} should be a usage error"
+            );
+            assert!(error.to_string().contains(omitted), "{error}");
+        }
+    }
+
+    #[test]
+    fn postgres_cross_value_relationships_have_specific_validation_errors() {
+        let mut basic_with_role = postgres_cli_args(Some("public.events:events"));
+        basic_with_role.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
+        let command = parse_clickpipe(&basic_with_role);
+        assert_eq!(
+            clickpipe_validation_message(&command).as_deref(),
+            Some("--iam-role cannot be used with --auth basic; use --auth IAM_ROLE")
+        );
+
+        for mode in ["cdc", "snapshot"] {
+            let mut args = postgres_cli_args(Some("public.events:events"));
+            args.extend([
+                "--replication-mode",
+                mode,
+                "--replication-slot-name",
+                "existing_slot",
+            ]);
+            let command = parse_clickpipe(&args);
+            assert_eq!(
+                clickpipe_validation_message(&command).as_deref(),
+                Some("--replication-slot-name can only be used with --replication-mode cdc_only")
+            );
+        }
+
+        for tls_only_flag in [
+            vec!["--tls-host", "postgres.internal.example"],
+            vec!["--ca-certificate", "/tmp/postgres-ca.pem"],
+            vec!["--skip-cert-verification"],
+        ] {
+            let mut args = postgres_cli_args(Some("public.events:events"));
+            args.push("--disable-tls");
+            args.extend(tls_only_flag);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        }
+    }
+
+    /// `<JSON>` is the value name clap renders for the flag's attribute.
+    #[test]
+    fn postgres_help_renders_the_json_table_mapping_value_name() {
+        let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        assert!(help.contains("--table-mapping-json <JSON>"), "{help}");
+    }
+
+    /// Every CDC and TLS flag reaches the help screen with the value name its
+    /// clap attribute declares.
+    #[test]
+    fn postgres_help_renders_every_cdc_and_tls_flag_value_name() {
+        let error = clickpipe_parse_error(&["create", "postgres", "--help"]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        for flag in [
+            "--sync-interval-seconds <SECONDS>",
+            "--pull-batch-size <ROWS>",
+            "--initial-load-parallelism <WORKERS>",
+            "--snapshot-rows-per-partition <ROWS>",
+            "--snapshot-parallel-tables <TABLES>",
+            "--allow-nullable-columns <true|false>",
+            "--enable-failover-slots <true|false>",
+            "--delete-on-merge <true|false>",
+            "--ca-certificate <PATH>",
+            "--tls-host <HOSTNAME>",
+            "--disable-tls",
+            "--skip-cert-verification",
+        ] {
+            assert!(help.contains(flag), "missing `{flag}`:\n{help}");
+        }
+    }
+
+    /// The credential pair is `Option` so IAM_ROLE auth can omit it, which
+    /// takes it out of the usage line; the flags still have to reach the help
+    /// screen with their declared value names.
+    #[test]
+    fn mysql_help_renders_the_credential_flag_value_names() {
+        let error = clickpipe_parse_error(&["create", "mysql", "--help"]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        for flag in [
+            "--username <USERNAME>",
+            "--password <PASSWORD>",
+            "--iam-role <IAM_ROLE>",
+        ] {
+            assert!(help.contains(flag), "missing `{flag}`:\n{help}");
+        }
+    }
+
+    /// `main` formats the `clickpipe create` usage error against the source
+    /// subcommand named by `clickpipe_create_validation_error`, so every name
+    /// that hook can return has to resolve in the real clap command tree.
+    #[test]
+    fn every_clickpipe_create_validation_source_resolves_to_a_subcommand() {
+        use clap::CommandFactory;
+
+        // One failing invocation per source whose flag relationships are
+        // validated after parsing. The match in
+        // `clickpipe_create_validation_error` is exhaustive, so a new source
+        // that gains checks has to be added here too.
+        let mut postgres = postgres_cli_args(Some("public.events:events"));
+        postgres.extend(["--iam-role", "arn:aws:iam::123456789012:role/clickpipe"]);
+        let sources: Vec<&'static str> = [postgres, mysql_create_cli_args()]
+            .iter()
+            .map(|args| {
+                parse_clickpipe(args)
+                    .clickpipe_create_validation_error()
+                    .unwrap_or_else(|| panic!("expected a validation error for: {args:?}"))
+                    .0
+            })
+            .collect();
+        assert_eq!(sources, ["postgres", "mysql"]);
+
+        let mut command = Cli::command();
+        let create = command
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
+            .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
+            .expect("clickpipe create command must exist");
+        for source in sources {
+            assert!(
+                create.find_subcommand(source).is_some(),
+                "`clickpipe create {source}` must exist for the usage error to name it"
+            );
+        }
+    }
+
+    #[test]
+    fn postgres_tls_error_hints_are_narrow_and_preserve_api_detail() {
+        let unknown_authority = "BAD_REQUEST: failed to establish connection: tls: failed to verify certificate: \
+             x509: certificate signed by unknown authority";
+        let error = add_postgres_tls_error_hint(CloudError::new(unknown_authority));
+        assert!(error.message.starts_with(unknown_authority));
+        assert!(error.message.contains("--ca-certificate <PATH>"));
+
+        let hostname = postgres_tls_error_hint(
+            "x509: certificate is valid for postgres.internal.example.com, not 10.0.0.8",
+        )
+        .expect("hostname mismatch hint");
+        assert!(hostname.contains("--tls-host <HOSTNAME>"));
+        let ip_sans = postgres_tls_error_hint(
+            "x509: cannot validate certificate for 10.0.0.8 because it doesn't contain any IP Sans",
+        )
+        .expect("IP SAN hostname mismatch hint");
+        assert!(ip_sans.contains("--tls-host <HOSTNAME>"));
+        assert!(
+            postgres_tls_error_hint(
+                "BAD_REQUEST: failed to establish connection: connection refused"
+            )
+            .is_none()
+        );
+        assert!(
+            postgres_tls_error_hint("tls: failed to verify certificate: certificate expired")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn parses_mysql_flags_defaults_repeatability_and_server_id_range() {
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::MySQL(args),
+        } = parse_clickpipe(&[
+            "create",
+            "mysql",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "mysql.example",
+            "--port",
+            "3307",
+            "--table-mapping",
+            "source.one:one",
+            "--table-mapping",
+            "source.two:two",
+            "--table-mapping-json",
+            r#"{"sourceSchemaName":"source","sourceTable":"three","targetTable":"three"}"#,
+            "--mysql-type",
+            "mariadb",
+            "--replication-mode",
+            "cdc_only",
+            "--replication-mechanism",
+            "FILE_POS",
+            "--auth",
+            "IAM_ROLE",
+            "--iam-role",
+            "arn:role",
+            "--tls-host",
+            "tls.example",
+            "--ca-certificate",
+            "/tmp/ca.pem",
+            "--skip-cert-verification",
+            "--server-id",
+            "4294967295",
+            "--sync-interval-seconds",
+            "1",
+            "--pull-batch-size",
+            "2",
+            "--initial-load-parallelism",
+            "3",
+            "--snapshot-rows-per-partition",
+            "1000",
+            "--snapshot-parallel-tables",
+            "4",
+            "--allow-nullable-columns",
+            "false",
+            "--delete-on-merge",
+            "true",
+            "--use-compression",
+            "false",
+            "--destination-database",
+            "analytics",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected mysql create");
+        };
+        assert_eq!(args.service_id, "svc-1");
+        assert_eq!(args.name, "pipe-1");
+        assert_eq!(args.host, "mysql.example");
+        assert_eq!(args.port, 3307);
+        // IAM_ROLE authentication takes the role ARN, not a credential pair.
+        assert_eq!(args.username, None);
+        assert_eq!(args.password, None);
+        assert_eq!(args.table_mappings, ["source.one:one", "source.two:two"]);
+        assert_eq!(args.table_mappings_json.len(), 1);
+        assert_eq!(args.mysql_type, "mariadb");
+        assert_eq!(args.replication_mode, "cdc_only");
+        assert_eq!(args.replication_mechanism, "FILE_POS");
+        assert_eq!(args.auth, "IAM_ROLE");
+        assert_eq!(args.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.tls_host.as_deref(), Some("tls.example"));
+        assert_eq!(args.ca_certificate.as_deref(), Some("/tmp/ca.pem"));
+        assert!(!args.disable_tls);
+        assert!(args.skip_cert_verification);
+        assert_eq!(args.server_id, Some(4_294_967_295));
+        assert_eq!(args.sync_interval_seconds, Some(1));
+        assert_eq!(args.pull_batch_size, Some(2));
+        assert_eq!(args.initial_load_parallelism, Some(3));
+        assert_eq!(args.snapshot_rows_per_partition, Some(1000));
+        assert_eq!(args.snapshot_parallel_tables, Some(4));
+        assert_eq!(args.allow_nullable_columns, Some(false));
+        assert_eq!(args.delete_on_merge, Some(true));
+        assert_eq!(args.use_compression, Some(false));
+        assert_eq!(args.destination.destination_database, "analytics");
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::MySQL(args),
+        } = parse_clickpipe(&[
+            "create",
+            "mysql",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "mysql.example",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--table-mapping-json",
+            r#"{"sourceSchemaName":"source","sourceTable":"events","targetTable":"events"}"#,
+            "--server-id",
+            "1",
+        ])
+        else {
+            panic!("expected mysql create");
+        };
+        assert_eq!(args.port, 3306);
+        assert_eq!(args.username.as_deref(), Some("user"));
+        assert_eq!(args.password.as_deref(), Some("password"));
+        assert!(args.table_mappings.is_empty());
+        assert_eq!(args.table_mappings_json.len(), 1);
+        assert_eq!(args.mysql_type, "mysql");
+        assert_eq!(args.replication_mode, "cdc");
+        assert_eq!(args.replication_mechanism, "GTID");
+        assert_eq!(args.auth, "basic");
+        assert_eq!(args.iam_role, None);
+        assert_eq!(args.tls_host, None);
+        assert_eq!(args.ca_certificate, None);
+        assert!(!args.disable_tls);
+        assert!(!args.skip_cert_verification);
+        assert_eq!(args.server_id, Some(1));
+        assert_eq!(args.sync_interval_seconds, None);
+        assert_eq!(args.pull_batch_size, None);
+        assert_eq!(args.initial_load_parallelism, None);
+        assert_eq!(args.snapshot_rows_per_partition, None);
+        assert_eq!(args.snapshot_parallel_tables, None);
+        assert_eq!(args.allow_nullable_columns, None);
+        assert_eq!(args.delete_on_merge, None);
+        assert_eq!(args.use_compression, None);
+        assert_eq!(args.destination.destination_database, "default");
+
+        for invalid in ["0", "4294967296"] {
+            assert_rejected(&[
+                "create",
+                "mysql",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--host",
+                "mysql.example",
+                "--username",
+                "user",
+                "--password",
+                "password",
+                "--table-mapping",
+                "source.events:events",
+                "--server-id",
+                invalid,
+            ]);
+        }
+
+        for (flag, invalid) in [
+            ("--sync-interval-seconds", "0"),
+            ("--pull-batch-size", "0"),
+            ("--initial-load-parallelism", "0"),
+            ("--snapshot-rows-per-partition", "999"),
+            ("--snapshot-parallel-tables", "0"),
+        ] {
+            let mut args = mysql_create_cli_args();
+            args.extend([flag, invalid]);
+            assert_rejected(&args);
+        }
+    }
+
+    #[test]
+    fn mysql_port_accepts_default_and_boundaries_and_rejects_out_of_range_values() {
+        for (port, expected) in [(None, 3306), (Some("1"), 1), (Some("65535"), 65535)] {
+            let mut args = mysql_create_cli_args();
+            args.extend(["--username", "user", "--password", "password"]);
+            if let Some(port) = port {
+                args.extend(["--port", port]);
+            }
+            let ClickPipeCommands::Create {
+                command: ClickPipeCreateCommands::MySQL(parsed),
+            } = parse_clickpipe(&args)
+            else {
+                panic!("expected mysql create");
+            };
+            assert_eq!(parsed.port, expected);
+        }
+
+        for port in ["0", "65536"] {
+            let mut args = mysql_create_cli_args();
+            args.extend([
+                "--username",
+                "user",
+                "--password",
+                "password",
+                "--port",
+                port,
+            ]);
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert_eq!(error.exit_code(), 2);
+        }
+    }
+
+    /// Minimal `clickpipe create mysql` invocation, before any auth flags.
+    fn mysql_create_cli_args() -> Vec<&'static str> {
+        vec![
+            "create",
+            "mysql",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "mysql.example",
+            "--table-mapping",
+            "source.events:events",
+        ]
+    }
+
+    #[test]
+    fn mysql_iam_role_auth_does_not_require_username_or_password() {
+        // IAM_ROLE authentication has no username or password: the role ARN is
+        // the whole credential, so clap must not demand the pair.
+        let mut args = mysql_create_cli_args();
+        args.extend([
+            "--auth",
+            "IAM_ROLE",
+            "--iam-role",
+            "arn:aws:iam::123456789012:role/clickpipe",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::MySQL(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected mysql create");
+        };
+        assert_eq!(parsed.username, None);
+        assert_eq!(parsed.password, None);
+        assert_eq!(parsed.auth, "IAM_ROLE");
+        assert_eq!(
+            parsed.iam_role.as_deref(),
+            Some("arn:aws:iam::123456789012:role/clickpipe")
+        );
+        assert_eq!(clickpipe_validation_message(&parse_clickpipe(&args)), None);
+
+        // The pair is rejected rather than silently dropped, the same way
+        // basic auth rejects --iam-role.
+        args.extend(["--username", "user", "--password", "password"]);
+        assert_eq!(
+            parse_clickpipe(&args).clickpipe_create_validation_error(),
+            Some((
+                "mysql",
+                "--username and --password cannot be used with --auth IAM_ROLE; use --auth basic"
+                    .to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn mysql_iam_role_only_error_names_the_role_flag_and_not_the_pair() {
+        // `--auth IAM_ROLE` on its own must ask for --iam-role only: asking for
+        // the credential pair would send the user into the "cannot be used with
+        // --auth IAM_ROLE" rejection.
+        let mut args = mysql_create_cli_args();
+        args.extend(["--auth", "IAM_ROLE"]);
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        let message = error.to_string();
+        assert!(message.contains("--iam-role"), "{message}");
+        assert!(!message.contains("--username"), "{message}");
+        assert!(!message.contains("--password"), "{message}");
+    }
+
+    #[test]
+    fn mysql_basic_auth_without_any_credentials_is_a_validation_error() {
+        // clap only pairs the two flags, so neither being present parses
+        // cleanly and `validate_mysql_create_args` owns the basic-auth rule:
+        // it depends on --auth's value, which clap cannot express.
+        let args = mysql_create_cli_args();
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::MySQL(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected mysql create");
+        };
+        assert_eq!(parsed.auth, "basic");
+        assert_eq!(parsed.username, None);
+        assert_eq!(parsed.password, None);
+
+        assert_eq!(
+            parse_clickpipe(&args).clickpipe_create_validation_error(),
+            Some((
+                "mysql",
+                "--auth basic requires --username <USERNAME> and --password <PASSWORD>".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn mysql_basic_auth_still_requires_username_and_password() {
+        // The two flags are joined with clap `requires`, so half a pair is a
+        // usage error naming the missing half rather than the whole set.
+        for omitted in ["--username", "--password"] {
+            let mut args = mysql_create_cli_args();
+            args.extend(["--username", "user", "--password", "password"]);
+            let position = args.iter().position(|arg| *arg == omitted).unwrap();
+            args.drain(position..position + 2);
+
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "omitting {omitted} should be a usage error"
+            );
+            assert!(error.to_string().contains(omitted), "{error}");
+        }
+    }
+
+    #[test]
+    fn mysql_iam_role_with_basic_auth_is_a_validation_error() {
+        // The reverse of the credential rule, and the guard MySQL previously
+        // lacked entirely: basic auth has no use for a role ARN.
+        let mut args = mysql_create_cli_args();
+        args.extend([
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--iam-role",
+            "arn:aws:iam::123456789012:role/clickpipe",
+        ]);
+        assert_eq!(
+            parse_clickpipe(&args).clickpipe_create_validation_error(),
+            Some((
+                "mysql",
+                "--iam-role cannot be used with --auth basic; use --auth IAM_ROLE".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn parses_mongodb_flags_defaults_and_repeatability() {
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::MongoDB(args),
+        } = parse_clickpipe(&[
+            "create",
+            "mongodb",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--uri",
+            "mongodb://mongo.example/source",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--table-mapping",
+            "source.one:one",
+            "--table-mapping",
+            "source.two:two",
+            "--table-mapping-json",
+            r#"{"sourceDatabaseName":"source","sourceCollection":"three","targetTable":"three"}"#,
+            "--replication-mode",
+            "snapshot",
+            "--read-preference",
+            "nearest",
+            "--tls-host",
+            "tls.example",
+            "--ca-certificate",
+            "/tmp/ca.pem",
+            "--skip-cert-verification",
+            "--sync-interval-seconds",
+            "1",
+            "--pull-batch-size",
+            "2",
+            "--snapshot-rows-per-partition",
+            "1000",
+            "--snapshot-parallel-collections",
+            "3",
+            "--delete-on-merge",
+            "false",
+            "--use-json-native-format",
+            "true",
+            "--destination-database",
+            "analytics",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected mongodb create");
+        };
+        assert_eq!(args.service_id, "svc-1");
+        assert_eq!(args.name, "pipe-1");
+        assert_eq!(args.uri, "mongodb://mongo.example/source");
+        assert_eq!(args.username, "user");
+        assert_eq!(args.password, "password");
+        assert_eq!(args.table_mappings, ["source.one:one", "source.two:two"]);
+        assert_eq!(args.table_mappings_json.len(), 1);
+        assert_eq!(args.replication_mode, "snapshot");
+        assert_eq!(args.read_preference, "nearest");
+        assert_eq!(args.tls_host.as_deref(), Some("tls.example"));
+        assert_eq!(args.ca_certificate.as_deref(), Some("/tmp/ca.pem"));
+        assert!(!args.disable_tls);
+        assert!(args.skip_cert_verification);
+        assert_eq!(args.sync_interval_seconds, Some(1));
+        assert_eq!(args.pull_batch_size, Some(2));
+        assert_eq!(args.snapshot_rows_per_partition, Some(1000));
+        assert_eq!(args.snapshot_parallel_collections, Some(3));
+        assert_eq!(args.delete_on_merge, Some(false));
+        assert_eq!(args.use_json_native_format, Some(true));
+        assert_eq!(args.destination.destination_database, "analytics");
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::MongoDB(args),
+        } = parse_clickpipe(&[
+            "create",
+            "mongodb",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--uri",
+            "mongodb://mongo.example/source",
+            "--username",
+            "user",
+            "--password",
+            "password",
+            "--table-mapping-json",
+            r#"{"sourceDatabaseName":"source","sourceCollection":"events","targetTable":"events"}"#,
+        ])
+        else {
+            panic!("expected mongodb create");
+        };
+        assert!(args.table_mappings.is_empty());
+        assert_eq!(args.table_mappings_json.len(), 1);
+        assert_eq!(args.replication_mode, "cdc");
+        assert_eq!(args.read_preference, "secondaryPreferred");
+        assert_eq!(args.tls_host, None);
+        assert_eq!(args.ca_certificate, None);
+        assert!(!args.disable_tls);
+        assert!(!args.skip_cert_verification);
+        assert_eq!(args.sync_interval_seconds, None);
+        assert_eq!(args.pull_batch_size, None);
+        assert_eq!(args.snapshot_rows_per_partition, None);
+        assert_eq!(args.snapshot_parallel_collections, None);
+        assert_eq!(args.delete_on_merge, None);
+        assert_eq!(args.use_json_native_format, None);
+        assert_eq!(args.destination.destination_database, "default");
+
+        for (flag, invalid) in [
+            ("--sync-interval-seconds", "0"),
+            ("--pull-batch-size", "0"),
+            ("--snapshot-rows-per-partition", "999"),
+            ("--snapshot-parallel-collections", "0"),
+        ] {
+            assert_rejected(&[
+                "create",
+                "mongodb",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--uri",
+                "mongodb://mongo.example/source",
+                "--username",
+                "user",
+                "--password",
+                "password",
+                "--table-mapping",
+                "source.events:events",
+                flag,
+                invalid,
+            ]);
+        }
+    }
+
+    #[test]
+    fn parses_bigquery_flags_defaults_and_repeatability() {
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::BigQuery(args),
+        } = parse_clickpipe(&[
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping",
+            "dataset.one:one",
+            "--table-mapping",
+            "dataset.two:two",
+            "--table-mapping-json",
+            r#"{"sourceDatasetName":"dataset","sourceTable":"three","targetTable":"three"}"#,
+            "--replication-mode",
+            "snapshot",
+            "--allow-nullable-columns",
+            "false",
+            "--initial-load-parallelism",
+            "2.5",
+            "--snapshot-rows-per-partition",
+            "1000000",
+            "--snapshot-parallel-tables",
+            "3",
+            "--destination-database",
+            "analytics",
+            "--org-id",
+            "org-1",
+        ])
+        else {
+            panic!("expected bigquery create");
+        };
+        assert_eq!(args.service_id, "svc-1");
+        assert_eq!(args.name, "pipe-1");
+        assert_eq!(args.auth, "SERVICE_ACCOUNT");
+        assert_eq!(
+            args.service_account_file.as_deref(),
+            Some("/tmp/account.json")
+        );
+        assert_eq!(args.project_id, None);
+        assert_eq!(args.staging_path, "gs://bucket/staging");
+        assert_eq!(args.table_mappings, ["dataset.one:one", "dataset.two:two"]);
+        assert_eq!(args.table_mappings_json.len(), 1);
+        assert_eq!(args.replication_mode, "snapshot");
+        assert_eq!(args.allow_nullable_columns, Some(false));
+        assert_eq!(args.initial_load_parallelism, Some(2.5));
+        assert_eq!(args.snapshot_rows_per_partition, Some(1_000_000.0));
+        assert_eq!(args.snapshot_parallel_tables, Some(3.0));
+        assert_eq!(args.destination.destination_database, "analytics");
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::BigQuery(args),
+        } = parse_clickpipe(&[
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping-json",
+            r#"{"sourceDatasetName":"dataset","sourceTable":"events","targetTable":"events"}"#,
+        ])
+        else {
+            panic!("expected bigquery create");
+        };
+        assert!(args.table_mappings.is_empty());
+        assert_eq!(args.table_mappings_json.len(), 1);
+        assert_eq!(args.replication_mode, "snapshot");
+        assert_eq!(args.allow_nullable_columns, None);
+        assert_eq!(args.initial_load_parallelism, None);
+        assert_eq!(args.snapshot_rows_per_partition, None);
+        assert_eq!(args.snapshot_parallel_tables, None);
+        assert_eq!(args.destination.destination_database, "default");
+    }
+
+    #[test]
+    fn non_postgres_database_sources_require_one_mapping_form() {
+        let cases = [
+            vec![
+                "create",
+                "mysql",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--host",
+                "mysql.example",
+                "--username",
+                "user",
+                "--password",
+                "password",
+            ],
+            vec![
+                "create",
+                "mongodb",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--uri",
+                "mongodb://mongo.example/source",
+                "--username",
+                "user",
+                "--password",
+                "password",
+            ],
+            vec![
+                "create",
+                "bigquery",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--service-account-file",
+                "/tmp/account.json",
+                "--staging-path",
+                "gs://bucket/staging",
+            ],
+        ];
+
+        for args in cases {
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+            let message = error.to_string();
+            assert!(message.contains("--table-mapping"), "{message}");
+            assert!(message.contains("--table-mapping-json"), "{message}");
+        }
+    }
+
+    #[test]
+    fn bigquery_tuning_numbers_require_finite_values() {
+        for (flag, value) in [
+            ("--initial-load-parallelism", "NaN"),
+            ("--snapshot-rows-per-partition", "inf"),
+            ("--snapshot-parallel-tables", "-inf"),
+        ] {
+            let error = clickpipe_parse_error(&[
+                "create",
+                "bigquery",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--service-account-file",
+                "/tmp/account.json",
+                "--staging-path",
+                "gs://bucket/staging",
+                "--table-mapping",
+                "dataset.events:events",
+                flag,
+                value,
+            ]);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            let message = error.to_string();
+            assert!(message.contains(flag), "{message}");
+            assert!(message.contains("finite number"), "{message}");
+        }
+
+        assert_eq!(parse_finite_f64("-1.5"), Ok(-1.5));
+        assert_eq!(parse_finite_f64("2.5"), Ok(2.5));
+        for flag in [
+            "--initial-load-parallelism",
+            "--snapshot-rows-per-partition",
+            "--snapshot-parallel-tables",
+        ] {
+            assert_bigquery_value(flag, "-1.5");
+        }
+    }
+
+    #[test]
+    fn accepted_possible_values_are_pinned() {
+        assert_eq!(
+            OBJECT_STORAGE_FORMATS,
+            &[
+                "JSONEachRow",
+                "JSONAsObject",
+                "CSV",
+                "CSVWithNames",
+                "TabSeparated",
+                "TabSeparatedWithNames",
+                "Parquet",
+                "Avro",
+            ]
+        );
+        assert_eq!(
+            OBJECT_STORAGE_COMPRESSIONS,
+            &[
+                "none", "gzip", "gz", "brotli", "br", "xz", "LZMA", "zstd", "auto",
+            ]
+        );
+        assert_eq!(
+            OBJECT_STORAGE_TYPES,
+            &[
+                "s3",
+                "gcs",
+                "dospaces",
+                "azureblobstorage",
+                "cloudflarer2",
+                "ovhobjectstorage",
+            ]
+        );
+        assert_eq!(KINESIS_FORMATS, &["JSONEachRow", "Avro", "AvroConfluent"]);
+        assert_eq!(KINESIS_AUTHS, &["IAM_ROLE", "IAM_USER"]);
+        assert_eq!(
+            KINESIS_ITERATOR_TYPES,
+            &["TRIM_HORIZON", "LATEST", "AT_TIMESTAMP"]
+        );
+        assert_eq!(
+            POSTGRES_TYPES,
+            &[
+                "postgres",
+                "supabase",
+                "neon",
+                "alloydb",
+                "planetscale",
+                "rdspostgres",
+                "aurorapostgres",
+                "cloudsqlpostgres",
+                "azurepostgres",
+                "crunchybridge",
+                "tigerdata",
+            ]
+        );
+        assert_eq!(DB_AUTHS, &["basic", "IAM_ROLE"]);
+        assert_eq!(REPLICATION_MODES, &["cdc", "snapshot", "cdc_only"]);
+        assert_eq!(PUBSUB_FORMATS, &["JSONEachRow", "Avro", "Protobuf"]);
+        assert_eq!(PUBSUB_SEEK_TYPES, &["latest", "earliest", "timestamp"]);
+
+        for &value in OBJECT_STORAGE_FORMATS {
+            assert_object_storage_value("--format", value);
+        }
+        for &value in OBJECT_STORAGE_COMPRESSIONS {
+            assert_object_storage_value("--compression", value);
+        }
+        for &value in OBJECT_STORAGE_TYPES {
+            assert_object_storage_value("--storage-type", value);
+        }
+        for &value in ClickPipePostKafkaSourceFormat::VALUES {
+            assert_kafka_value("--format", value);
+        }
+        for &value in ClickPipePostKafkaSourceType::VALUES {
+            assert_kafka_value("--kafka-type", value);
+        }
+        for &value in ClickPipePostKafkaSourceAuthentication::VALUES {
+            if parse_kafka_authentication(value).is_ok() {
+                assert_kafka_value("--auth", value);
+            } else {
+                let mut args = kafka_create_cli_args();
+                args.extend(["--auth", value]);
+                assert_rejected(&args);
+            }
+        }
+        for &value in ClickPipeKafkaOffsetStrategy::VALUES {
+            assert_kafka_value("--offset", value);
+        }
+        for &value in KINESIS_FORMATS {
+            assert_kinesis_value("--format", value);
+        }
+        for &value in KINESIS_AUTHS {
+            assert_kinesis_value("--auth", value);
+        }
+        for &value in KINESIS_ITERATOR_TYPES {
+            assert_kinesis_value("--iterator-type", value);
+        }
+        for &value in POSTGRES_TYPES {
+            assert_postgres_value("--postgres-type", value);
+        }
+        for &value in DB_AUTHS {
+            assert_postgres_value("--auth", value);
+        }
+        for &value in REPLICATION_MODES {
+            assert_postgres_value("--replication-mode", value);
+        }
+        for &value in ClickPipeBigQueryPipeSettingsReplicationmode::VALUES {
+            assert_bigquery_value("--replication-mode", value);
+        }
+        for &value in ClickPipeMutateMySQLSourceAuthentication::VALUES {
+            assert_mysql_value("--auth", value);
+        }
+        for &value in ClickPipeMySQLPipeSettingsReplicationmode::VALUES {
+            assert_mysql_value("--replication-mode", value);
+        }
+        for &value in ClickPipeMongoDBPipeSettingsReplicationmode::VALUES {
+            assert_mongodb_value("--replication-mode", value);
+        }
+        for &value in ClickPipeMutateMySQLSourceType::VALUES {
+            assert_mysql_value("--mysql-type", value);
+        }
+        for &value in ClickPipeMySQLPipeSettingsReplicationmechanism::VALUES {
+            assert_mysql_value("--replication-mechanism", value);
+        }
+        for &value in ClickPipeMutateMongoDBSourceReadpreference::VALUES {
+            assert_mongodb_value("--read-preference", value);
+        }
+        for &value in PUBSUB_FORMATS {
+            assert_pubsub_value("--format", value);
+        }
+        for value in ["SERVICE_ACCOUNT", "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"] {
+            assert_pubsub_value("--auth", value);
+        }
+        for &value in PUBSUB_SEEK_TYPES {
+            // `timestamp` needs its companion flag, which is covered by
+            // `pubsub_seek_timestamp_pairs_with_the_timestamp_seek_type`.
+            if value == "timestamp" {
+                continue;
+            }
+            assert_pubsub_value("--seek-type", value);
+        }
+    }
+
+    #[test]
+    fn every_clickpipe_auth_flag_exposes_valid_canonical_choices() {
+        use clap::CommandFactory;
+        fn visit(command: &clap::Command, count: &mut usize) {
+            for argument in command
+                .get_arguments()
+                .filter(|arg| arg.get_long() == Some("auth"))
+            {
+                let parser = argument.get_value_parser();
+                let choices: Vec<_> = parser.possible_values().expect("auth choices").collect();
+                assert!(!choices.is_empty(), "{}", command.get_name());
+                for choice in choices {
+                    let value = choice.get_name();
+                    // Validate every advertised choice through the existing domain parser.
+                    match command.get_name() {
+                        "object-storage" => {
+                            parse_supported_object_storage_auth(value).unwrap();
+                        }
+                        "kafka" => {
+                            parse_supported_kafka_auth(value).unwrap();
+                        }
+                        "pubsub" => {
+                            parse_supported_pubsub_auth(value).unwrap();
+                        }
+                        "bigquery" => {
+                            parse_supported_bigquery_auth(value).unwrap();
+                        }
+                        _ => {}
+                    }
+                }
+                *count += 1;
+            }
+            for child in command.get_subcommands() {
+                visit(child, count);
+            }
+        }
+        let tree = crate::cli::Cli::command();
+        let clickpipe = tree
+            .find_subcommand("cloud")
+            .unwrap()
+            .find_subcommand("clickpipe")
+            .unwrap();
+        let mut count = 0;
+        visit(clickpipe, &mut count);
+        assert_eq!(count, 11);
+    }
+
+    #[test]
+    fn possible_value_parsers_reject_unknown_values() {
+        let invalid = "not-a-valid-value";
+        let object_base = [
+            "create",
+            "object-storage",
+            "--column",
+            "id:Int64",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        assert_rejected(&[
+            "create",
+            "object-storage",
+            "--column",
+            "id:Int64",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data",
+            "--format",
+            invalid,
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ]);
+        for flag in ["--compression", "--storage-type", "--auth"] {
+            let mut args = object_base.to_vec();
+            args.extend([flag, invalid]);
+            assert_rejected(&args);
+        }
+
+        let kafka_base = [
+            "create",
+            "kafka",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        assert_rejected(&[
+            "create",
+            "kafka",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            invalid,
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ]);
+        for flag in ["--kafka-type", "--auth", "--offset"] {
+            let mut args = kafka_base.to_vec();
+            args.extend([flag, invalid]);
+            assert_rejected(&args);
+        }
+
+        let kinesis_base = [
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "stream-1",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        assert_rejected(&[
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "stream-1",
+            "--region",
+            "us-east-1",
+            "--format",
+            invalid,
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ]);
+        for flag in ["--auth", "--iterator-type"] {
+            let mut args = kinesis_base.to_vec();
+            args.extend([flag, invalid]);
+            assert_rejected(&args);
+        }
+
+        let postgres_base = [
+            "create",
+            "postgres",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "postgres.example",
+            "--pg-database",
+            "source-db",
+            "--username",
+            "user",
+            "--password",
+            "password",
+        ];
+        for flag in ["--postgres-type", "--replication-mode", "--auth"] {
+            let mut args = postgres_base.to_vec();
+            args.extend([flag, invalid]);
+            assert_rejected(&args);
+        }
+
+        let mysql_base = [
+            "create",
+            "mysql",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--host",
+            "mysql.example",
+            "--username",
+            "user",
+            "--password",
+            "password",
+        ];
+        for flag in [
+            "--mysql-type",
+            "--replication-mode",
+            "--replication-mechanism",
+            "--auth",
+        ] {
+            let mut args = mysql_base.to_vec();
+            args.extend([flag, invalid]);
+            assert_rejected(&args);
+        }
+
+        let mongodb_base = [
+            "create",
+            "mongodb",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--uri",
+            "mongodb://mongo.example/source",
+            "--username",
+            "user",
+            "--password",
+            "password",
+        ];
+        for flag in ["--replication-mode", "--read-preference"] {
+            let mut args = mongodb_base.to_vec();
+            args.extend([flag, invalid]);
+            assert_rejected(&args);
+        }
+
+        assert_rejected(&[
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--replication-mode",
+            invalid,
+        ]);
+        assert_rejected(&[
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--auth",
+            invalid,
+        ]);
+
+        for flag in ["--format", "--auth", "--seek-type"] {
+            let mut flags = pubsub_source_flags("./sa-key.json");
+            match flags.iter().position(|arg| *arg == flag) {
+                Some(index) => flags[index + 1] = invalid,
+                None => flags.extend([flag, invalid]),
+            }
+            let mut args = vec![
+                "create",
+                "pubsub",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ];
+            args.extend(flags);
+            assert_rejected(&args);
+        }
+    }
+
+    #[test]
+    fn credential_flags_keep_pair_requirements() {
+        let object_base = [
+            "create",
+            "object-storage",
+            "--column",
+            "id:Int64",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--source-url",
+            "https://bucket.example/data",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        for pair in [["--access-key-id", "access"], ["--secret-key", "secret"]] {
+            let mut args = object_base.to_vec();
+            args.extend(pair);
+            assert_rejected(&args);
+        }
+
+        let kafka_base = [
+            "create",
+            "kafka",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--brokers",
+            "broker:9092",
+            "--topics",
+            "topic",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        for pair in [
+            ["--username", "user"],
+            ["--password", "password"],
+            ["--access-key-id", "access"],
+            ["--secret-key", "secret"],
+        ] {
+            let mut args = kafka_base.to_vec();
+            args.extend(pair);
+            assert_rejected(&args);
+        }
+
+        let kinesis_base = [
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--stream-name",
+            "stream-1",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        for pair in [["--access-key-id", "access"], ["--secret-key", "secret"]] {
+            let mut args = kinesis_base.to_vec();
+            args.extend(pair);
+            assert_rejected(&args);
+        }
+    }
+
+    #[test]
+    fn clickpipe_write_classification_delegates_from_cloud_commands() {
+        assert_write(&["list", "svc-1"], false);
+        assert_write(&["get", "svc-1", "pipe-1"], false);
+        assert_write(&["update", "svc-1", "pipe-1", "--file", "patch.json"], true);
+        assert_write(&["delete", "svc-1", "pipe-1"], true);
+        assert_write(&["start", "svc-1", "pipe-1"], true);
+        assert_write(&["stop", "svc-1", "pipe-1"], true);
+        assert_write(&["resync", "svc-1", "pipe-1"], true);
+        assert_write(&["scale", "svc-1", "pipe-1", "--replicas", "4"], true);
+        assert_write(&["cdc-scaling", "get", "svc-1"], false);
+        assert_write(
+            &["cdc-scaling", "update", "svc-1", "--cpu-millicores", "1000"],
+            true,
+        );
+        assert_write(&["settings", "get", "svc-1", "pipe-1"], false);
+        assert_write(
+            &[
+                "settings",
+                "update",
+                "svc-1",
+                "pipe-1",
+                "--kafka-read-committed",
+                "false",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "schema-discover",
+                "kafka",
+                "svc-1",
+                "--brokers",
+                "broker:9092",
+                "--topics",
+                "topic",
+                "--format",
+                "JSONEachRow",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "schema-discover",
+                "kinesis",
+                "svc-1",
+                "--stream-name",
+                "stream-1",
+                "--region",
+                "us-east-1",
+                "--format",
+                "JSONEachRow",
+            ],
+            true,
+        );
+        assert_write(
+            &[
+                "schema-discover",
+                "object-storage",
+                "svc-1",
+                "--source-url",
+                "https://bucket.example/data/*.json",
+                "--format",
+                "JSONEachRow",
+            ],
+            true,
+        );
+        let mut pubsub_discover = vec!["schema-discover", "pubsub", "svc-1"];
+        pubsub_discover.extend(pubsub_source_flags("./sa-key.json"));
+        assert_write(&pubsub_discover, true);
+        let mut pubsub_create = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        pubsub_create.extend(pubsub_source_flags("./sa-key.json"));
+        assert_write(&pubsub_create, true);
+        assert_write(
+            &[
+                "create",
+                "object-storage",
+                "--column",
+                "id:Int64",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--source-url",
+                "https://bucket.example/data/*.json",
+                "--format",
+                "JSONEachRow",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ],
+            true,
+        );
+    }
+
+    #[test]
+    fn clickpipe_update_parses_file_and_stdin_paths() {
+        for config_file in ["patch.json", "-"] {
+            let ClickPipeCommands::Update {
+                service_id,
+                clickpipe_id,
+                config_file: parsed_file,
+            } = parse_clickpipe(&[
+                "update",
+                "svc-1",
+                "pipe-1",
+                "--file",
+                config_file,
+                "--org-id",
+                "org-1",
+            ])
+            else {
+                panic!("expected clickpipe update");
+            };
+            assert_eq!(service_id, "svc-1");
+            assert_eq!(clickpipe_id.id.as_deref(), Some("pipe-1"));
+            assert_eq!(parsed_file, config_file);
+        }
+        assert_rejected(&["update", "svc-1", "pipe-1"]);
+    }
+
+    #[test]
+    fn clickpipe_update_builder_preserves_minimal_and_full_patch_shapes() {
+        let minimal = serde_json::json!({"name": ""});
+        let request = build_clickpipe_update_request(minimal.clone(), "test").unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), minimal);
+
+        let full = serde_json::json!({
+            "name": "renamed",
+            "destination": {
+                "columns": [
+                    {"name": "id", "type": "UInt64"},
+                    {"name": "payload", "type": "String"}
+                ]
+            },
+            "fieldMappings": [
+                {"sourceField": "event_id", "destinationField": "id"}
+            ],
+            "settings": {
+                "streaming_max_insert_wait_ms": 0,
+                "clickhouse_parallel_view_processing": false,
+                "kafka_read_committed": false
+            },
+            "source": {
+                "mysql": {
+                    "authentication": "basic",
+                    "credentials": {"username": "rotated", "password": "secret"},
+                    "host": "mysql.example.com",
+                    "port": 3306,
+                    "tlsHost": "mysql-tls.example.com",
+                    "caCertificate": "certificate",
+                    "disableTls": false,
+                    "skipCertVerification": false,
+                    "serverId": 0,
+                    "settings": {
+                        "syncIntervalSeconds": 0,
+                        "pullBatchSize": 0,
+                        "useCompression": false
+                    },
+                    "tableMappingsToAdd": [{
+                        "sourceSchemaName": "sales",
+                        "sourceTable": "orders",
+                        "targetTable": "orders_v2",
+                        "excludedColumns": [],
+                        "useCustomSortingKey": false,
+                        "sortingKeys": [],
+                        "tableEngine": "ReplacingMergeTree",
+                        "partitionKey": "id",
+                        "partitionByExpr": "toYYYYMM(created_at)"
+                    }],
+                    "tableMappingsToRemove": [{
+                        "sourceSchemaName": "sales",
+                        "sourceTable": "old_orders",
+                        "targetTable": "old_orders",
+                        "tableEngine": "MergeTree",
+                        "partitionKey": "id",
+                        "partitionByExpr": "toYYYYMM(created_at)"
+                    }]
+                },
+                "validateSamples": false
+            }
+        });
+        let request = build_clickpipe_update_request(full.clone(), "test").unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), full);
+
+        for partial in [
+            serde_json::json!({"source": {"kafka": {"caCertificate": "new-ca"}}}),
+            serde_json::json!({"source": {"kafka": {
+                "authentication": "IAM_ROLE",
+                "iamRole": "arn:aws:iam::123456789012:role/clickpipe"
+            }}}),
+            serde_json::json!({"source": {"kafka": {
+                "authentication": "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
+            }}}),
+            serde_json::json!({"source": {"postgres": {
+                "host": "postgres.example.com"
+            }}}),
+        ] {
+            let request = build_clickpipe_update_request(partial.clone(), "test").unwrap();
+            assert_eq!(
+                serde_json::to_value(request).unwrap(),
+                partial,
+                "omitted PATCH fields must remain absent"
+            );
+        }
+    }
+
+    #[test]
+    fn clickpipe_update_builder_validates_typed_database_source_ports() {
+        for provider in ["mysql", "postgres"] {
+            for port in [1, 65535] {
+                let patch = serde_json::json!({"source": {
+                    (provider): {"host": "db.example.com", "port": port}
+                }});
+                let request = build_clickpipe_update_request(patch.clone(), "test").unwrap();
+                assert_eq!(serde_json::to_value(request).unwrap(), patch);
+            }
+
+            for port in [-1, 0, 65536] {
+                let patch = serde_json::json!({"source": {
+                    (provider): {"host": "db.example.com", "port": port}
+                }});
+                let error = build_clickpipe_update_request(patch, "test").unwrap_err();
+                assert!(
+                    error.message.contains(&format!(
+                        "source.{provider}.port` must be in the range 1..=65535"
+                    )),
+                    "{error}"
+                );
+            }
+        }
+
+        let omitted = serde_json::json!({"source": {
+            "postgres": {"host": "db.example.com"}
+        }});
+        let request = build_clickpipe_update_request(omitted.clone(), "test").unwrap();
+        assert_eq!(serde_json::to_value(request).unwrap(), omitted);
+    }
+
+    #[test]
+    fn clickpipe_update_builder_reports_bigquery_as_an_unsupported_source() {
+        let error = build_clickpipe_update_request(
+            serde_json::json!({"source": {
+                "bigquery": {},
+                "validateSamples": false
+            }}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("`source.bigquery`"), "{error}");
+        assert!(error.message.contains("cannot be updated"), "{error}");
+        assert!(!error.message.contains(".?."), "{error}");
+
+        let unknown = build_clickpipe_update_request(
+            serde_json::json!({"source": {"kafka": {"unknownOption": true}}}),
+            "test",
+        )
+        .unwrap_err();
+        assert!(unknown.message.contains("unknownOption"), "{unknown}");
+    }
+
+    #[test]
+    fn clickpipe_update_builder_rejects_noop_unknowns_and_invalid_sources() {
+        for invalid in [
+            serde_json::json!({}),
+            serde_json::json!({"bigquery": {}}),
+            serde_json::json!({"destination": {}}),
+            serde_json::json!({"fieldMappings": [{"sourceFiled": "id", "destinationField": "id"}]}),
+            serde_json::json!({"source": {
+                "kinesis": {"authentication": "FUTURE_AUTH"},
+                "validateSamples": false
+            }}),
+            serde_json::json!({"source": {
+                "mongodb": {
+                    "uri": "mongodb://example/db",
+                    "readPreference": "futurePreference"
+                },
+                "validateSamples": false
+            }}),
+            serde_json::json!({"source": {
+                "kafka": {
+                    "credentials": {"username": "user", "password": "pw", "extra": true},
+                    "reversePrivateEndpointIds": []
+                },
+                "validateSamples": false
+            }}),
+            serde_json::json!({"source": {"kafka": {
+                "authentication": "PLAIN",
+                "credentials": {"accessKeyId": "key", "secretKey": "secret"}
+            }}}),
+            serde_json::json!({"source": {"kafka": {
+                "authentication": "IAM_ROLE",
+                "iamRole": "arn:aws:iam::123456789012:role/clickpipe",
+                "credentials": {"username": "user", "password": "secret"}
+            }}}),
+            serde_json::json!({"source": {"kafka": {
+                "authentication": "IAM_ROLE"
+            }}}),
+            serde_json::json!({"source": {"kafka": {
+                "authentication": "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+                "credentials": {"username": "user", "password": "secret"}
+            }}}),
+            serde_json::json!({"source": {"mysql": {
+                "settings": {"syncIntervalSeconds": 5}
+            }}}),
+            serde_json::json!({"source": {"mongodb": {
+                "settings": {"syncIntervalSeconds": 5}
+            }}}),
+            serde_json::json!({"source": {"pubsub": {
+                "ackDeadline": 10
+            }}}),
+            serde_json::json!({"source": {
+                "kinesis": {},
+                "objectStorage": {},
+                "validateSamples": false
+            }}),
+        ] {
+            assert!(
+                build_clickpipe_update_request(invalid.clone(), "test").is_err(),
+                "accepted invalid patch: {invalid}"
+            );
+        }
+    }
+
+    /// Parse `schema-discover object-storage` args and return the source
+    /// fields, so the builder tests exercise the real clap defaults.
+    fn parse_object_storage_discovery(flags: &[&str]) -> Box<ObjectStorageSourceFields> {
+        let mut args = vec!["schema-discover", "object-storage", "svc-1"];
+        args.extend(flags.iter().copied());
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::ObjectStorage(source),
+            ..
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected object-storage schema discovery");
+        };
+        Box::new(source.source)
+    }
+
+    #[test]
+    fn build_object_storage_schema_discovery_request_minimal() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostObjectStorageSourceCompression, ClickPipePostObjectStorageSourceFormat,
+            ClickPipePostObjectStorageSourceType,
+        };
+
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+        ]);
+        let request = build_object_storage_schema_discovery_request(&args)
+            .expect("minimal object-storage discovery request builds");
+
+        // Only the objectStorage source is populated.
+        assert!(request.source.kafka.is_none());
+        assert!(request.source.kinesis.is_none());
+        assert!(request.source.pubsub.is_none());
+        let source = request
+            .source
+            .object_storage
+            .expect("objectStorage source is set");
+        assert_eq!(source.url, "https://bucket.example/data/*.json");
+        assert_eq!(
+            source.format,
+            ClickPipePostObjectStorageSourceFormat::JSONEachRow
+        );
+        assert_eq!(source.r#type, ClickPipePostObjectStorageSourceType::S3);
+        assert_eq!(
+            source.compression,
+            Some(ClickPipePostObjectStorageSourceCompression::Auto)
+        );
+        assert_eq!(source.authentication, None);
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.access_key, None);
+        assert_eq!(source.connection_string, None);
+        assert_eq!(source.azure_container_name, None);
+        assert_eq!(source.path, None);
+        assert_eq!(source.service_account_key, None);
+        assert_eq!(source.delimiter, None);
+        assert_eq!(source.queue_url, None);
+        assert_eq!(source.is_continuous, None);
+        assert_eq!(source.skip_initial_load, None);
+        assert_eq!(source.start_after, None);
+    }
+
+    #[test]
+    fn build_object_storage_schema_discovery_request_maximal() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostObjectStorageSourceAuthentication,
+            ClickPipePostObjectStorageSourceCompression, ClickPipePostObjectStorageSourceFormat,
+            ClickPipePostObjectStorageSourceType, MskIamUser,
+        };
+        use std::io::Write;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let sa_path = dir.path().join("service-account.json");
+        let mut sa_file = std::fs::File::create(&sa_path).expect("create service account file");
+        sa_file
+            .write_all(br#"{"type":"service_account"}"#)
+            .expect("write service account file");
+
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.example/data/*.csv",
+            "--format",
+            "CSV",
+            "--storage-type",
+            "gcs",
+            "--compression",
+            "gzip",
+            "--continuous",
+            "--queue-url",
+            "https://queue.example/q",
+            "--start-after",
+            "key-1",
+            "--delimiter",
+            ",",
+            "--azure-container-name",
+            "container",
+            "--path",
+            "path/*.csv",
+            "--service-account-file",
+            sa_path.to_str().expect("utf-8 temp path"),
+        ]);
+        let request = build_object_storage_schema_discovery_request(&args)
+            .expect("maximal object-storage discovery request builds");
+
+        assert!(request.source.kafka.is_none());
+        assert!(request.source.kinesis.is_none());
+        assert!(request.source.pubsub.is_none());
+        let source = request
+            .source
+            .object_storage
+            .expect("objectStorage source is set");
+        assert_eq!(source.url, "https://bucket.example/data/*.csv");
+        assert_eq!(source.format, ClickPipePostObjectStorageSourceFormat::CSV);
+        assert_eq!(source.r#type, ClickPipePostObjectStorageSourceType::Gcs);
+        assert_eq!(
+            source.compression,
+            Some(ClickPipePostObjectStorageSourceCompression::Gzip)
+        );
+        assert_eq!(
+            source.authentication,
+            Some(ClickPipePostObjectStorageSourceAuthentication::SERVICE_ACCOUNT)
+        );
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.access_key, None);
+        assert_eq!(source.connection_string, None);
+        assert_eq!(source.azure_container_name.as_deref(), Some("container"));
+        assert_eq!(source.path.as_deref(), Some("path/*.csv"));
+        // The GCP key file is read and base64-encoded, not passed by path.
+        assert_eq!(
+            source.service_account_key.as_deref(),
+            Some("eyJ0eXBlIjoic2VydmljZV9hY2NvdW50In0=")
+        );
+        assert_eq!(source.delimiter.as_deref(), Some(","));
+        assert_eq!(source.queue_url.as_deref(), Some("https://queue.example/q"));
+        assert_eq!(source.is_continuous, Some(true));
+        assert_eq!(source.skip_initial_load, None);
+        assert_eq!(source.start_after.as_deref(), Some("key-1"));
+
+        // Without --iam-role the access key pair infers IAM_USER, and
+        // --skip-initial-load is carried through.
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.example/data/*.json",
+            "--format",
+            "JSONEachRow",
+            "--access-key-id",
+            "access",
+            "--secret-key",
+            "secret",
+            "--queue-url",
+            "https://queue.example/q",
+            "--skip-initial-load",
+        ]);
+        let source = build_object_storage_schema_discovery_request(&args)
+            .expect("IAM_USER object-storage discovery request builds")
+            .source
+            .object_storage
+            .expect("objectStorage source is set");
+        assert_eq!(
+            source.authentication,
+            Some(ClickPipePostObjectStorageSourceAuthentication::IAM_USER)
+        );
+        assert_eq!(source.iam_role, None);
+        assert_eq!(
+            source.access_key,
+            Some(MskIamUser {
+                access_key_id: "access".to_string(),
+                secret_key: "secret".to_string(),
+            })
+        );
+        assert_eq!(source.skip_initial_load, Some(true));
+    }
+
+    #[test]
+    fn parses_pubsub_create_flags_and_defaults() {
+        let args = parse_pubsub_create(&[
+            "--topic",
+            "events",
+            "--project-id",
+            "my-gcp-project",
+            "--format",
+            "Avro",
+            "--seek-type",
+            "timestamp",
+            "--seek-timestamp",
+            "2026-04-10T12:00:00Z",
+            "--service-account-file",
+            "/tmp/sa-key.json",
+            "--auth",
+            "SERVICE_ACCOUNT",
+            "--filter",
+            r#"attributes.region = "eu""#,
+            "--enable-ordering",
+            "--ack-deadline",
+            "120",
+            "--column",
+            "event_id:Int64",
+            "--column",
+            "name:String",
+            "--role",
+            "analytics_reader",
+            "--org-id",
+            "org-1",
+        ]);
+
+        assert_eq!(args.service_id, "svc-1");
+        assert_eq!(args.name, "pipe-1");
+        assert_eq!(args.source.topic, "events");
+        assert_eq!(args.source.project_id, "my-gcp-project");
+        assert_eq!(args.source.format, "Avro");
+        assert_eq!(args.source.seek_type, "timestamp");
+        assert_eq!(
+            args.source.seek_timestamp.as_deref(),
+            Some("2026-04-10T12:00:00Z")
+        );
+        assert_eq!(
+            args.source.service_account_file.as_deref(),
+            Some("/tmp/sa-key.json")
+        );
+        assert_eq!(args.source.auth, "SERVICE_ACCOUNT");
+        assert_eq!(
+            args.source.filter.as_deref(),
+            Some(r#"attributes.region = "eu""#)
+        );
+        assert!(args.source.enable_ordering);
+        assert_eq!(args.source.ack_deadline, Some(120));
+        assert_eq!(args.database, "db");
+        assert_eq!(args.table, "events");
+        assert_eq!(args.columns, vec!["event_id:Int64", "name:String"]);
+        assert_eq!(args.destination_roles.roles, vec!["analytics_reader"]);
+
+        // Defaults: only --auth has one, and the optional fields stay unset.
+        let args = parse_pubsub_create(&pubsub_source_flags("./sa-key.json"));
+        assert_eq!(args.source.auth, "SERVICE_ACCOUNT");
+        assert_eq!(args.source.seek_timestamp, None);
+        assert_eq!(args.source.filter, None);
+        assert!(!args.source.enable_ordering);
+        assert_eq!(args.source.ack_deadline, None);
+        assert!(args.columns.is_empty());
+        assert!(args.destination_roles.roles.is_empty());
+    }
+
+    #[test]
+    fn pubsub_create_requires_every_strict_source_field() {
+        // Each field the library types as `T` is a required flag, so dropping
+        // one is a usage error rather than a request the API rejects.
+        for omitted in ["--topic", "--project-id", "--format", "--seek-type"] {
+            let flags = pubsub_source_flags("./sa-key.json");
+            let index = flags
+                .iter()
+                .position(|arg| *arg == omitted)
+                .expect("baseline flag");
+            let mut args = vec![
+                "create",
+                "pubsub",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ];
+            args.extend(
+                flags
+                    .iter()
+                    .copied()
+                    .enumerate()
+                    .filter_map(|(at, arg)| (at != index && at != index + 1).then_some(arg)),
+            );
+            let error = clickpipe_parse_error(&args);
+            assert_eq!(error.exit_code(), 2, "{omitted}: {error}");
+            assert!(error.to_string().contains(omitted), "{omitted}: {error}");
+        }
+    }
+
+    #[test]
+    fn pubsub_seek_timestamp_pairs_with_the_timestamp_seek_type() {
+        let (_dir, key_path) = service_account_key_file();
+
+        // `--seek-type timestamp` without the companion flag is a clap error.
+        let mut flags = pubsub_source_flags(&key_path);
+        let index = flags
+            .iter()
+            .position(|arg| *arg == "earliest")
+            .expect("baseline seek type");
+        flags[index] = "timestamp";
+        let mut args = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        args.extend(flags.iter().copied());
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(error.exit_code(), 2, "{error}");
+        assert!(error.to_string().contains("--seek-timestamp"), "{error}");
+
+        // With it, the pair parses and builds.
+        let mut with_timestamp = flags.clone();
+        with_timestamp.extend(["--seek-timestamp", "2026-04-10T12:00:00Z"]);
+        let built = build_pubsub_source(&parse_pubsub_create(&with_timestamp).source)
+            .expect("timestamp seek builds");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(built) = built else {
+            panic!("expected service-account source");
+        };
+        assert_eq!(
+            built.seek_timestamp,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-04-10T12:00:00Z")
+                    .expect("fixed timestamp")
+                    .with_timezone(&chrono::Utc)
+            )
+        );
+
+        // clap cannot express the inverse relationship, so the builder refuses
+        // a timestamp given for another seek type before any network call.
+        let mut mismatched = pubsub_source_flags(&key_path);
+        mismatched.extend(["--seek-timestamp", "2026-04-10T12:00:00Z"]);
+        let error = build_pubsub_source(&parse_pubsub_create(&mismatched).source)
+            .expect_err("earliest seek with a timestamp is refused");
+        assert_eq!(
+            error.to_string(),
+            "--seek-timestamp can only be used with --seek-type timestamp, not --seek-type earliest"
+        );
+
+        // A malformed timestamp never reaches the builder.
+        let mut malformed = flags;
+        malformed.extend(["--seek-timestamp", "yesterday"]);
+        let mut args = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        args.extend(malformed);
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(error.exit_code(), 2, "{error}");
+        assert!(error.to_string().contains("ISO 8601 / RFC 3339"), "{error}");
+    }
+
+    #[test]
+    fn pubsub_ack_deadline_and_filter_stay_inside_the_spec_bounds() {
+        for deadline in ["10", "600"] {
+            let mut flags = pubsub_source_flags("./sa-key.json");
+            flags.extend(["--ack-deadline", deadline]);
+            let args = parse_pubsub_create(&flags);
+            assert_eq!(
+                args.source.ack_deadline,
+                Some(deadline.parse::<i64>().expect("test literal"))
+            );
+        }
+        for deadline in ["9", "601", "0"] {
+            let mut flags = pubsub_source_flags("./sa-key.json");
+            flags.extend(["--ack-deadline", deadline]);
+            let mut args = vec![
+                "create",
+                "pubsub",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ];
+            args.extend(flags);
+            assert_rejected(&args);
+        }
+
+        // The filter's 256-character limit is enforced at parse time.
+        let at_limit = "a".repeat(PUBSUB_FILTER_MAX_LENGTH);
+        let mut flags = pubsub_source_flags("./sa-key.json");
+        flags.extend(["--filter", &at_limit]);
+        assert_eq!(
+            parse_pubsub_create(&flags).source.filter.as_deref(),
+            Some(at_limit.as_str())
+        );
+
+        let too_long = "a".repeat(PUBSUB_FILTER_MAX_LENGTH + 1);
+        let mut flags = pubsub_source_flags("./sa-key.json");
+        flags.extend(["--filter", &too_long]);
+        let mut args = vec![
+            "create",
+            "pubsub",
+            "svc-1",
+            "--name",
+            "pipe-1",
+            "--database",
+            "db",
+            "--table",
+            "events",
+        ];
+        args.extend(flags);
+        let error = clickpipe_parse_error(&args);
+        assert_eq!(error.exit_code(), 2, "{error}");
+        assert!(error.to_string().contains("257 characters"), "{error}");
+    }
+
+    #[test]
+    fn parses_pubsub_schema_discovery_flags() {
+        let ClickPipeCommands::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::PubSub(args),
+        } = parse_clickpipe(&[
+            "schema-discover",
+            "pubsub",
+            "--org-id",
+            "org-pubsub",
+            "svc-pubsub",
+            "--topic",
+            "events",
+            "--project-id",
+            "my-gcp-project",
+            "--format",
+            "Protobuf",
+            "--seek-type",
+            "latest",
+            "--service-account-file",
+            "/tmp/sa-key.json",
+            "--filter",
+            "attributes.tenant = \"acme\"",
+            "--enable-ordering",
+            "--ack-deadline",
+            "30",
+        ])
+        else {
+            panic!("expected pubsub schema discovery");
+        };
+        assert_eq!(args.service_id, "svc-pubsub");
+        let args = args.source;
+
+        assert_eq!(args.topic, "events");
+        assert_eq!(args.project_id, "my-gcp-project");
+        assert_eq!(args.format, "Protobuf");
+        assert_eq!(args.seek_type, "latest");
+        assert_eq!(
+            args.service_account_file.as_deref(),
+            Some("/tmp/sa-key.json")
+        );
+        assert_eq!(args.auth, "SERVICE_ACCOUNT");
+        assert_eq!(args.filter.as_deref(), Some("attributes.tenant = \"acme\""));
+        assert!(args.enable_ordering);
+        assert_eq!(args.ack_deadline, Some(30));
+    }
+
+    #[test]
+    fn build_pubsub_source_supports_minimal_fields() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostPubSubSourceAuthentication, ClickPipePostPubSubSourceFormat,
+            ClickPipePostPubSubSourceSeektype,
+        };
+
+        let (_dir, key_path) = service_account_key_file();
+        let args = parse_pubsub_create(&pubsub_source_flags(&key_path));
+        let source = build_pubsub_source(&args.source).expect("minimal pubsub source builds");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(source) = source else {
+            panic!("expected service-account source");
+        };
+
+        assert_eq!(source.topic, "events");
+        assert_eq!(source.project_id, "my-gcp-project");
+        assert_eq!(source.format, ClickPipePostPubSubSourceFormat::JSONEachRow);
+        assert_eq!(
+            source.authentication,
+            ClickPipePostPubSubSourceAuthentication::ServiceAccount
+        );
+        assert_eq!(
+            source.seek_type,
+            ClickPipePostPubSubSourceSeektype::Earliest
+        );
+        assert_eq!(source.seek_timestamp, None);
+        // The key file is read and base64-encoded; the path is never sent.
+        assert_eq!(
+            source.service_account_key.service_account_file,
+            SERVICE_ACCOUNT_KEY_BASE64
+        );
+        assert_eq!(source.filter, None);
+        assert_eq!(source.enable_ordering, None);
+        assert_eq!(source.ack_deadline, None);
+    }
+
+    #[test]
+    fn build_pubsub_source_supports_maximal_fields() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostPubSubSourceFormat, ClickPipePostPubSubSourceSeektype,
+        };
+
+        let (_dir, key_path) = service_account_key_file();
+        let mut flags = pubsub_source_flags(&key_path);
+        let seek = flags
+            .iter()
+            .position(|arg| *arg == "earliest")
+            .expect("baseline seek type");
+        flags[seek] = "timestamp";
+        let format = flags
+            .iter()
+            .position(|arg| *arg == "JSONEachRow")
+            .expect("baseline format");
+        flags[format] = "Protobuf";
+        flags.extend([
+            "--seek-timestamp",
+            "2026-04-10T12:00:00+02:00",
+            "--filter",
+            "attributes.region = \"eu\"",
+            "--enable-ordering",
+            "--ack-deadline",
+            "600",
+        ]);
+        let args = parse_pubsub_create(&flags);
+        let source = build_pubsub_source(&args.source).expect("maximal pubsub source builds");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(source) = source else {
+            panic!("expected service-account source");
+        };
+
+        assert_eq!(source.format, ClickPipePostPubSubSourceFormat::Protobuf);
+        assert_eq!(
+            source.seek_type,
+            ClickPipePostPubSubSourceSeektype::Timestamp
+        );
+        // The offset is normalized to UTC for the wire.
+        assert_eq!(
+            source.seek_timestamp,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-04-10T10:00:00Z")
+                    .expect("fixed timestamp")
+                    .with_timezone(&chrono::Utc)
+            )
+        );
+        assert_eq!(source.filter.as_deref(), Some("attributes.region = \"eu\""));
+        assert_eq!(source.enable_ordering, Some(true));
+        assert_eq!(source.ack_deadline, Some(600));
+        assert_eq!(
+            source.service_account_key.service_account_file,
+            SERVICE_ACCOUNT_KEY_BASE64
+        );
+    }
+
+    #[test]
+    fn build_pubsub_source_reports_an_unreadable_or_empty_key_without_echoing_it() {
+        let (dir, key_path) = service_account_key_file();
+
+        let mut flags = pubsub_source_flags("/missing/sa-key.json");
+        let args = parse_pubsub_create(&flags);
+        let error = build_pubsub_source(&args.source).expect_err("missing key file fails");
+        assert!(!error.to_string().is_empty());
+
+        let empty_path = dir.path().join("empty.json");
+        std::fs::write(&empty_path, b"   \n").expect("write empty key file");
+        let empty_path = empty_path.to_str().expect("utf-8 temp path").to_string();
+        flags = pubsub_source_flags(&empty_path);
+        let args = parse_pubsub_create(&flags);
+        let error = build_pubsub_source(&args.source).expect_err("empty key file fails");
+        assert_eq!(
+            error.to_string(),
+            format!("service account key file '{empty_path}' was empty")
+        );
+
+        // The happy path still reads the same file the other tests use.
+        let args = parse_pubsub_create(&pubsub_source_flags(&key_path));
+        assert!(build_pubsub_source(&args.source).is_ok());
+    }
+
+    #[test]
+    fn build_pubsub_schema_discovery_request_minimal() {
+        use clickhouse_cloud_api::models::{
+            ClickPipePostPubSubSourceFormat, ClickPipePostPubSubSourceSeektype,
+        };
+
+        let (_dir, key_path) = service_account_key_file();
+        let args = parse_pubsub_discovery(&pubsub_source_flags(&key_path));
+        let request = build_pubsub_schema_discovery_request(&args)
+            .expect("minimal pubsub discovery request builds");
+
+        // Only the pubsub source is populated.
+        assert!(request.source.kafka.is_none());
+        assert!(request.source.kinesis.is_none());
+        assert!(request.source.object_storage.is_none());
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(source) = request.source.pubsub.expect("pubsub source is set") else { panic!("expected service-account source") };
+        assert_eq!(source.topic, "events");
+        assert_eq!(source.project_id, "my-gcp-project");
+        assert_eq!(source.format, ClickPipePostPubSubSourceFormat::JSONEachRow);
+        assert_eq!(
+            source.seek_type,
+            ClickPipePostPubSubSourceSeektype::Earliest
+        );
+        assert_eq!(
+            source.service_account_key.service_account_file,
+            SERVICE_ACCOUNT_KEY_BASE64
+        );
+        assert_eq!(source.seek_timestamp, None);
+        assert_eq!(source.filter, None);
+        assert_eq!(source.enable_ordering, None);
+        assert_eq!(source.ack_deadline, None);
+    }
+
+    #[test]
+    fn build_pubsub_schema_discovery_request_maximal() {
+        use clickhouse_cloud_api::models::ClickPipePostPubSubSourceSeektype;
+
+        let (_dir, key_path) = service_account_key_file();
+        let mut flags = pubsub_source_flags(&key_path);
+        let seek = flags
+            .iter()
+            .position(|arg| *arg == "earliest")
+            .expect("baseline seek type");
+        flags[seek] = "timestamp";
+        flags.extend([
+            "--seek-timestamp",
+            "2026-04-10T12:00:00Z",
+            "--filter",
+            "attributes.region = \"eu\"",
+            "--enable-ordering",
+            "--ack-deadline",
+            "45",
+        ]);
+        let args = parse_pubsub_discovery(&flags);
+        let request = build_pubsub_schema_discovery_request(&args)
+            .expect("maximal pubsub discovery request builds");
+
+        assert!(request.source.kafka.is_none());
+        assert!(request.source.kinesis.is_none());
+        assert!(request.source.object_storage.is_none());
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubServiceAccountSource(source) = request.source.pubsub.expect("pubsub source is set") else { panic!("expected service-account source") };
+        assert_eq!(
+            source.seek_type,
+            ClickPipePostPubSubSourceSeektype::Timestamp
+        );
+        assert_eq!(
+            source.seek_timestamp,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-04-10T12:00:00Z")
+                    .expect("fixed timestamp")
+                    .with_timezone(&chrono::Utc)
+            )
+        );
+        assert_eq!(source.filter.as_deref(), Some("attributes.region = \"eu\""));
+        assert_eq!(source.enable_ordering, Some(true));
+        assert_eq!(source.ack_deadline, Some(45));
+    }
+
+    /// Every value the `PossibleValuesParser`s accept stays visible in the
+    /// help screen clap renders from them.
+    #[test]
+    fn pubsub_help_lists_every_accepted_format_and_seek_type() {
+        let error = clickpipe_parse_error(&["create", "pubsub", "--help"]);
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = error.to_string();
+
+        for value in PUBSUB_FORMATS.iter().chain(PUBSUB_SEEK_TYPES) {
+            assert!(help.contains(value), "missing `{value}`:\n{help}");
+        }
+    }
+
+    #[test]
+    fn build_kinesis_source_rejects_out_of_range_iterator_timestamp() {
+        let args = KinesisSourceFields {
+            stream_name: "stream".to_string(),
+            region: "us-east-1".to_string(),
+            format: "JSONEachRow".to_string(),
+            auth: "IAM_ROLE".to_string(),
+            iam_role: None,
+            access_key_id: None,
+            secret_key: None,
+            iterator_type: "AT_TIMESTAMP".to_string(),
+            iterator_timestamp: Some(u64::MAX),
+            enhanced_fan_out: false,
+        };
+        let error = build_kinesis_source(&args).unwrap_err();
+        assert!(
+            error.to_string().contains("out of range"),
+            "error should mention the range: {}",
+            error
+        );
+
+        let args = KinesisSourceFields {
+            iterator_timestamp: Some(1_750_000_000),
+            ..args
+        };
+        let source = build_kinesis_source(&args).unwrap();
+        assert_eq!(source.timestamp, Some(1_750_000_000));
+    }
+
+    fn postgres_builder_args() -> PostgresCreateArgs {
+        PostgresCreateArgs {
+            service_id: "svc-1".into(),
+            name: "pipe-1".into(),
+            validation: ClickPipeCreateValidationArgs::default(),
+            host: "postgres.example".into(),
+            port: 5432,
+            pg_database: "source-db".into(),
+            username: Some("user".into()),
+            password: Some("password".into()),
+            table_mappings: vec!["public.events:events".into()],
+            table_mappings_json: vec![],
+            postgres_type: "postgres".into(),
+            replication_mode: "cdc".into(),
+            auth: "basic".into(),
+            iam_role: None,
+            tls_host: None,
+            ca_certificate: None,
+            disable_tls: false,
+            skip_cert_verification: false,
+            publication_name: None,
+            replication_slot_name: None,
+            sync_interval_seconds: None,
+            pull_batch_size: None,
+            initial_load_parallelism: None,
+            snapshot_rows_per_partition: None,
+            snapshot_parallel_tables: None,
+            allow_nullable_columns: None,
+            enable_failover_slots: None,
+            delete_on_merge: None,
+            destination: DatabaseDestinationArgs {
+                destination_database: "default".into(),
+            },
+            destination_roles: DestinationRoleArgs::default(),
+        }
+    }
+
+    #[test]
+    fn build_postgres_request_supports_minimal_fields() {
+        let request = build_postgres_request(&postgres_builder_args()).unwrap();
+
+        assert_eq!(request.name, "pipe-1");
+        assert!(request.field_mappings.is_empty());
+        assert_eq!(request.scaling, None);
+        assert_eq!(request.settings, None);
+        assert_eq!(request.destination.database, "default");
+        assert!(request.destination.columns.is_empty());
+        assert_eq!(request.destination.table, None);
+        assert_eq!(request.destination.managed_table, None);
+        assert_eq!(request.destination.roles, None);
+        assert_eq!(request.destination.table_definition, None);
+        assert!(request.source.bigquery.is_none());
+        assert!(request.source.kafka.is_none());
+        assert!(request.source.kinesis.is_none());
+        assert!(request.source.mongodb.is_none());
+        assert!(request.source.mysql.is_none());
+        assert!(request.source.object_storage.is_none());
+        assert!(request.source.pubsub.is_none());
+        assert_eq!(request.source.validate_samples, None);
+
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        assert_eq!(source.r#type.as_ref().unwrap().to_string(), "postgres");
+        assert_eq!(source.authentication.to_string(), "basic");
+        let credentials = source.credentials.as_ref().expect("basic credentials");
+        assert_eq!(credentials.username, "user");
+        assert_eq!(credentials.password, "password");
+        assert_eq!(source.host, "postgres.example");
+        assert_eq!(source.port, 5432);
+        assert_eq!(source.database, "source-db");
+        assert!(!source.disable_tls);
+        assert!(!source.skip_cert_verification);
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.tls_host, None);
+        assert_eq!(source.ca_certificate, None);
+        assert_eq!(source.settings.replication_mode.to_string(), "cdc");
+        assert_eq!(source.settings.publication_name, None);
+        assert_eq!(source.settings.replication_slot_name, None);
+        assert!(!source.settings.allow_nullable_columns);
+        assert!(!source.settings.delete_on_merge);
+        assert!(!source.settings.enable_failover_slots);
+        assert_eq!(source.settings.initial_load_parallelism, None);
+        assert_eq!(source.settings.pull_batch_size, None);
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
+        assert_eq!(source.settings.sync_interval_seconds, None);
+        assert_eq!(source.table_mappings.len(), 1);
+        let mapping = &source.table_mappings[0];
+        assert_eq!(mapping.source_schema_name, "public");
+        assert_eq!(mapping.source_table, "events");
+        assert_eq!(mapping.target_table, "events");
+        assert!(mapping.excluded_columns.is_empty());
+        assert_eq!(mapping.partition_by_expr, "");
+        assert_eq!(mapping.partition_key, "");
+        assert!(mapping.sorting_keys.is_empty());
+        assert!(!mapping.use_custom_sorting_key);
+    }
+
+    #[test]
+    fn build_postgres_request_supports_maximal_fields_and_certificate_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca_certificate = directory.path().join("postgres-ca.pem");
+        std::fs::write(&ca_certificate, "POSTGRES_CA").unwrap();
+        let mut args = postgres_builder_args();
+        args.name = "maximal-pipe".into();
+        args.host = "rds.example".into();
+        args.port = 65535;
+        args.pg_database = "production".into();
+        // IAM_ROLE auth has no username or password: the role ARN is the whole
+        // credential, so the `credentials` object is omitted entirely.
+        args.username = None;
+        args.password = None;
+        args.table_mappings = vec![
+            "public.users:users_raw".into(),
+            "audit.events:audit_events".into(),
+        ];
+        args.postgres_type = "rdspostgres".into();
+        args.replication_mode = "cdc_only".into();
+        args.auth = "IAM_ROLE".into();
+        args.iam_role = Some("arn:aws:iam::123456789012:role/clickpipe".into());
+        args.tls_host = Some("database.internal".into());
+        args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
+        args.skip_cert_verification = true;
+        args.publication_name = Some("clickpipe_publication".into());
+        args.replication_slot_name = Some("clickpipe_slot".into());
+        args.sync_interval_seconds = Some(30);
+        args.pull_batch_size = Some(50_000);
+        args.initial_load_parallelism = Some(4);
+        args.snapshot_rows_per_partition = Some(1_000_000);
+        args.snapshot_parallel_tables = Some(3);
+        args.allow_nullable_columns = Some(true);
+        args.enable_failover_slots = Some(true);
+        args.delete_on_merge = Some(true);
+        args.destination.destination_database = "analytics".into();
+        args.destination_roles = DestinationRoleArgs {
+            roles: vec!["analytics_reader".into(), "analytics_writer".into()],
+        };
+
+        let request = build_postgres_request(&args).unwrap();
+        assert_eq!(request.name, "maximal-pipe");
+        assert_eq!(request.destination.database, "analytics");
+        assert_eq!(request.destination.table, None);
+        assert_eq!(
+            request.destination.roles,
+            Some(vec![
+                "analytics_reader".to_string(),
+                "analytics_writer".to_string()
+            ])
+        );
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        assert_eq!(source.r#type.as_ref().unwrap().to_string(), "rdspostgres");
+        assert_eq!(source.authentication.to_string(), "IAM_ROLE");
+        assert_eq!(source.credentials, None);
+        assert_eq!(source.host, "rds.example");
+        assert_eq!(source.port, 65535);
+        assert_eq!(source.database, "production");
+        assert_eq!(
+            source.iam_role.as_deref(),
+            Some("arn:aws:iam::123456789012:role/clickpipe")
+        );
+        assert_eq!(source.tls_host.as_deref(), Some("database.internal"));
+        assert_eq!(source.ca_certificate.as_deref(), Some("POSTGRES_CA"));
+        assert!(!source.disable_tls);
+        assert!(source.skip_cert_verification);
+        assert_eq!(source.settings.replication_mode.to_string(), "cdc_only");
+        assert_eq!(
+            source.settings.publication_name.as_deref(),
+            Some("clickpipe_publication")
+        );
+        assert_eq!(
+            source.settings.replication_slot_name.as_deref(),
+            Some("clickpipe_slot")
+        );
+        assert_eq!(source.settings.sync_interval_seconds, Some(30));
+        assert_eq!(source.settings.pull_batch_size, Some(50_000));
+        assert_eq!(source.settings.initial_load_parallelism, Some(4));
+        assert_eq!(
+            source.settings.snapshot_num_rows_per_partition,
+            Some(1_000_000)
+        );
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(3));
+        assert!(source.settings.allow_nullable_columns);
+        assert!(source.settings.enable_failover_slots);
+        assert!(source.settings.delete_on_merge);
+        assert_eq!(source.table_mappings.len(), 2);
+        assert_eq!(source.table_mappings[0].source_schema_name, "public");
+        assert_eq!(source.table_mappings[0].source_table, "users");
+        assert_eq!(source.table_mappings[0].target_table, "users_raw");
+        assert_eq!(source.table_mappings[1].source_schema_name, "audit");
+        assert_eq!(source.table_mappings[1].source_table, "events");
+        assert_eq!(source.table_mappings[1].target_table, "audit_events");
+    }
+
+    #[test]
+    fn build_postgres_request_supports_explicit_tls_opt_outs() {
+        let mut args = postgres_builder_args();
+        args.skip_cert_verification = true;
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        assert!(!source.disable_tls);
+        assert!(source.skip_cert_verification);
+
+        args.skip_cert_verification = false;
+        args.disable_tls = true;
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        assert!(source.disable_tls);
+        assert!(!source.skip_cert_verification);
+    }
+
+    #[test]
+    fn build_postgres_pipe_settings_omits_unset_settings_and_sends_explicit_false() {
+        let mut args = postgres_builder_args();
+        args.sync_interval_seconds = Some(15);
+        args.allow_nullable_columns = Some(false);
+        args.delete_on_merge = Some(false);
+        args.enable_failover_slots = Some(false);
+
+        let settings = build_postgres_pipe_settings(&args).unwrap();
+        assert_eq!(settings.sync_interval_seconds, Some(15));
+        assert!(!settings.allow_nullable_columns);
+        assert!(!settings.delete_on_merge);
+        assert!(!settings.enable_failover_slots);
+        assert_eq!(settings.pull_batch_size, None);
+        assert_eq!(settings.initial_load_parallelism, None);
+        assert_eq!(settings.snapshot_num_rows_per_partition, None);
+        assert_eq!(settings.snapshot_number_of_parallel_tables, None);
+
+        // The three schema-required booleans always serialize; every other
+        // unset setting is omitted rather than sent as a zero value.
+        let value = serde_json::to_value(&settings).unwrap();
+        let mut keys: Vec<&str> = value
+            .as_object()
+            .expect("settings object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "allowNullableColumns",
+                "deleteOnMerge",
+                "enableFailoverSlots",
+                "replicationMode",
+                "syncIntervalSeconds",
+            ]
+        );
+    }
+
+    #[test]
+    fn build_postgres_pipe_settings_defaults_optional_booleans_to_false() {
+        let settings = build_postgres_pipe_settings(&postgres_builder_args()).unwrap();
+
+        assert!(!settings.allow_nullable_columns);
+        assert!(!settings.delete_on_merge);
+        assert!(!settings.enable_failover_slots);
+    }
+
+    #[test]
+    fn build_postgres_request_trims_table_mapping_components() {
+        let mut args = postgres_builder_args();
+        args.table_mappings = vec![" public.events : events_raw ".into()];
+
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        let mapping = &source.table_mappings[0];
+        assert_eq!(mapping.source_schema_name, "public");
+        assert_eq!(mapping.source_table, "events");
+        assert_eq!(mapping.target_table, "events_raw");
+    }
+
+    #[test]
+    fn parse_postgres_table_mapping_json_accepts_a_minimal_object() {
+        let mapping = parse_postgres_table_mapping_json(
+            0,
+            r#"{"sourceSchemaName":" public ","sourceTable":" users ","targetTable":" users_raw "}"#,
+        )
+        .unwrap();
+
+        // Absent optional fields fall back to the same request shape the
+        // simple `schema.table:target` form sends.
+        assert_eq!(
+            mapping,
+            ClickPipePostgresPipeTableMapping {
+                source_schema_name: "public".into(),
+                source_table: "users".into(),
+                target_table: "users_raw".into(),
+                excluded_columns: vec![],
+                sorting_keys: vec![],
+                use_custom_sorting_key: false,
+                partition_by_expr: String::new(),
+                partition_key: String::new(),
+                table_engine: ClickPipePostgresPipeTableMappingTableengine::MergeTree,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_postgres_table_mapping_json_accepts_a_maximal_object() {
+        let mapping = parse_postgres_table_mapping_json(0, MAXIMAL_TABLE_MAPPING_JSON).unwrap();
+
+        assert_eq!(
+            mapping,
+            ClickPipePostgresPipeTableMapping {
+                source_schema_name: "public".into(),
+                source_table: "users".into(),
+                target_table: "users_raw".into(),
+                excluded_columns: vec!["ssn".into(), "dob".into()],
+                sorting_keys: vec!["created_at".into(), "id".into()],
+                use_custom_sorting_key: true,
+                partition_by_expr: "toYYYYMM(created_at)".into(),
+                partition_key: "id".into(),
+                table_engine: ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
+            }
+        );
+    }
+
+    #[test]
+    fn parse_postgres_table_mapping_json_enables_the_custom_sorting_key() {
+        // The API ignores `sortingKeys` unless `useCustomSortingKey` is true,
+        // so omitting the flag must not silently drop the keys.
+        let mapping = parse_postgres_table_mapping_json(
+            0,
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users",
+                "sortingKeys":["created_at"," id "]}"#,
+        )
+        .unwrap();
+        assert!(mapping.use_custom_sorting_key);
+        assert_eq!(mapping.sorting_keys, ["created_at", "id"]);
+
+        // Without keys, the flag stays false and the pipe keeps the default
+        // ordering key.
+        let mapping = parse_postgres_table_mapping_json(
+            0,
+            r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users"}"#,
+        )
+        .unwrap();
+        assert!(!mapping.use_custom_sorting_key);
+    }
+
+    #[test]
+    fn parse_postgres_table_mapping_json_accepts_every_table_engine() {
+        for engine in ClickPipePostgresPipeTableMappingTableengine::VALUES {
+            let mapping = parse_postgres_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceSchemaName":"public","sourceTable":"users",
+                        "targetTable":"users","tableEngine":"{engine}"}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(mapping.table_engine.to_string(), *engine);
+        }
+    }
+
+    #[test]
+    fn parse_postgres_table_mapping_json_rejects_invalid_objects() {
+        let cases = [
+            // Not JSON, and not an object.
+            ("{ nope", "invalid JSON"),
+            (
+                r#"["public.users"]"#,
+                "expected a JSON object with the fields sourceSchemaName",
+            ),
+            // A typo in a field name is rejected instead of being ignored.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","excludeColumns":["ssn"]}"#,
+                "unknown field excludeColumns; valid fields are sourceSchemaName",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","engine":"Null","order":"id"}"#,
+                "unknown fields engine, order",
+            ),
+            // Wrong JSON type for a known field.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":"id"}"#,
+                "invalid type: string \"id\", expected a sequence",
+            ),
+            // Required fields, absent or empty.
+            (
+                r#"{"sourceTable":"users","targetTable":"users"}"#,
+                "sourceSchemaName is required and must not be empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","targetTable":"users"}"#,
+                "sourceTable is required and must not be empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users"}"#,
+                "targetTable is required and must not be empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"  "}"#,
+                "targetTable is required and must not be empty",
+            ),
+            // Empty list entries.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","excludedColumns":["ssn",""]}"#,
+                "excludedColumns must not contain an empty entry",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":[" "]}"#,
+                "sortingKeys must not contain an empty entry",
+            ),
+            // The two contradictions between sortingKeys and its flag.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","useCustomSortingKey":true}"#,
+                "useCustomSortingKey is true but sortingKeys is empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","sortingKeys":["id"],"useCustomSortingKey":false}"#,
+                "sortingKeys is set but useCustomSortingKey is false",
+            ),
+            // An unknown table engine is caught here rather than reaching the
+            // API, because the engine cannot be changed after creation.
+            (
+                r#"{"sourceSchemaName":"public","sourceTable":"users","targetTable":"users","tableEngine":"MergeTre"}"#,
+                "invalid tableEngine: unknown value 'MergeTre', expected one of: \
+                 MergeTree, ReplacingMergeTree, Null",
+            ),
+        ];
+
+        for (raw, diagnostic) in cases {
+            let error = parse_postgres_table_mapping_json(0, raw).unwrap_err();
+            assert!(
+                error.message.contains(diagnostic),
+                "expected `{diagnostic}` in: {}",
+                error.message
+            );
+            // Every diagnostic names the offending flag occurrence.
+            assert!(
+                error.message.starts_with("--table-mapping-json #1: "),
+                "{}",
+                error.message
+            );
+        }
+
+        // The occurrence number is one-based over the flag's own values.
+        let error = parse_postgres_table_mapping_json(2, "{ nope").unwrap_err();
+        assert!(
+            error.message.starts_with("--table-mapping-json #3: "),
+            "{}",
+            error.message
+        );
+    }
+
+    const MAXIMAL_MYSQL_TABLE_MAPPING_JSON: &str = r#"{
+        "sourceSchemaName":"sales",
+        "sourceTable":"orders",
+        "targetTable":"orders_raw",
+        "excludedColumns":["internal_id","temporary"],
+        "sortingKeys":["created_at","id"],
+        "useCustomSortingKey":true,
+        "partitionKey":"id",
+        "partitionByExpr":"toYYYYMM(created_at)",
+        "tableEngine":"ReplacingMergeTree"
+    }"#;
+
+    const MAXIMAL_MONGODB_TABLE_MAPPING_JSON: &str = r#"{
+        "sourceDatabaseName":"sales",
+        "sourceCollection":"orders",
+        "targetTable":"orders_raw",
+        "tableEngine":"Null"
+    }"#;
+
+    const MAXIMAL_BIGQUERY_TABLE_MAPPING_JSON: &str = r#"{
+        "sourceDatasetName":"sales",
+        "sourceTable":"orders",
+        "targetTable":"orders_raw",
+        "excludedColumns":["internal_id","temporary"],
+        "sortingKeys":["created_at","id"],
+        "useCustomSortingKey":true,
+        "tableEngine":"MergeTree"
+    }"#;
+
+    #[test]
+    fn non_postgres_table_mapping_json_accepts_every_field() {
+        let mysql = parse_mysql_table_mapping_json(0, MAXIMAL_MYSQL_TABLE_MAPPING_JSON).unwrap();
+        assert_eq!(mysql.source_schema_name, "sales");
+        assert_eq!(mysql.source_table, "orders");
+        assert_eq!(mysql.target_table, "orders_raw");
+        assert_eq!(
+            mysql.excluded_columns.unwrap(),
+            ["internal_id", "temporary"]
+        );
+        assert_eq!(mysql.sorting_keys.unwrap(), ["created_at", "id"]);
+        assert_eq!(mysql.use_custom_sorting_key, Some(true));
+        assert_eq!(mysql.partition_key.as_deref(), Some("id"));
+        assert_eq!(
+            mysql.partition_by_expr.as_deref(),
+            Some("toYYYYMM(created_at)")
+        );
+        assert_eq!(
+            mysql.table_engine,
+            Some(ClickPipeMySQLPipeTableMappingTableengine::ReplacingMergeTree)
+        );
+
+        let mongodb =
+            parse_mongodb_table_mapping_json(0, MAXIMAL_MONGODB_TABLE_MAPPING_JSON).unwrap();
+        assert_eq!(mongodb.source_database_name, "sales");
+        assert_eq!(mongodb.source_collection, "orders");
+        assert_eq!(mongodb.target_table, "orders_raw");
+        assert_eq!(
+            mongodb.table_engine,
+            Some(ClickPipeMongoDBPipeTableMappingTableengine::Null)
+        );
+
+        let bigquery =
+            parse_bigquery_table_mapping_json(0, MAXIMAL_BIGQUERY_TABLE_MAPPING_JSON).unwrap();
+        assert_eq!(bigquery.source_dataset_name, "sales");
+        assert_eq!(bigquery.source_table, "orders");
+        assert_eq!(bigquery.target_table, "orders_raw");
+        assert_eq!(
+            bigquery.excluded_columns.unwrap(),
+            ["internal_id", "temporary"]
+        );
+        assert_eq!(bigquery.sorting_keys.unwrap(), ["created_at", "id"]);
+        assert_eq!(bigquery.use_custom_sorting_key, Some(true));
+        assert_eq!(
+            bigquery.table_engine,
+            Some(ClickPipeBigQueryPipeTableMappingTableengine::MergeTree)
+        );
+    }
+
+    #[test]
+    fn non_postgres_table_mapping_json_preserves_optional_omission_and_empty_lists() {
+        let mysql = parse_mysql_table_mapping_json(
+            0,
+            r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t"}"#,
+        )
+        .unwrap();
+        assert_eq!(mysql.excluded_columns, None);
+        assert_eq!(mysql.sorting_keys, None);
+        assert_eq!(mysql.use_custom_sorting_key, None);
+        assert_eq!(mysql.partition_key, None);
+        assert_eq!(mysql.partition_by_expr, None);
+        assert_eq!(mysql.table_engine, None);
+
+        let bigquery = parse_bigquery_table_mapping_json(
+            0,
+            r#"{"sourceDatasetName":"ds","sourceTable":"t","targetTable":"t","excludedColumns":[],"sortingKeys":[],"useCustomSortingKey":false}"#,
+        )
+        .unwrap();
+        assert_eq!(bigquery.excluded_columns, Some(vec![]));
+        assert_eq!(bigquery.sorting_keys, Some(vec![]));
+        assert_eq!(bigquery.use_custom_sorting_key, Some(false));
+        assert_eq!(bigquery.table_engine, None);
+    }
+
+    #[test]
+    fn non_postgres_table_mapping_json_accepts_every_table_engine() {
+        for engine in ClickPipeMySQLPipeTableMappingTableengine::VALUES {
+            let mapping = parse_mysql_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","tableEngine":"{engine}"}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(mapping.table_engine.unwrap().to_string(), *engine);
+        }
+        for engine in ClickPipeMongoDBPipeTableMappingTableengine::VALUES {
+            let mapping = parse_mongodb_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","tableEngine":"{engine}"}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(mapping.table_engine.unwrap().to_string(), *engine);
+        }
+        for engine in ClickPipeBigQueryPipeTableMappingTableengine::VALUES {
+            let mapping = parse_bigquery_table_mapping_json(
+                0,
+                &format!(
+                    r#"{{"sourceDatasetName":"ds","sourceTable":"t","targetTable":"t","tableEngine":"{engine}"}}"#
+                ),
+            )
+            .unwrap();
+            assert_eq!(mapping.table_engine.unwrap().to_string(), *engine);
+        }
+    }
+
+    #[test]
+    fn non_postgres_table_mapping_json_rejects_invalid_objects() {
+        let mysql_cases = [
+            ("{ nope", "invalid JSON"),
+            (r#"["db.t"]"#, "expected a JSON object"),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","excludeColumns":[]}"#,
+                "unknown field excludeColumns",
+            ),
+            (
+                r#"{"sourceTable":"t","targetTable":"t"}"#,
+                "missing field `sourceSchemaName`",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","excludedColumns":["id",""]}"#,
+                "excludedColumns must not contain an empty entry",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","sortingKeys":["id","id"]}"#,
+                "sortingKeys must not contain duplicate entry 'id'",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","useCustomSortingKey":true}"#,
+                "useCustomSortingKey is true but sortingKeys is empty",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","sortingKeys":["id"],"useCustomSortingKey":false}"#,
+                "sortingKeys is set but useCustomSortingKey is false",
+            ),
+            (
+                r#"{"sourceSchemaName":"db","sourceTable":"t","targetTable":"t","tableEngine":"MergeTre"}"#,
+                "invalid tableEngine: unknown value 'MergeTre'",
+            ),
+        ];
+        for (raw, diagnostic) in mysql_cases {
+            let error = parse_mysql_table_mapping_json(1, raw).unwrap_err();
+            assert!(error.message.starts_with("--table-mapping-json #2: "));
+            assert!(error.message.contains(diagnostic), "{}", error.message);
+        }
+
+        let mongodb = parse_mongodb_table_mapping_json(
+            0,
+            r#"{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","sortingKeys":[]}"#,
+        )
+        .unwrap_err();
+        assert!(mongodb.message.contains("unknown field sortingKeys"));
+        let bigquery = parse_bigquery_table_mapping_json(
+            0,
+            r#"{"sourceDatasetName":"ds","sourceTable":"","targetTable":"t"}"#,
+        )
+        .unwrap_err();
+        assert!(bigquery.message.contains("sourceTable is required"));
+    }
+
+    #[test]
+    fn build_postgres_request_combines_both_table_mapping_flags() {
+        let mut args = postgres_builder_args();
+        args.table_mappings = vec!["public.events:events".into()];
+        args.table_mappings_json = vec![
+            MAXIMAL_TABLE_MAPPING_JSON.to_string(),
+            r#"{"sourceSchemaName":"audit","sourceTable":"events","targetTable":"audit_events","tableEngine":"Null"}"#
+                .to_string(),
+        ];
+
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+
+        // The simple mappings come first, then the JSON ones in order.
+        assert_eq!(source.table_mappings.len(), 3);
+        assert_eq!(
+            source.table_mappings[0],
+            ClickPipePostgresPipeTableMapping {
+                source_schema_name: "public".into(),
+                source_table: "events".into(),
+                target_table: "events".into(),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            source.table_mappings[1],
+            ClickPipePostgresPipeTableMapping {
+                source_schema_name: "public".into(),
+                source_table: "users".into(),
+                target_table: "users_raw".into(),
+                excluded_columns: vec!["ssn".into(), "dob".into()],
+                sorting_keys: vec!["created_at".into(), "id".into()],
+                use_custom_sorting_key: true,
+                partition_by_expr: "toYYYYMM(created_at)".into(),
+                partition_key: "id".into(),
+                table_engine: ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
+            }
+        );
+        assert_eq!(
+            source.table_mappings[2].table_engine,
+            ClickPipePostgresPipeTableMappingTableengine::Null
+        );
+    }
+
+    #[test]
+    fn build_postgres_request_accepts_json_mappings_alone() {
+        let mut args = postgres_builder_args();
+        args.table_mappings.clear();
+        args.table_mappings_json = vec![MAXIMAL_TABLE_MAPPING_JSON.to_string()];
+
+        let request = build_postgres_request(&args).unwrap();
+        let source = request.source.postgres.as_ref().expect("postgres source");
+        assert_eq!(source.table_mappings.len(), 1);
+        assert_eq!(source.table_mappings[0].target_table, "users_raw");
+    }
+
+    #[test]
+    fn build_postgres_request_preserves_basic_auth_replication_modes() {
+        for mode in REPLICATION_MODES {
+            let mut args = postgres_builder_args();
+            args.replication_mode = (*mode).into();
+            if *mode == "cdc_only" {
+                args.publication_name = Some("publication".into());
+                args.replication_slot_name = Some("slot".into());
+            }
+
+            let request = build_postgres_request(&args).unwrap();
+            let source = request.source.postgres.as_ref().expect("postgres source");
+            assert_eq!(source.authentication.to_string(), "basic");
+            assert_eq!(source.iam_role, None);
+            assert_eq!(source.settings.replication_mode.to_string(), *mode);
+        }
+    }
+
+    #[test]
+    fn build_postgres_request_defensively_rejects_invalid_inputs() {
+        let cases = [
+            {
+                let mut args = postgres_builder_args();
+                args.port = 0;
+                (args, "--port must be in the range 1..=65535")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.table_mappings.clear();
+                (
+                    args,
+                    "at least one --table-mapping <SCHEMA.TABLE:TARGET_TABLE> or \
+                     --table-mapping-json <JSON> is required",
+                )
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.table_mappings_json = vec!["{}".into()];
+                (
+                    args,
+                    "--table-mapping-json #1: sourceSchemaName is required",
+                )
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.table_mappings = vec![".events:events".into()];
+                (args, "source schema must not be empty")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.auth = "IAM_ROLE".into();
+                (args, "--auth IAM_ROLE requires --iam-role")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.iam_role = Some("arn:role".into());
+                (args, "--iam-role cannot be used with --auth basic")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.replication_slot_name = Some("slot".into());
+                (args, "--replication-slot-name can only be used")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.disable_tls = true;
+                args.tls_host = Some("postgres.internal.example".into());
+                (args, "--tls-host cannot be used with --disable-tls")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.disable_tls = true;
+                args.ca_certificate = Some("secret-ca-path".into());
+                (args, "--ca-certificate cannot be used with --disable-tls")
+            },
+            {
+                let mut args = postgres_builder_args();
+                args.disable_tls = true;
+                args.skip_cert_verification = true;
+                (
+                    args,
+                    "--skip-cert-verification cannot be used with --disable-tls",
+                )
+            },
+        ];
+
+        for (args, diagnostic) in cases {
+            let error = build_postgres_request(&args).unwrap_err();
+            assert!(error.message.contains(diagnostic), "{}", error.message);
+        }
+    }
+
+    fn mysql_builder_args() -> MySqlCreateArgs {
+        MySqlCreateArgs {
+            service_id: "svc-1".into(),
+            name: "pipe-1".into(),
+            validation: ClickPipeCreateValidationArgs::default(),
+            host: "mysql.example".into(),
+            port: 3306,
+            username: Some("user".into()),
+            password: Some("password".into()),
+            table_mappings: vec!["source.events:events".into()],
+            table_mappings_json: vec![],
+            mysql_type: "mysql".into(),
+            replication_mode: "cdc".into(),
+            replication_mechanism: "GTID".into(),
+            auth: "basic".into(),
+            iam_role: None,
+            tls_host: None,
+            ca_certificate: None,
+            disable_tls: false,
+            skip_cert_verification: false,
+            server_id: None,
+            sync_interval_seconds: None,
+            pull_batch_size: None,
+            initial_load_parallelism: None,
+            snapshot_rows_per_partition: None,
+            snapshot_parallel_tables: None,
+            allow_nullable_columns: None,
+            delete_on_merge: None,
+            use_compression: None,
+            destination: DatabaseDestinationArgs {
+                destination_database: "default".into(),
+            },
+            destination_roles: DestinationRoleArgs::default(),
+        }
+    }
+
+    #[test]
+    fn build_mysql_request_sends_basic_credentials() {
+        let request = build_mysql_request(&mysql_builder_args()).unwrap();
+
+        assert_eq!(request.name, "pipe-1");
+        assert_eq!(request.destination.database, "default");
+        assert_eq!(request.destination.table, None);
+        assert_eq!(request.destination.roles, None);
+        assert!(request.source.postgres.is_none());
+        assert!(request.source.kafka.is_none());
+
+        let source = request.source.mysql.as_ref().expect("mysql source");
+        assert_eq!(source.r#type.as_ref().unwrap().to_string(), "mysql");
+        assert_eq!(source.authentication.as_ref().unwrap().to_string(), "basic");
+        let credentials = source.credentials.as_ref().expect("basic credentials");
+        assert_eq!(credentials.username, "user");
+        assert_eq!(credentials.password, "password");
+        assert_eq!(source.host, "mysql.example");
+        assert_eq!(source.port, 3306);
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.tls_host, None);
+        assert_eq!(source.ca_certificate, None);
+        assert_eq!(source.disable_tls, None);
+        assert_eq!(source.skip_cert_verification, None);
+        assert_eq!(source.server_id, None);
+        assert_eq!(source.settings.replication_mode.to_string(), "cdc");
+        assert_eq!(
+            source
+                .settings
+                .replication_mechanism
+                .as_ref()
+                .unwrap()
+                .to_string(),
+            "GTID"
+        );
+        assert_eq!(source.settings.allow_nullable_columns, None);
+        assert_eq!(source.settings.delete_on_merge, None);
+        assert_eq!(source.settings.initial_load_parallelism, None);
+        assert_eq!(source.settings.pull_batch_size, None);
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
+        assert_eq!(source.settings.sync_interval_seconds, None);
+        assert_eq!(source.settings.use_compression, None);
+        assert_eq!(source.table_mappings.len(), 1);
+        assert_eq!(source.table_mappings[0].source_schema_name, "source");
+        assert_eq!(source.table_mappings[0].source_table, "events");
+        assert_eq!(source.table_mappings[0].target_table, "events");
+    }
+
+    #[test]
+    fn build_mysql_request_omits_the_credentials_object_for_iam_role() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca_certificate = directory.path().join("mysql-ca.pem");
+        std::fs::write(&ca_certificate, "MYSQL_CA").unwrap();
+        let mut args = mysql_builder_args();
+        args.name = "maximal-pipe".into();
+        args.host = "rds.example".into();
+        args.port = 3307;
+        // IAM_ROLE auth has no username or password: the role ARN is the whole
+        // credential, so the `credentials` object is omitted entirely.
+        args.username = None;
+        args.password = None;
+        args.table_mappings = vec!["source.users:users_raw".into()];
+        args.table_mappings_json = vec![MAXIMAL_MYSQL_TABLE_MAPPING_JSON.into()];
+        args.mysql_type = "rdsmysql".into();
+        args.replication_mode = "cdc_only".into();
+        args.replication_mechanism = "FILE_POS".into();
+        args.auth = "IAM_ROLE".into();
+        args.iam_role = Some("arn:aws:iam::123456789012:role/clickpipe".into());
+        args.tls_host = Some("database.internal".into());
+        args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
+        args.disable_tls = false;
+        args.skip_cert_verification = true;
+        args.server_id = Some(4_294_967_295);
+        args.sync_interval_seconds = Some(1);
+        args.pull_batch_size = Some(2);
+        args.initial_load_parallelism = Some(3);
+        args.snapshot_rows_per_partition = Some(1000);
+        args.snapshot_parallel_tables = Some(4);
+        args.allow_nullable_columns = Some(false);
+        args.delete_on_merge = Some(true);
+        args.use_compression = Some(false);
+        args.destination.destination_database = "analytics".into();
+        args.destination_roles = DestinationRoleArgs {
+            roles: vec!["analytics_reader".into()],
+        };
+
+        let request = build_mysql_request(&args).unwrap();
+        assert_eq!(request.name, "maximal-pipe");
+        assert_eq!(request.destination.database, "analytics");
+        assert_eq!(
+            request.destination.roles,
+            Some(vec!["analytics_reader".to_string()])
+        );
+
+        let source = request.source.mysql.as_ref().expect("mysql source");
+        assert_eq!(source.r#type.as_ref().unwrap().to_string(), "rdsmysql");
+        assert_eq!(
+            source.authentication.as_ref().unwrap().to_string(),
+            "IAM_ROLE"
+        );
+        assert_eq!(source.credentials, None);
+        assert_eq!(
+            source.iam_role.as_deref(),
+            Some("arn:aws:iam::123456789012:role/clickpipe")
+        );
+        assert_eq!(source.host, "rds.example");
+        assert_eq!(source.port, 3307);
+        assert_eq!(source.tls_host.as_deref(), Some("database.internal"));
+        // The file contents are sent, not the path.
+        assert_eq!(source.ca_certificate.as_deref(), Some("MYSQL_CA"));
+        assert_eq!(source.disable_tls, None);
+        assert_eq!(source.skip_cert_verification, Some(true));
+        assert_eq!(source.server_id, Some(4_294_967_295));
+        assert_eq!(source.settings.replication_mode.to_string(), "cdc_only");
+        assert_eq!(
+            source
+                .settings
+                .replication_mechanism
+                .as_ref()
+                .unwrap()
+                .to_string(),
+            "FILE_POS"
+        );
+        assert_eq!(source.settings.sync_interval_seconds, Some(1));
+        assert_eq!(source.settings.pull_batch_size, Some(2));
+        assert_eq!(source.settings.initial_load_parallelism, Some(3));
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, Some(1000));
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(4));
+        assert_eq!(source.settings.allow_nullable_columns, Some(false));
+        assert_eq!(source.settings.delete_on_merge, Some(true));
+        assert_eq!(source.settings.use_compression, Some(false));
+        assert_eq!(source.table_mappings.len(), 2);
+        let mapping = &source.table_mappings[1];
+        assert_eq!(mapping.source_schema_name, "sales");
+        assert_eq!(mapping.source_table, "orders");
+        assert_eq!(mapping.target_table, "orders_raw");
+        assert_eq!(
+            mapping.excluded_columns.as_deref(),
+            Some(&["internal_id".into(), "temporary".into()][..])
+        );
+        assert_eq!(
+            mapping.sorting_keys.as_deref(),
+            Some(&["created_at".into(), "id".into()][..])
+        );
+        assert_eq!(mapping.use_custom_sorting_key, Some(true));
+        assert_eq!(mapping.partition_key.as_deref(), Some("id"));
+        assert_eq!(
+            mapping.partition_by_expr.as_deref(),
+            Some("toYYYYMM(created_at)")
+        );
+        assert_eq!(
+            mapping.table_engine,
+            Some(ClickPipeMySQLPipeTableMappingTableengine::ReplacingMergeTree)
+        );
+    }
+
+    #[test]
+    fn build_mysql_request_defensively_rejects_invalid_credential_combinations() {
+        let cases = [
+            {
+                let mut args = mysql_builder_args();
+                args.auth = "IAM_ROLE".into();
+                (args, "--auth IAM_ROLE requires --iam-role <IAM_ROLE>")
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.iam_role = Some("arn:role".into());
+                (args, "--iam-role cannot be used with --auth basic")
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.auth = "IAM_ROLE".into();
+                args.iam_role = Some("arn:role".into());
+                (
+                    args,
+                    "--username and --password cannot be used with --auth IAM_ROLE",
+                )
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.username = None;
+                args.password = None;
+                (
+                    args,
+                    "--auth basic requires --username <USERNAME> and --password <PASSWORD>",
+                )
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.table_mappings = vec!["source.events".into()];
+                (args, "invalid table mapping")
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.sync_interval_seconds = Some(0);
+                (args, "--sync-interval-seconds must be at least 1")
+            },
+            {
+                let mut args = mysql_builder_args();
+                args.disable_tls = true;
+                args.skip_cert_verification = true;
+                (args, "--disable-tls cannot be combined")
+            },
+        ];
+
+        for (args, diagnostic) in cases {
+            let error = build_mysql_request(&args).unwrap_err();
+            assert!(error.message.contains(diagnostic), "{}", error.message);
+        }
+    }
+
+    fn mongodb_builder_args() -> MongoDbCreateArgs {
+        MongoDbCreateArgs {
+            service_id: "svc-1".into(),
+            name: "pipe-1".into(),
+            validation: ClickPipeCreateValidationArgs::default(),
+            uri: "mongodb://mongo.example/source".into(),
+            username: "user".into(),
+            password: "password".into(),
+            table_mappings: vec!["source.events:events".into()],
+            table_mappings_json: vec![],
+            replication_mode: "cdc".into(),
+            read_preference: "secondaryPreferred".into(),
+            tls_host: None,
+            ca_certificate: None,
+            disable_tls: false,
+            skip_cert_verification: false,
+            sync_interval_seconds: None,
+            pull_batch_size: None,
+            snapshot_rows_per_partition: None,
+            snapshot_parallel_collections: None,
+            delete_on_merge: None,
+            use_json_native_format: None,
+            destination: DatabaseDestinationArgs {
+                destination_database: "default".into(),
+            },
+            destination_roles: DestinationRoleArgs::default(),
+        }
+    }
+
+    #[test]
+    fn build_mongodb_request_supports_minimal_fields() {
+        let request = build_mongodb_request(&mongodb_builder_args()).unwrap();
+
+        assert_eq!(request.destination.database, "default");
+        assert_eq!(request.destination.table, None);
+        assert_eq!(request.destination.roles, None);
+        let source = request.source.mongodb.as_ref().expect("mongodb source");
+        assert_eq!(source.uri, "mongodb://mongo.example/source");
+        assert_eq!(source.table_mappings.len(), 1);
+        assert_eq!(source.table_mappings[0].source_database_name, "source");
+        assert_eq!(source.table_mappings[0].source_collection, "events");
+        assert_eq!(source.table_mappings[0].target_table, "events");
+        assert_eq!(source.skip_cert_verification, None);
+        assert_eq!(source.settings.sync_interval_seconds, None);
+        assert_eq!(source.settings.pull_batch_size, None);
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
+        assert_eq!(source.settings.delete_on_merge, None);
+        assert_eq!(source.settings.use_json_native_format, None);
+    }
+
+    #[test]
+    fn build_mongodb_request_supports_maximal_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let ca_certificate = directory.path().join("mongodb-ca.pem");
+        std::fs::write(&ca_certificate, "MONGODB_CA").unwrap();
+        let mut args = mongodb_builder_args();
+        args.table_mappings = vec!["sales.orders:orders_raw".into()];
+        args.table_mappings_json = vec![MAXIMAL_MONGODB_TABLE_MAPPING_JSON.into()];
+        args.replication_mode = "snapshot".into();
+        args.read_preference = "nearest".into();
+        args.tls_host = Some("mongodb.internal".into());
+        args.ca_certificate = Some(ca_certificate.to_string_lossy().into_owned());
+        args.disable_tls = false;
+        args.skip_cert_verification = true;
+        args.sync_interval_seconds = Some(1);
+        args.pull_batch_size = Some(2);
+        args.snapshot_rows_per_partition = Some(1000);
+        args.snapshot_parallel_collections = Some(3);
+        args.delete_on_merge = Some(false);
+        args.use_json_native_format = Some(true);
+        args.destination.destination_database = "analytics".into();
+        args.destination_roles.roles = vec!["analytics_reader".into()];
+
+        let request = build_mongodb_request(&args).unwrap();
+
+        assert_eq!(request.destination.database, "analytics");
+        assert_eq!(
+            request.destination.roles,
+            Some(vec!["analytics_reader".into()])
+        );
+        let source = request.source.mongodb.as_ref().expect("mongodb source");
+        assert_eq!(source.read_preference.to_string(), "nearest");
+        assert_eq!(source.tls_host.as_deref(), Some("mongodb.internal"));
+        assert_eq!(source.ca_certificate.as_deref(), Some("MONGODB_CA"));
+        assert_eq!(source.disable_tls, None);
+        assert_eq!(source.skip_cert_verification, Some(true));
+        assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
+        assert_eq!(source.settings.sync_interval_seconds, Some(1));
+        assert_eq!(source.settings.pull_batch_size, Some(2));
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, Some(1000));
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(3));
+        assert_eq!(source.settings.delete_on_merge, Some(false));
+        assert_eq!(source.settings.use_json_native_format, Some(true));
+        assert_eq!(source.table_mappings.len(), 2);
+        assert_eq!(source.table_mappings[1].source_database_name, "sales");
+        assert_eq!(source.table_mappings[1].source_collection, "orders");
+        assert_eq!(source.table_mappings[1].target_table, "orders_raw");
+        assert_eq!(
+            source.table_mappings[1].table_engine,
+            Some(ClickPipeMongoDBPipeTableMappingTableengine::Null)
+        );
+    }
+
+    #[test]
+    fn build_mongodb_request_defensively_validates_ranges_and_tls_flags() {
+        let mut args = mongodb_builder_args();
+        args.snapshot_rows_per_partition = Some(999);
+        let error = build_mongodb_request(&args).unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("--snapshot-rows-per-partition must be at least 1000")
+        );
+
+        args.snapshot_rows_per_partition = None;
+        args.disable_tls = true;
+        args.tls_host = Some("mongo.internal".into());
+        let error = build_mongodb_request(&args).unwrap_err();
+        assert!(error.message.contains("--disable-tls cannot be combined"));
+    }
+
+    fn bigquery_builder_args(service_account_file: String) -> BigQueryCreateArgs {
+        BigQueryCreateArgs {
+            service_id: "svc-1".into(),
+            name: "pipe-1".into(),
+            validation: ClickPipeCreateValidationArgs::default(),
+            auth: "SERVICE_ACCOUNT".into(),
+            service_account_file: Some(service_account_file),
+            project_id: None,
+            staging_path: "gs://bucket/staging".into(),
+            table_mappings: vec!["source.events:events".into()],
+            table_mappings_json: vec![],
+            replication_mode: "snapshot".into(),
+            allow_nullable_columns: None,
+            initial_load_parallelism: None,
+            snapshot_rows_per_partition: None,
+            snapshot_parallel_tables: None,
+            destination: DatabaseDestinationArgs {
+                destination_database: "default".into(),
+            },
+            destination_roles: DestinationRoleArgs::default(),
+        }
+    }
+
+    #[test]
+    fn build_bigquery_request_supports_minimal_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let service_account = directory.path().join("service-account.json");
+        std::fs::write(&service_account, "{}").unwrap();
+        let args = bigquery_builder_args(service_account.to_string_lossy().into_owned());
+
+        let request = build_bigquery_request(&args).unwrap();
+
+        assert_eq!(request.destination.database, "default");
+        assert_eq!(request.destination.table, None);
+        assert_eq!(request.destination.roles, None);
+        let source = request.source.bigquery.as_ref().expect("bigquery source");
+        let clickhouse_cloud_api::models::ClickPipeMutateBigQuerySource::ClickPipePostBigQueryServiceAccountSource(source) = source else {
+            panic!("expected service-account source");
+        };
+        assert_eq!(source.snapshot_staging_path, "gs://bucket/staging");
+        assert_eq!(source.table_mappings.len(), 1);
+        assert_eq!(source.table_mappings[0].source_dataset_name, "source");
+        assert_eq!(source.table_mappings[0].source_table, "events");
+        assert_eq!(source.table_mappings[0].target_table, "events");
+        assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
+        assert_eq!(source.settings.allow_nullable_columns, None);
+        assert_eq!(source.settings.initial_load_parallelism, None);
+        assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
+        assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
+    }
+
+    #[test]
+    fn build_bigquery_request_supports_maximal_fields() {
+        let directory = tempfile::tempdir().unwrap();
+        let service_account = directory.path().join("service-account.json");
+        std::fs::write(&service_account, "{\"project_id\":\"source-project\"}").unwrap();
+        let mut args = bigquery_builder_args(service_account.to_string_lossy().into_owned());
+        args.name = "maximal-pipe".into();
+        args.staging_path = "gs://other-bucket/snapshots".into();
+        args.project_id = Some("source-project".into());
+        args.table_mappings = vec!["audit.events:audit_events".into()];
+        args.table_mappings_json = vec![MAXIMAL_BIGQUERY_TABLE_MAPPING_JSON.into()];
+        args.destination.destination_database = "analytics".into();
+        args.destination_roles.roles = vec!["analytics_reader".into()];
+        args.allow_nullable_columns = Some(true);
+        args.initial_load_parallelism = Some(2.5);
+        args.snapshot_rows_per_partition = Some(1_000_000.0);
+        args.snapshot_parallel_tables = Some(3.0);
+
+        let request = build_bigquery_request(&args).unwrap();
+
+        assert_eq!(request.name, "maximal-pipe");
+        assert_eq!(request.destination.database, "analytics");
+        assert_eq!(
+            request.destination.roles,
+            Some(vec!["analytics_reader".into()])
+        );
+        let source = request.source.bigquery.as_ref().expect("bigquery source");
+        let clickhouse_cloud_api::models::ClickPipeMutateBigQuerySource::ClickPipePostBigQueryServiceAccountSource(source) = source else {
+            panic!("expected service-account source");
+        };
+        assert_eq!(source.snapshot_staging_path, "gs://other-bucket/snapshots");
+        assert_eq!(source.project_id.as_deref(), Some("source-project"));
+        assert_eq!(
+            source.credentials.service_account_file,
+            "eyJwcm9qZWN0X2lkIjoic291cmNlLXByb2plY3QifQ=="
+        );
+        assert_eq!(source.table_mappings.len(), 2);
+        let mapping = &source.table_mappings[1];
+        assert_eq!(mapping.source_dataset_name, "sales");
+        assert_eq!(mapping.source_table, "orders");
+        assert_eq!(mapping.target_table, "orders_raw");
+        assert_eq!(
+            mapping.excluded_columns.as_deref(),
+            Some(&["internal_id".into(), "temporary".into()][..])
+        );
+        assert_eq!(
+            mapping.sorting_keys.as_deref(),
+            Some(&["created_at".into(), "id".into()][..])
+        );
+        assert_eq!(mapping.use_custom_sorting_key, Some(true));
+        assert_eq!(
+            mapping.table_engine,
+            Some(ClickPipeBigQueryPipeTableMappingTableengine::MergeTree)
+        );
+        assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
+        assert_eq!(source.settings.allow_nullable_columns, Some(true));
+        assert_eq!(source.settings.initial_load_parallelism, Some(2.5));
+        assert_eq!(
+            source.settings.snapshot_num_rows_per_partition,
+            Some(1_000_000.0)
+        );
+        assert_eq!(
+            source.settings.snapshot_number_of_parallel_tables,
+            Some(3.0)
+        );
+    }
+
+    #[test]
+    fn build_bigquery_request_rejects_non_finite_settings_before_key_file() {
+        fn set_initial_load_parallelism(args: &mut BigQueryCreateArgs) {
+            args.initial_load_parallelism = Some(f64::NAN);
+        }
+        fn set_snapshot_rows(args: &mut BigQueryCreateArgs) {
+            args.snapshot_rows_per_partition = Some(f64::INFINITY);
+        }
+        fn set_snapshot_tables(args: &mut BigQueryCreateArgs) {
+            args.snapshot_parallel_tables = Some(f64::NEG_INFINITY);
+        }
+
+        for (flag, set_value) in [
+            (
+                "--initial-load-parallelism",
+                set_initial_load_parallelism as fn(&mut BigQueryCreateArgs),
+            ),
+            (
+                "--snapshot-rows-per-partition",
+                set_snapshot_rows as fn(&mut BigQueryCreateArgs),
+            ),
+            (
+                "--snapshot-parallel-tables",
+                set_snapshot_tables as fn(&mut BigQueryCreateArgs),
+            ),
+        ] {
+            let mut args = bigquery_builder_args("/missing/service-account.json".into());
+            set_value(&mut args);
+
+            let error = build_bigquery_request(&args).unwrap_err().to_string();
+
+            assert_eq!(error, format!("invalid {flag}: expected a finite number"));
+        }
+    }
+
+    #[test]
+    fn parse_enum_known_variant() {
+        use clickhouse_cloud_api::models::ClickPipePostObjectStorageSourceFormat;
+        let format: ClickPipePostObjectStorageSourceFormat = parse_enum("JSONEachRow").unwrap();
+        assert_eq!(format, ClickPipePostObjectStorageSourceFormat::JSONEachRow);
+    }
+
+    #[test]
+    fn parse_enum_unknown_falls_through() {
+        // Unknown values map to the catch-all Unknown(String) variant —
+        // forwarded to the API which returns the canonical validation error.
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceType;
+        let kafka_type: ClickPipePostKafkaSourceType = parse_enum("not-a-real-type").unwrap();
+        assert_eq!(
+            kafka_type,
+            ClickPipePostKafkaSourceType::Unknown("not-a-real-type".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_enum_preserves_rename_spellings() {
+        // Enums use `#[serde(rename = "s3")]` etc. — wire format is authoritative.
+        use clickhouse_cloud_api::models::{
+            ClickPipePostKafkaSourceAuthentication, ClickPipePostObjectStorageSourceType,
+        };
+        let source_type: ClickPipePostObjectStorageSourceType = parse_enum("s3").unwrap();
+        assert_eq!(source_type, ClickPipePostObjectStorageSourceType::S3);
+        let authentication: ClickPipePostKafkaSourceAuthentication =
+            parse_enum("SCRAM-SHA-256").unwrap();
+        assert_eq!(
+            authentication,
+            ClickPipePostKafkaSourceAuthentication::SCRAM_SHA_256
+        );
+    }
+
+    #[test]
+    fn column_grammar_is_validated_on_every_streaming_create() {
+        let mut pubsub = vec!["create", "pubsub", "svc-1", "--name", "pipe-1"];
+        pubsub.extend(pubsub_source_flags("./sa-key.json"));
+        pubsub.extend(["--database", "db", "--table", "events"]);
+        for source_args in [
+            vec![
+                "create",
+                "object-storage",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--source-url",
+                "https://bucket.example/events",
+                "--format",
+                "JSONEachRow",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ],
+            kafka_create_cli_args(),
+            vec![
+                "create",
+                "kinesis",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--stream-name",
+                "events",
+                "--region",
+                "eu-west-1",
+                "--format",
+                "JSONEachRow",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ],
+            pubsub,
+        ] {
+            for (column, valid) in [
+                ("bad_no_colon", false),
+                ("id:Int64", true),
+                ("metadata:Tuple(key String, value String)", true),
+            ] {
+                let mut args = vec!["clickhousectl", "cloud", "clickpipe"];
+                args.extend(source_args.iter().copied());
+                args.extend(["--column", column]);
+                let parsed = Cli::try_parse_from(args);
+                if valid {
+                    assert!(parsed.is_ok(), "{}: {column}", source_args[1]);
+                } else {
+                    let error = parsed.err().expect("invalid column");
+                    assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                    assert_eq!(error.exit_code(), 2);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn parse_columns_valid() {
+        let columns = vec!["id:Int64".to_string(), "name:String".to_string()];
+        let parsed = parse_columns(&columns).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].name, "id");
+        assert_eq!(parsed[0].r#type, "Int64");
+        assert_eq!(parsed[1].name, "name");
+        assert_eq!(parsed[1].r#type, "String");
+    }
+
+    #[test]
+    fn parse_columns_missing_colon_errors() {
+        let columns = vec!["id_without_type".to_string()];
+        let error = parse_columns(&columns).unwrap_err();
+        assert!(error.message.contains("expected name:type"));
+    }
+
+    #[test]
+    fn build_streaming_destination_uses_compatible_defaults() {
+        let destination = build_streaming_destination(
+            "mydb",
+            "events",
+            vec![],
+            None,
+            &StreamingDestinationTableArgs::default(),
+        )
+        .unwrap();
+        assert_eq!(destination.database, "mydb");
+        assert_eq!(destination.table.as_deref(), Some("events"));
+        assert_eq!(destination.managed_table, Some(true));
+        // Default table engine is MergeTree, not something else.
+        assert_eq!(
+            destination
+                .table_definition
+                .as_ref()
+                .expect("non-database pipe gets a tableDefinition")
+                .engine
+                .r#type,
+            clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType::MergeTree
+        );
+    }
+
+    #[test]
+    fn build_streaming_destination_reads_the_complete_typed_definition() {
+        use clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType;
+        use std::io::Write as _;
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            config,
+            "{}",
+            serde_json::json!({
+                "engine": {
+                    "columnIds": ["amount", "tax"],
+                    "type": "SummingMergeTree",
+                    "versionColumnId": null
+                },
+                "partitionBy": "toYYYYMM(created_at)",
+                "primaryKey": "event_id",
+                "sortingKey": ["event_id", "created_at"]
+            })
+        )
+        .unwrap();
+        let options = StreamingDestinationTableArgs {
+            managed_table: false,
+            table_definition_file: Some(config.path().to_string_lossy().into_owned()),
+        };
+
+        let destination =
+            build_streaming_destination("analytics", "events", vec![], None, &options).unwrap();
+        assert_eq!(destination.managed_table, Some(false));
+        let definition = destination.table_definition.unwrap();
+        assert_eq!(
+            definition.engine.r#type,
+            ClickPipeDestinationTableEngineType::SummingMergeTree
+        );
+        assert_eq!(definition.engine.column_ids, ["amount", "tax"]);
+        assert_eq!(definition.engine.version_column_id, None);
+        assert_eq!(definition.partition_by, "toYYYYMM(created_at)");
+        assert_eq!(definition.primary_key, "event_id");
+        assert_eq!(definition.sorting_key, ["event_id", "created_at"]);
+        assert!(definition.ttl.is_empty());
+        assert!(
+            serde_json::to_value(&definition)
+                .unwrap()
+                .get("ttl")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn destination_table_definition_preserves_explicit_ttl_and_rejects_invalid_types() {
+        use std::io::Write as _;
+
+        for ttl in [
+            serde_json::json!("created_at + INTERVAL 30 DAY"),
+            serde_json::Value::Null,
+            serde_json::json!(false),
+        ] {
+            let mut config = tempfile::NamedTempFile::new().unwrap();
+            let value = serde_json::json!({
+                "engine": {"columnIds": [], "type": "MergeTree", "versionColumnId": null},
+                "partitionBy": "tuple()", "primaryKey": "event_id", "sortingKey": ["event_id"],
+                "ttl": ttl
+            });
+            write!(config, "{value}").unwrap();
+            let result = read_destination_table_definition(config.path().to_str().unwrap());
+            if let Some(expected) = ttl.as_str() {
+                assert_eq!(result.unwrap().ttl, expected);
+            } else {
+                assert!(
+                    result.is_err(),
+                    "invalid TTL must not become an omitted field"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn destination_table_definition_accepts_every_engine_and_nullable_version() {
+        use clickhouse_cloud_api::models::ClickPipeDestinationTableEngineType;
+        use std::io::Write as _;
+
+        for (wire_value, expected) in [
+            ("MergeTree", ClickPipeDestinationTableEngineType::MergeTree),
+            (
+                "ReplacingMergeTree",
+                ClickPipeDestinationTableEngineType::ReplacingMergeTree,
+            ),
+            (
+                "SummingMergeTree",
+                ClickPipeDestinationTableEngineType::SummingMergeTree,
+            ),
+            ("Null", ClickPipeDestinationTableEngineType::Null),
+        ] {
+            let mut config = tempfile::NamedTempFile::new().unwrap();
+            write!(
+                config,
+                "{}",
+                serde_json::json!({
+                    "engine": {
+                        "columnIds": [],
+                        "type": wire_value,
+                        "versionColumnId": null
+                    },
+                    "partitionBy": "tuple()",
+                    "primaryKey": "event_id",
+                    "sortingKey": ["event_id"]
+                })
+            )
+            .unwrap();
+            let definition =
+                read_destination_table_definition(config.path().to_str().unwrap()).unwrap();
+            assert_eq!(definition.engine.r#type, expected);
+            assert_eq!(definition.engine.version_column_id, None);
+        }
+    }
+
+    #[test]
+    fn destination_table_definition_rejects_unknown_nested_fields_and_enums() {
+        use std::io::Write as _;
+
+        for (value, rejected_value) in [
+            (
+                serde_json::json!({
+                    "engine": {
+                        "columnIds": [],
+                        "type": "MergeTree",
+                        "versionColumnId": null
+                    },
+                    "partitionBy": "tuple()",
+                    "primaryKey": "event_id",
+                    "sortingKey": ["event_id"],
+                    "sortingKeys": ["typo"]
+                }),
+                "sortingKeys",
+            ),
+            (
+                serde_json::json!({
+                "engine": {
+                    "columnIds": [],
+                    "type": "MergeTree",
+                    "versionColumnId": null,
+                    "versionColumn": "typo"
+                },
+                "partitionBy": "tuple()",
+                "primaryKey": "event_id",
+                "sortingKey": ["event_id"]
+                }),
+                "versionColumn",
+            ),
+            (
+                serde_json::json!({
+                "engine": {
+                    "columnIds": [],
+                    "type": "MergeTreeWithTypo",
+                    "versionColumnId": null
+                },
+                "partitionBy": "tuple()",
+                "primaryKey": "event_id",
+                "sortingKey": ["event_id"]
+                }),
+                "MergeTreeWithTypo",
+            ),
+        ] {
+            let mut config = tempfile::NamedTempFile::new().unwrap();
+            write!(config, "{value}").unwrap();
+            let error = read_destination_table_definition(config.path().to_str().unwrap())
+                .expect_err("invalid definitions fail before an API request");
+            assert!(error.message.contains(rejected_value), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn destination_table_definition_does_not_default_missing_required_fields() {
+        use std::io::Write as _;
+
+        let mut config = tempfile::NamedTempFile::new().unwrap();
+        write!(
+            config,
+            "{}",
+            serde_json::json!({
+                "engine": {
+                    "type": "MergeTree",
+                    "versionColumnId": null
+                },
+                "partitionBy": "tuple()",
+                "sortingKey": ["event_id"]
+            })
+        )
+        .unwrap();
+        let error = read_destination_table_definition(config.path().to_str().unwrap())
+            .expect_err("required fields are not fabricated");
+        assert!(
+            error.message.contains("columnIds") || error.message.contains("primaryKey"),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn build_destination_omits_table_fields_for_database_pipes() {
+        let destination = build_destination("default", "", vec![], None);
+        assert_eq!(destination.database, "default");
+        assert_eq!(destination.table, None);
+        assert!(destination.columns.is_empty());
+        assert_eq!(destination.managed_table, None);
+        assert_eq!(destination.roles, None);
+        assert_eq!(destination.table_definition, None);
+    }
+
+    // `--role` → `destination.roles` (issue #568). Omitted means the field is
+    // absent from the body, so ClickPipes applies the default role on its own.
+
+    #[test]
+    fn build_destination_carries_roles_on_both_destination_shapes() {
+        let roles = Some(vec!["reader".to_string(), "writer".to_string()]);
+        let streaming = build_destination("mydb", "events", vec![], roles.clone());
+        assert_eq!(streaming.roles, roles);
+        // Database pipes send only `database`, but `roles` is not one of the
+        // four fields they reject, so it must survive that branch too.
+        let database_pipe = build_destination("default", "", vec![], roles.clone());
+        assert_eq!(database_pipe.roles, roles);
+        assert_eq!(database_pipe.table, None);
+    }
+
+    #[test]
+    fn build_destination_roles_omits_field_when_no_flags_passed() {
+        assert_eq!(build_destination_roles(&[]), None);
+    }
+
+    #[test]
+    fn build_destination_roles_dedupes_preserving_declaration_order() {
+        let roles = [
+            "writer".to_string(),
+            "reader".to_string(),
+            "writer".to_string(),
+        ];
+        assert_eq!(
+            build_destination_roles(&roles),
+            Some(vec!["writer".to_string(), "reader".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_destination_role_name_trims_and_accepts_ordinary_names() {
+        assert_eq!(
+            parse_destination_role_name("  analytics_reader  ").unwrap(),
+            "analytics_reader"
+        );
+    }
+
+    #[test]
+    fn parse_destination_role_name_rejects_blank_names() {
+        for blank in ["", "   ", "\t"] {
+            let error = parse_destination_role_name(blank)
+                .expect_err("a blank role name must be rejected client-side");
+            assert!(error.message.contains("must not be empty"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn parse_destination_role_name_rejects_api_reserved_names() {
+        for reserved in [
+            "clickpipes",
+            "clickpipes_system",
+            "ClickPipes",
+            "  clickpipes_system  ",
+        ] {
+            let error = parse_destination_role_name(reserved)
+                .expect_err("reserved role names must be rejected client-side");
+            assert!(
+                error.message.contains("reserved by ClickPipes"),
+                "{error:?}"
+            );
+            assert!(error.message.contains("clickpipes_system"), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn parses_repeatable_role_on_kafka_create() {
+        let mut args = kafka_create_cli_args();
+        args.extend(["--role", "reader", "--role", "writer"]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected clickpipe create kafka");
+        };
+        assert_eq!(parsed.destination_roles.roles, vec!["reader", "writer"]);
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(parsed),
+        } = parse_clickpipe(&kafka_create_cli_args())
+        else {
+            panic!("expected clickpipe create kafka");
+        };
+        assert!(parsed.destination_roles.roles.is_empty());
+    }
+
+    #[test]
+    fn streaming_destination_options_parse_on_every_streaming_create() {
+        let mut pubsub = vec!["create", "pubsub", "svc-1", "--name", "pipe-1"];
+        pubsub.extend(pubsub_source_flags("./sa-key.json"));
+        pubsub.extend(["--database", "db", "--table", "events"]);
+
+        for mut args in [
+            vec![
+                "create",
+                "object-storage",
+                "--column",
+                "id:Int64",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--source-url",
+                "https://bucket.example/events",
+                "--format",
+                "JSONEachRow",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ],
+            kafka_create_cli_args(),
+            vec![
+                "create",
+                "kinesis",
+                "svc-1",
+                "--name",
+                "pipe-1",
+                "--stream-name",
+                "events",
+                "--region",
+                "eu-west-1",
+                "--format",
+                "JSONEachRow",
+                "--database",
+                "db",
+                "--table",
+                "events",
+            ],
+            pubsub,
+        ] {
+            args.extend([
+                "--managed-table",
+                "false",
+                "--table-definition-file",
+                "definition.json",
+            ]);
+            let options = match parse_clickpipe(&args) {
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::ObjectStorage(args),
+                } => args.destination_table,
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kafka(args),
+                } => args.destination_table,
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kinesis(args),
+                } => args.destination_table,
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::PubSub(args),
+                } => args.destination_table,
+                _ => panic!("expected streaming create"),
+            };
+            assert!(!options.managed_table);
+            assert_eq!(
+                options.table_definition_file.as_deref(),
+                Some("definition.json")
+            );
+        }
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(args),
+        } = parse_clickpipe(&kafka_create_cli_args())
+        else {
+            panic!("expected Kafka create");
+        };
+        assert!(args.destination_table.managed_table);
+        assert_eq!(args.destination_table.table_definition_file, None);
+    }
+
+    #[test]
+    fn parses_repeatable_role_on_postgres_create() {
+        let mut args = postgres_cli_args(Some("public.events:events"));
+        args.extend(["--role", "reader", "--role", "writer"]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(parsed),
+        } = parse_clickpipe(&args)
+        else {
+            panic!("expected clickpipe create postgres");
+        };
+        assert_eq!(parsed.destination_roles.roles, vec!["reader", "writer"]);
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(parsed),
+        } = parse_clickpipe(&postgres_cli_args(Some("public.events:events")))
+        else {
+            panic!("expected clickpipe create postgres");
+        };
+        assert!(parsed.destination_roles.roles.is_empty());
+    }
+
+    #[test]
+    fn role_is_available_on_every_create_subcommand() {
+        for (subcommand, extra) in [
+            (
+                "object-storage",
+                vec![
+                    "--column",
+                    "id:Int64",
+                    "--source-url",
+                    "https://bucket.example/data",
+                    "--format",
+                    "JSONEachRow",
+                    "--database",
+                    "db",
+                    "--table",
+                    "events",
+                ],
+            ),
+            (
+                "kafka",
+                vec![
+                    "--brokers",
+                    "broker:9092",
+                    "--topics",
+                    "topic",
+                    "--format",
+                    "JSONEachRow",
+                    "--database",
+                    "db",
+                    "--table",
+                    "events",
+                ],
+            ),
+            (
+                "kinesis",
+                vec![
+                    "--stream-name",
+                    "stream",
+                    "--region",
+                    "us-east-1",
+                    "--format",
+                    "JSONEachRow",
+                    "--database",
+                    "db",
+                    "--table",
+                    "events",
+                ],
+            ),
+            (
+                "postgres",
+                vec![
+                    "--host",
+                    "postgres.example",
+                    "--pg-database",
+                    "source-db",
+                    "--username",
+                    "user",
+                    "--password",
+                    "password",
+                    "--table-mapping",
+                    "public.events:events",
+                ],
+            ),
+            (
+                "mysql",
+                vec![
+                    "--host",
+                    "mysql.example",
+                    "--username",
+                    "user",
+                    "--password",
+                    "password",
+                    "--table-mapping",
+                    "mydb.events:events",
+                ],
+            ),
+            (
+                "mongodb",
+                vec![
+                    "--uri",
+                    "mongodb://mongo.example:27017",
+                    "--username",
+                    "user",
+                    "--password",
+                    "password",
+                    "--table-mapping",
+                    "mydb.events:events",
+                ],
+            ),
+            (
+                "bigquery",
+                vec![
+                    "--service-account-file",
+                    "./sa-key.json",
+                    "--staging-path",
+                    "gs://bucket/staging",
+                    "--table-mapping",
+                    "dataset.events:events",
+                ],
+            ),
+            ("pubsub", {
+                let mut flags = pubsub_source_flags("./sa-key.json");
+                flags.extend(["--database", "db", "--table", "events"]);
+                flags
+            }),
+        ] {
+            let mut args = vec!["create", subcommand, "svc-1", "--name", "pipe-1"];
+            args.extend(extra);
+            args.extend(["--role", "reader"]);
+            parse_clickpipe(&args);
+
+            let mut reserved = args.clone();
+            reserved.pop();
+            reserved.push("clickpipes");
+            let error = clickpipe_parse_error(&reserved);
+            assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+            assert_eq!(error.exit_code(), 2);
+            assert!(
+                error.to_string().contains("reserved by ClickPipes"),
+                "{subcommand}: {error}"
+            );
+        }
+    }
+
+    // `build_kafka_credentials` tests — lock the wire shape for each auth mode.
+    // Authoritative source: `ClickPipePostKafkaSource.credentials` in
+    // `crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json`.
+
+    fn kafka_args() -> KafkaCreateArgs {
+        KafkaCreateArgs {
+            service_id: "svc".into(),
+            name: "pipe".into(),
+            request: ClickPipeCreateRequestArgs::default(),
+            source: KafkaSourceFields {
+                brokers: "b:9092".into(),
+                topics: "t".into(),
+                format: "JSONEachRow".into(),
+                kafka_type: "kafka".into(),
+                consumer_group: None,
+                auth: None,
+                event_hubs_connection_string: None,
+                username: None,
+                password: None,
+                iam_role: None,
+                access_key_id: None,
+                secret_key: None,
+                offset: "from_beginning".into(),
+                offset_timestamp: None,
+                schema_registry_url: None,
+                schema_registry_username: None,
+                schema_registry_password: None,
+                protobuf_schema_file: None,
+                ca_certificate: None,
+                client_certificate: None,
+                client_key: None,
+                schema_registry_ca_certificate: None,
+                reverse_private_endpoint_ids: vec![],
+            },
+            exactly_once: None,
+            database: "d".into(),
+            table: "t".into(),
+            columns: vec![],
+            destination_table: StreamingDestinationTableArgs::default(),
+            destination_roles: DestinationRoleArgs::default(),
+        }
+    }
+
+    /// Wire value of the built source's authentication, or `None` when the
+    /// request omits authentication entirely (no-auth broker).
+    fn kafka_auth(
+        source: &clickhouse_cloud_api::models::ClickPipePostKafkaSource,
+    ) -> Option<String> {
+        source.authentication.as_ref().map(ToString::to_string)
+    }
+
+    #[test]
+    fn build_kafka_source_defaults_to_no_authentication() {
+        // No --auth and no credential flags: the request must omit
+        // authentication rather than inventing PLAIN, so brokers that require
+        // no authentication are reachable (issue #606).
+        let args = kafka_args().source;
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source), None);
+        assert!(
+            source.credentials.is_null(),
+            "no-auth source must not carry credentials: {}",
+            source.credentials
+        );
+        assert_eq!(source.iam_role, None);
+    }
+
+    #[test]
+    fn build_kafka_source_infers_plain_from_username_and_password() {
+        let mut args = kafka_args().source;
+        args.username = Some("user".into());
+        args.password = Some("password".into());
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
+        assert_eq!(source.credentials["username"], "user");
+        assert_eq!(source.credentials["password"], "password");
+    }
+
+    #[test]
+    fn build_kafka_source_infers_iam_user_from_access_keys() {
+        let mut args = kafka_args().source;
+        args.access_key_id = Some("AKIA".into());
+        args.secret_key = Some("secret".into());
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("IAM_USER"));
+        assert_eq!(source.credentials["accessKeyId"], "AKIA");
+        assert_eq!(source.credentials["secretKey"], "secret");
+    }
+
+    #[test]
+    fn build_kafka_source_infers_iam_role_from_role_arn() {
+        let mut args = kafka_args().source;
+        args.iam_role = Some("arn:aws:iam::123:role/Foo".into());
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("IAM_ROLE"));
+        assert!(source.credentials.is_null());
+        assert_eq!(
+            source.iam_role.as_deref(),
+            Some("arn:aws:iam::123:role/Foo")
+        );
+    }
+
+    #[test]
+    fn build_kafka_source_infers_mutual_tls_from_client_certificate_pair() {
+        let directory = tempfile::tempdir().unwrap();
+        let client_certificate = directory.path().join("client.pem");
+        let client_key = directory.path().join("client.key");
+        std::fs::write(&client_certificate, "CLIENT_CERT").unwrap();
+        std::fs::write(&client_key, "CLIENT_KEY").unwrap();
+
+        let mut args = kafka_args().source;
+        args.client_certificate = Some(client_certificate.to_string_lossy().into_owned());
+        args.client_key = Some(client_key.to_string_lossy().into_owned());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("MUTUAL_TLS"));
+        assert_eq!(source.credentials["certificate"], "CLIENT_CERT");
+        assert_eq!(source.credentials["privateKey"], "CLIENT_KEY");
+    }
+
+    #[test]
+    fn build_kafka_source_errors_when_explicit_mechanism_lacks_credentials() {
+        // An explicitly selected mechanism still fails fast, and the message
+        // names the mechanism the user actually asked for.
+        for auth in ["PLAIN", "SCRAM-SHA-256", "SCRAM-SHA-512"] {
+            let mut args = kafka_args().source;
+            args.auth = Some(auth.into());
+            let error = build_kafka_source(&args).unwrap_err();
+            assert_eq!(
+                error.message,
+                format!("{auth} requires --username and --password")
+            );
+        }
+
+        let mut args = kafka_args().source;
+        args.auth = Some("IAM_USER".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("--access-key-id"));
+
+        let mut args = kafka_args().source;
+        args.auth = Some("MUTUAL_TLS".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("--client-certificate"));
+    }
+
+    #[test]
+    fn kafka_credentials_absent_authentication_is_null() {
+        let args = kafka_args();
+        let credentials = build_kafka_credentials(None, &args.source, None).unwrap();
+        assert!(credentials.is_null());
+    }
+
+    #[test]
+    fn infer_kafka_authentication_prefers_sasl_over_certificates() {
+        // Both SASL and client-certificate flags present: SASL wins, matching
+        // the credential body that gets built.
+        let mut args = kafka_args().source;
+        args.username = Some("user".into());
+        args.password = Some("password".into());
+        args.client_certificate = Some("cert-path".into());
+        args.client_key = Some("key-path".into());
+        assert_eq!(
+            infer_kafka_authentication(&args).map(|auth| auth.to_string()),
+            Some("PLAIN".to_string())
+        );
+    }
+
+    #[test]
+    fn infer_kafka_authentication_ignores_half_specified_credentials() {
+        // Half a credential pair is not enough to infer a mechanism. Every
+        // pair is also paired with clap `requires`, so a half-specified
+        // invocation never reaches this function (see
+        // `kafka_credential_flags_must_be_given_in_pairs`); these assertions
+        // pin the defensive behaviour of the inference itself, so a future
+        // caller cannot turn half a pair into an unintended mechanism.
+        let mut args = kafka_args().source;
+        args.username = Some("user".into());
+        assert_eq!(infer_kafka_authentication(&args), None);
+
+        let mut args = kafka_args().source;
+        args.secret_key = Some("secret".into());
+        assert_eq!(infer_kafka_authentication(&args), None);
+
+        let mut args = kafka_args().source;
+        args.client_key = Some("key-path".into());
+        assert_eq!(infer_kafka_authentication(&args), None);
+    }
+
+    #[test]
+    fn build_kafka_source_supports_minimal_fields() {
+        let mut args = kafka_args().source;
+        args.auth = Some("PLAIN".into());
+        args.username = Some("user".into());
+        args.password = Some("password".into());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(source.r#type.to_string(), "kafka");
+        assert_eq!(source.format.to_string(), "JSONEachRow");
+        assert_eq!(source.brokers, "b:9092");
+        assert_eq!(source.topics, "t");
+        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
+        assert_eq!(source.credentials["username"], "user");
+        assert_eq!(source.credentials["password"], "password");
+        assert_eq!(source.consumer_group, None);
+        assert_eq!(source.exactly_once, None);
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.ca_certificate, None);
+        assert_eq!(source.schema_registry, None);
+        assert!(source.reverse_private_endpoint_ids.is_empty());
+        let offset = source.offset.expect("Kafka offset is always populated");
+        assert_eq!(offset.strategy.to_string(), "from_beginning");
+        assert_eq!(offset.timestamp, None);
+    }
+
+    #[test]
+    fn build_kafka_source_sends_exactly_once_only_for_create() {
+        let args = kafka_args().source;
+        for value in [true, false] {
+            let create = build_kafka_source_with_exactly_once(&args, Some(value)).unwrap();
+            assert_eq!(create.exactly_once, Some(value));
+        }
+
+        let discovery = build_kafka_source(&args).unwrap();
+        assert_eq!(discovery.exactly_once, None);
+    }
+
+    #[test]
+    fn build_kafka_source_encodes_an_inline_protobuf_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let schema = directory.path().join("events.proto");
+        std::fs::write(&schema, b"syntax = \"proto3\";").unwrap();
+        let mut args = kafka_args().source;
+        args.format = "Protobuf".into();
+        args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(
+            source.protobuf_schema.as_deref(),
+            Some("c3ludGF4ID0gInByb3RvMyI7")
+        );
+    }
+
+    #[test]
+    fn build_kafka_source_validates_protobuf_flags_before_reading_files() {
+        let mut args = kafka_args().source;
+        args.protobuf_schema_file = Some("/file/that/does/not/exist".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("--format Protobuf"), "{error:?}");
+
+        args.format = "Protobuf".into();
+        args.schema_registry_url = Some("https://registry.example".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("schema registry flags"), "{error:?}");
+    }
+
+    #[test]
+    fn build_kafka_source_rejects_oversized_protobuf_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let schema = directory.path().join("events.desc");
+        std::fs::write(&schema, vec![0_u8; 786_433]).unwrap();
+        let mut args = kafka_args().source;
+        args.format = "Protobuf".into();
+        args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
+
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("1048576 bytes"), "{error:?}");
+    }
+
+    #[test]
+    fn build_kafka_source_rejects_an_empty_protobuf_schema() {
+        let directory = tempfile::tempdir().unwrap();
+        let schema = directory.path().join("events.proto");
+        std::fs::write(&schema, []).unwrap();
+        let mut args = kafka_args().source;
+        args.format = "Protobuf".into();
+        args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
+
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("was empty"), "{error:?}");
+    }
+
+    #[test]
+    fn build_kafka_source_sends_event_hubs_connection_string_credentials() {
+        let mut args = kafka_args().source;
+        args.kafka_type = "azureeventhub".into();
+        args.event_hubs_connection_string =
+            Some("Endpoint=sb://events.example/;SharedAccessKey=secret".into());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(source.r#type.to_string(), "azureeventhub");
+        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
+        assert_eq!(
+            source.credentials["connectionString"],
+            "Endpoint=sb://events.example/;SharedAccessKey=secret"
+        );
+        assert!(source.credentials.get("username").is_none());
+    }
+
+    #[test]
+    fn build_kafka_source_rejects_event_hubs_credentials_on_other_sources() {
+        let mut args = kafka_args().source;
+        args.event_hubs_connection_string = Some("Endpoint=sb://events.example/".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("--kafka-type azureeventhub"));
+
+        args.kafka_type = "azureeventhub".into();
+        args.auth = Some("SCRAM-SHA-256".into());
+        let error = build_kafka_source(&args).unwrap_err();
+        assert!(error.message.contains("only --auth PLAIN"));
+    }
+
+    #[test]
+    fn build_kafka_source_supports_maximal_fields_and_certificate_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let broker_ca = directory.path().join("broker-ca.pem");
+        let client_certificate = directory.path().join("client.pem");
+        let client_key = directory.path().join("client.key");
+        let registry_ca = directory.path().join("registry-ca.pem");
+        std::fs::write(&broker_ca, "BROKER_CA").unwrap();
+        std::fs::write(&client_certificate, "CLIENT_CERT").unwrap();
+        std::fs::write(&client_key, "CLIENT_KEY").unwrap();
+        std::fs::write(&registry_ca, "REGISTRY_CA").unwrap();
+
+        let mut args = kafka_args().source;
+        args.brokers = "broker-1:9092,broker-2:9092".into();
+        args.topics = "topic-1,topic-2".into();
+        args.format = "AvroConfluent".into();
+        args.kafka_type = "msk".into();
+        args.consumer_group = Some("group".into());
+        args.auth = Some("MUTUAL_TLS".into());
+        args.offset = "from_timestamp".into();
+        args.offset_timestamp = Some("2021-01-01T00:00".into());
+        args.schema_registry_url = Some("https://registry.example".into());
+        args.schema_registry_username = Some("registry-user".into());
+        args.schema_registry_password = Some("registry-password".into());
+        args.ca_certificate = Some(broker_ca.to_string_lossy().into_owned());
+        args.client_certificate = Some(client_certificate.to_string_lossy().into_owned());
+        args.client_key = Some(client_key.to_string_lossy().into_owned());
+        args.schema_registry_ca_certificate = Some(registry_ca.to_string_lossy().into_owned());
+        args.reverse_private_endpoint_ids = vec!["endpoint-1".into(), "endpoint-2".into()];
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(source.r#type.to_string(), "msk");
+        assert_eq!(source.format.to_string(), "AvroConfluent");
+        assert_eq!(source.brokers, "broker-1:9092,broker-2:9092");
+        assert_eq!(source.topics, "topic-1,topic-2");
+        assert_eq!(source.consumer_group.as_deref(), Some("group"));
+        assert_eq!(kafka_auth(&source).as_deref(), Some("MUTUAL_TLS"));
+        assert_eq!(source.credentials["certificate"], "CLIENT_CERT");
+        assert_eq!(source.credentials["privateKey"], "CLIENT_KEY");
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.ca_certificate.as_deref(), Some("BROKER_CA"));
+        assert_eq!(
+            source.reverse_private_endpoint_ids,
+            ["endpoint-1", "endpoint-2"]
+        );
+        let offset = source.offset.expect("Kafka offset is always populated");
+        assert_eq!(offset.strategy.to_string(), "from_timestamp");
+        assert_eq!(offset.timestamp.as_deref(), Some("2021-01-01T00:00"));
+        let registry = source
+            .schema_registry
+            .expect("schema registry is populated");
+        assert_eq!(registry.url, "https://registry.example");
+        assert_eq!(registry.credentials.username, "registry-user");
+        assert_eq!(registry.credentials.password, "registry-password");
+        assert_eq!(registry.ca_certificate.as_deref(), Some("REGISTRY_CA"));
+    }
+
+    #[test]
+    fn build_kinesis_source_supports_minimal_fields() {
+        let args = KinesisSourceFields {
+            stream_name: "stream".into(),
+            region: "us-east-1".into(),
+            format: "JSONEachRow".into(),
+            auth: "IAM_ROLE".into(),
+            iam_role: None,
+            access_key_id: None,
+            secret_key: None,
+            iterator_type: "TRIM_HORIZON".into(),
+            iterator_timestamp: None,
+            enhanced_fan_out: false,
+        };
+
+        let source = build_kinesis_source(&args).unwrap();
+        assert_eq!(source.stream_name, "stream");
+        assert_eq!(source.region, "us-east-1");
+        assert_eq!(source.format.to_string(), "JSONEachRow");
+        assert_eq!(source.authentication.to_string(), "IAM_ROLE");
+        assert_eq!(source.iterator_type.to_string(), "TRIM_HORIZON");
+        assert_eq!(source.iam_role, None);
+        assert_eq!(source.access_key, None);
+        assert_eq!(source.timestamp, None);
+        assert_eq!(source.use_enhanced_fan_out, None);
+    }
+
+    #[test]
+    fn build_kinesis_source_supports_maximal_fields() {
+        let args = KinesisSourceFields {
+            stream_name: "stream".into(),
+            region: "us-east-1".into(),
+            format: "AvroConfluent".into(),
+            auth: "IAM_USER".into(),
+            iam_role: Some("arn:role".into()),
+            access_key_id: Some("access".into()),
+            secret_key: Some("secret".into()),
+            iterator_type: "AT_TIMESTAMP".into(),
+            iterator_timestamp: Some(1_750_000_000),
+            enhanced_fan_out: true,
+        };
+
+        let source = build_kinesis_source(&args).unwrap();
+        assert_eq!(source.stream_name, "stream");
+        assert_eq!(source.region, "us-east-1");
+        assert_eq!(source.format.to_string(), "AvroConfluent");
+        assert_eq!(source.authentication.to_string(), "IAM_USER");
+        assert_eq!(source.iterator_type.to_string(), "AT_TIMESTAMP");
+        assert_eq!(source.iam_role.as_deref(), Some("arn:role"));
+        let access_key = source.access_key.expect("access key is populated");
+        assert_eq!(access_key.access_key_id, "access");
+        assert_eq!(access_key.secret_key, "secret");
+        assert_eq!(source.timestamp, Some(1_750_000_000));
+        assert_eq!(source.use_enhanced_fan_out, Some(true));
+    }
+
+    #[test]
+    fn kafka_credentials_plain_shape() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let mut args = kafka_args();
+        args.source.auth = Some("PLAIN".into());
+        args.source.username = Some("u".into());
+        args.source.password = Some("p".into());
+        let credentials = build_kafka_credentials(Some(&Auth::PLAIN), &args.source, None).unwrap();
+        assert_eq!(credentials["username"], "u");
+        assert_eq!(credentials["password"], "p");
+    }
+
+    #[test]
+    fn kafka_credentials_iam_user_shape() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let mut args = kafka_args();
+        args.source.auth = Some("IAM_USER".into());
+        args.source.access_key_id = Some("AKIA".into());
+        args.source.secret_key = Some("secret".into());
+        let credentials =
+            build_kafka_credentials(Some(&Auth::IAM_USER), &args.source, None).unwrap();
+        // MskIamUser wire shape is {accessKeyId, secretKey} — NOT snake_case.
+        assert_eq!(credentials["accessKeyId"], "AKIA");
+        assert_eq!(credentials["secretKey"], "secret");
+        assert!(credentials.get("access_key_id").is_none());
+    }
+
+    #[test]
+    fn kafka_credentials_iam_role_is_null() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let mut args = kafka_args();
+        args.source.auth = Some("IAM_ROLE".into());
+        args.source.iam_role = Some("arn:aws:iam::123:role/Foo".into());
+        // IAM_ROLE sends credentials=null; the role ARN flows through the
+        // top-level `iamRole` field on the Kafka source, not credentials.
+        let credentials =
+            build_kafka_credentials(Some(&Auth::IAM_ROLE), &args.source, None).unwrap();
+        assert!(credentials.is_null());
+    }
+
+    #[test]
+    fn kafka_credentials_mutual_tls_shape() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let args = kafka_args();
+        let contents = Some(("CERT_PEM".into(), "KEY_PEM".into()));
+        let credentials =
+            build_kafka_credentials(Some(&Auth::MUTUAL_TLS), &args.source, contents).unwrap();
+        assert_eq!(credentials["certificate"], "CERT_PEM");
+        assert_eq!(credentials["privateKey"], "KEY_PEM");
+    }
+
+    #[test]
+    fn kafka_credentials_iam_user_missing_args_errors() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let args = kafka_args();
+        let error = build_kafka_credentials(Some(&Auth::IAM_USER), &args.source, None).unwrap_err();
+        assert!(error.message.contains("--access-key-id"));
+    }
+
+    #[test]
+    fn kafka_credentials_iam_role_missing_arn_errors() {
+        use clickhouse_cloud_api::models::ClickPipePostKafkaSourceAuthentication as Auth;
+        let mut args = kafka_args();
+        args.source.auth = Some("IAM_ROLE".into());
+        let error = build_kafka_credentials(Some(&Auth::IAM_ROLE), &args.source, None).unwrap_err();
+        assert!(error.message.contains("--iam-role"));
+    }
+
+    #[test]
+    fn context_get_parses_and_is_read_only() {
+        let command = parse_clickpipe(&["context", "get", "svc-1", "--org-id", "org-1"]);
+        assert!(!command.is_write());
+        let ClickPipeCommands::Context {
+            command: ClickPipeContextCommands::Get { service_id },
+        } = command
+        else {
+            panic!("expected context get");
+        };
+        assert_eq!(service_id, "svc-1");
+    }
+
+    #[test]
+    fn object_storage_workload_identity_builds_for_gcs_without_credentials() {
+        let args = parse_object_storage_discovery(&[
+            "--source-url",
+            "gs://bucket/events/*.json",
+            "--format",
+            "JSONEachRow",
+            "--storage-type",
+            "gcs",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+        ]);
+        let source = build_object_storage_source(&args).expect("GCS workload identity builds");
+        let json = serde_json::to_value(source).expect("source serializes");
+        assert_eq!(json["authentication"], "SERVICE_ACCOUNT_WORKLOAD_IDENTITY");
+        for field in [
+            "iamRole",
+            "accessKey",
+            "connectionString",
+            "serviceAccountKey",
+        ] {
+            assert!(json.get(field).is_none(), "{field} leaked into {json}");
+        }
+    }
+
+    #[test]
+    fn object_storage_workload_identity_rejects_provider_and_credentials() {
+        let wrong_provider = parse_object_storage_discovery(&[
+            "--source-url",
+            "https://bucket.s3.amazonaws.com/events.json",
+            "--format",
+            "JSONEachRow",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+        ]);
+        assert!(
+            build_object_storage_source(&wrong_provider)
+                .unwrap_err()
+                .message
+                .contains("--storage-type gcs")
+        );
+
+        let with_key = parse_object_storage_discovery(&[
+            "--source-url",
+            "gs://bucket/events.json",
+            "--format",
+            "JSONEachRow",
+            "--storage-type",
+            "gcs",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            "--service-account-file",
+            "/missing/must-not-be-read.json",
+        ]);
+        assert!(
+            build_object_storage_source(&with_key)
+                .unwrap_err()
+                .message
+                .contains("cannot be combined")
+        );
+    }
+
+    #[test]
+    fn kafka_workload_identity_builds_for_gcmk_without_credentials() {
+        let mut args = kafka_args().source;
+        args.kafka_type = "gcmk".into();
+        args.auth = Some("SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into());
+        let source = build_kafka_source(&args).expect("GCMK workload identity builds");
+        assert_eq!(
+            source.authentication,
+            Some(ClickPipePostKafkaSourceAuthentication::ServiceAccountWorkloadIdentity)
+        );
+        assert!(source.credentials.is_null());
+        assert!(source.iam_role.is_none());
+    }
+
+    #[test]
+    fn kafka_workload_identity_rejects_provider_and_credentials() {
+        let mut args = kafka_args().source;
+        args.auth = Some("SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into());
+        assert!(
+            build_kafka_source(&args)
+                .unwrap_err()
+                .message
+                .contains("--kafka-type gcmk")
+        );
+
+        args.kafka_type = "gcmk".into();
+        args.username = Some("user".into());
+        args.password = Some("password".into());
+        assert!(
+            build_kafka_source(&args)
+                .unwrap_err()
+                .message
+                .contains("cannot be combined")
+        );
+    }
+
+    #[test]
+    fn pubsub_workload_identity_selects_the_typed_union_without_a_key() {
+        let args = parse_pubsub_create(&[
+            "--topic",
+            "events",
+            "--project-id",
+            "project-1",
+            "--format",
+            "JSONEachRow",
+            "--seek-type",
+            "earliest",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+        ]);
+        let source = build_pubsub_source(&args.source).expect("Pub/Sub workload identity builds");
+        let clickhouse_cloud_api::models::ClickPipePostPubSubSource::ClickPipePostPubSubWorkloadIdentitySource(source) = source else {
+            panic!("expected workload-identity source");
+        };
+        assert_eq!(source.project_id, "project-1");
+        assert_eq!(
+            source.authentication,
+            clickhouse_cloud_api::models::ClickPipePostPubSubWorkloadIdentitySourceAuthentication::ServiceAccountWorkloadIdentity
+        );
+        let json = serde_json::to_value(source).expect("source serializes");
+        assert!(json.get("serviceAccountKey").is_none());
+    }
+
+    #[test]
+    fn pubsub_authentication_rejects_mismatched_key_presence() {
+        let workload_with_key = parse_pubsub_create(&[
+            "--topic",
+            "events",
+            "--project-id",
+            "project-1",
+            "--format",
+            "JSONEachRow",
+            "--seek-type",
+            "earliest",
+            "--auth",
+            "SERVICE_ACCOUNT_WORKLOAD_IDENTITY",
+            "--service-account-file",
+            "/missing/must-not-be-read.json",
+        ]);
+        assert!(
+            build_pubsub_source(&workload_with_key.source)
+                .unwrap_err()
+                .message
+                .contains("cannot be used")
+        );
+
+        let service_account_without_key = parse_pubsub_create(&[
+            "--topic",
+            "events",
+            "--project-id",
+            "project-1",
+            "--format",
+            "JSONEachRow",
+            "--seek-type",
+            "earliest",
+        ]);
+        assert!(
+            build_pubsub_source(&service_account_without_key.source)
+                .unwrap_err()
+                .message
+                .contains("requires --service-account-file")
+        );
+    }
+
+    #[test]
+    fn bigquery_workload_identity_selects_the_typed_union_without_a_key() {
+        let mut args = bigquery_builder_args("/missing/must-not-be-read.json".into());
+        args.auth = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into();
+        args.service_account_file = None;
+        args.project_id = Some("project-1".into());
+        let request = build_bigquery_request(&args).expect("BigQuery workload identity builds");
+        let source = request.source.bigquery.expect("bigquery source");
+        let clickhouse_cloud_api::models::ClickPipeMutateBigQuerySource::ClickPipePostBigQueryWorkloadIdentitySource(source) = source else {
+            panic!("expected workload-identity source");
+        };
+        assert_eq!(source.project_id, "project-1");
+        assert_eq!(source.table_mappings.len(), 1);
+        let json = serde_json::to_value(source).expect("source serializes");
+        assert!(json.get("credentials").is_none());
+    }
+
+    #[test]
+    fn bigquery_authentication_validates_project_and_key_before_file_io() {
+        let mut workload = bigquery_builder_args("/missing/must-not-be-read.json".into());
+        workload.auth = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into();
+        assert!(
+            build_bigquery_request(&workload)
+                .unwrap_err()
+                .message
+                .contains("cannot be used")
+        );
+
+        workload.service_account_file = None;
+        assert!(
+            build_bigquery_request(&workload)
+                .unwrap_err()
+                .message
+                .contains("requires --project-id")
+        );
+
+        let service_account = bigquery_builder_args("/missing/key.json".into());
+        let mut service_account_without_key = service_account;
+        service_account_without_key.service_account_file = None;
+        assert!(
+            build_bigquery_request(&service_account_without_key)
+                .unwrap_err()
+                .message
+                .contains("requires --service-account-file")
+        );
+    }
+}

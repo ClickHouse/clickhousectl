@@ -6,13 +6,32 @@ on:
       - "crates/clickhousectl/src/version_manager/**"
       - "crates/clickhousectl/src/main.rs"
       - "crates/clickhousectl/src/cli.rs"
+      - "crates/clickhousectl/src/local/cli.rs"
+      - "crates/clickhousectl/src/local/mod.rs"
+      - "crates/clickhousectl/src/local/output.rs"
+      - "crates/clickhousectl/src/local/server.rs"
+      - "crates/clickhousectl/src/local/discovery.rs"
+      - "crates/clickhousectl/src/local/symlink.rs"
+      - "crates/clickhousectl/src/init.rs"
+      - "crates/clickhousectl/src/paths.rs"
+      - "crates/clickhousectl/src/error.rs"
+      - "crates/clickhousectl/src/http.rs"
+      - "crates/clickhousectl/src/user_agent.rs"
+      - "crates/clickhousectl/tests/local_install_local_first_test.rs"
+      - "crates/clickhousectl/tests/local_version_error_test.rs"
+      - "Cargo.toml"
+      - "Cargo.lock"
       - "crates/clickhousectl/Cargo.toml"
-      - "homebrew/**"
-      - "scripts/update-homebrew-formula.sh"
+      - "scripts/classify-install-integration.py"
+      - "scripts/tests/test_classify_install_integration.py"
       - ".github/workflows/test-install.yml"
+      - ".github/workflows/test-cli.yml"
 
 permissions:
   contents: read
+
+env:
+  DO_NOT_TRACK: "1"
 
 jobs:
   unit-tests:
@@ -22,6 +41,8 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - name: Verify install workflow path mapping
+        run: python3 scripts/tests/test_classify_install_integration.py
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable @ 2026-03-27
       - run: cargo test
 
@@ -146,36 +167,3 @@ jobs:
         run: |
           version_dir=$(ls -d ~/.clickhouse/versions/*/clickhouse | head -1)
           $version_dir --version
-
-  homebrew-formula:
-    name: Homebrew formula
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-
-      - name: Install Ruby
-        uses: ruby/setup-ruby@d5123d83b85bf5fc943d23f88231b89204f0f3e9 # v1.207.0
-        with:
-          ruby-version: '3.3'
-
-      - name: Render template and verify Ruby syntax
-        run: |
-          # Render the template with placeholder values to verify it produces
-          # syntactically valid Ruby. Uses dummy SHA256 hashes.
-          TMPDIR=$(mktemp -d)
-          sed \
-            -e 's|{{VERSION}}|0.0.0-test|g' \
-            -e 's|{{SHA256_X86_64_LINUX_MUSL}}|0000000000000000000000000000000000000000000000000000000000000000|g' \
-            -e 's|{{SHA256_AARCH64_LINUX_MUSL}}|0000000000000000000000000000000000000000000000000000000000000000|g' \
-            -e 's|{{SHA256_X86_64_APPLE_DARWIN}}|0000000000000000000000000000000000000000000000000000000000000000|g' \
-            -e 's|{{SHA256_AARCH64_APPLE_DARWIN}}|0000000000000000000000000000000000000000000000000000000000000000|g' \
-            homebrew/clickhousectl.rb.tmpl > "${TMPDIR}/clickhousectl.rb"
-
-          ruby -c "${TMPDIR}/clickhousectl.rb"
-
-      - name: Shellcheck update script
-        run: |
-          # shellcheck is pre-installed on ubuntu-latest.
-          shellcheck scripts/update-homebrew-formula.sh

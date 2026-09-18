@@ -10,13 +10,17 @@
 //!
 //!  * `clickhousectl.engine=postgres`
 //!  * `clickhousectl.name=<server-name>`
+//!  * `clickhousectl.major=<major-version>`
 //!  * `clickhousectl.project=<canonical project cwd>`
 //!  * `created_by=clickhousectl_<crate-version>`
 
 use crate::error::{Error, Result};
 use bollard::Docker;
+use bollard::errors::Error as BollardError;
 use futures_util::StreamExt;
 use std::collections::HashMap;
+use std::error::Error as StdError;
+use std::io::{self, IsTerminal, Write};
 
 pub const LABEL_ENGINE: &str = "clickhousectl.engine";
 pub const LABEL_NAME: &str = "clickhousectl.name";
@@ -37,29 +41,290 @@ pub fn pg_container_name(user_name: &str, major: &str) -> String {
 
 /// Connect to the local Docker daemon and verify it's reachable.
 pub async fn connect() -> Result<Docker> {
-    let docker = Docker::connect_with_local_defaults().map_err(|e| {
-        Error::DockerNotAvailable(format!("could not initialize docker client: {e}"))
-    })?;
-    docker.ping().await.map_err(|e| {
-        Error::DockerNotAvailable(format!(
-            "Docker daemon is not reachable ({e}). Install Docker Desktop or start the daemon."
-        ))
-    })?;
+    let docker = Docker::connect_with_defaults()
+        .map_err(|error| docker_unavailable(DockerConnectStage::Constructor, &error))?;
+    docker
+        .ping()
+        .await
+        .map_err(|error| docker_unavailable(DockerConnectStage::Ping, &error))?;
     Ok(docker)
 }
 
-/// Pull `postgres:<tag>`, streaming progress to stderr.
-pub async fn pull_image(docker: &Docker, tag: &str) -> Result<()> {
-    use bollard::query_parameters::CreateImageOptionsBuilder;
-    let from = format!("postgres:{}", tag);
-    let opts = CreateImageOptionsBuilder::default().from_image(&from).build();
-    let mut stream = docker.create_image(Some(opts), None, None);
-    while let Some(item) = stream.next().await {
-        let info = item.map_err(|e| Error::DockerError(e.to_string()))?;
-        if let Some(status) = info.status.as_deref() {
-            eprintln!("  {}", status);
+#[derive(Clone, Copy)]
+enum DockerConnectStage {
+    Constructor,
+    Ping,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum DockerFailureKind {
+    MissingSocket,
+    PermissionDenied,
+    ConnectionRefused,
+    TimedOut,
+    InvalidHost,
+    HttpStatus(u16),
+    Other,
+}
+
+#[derive(Clone, Copy)]
+enum HostPlatform {
+    MacOs,
+    Linux,
+    Windows,
+    Other,
+}
+
+impl HostPlatform {
+    fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(target_os = "linux") {
+            Self::Linux
+        } else if cfg!(target_os = "windows") {
+            Self::Windows
+        } else {
+            Self::Other
         }
     }
+}
+
+fn docker_unavailable(stage: DockerConnectStage, error: &BollardError) -> Error {
+    let kind = classify_docker_failure(error);
+    let platform = HostPlatform::current();
+    let prefix = match stage {
+        DockerConnectStage::Constructor => "could not initialize Docker client",
+        DockerConnectStage::Ping => "Docker daemon is not reachable",
+    };
+    Error::DockerNotAvailable(format!(
+        "{prefix}: {}.\n{}",
+        docker_failure_cause(stage, kind, platform),
+        docker_guidance(platform)
+    ))
+}
+
+fn classify_docker_failure(error: &BollardError) -> DockerFailureKind {
+    match error {
+        BollardError::SocketNotFoundError(_) => return DockerFailureKind::MissingSocket,
+        BollardError::UnsupportedURISchemeError { .. }
+        | BollardError::URLParseError { .. }
+        | BollardError::InvalidURIError { .. }
+        | BollardError::InvalidURIPartsError { .. } => return DockerFailureKind::InvalidHost,
+        BollardError::RequestTimeoutError => return DockerFailureKind::TimedOut,
+        BollardError::IOError { err } => match err.kind() {
+            io::ErrorKind::NotFound => return DockerFailureKind::MissingSocket,
+            io::ErrorKind::PermissionDenied => return DockerFailureKind::PermissionDenied,
+            io::ErrorKind::ConnectionRefused => return DockerFailureKind::ConnectionRefused,
+            io::ErrorKind::TimedOut => return DockerFailureKind::TimedOut,
+            _ => {}
+        },
+        BollardError::DockerResponseServerError { status_code, .. } => {
+            return DockerFailureKind::HttpStatus(*status_code);
+        }
+        _ => {}
+    }
+
+    let mut descriptions = Vec::new();
+    let mut source: Option<&(dyn StdError + 'static)> = Some(error);
+    while let Some(current) = source {
+        descriptions.push(current.to_string().to_ascii_lowercase());
+        if let Some(io_error) = current.downcast_ref::<io::Error>() {
+            match io_error.kind() {
+                io::ErrorKind::NotFound => return DockerFailureKind::MissingSocket,
+                io::ErrorKind::PermissionDenied => return DockerFailureKind::PermissionDenied,
+                io::ErrorKind::ConnectionRefused => return DockerFailureKind::ConnectionRefused,
+                io::ErrorKind::TimedOut => return DockerFailureKind::TimedOut,
+                _ => {}
+            }
+        }
+        source = current.source();
+    }
+
+    // Some connector errors do not expose their underlying io::Error through
+    // Error::source. Inspect their text only for classification; never render it.
+    let chain = descriptions.join(": ");
+    if chain.contains("permission denied") {
+        DockerFailureKind::PermissionDenied
+    } else if chain.contains("connection refused") {
+        DockerFailureKind::ConnectionRefused
+    } else if chain.contains("no such file") || chain.contains("not found") {
+        DockerFailureKind::MissingSocket
+    } else if chain.contains("timed out") || chain.contains("timeout") {
+        DockerFailureKind::TimedOut
+    } else {
+        DockerFailureKind::Other
+    }
+}
+
+fn docker_failure_cause(
+    stage: DockerConnectStage,
+    kind: DockerFailureKind,
+    platform: HostPlatform,
+) -> String {
+    let endpoint = match platform {
+        HostPlatform::Windows => "Docker named pipe",
+        _ => "Docker socket",
+    };
+    match kind {
+        DockerFailureKind::MissingSocket => format!("{endpoint} was not found"),
+        DockerFailureKind::PermissionDenied => {
+            format!("permission denied while opening the {endpoint}")
+        }
+        DockerFailureKind::ConnectionRefused => "the Docker daemon refused the connection".into(),
+        DockerFailureKind::TimedOut => "the Docker daemon connection timed out".into(),
+        DockerFailureKind::InvalidHost => {
+            "DOCKER_HOST is invalid or uses an unsupported scheme".into()
+        }
+        DockerFailureKind::HttpStatus(status) => {
+            format!("the Docker API returned HTTP status {status}")
+        }
+        DockerFailureKind::Other => match stage {
+            DockerConnectStage::Constructor => "Docker client initialization failed".into(),
+            DockerConnectStage::Ping => "the Docker API ping failed".into(),
+        },
+    }
+}
+
+fn docker_guidance(platform: HostPlatform) -> &'static str {
+    match platform {
+        HostPlatform::MacOs => {
+            "On macOS, start Docker Desktop and check access to its socket. Verify the active context with `docker context show`; for a non-default context, set `DOCKER_HOST` to its endpoint."
+        }
+        HostPlatform::Linux => {
+            "On Linux, start Docker Engine or Docker Desktop and check that your user can access the Docker socket. Verify `docker context show`; for rootless Docker or a non-default context, set `DOCKER_HOST` to its Unix socket (rootless Engine commonly uses `unix://$XDG_RUNTIME_DIR/docker.sock`)."
+        }
+        HostPlatform::Windows => {
+            "On Windows, start Docker Desktop or Docker Engine and check named-pipe permissions. Verify `docker context show`; for a non-default context, set `DOCKER_HOST` to its endpoint."
+        }
+        HostPlatform::Other => {
+            "Start Docker Engine and check socket permissions. Verify `docker context show`; for rootless Docker or a non-default context, set `DOCKER_HOST` to its endpoint."
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PullProgressMode {
+    Interactive,
+    Collapsed,
+    Silent,
+}
+
+fn pull_progress_mode(
+    stdout_is_terminal: bool,
+    stderr_is_terminal: bool,
+    structured_output: bool,
+) -> PullProgressMode {
+    if structured_output {
+        PullProgressMode::Silent
+    } else if stdout_is_terminal && stderr_is_terminal {
+        PullProgressMode::Interactive
+    } else {
+        PullProgressMode::Collapsed
+    }
+}
+
+struct PullReporter {
+    image: String,
+    mode: PullProgressMode,
+}
+
+impl PullReporter {
+    fn new(image: String, mode: PullProgressMode) -> Self {
+        Self { image, mode }
+    }
+
+    fn start(&self, output: &mut impl Write) {
+        match self.mode {
+            PullProgressMode::Interactive => {
+                let _ = writeln!(output, "Pulling {}...", self.image);
+            }
+            PullProgressMode::Collapsed => {
+                let _ = write!(output, "Pulling {}...", self.image);
+                let _ = output.flush();
+            }
+            PullProgressMode::Silent => {}
+        }
+    }
+
+    fn event(&self, info: &bollard::models::CreateImageInfo, output: &mut impl Write) {
+        if self.mode != PullProgressMode::Interactive {
+            return;
+        }
+
+        let Some(status) = info.status.as_deref() else {
+            return;
+        };
+        let _ = write!(output, "  ");
+        if let Some(id) = info.id.as_deref() {
+            let _ = write!(output, "{id}: ");
+        }
+        let _ = write!(output, "{status}");
+        if let Some((current, total)) = info.progress_detail.as_ref().and_then(|progress| {
+            progress
+                .current
+                .zip(progress.total)
+                .filter(|(_, total)| *total > 0)
+        }) {
+            let percent = current.saturating_mul(100) / total;
+            let _ = write!(output, " ({current}/{total} bytes, {percent}%)");
+        }
+        let _ = writeln!(output);
+    }
+
+    fn finish(&self, output: &mut impl Write) {
+        match self.mode {
+            PullProgressMode::Interactive => {
+                let _ = writeln!(output, "Pulled {}", self.image);
+            }
+            PullProgressMode::Collapsed => {
+                let _ = writeln!(output, " done");
+            }
+            PullProgressMode::Silent => {}
+        }
+    }
+
+    fn fail(&self, output: &mut impl Write) {
+        match self.mode {
+            PullProgressMode::Interactive => {
+                let _ = writeln!(output, "Failed to pull {}", self.image);
+            }
+            PullProgressMode::Collapsed => {
+                let _ = writeln!(output, " failed");
+            }
+            PullProgressMode::Silent => {}
+        }
+    }
+}
+
+/// Pull `postgres:<tag>`, keeping full progress for interactive terminals and
+/// collapsing it to one bounded summary line for redirected or structured output.
+pub async fn pull_image(docker: &Docker, tag: &str, structured_output: bool) -> Result<()> {
+    use bollard::query_parameters::CreateImageOptionsBuilder;
+    let from = format!("postgres:{}", tag);
+    let mode = pull_progress_mode(
+        io::stdout().is_terminal(),
+        io::stderr().is_terminal(),
+        structured_output,
+    );
+    let reporter = PullReporter::new(from.clone(), mode);
+    let stderr = io::stderr();
+    reporter.start(&mut stderr.lock());
+
+    let opts = CreateImageOptionsBuilder::default()
+        .from_image(&from)
+        .build();
+    let mut stream = docker.create_image(Some(opts), None, None);
+    while let Some(item) = stream.next().await {
+        let info = match item {
+            Ok(info) => info,
+            Err(error) => {
+                reporter.fail(&mut stderr.lock());
+                return Err(Error::Download(error.to_string()));
+            }
+        };
+        reporter.event(&info, &mut stderr.lock());
+    }
+    reporter.finish(&mut stderr.lock());
     Ok(())
 }
 
@@ -69,7 +334,9 @@ pub async fn image_exists(docker: &Docker, tag: &str) -> Result<bool> {
     let name = format!("postgres:{}", tag);
     match docker.inspect_image(&name).await {
         Ok(_) => Ok(true),
-        Err(BErr::DockerResponseServerError { status_code: 404, .. }) => Ok(false),
+        Err(BErr::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(false),
         Err(e) => Err(Error::DockerError(e.to_string())),
     }
 }
@@ -89,10 +356,13 @@ pub struct PostgresRunOpts<'a> {
     pub extra_env: Vec<String>,
 }
 
-/// Create + start a Postgres container; return its ID.
-pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<String> {
+/// Create a Postgres container without starting it; return its ID.
+///
+/// Keeping creation separate gives the caller the exact container ID needed
+/// to roll back every later startup step.
+pub async fn create_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<String> {
     use bollard::models::{ContainerCreateBody, HostConfig, PortBinding};
-    use bollard::query_parameters::{CreateContainerOptionsBuilder, StartContainerOptions};
+    use bollard::query_parameters::CreateContainerOptionsBuilder;
 
     let mut port_bindings: HashMap<String, Option<Vec<PortBinding>>> = HashMap::new();
     port_bindings.insert(
@@ -152,12 +422,6 @@ pub async fn run_postgres(docker: &Docker, opts: PostgresRunOpts<'_>) -> Result<
         .create_container(Some(create_opts), container_config)
         .await
         .map_err(|e| Error::DockerError(e.to_string()))?;
-
-    docker
-        .start_container(&created.id, None::<StartContainerOptions>)
-        .await
-        .map_err(|e| Error::DockerError(e.to_string()))?;
-
     Ok(created.id)
 }
 
@@ -185,25 +449,145 @@ pub async fn ensure_name_free(
                 })
                 .unwrap_or(false);
             if !labels_match {
-                return Err(Error::DockerError(format!(
-                    "container '{cname}' already exists but is not managed by clickhousectl. \
-                     Remove it manually or pick a different --name."
-                )));
+                return Err(Error::ContainerNameConflict(cname));
             }
             let id = info.id.unwrap_or(cname.clone());
             let _ = stop_container(docker, &id).await;
             remove_container(docker, &id).await
         }
-        Err(BErr::DockerResponseServerError { status_code: 404, .. }) => Ok(()),
+        Err(BErr::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(()),
         Err(e) => Err(Error::DockerError(e.to_string())),
     }
 }
 
-pub async fn is_container_running(docker: &Docker, id: &str) -> bool {
+/// A missing container is distinct from an inspection failure. Only Docker's
+/// typed 404 response establishes absence; all other failures remain errors.
+pub async fn inspect_container(
+    docker: &Docker,
+    id: &str,
+) -> Result<Option<bollard::models::ContainerInspectResponse>> {
     match docker.inspect_container(id, None).await {
-        Ok(resp) => resp.state.and_then(|s| s.running).unwrap_or(false),
-        Err(_) => false,
+        Ok(response) => Ok(Some(response)),
+        Err(BollardError::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(None),
+        Err(error) => Err(Error::DockerError(error.to_string())),
     }
+}
+
+pub fn inspected_container_running(
+    response: &bollard::models::ContainerInspectResponse,
+) -> Result<bool> {
+    response
+        .state
+        .as_ref()
+        .and_then(|state| state.running)
+        .ok_or_else(|| Error::DockerError("container inspection omitted its running state".into()))
+}
+
+pub async fn is_container_running(docker: &Docker, id: &str) -> Result<bool> {
+    match inspect_container(docker, id).await? {
+        Some(response) => inspected_container_running(&response),
+        None => Ok(false),
+    }
+}
+
+pub struct ContainerState {
+    pub running: bool,
+    pub exited: bool,
+    pub status: String,
+    pub exit_code: Option<i64>,
+    pub oom_killed: bool,
+}
+
+pub async fn container_state(docker: &Docker, id: &str) -> Result<ContainerState> {
+    use bollard::models::ContainerStateStatusEnum;
+
+    let inspect = docker
+        .inspect_container(id, None)
+        .await
+        .map_err(|error| Error::DockerError(error.to_string()))?;
+    let state = inspect.state.unwrap_or_default();
+    let status = state
+        .status
+        .map(|status| status.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+    let exited = state.dead == Some(true)
+        || matches!(
+            state.status,
+            Some(ContainerStateStatusEnum::EXITED | ContainerStateStatusEnum::DEAD)
+        );
+    Ok(ContainerState {
+        running: state.running == Some(true) && state.paused != Some(true),
+        exited,
+        status,
+        exit_code: state.exit_code,
+        oom_killed: state.oom_killed == Some(true),
+    })
+}
+
+/// Run PostgreSQL's own readiness probe inside the container. The command uses
+/// container-local TCP and does not receive a username, database, or password.
+pub async fn postgres_is_ready(docker: &Docker, id: &str) -> Result<bool> {
+    use bollard::exec::{StartExecOptions, StartExecResults};
+    use bollard::models::ExecConfig;
+
+    let exec = docker
+        .create_exec(
+            id,
+            ExecConfig {
+                attach_stdout: Some(false),
+                attach_stderr: Some(false),
+                attach_stdin: Some(false),
+                tty: Some(false),
+                cmd: Some(vec![
+                    "pg_isready".to_string(),
+                    "--quiet".to_string(),
+                    "--host".to_string(),
+                    "127.0.0.1".to_string(),
+                    // `--port` only changes the host binding; the official
+                    // image always listens on 5432 inside the container.
+                    "--port".to_string(),
+                    "5432".to_string(),
+                    "--timeout".to_string(),
+                    "1".to_string(),
+                ]),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|error| Error::DockerError(error.to_string()))?;
+    let started = docker
+        .start_exec(
+            &exec.id,
+            Some(StartExecOptions {
+                detach: true,
+                ..Default::default()
+            }),
+        )
+        .await
+        .map_err(|error| Error::DockerError(error.to_string()))?;
+    if !matches!(started, StartExecResults::Detached) {
+        return Err(Error::DockerError(
+            "PostgreSQL readiness probe unexpectedly attached".to_string(),
+        ));
+    }
+
+    for _ in 0..75 {
+        let inspect = docker
+            .inspect_exec(&exec.id)
+            .await
+            .map_err(|error| Error::DockerError(error.to_string()))?;
+        if inspect.running != Some(true) {
+            return Ok(inspect.exit_code == Some(0));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    Err(Error::DockerError(
+        "PostgreSQL readiness probe did not exit within 1.5 seconds".to_string(),
+    ))
 }
 
 pub async fn stop_container(docker: &Docker, id: &str) -> Result<()> {
@@ -220,17 +604,37 @@ pub async fn stop_container(docker: &Docker, id: &str) -> Result<()> {
 
 pub async fn remove_container(docker: &Docker, id: &str) -> Result<()> {
     use bollard::query_parameters::RemoveContainerOptionsBuilder;
-    docker
-        .remove_container(
-            id,
-            Some(RemoveContainerOptionsBuilder::default().force(true).build()),
-        )
-        .await
-        .map_err(|e| Error::DockerError(e.to_string()))?;
-    Ok(())
+    remove_container_result(
+        docker
+            .remove_container(
+                id,
+                Some(
+                    RemoveContainerOptionsBuilder::default()
+                        .force(true)
+                        .v(true)
+                        .build(),
+                ),
+            )
+            .await,
+    )
 }
 
-pub async fn container_logs_tail(docker: &Docker, id: &str, n: usize) -> Result<String> {
+fn remove_container_result(result: std::result::Result<(), BollardError>) -> Result<()> {
+    match result {
+        Ok(())
+        | Err(BollardError::DockerResponseServerError {
+            status_code: 404, ..
+        }) => Ok(()),
+        Err(e) => Err(Error::DockerError(e.to_string())),
+    }
+}
+
+pub async fn container_logs_tail(
+    docker: &Docker,
+    id: &str,
+    n: usize,
+    max_bytes: usize,
+) -> Result<String> {
     use bollard::query_parameters::LogsOptionsBuilder;
     let opts = LogsOptionsBuilder::default()
         .stdout(true)
@@ -238,12 +642,43 @@ pub async fn container_logs_tail(docker: &Docker, id: &str, n: usize) -> Result<
         .tail(&n.to_string())
         .build();
     let mut stream = docker.logs(id, Some(opts));
-    let mut buf = String::new();
+    let mut buf = Vec::new();
+    let mut truncated = false;
     while let Some(line) = stream.next().await {
         let l = line.map_err(|e| Error::DockerError(e.to_string()))?;
-        buf.push_str(&l.to_string());
+        truncated |= append_bounded_tail(&mut buf, &l.into_bytes(), max_bytes);
     }
-    Ok(buf)
+    let logs = String::from_utf8_lossy(&buf);
+    if truncated {
+        Ok(format!("[earlier log output truncated]\n{logs}"))
+    } else if logs.is_empty() {
+        Ok("(no container logs)".to_string())
+    } else {
+        Ok(logs.into_owned())
+    }
+}
+
+fn append_bounded_tail(buffer: &mut Vec<u8>, chunk: &[u8], max_bytes: usize) -> bool {
+    if max_bytes == 0 {
+        let truncated = !buffer.is_empty() || !chunk.is_empty();
+        buffer.clear();
+        return truncated;
+    }
+    if chunk.len() >= max_bytes {
+        buffer.clear();
+        buffer.extend_from_slice(&chunk[chunk.len() - max_bytes..]);
+        return true;
+    }
+
+    let overflow = buffer
+        .len()
+        .saturating_add(chunk.len())
+        .saturating_sub(max_bytes);
+    if overflow > 0 {
+        buffer.drain(..overflow);
+    }
+    buffer.extend_from_slice(chunk);
+    overflow > 0
 }
 
 pub struct DiscoveredContainer {
@@ -320,13 +755,13 @@ pub async fn list_project_postgres(
     Ok(out)
 }
 
-/// Run `psql` inside a container in non-interactive mode: no TTY, no raw
-/// mode, no stdin. Streams stdout+stderr to the host. Used when the caller
-/// passes `--query` or `--queries-file` so the output can be piped/scripted.
+/// Run `psql` without a TTY, streaming an optional host SQL file or stdin
+/// into the exec stream while forwarding stdout and stderr independently.
 pub async fn exec_psql_one_shot(
     docker: &Docker,
     container_id: &str,
     psql_args: &[String],
+    reader: Option<Box<dyn io::Read + Send>>,
 ) -> Result<()> {
     use bollard::exec::StartExecResults;
     use bollard::models::ExecConfig;
@@ -341,7 +776,7 @@ pub async fn exec_psql_one_shot(
             ExecConfig {
                 attach_stdout: Some(true),
                 attach_stderr: Some(true),
-                attach_stdin: Some(false),
+                attach_stdin: Some(reader.is_some()),
                 tty: Some(false),
                 cmd: Some(cmd),
                 ..Default::default()
@@ -355,32 +790,99 @@ pub async fn exec_psql_one_shot(
         .start_exec(&exec_id, None)
         .await
         .map_err(|e| Error::DockerError(e.to_string()))?;
-    let mut output = match started {
-        StartExecResults::Attached { output, .. } => output,
-        StartExecResults::Detached => return Ok(()),
+    let (mut output, mut input) = match started {
+        StartExecResults::Attached { output, input } => (output, input),
+        StartExecResults::Detached => {
+            return Err(Error::DockerError("psql exec unexpectedly detached".into()));
+        }
     };
 
-    let mut stdout = tokio::io::stdout();
-    let mut stderr = tokio::io::stderr();
-    while let Some(chunk) = output.next().await {
-        match chunk {
-            Ok(bollard::container::LogOutput::StdErr { message }) => {
-                let _ = stderr.write_all(&message).await;
-            }
-            Ok(out) => {
-                let _ = stdout.write_all(&out.into_bytes()).await;
-            }
-            Err(_) => break,
+    let write_input = async {
+        if let Some(reader) = reader {
+            let result = stream_psql_input(reader, &mut input).await;
+            // Docker needs a half-close to deliver EOF to psql's -f -. Keep
+            // the read half alive until all output and the exit status arrive.
+            let shutdown = input.shutdown().await;
+            result?;
+            shutdown?;
         }
-    }
-    let _ = stdout.flush().await;
-    let _ = stderr.flush().await;
+        Ok::<_, Error>(())
+    };
+    let read_output = async {
+        let mut stdout = tokio::io::stdout();
+        let mut stderr = tokio::io::stderr();
+        while let Some(chunk) = output.next().await {
+            match chunk.map_err(|error| Error::DockerError(error.to_string()))? {
+                bollard::container::LogOutput::StdErr { message } => {
+                    stderr.write_all(&message).await?;
+                    stderr.flush().await?;
+                }
+                out => {
+                    stdout.write_all(&out.into_bytes()).await?;
+                    stdout.flush().await?;
+                }
+            }
+        }
+        Ok::<_, Error>(())
+    };
+    tokio::pin!(write_input, read_output);
+    let (input_result, output_result) = tokio::select! {
+        result = &mut write_input => (result, read_output.await),
+        result = &mut read_output => (Ok(()), result),
+    };
 
-    if let Ok(info) = docker.inspect_exec(&exec_id).await
-        && let Some(code) = info.exit_code
-        && code != 0
-    {
-        std::process::exit(code as i32);
+    let info = docker
+        .inspect_exec(&exec_id)
+        .await
+        .map_err(|error| Error::DockerError(error.to_string()))?;
+    match info.exit_code {
+        Some(code) if code != 0 => Err(Error::ChildExit(code as i32)),
+        Some(0) if info.running != Some(true) => {
+            output_result?;
+            input_result
+        }
+        _ => Err(Error::DockerError(
+            "psql exec has no final exit status".into(),
+        )),
+    }
+}
+
+async fn stream_psql_input(
+    mut reader: Box<dyn io::Read + Send>,
+    input: &mut (impl tokio::io::AsyncWrite + Unpin),
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    // A dedicated reader thread and bounded channel keep pipes streaming with
+    // bounded memory. Unlike tokio::io::stdin's blocking-pool task, this thread
+    // cannot hold runtime shutdown hostage when psql exits before stdin EOF.
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+    std::thread::Builder::new()
+        .name("psql-input".into())
+        .spawn(move || {
+            loop {
+                let mut buffer = vec![0; 8192];
+                match reader.read(&mut buffer) {
+                    Ok(0) => break,
+                    Ok(count) => {
+                        buffer.truncate(count);
+                        if sender.blocking_send(Ok(buffer)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                    Err(error) => {
+                        let _ = sender.blocking_send(Err(error));
+                        break;
+                    }
+                }
+            }
+        })?;
+    while let Some(chunk) = receiver.recv().await {
+        input
+            .write_all(&chunk.map_err(Error::SqlInputRead)?)
+            .await?;
+        input.flush().await?;
     }
     Ok(())
 }
@@ -451,7 +953,7 @@ pub async fn exec_psql_in_container(
 
     #[cfg(unix)]
     let resize_task = {
-        use tokio::signal::unix::{signal, SignalKind};
+        use tokio::signal::unix::{SignalKind, signal};
         let docker_clone = docker.clone();
         let exec_id_clone = exec_id.clone();
         tokio::spawn(async move {
@@ -513,7 +1015,7 @@ pub async fn exec_psql_in_container(
         && let Some(code) = info.exit_code
         && code != 0
     {
-        std::process::exit(code as i32);
+        return Err(Error::ChildExit(code as i32));
     }
     Ok(())
 }
@@ -539,13 +1041,10 @@ pub(crate) fn block_on<F: std::future::Future>(f: F) -> F::Output {
     }
 }
 
-pub fn is_container_running_blocking(id: &str) -> bool {
+pub fn is_container_running_blocking(id: &str) -> Result<bool> {
     let id = id.to_string();
     block_on(async move {
-        let docker = match connect().await {
-            Ok(d) => d,
-            Err(_) => return false,
-        };
+        let docker = connect().await?;
         is_container_running(&docker, &id).await
     })
 }
@@ -563,14 +1062,15 @@ pub fn stop_blocking(id: &str) -> Result<()> {
 /// Remove a host directory and its contents, even when files inside are
 /// owned by container UIDs (postgres' uid 999) the host user can't `rm`.
 ///
-/// Tries `std::fs::remove_dir_all` first, which is enough on macOS because
-/// Docker Desktop maps host UIDs transparently. On Linux bind mounts are
-/// direct, so fall back to a one-shot Alpine container running as root
-/// that nukes the directory from inside.
+/// On non-macOS hosts, tries `std::fs::remove_dir_all` first and falls back to
+/// a one-shot Alpine container for files owned by container UIDs. macOS Docker
+/// backends can retain a stale bind-mount view after host-side removal, so they
+/// always remove the directory through Docker's filesystem view.
 pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
     if !host_path.exists() {
         return Ok(());
     }
+    #[cfg(not(target_os = "macos"))]
     if std::fs::remove_dir_all(host_path).is_ok() {
         return Ok(());
     }
@@ -596,8 +1096,9 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
         let docker = connect().await?;
 
         // Pull alpine on first use.
-        if let Err(BErr::DockerResponseServerError { status_code: 404, .. }) =
-            docker.inspect_image("alpine:latest").await
+        if let Err(BErr::DockerResponseServerError {
+            status_code: 404, ..
+        }) = docker.inspect_image("alpine:latest").await
         {
             let mut s = docker.create_image(
                 Some(
@@ -614,10 +1115,9 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
         }
 
         let bind = format!("{}:/work", parent_str);
-        let cmd = format!("rm -rf /work/{}", basename);
         let cfg = ContainerCreateBody {
             image: Some("alpine:latest".into()),
-            cmd: Some(vec!["sh".into(), "-c".into(), cmd]),
+            cmd: Some(privileged_remove_command(&basename)),
             host_config: Some(HostConfig {
                 binds: Some(vec![bind]),
                 auto_remove: Some(true),
@@ -626,10 +1126,7 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
             ..Default::default()
         };
         let created = docker
-            .create_container(
-                Some(CreateContainerOptionsBuilder::default().build()),
-                cfg,
-            )
+            .create_container(Some(CreateContainerOptionsBuilder::default().build()), cfg)
             .await
             .map_err(|e| Error::DockerError(e.to_string()))?;
         docker
@@ -646,9 +1143,18 @@ pub fn remove_host_dir_blocking(host_path: &std::path::Path) -> Result<()> {
 
     // If anything is left (e.g. the dir itself remained empty), clean up host-side.
     if host_path.exists() {
-        let _ = std::fs::remove_dir_all(host_path);
+        std::fs::remove_dir_all(host_path)?;
     }
     Ok(())
+}
+
+fn privileged_remove_command(basename: &str) -> Vec<String> {
+    vec![
+        "rm".into(),
+        "-rf".into(),
+        "--".into(),
+        format!("/work/{basename}"),
+    ]
 }
 
 pub fn stop_and_remove_blocking(id: &str) -> Result<()> {
@@ -661,16 +1167,12 @@ pub fn stop_and_remove_blocking(id: &str) -> Result<()> {
 }
 
 /// `docker start` an existing stopped container.
-pub fn start_existing_blocking(id: &str) -> Result<()> {
+pub async fn start_existing(docker: &Docker, id: &str) -> Result<()> {
     use bollard::query_parameters::StartContainerOptions;
-    let id = id.to_string();
-    block_on(async move {
-        let docker = connect().await?;
-        docker
-            .start_container(&id, None::<StartContainerOptions>)
-            .await
-            .map_err(|e| Error::DockerError(e.to_string()))
-    })
+    docker
+        .start_container(id, None::<StartContainerOptions>)
+        .await
+        .map_err(|e| Error::DockerError(e.to_string()))
 }
 
 /// Discover Postgres containers belonging to this project that don't yet have
@@ -680,13 +1182,16 @@ pub fn start_existing_blocking(id: &str) -> Result<()> {
 /// Safe to call multiple times in one CLI invocation. When Docker isn't
 /// reachable, `connect()` fails fast (no socket → immediate error, no I/O
 /// timeout) and we return silently.
-pub fn recover_project_postgres_blocking(project_cwd: &str) {
+pub fn recover_project_postgres_blocking(
+    project_cwd: &str,
+    lock: &crate::local::server::MetadataLock,
+) -> Result<()> {
     use crate::local::server::{
-        ensure_pg_data_dir, pg_instance_key, save_server_info,
-        server_meta_path_for_recovery, Engine, ServerInfo,
+        Engine, ServerInfo, ensure_pg_data_dir, load_info_locked, pg_instance_key,
+        save_server_info_locked,
     };
     let cwd_owned = project_cwd.to_string();
-    let _ = block_on(async move {
+    block_on(async move {
         let docker = match connect().await {
             Ok(d) => d,
             Err(_) => return Ok::<(), Error>(()),
@@ -697,10 +1202,10 @@ pub fn recover_project_postgres_blocking(project_cwd: &str) {
         };
         for c in containers {
             let key = pg_instance_key(&c.user_name, &c.major);
-            if server_meta_path_for_recovery(&key).exists() {
+            if load_info_locked(&key, lock)?.is_some() {
                 continue;
             }
-            let _ = ensure_pg_data_dir(&c.user_name, &c.major);
+            ensure_pg_data_dir(&c.user_name, &c.major)?;
             let info = ServerInfo {
                 name: key,
                 pid: 0,
@@ -712,8 +1217,358 @@ pub fn recover_project_postgres_blocking(project_cwd: &str) {
                 engine: Engine::Postgres,
                 container_id: Some(c.container_id.clone()),
             };
-            let _ = save_server_info(&info);
+            save_server_info_locked(&info, lock)?;
         }
         Ok(())
-    });
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bollard::models::{CreateImageInfo, ProgressDetail};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn remove_container_requests_anonymous_volume_cleanup() {
+        use std::io::{Read, Write};
+        use std::os::unix::net::UnixListener;
+
+        let directory = tempfile::tempdir().expect("create Docker mock directory");
+        let socket_path = directory.path().join("docker.sock");
+        let listener = UnixListener::bind(&socket_path).expect("bind Docker mock socket");
+        let request = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Docker request");
+            let mut bytes = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read Docker request");
+                assert!(count > 0, "Docker request ended before its headers");
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+            stream
+                .write_all(
+                    b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .expect("write Docker response");
+            String::from_utf8(bytes).expect("Docker request is UTF-8")
+        });
+        let docker = Docker::connect_with_unix(
+            socket_path.to_str().expect("socket path is UTF-8"),
+            5,
+            bollard::API_DEFAULT_VERSION,
+        )
+        .expect("connect to Docker mock");
+
+        remove_container(&docker, "pg-id")
+            .await
+            .expect("remove container");
+
+        let request = request.join().expect("join Docker mock");
+        let request_line = request.lines().next().expect("Docker request line");
+        let path = request_line
+            .split_whitespace()
+            .nth(1)
+            .expect("Docker request path");
+        let query = path.split_once('?').expect("Docker request query").1;
+        let parameters: HashMap<_, _> = query
+            .split('&')
+            .filter_map(|parameter| parameter.split_once('='))
+            .collect();
+        assert_eq!(parameters.get("force"), Some(&"true"));
+        assert_eq!(parameters.get("v"), Some(&"true"));
+    }
+
+    #[tokio::test]
+    async fn sql_reader_failures_are_distinct_from_docker_input_write_failures() {
+        struct FailedReader;
+        impl io::Read for FailedReader {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("private SQL input source"))
+            }
+        }
+        let error = stream_psql_input(Box::new(FailedReader), &mut tokio::io::sink())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::SqlInputRead(_)));
+
+        let (mut writer, reader) = tokio::io::duplex(16);
+        drop(reader);
+        let error = stream_psql_input(Box::new(io::Cursor::new(b"select 1")), &mut writer)
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Io(_)));
+    }
+
+    #[test]
+    fn docker_failures_keep_safe_causes_without_endpoint_values() {
+        let secret_path = "/tmp/docker-password-secret.sock";
+        let missing = BollardError::SocketNotFoundError(secret_path.into());
+        let Error::DockerNotAvailable(message) =
+            docker_unavailable(DockerConnectStage::Constructor, &missing)
+        else {
+            panic!("expected DockerNotAvailable");
+        };
+        assert!(
+            message
+                .starts_with("could not initialize Docker client: Docker socket was not found.\n")
+        );
+        assert!(!message.contains(secret_path));
+
+        let invalid = BollardError::UnsupportedURISchemeError {
+            uri: "tcp+secret://user:password@example.test".into(),
+        };
+        let Error::DockerNotAvailable(message) =
+            docker_unavailable(DockerConnectStage::Constructor, &invalid)
+        else {
+            panic!("expected DockerNotAvailable");
+        };
+        assert!(message.contains("DOCKER_HOST is invalid or uses an unsupported scheme"));
+        assert!(!message.contains("user:password"));
+        assert!(!message.contains("example.test"));
+    }
+
+    #[test]
+    fn docker_ping_failures_preserve_actionable_io_causes() {
+        for (kind, expected) in [
+            (
+                io::ErrorKind::PermissionDenied,
+                "permission denied while opening the Docker socket",
+            ),
+            (
+                io::ErrorKind::ConnectionRefused,
+                "the Docker daemon refused the connection",
+            ),
+            (
+                io::ErrorKind::TimedOut,
+                "the Docker daemon connection timed out",
+            ),
+        ] {
+            let error = BollardError::IOError {
+                err: io::Error::new(kind, "sensitive endpoint details"),
+            };
+            let Error::DockerNotAvailable(message) =
+                docker_unavailable(DockerConnectStage::Ping, &error)
+            else {
+                panic!("expected DockerNotAvailable");
+            };
+            assert!(
+                message.starts_with(&format!("Docker daemon is not reachable: {expected}.\n")),
+                "{message}"
+            );
+            assert!(!message.contains("sensitive endpoint details"));
+        }
+    }
+
+    #[test]
+    fn docker_endpoint_failure_causes_are_platform_aware() {
+        assert_eq!(
+            docker_failure_cause(
+                DockerConnectStage::Constructor,
+                DockerFailureKind::MissingSocket,
+                HostPlatform::Windows,
+            ),
+            "Docker named pipe was not found"
+        );
+        assert_eq!(
+            docker_failure_cause(
+                DockerConnectStage::Ping,
+                DockerFailureKind::PermissionDenied,
+                HostPlatform::Windows,
+            ),
+            "permission denied while opening the Docker named pipe"
+        );
+        assert_eq!(
+            docker_failure_cause(
+                DockerConnectStage::Constructor,
+                DockerFailureKind::MissingSocket,
+                HostPlatform::Linux,
+            ),
+            "Docker socket was not found"
+        );
+    }
+
+    #[test]
+    fn docker_timeout_and_http_status_failures_are_classified() {
+        let timeout = BollardError::RequestTimeoutError;
+        assert_eq!(
+            classify_docker_failure(&timeout),
+            DockerFailureKind::TimedOut
+        );
+
+        let response = BollardError::DockerResponseServerError {
+            status_code: 503,
+            message: "sensitive daemon response".into(),
+        };
+        assert_eq!(
+            classify_docker_failure(&response),
+            DockerFailureKind::HttpStatus(503)
+        );
+        let Error::DockerNotAvailable(message) =
+            docker_unavailable(DockerConnectStage::Ping, &response)
+        else {
+            panic!("expected DockerNotAvailable");
+        };
+        assert!(message.contains("the Docker API returned HTTP status 503"));
+        assert!(!message.contains("sensitive daemon response"));
+    }
+
+    #[test]
+    fn docker_guidance_is_platform_aware() {
+        let macos = docker_guidance(HostPlatform::MacOs);
+        assert!(macos.contains("Docker Desktop"));
+        assert!(macos.contains("socket"));
+        assert!(macos.contains("docker context show"));
+        assert!(macos.contains("DOCKER_HOST"));
+
+        let linux = docker_guidance(HostPlatform::Linux);
+        assert!(linux.contains("Docker Engine or Docker Desktop"));
+        assert!(linux.contains("socket"));
+        assert!(linux.contains("docker context show"));
+        assert!(linux.contains("rootless Docker"));
+        assert!(linux.contains("DOCKER_HOST"));
+
+        let windows = docker_guidance(HostPlatform::Windows);
+        assert!(windows.contains("Docker Desktop or Docker Engine"));
+        assert!(windows.contains("named-pipe permissions"));
+        assert!(windows.contains("docker context show"));
+        assert!(windows.contains("DOCKER_HOST"));
+    }
+
+    #[test]
+    fn pull_progress_is_interactive_only_for_human_ttys() {
+        assert_eq!(
+            pull_progress_mode(true, true, false),
+            PullProgressMode::Interactive
+        );
+        assert_eq!(
+            pull_progress_mode(false, true, false),
+            PullProgressMode::Collapsed
+        );
+        assert_eq!(
+            pull_progress_mode(true, false, false),
+            PullProgressMode::Collapsed
+        );
+        assert_eq!(
+            pull_progress_mode(true, true, true),
+            PullProgressMode::Silent
+        );
+    }
+
+    #[test]
+    fn collapsed_pull_progress_is_one_bounded_summary_line() {
+        let mut output = Vec::new();
+        let reporter = PullReporter::new("postgres:18".to_string(), PullProgressMode::Collapsed);
+        reporter.start(&mut output);
+        for (id, status) in [
+            ("layer-a", "Pulling fs layer"),
+            ("layer-a", "Downloading"),
+            ("layer-b", "Pulling fs layer"),
+            ("layer-b", "Pull complete"),
+        ] {
+            reporter.event(
+                &CreateImageInfo {
+                    id: Some(id.to_string()),
+                    status: Some(status.to_string()),
+                    ..Default::default()
+                },
+                &mut output,
+            );
+        }
+        reporter.finish(&mut output);
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "Pulling postgres:18... done\n"
+        );
+    }
+
+    #[test]
+    fn interactive_pull_progress_keeps_layer_and_byte_context() {
+        let mut output = Vec::new();
+        let reporter = PullReporter::new("postgres:18".to_string(), PullProgressMode::Interactive);
+        reporter.start(&mut output);
+        reporter.event(
+            &CreateImageInfo {
+                id: Some("layer-a".to_string()),
+                status: Some("Downloading".to_string()),
+                progress_detail: Some(ProgressDetail {
+                    current: Some(50),
+                    total: Some(100),
+                }),
+                ..Default::default()
+            },
+            &mut output,
+        );
+        reporter.finish(&mut output);
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "Pulling postgres:18...\n  layer-a: Downloading (50/100 bytes, 50%)\nPulled postgres:18\n"
+        );
+    }
+
+    #[test]
+    fn collapsed_pull_failure_closes_the_summary_line() {
+        let mut output = Vec::new();
+        let reporter =
+            PullReporter::new("postgres:missing".to_string(), PullProgressMode::Collapsed);
+        reporter.start(&mut output);
+        reporter.fail(&mut output);
+
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "Pulling postgres:missing... failed\n"
+        );
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn remove_host_dir_removes_normal_directory() {
+        let tempdir = tempfile::tempdir().expect("create cleanup tempdir");
+        let directory = tempdir.path().join("normal-pg18");
+        std::fs::create_dir_all(directory.join("data")).expect("create data directory");
+        std::fs::write(directory.join("data/PG_VERSION"), "18").expect("write data file");
+
+        remove_host_dir_blocking(&directory).expect("remove host directory");
+
+        assert!(!directory.exists());
+    }
+
+    #[test]
+    fn privileged_remove_passes_metacharacters_as_one_argument() {
+        let basename = "db; touch injected; $(whoami) *";
+
+        assert_eq!(
+            privileged_remove_command(basename),
+            vec![
+                "rm".to_string(),
+                "-rf".to_string(),
+                "--".to_string(),
+                format!("/work/{basename}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn missing_container_is_already_removed() {
+        assert!(
+            remove_container_result(Err(BollardError::DockerResponseServerError {
+                status_code: 404,
+                message: "No such container".to_string(),
+            }))
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn log_tail_is_bounded_by_bytes() {
+        let mut buffer = Vec::new();
+        assert!(!append_bounded_tail(&mut buffer, b"first\n", 10));
+        assert!(append_bounded_tail(&mut buffer, b"second\n", 10));
+        assert_eq!(buffer, b"st\nsecond\n");
+
+        assert!(append_bounded_tail(&mut buffer, b"0123456789abcdef", 10));
+        assert_eq!(buffer, b"6789abcdef");
+    }
 }

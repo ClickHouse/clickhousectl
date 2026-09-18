@@ -8,8 +8,8 @@
 // Each test binary uses a different subset — silence dead_code for the rest.
 #![allow(dead_code)]
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 use std::env;
 use std::fmt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -105,12 +105,35 @@ impl TestContext {
         })
     }
 
+    /// Keep generated resource names within the Cloud service name limit. Hash
+    /// the full run ID before shortening, so a shared label prefix does not
+    /// collapse distinct runs. Reserve the suffix before trimming the label.
+    fn resource_name(&self, prefix: &str, suffix: &str) -> String {
+        const MAX_NAME_CHARS: usize = 50;
+        let name = format!("{prefix}{}{suffix}", self.run_id);
+        if name.chars().count() <= MAX_NAME_CHARS {
+            return name;
+        }
+        // Fixed FNV-1a keeps names reproducible across processes and Rust
+        // versions; this fingerprint is for collision avoidance, not security.
+        let hash = self
+            .run_id
+            .bytes()
+            .fold(0xcbf29ce484222325_u64, |hash, byte| {
+                (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3)
+            });
+        let fingerprint = format!("{hash:016x}");
+        let label_budget = MAX_NAME_CHARS - prefix.len() - suffix.len() - fingerprint.len() - 1;
+        let label: String = self.run_id.chars().take(label_budget).collect();
+        format!("{prefix}{label}-{fingerprint}{suffix}")
+    }
+
     pub fn service_name(&self) -> String {
-        format!("clickhousectl-it-{}", self.run_id)
+        self.resource_name("clickhousectl-it-", "")
     }
 
     pub fn updated_service_name(&self) -> String {
-        format!("{}-updated", self.service_name())
+        self.resource_name("clickhousectl-it-", "-updated")
     }
 
     pub fn run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -139,11 +162,11 @@ impl TestContext {
     }
 
     pub fn postgres_service_name(&self) -> String {
-        format!("clickhousectl-it-pg-{}", self.run_id)
+        self.resource_name("clickhousectl-it-pg-", "")
     }
 
     pub fn postgres_replica_name(&self) -> String {
-        format!("clickhousectl-it-pgrr-{}", self.run_id)
+        self.resource_name("clickhousectl-it-pgrr-", "")
     }
 
     pub fn postgres_run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -209,11 +232,11 @@ impl TestContext {
     }
 
     pub fn clickpipe_service_name(&self) -> String {
-        format!("clickhousectl-it-cp-{}", self.run_id)
+        self.resource_name("clickhousectl-it-cp-", "")
     }
 
     pub fn clickpipe_postgres_service_name(&self) -> String {
-        format!("clickhousectl-it-cp-pg-{}", self.run_id)
+        self.resource_name("clickhousectl-it-cp-pg-", "")
     }
 
     pub fn clickpipe_run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -244,7 +267,7 @@ impl TestContext {
     /// Shared service name for the multi-source E2E driver — one ClickHouse
     /// service hosts all per-source stages in a run.
     pub fn clickpipe_e2e_service_name(&self) -> String {
-        format!("clickhousectl-it-cp-e2e-{}", self.run_id)
+        self.resource_name("clickhousectl-it-cp-e2e-", "")
     }
 
     pub fn clickpipe_e2e_run_tags(&self) -> Vec<ResourceTagsV1> {
@@ -275,32 +298,35 @@ impl TestContext {
     /// S3 bucket names must be globally unique, 3–63 chars, lowercase letters,
     /// digits, hyphens. `run_id` is already constrained to safe chars.
     pub fn aws_s3_bucket_name(&self) -> String {
-        let raw = format!("clickhousectl-e2e-s3-{}", self.run_id);
+        let raw = self.resource_name("clickhousectl-e2e-s3-", "");
         // S3 forbids underscores; substitute for safety even if run_id is clean today.
         raw.replace('_', "-").to_ascii_lowercase()
     }
 
     pub fn aws_iam_role_name(&self) -> String {
-        format!("clickhousectl-e2e-s3-{}", self.run_id)
+        self.resource_name("clickhousectl-e2e-s3-", "")
     }
 
     /// Kinesis stream names: 1–128 chars, `[A-Za-z0-9_.-]`. `run_id` is already
     /// safe but keep this distinct from the S3 role/bucket names for clarity.
     pub fn aws_kinesis_stream_name(&self) -> String {
-        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+        self.resource_name("clickhousectl-e2e-kinesis-", "")
     }
 
     /// IAM role name dedicated to the Kinesis stage (trust scoped to the
     /// per-test CHC service principal).
     pub fn aws_kinesis_iam_role_name(&self) -> String {
-        format!("clickhousectl-e2e-kinesis-{}", self.run_id)
+        self.resource_name("clickhousectl-e2e-kinesis-", "")
     }
 }
 
 pub fn create_client() -> TestResult<Client> {
     let key = required_env("CLICKHOUSE_CLOUD_API_KEY")?;
     let secret = required_env("CLICKHOUSE_CLOUD_API_SECRET")?;
-    match env::var("CLICKHOUSE_CLOUD_API_BASE_URL").ok().filter(|s| !s.is_empty()) {
+    match env::var("CLICKHOUSE_CLOUD_API_BASE_URL")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
         Some(base_url) => Ok(Client::with_base_url(base_url, key, secret)),
         None => Ok(Client::new(key, secret)),
     }
@@ -417,7 +443,7 @@ impl FailureRecorder {
 pub struct ClickhouseSettingRestore {
     pub service_id: String,
     pub setting_name: String,
-    pub original_value: String,
+    pub original_value: serde_json::Value,
 }
 
 #[derive(Default)]
@@ -440,6 +466,8 @@ pub struct CleanupRegistry {
     // before the key they point to, otherwise we can't distinguish "binding
     // cleanup works" from "API key was already gone."
     query_endpoint_service_ids: Vec<String>,
+    // Saved Query API endpoints are distinct from instance-level bindings.
+    query_api_endpoints: Vec<(String, String)>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
     clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
@@ -505,7 +533,8 @@ impl CleanupRegistry {
         service_id: impl Into<String>,
         clickpipe_id: impl Into<String>,
     ) {
-        self.clickpipes.push((service_id.into(), clickpipe_id.into()));
+        self.clickpipes
+            .push((service_id.into(), clickpipe_id.into()));
     }
 
     /// Register a `default.<table>` destination table so teardown drops it.
@@ -521,12 +550,15 @@ impl CleanupRegistry {
     pub fn merge_from(&mut self, mut other: CleanupRegistry) {
         self.service_ids.append(&mut other.service_ids);
         self.postgres_ids.append(&mut other.postgres_ids);
-        self.postgres_replica_ids.append(&mut other.postgres_replica_ids);
+        self.postgres_replica_ids
+            .append(&mut other.postgres_replica_ids);
         self.clickpipes.append(&mut other.clickpipes);
         self.tables.append(&mut other.tables);
         self.api_key_ids.append(&mut other.api_key_ids);
         self.query_endpoint_service_ids
             .append(&mut other.query_endpoint_service_ids);
+        self.query_api_endpoints
+            .append(&mut other.query_api_endpoints);
         self.role_ids.append(&mut other.role_ids);
         self.invitation_ids.append(&mut other.invitation_ids);
         self.clickhouse_setting_restores
@@ -543,8 +575,7 @@ impl CleanupRegistry {
     }
 
     pub fn unregister_api_key(&mut self, key_id: &str) {
-        self.api_key_ids
-            .retain(|registered| registered != key_id);
+        self.api_key_ids.retain(|registered| registered != key_id);
     }
 
     pub fn register_query_endpoint(&mut self, service_id: impl Into<String>) {
@@ -554,6 +585,20 @@ impl CleanupRegistry {
     pub fn unregister_query_endpoint(&mut self, service_id: &str) {
         self.query_endpoint_service_ids
             .retain(|registered| registered != service_id);
+    }
+
+    pub fn register_query_api_endpoint(
+        &mut self,
+        service_id: impl Into<String>,
+        endpoint_id: impl Into<String>,
+    ) {
+        self.query_api_endpoints
+            .push((service_id.into(), endpoint_id.into()));
+    }
+
+    pub fn unregister_query_api_endpoint(&mut self, service_id: &str, endpoint_id: &str) {
+        self.query_api_endpoints
+            .retain(|(service, endpoint)| service != service_id || endpoint != endpoint_id);
     }
 
     pub fn register_role(&mut self, role_id: impl Into<String>) {
@@ -577,13 +622,14 @@ impl CleanupRegistry {
         &mut self,
         service_id: impl Into<String>,
         setting_name: impl Into<String>,
-        original_value: impl Into<String>,
+        original_value: impl Into<serde_json::Value>,
     ) {
-        self.clickhouse_setting_restores.push(ClickhouseSettingRestore {
-            service_id: service_id.into(),
-            setting_name: setting_name.into(),
-            original_value: original_value.into(),
-        });
+        self.clickhouse_setting_restores
+            .push(ClickhouseSettingRestore {
+                service_id: service_id.into(),
+                setting_name: setting_name.into(),
+                original_value: original_value.into(),
+            });
     }
 
     pub fn unregister_clickhouse_setting_restore(&mut self, service_id: &str, setting_name: &str) {
@@ -672,9 +718,7 @@ impl CleanupRegistry {
         // the wrong role, every subsequent run starts with bad state. A
         // 404 means the user is no longer in the org and we have nothing
         // to do.
-        while let Some((user_id, original_assigned_role_ids)) =
-            self.member_role_restores.pop()
-        {
+        while let Some((user_id, original_assigned_role_ids)) = self.member_role_restores.pop() {
             let body = MemberPatchRequest {
                 assigned_role_ids: Some(original_assigned_role_ids.clone()),
                 #[cfg(feature = "deprecated-fields")]
@@ -693,23 +737,11 @@ impl CleanupRegistry {
         // them. If the service is already gone (e.g. test deleted it as part of
         // its body) the restore call will 404 and is skipped.
         while let Some(restore) = self.clickhouse_setting_restores.pop() {
-            // The `settings` field on the API is a JSON-encoded string; build
-            // it with serde_json so quotes / backslashes in the original value
-            // round-trip correctly.
-            let inner = match serde_json::to_string(&serde_json::json!({
-                restore.setting_name.clone(): restore.original_value.clone(),
-            })) {
-                Ok(s) => s,
-                Err(e) => {
-                    failures.push(format!(
-                        "serialize clickhouse setting restore body for {} on {}: {}",
-                        restore.setting_name, restore.service_id, e
-                    ));
-                    continue;
-                }
-            };
             let body = ServiceClickhouseSettingsPatchRequest {
-                settings: Some(inner),
+                settings: Some(std::collections::BTreeMap::from([(
+                    restore.setting_name.clone(),
+                    serde_json::json!(restore.original_value),
+                )])),
             };
             match client
                 .service_clickhouse_settings_update(org_id, &restore.service_id, &body)
@@ -748,11 +780,29 @@ impl CleanupRegistry {
             }
         }
 
+        // Saved endpoints also reference API keys and services. Delete only
+        // endpoint IDs created and registered by this test, before either parent.
+        while let Some((service_id, endpoint_id)) = self.query_api_endpoints.pop() {
+            match client
+                .query_api_endpoint_delete(org_id, &service_id, &endpoint_id)
+                .await
+            {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!(
+                    "query API endpoint {endpoint_id} on {service_id}: {e}"
+                )),
+            }
+        }
+
         // Query endpoint bindings reference an API key, so drop them first.
         // The service itself may still be around; that's fine — we're just
         // removing the binding so the API key can be deleted cleanly next.
         while let Some(service_id) = self.query_endpoint_service_ids.pop() {
-            match client.instance_query_endpoint_delete(org_id, &service_id).await {
+            match client
+                .instance_query_endpoint_delete(org_id, &service_id)
+                .await
+            {
                 Ok(_) => {}
                 Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
                 Err(e) => failures.push(format!("query endpoint on {service_id}: {e}")),
@@ -823,9 +873,11 @@ impl CleanupRegistry {
             self.tables.clear();
         }
 
-
         while let Some(service_id) = self.service_ids.pop() {
-            if let Err(error) = ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval).await {
+            if let Err(error) =
+                ensure_service_gone(client, org_id, &service_id, delete_timeout, poll_interval)
+                    .await
+            {
                 failures.push(format!("{service_id}: {error}"));
             }
         }
@@ -843,7 +895,10 @@ impl CleanupRegistry {
         }
 
         while let Some(postgres_id) = self.postgres_ids.pop() {
-            if let Err(error) = ensure_postgres_gone(client, org_id, &postgres_id, delete_timeout, poll_interval).await {
+            if let Err(error) =
+                ensure_postgres_gone(client, org_id, &postgres_id, delete_timeout, poll_interval)
+                    .await
+            {
                 failures.push(format!("postgres {postgres_id}: {error}"));
             }
         }
@@ -866,9 +921,11 @@ async fn restore_scaling_schedule(
         entries: restore
             .pre_state
             .entries
-            .iter()
-            .map(scaling_schedule_entry_to_request)
-            .collect(),
+            .clone()
+            .unwrap_or_default()
+            .into_iter()
+            .map(ScalingScheduleEntryRequest::try_from)
+            .collect::<Result<Vec<_>, _>>()?,
     };
     match client
         .scaling_schedule_upsert(org_id, &restore.service_id, &body)
@@ -887,10 +944,7 @@ async fn restore_upgrade_window(
     restore: &UpgradeWindowRestore,
 ) -> TestResult<()> {
     eprintln!("  cleanup: restoring upgrade window pre-state");
-    let body = UpgradeWindowPutRequest {
-        start_hour_utc: restore.pre_state.start_hour_utc,
-        weekday: restore.pre_state.weekday,
-    };
+    let body = UpgradeWindowPutRequest::try_from(restore.pre_state.clone())?;
     match client
         .upgrade_window_update(org_id, &restore.service_id, &body)
         .await
@@ -902,21 +956,42 @@ async fn restore_upgrade_window(
     }
 }
 
-pub fn scaling_schedule_entry_to_request(
-    entry: &ScalingScheduleEntry,
-) -> ScalingScheduleEntryRequest {
-    ScalingScheduleEntryRequest {
-        end_hour_utc: entry.end_hour_utc,
-        idle_scaling: entry.idle_scaling,
-        idle_timeout_minutes: entry.idle_timeout_minutes,
-        max_replica_memory_gb: entry.max_replica_memory_gb,
-        max_replicas: entry.max_replicas,
-        min_replica_memory_gb: entry.min_replica_memory_gb,
-        min_replicas: entry.min_replicas,
-        name: entry.name.clone(),
-        start_hour_utc: entry.start_hour_utc,
-        weekdays: entry.weekdays.clone(),
-    }
+/// Requires a response field a test cannot proceed without.
+///
+/// Every response model field is `Option<T>`, so a test that needs a value says
+/// so here instead of unwrapping and panicking on a field the API dropped.
+pub fn require_field<T>(value: Option<T>, field: &str) -> TestResult<T> {
+    value.ok_or_else(|| format!("the API response is missing required field '{field}'").into())
+}
+
+/// A response field rendered as a string, or an empty string when the API
+/// omitted it (which matches no real value).
+pub fn field_string<T: fmt::Display>(value: Option<T>) -> String {
+    value.map(|value| value.to_string()).unwrap_or_default()
+}
+
+/// A service's state as a string, or an empty string when the API omitted it
+/// (which matches no known state).
+pub fn service_state(service: &Service) -> String {
+    service
+        .state
+        .as_ref()
+        .map(|state| state.to_string())
+        .unwrap_or_default()
+}
+
+/// The service's HTTPS endpoint, which every query helper needs.
+pub fn https_endpoint(service: &Service) -> TestResult<ServiceEndpoint> {
+    service
+        .endpoints
+        .as_ref()
+        .and_then(|endpoints| {
+            endpoints
+                .iter()
+                .find(|e| e.protocol == Some(ServiceEndpointProtocol::Https))
+        })
+        .cloned()
+        .ok_or_else(|| "ClickHouse service has no https endpoint".into())
 }
 
 async fn ensure_service_gone(
@@ -932,7 +1007,7 @@ async fn ensure_service_gone(
     match client.instance_get(org_id, service_id).await {
         Ok(resp) => {
             if let Some(svc) = resp.result {
-                let state = svc.state.to_string();
+                let state = service_state(&svc);
                 if matches!(state.as_str(), "running" | "idle" | "starting" | "awaking") {
                     eprintln!("  cleanup: stopping service before delete");
                     let _ = client
@@ -945,24 +1020,29 @@ async fn ensure_service_gone(
                         )
                         .await;
                     // Wait for stop
-                    let _ = poll_until("service stop for cleanup", delete_timeout, poll_interval, || {
-                        let client = client.clone();
-                        let org_id = org_id.to_string();
-                        let service_id = service_id.to_string();
-                        async move {
-                            let resp = client.instance_get(&org_id, &service_id).await?;
-                            let state = resp
-                                .result
-                                .as_ref()
-                                .map(|s| s.state.to_string())
-                                .unwrap_or_default();
-                            if matches!(state.as_str(), "stopped" | "idle" | "degraded" | "failed") {
-                                Ok(Some(()))
-                            } else {
-                                Ok(None)
+                    let _ = poll_until(
+                        "service stop for cleanup",
+                        delete_timeout,
+                        poll_interval,
+                        || {
+                            let client = client.clone();
+                            let org_id = org_id.to_string();
+                            let service_id = service_id.to_string();
+                            async move {
+                                let resp = client.instance_get(&org_id, &service_id).await?;
+                                let state =
+                                    resp.result.as_ref().map(service_state).unwrap_or_default();
+                                if matches!(
+                                    state.as_str(),
+                                    "stopped" | "idle" | "degraded" | "failed"
+                                ) {
+                                    Ok(Some(()))
+                                } else {
+                                    Ok(None)
+                                }
                             }
-                        }
-                    })
+                        },
+                    )
                     .await;
                 }
             }
@@ -1006,13 +1086,19 @@ async fn ensure_clickpipe_gone(
 ) -> TestResult<()> {
     eprintln!("  cleanup: ensuring clickpipe is gone");
 
-    match client.click_pipe_get(org_id, service_id, clickpipe_id).await {
+    match client
+        .click_pipe_get(org_id, service_id, clickpipe_id)
+        .await
+    {
         Ok(_) => {}
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
         Err(_) => {}
     }
 
-    match client.click_pipe_delete(org_id, service_id, clickpipe_id).await {
+    match client
+        .click_pipe_delete(org_id, service_id, clickpipe_id)
+        .await
+    {
         Ok(_) => {}
         Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => return Ok(()),
         Err(e) => return Err(e.into()),
@@ -1024,7 +1110,10 @@ async fn ensure_clickpipe_gone(
         let service_id = service_id.to_string();
         let clickpipe_id = clickpipe_id.to_string();
         async move {
-            match client.click_pipe_get(&org_id, &service_id, &clickpipe_id).await {
+            match client
+                .click_pipe_get(&org_id, &service_id, &clickpipe_id)
+                .await
+            {
                 Ok(_) => Ok(None),
                 Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => Ok(Some(())),
                 Err(e) => Err(e.into()),
@@ -1116,6 +1205,73 @@ where
                 message.push_str(&format!("; last error: {error}"));
             }
             return Err(message.into());
+        }
+
+        tokio::time::sleep(interval).await;
+    }
+}
+
+// ── Retry ────────────────────────────────────────────────────────────
+
+/// Retry an API call whose error matches `retryable`.
+///
+/// Unlike [`poll_until`], which polls a *status* and returns once a condition
+/// is met, this retries an *operation* that may itself fail with a transient
+/// error. The closure is re-invoked on each attempt; errors for which
+/// `retryable` returns `true` are logged and retried after `interval`, up to
+/// `timeout`. Non-retryable errors are returned immediately. On timeout the
+/// last retryable error (if any) is returned, otherwise a generic timeout
+/// error.
+///
+/// Used to smooth over races where the API rejects an otherwise-valid request
+/// because a prerequisite resource hasn't settled yet (e.g. creating a
+/// Postgres read replica against a primary that hasn't taken its first
+/// backup). The test infra is ClickHouse-Cloud-specific, so this is typed to
+/// [`clickhouse_cloud_api::Error`] directly — no downcasting needed.
+pub async fn retry_api_call<F, Fut, T>(
+    description: &str,
+    timeout: Duration,
+    interval: Duration,
+    mut attempt: F,
+    retryable: impl Fn(&clickhouse_cloud_api::Error) -> bool,
+) -> TestResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, clickhouse_cloud_api::Error>>,
+{
+    let started = Instant::now();
+    let mut last_retryable: Option<String> = None;
+    loop {
+        match attempt().await {
+            Ok(value) => {
+                if last_retryable.is_some() {
+                    eprintln!(
+                        "  retry: {description} succeeded after {:?}",
+                        started.elapsed()
+                    );
+                }
+                return Ok(value);
+            }
+            Err(error) => {
+                if !retryable(&error) {
+                    return Err(error.into());
+                }
+                let message = error.to_string();
+                eprintln!(
+                    "  retry: {description} transient failure (will retry): {}",
+                    first_line(&message)
+                );
+                last_retryable = Some(message);
+            }
+        }
+
+        if started.elapsed() >= timeout {
+            let detail = last_retryable.unwrap_or_else(|| "no retryable error recorded".into());
+            return Err(format!(
+                "timed out after {:?} retrying {description}; last error: {detail}",
+                started.elapsed()
+            )
+            .into());
         }
 
         tokio::time::sleep(interval).await;
@@ -1231,7 +1387,7 @@ pub async fn provision_clickhouse(
         region: ServicePostRequestRegion::Unknown(ctx.region.clone()),
         min_replica_memory_gb: Some(8.0),
         max_replica_memory_gb: Some(8.0),
-        num_replicas: Some(1.0),
+        num_replicas: Some(1),
         idle_scaling: Some(true),
         idle_timeout_minutes: Some(5.0),
         ip_access_list: vec![IpAccessListEntry {
@@ -1247,8 +1403,9 @@ pub async fn provision_clickhouse(
         .await?
         .result
         .ok_or("service create returned no result")?;
-    let service_id = created.service.id.to_string();
-    let password = created.password.clone();
+    let service = require_field(created.service, "service")?;
+    let service_id = require_field(service.id, "service.id")?.to_string();
+    let password = require_field(created.password, "password")?;
     cleanup.register_service(service_id.clone());
     eprintln!("  provisioned clickhouse id <redacted>");
 
@@ -1263,7 +1420,7 @@ pub async fn provision_clickhouse(
             async move {
                 let resp = client.instance_get(&org_id, &service_id).await?;
                 let svc = resp.result.ok_or("service get returned no result")?;
-                let state = svc.state.to_string();
+                let state = service_state(&svc);
                 if matches!(state.as_str(), "running" | "idle") {
                     Ok(Some(svc))
                 } else {
@@ -1274,26 +1431,19 @@ pub async fn provision_clickhouse(
     )
     .await?;
 
-    if svc.iam_role.is_empty() {
-        return Err(
-            "provisioned service has no iamRole populated — cannot establish ClickPipes trust".into(),
-        );
-    }
+    let iam_role = svc.iam_role.clone().filter(|role| !role.is_empty()).ok_or(
+        "provisioned service has no iamRole populated — cannot establish ClickPipes trust",
+    )?;
 
-    let https_endpoint = svc
-        .endpoints
-        .iter()
-        .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
-        .ok_or("ClickHouse service has no https endpoint")?
-        .clone();
+    let https_endpoint = https_endpoint(&svc)?;
     let username = https_endpoint
         .username
         .clone()
         .unwrap_or_else(|| "default".to_string());
 
     let query = ClickHouseQuery::new(
-        &https_endpoint.host,
-        https_endpoint.port as u16,
+        &require_field(https_endpoint.host.clone(), "endpoints[].host")?,
+        require_field(https_endpoint.port, "endpoints[].port")? as u16,
         &username,
         &password,
     );
@@ -1301,7 +1451,7 @@ pub async fn provision_clickhouse(
     Ok(ProvisionedClickHouse {
         service_id,
         password,
-        iam_role: svc.iam_role,
+        iam_role,
         https_endpoint,
         username,
         query,
@@ -1327,16 +1477,20 @@ pub async fn attach_clickhouse(
     // a query is what actually triggers the wake. Send `SELECT 1` and poll
     // until the state field flips to `running` so subsequent pipe-creates
     // succeed.
-    let state = svc.state.to_string();
+    let state = service_state(&svc);
     if state == "idle" {
         eprintln!("  service is idle — sending wake query");
-        let https = svc
-            .endpoints
-            .iter()
-            .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
-            .ok_or("service has no https endpoint to wake")?;
-        let username = https.username.clone().unwrap_or_else(|| "default".to_string());
-        let wake_query = ClickHouseQuery::new(&https.host, https.port as u16, &username, password);
+        let https = https_endpoint(&svc)?;
+        let username = https
+            .username
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let wake_query = ClickHouseQuery::new(
+            &require_field(https.host.clone(), "endpoints[].host")?,
+            require_field(https.port, "endpoints[].port")? as u16,
+            &username,
+            password,
+        );
         let _ = wake_query.run_query("SELECT 1 FORMAT TabSeparated").await?;
 
         svc = poll_until(
@@ -1350,7 +1504,7 @@ pub async fn attach_clickhouse(
                 async move {
                     let resp = client.instance_get(&org_id, &service_id).await?;
                     let svc = resp.result.ok_or("service get returned no result")?;
-                    if svc.state.to_string() == "running" {
+                    if service_state(&svc) == "running" {
                         Ok(Some(svc))
                     } else {
                         Ok(None)
@@ -1360,31 +1514,24 @@ pub async fn attach_clickhouse(
         )
         .await?;
     } else if state != "running" {
-        return Err(format!(
-            "service {service_id} is in state {state}, expected running or idle"
-        )
-        .into());
-    }
-    if svc.iam_role.is_empty() {
         return Err(
-            "attached service has no iamRole populated — cannot establish ClickPipes trust".into(),
+            format!("service {service_id} is in state {state}, expected running or idle").into(),
         );
     }
+    let iam_role =
+        svc.iam_role.clone().filter(|role| !role.is_empty()).ok_or(
+            "attached service has no iamRole populated — cannot establish ClickPipes trust",
+        )?;
 
-    let https_endpoint = svc
-        .endpoints
-        .iter()
-        .find(|e| matches!(e.protocol, ServiceEndpointProtocol::Https))
-        .ok_or("ClickHouse service has no https endpoint")?
-        .clone();
+    let https_endpoint = https_endpoint(&svc)?;
     let username = https_endpoint
         .username
         .clone()
         .unwrap_or_else(|| "default".to_string());
 
     let query = ClickHouseQuery::new(
-        &https_endpoint.host,
-        https_endpoint.port as u16,
+        &require_field(https_endpoint.host.clone(), "endpoints[].host")?,
+        require_field(https_endpoint.port, "endpoints[].port")? as u16,
         &username,
         password,
     );
@@ -1393,7 +1540,7 @@ pub async fn attach_clickhouse(
     Ok(ProvisionedClickHouse {
         service_id: service_id.to_string(),
         password: password.to_string(),
-        iam_role: svc.iam_role,
+        iam_role,
         https_endpoint,
         username,
         query,
@@ -1469,5 +1616,95 @@ fn optional_env(name: &str) -> Option<String> {
     match env::var(name) {
         Ok(value) if !value.is_empty() => Some(value),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod name_tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn context(run_id: &str) -> TestContext {
+        TestContext {
+            org_id: String::new(),
+            provider: String::new(),
+            region: String::new(),
+            run_id: run_id.to_owned(),
+            secondary_user_id: None,
+            create_timeout: Duration::ZERO,
+            delete_timeout: Duration::ZERO,
+            steady_state_timeout: Duration::ZERO,
+            poll_interval: Duration::ZERO,
+            continue_on_non_blocking_failures: false,
+        }
+    }
+
+    fn names(ctx: &TestContext) -> [String; 11] {
+        [
+            ctx.service_name(),
+            ctx.updated_service_name(),
+            ctx.postgres_service_name(),
+            ctx.postgres_replica_name(),
+            ctx.clickpipe_service_name(),
+            ctx.clickpipe_postgres_service_name(),
+            ctx.clickpipe_e2e_service_name(),
+            ctx.aws_s3_bucket_name(),
+            ctx.aws_iam_role_name(),
+            ctx.aws_kinesis_stream_name(),
+            ctx.aws_kinesis_iam_role_name(),
+        ]
+    }
+
+    #[test]
+    fn all_name_builders_respect_limit_for_arbitrary_run_labels() {
+        for run_id in [
+            String::new(),
+            "nightly-1c577b3".to_owned(),
+            "manual-33677928044-1c577b3".to_owned(),
+            "long-label-".repeat(1000),
+            "é🦀".repeat(1000),
+        ] {
+            let ctx = context(&run_id);
+            for name in names(&ctx) {
+                assert!(name.chars().count() <= 50, "{name}");
+            }
+            assert!(ctx.updated_service_name().ends_with("-updated"));
+            // Each Cloud resource keeps its distinct purpose, even when the
+            // run ID consumes the entire available label budget.
+            assert_eq!(names(&ctx)[..7].iter().collect::<HashSet<_>>().len(), 7);
+            assert_eq!(names(&ctx), names(&ctx));
+        }
+    }
+
+    #[test]
+    fn shortening_preserves_distinct_run_tails() {
+        let shared_prefix = "same-prefix-".repeat(100);
+        let first = context(&format!("{shared_prefix}a-1c577b3"));
+        let second = context(&format!("{shared_prefix}b-1c577b3"));
+        let other_commit = context(&format!("{shared_prefix}a-7654321"));
+        for ((first, second), other_commit) in names(&first)
+            .into_iter()
+            .zip(names(&second))
+            .zip(names(&other_commit))
+        {
+            assert_ne!(first, second);
+            assert_ne!(first, other_commit);
+        }
+    }
+
+    #[test]
+    fn short_names_and_exact_limit_are_preserved() {
+        let ctx = context("pr-676-1c577b3");
+        assert_eq!(ctx.service_name(), "clickhousectl-it-pr-676-1c577b3");
+        assert_eq!(
+            ctx.updated_service_name(),
+            "clickhousectl-it-pr-676-1c577b3-updated"
+        );
+        let ctx = context(&"a".repeat(50 - "clickhousectl-it-".len() - "-updated".len()));
+        assert_eq!(
+            ctx.updated_service_name(),
+            format!("clickhousectl-it-{}-updated", ctx.run_id)
+        );
+        assert_eq!(ctx.updated_service_name().len(), 50);
     }
 }

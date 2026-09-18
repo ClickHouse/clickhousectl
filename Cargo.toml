@@ -2,5 +2,6 @@
 members = [
     "crates/clickhousectl",
     "crates/clickhouse-cloud-api",
+    "crates/clickhouse-openapi-analyzer",
 ]
 resolver = "3"

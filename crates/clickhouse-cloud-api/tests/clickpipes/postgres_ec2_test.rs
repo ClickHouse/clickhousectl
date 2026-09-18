@@ -1,6 +1,6 @@
 //! Postgres-on-EC2 ClickPipe E2E — own CHC service, single stage. Parallels
 //! the mysql/mongo per-source binaries. Distinct from the existing
-//! `clickpipe_postgres_cdc_test` (Al's library-driven test against
+//! `clickpipe_postgres_cli_cdc_test` (the required live CLI path against
 //! CHC-managed Postgres).
 
 #[path = "../common/mod.rs"]

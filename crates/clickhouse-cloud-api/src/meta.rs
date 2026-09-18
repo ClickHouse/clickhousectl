@@ -14,8 +14,8 @@
 //! python3 scripts/regenerate-beta-lists.py
 //! ```
 //!
-//! The `beta_operations_match_spec` test in `tests/spec_coverage_test.rs` fails
-//! if this list drifts from the spec.
+//! The shared OpenAPI analyzer reports drift if this list differs from the
+//! snapshot or live spec.
 
 /// Snake-case operation IDs (matching [`crate::client::Client`] method names)
 /// that the OpenAPI spec marks Beta via `x-badges`.
@@ -24,24 +24,49 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "backup_bucket_delete",
     "backup_bucket_get",
     "backup_bucket_update",
+    "click_pipe_schema_discovery",
+    "click_pipes_service_context_get",
     "click_stack_create_alert",
     "click_stack_create_dashboard",
+    "click_stack_create_role",
+    "click_stack_create_saved_search",
+    "click_stack_create_source",
+    "click_stack_create_webhook",
     "click_stack_delete_alert",
     "click_stack_delete_dashboard",
+    "click_stack_delete_role",
+    "click_stack_delete_saved_search",
+    "click_stack_delete_source",
+    "click_stack_delete_webhook",
     "click_stack_get_alert",
     "click_stack_get_dashboard",
+    "click_stack_get_role",
+    "click_stack_get_saved_search",
+    "click_stack_get_source",
     "click_stack_list_alerts",
     "click_stack_list_dashboards",
+    "click_stack_list_roles",
+    "click_stack_list_saved_searches",
     "click_stack_list_sources",
     "click_stack_list_webhooks",
     "click_stack_update_alert",
     "click_stack_update_dashboard",
+    "click_stack_update_role",
+    "click_stack_update_saved_search",
+    "click_stack_update_source",
+    "click_stack_update_webhook",
+    "click_stack_validate_dashboard",
+    "credit_balances_get",
+    "organization_quota_get",
+    "organization_quotas_get_list",
     "postgres_instance_config_get",
     "postgres_instance_config_patch",
     "postgres_instance_config_post",
     "postgres_instance_create_read_replica",
+    "postgres_instance_metrics_get",
     "postgres_instance_prometheus_get",
     "postgres_instance_restore",
+    "postgres_logs_get_list",
     "postgres_org_prometheus_get",
     "postgres_service_certs_get",
     "postgres_service_create",
@@ -51,13 +76,37 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "postgres_service_patch",
     "postgres_service_patch_state",
     "postgres_service_set_password",
+    "query_api_endpoint_create",
+    "query_api_endpoint_delete",
+    "query_api_endpoint_get",
+    "query_api_endpoint_list",
+    "query_api_endpoint_update",
     "scaling_schedule_delete",
     "scaling_schedule_get",
     "scaling_schedule_upsert",
+    "service_clickhouse_setting_delete",
     "service_clickhouse_setting_get",
     "service_clickhouse_settings_list_get",
     "service_clickhouse_settings_schema_get",
     "service_clickhouse_settings_update",
+    "slow_query_pattern_get",
+    "slow_query_patterns_get_list",
+    "snapshot_configuration_get",
+    "snapshot_configuration_update",
+    "snapshot_get",
+    "snapshot_get_list",
+    "udf_attach",
+    "udf_attachment_get",
+    "udf_attachment_list",
+    "udf_create",
+    "udf_delete",
+    "udf_detach",
+    "udf_get",
+    "udf_list",
+    "udf_upload_session_create",
+    "udf_version_create",
+    "udf_version_delete",
+    "udf_version_list",
 ];
 
 /// Returns `true` if `name` matches a client method backed by a Beta endpoint.
@@ -91,9 +140,15 @@ pub fn is_beta_operation(name: &str) -> bool {
 /// python3 scripts/regenerate-deprecated-fields.py
 /// ```
 ///
-/// The `deprecated_fields_match_spec` test in `tests/spec_coverage_test.rs`
-/// fails if this list drifts from the spec, and `deprecated_fields_hidden`
-/// fails if a field here lacks the `#[cfg(feature = "deprecated-fields")]`
+/// The script derives struct names from spec schema names alone, so a schema
+/// modeled as both a request and a response type needs the `{Name}Response`
+/// entry added by hand after regenerating (e.g. `ClickPipeScalingResponse`).
+/// The analyzer expects the pair once per Rust type the schema maps to, so a
+/// dropped response-variant entry fails the drift check rather than passing
+/// silently.
+///
+/// The shared OpenAPI analyzer reports drift if this list differs from the
+/// spec or if a field here lacks the `#[cfg(feature = "deprecated-fields")]`
 /// marker in `models.rs` (or vice versa).
 pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[
     ("ApiKey", "roles"),
@@ -101,6 +156,7 @@ pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[
     ("ApiKeyPostRequest", "roles"),
     ("ClickPipeScaling", "concurrency"),
     ("ClickPipeScalingPatchRequest", "concurrency"),
+    ("ClickPipeScalingResponse", "concurrency"),
     ("ClickStackTileInput", "asRatio"),
     ("ClickStackTileInput", "series"),
     ("Invitation", "role"),
@@ -154,6 +210,7 @@ mod tests {
         assert!(is_beta_operation("scaling_schedule_get"));
         assert!(is_beta_operation("postgres_service_get_list"));
         assert!(!is_beta_operation("services_list"));
+        assert!(!is_beta_operation("organization_prometheus_discovery_get"));
         assert!(!is_beta_operation("not_a_real_op"));
     }
 

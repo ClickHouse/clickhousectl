@@ -1,8 +1,500 @@
 mod common;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 use common::support::*;
+
+fn assert_saved_query_endpoint(
+    endpoint: &PublicQueryApiEndpoint,
+    expected: &PublicQueryApiEndpointRequest,
+) -> TestResult<()> {
+    let parameters = expected.parameters.clone().unwrap_or_default();
+    let origins = expected.allowed_origins.clone().unwrap_or_default();
+    if endpoint.name.as_ref() != Some(&expected.name)
+        || endpoint.sql.as_ref() != Some(&expected.sql)
+        || endpoint.database.as_ref() != Some(&expected.database)
+        || endpoint.parameters.as_ref() != Some(&parameters)
+        || endpoint.api_key_ids.as_ref() != Some(&expected.api_key_ids)
+        || endpoint.roles.as_ref() != Some(&expected.roles)
+        || endpoint.allowed_origins.as_ref() != Some(&origins)
+        || endpoint.owner_type != Some(PublicQueryApiEndpointOwnertype::QueryApiEndpoint)
+        || endpoint.url.as_ref().is_none_or(String::is_empty)
+    {
+        return Err("saved Query API endpoint did not preserve its configuration".into());
+    }
+    Ok(())
+}
+
+/// Page through a disposable service without assuming every endpoint is API-owned.
+async fn list_saved_query_endpoints(
+    client: &Client,
+    org: &str,
+    service: &str,
+) -> TestResult<Vec<PublicQueryApiEndpointListItem>> {
+    let mut cursor = None;
+    let mut seen_cursors = std::collections::BTreeSet::new();
+    let mut seen_ids = std::collections::BTreeSet::new();
+    let mut listed = Vec::new();
+    for _ in 0..100 {
+        let page = client
+            .query_api_endpoint_list(org, service, cursor.as_deref(), Some(1))
+            .await?
+            .result
+            .ok_or("Query API endpoint list returned no result")?;
+        let items = page.items.ok_or("Query API endpoint list omitted items")?;
+        let pagination = page
+            .pagination
+            .ok_or("Query API endpoint list omitted pagination")?;
+        if items.len() > 1 || pagination.limit != Some(1) {
+            return Err("Query API endpoint list did not respect limit=1".into());
+        }
+        if cursor.is_none() && pagination.current_cursor.is_some() {
+            return Err("Query API endpoint first page has a non-null current cursor".into());
+        }
+        for item in items {
+            let id = item.id.ok_or("Query API endpoint list item omitted id")?;
+            if !seen_ids.insert(id) {
+                return Err("Query API endpoint pagination repeated an endpoint".into());
+            }
+            listed.push(item);
+        }
+        cursor = pagination.next_cursor;
+        let Some(next_cursor) = &cursor else {
+            if pagination.total_records != Some(listed.len() as i64) {
+                return Err("Query API endpoint pagination total does not match items".into());
+            }
+            return Ok(listed);
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err("Query API endpoint pagination repeated a cursor".into());
+        }
+    }
+    Err("Query API endpoint pagination exceeded 100 pages on a disposable service".into())
+}
+
+/// Reuse the lifecycle's disposable service and API key. Register each newly
+/// created ID before assertions so the outer teardown also covers early failures.
+async fn cloud_saved_query_endpoint_lifecycle(
+    client: &Client,
+    cleanup: &mut CleanupRegistry,
+    org: &str,
+    service: &str,
+    api_key_id: &str,
+    name: &str,
+) -> TestResult<()> {
+    let mut request = PublicQueryApiEndpointRequest {
+        name: format!("{name}-saved-query"),
+        sql: "SELECT 1 AS value".to_string(),
+        database: "default".to_string(),
+        parameters: None,
+        api_key_ids: vec![api_key_id.parse()?],
+        roles: vec!["sql_console_admin".to_string()],
+        allowed_origins: None,
+    };
+    let mut created_ids = Vec::new();
+    // Two endpoints guarantee that limit=1 exercises a subsequent cursor page.
+    for suffix in ["first", "second"] {
+        request.name = format!("{name}-saved-query-{suffix}");
+        let created = client
+            .query_api_endpoint_create(org, service, &request)
+            .await?
+            .result
+            .ok_or("Query API endpoint create returned no result")?;
+        let id = created.id.ok_or("Query API endpoint create omitted id")?;
+        cleanup.register_query_api_endpoint(service, id.to_string());
+        created_ids.push(id);
+        assert_saved_query_endpoint(&created, &request)?;
+        let fetched = client
+            .query_api_endpoint_get(org, service, &id.to_string())
+            .await?
+            .result
+            .ok_or("Query API endpoint get returned no result")?;
+        if fetched.id != Some(id) {
+            return Err("Query API endpoint get returned a different id".into());
+        }
+        assert_saved_query_endpoint(&fetched, &request)?;
+    }
+
+    request.name = format!("{name}-saved-query-updated");
+    request.sql = "SELECT {value:UInt32} AS value".to_string();
+    request.parameters = Some(std::collections::BTreeMap::from([(
+        "value".to_string(),
+        "42".to_string(),
+    )]));
+    request.allowed_origins = Some(vec!["https://example.com".to_string()]);
+    let updated_id = created_ids[0];
+    let updated = client
+        .query_api_endpoint_update(org, service, &updated_id.to_string(), &request)
+        .await?
+        .result
+        .ok_or("Query API endpoint update returned no result")?;
+    if updated.id != Some(updated_id) {
+        return Err("Query API endpoint update changed its id".into());
+    }
+    assert_saved_query_endpoint(&updated, &request)?;
+    let fetched = client
+        .query_api_endpoint_get(org, service, &updated_id.to_string())
+        .await?
+        .result
+        .ok_or("Query API endpoint get after update returned no result")?;
+    if fetched.id != Some(updated_id) {
+        return Err("Query API endpoint get after update returned a different id".into());
+    }
+    assert_saved_query_endpoint(&fetched, &request)?;
+
+    let listed = list_saved_query_endpoints(client, org, service).await?;
+    for id in &created_ids {
+        let item = listed
+            .iter()
+            .find(|item| item.id == Some(*id))
+            .ok_or("Query API endpoint list omitted a created endpoint")?;
+        if item.owner_type != Some(PublicQueryApiEndpointListItemOwnertype::QueryApiEndpoint)
+            || item.api_key_ids.as_ref() != Some(&request.api_key_ids)
+            || item.roles.as_ref() != Some(&request.roles)
+            || item.database.as_ref() != Some(&request.database)
+            || item.url.as_ref().is_none_or(String::is_empty)
+        {
+            return Err("Query API endpoint list did not preserve endpoint metadata".into());
+        }
+        if *id == updated_id
+            && (item.name.as_ref() != Some(&request.name)
+                || item.allowed_origins != request.allowed_origins)
+        {
+            return Err("Query API endpoint list did not reflect the update".into());
+        }
+    }
+
+    for id in &created_ids {
+        client
+            .query_api_endpoint_delete(org, service, &id.to_string())
+            .await?;
+        cleanup.unregister_query_api_endpoint(service, &id.to_string());
+        match client
+            .query_api_endpoint_get(org, service, &id.to_string())
+            .await
+        {
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+            other => {
+                return Err(format!("expected 404 after endpoint deletion, got {other:?}").into());
+            }
+        }
+    }
+    let remaining = list_saved_query_endpoints(client, org, service).await?;
+    if remaining
+        .iter()
+        .any(|item| item.id.is_some_and(|id| created_ids.contains(&id)))
+    {
+        return Err("Query API endpoint list still includes a deleted endpoint".into());
+    }
+    Ok(())
+}
+
+/// Use the lifecycle's disposable service and restore its seeded overrides.
+async fn cloud_clickhouse_settings_native_contract(
+    client: &Client,
+    org: &str,
+    service: &str,
+) -> TestResult<()> {
+    let original = client
+        .service_clickhouse_settings_list_get(org, service)
+        .await?
+        .result
+        .ok_or("missing original settings result")?
+        .settings
+        .ok_or("missing original settings list")?;
+    let names = ["compatibility", "max_query_size"];
+    let original: std::collections::BTreeMap<_, _> = original
+        .into_iter()
+        .filter_map(|setting| Some((setting.name?, setting.value?)))
+        .filter(|(name, _)| names.contains(&name.as_str()))
+        .collect();
+    let wanted = serde_json::json!({"compatibility": "26.2", "max_query_size": 262146});
+    // Keep errors inside the future so every attempted write is followed by cleanup.
+    let outcome: TestResult<()> = async {
+        let request = ServiceClickhouseSettingsPatchRequest {
+            settings: Some(serde_json::from_value::<ServiceClickhouseSettingsMap>(
+                wanted.clone(),
+            )?),
+        };
+        let patched = client
+            .service_clickhouse_settings_update(org, service, &request)
+            .await?
+            .result
+            .ok_or("missing PATCH result")?;
+        if serde_json::to_value(patched.settings)? != wanted {
+            return Err("PATCH did not preserve the native settings map".into());
+        }
+        for name in names {
+            let setting = client
+                .service_clickhouse_setting_get(org, service, name)
+                .await?
+                .result
+                .ok_or("missing single GET result")?;
+            if setting.value.as_ref() != wanted.get(name) {
+                return Err(
+                    format!("single GET did not preserve {name}'s native type/value").into(),
+                );
+            }
+        }
+        let listed = client
+            .service_clickhouse_settings_list_get(org, service)
+            .await?
+            .result
+            .ok_or("missing list GET result")?
+            .settings
+            .ok_or("missing settings list")?;
+        for name in names {
+            let value = listed
+                .iter()
+                .find(|setting| setting.name.as_deref() == Some(name))
+                .and_then(|setting| setting.value.as_ref());
+            if value != wanted.get(name) {
+                return Err(format!("list GET did not preserve {name}'s native type/value").into());
+            }
+        }
+        Ok(())
+    }
+    .await;
+    let mut cleanup_errors = Vec::new();
+    for name in names {
+        if let Err(error) = client
+            .service_clickhouse_setting_delete(org, service, name)
+            .await
+        {
+            cleanup_errors.push(format!("reset {name}: {error}"));
+        }
+    }
+    if !original.is_empty() {
+        let request = ServiceClickhouseSettingsPatchRequest {
+            settings: Some(original),
+        };
+        if let Err(error) = client
+            .service_clickhouse_settings_update(org, service, &request)
+            .await
+        {
+            cleanup_errors.push(format!("restore original settings: {error}"));
+        }
+    }
+    if !cleanup_errors.is_empty() {
+        return Err(format!(
+            "contract outcome: {outcome:?}; cleanup: {}",
+            cleanup_errors.join("; ")
+        )
+        .into());
+    }
+    outcome
+}
+
+/// The service is already registered for deletion by the outer lifecycle.
+/// Return errors instead of panicking so teardown runs after a failed mutation
+/// or readback; the final successful transition leaves snapshots disabled.
+async fn cloud_snapshot_configuration_lifecycle(
+    client: &Client,
+    org: &str,
+    service: &str,
+) -> TestResult<()> {
+    let transitions = [
+        (
+            "enable scheduled snapshots",
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(true),
+                gap: Some(30.0),
+                time_frame: Some(1440.0),
+            },
+            (Some(true), Some(30.0), Some(1440.0)),
+        ),
+        (
+            "update snapshot cadence without changing enabled",
+            SnapshotConfigurationPatchRequest {
+                enabled: None,
+                gap: Some(60.0),
+                time_frame: Some(2880.0),
+            },
+            (Some(true), Some(60.0), Some(2880.0)),
+        ),
+        (
+            "disable scheduled snapshots without changing cadence",
+            SnapshotConfigurationPatchRequest {
+                enabled: Some(false),
+                gap: None,
+                time_frame: None,
+            },
+            (Some(false), Some(60.0), Some(2880.0)),
+        ),
+    ];
+    for (phase, request, expected) in transitions {
+        let updated = client
+            .snapshot_configuration_update(org, service, &request)
+            .await?
+            .result
+            .ok_or("snapshot configuration PATCH returned no result")?;
+        if (updated.enabled, updated.gap, updated.time_frame) != expected {
+            return Err(
+                format!("{phase}: snapshot configuration PATCH returned {updated:?}").into(),
+            );
+        }
+        let fetched = client
+            .snapshot_configuration_get(org, service)
+            .await?
+            .result
+            .ok_or("snapshot configuration GET returned no result")?;
+        if (fetched.enabled, fetched.gap, fetched.time_frame) != expected {
+            return Err(format!("{phase}: snapshot configuration GET returned {fetched:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn snapshot_configuration_lifecycle_checks_every_transition_and_rejects_bad_readback() {
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    for corrupt_readback in [false, true] {
+        let server = MockServer::start().await;
+        let client = Client::with_base_url(server.uri(), "key", "secret");
+        let endpoint = "/v1/organizations/org/services/service/snapshotConfiguration";
+        let transitions = [
+            (
+                serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+                serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+            ),
+            (
+                serde_json::json!({"gap": 60.0, "timeFrame": 2880.0}),
+                serde_json::json!({"enabled": true, "gap": 60.0, "timeFrame": 2880.0}),
+            ),
+            (
+                serde_json::json!({"enabled": false}),
+                serde_json::json!({"enabled": false, "gap": 60.0, "timeFrame": 2880.0}),
+            ),
+        ];
+        for (index, (request, result)) in transitions.into_iter().enumerate() {
+            let calls = if corrupt_readback && index > 0 { 0 } else { 1 };
+            Mock::given(method("PATCH"))
+                .and(path(endpoint))
+                .and(body_json(request))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"status": 200, "result": result})),
+                )
+                .expect(calls)
+                .mount(&server)
+                .await;
+            let readback = if corrupt_readback && index == 0 {
+                // A successful HTTP status must not hide a dropped write.
+                serde_json::json!({"enabled": false, "gap": 30.0, "timeFrame": 1440.0})
+            } else {
+                result
+            };
+            Mock::given(method("GET"))
+                .and(path(endpoint))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"status": 200, "result": readback})),
+                )
+                .up_to_n_times(1)
+                .with_priority(index as u8 + 1)
+                .expect(calls)
+                .mount(&server)
+                .await;
+        }
+        let outcome = cloud_snapshot_configuration_lifecycle(&client, "org", "service").await;
+        if corrupt_readback {
+            assert!(
+                outcome
+                    .unwrap_err()
+                    .to_string()
+                    .contains("snapshot configuration GET returned")
+            );
+        } else {
+            outcome.unwrap();
+        }
+        server.verify().await;
+    }
+}
+
+#[tokio::test]
+async fn settings_native_contract_restores_overrides_after_success_or_type_mismatch() {
+    use wiremock::matchers::{body_json, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    for corrupt_readback in [false, true] {
+        let server = MockServer::start().await;
+        let client = Client::with_base_url(server.uri(), "key", "secret");
+        let collection = "/v1/organizations/org/services/service/clickhouseSettings";
+        let original = serde_json::json!({"compatibility": "25.8", "max_query_size": 262144});
+        let wanted = serde_json::json!({"compatibility": "26.2", "max_query_size": 262146});
+        let response = |result: serde_json::Value| {
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"status": 200, "result": result}))
+        };
+        let list = |settings: &serde_json::Value| {
+            serde_json::json!({"settings": settings.as_object().unwrap().iter()
+                .map(|(name, value)| serde_json::json!({"name": name, "value": value}))
+                .collect::<Vec<_>>()})
+        };
+        Mock::given(method("GET"))
+            .and(path(collection))
+            .respond_with(response(list(&original)))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(collection))
+            .respond_with(response(list(&wanted)))
+            .with_priority(2)
+            .expect(if corrupt_readback { 0 } else { 1 })
+            .mount(&server)
+            .await;
+        for settings in [&wanted, &original] {
+            Mock::given(method("PATCH"))
+                .and(path(collection))
+                .and(body_json(serde_json::json!({"settings": settings})))
+                .respond_with(response(serde_json::json!({"settings": settings})))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        for name in ["compatibility", "max_query_size"] {
+            let value = if corrupt_readback && name == "max_query_size" {
+                serde_json::json!("262146")
+            } else {
+                wanted[name].clone()
+            };
+            Mock::given(method("GET"))
+                .and(path(format!("{collection}/{name}")))
+                .respond_with(response(serde_json::json!({"name": name, "value": value})))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("DELETE"))
+                .and(path(format!("{collection}/{name}")))
+                .respond_with(response(serde_json::Value::Null))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let outcome = cloud_clickhouse_settings_native_contract(&client, "org", "service").await;
+        if corrupt_readback {
+            assert!(
+                outcome
+                    .unwrap_err()
+                    .to_string()
+                    .contains("native type/value")
+            );
+        } else {
+            outcome.unwrap();
+        }
+        server.verify().await;
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[requests.len() - 3].method, "DELETE");
+        assert_eq!(requests[requests.len() - 2].method, "DELETE");
+        let restored: serde_json::Value = requests.last().unwrap().body_json().unwrap();
+        assert_eq!(restored, serde_json::json!({"settings": original}));
+    }
+}
 
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
@@ -25,8 +517,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         let deprecated_base_total_memory_gb = 12.0_f64;
         #[cfg(feature = "deprecated-fields")]
         let deprecated_scaled_total_memory_gb = 24.0_f64;
-        let base_replicas = 1.0_f64;
-        let scaled_replicas = 3.0_f64;
+        let base_replicas = 1_i64;
+        let scaled_replicas = 3_i64;
         let primary_ip = "203.0.113.10/32";
         let secondary_ip = "203.0.113.11/32";
 
@@ -44,7 +536,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             })
             .await?
             .expect("blocking steps always return a value");
-        assert_eq!(org.id.to_string(), ctx.org_id);
+        assert_eq!(field_string(org.id), ctx.org_id);
         let current_org_name = org.name.clone();
 
         let org_list = failures
@@ -65,7 +557,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         assert!(
             org_list
                 .iter()
-                .any(|o| o.id.to_string() == ctx.org_id),
+                .any(|o| field_string(o.id) == ctx.org_id),
             "org list did not include target org {}",
             ctx.org_id
         );
@@ -80,13 +572,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         .organization_update(
                             &org_id,
                             &OrganizationPatchRequest {
-                                name: Some(name),
+                                name,
                                 ..Default::default()
                             },
                         )
                         .await?;
                     let updated = resp.result.ok_or("org update returned no result")?;
-                    let updated_id = updated.id.to_string();
+                    let updated_id = field_string(updated.id);
                     if updated_id != org_id {
                         return Err(
                             format!("org update returned unexpected org id {updated_id}").into()
@@ -168,8 +660,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .await?
             .expect("blocking steps always return a value");
 
-        let service = &created.service;
-        let service_id = service.id.to_string();
+        let service = require_field(created.service, "service")?;
+        let service_id = require_field(service.id, "service.id")?.to_string();
         let _password = created.password.clone();
         eprintln!("service_id: <redacted>");
         cleanup.register_service(service_id.clone());
@@ -196,7 +688,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                     let resp =
                                         client.instance_get(&org_id, &service_id).await?;
                                     let svc = resp.result.ok_or("service get returned no result")?;
-                                    let state = svc.state.to_string();
+                                    let state = service_state(&svc);
                                     if matches!(state.as_str(), "running" | "idle") {
                                         Ok(Some(svc))
                                     } else {
@@ -212,10 +704,10 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .await?
             .expect("blocking steps always return a value");
 
-        assert_eq!(ready.name, ctx.service_name());
-        assert_eq!(ready.min_replica_memory_gb, base_memory_gb);
-        assert_eq!(ready.max_replica_memory_gb, base_memory_gb);
-        assert_eq!(ready.num_replicas, base_replicas);
+        assert_eq!(ready.name, Some(ctx.service_name()));
+        assert_eq!(ready.min_replica_memory_gb, Some(base_memory_gb));
+        assert_eq!(ready.max_replica_memory_gb, Some(base_memory_gb));
+        assert_eq!(ready.num_replicas, Some(base_replicas));
 
         let listed = failures
             .run(
@@ -239,9 +731,46 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         assert!(
             listed
                 .iter()
-                .any(|s| s.id.to_string() == service_id),
+                .any(|s| field_string(s.id) == service_id),
             "created service was not visible in service list"
         );
+
+        failures
+            .run(&ctx, StepKind::NonBlocking, "list and get service snapshots", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let service_id = service_id.clone();
+                async move {
+                    let snapshots = client
+                        .snapshot_get_list(&org_id, &service_id)
+                        .await?
+                        .result
+                        .ok_or("snapshot list returned no result")?;
+                    // Fresh services may have no snapshots yet. Exercise get
+                    // whenever one exists without waiting for a scheduled backup.
+                    if let Some(snapshot) = snapshots.first() {
+                        let id = snapshot.id.ok_or("snapshot list item omitted id")?;
+                        let fetched = client
+                            .snapshot_get(&org_id, &service_id, &id.to_string())
+                            .await?
+                            .result
+                            .ok_or("snapshot get returned no result")?;
+                        assert_eq!(fetched.id, Some(id));
+                        assert_eq!(fetched.service_id.as_deref(), Some(service_id.as_str()));
+                    }
+                    Ok(())
+                }
+            })
+            .await?;
+
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "verify snapshot configuration updates and omitted fields",
+                || cloud_snapshot_configuration_lifecycle(&client, &ctx.org_id, &service_id),
+            )
+            .await?;
 
         // ── 2. Query API Endpoint ────────────────────────────────────
         //
@@ -284,7 +813,12 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         // query endpoint. Management endpoints (GET/DELETE /keys/{id}) and the
         // endpoint binding's `openApiKeys` array reference the API key's
         // resource UUID instead — `query_key.key.id`.
-        let api_key_uuid = query_key.key.id.to_string();
+        // Every response field is `Option<T>`: require the credential pair and
+        // the key's resource UUID once here rather than at each use below.
+        let key_id = require_field(query_key.key_id.clone(), "keyId")?;
+        let key_secret = require_field(query_key.key_secret.clone(), "keySecret")?;
+        let api_key_uuid =
+            require_field(query_key.key.as_ref().and_then(|key| key.id), "key.id")?.to_string();
         cleanup.register_api_key(api_key_uuid.clone());
 
         // Before binding the key to a query endpoint, calling the Query API
@@ -300,8 +834,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 || {
                     let client = client.clone();
                     let service_id = service_id.clone();
-                    let key_id = query_key.key_id.clone();
-                    let key_secret = query_key.key_secret.clone();
+                    let key_id = key_id.clone();
+                    let key_secret = key_secret.clone();
                     async move {
                         match client
                             .run_query(
@@ -354,7 +888,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     let api_key_uuid = api_key_uuid.clone();
                     async move {
                         let body = InstanceServiceQueryApiEndpointsPostRequest {
-                            roles: vec!["sql_console_admin".to_string()],
+                            roles: vec![QueryEndpointRole::SqlConsoleAdmin],
                             open_api_keys: vec![api_key_uuid],
                             allowed_origins: "*".to_string(),
                         };
@@ -396,26 +930,36 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                             .ok_or("query endpoint get returned no result")?;
                         if endpoint.id != initial_endpoint.id {
                             return Err(format!(
-                                "get returned different endpoint id: {} (upsert) vs {} (get)",
+                                "get returned different endpoint id: {:?} (upsert) vs {:?} (get)",
                                 initial_endpoint.id, endpoint.id
                             )
                             .into());
                         }
-                        if !endpoint.roles.iter().any(|r| r == "sql_console_admin") {
+                        if !endpoint
+                            .roles
+                            .iter()
+                            .flatten()
+                            .any(|r| r == &QueryEndpointRole::SqlConsoleAdmin)
+                        {
                             return Err(format!(
                                 "get missing sql_console_admin role: {:?}",
                                 endpoint.roles
                             )
                             .into());
                         }
-                        if !endpoint.open_api_keys.contains(&api_key_uuid) {
+                        if !endpoint
+                            .open_api_keys
+                            .iter()
+                            .flatten()
+                            .any(|key| key == &api_key_uuid)
+                        {
                             return Err(format!(
                                 "get missing our key from openApiKeys: {:?}",
                                 endpoint.open_api_keys
                             )
                             .into());
                         }
-                        if endpoint.allowed_origins != "*" {
+                        if endpoint.allowed_origins.as_deref() != Some("*") {
                             return Err(format!(
                                 "get returned unexpected allowedOrigins: {:?}",
                                 endpoint.allowed_origins
@@ -435,8 +979,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .run(&ctx, StepKind::Blocking, "run SELECT 1 via Query API", || {
                 let client = client.clone();
                 let service_id = service_id.clone();
-                let key_id = query_key.key_id.clone();
-                let key_secret = query_key.key_secret.clone();
+                let key_id = key_id.clone();
+                let key_secret = key_secret.clone();
                 async move {
                     poll_until(
                         "query API SELECT 1",
@@ -506,8 +1050,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 || {
                     let client = client.clone();
                     let service_id = service_id.clone();
-                    let key_id = query_key.key_id.clone();
-                    let key_secret = query_key.key_secret.clone();
+                    let key_id = key_id.clone();
+                    let key_secret = key_secret.clone();
                     async move {
                         async fn exec(
                             client: &clickhouse_cloud_api::Client,
@@ -604,7 +1148,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                     let initial_endpoint = initial_endpoint.clone();
                     async move {
                         let body = InstanceServiceQueryApiEndpointsPostRequest {
-                            roles: vec!["sql_console_admin".to_string()],
+                            roles: vec![QueryEndpointRole::SqlConsoleAdmin],
                             open_api_keys: vec![api_key_uuid.clone()],
                             allowed_origins: "*".to_string(),
                         };
@@ -616,19 +1160,29 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                             .ok_or("re-upsert returned no result")?;
                         if endpoint.id != initial_endpoint.id {
                             return Err(format!(
-                                "re-upsert changed endpoint id: {} -> {}",
+                                "re-upsert changed endpoint id: {:?} -> {:?}",
                                 initial_endpoint.id, endpoint.id
                             )
                             .into());
                         }
-                        if !endpoint.open_api_keys.contains(&api_key_uuid) {
+                        if !endpoint
+                            .open_api_keys
+                            .iter()
+                            .flatten()
+                            .any(|key| key == &api_key_uuid)
+                        {
                             return Err(format!(
                                 "re-upsert dropped our key from openApiKeys: {:?}",
                                 endpoint.open_api_keys
                             )
                             .into());
                         }
-                        if !endpoint.roles.iter().any(|r| r == "sql_console_admin") {
+                        if !endpoint
+                            .roles
+                            .iter()
+                            .flatten()
+                            .any(|r| r == &QueryEndpointRole::SqlConsoleAdmin)
+                        {
                             return Err(format!(
                                 "re-upsert dropped sql_console_admin role: {:?}",
                                 endpoint.roles
@@ -649,8 +1203,8 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 || {
                     let client = client.clone();
                     let service_id = service_id.clone();
-                    let key_id = query_key.key_id.clone();
-                    let key_secret = query_key.key_secret.clone();
+                    let key_id = key_id.clone();
+                    let key_secret = key_secret.clone();
                     async move {
                         let response = client
                             .run_query(
@@ -740,6 +1294,27 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
+        // Saved Query API endpoint management is independent of the instance
+        // binding above. Reuse its key only after those assertions complete.
+        log_phase("Saved Query API Endpoints");
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "saved Query API endpoint create/get/list/update/delete",
+                || {
+                    cloud_saved_query_endpoint_lifecycle(
+                        &client,
+                        &mut cleanup,
+                        &ctx.org_id,
+                        &service_id,
+                        &api_key_uuid,
+                        &ctx.run_id,
+                    )
+                },
+            )
+            .await?;
+
         failures
             .run(&ctx, StepKind::Blocking, "delete query API key", || {
                 let client = client.clone();
@@ -780,7 +1355,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         async move {
                             let resp = client.instance_get(&org_id, &service_id).await?;
                             let svc = resp.result.ok_or("service get returned no result")?;
-                            let state = svc.state.to_string();
+                            let state = service_state(&svc);
                             if matches!(state.as_str(), "idle" | "stopped") {
                                 Ok(Some(()))
                             } else {
@@ -818,7 +1393,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         async move {
                             let resp = client.instance_get(&org_id, &service_id).await?;
                             let svc = resp.result.ok_or("service get returned no result")?;
-                            let state = svc.state.to_string();
+                            let state = service_state(&svc);
                             if matches!(state.as_str(), "running" | "idle") {
                                 Ok(Some(()))
                             } else {
@@ -879,7 +1454,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 let resp = client.instance_get(&org_id, &service_id).await?;
                                 let svc =
                                     resp.result.ok_or("service get returned no result")?;
-                                if svc.name == expected_name {
+                                if svc.name.as_deref() == Some(expected_name.as_str()) {
                                     Ok(Some(svc))
                                 } else {
                                     Ok(None)
@@ -892,7 +1467,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             )
             .await?
             .expect("blocking steps always return a value");
-        assert_eq!(updated.name, ctx.updated_service_name());
+        assert_eq!(updated.name, Some(ctx.updated_service_name()));
 
         let renamed_list = failures
             .run(
@@ -922,10 +1497,12 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 let services = resp
                                     .result
                                     .ok_or("service list returned no result")?;
-                                let found = services.iter().find(|s| {
-                                    s.id.to_string() == service_id
-                                });
-                                if found.is_some_and(|s| s.name == expected_name) {
+                                let found = services
+                                    .iter()
+                                    .find(|s| field_string(s.id) == service_id);
+                                if found.is_some_and(|s| {
+                                    s.name.as_deref() == Some(expected_name.as_str())
+                                }) {
                                     Ok(Some(services))
                                 } else {
                                     Ok(None)
@@ -940,9 +1517,9 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         let renamed_svc = renamed_list
             .iter()
-            .find(|s| s.id.to_string() == service_id);
+            .find(|s| field_string(s.id) == service_id);
         assert_eq!(
-            renamed_svc.map(|s| s.name.as_str()),
+            renamed_svc.and_then(|s| s.name.as_deref()),
             Some(ctx.updated_service_name().as_str())
         );
 
@@ -986,7 +1563,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 &org_id,
                                 &service_id,
                                 &ServicePatchRequest {
-                                    enable_core_dumps: Some(current_value),
+                                    enable_core_dumps: current_value,
                                     ..Default::default()
                                 },
                             )
@@ -1057,6 +1634,15 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
 
         log_phase("ClickHouse Settings");
 
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "clickhouse settings native string/integer contract",
+                || cloud_clickhouse_settings_native_contract(&client, &ctx.org_id, &service_id),
+            )
+            .await?;
+
         let settings_schema = failures
             .run(
                 &ctx,
@@ -1073,7 +1659,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         let schema = resp
                             .result
                             .ok_or("clickhouse settings schema returned no result")?;
-                        if schema.settings.is_empty() {
+                        if schema.settings.iter().flatten().count() == 0 {
                             return Err("clickhouse settings schema returned no entries".into());
                         }
                         Ok(schema)
@@ -1114,13 +1700,17 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 schema
                     .settings
                     .iter()
-                    .find(|entry| entry.name == *name)
+                    .flatten()
+                    .find(|entry| entry.name.as_deref() == Some(*name))
                     .cloned()
             });
 
             if let Some(entry) = chosen {
-                let setting_name = entry.name.clone();
-                eprintln!("  chose setting: {setting_name} (type: {})", entry.r#type);
+                let setting_name = require_field(entry.name.clone(), "settings[].name")?;
+                eprintln!(
+                    "  chose setting: {setting_name} (type: {})",
+                    field_string(entry.r#type.as_deref())
+                );
 
                 let list_resp = failures
                     .run(
@@ -1141,7 +1731,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 let list = resp.result.ok_or(
                                     "clickhouse settings list returned no result",
                                 )?;
-                                if list.settings.is_empty() {
+                                if list.settings.iter().flatten().count() == 0 {
                                     return Err(
                                         "clickhouse settings list returned no entries".into(),
                                     );
@@ -1155,22 +1745,21 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 let original_value = list_resp.as_ref().and_then(|list| {
                     list.settings
                         .iter()
-                        .find(|s| s.name == setting_name)
-                        .map(|s| s.value.clone())
+                        .flatten()
+                        .find(|s| s.name.as_deref() == Some(setting_name.as_str()))
+                        .and_then(|s| s.value.clone())
                 });
 
                 if let Some(original) = original_value {
                     eprintln!("  current value: {original}");
 
-                    // Pick a new numeric value that differs from the current
-                    // one. The candidates are all integer-typed settings, so
-                    // we parse the current value as an integer; if parsing
-                    // fails we bail to the next pre-set safe value below.
-                    let new_value = match original.parse::<u64>() {
-                        Ok(0) => "1".to_string(),
-                        Ok(n) => (n.saturating_add(1)).to_string(),
-                        Err(_) => "1".to_string(),
-                    };
+                    // Integer settings may arrive as a JSON number or string.
+                    // Send a numeric update and preserve the original JSON type
+                    // separately for cleanup.
+                    let current = original.as_u64().or_else(|| {
+                        original.as_str().and_then(|value| value.parse::<u64>().ok())
+                    });
+                    let new_value = serde_json::json!(current.unwrap_or(0).saturating_add(1));
 
                     // Register the restore BEFORE attempting the mutation so
                     // a failed mid-mutation still triggers a cleanup attempt.
@@ -1180,13 +1769,10 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         original.clone(),
                     );
 
-                    // The `settings` field on the API is a JSON-encoded string
-                    // (the spec example is "{\"compatibility\":\"24.8\"}"). Build
-                    // it with serde_json so the inner JSON escapes correctly
-                    // regardless of what the setting name/value look like.
-                    let patch_body_settings = serde_json::to_string(
-                        &serde_json::json!({ setting_name.clone(): new_value.clone() }),
-                    )?;
+                    let patch_body_settings = std::collections::BTreeMap::from([(
+                        setting_name.clone(),
+                        serde_json::json!(new_value),
+                    )]);
                     let update_ok = failures
                         .run(
                             &ctx,
@@ -1259,7 +1845,9 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                                     let got = resp.result.ok_or(
                                                         "clickhouse setting get returned no result",
                                                     )?;
-                                                    if got.value == expected {
+                                                    if got.value.as_ref()
+                                                        == Some(&expected)
+                                                    {
                                                         Ok(Some(()))
                                                     } else {
                                                         Ok(None)
@@ -1302,8 +1890,12 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 // updated, and skip the mutation phase. The earlier
                 // `clickhouse settings schema get` step still records
                 // coverage of the schema endpoint.
-                let exposed: Vec<&str> =
-                    schema.settings.iter().map(|s| s.name.as_str()).collect();
+                let exposed: Vec<&str> = schema
+                    .settings
+                    .iter()
+                    .flatten()
+                    .filter_map(|s| s.name.as_deref())
+                    .collect();
                 eprintln!(
                     "  SKIP clickhouse settings round-trip: none of {:?} matched the \
                      {} settings the cloud schema currently exposes: {:?}",
@@ -1354,22 +1946,22 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         let config = resp.result.ok_or(
                             "instance_private_endpoint_config_get returned no result",
                         )?;
-                        if config.endpoint_service_id.is_empty() {
-                            return Err(
-                                "private endpoint config returned empty endpointServiceId"
-                                    .into(),
-                            );
-                        }
-                        if config.private_dns_hostname.is_empty() {
-                            return Err(
-                                "private endpoint config returned empty privateDnsHostname"
-                                    .into(),
-                            );
-                        }
+                        let endpoint_service_id = config
+                            .endpoint_service_id
+                            .filter(|id| !id.is_empty())
+                            .ok_or(
+                                "private endpoint config returned no endpointServiceId",
+                            )?;
+                        let private_dns_hostname = config
+                            .private_dns_hostname
+                            .filter(|host| !host.is_empty())
+                            .ok_or(
+                                "private endpoint config returned no privateDnsHostname",
+                            )?;
                         eprintln!(
                             "  private endpoint config: endpointServiceId len={} privateDnsHostname len={}",
-                            config.endpoint_service_id.len(),
-                            config.private_dns_hostname.len()
+                            endpoint_service_id.len(),
+                            private_dns_hostname.len()
                         );
                         Ok(())
                     }
@@ -1416,20 +2008,22 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 let endpoint = resp.result.ok_or(
                                     "instance_private_endpoint_create returned no result",
                                 )?;
-                                if endpoint.id != synthetic_endpoint_id {
+                                let endpoint_id =
+                                    require_field(endpoint.id, "id")?;
+                                if endpoint_id != synthetic_endpoint_id {
                                     return Err(format!(
                                         "private endpoint create returned unexpected id: \
                                          got {}, expected {}",
-                                        endpoint.id, synthetic_endpoint_id
+                                        endpoint_id, synthetic_endpoint_id
                                     )
                                     .into());
                                 }
                                 eprintln!(
                                     "  private endpoint create unexpectedly succeeded \
-                                     (provider={}, region={}); registering inline cleanup",
+                                     (provider={:?}, region={:?}); registering inline cleanup",
                                     endpoint.cloud_provider, endpoint.region
                                 );
-                                *created_endpoint_id = Some(endpoint.id);
+                                *created_endpoint_id = Some(endpoint_id);
                                 Ok(())
                             }
                             Err(clickhouse_cloud_api::Error::Api { status, message })
@@ -1895,9 +2489,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         // Sanity: the deprecated body's totals only equal per-replica when
         // num_replicas == 1. We rely on the previous step landing us there.
-        assert_eq!(pre_vertical.num_replicas, base_replicas);
-        let pre_min_total = pre_vertical.min_total_memory_gb;
-        let pre_max_total = pre_vertical.max_total_memory_gb;
+        assert_eq!(pre_vertical.num_replicas, Some(base_replicas));
+        let pre_min_total = pre_vertical
+            .min_total_memory_gb
+            .ok_or("service response omitted minTotalMemoryGb before deprecated vertical scaling")?;
+        let pre_max_total = pre_vertical
+            .max_total_memory_gb
+            .ok_or("service response omitted maxTotalMemoryGb before deprecated vertical scaling")?;
 
         failures
             .run(
@@ -2011,13 +2609,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             // rejects upserts with an empty `entries` array, and there is
             // nothing meaningful to restore. Cleanup of synthetic entries
             // is still covered by the service-delete teardown below.
-            if !pre_state.entries.is_empty() {
+            if pre_state.entries.iter().flatten().count() > 0 {
                 cleanup
                     .register_scaling_schedule_restore(service_id.clone(), pre_state.clone());
             }
             eprintln!(
                 "  captured scaling_schedule pre-state: {} entries",
-                pre_state.entries.len()
+                pre_state.entries.iter().flatten().count()
             );
 
             // 9a. Upsert a synthetic-but-inert schedule.
@@ -2028,10 +2626,14 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 end_hour_utc: 2,
                 min_replica_memory_gb: Some(base_memory_gb),
                 max_replica_memory_gb: Some(base_memory_gb),
-                min_replicas: Some(base_replicas as i64),
-                max_replicas: Some(base_replicas as i64),
+                min_replicas: Some(base_replicas),
+                max_replicas: Some(base_replicas),
                 idle_scaling: Some(true),
                 idle_timeout_minutes: Some(5),
+                // Vertical entry expressed as equal min/max; the fixed-count
+                // and horizontal-autoscaling forms need org-level enablement.
+                num_replicas: None,
+                ..Default::default()
             };
 
             let upserted = failures
@@ -2078,24 +2680,27 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 let schedule = resp.result.ok_or(
                                     "scaling_schedule get returned no result after upsert",
                                 )?;
-                                if schedule.entries.len() != 1 {
+                                let entries =
+                                    schedule.entries.as_deref().unwrap_or_default();
+                                if entries.len() != 1 {
                                     return Err(format!(
                                         "expected 1 entry after upsert, got {}",
-                                        schedule.entries.len()
+                                        entries.len()
                                     )
                                     .into());
                                 }
-                                let entry = &schedule.entries[0];
-                                if entry.name != expected_name {
+                                let entry = &entries[0];
+                                if entry.name.as_deref() != Some(expected_name.as_str()) {
                                     return Err(format!(
                                         "upserted entry name mismatch: got {:?}, expected {:?}",
                                         entry.name, expected_name
                                     )
                                     .into());
                                 }
-                                if entry.start_hour_utc != 1 || entry.end_hour_utc != 2 {
+                                if entry.start_hour_utc != Some(1) || entry.end_hour_utc != Some(2)
+                                {
                                     return Err(format!(
-                                        "upserted entry window mismatch: got {}-{} UTC, expected 1-2",
+                                        "upserted entry window mismatch: got {:?}-{:?} UTC, expected 1-2",
                                         entry.start_hour_utc, entry.end_hour_utc
                                     )
                                     .into());
@@ -2208,7 +2813,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             // returns the service to its original empty state on its own.
             if let Some(window) = pre_state {
                 eprintln!(
-                    "  captured upgrade_window pre-state: weekday={}, startHourUtc={}",
+                    "  captured upgrade_window pre-state: weekday={:?}, startHourUtc={:?}",
                     window.weekday, window.start_hour_utc,
                 );
                 cleanup.register_upgrade_window_restore(service_id.clone(), window);
@@ -2219,7 +2824,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             // 10a. PUT a known-valid window.
             let put_body = UpgradeWindowPutRequest {
                 weekday: 0,
-                start_hour_utc: 0,
+                start_hour_utc: UpgradeWindowStartHourUtc::Hour0,
             };
             let put_window = failures
                 .run(
@@ -2262,11 +2867,11 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                                 let window = resp
                                     .result
                                     .ok_or("upgrade_window get returned no result")?;
-                                if window.weekday != expected_weekday
-                                    || window.start_hour_utc != expected_start
+                                if window.weekday != Some(expected_weekday)
+                                    || window.start_hour_utc != Some(expected_start)
                                 {
                                     return Err(format!(
-                                        "upgrade_window get mismatch: expected weekday={expected_weekday} startHourUtc={expected_start}, got weekday={got_w} startHourUtc={got_h}",
+                                        "upgrade_window get mismatch: expected weekday={expected_weekday} startHourUtc={expected_start}, got weekday={got_w:?} startHourUtc={got_h:?}",
                                         got_w = window.weekday,
                                         got_h = window.start_hour_utc,
                                     )
@@ -2362,12 +2967,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         let result = resp
                             .result
                             .ok_or("password update returned no result")?;
-                        if result.password.is_empty() {
-                            return Err("password update response had empty password".into());
-                        }
+                        let password = result
+                            .password
+                            .filter(|password| !password.is_empty())
+                            .ok_or("password update response had no password")?;
                         eprintln!(
                             "  password rotated (length={}, run_id={})",
-                            result.password.len(),
+                            password.len(),
                             run_id
                         );
                         Ok(())
@@ -2405,7 +3011,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         async move {
                             let resp = client.instance_get(&org_id, &service_id).await?;
                             let svc = resp.result.ok_or("service get returned no result")?;
-                            let state = svc.state.to_string();
+                            let state = service_state(&svc);
                             if matches!(state.as_str(), "idle" | "stopped") {
                                 Ok(Some(()))
                             } else {
@@ -2480,7 +3086,13 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
     .await;
 
     let cleanup_result = cleanup
-        .cleanup(&client, &ctx.org_id, ctx.delete_timeout, ctx.poll_interval, None)
+        .cleanup(
+            &client,
+            &ctx.org_id,
+            ctx.delete_timeout,
+            ctx.poll_interval,
+            None,
+        )
         .await;
 
     match (test_result, cleanup_result) {
@@ -2494,7 +3106,10 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
 }
 
 fn has_ip_entry(svc: &Service, source: &str) -> bool {
-    svc.ip_access_list.iter().any(|e| e.source == source)
+    svc.ip_access_list
+        .iter()
+        .flatten()
+        .any(|e| e.source.as_deref() == Some(source))
 }
 
 async fn poll_for_ip_presence(
@@ -2537,7 +3152,7 @@ async fn scale_service_and_wait(
     service_id: &str,
     min_memory_gb: Option<f64>,
     max_memory_gb: Option<f64>,
-    replicas: Option<f64>,
+    replicas: Option<i64>,
     description: &str,
     timeout: std::time::Duration,
     interval: std::time::Duration,
@@ -2566,9 +3181,9 @@ async fn scale_service_and_wait(
             async move {
                 let resp = client.instance_get(&org_id, &service_id).await?;
                 let svc = resp.result.ok_or("service get returned no result")?;
-                if min_memory_gb.is_none_or(|v| svc.min_replica_memory_gb == v)
-                    && max_memory_gb.is_none_or(|v| svc.max_replica_memory_gb == v)
-                    && replicas.is_none_or(|v| svc.num_replicas == v)
+                if min_memory_gb.is_none_or(|v| svc.min_replica_memory_gb == Some(v))
+                    && max_memory_gb.is_none_or(|v| svc.max_replica_memory_gb == Some(v))
+                    && replicas.is_none_or(|v| svc.num_replicas == Some(v))
                 {
                     Ok(Some(()))
                 } else {
@@ -2607,9 +3222,10 @@ fn synthetic_private_endpoint_id(ctx: &TestContext) -> String {
         // pick a 19-digit value seeded by the run id hash so different runs
         // collide neither with each other nor with real PSC endpoints.
         "gcp" => {
-            let hash: u64 = ctx.run_id.bytes().fold(0u64, |acc, b| {
-                acc.wrapping_mul(31).wrapping_add(b as u64)
-            });
+            let hash: u64 = ctx
+                .run_id
+                .bytes()
+                .fold(0u64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u64));
             format!("{:019}", hash % 10u64.pow(19))
         }
         // Azure private endpoint resource ids are GUIDs. Synthesize one
@@ -2667,8 +3283,8 @@ async fn scale_service_vertical_and_wait(
             async move {
                 let resp = client.instance_get(&org_id, &service_id).await?;
                 let svc = resp.result.ok_or("service get returned no result")?;
-                if min_total_memory_gb.is_none_or(|v| svc.min_total_memory_gb == v)
-                    && max_total_memory_gb.is_none_or(|v| svc.max_total_memory_gb == v)
+                if min_total_memory_gb.is_none_or(|v| svc.min_total_memory_gb == Some(v))
+                    && max_total_memory_gb.is_none_or(|v| svc.max_total_memory_gb == Some(v))
                 {
                     Ok(Some(()))
                 } else {

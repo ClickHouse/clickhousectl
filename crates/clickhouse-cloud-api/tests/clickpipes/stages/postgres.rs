@@ -3,18 +3,16 @@
 //! Postgres-on-EC2 ClickPipe stage: per-test EC2 + Basic auth + CDC.
 //!
 //! Parallel to the MySQL and Mongo stages — launches a t3.medium with
-//! PostgreSQL 16 configured for logical replication, then creates a pipe via
-//! the CLI with `--replication-mode cdc` but **without** `--publication-name`
-//! / `--replication-slot-name`. That's Al's `4f6c2ba` Bug 1 scenario: a
-//! handler regression that sends `""` for those fields would re-trigger
-//! `replicationSlotName: ''` server validation here. Distinct from
-//! `clickpipes/postgres_cdc_test.rs`, which exercises Al's flow against
-//! CHC-managed Postgres via the library, not the CLI.
+//! PostgreSQL 16 configured for logical replication, then creates a pipe
+//! directly through the API with `replicationMode=cdc` but without
+//! `publicationName` / `replicationSlotName`. Distinct from
+//! `clickpipes/postgres_cli_cdc_test.rs`, which exercises the required real
+//! CLI path against CHC-managed Postgres.
 
 use std::time::Duration;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 
 use crate::support::*;
 
@@ -92,7 +90,12 @@ const POSTGRES_VARIANTS: &[PostgresVariant] = &[
         // right rows (rather than passing on aliased data).
         mappings: &[
             ("pg_users", "postgres_multi_a_users", 1, "Ada Lovelace"),
-            ("pg_users_more", "postgres_multi_b_users", 101, "Joan Clarke"),
+            (
+                "pg_users_more",
+                "postgres_multi_b_users",
+                101,
+                "Joan Clarke",
+            ),
         ],
         replication_mode: ClickPipePostgresPipeSettingsReplicationmode::Cdc,
         publication_name: None,
@@ -347,11 +350,7 @@ async fn run_inner(
             .map(|(name, err)| format!("    - {name}: {err}"))
             .collect::<Vec<_>>()
             .join("\n");
-        return Err(format!(
-            "{} variant failure(s):\n{summary}",
-            variant_failures.len()
-        )
-        .into());
+        return Err(format!("{} variant failure(s):\n{summary}", variant_failures.len()).into());
     }
 
     Ok(())
@@ -390,10 +389,10 @@ async fn run_variant(
                 postgres: Some(ClickPipeMutatePostgresSource {
                     r#type: Some(ClickPipeMutatePostgresSourceType::Postgres),
                     authentication: ClickPipeMutatePostgresSourceAuthentication::Basic,
-                    credentials: PLAIN {
+                    credentials: Some(PLAIN {
                         username: clickpipe_user.to_string(),
                         password: clickpipe_pass.to_string(),
-                    },
+                    }),
                     host: host_ip.to_string(),
                     port: 5432,
                     database: db_name.to_string(),

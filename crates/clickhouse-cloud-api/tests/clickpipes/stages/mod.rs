@@ -12,8 +12,8 @@
 
 use std::time::Duration;
 
-use clickhouse_cloud_api::models::*;
 use clickhouse_cloud_api::Client;
+use clickhouse_cloud_api::models::*;
 
 use crate::support::*;
 
@@ -118,7 +118,7 @@ pub async fn create_pipe_and_wait_running(
         .await?
         .result
         .ok_or("clickpipe create returned no result")?;
-    let clickpipe_id = pipe.id.to_string();
+    let clickpipe_id = clickpipe_id(&pipe)?;
     cleanup.register_clickpipe(ch.service_id.clone(), clickpipe_id.clone());
     eprintln!("  provisioned clickpipe id <redacted>");
 
@@ -137,12 +137,16 @@ pub async fn create_pipe_and_wait_running(
                     .await?;
                 let pipe = resp.result.ok_or("clickpipe get returned no result")?;
                 match pipe.state {
-                    ClickPipeState::Running | ClickPipeState::Completed => Ok(Some(pipe)),
-                    ClickPipeState::Failed | ClickPipeState::InternalError => Err(format!(
-                        "clickpipe entered terminal failure state {}",
-                        pipe.state
-                    )
-                    .into()),
+                    Some(ClickPipeState::Running) | Some(ClickPipeState::Completed) => {
+                        Ok(Some(pipe))
+                    }
+                    Some(ClickPipeState::Failed) | Some(ClickPipeState::InternalError) => {
+                        Err(format!(
+                            "clickpipe entered terminal failure state {}",
+                            clickpipe_state(&pipe)
+                        )
+                        .into())
+                    }
                     _ => Ok(None),
                 }
             }
@@ -158,7 +162,10 @@ pub async fn create_pipe_and_wait_running(
         .await?
         .result
         .ok_or("clickpipe list returned no result")?;
-    if !pipes.iter().any(|p| p.id.to_string() == clickpipe_id) {
+    if !pipes
+        .iter()
+        .any(|p| p.id.map(|id| id.to_string()).as_deref() == Some(clickpipe_id.as_str()))
+    {
         return Err(format!("clickpipe {clickpipe_id} missing from list response").into());
     }
 
@@ -179,17 +186,22 @@ pub async fn verify_seed_rows(
     ingest_timeout: Duration,
     poll_interval: Duration,
 ) -> TestResult<()> {
-    poll_until("seeded row count in ClickHouse", ingest_timeout, poll_interval, || {
-        let query = ch.query.clone();
-        let table = table.to_string();
-        async move {
-            match query.count_rows(&table).await {
-                Ok(count) if count >= expected_count => Ok(Some(count)),
-                Ok(_) => Ok(None),
-                Err(e) => Err(e),
+    poll_until(
+        "seeded row count in ClickHouse",
+        ingest_timeout,
+        poll_interval,
+        || {
+            let query = ch.query.clone();
+            let table = table.to_string();
+            async move {
+                match query.count_rows(&table).await {
+                    Ok(count) if count >= expected_count => Ok(Some(count)),
+                    Ok(_) => Ok(None),
+                    Err(e) => Err(e),
+                }
             }
-        }
-    })
+        },
+    )
     .await?;
     let actual = ch
         .query
@@ -230,7 +242,9 @@ pub fn random_token(len: usize) -> String {
     let charset: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     let mut out = String::with_capacity(len);
     for _ in 0..len {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         out.push(charset[(state >> 33) as usize % charset.len()] as char);
     }
     out
@@ -239,7 +253,7 @@ pub fn random_token(len: usize) -> String {
 /// Base64-encode a string for embedding in user_data templates without
 /// escaping issues (multi-line PEMs etc.).
 pub fn b64(s: &str) -> String {
-    use base64::engine::general_purpose::STANDARD;
     use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD;
     STANDARD.encode(s.as_bytes())
 }

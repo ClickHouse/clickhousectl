@@ -1,11 +1,706 @@
 //! Structured output types for local commands.
 //!
-//! Each type supports both JSON serialization (via serde) and human-readable
-//! display (via `fmt::Display`). The `--json` flag switches between the two.
+//! Successful output types support both JSON serialization and human-readable
+//! display. Runtime failures use the redacted stable envelope below.
 
+use crate::error::{
+    Error, ManagedClientError, ManagedClientErrorKind, ManagedClientSelection, NetworkStage,
+    PortKind, ProjectServerCommand, ProjectServerNotFound, ProjectServerStateMissing,
+};
 use serde::Serialize;
 use std::fmt;
+use std::io::Write;
+use std::path::Path;
 use tabled::{Table, Tabled, settings::Style};
+
+const ABSENT: &str = "-";
+
+fn or_absent<T: fmt::Display>(value: Option<T>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| ABSENT.to_string())
+}
+
+/// Stable codes for local runtime failures. New codes may be added, but
+/// existing spellings and meanings are part of the machine-output contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalErrorCode {
+    ManagedClientServerNotFound,
+    ManagedClientServerNotRunning,
+    ManagedClientBinaryNotFound,
+    ManagedClientProjectStateUnavailable,
+    ServerNotFound,
+    ServerSelectionRequired,
+    ServerNotRunning,
+    ServerRunning,
+    InvalidServerName,
+    UnsupportedArgument,
+    ConfigNotFound,
+    InvalidConfigName,
+    InvalidVersion,
+    /// The version is not installed locally. Distinct from
+    /// [`Self::VersionUnavailable`], which means it could not be resolved or
+    /// downloaded: `local list --remote` is no help for a local miss.
+    VersionNotInstalled,
+    /// The build is installed but cannot be launched: not a regular file, or
+    /// carrying no execute bit. Distinct from [`Self::VersionNotInstalled`],
+    /// which `local install` fixes by fetching a missing build.
+    BinaryNotLaunchable,
+    VersionSelectionRequired,
+    VersionAlreadyInstalled,
+    VersionUnavailable,
+    VersionIsDefault,
+    UnsupportedClientVersion,
+    UnsupportedPlatform,
+    PortInUse,
+    StartupExit,
+    StartupTimeout,
+    DownloadFailed,
+    NetworkError,
+    DockerUnavailable,
+    DockerError,
+    /// The container name is held by a container clickhousectl does not
+    /// manage. Distinct from [`Self::DockerError`], which covers daemon
+    /// failures whose text is not rendered.
+    ContainerNameConflict,
+    /// A Postgres validation or state error whose text (and recovery
+    /// guidance) clickhousectl composes itself, rendered verbatim.
+    PostgresError,
+    SqlInputOpenFailed,
+    SqlInputReadFailed,
+    /// A managed server metadata file contains invalid JSON. The structured
+    /// body names the file and gives conservative recovery guidance without
+    /// exposing serde's source text.
+    ServerMetadataInvalid,
+    IoError,
+    LocalError,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalErrorDetail {
+    code: LocalErrorCode,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<String>,
+}
+
+/// How one [`Error`] variant renders into a [`LocalErrorDetail`].
+///
+/// Built with either [`Mapping::parity`] — the JSON message is the error's own
+/// human text, verbatim — or [`Mapping::redacted`], which substitutes a curated
+/// summary for errors that interpolate foreign text.
+struct Mapping {
+    code: LocalErrorCode,
+    command: Option<String>,
+    /// Curated replacement for the human text; `None` renders `Display`.
+    redacted: Option<String>,
+}
+
+impl Mapping {
+    /// The JSON message is the error's `Display` text, so machine output
+    /// carries exactly the detail and remediation human output prints.
+    fn parity(code: LocalErrorCode) -> Self {
+        Self {
+            code,
+            command: None,
+            redacted: None,
+        }
+    }
+
+    /// The JSON message is `message`, not the error's `Display` text. For
+    /// errors whose text interpolates foreign output.
+    fn redacted(code: LocalErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            command: None,
+            redacted: Some(message.into()),
+        }
+    }
+
+    /// A safe, runnable recovery command for this failure.
+    fn command(mut self, command: impl Into<String>) -> Self {
+        self.command = Some(command.into());
+        self
+    }
+
+    fn into_detail(self, error: &Error) -> LocalErrorDetail {
+        LocalErrorDetail {
+            code: self.code,
+            message: self.redacted.unwrap_or_else(|| error.to_string()),
+            command: self.command,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalProjectScope {
+    path: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LocalProjectScopeKind {
+    ExactCurrentProject,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ServerProjectScope {
+    kind: LocalProjectScopeKind,
+    path: String,
+    parent_projects_searched: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalServerSelection {
+    Default,
+    Named,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalManagedServer {
+    selection: LocalServerSelection,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    binary_version: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalGuidance {
+    message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'static str>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ServerMetadataParseErrorDetail {
+    code: LocalErrorCode,
+    message: &'static str,
+    path: String,
+    guidance: Vec<LocalGuidance>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LocalGuidanceAction {
+    ListProjectServers,
+    ListGlobalServers,
+    ReturnToProjectRoot,
+    StopGlobalProjectServer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ProjectServerGuidance {
+    action: LocalGuidanceAction,
+    message: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    command: Option<&'static str>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ManagedClientErrorDetail {
+    code: LocalErrorCode,
+    message: &'static str,
+    project_scope: LocalProjectScope,
+    server: LocalManagedServer,
+    guidance: Vec<LocalGuidance>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ProjectServerErrorDetail {
+    code: LocalErrorCode,
+    message: String,
+    project_scope: ServerProjectScope,
+    server: LocalProjectServer,
+    guidance: Vec<ProjectServerGuidance>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct ProjectServerStateMissingDetail {
+    code: LocalErrorCode,
+    message: &'static str,
+    project_scope: ServerProjectScope,
+    guidance: Vec<ProjectServerGuidance>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalProjectServer {
+    name: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+enum LocalErrorBody {
+    General(LocalErrorDetail),
+    ManagedClient(ManagedClientErrorDetail),
+    ProjectServer(ProjectServerErrorDetail),
+    ProjectServerStateMissing(ProjectServerStateMissingDetail),
+    ServerMetadataParse(ServerMetadataParseErrorDetail),
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize)]
+struct LocalErrorOutput {
+    error: LocalErrorBody,
+}
+
+impl LocalErrorOutput {
+    /// Classify one local runtime failure.
+    ///
+    /// Two rules govern the `message` field, and every arm below picks one
+    /// deliberately:
+    ///
+    /// * **Parity** ([`Mapping::parity`]) — the error's own human text is
+    ///   rendered verbatim, so a JSON consumer gets exactly the detail and
+    ///   remediation human mode prints. This is the default: these messages are
+    ///   composed by this crate from its own fields.
+    /// * **Redaction** ([`Mapping::redacted`]) — a curated summary replaces
+    ///   text that interpolates foreign output (subprocess stderr, Docker
+    ///   daemon or OS/serde source strings, download bodies), which can carry
+    ///   paths, SQL or credentials and tells a machine consumer nothing.
+    ///
+    /// The match is exhaustive on purpose: a new [`Error`] variant must be
+    /// classified here rather than silently collapsing to
+    /// `local_error`/"Local command failed".
+    fn from_error(error: &Error) -> Self {
+        let mapping = match error {
+            // ── structured bodies (their own DTOs, not code/message/command) ─
+            Error::ManagedClient(managed) => {
+                return Self {
+                    error: LocalErrorBody::ManagedClient(ManagedClientErrorDetail::from_error(
+                        managed,
+                    )),
+                };
+            }
+            Error::ProjectServerNotFound(not_found) => {
+                return Self {
+                    error: LocalErrorBody::ProjectServer(ProjectServerErrorDetail::from_error(
+                        not_found,
+                    )),
+                };
+            }
+            Error::ProjectServerStateMissing(missing) => {
+                return Self {
+                    error: LocalErrorBody::ProjectServerStateMissing(
+                        ProjectServerStateMissingDetail::from_error(missing),
+                    ),
+                };
+            }
+            Error::ServerMetadataParse { path, .. } => {
+                return Self {
+                    error: LocalErrorBody::ServerMetadataParse(
+                        ServerMetadataParseErrorDetail::from_path(path),
+                    ),
+                };
+            }
+            // The rollback note is a cleanup detail on top of the failure that
+            // actually stopped the command; classify by that primary failure.
+            Error::PostgresStartupRollback { primary, .. } => {
+                return Self::from_error(primary);
+            }
+
+            // ── servers ─────────────────────────────────────────────────────
+            Error::ServerNotFound(_) => Mapping::parity(LocalErrorCode::ServerNotFound)
+                .command("clickhousectl local server list"),
+            Error::ServerStopSelectionRequired { .. }
+            | Error::ServerRemoveSelectionRequired { .. } => {
+                Mapping::parity(LocalErrorCode::ServerSelectionRequired)
+                    .command("clickhousectl local server list")
+            }
+            // The same ambiguity across projects: the global list shows which
+            // project root to pass to `--project`.
+            Error::ServerInMultipleProjects { .. } => {
+                Mapping::parity(LocalErrorCode::ServerSelectionRequired)
+                    .command("clickhousectl local server list --global")
+            }
+            // Deliberately the list, not a `start` command: this variant is
+            // also raised for Postgres servers and for global PID lookups,
+            // where the name is not a `server start` argument.
+            Error::ServerNotRunning(_) => Mapping::parity(LocalErrorCode::ServerNotRunning)
+                .command("clickhousectl local server list"),
+            Error::ServerAlreadyRunning(_) => Mapping::parity(LocalErrorCode::ServerRunning)
+                .command("clickhousectl local server list"),
+            // Stopping *this* server is the recovery; `server list` only
+            // restates what the error already says.
+            Error::ServerRunningCannotRemove { command, .. } => {
+                Mapping::parity(LocalErrorCode::ServerRunning).command(command.clone())
+            }
+            Error::InvalidServerName(_) => Mapping::parity(LocalErrorCode::InvalidServerName)
+                .command("clickhousectl local server list"),
+            Error::UnsupportedArgument(_) => Mapping::parity(LocalErrorCode::UnsupportedArgument)
+                .command("clickhousectl local server start --help"),
+
+            // ── server configs ──────────────────────────────────────────────
+            Error::ConfigNotFound(_) => Mapping::parity(LocalErrorCode::ConfigNotFound)
+                .command("clickhousectl local server configs"),
+            Error::InvalidConfigName(_) => Mapping::parity(LocalErrorCode::InvalidConfigName)
+                .command("clickhousectl local server configs"),
+
+            // ── versions ────────────────────────────────────────────────────
+            Error::InvalidVersion(_) => Mapping::parity(LocalErrorCode::InvalidVersion)
+                .command("clickhousectl local install --help"),
+            // Not installed locally: the installed list, not the remote one, is
+            // what resolves these.
+            Error::VersionNotFound(_) | Error::StaleDefaultVersion(_) => {
+                Mapping::parity(LocalErrorCode::VersionNotInstalled)
+                    .command("clickhousectl local list")
+            }
+            Error::NoVersionsInstalled | Error::NoClientVersionInstalled => {
+                Mapping::parity(LocalErrorCode::VersionNotInstalled)
+                    .command("clickhousectl local install latest")
+            }
+            Error::ClientVersionNotInstalled(version) => {
+                Mapping::parity(LocalErrorCode::VersionNotInstalled)
+                    .command(format!("clickhousectl local install {version}"))
+            }
+            // Installed but unusable: the message is entirely self-composed
+            // (path plus a closed-vocabulary problem), so it renders at parity
+            // and names the repair (#471), which depends on the problem: see
+            // `BinaryLaunchProblem::repair_command`.
+            Error::BinaryNotLaunchable {
+                version, problem, ..
+            } => Mapping::parity(LocalErrorCode::BinaryNotLaunchable)
+                .command(problem.repair_command(version)),
+            Error::NoDefaultVersion | Error::AmbiguousClientVersion => {
+                Mapping::parity(LocalErrorCode::VersionSelectionRequired)
+                    .command("clickhousectl local list")
+            }
+            Error::VersionAlreadyInstalled(_) => {
+                Mapping::parity(LocalErrorCode::VersionAlreadyInstalled)
+                    .command("clickhousectl local list")
+            }
+            Error::RepeatedClientQueryUnsupported { .. } => {
+                Mapping::parity(LocalErrorCode::UnsupportedClientVersion)
+            }
+            // The blocking servers are named — including their project root —
+            // because they may live outside the current project, where neither
+            // `server list` nor the caller's own state can find them.
+            Error::VersionInUse { .. } => Mapping::parity(LocalErrorCode::ServerRunning)
+                .command("clickhousectl local server list --global"),
+            Error::VersionIsDefault {
+                recovery_command, ..
+            } => {
+                Mapping::parity(LocalErrorCode::VersionIsDefault).command(recovery_command.clone())
+            }
+            // Could not be resolved or downloaded, so the remote list is the
+            // next step.
+            Error::NoMatchingVersion(_)
+            | Error::ExactVersionUnavailable { .. }
+            | Error::UnknownVersionChannel(_)
+            | Error::VersionResolutionFallback { .. } => {
+                Mapping::parity(LocalErrorCode::VersionUnavailable)
+                    .command("clickhousectl local list --remote")
+            }
+            Error::UnsupportedPlatform { .. } => {
+                Mapping::parity(LocalErrorCode::UnsupportedPlatform)
+            }
+
+            // ── ports and startup ───────────────────────────────────────────
+            Error::PortInUse { kind, .. } | Error::PortUnavailable(kind) => {
+                Mapping::parity(LocalErrorCode::PortInUse).command(match kind {
+                    PortKind::Postgres => "clickhousectl local postgres start --help",
+                    PortKind::Http | PortKind::Tcp => "clickhousectl local server start --help",
+                })
+            }
+            // `details` is the managed server's own stderr or log tail: kept in
+            // human output, summarized here.
+            Error::StartupExit { kind, name, .. } => Mapping::redacted(
+                LocalErrorCode::StartupExit,
+                format!("{kind} server '{name}' exited before becoming ready"),
+            )
+            .command("clickhousectl local server list"),
+            Error::StartupTimeout {
+                kind,
+                name,
+                seconds,
+                ..
+            } => Mapping::redacted(
+                LocalErrorCode::StartupTimeout,
+                format!("{kind} server '{name}' did not become ready within {seconds} seconds"),
+            )
+            .command("clickhousectl local server list"),
+
+            // ── network, downloads and extraction ───────────────────────────
+            Error::Network(failure)
+                if matches!(
+                    failure.stage,
+                    NetworkStage::DownloadHeaders
+                        | NetworkStage::DownloadBody
+                        | NetworkStage::Download
+                ) =>
+            {
+                Mapping::parity(LocalErrorCode::DownloadFailed)
+            }
+            // Version resolution probes: the remote list is the next step.
+            Error::Network(_) => Mapping::parity(LocalErrorCode::VersionUnavailable)
+                .command("clickhousectl local list --remote"),
+            Error::Http(_) => {
+                Mapping::redacted(LocalErrorCode::NetworkError, "HTTP request failed")
+            }
+            Error::Download(_) => {
+                Mapping::redacted(LocalErrorCode::DownloadFailed, "Download failed")
+            }
+            Error::Extract(_) | Error::ExtractArchive { .. } => {
+                Mapping::redacted(LocalErrorCode::DownloadFailed, "Extraction failed")
+            }
+
+            // ── Docker ──────────────────────────────────────────────────────
+            // The unavailability text is built from a classified failure kind
+            // and platform guidance; the daemon's own message is used for
+            // classification only and never rendered (see `local::docker`).
+            Error::DockerNotAvailable(_) => Mapping::parity(LocalErrorCode::DockerUnavailable),
+            Error::DockerError(_) => {
+                Mapping::redacted(LocalErrorCode::DockerError, "Docker operation failed")
+            }
+            // Self-composed name-conflict guidance, unlike the daemon text
+            // above.
+            Error::ContainerNameConflict(_) => {
+                Mapping::parity(LocalErrorCode::ContainerNameConflict)
+            }
+
+            // ── filesystem and metadata ─────────────────────────────────────
+            Error::Io(_)
+            | Error::Json(_)
+            | Error::CreateDir { .. }
+            | Error::ServerMetadataPermission { .. }
+            | Error::ServerMetadataRead { .. }
+            | Error::ServerMetadataUtf8 { .. }
+            | Error::ServerMetadataWrite { .. }
+            | Error::ServerLock { .. } => {
+                Mapping::redacted(LocalErrorCode::IoError, "Local I/O operation failed")
+            }
+
+            // ── postgres ────────────────────────────────────────────────────
+            // Self-composed validation and state guidance; the foreign-text
+            // sibling `Error::Postgres` stays in the fallback below.
+            Error::PostgresUsage(_) => Mapping::parity(LocalErrorCode::PostgresError),
+            Error::SqlInputOpen { .. } => Mapping::redacted(
+                LocalErrorCode::SqlInputOpenFailed,
+                "Could not open SQL input file; check that --queries-file exists and is readable",
+            ),
+            Error::SqlInputRead(_) => Mapping::redacted(
+                LocalErrorCode::SqlInputReadFailed,
+                "Could not read SQL input; check the file or stdin source is readable",
+            ),
+
+            // ── bounded fallback ────────────────────────────────────────────
+            // Subprocess text and `Postgres` (OS text from a failed psql
+            // exec) are foreign output. `Cloud`, `CloudDetailed`,
+            // `AuthRequired` and `Skills` belong to other command surfaces
+            // and are never printed through this envelope; `ChildExit` passes the child's status through
+            // without an error object at all.
+            Error::Exec(_)
+            | Error::Postgres(_)
+            | Error::Cloud(_)
+            | Error::CloudDetailed(_)
+            | Error::AuthRequired(_)
+            | Error::Skills(_)
+            | Error::ChildExit(_) => {
+                Mapping::redacted(LocalErrorCode::LocalError, "Local command failed")
+            }
+            Error::Cancelled => Mapping::parity(LocalErrorCode::LocalError),
+        };
+        Self {
+            error: LocalErrorBody::General(mapping.into_detail(error)),
+        }
+    }
+}
+
+impl ServerMetadataParseErrorDetail {
+    fn from_path(path: &Path) -> Self {
+        Self {
+            code: LocalErrorCode::ServerMetadataInvalid,
+            message: "Server metadata is not valid JSON",
+            path: path.display().to_string(),
+            guidance: vec![
+                LocalGuidance {
+                    message: "Repair the metadata file, then retry",
+                    command: None,
+                },
+                LocalGuidance {
+                    message: "For ClickHouse, if repair is not possible, confirm that the running server is discoverable before moving the metadata file aside",
+                    command: Some("clickhousectl local server list --global"),
+                },
+                LocalGuidance {
+                    message: "For Postgres, verify the container state separately before moving the metadata file aside",
+                    command: None,
+                },
+                LocalGuidance {
+                    message: "Retry from the owning project; ClickHouse recovery requires the server to remain running and discoverable",
+                    command: Some("clickhousectl local server list"),
+                },
+            ],
+        }
+    }
+}
+
+impl ManagedClientErrorDetail {
+    fn from_error(error: &ManagedClientError) -> Self {
+        let (code, message) = match &error.kind {
+            ManagedClientErrorKind::ServerNotFound => (
+                LocalErrorCode::ManagedClientServerNotFound,
+                "Managed client server was not found in the current project",
+            ),
+            ManagedClientErrorKind::ServerNotRunning => (
+                LocalErrorCode::ManagedClientServerNotRunning,
+                "Managed client server is not running in the current project",
+            ),
+            ManagedClientErrorKind::BinaryNotFound => (
+                LocalErrorCode::ManagedClientBinaryNotFound,
+                "Managed client binary selected by server metadata is not installed",
+            ),
+            ManagedClientErrorKind::ProjectStateUnavailable(_) => (
+                LocalErrorCode::ManagedClientProjectStateUnavailable,
+                "Managed client project state is unavailable",
+            ),
+        };
+        let selection = match error.selection {
+            ManagedClientSelection::Default => LocalServerSelection::Default,
+            ManagedClientSelection::Named => LocalServerSelection::Named,
+        };
+        let mut guidance = vec![LocalGuidance {
+            message: "List managed servers in this exact project",
+            command: Some("clickhousectl local server list"),
+        }];
+        match &error.kind {
+            ManagedClientErrorKind::ServerNotFound => {
+                guidance.push(LocalGuidance {
+                    message: "Return to the project directory that owns the managed server",
+                    command: None,
+                });
+                guidance.push(start_guidance(error.selection));
+            }
+            ManagedClientErrorKind::ServerNotRunning => {
+                guidance.push(start_guidance(error.selection));
+            }
+            ManagedClientErrorKind::BinaryNotFound => {
+                guidance.push(LocalGuidance {
+                    message: "Install the version selected by the managed server metadata",
+                    command: Some("clickhousectl local install <version>"),
+                });
+            }
+            ManagedClientErrorKind::ProjectStateUnavailable(_) => {
+                guidance.insert(
+                    0,
+                    LocalGuidance {
+                        message: "Repair the reported project state error before retrying",
+                        command: None,
+                    },
+                );
+            }
+        }
+        guidance.push(LocalGuidance {
+            message: "Bypass managed project lookup and connect directly",
+            command: Some("clickhousectl local client --host <host> --port <port>"),
+        });
+
+        Self {
+            code,
+            message,
+            project_scope: LocalProjectScope {
+                path: error.project_dir.display().to_string(),
+            },
+            server: LocalManagedServer {
+                selection,
+                name: error.server_name.clone(),
+                binary_version: error.binary_version.clone(),
+            },
+            guidance,
+        }
+    }
+}
+
+impl ProjectServerErrorDetail {
+    fn from_error(error: &ProjectServerNotFound) -> Self {
+        Self {
+            code: LocalErrorCode::ServerNotFound,
+            message: format!(
+                "Server '{}' was not found in the current project",
+                error.server_name
+            ),
+            project_scope: exact_current_project_scope(&error.project_dir),
+            server: LocalProjectServer {
+                name: error.server_name.clone(),
+            },
+            guidance: project_scope_guidance(Some(error.command)),
+        }
+    }
+}
+
+impl ProjectServerStateMissingDetail {
+    fn from_error(error: &ProjectServerStateMissing) -> Self {
+        Self {
+            code: LocalErrorCode::ServerSelectionRequired,
+            message: "No project-local server state was found in the current directory; no server was removed",
+            project_scope: exact_current_project_scope(&error.project_dir),
+            guidance: project_scope_guidance(Some(error.command)),
+        }
+    }
+}
+
+pub(crate) fn exact_current_project_scope(project_dir: &Path) -> ServerProjectScope {
+    ServerProjectScope {
+        kind: LocalProjectScopeKind::ExactCurrentProject,
+        path: project_dir.display().to_string(),
+        parent_projects_searched: false,
+    }
+}
+
+pub(crate) fn project_scope_guidance(
+    command: Option<ProjectServerCommand>,
+) -> Vec<ProjectServerGuidance> {
+    let mut guidance = vec![
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ReturnToProjectRoot,
+            message: "Change to the local project root where the server was started",
+            command: Some("cd <project-root>"),
+        },
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ListProjectServers,
+            message: "List servers after returning to that exact project",
+            command: Some("clickhousectl local server list"),
+        },
+        ProjectServerGuidance {
+            action: LocalGuidanceAction::ListGlobalServers,
+            message: "Locate running ClickHouse servers across projects",
+            command: Some("clickhousectl local server list --global"),
+        },
+    ];
+    if command == Some(ProjectServerCommand::Stop) {
+        guidance.push(ProjectServerGuidance {
+            action: LocalGuidanceAction::StopGlobalProjectServer,
+            message: "After confirming the project, stop the server with explicit global project selection",
+            command: Some(
+                "clickhousectl local server stop <name> --global --project <project-root>",
+            ),
+        });
+    }
+    guidance
+}
+
+fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
+    match selection {
+        ManagedClientSelection::Default => LocalGuidance {
+            message: "Start the default managed server in this project",
+            command: Some("clickhousectl local server start"),
+        },
+        ManagedClientSelection::Named => LocalGuidance {
+            message: "Start the selected named managed server in this project",
+            command: Some("clickhousectl local server start <name>"),
+        },
+    }
+}
+
+/// Write exactly one local runtime error object to stderr. The serialized DTO
+/// is allowlisted above and never includes an error source or arbitrary detail.
+pub fn print_error(error: &Error) {
+    let output = LocalErrorOutput::from_error(error);
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+    if serde_json::to_writer_pretty(&mut stderr, &output).is_ok() {
+        let _ = writeln!(stderr);
+    }
+}
 
 // ── list (installed) ────────────────────────────────────────────────────────
 
@@ -152,11 +847,26 @@ impl fmt::Display for UseOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct RemoveOutput {
     pub version: String,
+    /// `true` when the removed version was the one named by
+    /// `~/.clickhouse/default`: that marker was deleted, and the global
+    /// `~/.local/bin/clickhouse` symlink was removed if it still pointed into
+    /// this version. Only reachable with `--force`; see
+    /// [`crate::error::Error::VersionIsDefault`].
+    pub was_default: bool,
 }
 
 impl fmt::Display for RemoveOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Removed version {}", self.version)
+        write!(f, "Removed version {}", self.version)?;
+        if self.was_default {
+            write!(
+                f,
+                "\nCleared the default version marker (~/.clickhouse/default) and the global \
+                 `clickhouse` symlink (~/.local/bin/clickhouse).\n\
+                 Set a new default with: clickhousectl local use latest"
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -164,12 +874,36 @@ impl fmt::Display for RemoveOutput {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct InitOutput {
-    pub path: String,
+    /// Every project-local path this invocation created, e.g. `.clickhouse/`,
+    /// `.clickhouse/.gitignore`, `clickhouse/`, or `postgres/`.
+    pub paths: Vec<String>,
+    /// Human-output detail only: the project dir already existed before this
+    /// run. This affects human wording only, so it is not serialized.
+    #[serde(skip)]
+    pub already_initialized: bool,
 }
 
 impl fmt::Display for InitOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Initialized ClickHouse project in {}", self.path)
+        if !self.already_initialized {
+            write!(f, "Initialized ClickHouse project in .clickhouse/")?;
+        } else if self
+            .paths
+            .iter()
+            .any(|path| path == ".clickhouse/.gitignore")
+        {
+            write!(f, "Restored runtime ignore at .clickhouse/.gitignore")?;
+        } else {
+            write!(f, "Already initialized at .clickhouse/")?;
+        }
+        for path in self
+            .paths
+            .iter()
+            .filter(|path| !path.starts_with(".clickhouse/"))
+        {
+            write!(f, "\nCreated project scaffold in {path}")?;
+        }
+        Ok(())
     }
 }
 
@@ -187,8 +921,10 @@ impl fmt::Display for ServerConfigsOutput {
             writeln!(f, "No config files in {}", self.dir)?;
             write!(
                 f,
-                "Drop a ClickHouse config file there, then start with: \
-                 clickhousectl local server start --config-file <NAME>"
+                "Create an XML or YAML file there with only the settings you want to change.\n\
+                 Other settings inherit ClickHouse's built-in defaults.\n\
+                 Start with: \
+                 clickhousectl local server start --config <NAME>"
             )?;
             return Ok(());
         }
@@ -198,7 +934,7 @@ impl fmt::Display for ServerConfigsOutput {
         }
         write!(
             f,
-            "Use with: clickhousectl local server start --config-file <NAME>"
+            "Use with: clickhousectl local server start --config <NAME>"
         )
     }
 }
@@ -254,6 +990,10 @@ pub struct ServerListOutput {
     pub servers: Vec<ServerListEntry>,
     pub total_servers: usize,
     pub total_running_servers: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_scope: Option<ServerProjectScope>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) guidance: Vec<ProjectServerGuidance>,
 }
 
 #[derive(Tabled)]
@@ -311,6 +1051,17 @@ struct ServerListRowGlobal {
 impl fmt::Display for ServerListOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.servers.is_empty() {
+            if let Some(scope) = &self.project_scope {
+                writeln!(f, "No servers found in project '{}'.", scope.path)?;
+                writeln!(
+                    f,
+                    "Project-local server list uses the exact current working directory; parent `.clickhouse` directories are not searched."
+                )?;
+                return write!(
+                    f,
+                    "Return to the local project root where the server was started and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
+                );
+            }
             write!(f, "No servers")?;
             return Ok(());
         }
@@ -329,18 +1080,22 @@ impl fmt::Display for ServerListOutput {
                         e.container_id
                             .as_deref()
                             .map(|s| s.chars().take(12).collect::<String>())
-                            .unwrap_or_default()
+                            .unwrap_or_else(|| ABSENT.to_string())
                     } else {
-                        e.pid.map(|p| p.to_string()).unwrap_or_default()
+                        or_absent(e.pid)
                     };
                     ServerListRowWithEngine {
                         name: e.name.clone(),
                         engine: e.engine.clone(),
-                        status: if e.running { "running".into() } else { "stopped".into() },
+                        status: if e.running {
+                            "running".into()
+                        } else {
+                            "stopped".into()
+                        },
                         pid_or_container: id,
-                        version: e.version.clone().unwrap_or_default(),
-                        http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                        tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+                        version: or_absent(e.version.as_deref()),
+                        http_port: or_absent(e.http_port),
+                        tcp_port: or_absent(e.tcp_port),
                     }
                 })
                 .collect();
@@ -366,11 +1121,11 @@ impl fmt::Display for ServerListOutput {
                     } else {
                         "stopped".to_string()
                     },
-                    pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
-                    version: e.version.clone().unwrap_or_default(),
-                    http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                    tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
-                    project: e.project.clone().unwrap_or_default(),
+                    pid: or_absent(e.pid),
+                    version: or_absent(e.version.as_deref()),
+                    http_port: or_absent(e.http_port),
+                    tcp_port: or_absent(e.tcp_port),
+                    project: or_absent(e.project.as_deref()),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::markdown()).to_string();
@@ -386,10 +1141,10 @@ impl fmt::Display for ServerListOutput {
                     } else {
                         "stopped".to_string()
                     },
-                    pid: e.pid.map(|p| p.to_string()).unwrap_or_default(),
-                    version: e.version.clone().unwrap_or_default(),
-                    http_port: e.http_port.map(|p| p.to_string()).unwrap_or_default(),
-                    tcp_port: e.tcp_port.map(|p| p.to_string()).unwrap_or_default(),
+                    pid: or_absent(e.pid),
+                    version: or_absent(e.version.as_deref()),
+                    http_port: or_absent(e.http_port),
+                    tcp_port: or_absent(e.tcp_port),
                 })
                 .collect();
             let table = Table::new(rows).with(Style::markdown()).to_string();
@@ -422,11 +1177,7 @@ pub struct PostgresStartOutput {
 impl fmt::Display for PostgresStartOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let short = self.container_id.chars().take(12).collect::<String>();
-        writeln!(
-            f,
-            "Postgres '{}' running (container: {})",
-            self.name, short
-        )?;
+        writeln!(f, "Postgres '{}' running (container: {})", self.name, short)?;
         writeln!(f, "  Image:    {}", self.image)?;
         writeln!(f, "  Port:     {}", self.port)?;
         writeln!(f, "  User:     {}", self.user)?;
@@ -434,7 +1185,7 @@ impl fmt::Display for PostgresStartOutput {
         writeln!(f, "  Database: {}", self.database)?;
         write!(
             f,
-            "  Connect:  clickhousectl local postgres client --name {}",
+            "  Connect:  clickhousectl local postgres client {}",
             self.name
         )
     }
@@ -461,20 +1212,67 @@ impl fmt::Display for PostgresDotenvOutput {
 
 // ── server stop ─────────────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ServerSelection {
+    Explicit,
+    Implicit,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerStopOutput {
     pub name: String,
     /// True when the server existed but was already stopped (idempotent noop).
     pub already_stopped: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ServerSelection>,
 }
 
 impl fmt::Display for ServerStopOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.already_stopped {
-            write!(f, "Server '{}' is already stopped", self.name)
+            write!(f, "Server '{}' is already stopped", self.name)?;
         } else {
-            write!(f, "Server '{}' stopped", self.name)
+            write!(f, "Server '{}' stopped", self.name)?;
         }
+        if self.selection == Some(ServerSelection::Implicit) {
+            write!(f, " (selected automatically)")?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerStopNoopOutput {
+    pub stopped: bool,
+    pub selection: ServerSelection,
+    pub reason: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) project_scope: Option<ServerProjectScope>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) guidance: Vec<ProjectServerGuidance>,
+}
+
+impl fmt::Display for ServerStopNoopOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "No ClickHouse servers found; nothing to stop")?;
+        if let Some(scope) = &self.project_scope {
+            writeln!(f)?;
+            writeln!(
+                f,
+                "No `.clickhouse` directory existed under project '{}' when the command started.",
+                scope.path
+            )?;
+            writeln!(
+                f,
+                "Project-local server stop uses the exact current working directory; parent `.clickhouse` directories are not searched."
+            )?;
+            write!(
+                f,
+                "The `.clickhouse` directory typically lives in the local project root where the server was started. Return there and run `clickhousectl local server list`, or use `clickhousectl local server list --global` to locate running servers in other projects."
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -483,6 +1281,11 @@ impl fmt::Display for ServerStopOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerStopEntry {
     pub name: String,
+    /// "clickhouse" or "postgres".
+    pub engine: String,
+    /// Postgres image version, used to distinguish same-name major versions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     pub stopped: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -500,13 +1303,18 @@ impl fmt::Display for ServerStopAllOutput {
             return Ok(());
         }
         for s in &self.servers {
+            let engine = match s.version.as_deref() {
+                Some(version) => format!("{}, {}", s.engine, version),
+                None => s.engine.clone(),
+            };
             if s.stopped {
-                writeln!(f, "Stopping '{}'... stopped", s.name)?;
+                writeln!(f, "Stopping '{}' ({})... stopped", s.name, engine)?;
             } else {
                 writeln!(
                     f,
-                    "Stopping '{}'... error: {}",
+                    "Stopping '{}' ({})... error: {}",
                     s.name,
+                    engine,
                     s.error.as_deref().unwrap_or("unknown")
                 )?;
             }
@@ -520,11 +1328,17 @@ impl fmt::Display for ServerStopAllOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct ServerRemoveOutput {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<ServerSelection>,
 }
 
 impl fmt::Display for ServerRemoveOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Server '{}' removed", self.name)
+        write!(f, "Server '{}' removed", self.name)?;
+        if self.selection == Some(ServerSelection::Implicit) {
+            write!(f, " (selected automatically)")?;
+        }
+        Ok(())
     }
 }
 
@@ -570,6 +1384,591 @@ pub fn print_output(output: &(impl Serialize + fmt::Display), json: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::BinaryLaunchProblem;
+
+    fn error_json(error: &Error) -> serde_json::Value {
+        serde_json::to_value(LocalErrorOutput::from_error(error)).unwrap()
+    }
+
+    #[test]
+    fn local_error_codes_cover_the_stable_vocabulary() {
+        let cases = [
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::ServerNotFound,
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Default,
+                    server_name: "default".into(),
+                    binary_version: None,
+                }),
+                "managed_client_server_not_found",
+            ),
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::ServerNotRunning,
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Named,
+                    server_name: "dev".into(),
+                    binary_version: None,
+                }),
+                "managed_client_server_not_running",
+            ),
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::BinaryNotFound,
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Named,
+                    server_name: "dev".into(),
+                    binary_version: Some("25.12.9.61".into()),
+                }),
+                "managed_client_binary_not_found",
+            ),
+            (
+                Error::ManagedClient(ManagedClientError {
+                    kind: ManagedClientErrorKind::ProjectStateUnavailable(Box::new(
+                        Error::ServerLock {
+                            operation: "open the server metadata lock file",
+                            path: "/project/.clickhouse/servers/.metadata.lock".into(),
+                            remediation: "Check access, then retry.",
+                            source: std::io::Error::other("lock failed"),
+                        },
+                    )),
+                    project_dir: "/project".into(),
+                    selection: ManagedClientSelection::Default,
+                    server_name: "default".into(),
+                    binary_version: None,
+                }),
+                "managed_client_project_state_unavailable",
+            ),
+            (
+                Error::ProjectServerNotFound(ProjectServerNotFound {
+                    command: ProjectServerCommand::Stop,
+                    project_dir: "/project".into(),
+                    server_name: "default".into(),
+                }),
+                "server_not_found",
+            ),
+            (
+                Error::ProjectServerStateMissing(ProjectServerStateMissing {
+                    command: ProjectServerCommand::Remove,
+                    project_dir: "/project".into(),
+                }),
+                "server_selection_required",
+            ),
+            (Error::ServerNotFound("default".into()), "server_not_found"),
+            (
+                Error::ServerStopSelectionRequired { available: 2 },
+                "server_selection_required",
+            ),
+            (
+                Error::ServerInMultipleProjects {
+                    name: "dev".into(),
+                    projects: "/a, /b".into(),
+                },
+                "server_selection_required",
+            ),
+            (
+                Error::ServerNotRunning("default".into()),
+                "server_not_running",
+            ),
+            (
+                Error::ServerAlreadyRunning("default".into()),
+                "server_running",
+            ),
+            (
+                Error::VersionInUse {
+                    version: "25.12.9.61".into(),
+                    servers: "default".into(),
+                },
+                "server_running",
+            ),
+            (
+                Error::VersionIsDefault {
+                    version: "25.12.9.61".into(),
+                    recovery_command: "clickhousectl local use latest".into(),
+                },
+                "version_is_default",
+            ),
+            (
+                Error::InvalidVersion("unsafe input".into()),
+                "invalid_version",
+            ),
+            (
+                Error::VersionNotFound("25.12.9.61".into()),
+                "version_not_installed",
+            ),
+            (
+                Error::StaleDefaultVersion("25.12.9.61".into()),
+                "version_not_installed",
+            ),
+            (Error::NoVersionsInstalled, "version_not_installed"),
+            (
+                Error::ClientVersionNotInstalled("25.12.9.61".into()),
+                "version_not_installed",
+            ),
+            (Error::NoDefaultVersion, "version_selection_required"),
+            (Error::AmbiguousClientVersion, "version_selection_required"),
+            (
+                Error::VersionAlreadyInstalled("25.12.9.61".into()),
+                "version_already_installed",
+            ),
+            (
+                Error::RepeatedClientQueryUnsupported {
+                    version: "24.1.1.1".into(),
+                    minimum: "24.2",
+                },
+                "unsupported_client_version",
+            ),
+            (
+                Error::NoMatchingVersion("99.99".into()),
+                "version_unavailable",
+            ),
+            (
+                Error::ExactVersionUnavailable {
+                    version: "26.2.8.7".into(),
+                    series: "26.2".into(),
+                    available: "26.2.20.4".into(),
+                },
+                "version_unavailable",
+            ),
+            (
+                Error::UnsupportedPlatform {
+                    os: "plan9".into(),
+                    arch: "sparc".into(),
+                },
+                "unsupported_platform",
+            ),
+            (
+                Error::ConfigNotFound("config 'x' not found in /configs (available: none)".into()),
+                "config_not_found",
+            ),
+            (
+                Error::InvalidConfigName("../etc/passwd".into()),
+                "invalid_config_name",
+            ),
+            (
+                Error::InvalidServerName("../escape".into()),
+                "invalid_server_name",
+            ),
+            (
+                Error::UnsupportedArgument("--config cannot be passed through".into()),
+                "unsupported_argument",
+            ),
+            (
+                Error::UnsupportedArgument(
+                    "--http-port 0 is not allowed; pick a specific port or omit the flag".into(),
+                ),
+                "unsupported_argument",
+            ),
+            (
+                Error::DockerNotAvailable("Docker socket was not found.\nStart Docker.".into()),
+                "docker_unavailable",
+            ),
+            (
+                Error::DockerError("raw daemon details".into()),
+                "docker_error",
+            ),
+            (
+                Error::ContainerNameConflict("chctl-pg-dev-17".into()),
+                "container_name_conflict",
+            ),
+            (
+                Error::PostgresUsage("--port 0 is not allowed".into()),
+                "postgres_error",
+            ),
+            (
+                Error::ServerRunningCannotRemove {
+                    name: "dev".into(),
+                    command: "clickhousectl local server stop dev".into(),
+                },
+                "server_running",
+            ),
+            (
+                Error::PortInUse {
+                    kind: PortKind::Http,
+                    port: 8123,
+                },
+                "port_in_use",
+            ),
+            (
+                Error::StartupExit {
+                    kind: crate::error::StartupKind::ClickHouse,
+                    name: "default".into(),
+                    details: "raw startup details".into(),
+                },
+                "startup_exit",
+            ),
+            (
+                Error::StartupTimeout {
+                    kind: crate::error::StartupKind::Postgres,
+                    name: "default".into(),
+                    seconds: 60,
+                    details: "raw timeout details".into(),
+                },
+                "startup_timeout",
+            ),
+            (
+                Error::Download("raw download details".into()),
+                "download_failed",
+            ),
+            (
+                Error::Io(std::io::Error::other("raw I/O details")),
+                "io_error",
+            ),
+            (
+                Error::ServerMetadataParse {
+                    path: "/work/.clickhouse/servers/default.json".into(),
+                    source: serde_json::from_str::<serde_json::Value>("{")
+                        .expect_err("invalid fixture must fail to parse"),
+                },
+                "server_metadata_invalid",
+            ),
+            (Error::Exec("raw fallback details".into()), "local_error"),
+            (
+                Error::BinaryNotLaunchable {
+                    version: "25.12.9.61".into(),
+                    problem: BinaryLaunchProblem::NotExecutable,
+                    path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
+                },
+                "binary_not_launchable",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error_json(&error)["error"]["code"], expected);
+        }
+    }
+
+    /// An installed-but-unlaunchable build is a different failure from a
+    /// missing one, and its recovery is the reinstall of *that* version (#471).
+    #[test]
+    fn unlaunchable_binary_json_error_names_the_problem_and_the_reinstall() {
+        let json = error_json(&Error::BinaryNotLaunchable {
+            version: "25.12.9.61".into(),
+            problem: BinaryLaunchProblem::NotExecutable,
+            path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
+        });
+        let message = json["error"]["message"].as_str().expect("message");
+        assert!(message.contains("not executable"), "{message}");
+        assert!(
+            message.contains("/home/u/.clickhouse/versions/25.12.9.61/clickhouse"),
+            "{message}"
+        );
+        assert_eq!(
+            json["error"]["command"],
+            "clickhousectl local install --force 25.12.9.61"
+        );
+    }
+
+    /// A directory at the binary path cannot be fixed by `install --force`
+    /// (renaming over a directory fails with EISDIR), so the recovery command
+    /// goes through `local remove` first.
+    #[test]
+    fn directory_at_binary_path_json_error_recommends_remove_then_install() {
+        let json = error_json(&Error::BinaryNotLaunchable {
+            version: "25.12.9.61".into(),
+            problem: BinaryLaunchProblem::NotAFile,
+            path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
+        });
+        let message = json["error"]["message"].as_str().expect("message");
+        assert!(message.contains("not a regular file"), "{message}");
+        assert!(!message.contains("--force"), "{message}");
+        assert_eq!(
+            json["error"]["command"],
+            "clickhousectl local remove 25.12.9.61 && clickhousectl local install 25.12.9.61"
+        );
+    }
+
+    #[test]
+    fn version_is_default_json_error_explains_both_the_refusal_and_the_way_forward() {
+        let json = error_json(&Error::VersionIsDefault {
+            version: "25.12.9.61".into(),
+            recovery_command: "clickhousectl local use 24.8.14.39".into(),
+        });
+        let message = json["error"]["message"].as_str().expect("message");
+
+        for required in [
+            "current default",
+            "~/.clickhouse/default",
+            "~/.local/bin/clickhouse",
+            "--force",
+        ] {
+            assert!(
+                message.contains(required),
+                "missing {required:?}: {message}"
+            );
+        }
+        assert_eq!(
+            json["error"]["command"], "clickhousectl local use 24.8.14.39",
+            "the JSON error must name the recovery command"
+        );
+    }
+
+    #[test]
+    fn structured_fallback_and_wrapped_errors_never_serialize_raw_details() {
+        let sensitive =
+            "SELECT * FROM private_table; password=hunter2; /Users/al/secret; container=abc";
+        let fallback = serde_json::to_string(&LocalErrorOutput::from_error(&Error::Exec(
+            sensitive.to_string(),
+        )))
+        .unwrap();
+        assert_eq!(
+            fallback,
+            r#"{"error":{"code":"local_error","message":"Local command failed"}}"#
+        );
+        assert!(!fallback.contains(sensitive));
+
+        let wrapped = Error::PostgresStartupRollback {
+            primary: Box::new(Error::StartupExit {
+                kind: crate::error::StartupKind::Postgres,
+                name: "default".into(),
+                details: sensitive.into(),
+            }),
+            cleanup: sensitive.into(),
+        };
+        let wrapped = serde_json::to_string(&LocalErrorOutput::from_error(&wrapped)).unwrap();
+        assert_eq!(
+            wrapped,
+            r#"{"error":{"code":"startup_exit","message":"Postgres server 'default' exited before becoming ready","command":"clickhousectl local server list"}}"#
+        );
+        assert!(!wrapped.contains("hunter2"));
+    }
+
+    #[test]
+    fn running_server_remove_json_error_points_at_stopping_that_server() {
+        assert_eq!(
+            serde_json::to_string(&LocalErrorOutput::from_error(
+                &Error::ServerRunningCannotRemove {
+                    name: "dev".into(),
+                    command: "clickhousectl local server stop dev".into()
+                }
+            ))
+            .unwrap(),
+            r#"{"error":{"code":"server_running","message":"Server 'dev' is running; stop it first with `clickhousectl local server stop dev`","command":"clickhousectl local server stop dev"}}"#
+        );
+    }
+
+    #[test]
+    fn missing_config_json_error_keeps_the_full_human_detail() {
+        let error = Error::ConfigNotFound(
+            "config 'does-not-exist' not found in /home/dev/.clickhouse/configs \
+             (available: analytics.xml)"
+                .to_string(),
+        );
+
+        assert_eq!(
+            serde_json::to_value(LocalErrorOutput::from_error(&error)).unwrap(),
+            serde_json::json!({
+                "error": {
+                    "code": "config_not_found",
+                    "message": "config 'does-not-exist' not found in /home/dev/.clickhouse/configs (available: analytics.xml)",
+                    "command": "clickhousectl local server configs"
+                }
+            })
+        );
+    }
+
+    #[test]
+    fn a_version_that_is_not_installed_is_not_reported_as_unavailable_for_download() {
+        assert_eq!(
+            serde_json::to_value(LocalErrorOutput::from_error(&Error::VersionNotFound(
+                "25.12.9.61".into()
+            )))
+            .unwrap(),
+            serde_json::json!({
+                "error": {
+                    "code": "version_not_installed",
+                    "message": "Version 25.12.9.61 not found",
+                    "command": "clickhousectl local list"
+                }
+            })
+        );
+
+        // A version that cannot be resolved remotely keeps the remote hint.
+        let unresolvable = error_json(&Error::NoMatchingVersion("99.99".into()));
+        assert_eq!(unresolvable["error"]["code"], "version_unavailable");
+        assert_eq!(
+            unresolvable["error"]["command"],
+            "clickhousectl local list --remote"
+        );
+    }
+
+    /// Errors this crate composes itself render their human text verbatim, so
+    /// `--json` never carries less than the `Error: ...` line does.
+    #[test]
+    fn self_composed_errors_serialize_their_human_message_verbatim() {
+        let cases = [
+            Error::ServerNotFound("dev".into()),
+            Error::ServerNotRunning("dev".into()),
+            Error::ServerAlreadyRunning("dev".into()),
+            Error::ServerRunningCannotRemove {
+                name: "dev".into(),
+                command: "clickhousectl local server stop dev".into(),
+            },
+            Error::ServerStopSelectionRequired { available: 2 },
+            Error::ServerRemoveSelectionRequired { available: 1 },
+            Error::ServerInMultipleProjects {
+                name: "dev".into(),
+                projects: "/projects/a, /projects/b".into(),
+            },
+            Error::InvalidServerName("../escape".into()),
+            Error::UnsupportedArgument("--config cannot be passed through".into()),
+            Error::UnsupportedArgument(
+                "--tcp-port 0 is not allowed; pick a specific port or omit the flag".into(),
+            ),
+            Error::ConfigNotFound("config 'x' not found in /configs (available: y.xml)".into()),
+            Error::InvalidConfigName("../etc/passwd".into()),
+            Error::VersionNotFound("25.12.9.61".into()),
+            Error::NoVersionsInstalled,
+            Error::NoDefaultVersion,
+            Error::NoClientVersionInstalled,
+            Error::AmbiguousClientVersion,
+            Error::StaleDefaultVersion("25.12.9.61".into()),
+            Error::ClientVersionNotInstalled("25.12.9.61".into()),
+            Error::BinaryNotLaunchable {
+                version: "25.12.9.61".into(),
+                problem: BinaryLaunchProblem::NotAFile,
+                path: "/home/u/.clickhouse/versions/25.12.9.61/clickhouse".into(),
+            },
+            Error::RepeatedClientQueryUnsupported {
+                version: "24.1.1.1".into(),
+                minimum: "24.2",
+            },
+            Error::VersionAlreadyInstalled("25.12.9.61".into()),
+            Error::VersionInUse {
+                version: "25.12.9.61".into(),
+                servers: "dev (/project, pid 42)".into(),
+            },
+            Error::VersionIsDefault {
+                version: "25.12.9.61".into(),
+                recovery_command: "clickhousectl local use latest".into(),
+            },
+            Error::NoMatchingVersion("99.99".into()),
+            Error::ExactVersionUnavailable {
+                version: "26.2.8.7".into(),
+                series: "26.2".into(),
+                available: "26.2.20.4".into(),
+            },
+            Error::UnknownVersionChannel("26.2.8.7".into()),
+            Error::InvalidVersion("Invalid version 'nope'".into()),
+            Error::UnsupportedPlatform {
+                os: "plan9".into(),
+                arch: "sparc".into(),
+            },
+            Error::PortInUse {
+                kind: PortKind::Postgres,
+                port: 5432,
+            },
+            Error::PortUnavailable(PortKind::Http),
+            Error::DockerNotAvailable("Docker socket was not found.\nStart Docker Desktop.".into()),
+            Error::ContainerNameConflict("chctl-pg-dev-17".into()),
+            Error::PostgresUsage(
+                "multiple postgres instances named 'dev' (17, 18); pass --version to select one"
+                    .into(),
+            ),
+            // The missing-`psql` pre-flight (#471): its text is composed by
+            // this CLI, so the install hint must survive into JSON.
+            Error::PostgresUsage(
+                "could not execute psql: not found on PATH (install the PostgreSQL client tools)"
+                    .into(),
+            ),
+        ];
+
+        for error in cases {
+            let json = error_json(&error);
+            assert_eq!(
+                json["error"]["message"],
+                serde_json::Value::String(error.to_string()),
+                "JSON message must match human output for {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sql_input_errors_keep_categories_without_paths_or_os_messages() {
+        let secret = "password=hunter2; SELECT secret FROM private_table";
+        for (error, code) in [
+            (
+                Error::SqlInputOpen {
+                    path: secret.into(),
+                    source: std::io::Error::other(secret),
+                },
+                "sql_input_open_failed",
+            ),
+            (
+                Error::SqlInputRead(std::io::Error::other(secret)),
+                "sql_input_read_failed",
+            ),
+        ] {
+            assert!(error.to_string().contains(secret));
+            let json = error_json(&error);
+            assert_eq!(json["error"]["code"], code);
+            assert!(!json.to_string().contains(secret));
+            assert!(
+                json["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("SQL input")
+            );
+            assert_eq!(error.exit_code(), 1);
+        }
+    }
+
+    /// The complement of the parity rule: text that interpolates foreign output
+    /// (subprocess, Docker daemon, OS/serde sources) stays summarized.
+    #[test]
+    fn errors_carrying_foreign_output_stay_summarized() {
+        let secret = "password=hunter2; /Users/al/secret-project";
+        let cases = [
+            (Error::Exec(secret.into()), "Local command failed"),
+            (Error::DockerError(secret.into()), "Docker operation failed"),
+            (Error::Postgres(secret.into()), "Local command failed"),
+            (Error::Download(secret.into()), "Download failed"),
+            (Error::Extract(secret.into()), "Extraction failed"),
+            (
+                Error::Io(std::io::Error::other(secret)),
+                "Local I/O operation failed",
+            ),
+            (
+                Error::ServerMetadataWrite {
+                    path: secret.into(),
+                    source: std::io::Error::other(secret),
+                },
+                "Local I/O operation failed",
+            ),
+            (
+                Error::ServerLock {
+                    operation: "open the server metadata lock file",
+                    path: secret.into(),
+                    remediation: "Check access, then retry.",
+                    source: std::io::Error::other(secret),
+                },
+                "Local I/O operation failed",
+            ),
+            (
+                Error::StartupTimeout {
+                    kind: crate::error::StartupKind::ClickHouse,
+                    name: "default".into(),
+                    seconds: 30,
+                    details: secret.into(),
+                },
+                "ClickHouse server 'default' did not become ready within 30 seconds",
+            ),
+        ];
+
+        for (error, expected) in cases {
+            let serialized = serde_json::to_string(&LocalErrorOutput::from_error(&error)).unwrap();
+            assert_eq!(
+                error_json(&error)["error"]["message"],
+                expected,
+                "unexpected summary for {error:?}"
+            );
+            assert!(
+                !serialized.contains("hunter2") && !serialized.contains("secret-project"),
+                "leaked foreign output: {serialized}"
+            );
+        }
+    }
 
     // ── JSON serialization tests ────────────────────────────────────────
 
@@ -587,10 +1986,8 @@ mod tests {
                 },
             ],
         };
-        let json: serde_json::Value = serde_json::from_str(
-            &serde_json::to_string_pretty(&output).unwrap(),
-        )
-        .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["versions"][0]["version"], "25.12.5.44");
         assert_eq!(json["versions"][0]["default"], true);
@@ -601,9 +1998,7 @@ mod tests {
 
     #[test]
     fn list_installed_json_empty() {
-        let output = ListInstalledOutput {
-            versions: vec![],
-        };
+        let output = ListInstalledOutput { versions: vec![] };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
         assert_eq!(json["versions"].as_array().unwrap().len(), 0);
@@ -675,22 +2070,89 @@ mod tests {
     fn remove_json() {
         let output = RemoveOutput {
             version: "25.12.5.44".to_string(),
+            was_default: false,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["version"], "25.12.5.44");
+        assert_eq!(json["was_default"], false);
     }
 
     #[test]
-    fn init_json() {
-        let output = InitOutput {
-            path: ".clickhouse/".to_string(),
+    fn remove_json_reports_a_cleared_default() {
+        let output = RemoveOutput {
+            version: "25.12.5.44".to_string(),
+            was_default: true,
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
-        assert_eq!(json["path"], ".clickhouse/");
+        assert_eq!(json["version"], "25.12.5.44");
+        assert_eq!(json["was_default"], true);
+    }
+
+    #[test]
+    fn remove_human_output_warns_when_the_default_was_cleared() {
+        let plain = RemoveOutput {
+            version: "25.12.5.44".to_string(),
+            was_default: false,
+        }
+        .to_string();
+        assert_eq!(plain, "Removed version 25.12.5.44");
+
+        let cleared = RemoveOutput {
+            version: "25.12.5.44".to_string(),
+            was_default: true,
+        }
+        .to_string();
+        assert!(
+            cleared.starts_with("Removed version 25.12.5.44\n"),
+            "{cleared}"
+        );
+        for required in [
+            "~/.clickhouse/default",
+            "~/.local/bin/clickhouse",
+            "clickhousectl local use latest",
+        ] {
+            assert!(
+                cleared.contains(required),
+                "missing {required:?}: {cleared}"
+            );
+        }
+    }
+
+    #[test]
+    fn init_json_first_run_reports_all_created_paths() {
+        let output = InitOutput {
+            paths: vec![
+                ".clickhouse/".to_string(),
+                "clickhouse/".to_string(),
+                "postgres/".to_string(),
+            ],
+            already_initialized: false,
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
+
+        assert_eq!(
+            json["paths"],
+            serde_json::json!([".clickhouse/", "clickhouse/", "postgres/"])
+        );
+        // Human-only detail must stay out of the JSON payload.
+        assert!(json.get("already_initialized").is_none());
+    }
+
+    #[test]
+    fn init_json_idempotent_run_reports_no_created_paths() {
+        let output = InitOutput {
+            paths: vec![],
+            already_initialized: true,
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
+
+        assert_eq!(json["paths"], serde_json::json!([]));
     }
 
     #[test]
@@ -741,6 +2203,8 @@ mod tests {
             ],
             total_servers: 2,
             total_running_servers: 1,
+            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            guidance: Vec::new(),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -756,6 +2220,8 @@ mod tests {
         assert!(json["servers"][1].get("version").is_none());
         assert_eq!(json["total_servers"], 2);
         assert_eq!(json["total_running_servers"], 1);
+        assert_eq!(json["project_scope"]["path"], "/project");
+        assert_eq!(json["project_scope"]["parent_projects_searched"], false);
     }
 
     #[test]
@@ -764,6 +2230,8 @@ mod tests {
             servers: vec![],
             total_servers: 0,
             total_running_servers: 0,
+            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            guidance: project_scope_guidance(None),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -771,6 +2239,8 @@ mod tests {
         assert_eq!(json["servers"].as_array().unwrap().len(), 0);
         assert_eq!(json["total_servers"], 0);
         assert_eq!(json["total_running_servers"], 0);
+        assert_eq!(json["project_scope"]["kind"], "exact_current_project");
+        assert_eq!(json["guidance"][2]["action"], "list_global_servers");
     }
 
     #[test]
@@ -778,12 +2248,14 @@ mod tests {
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: false,
+            selection: Some(ServerSelection::Explicit),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["name"], "default");
         assert_eq!(json["already_stopped"], false);
+        assert_eq!(json["selection"], "explicit");
     }
 
     #[test]
@@ -791,8 +2263,12 @@ mod tests {
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: true,
+            selection: Some(ServerSelection::Implicit),
         };
-        assert_eq!(output.to_string(), "Server 'default' is already stopped");
+        assert_eq!(
+            output.to_string(),
+            "Server 'default' is already stopped (selected automatically)"
+        );
 
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
@@ -805,13 +2281,17 @@ mod tests {
             servers: vec![
                 ServerStopEntry {
                     name: "default".to_string(),
+                    engine: "clickhouse".to_string(),
+                    version: None,
                     stopped: true,
                     error: None,
                 },
                 ServerStopEntry {
-                    name: "test".to_string(),
+                    name: "default".to_string(),
+                    engine: "postgres".to_string(),
+                    version: Some("postgres:18".to_string()),
                     stopped: false,
-                    error: Some("process not found".to_string()),
+                    error: Some("container not found".to_string()),
                 },
             ],
         };
@@ -819,18 +2299,20 @@ mod tests {
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["servers"][0]["name"], "default");
+        assert_eq!(json["servers"][0]["engine"], "clickhouse");
         assert_eq!(json["servers"][0]["stopped"], true);
+        assert!(json["servers"][0].get("version").is_none());
         assert!(json["servers"][0].get("error").is_none());
-        assert_eq!(json["servers"][1]["name"], "test");
+        assert_eq!(json["servers"][1]["name"], "default");
+        assert_eq!(json["servers"][1]["engine"], "postgres");
+        assert_eq!(json["servers"][1]["version"], "postgres:18");
         assert_eq!(json["servers"][1]["stopped"], false);
-        assert_eq!(json["servers"][1]["error"], "process not found");
+        assert_eq!(json["servers"][1]["error"], "container not found");
     }
 
     #[test]
     fn server_stop_all_json_empty() {
-        let output = ServerStopAllOutput {
-            servers: vec![],
-        };
+        let output = ServerStopAllOutput { servers: vec![] };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
@@ -859,7 +2341,7 @@ mod tests {
         };
         let text = output.to_string();
         assert!(text.contains("No config files"));
-        assert!(text.contains("--config-file"));
+        assert!(text.contains("--config <NAME>"));
     }
 
     #[test]
@@ -877,11 +2359,13 @@ mod tests {
     fn server_remove_json() {
         let output = ServerRemoveOutput {
             name: "test".to_string(),
+            selection: Some(ServerSelection::Explicit),
         };
         let json: serde_json::Value =
             serde_json::from_str(&serde_json::to_string_pretty(&output).unwrap()).unwrap();
 
         assert_eq!(json["name"], "test");
+        assert_eq!(json["selection"], "explicit");
     }
 
     // ── Display (human-readable) tests ──────────────────────────────────
@@ -910,9 +2394,7 @@ mod tests {
 
     #[test]
     fn list_installed_display_empty() {
-        let output = ListInstalledOutput {
-            versions: vec![],
-        };
+        let output = ListInstalledOutput { versions: vec![] };
         let text = output.to_string();
         assert!(text.contains("No versions installed"));
         assert!(text.contains("Run: clickhousectl local install stable"));
@@ -943,9 +2425,7 @@ mod tests {
 
     #[test]
     fn list_available_display_empty() {
-        let output = ListAvailableOutput {
-            versions: vec![],
-        };
+        let output = ListAvailableOutput { versions: vec![] };
         assert_eq!(output.to_string(), "No versions available");
     }
 
@@ -991,18 +2471,59 @@ mod tests {
     fn remove_display() {
         let output = RemoveOutput {
             version: "25.12.5.44".to_string(),
+            was_default: false,
         };
         assert_eq!(output.to_string(), "Removed version 25.12.5.44");
     }
 
     #[test]
-    fn init_display() {
+    fn init_display_idempotent() {
         let output = InitOutput {
-            path: ".clickhouse/".to_string(),
+            paths: vec![],
+            already_initialized: true,
+        };
+        assert_eq!(output.to_string(), "Already initialized at .clickhouse/");
+    }
+
+    #[test]
+    fn init_display_reports_runtime_ignore_repair() {
+        let output = InitOutput {
+            paths: vec![".clickhouse/.gitignore".to_string()],
+            already_initialized: true,
         };
         assert_eq!(
             output.to_string(),
-            "Initialized ClickHouse project in .clickhouse/"
+            "Restored runtime ignore at .clickhouse/.gitignore"
+        );
+    }
+
+    #[test]
+    fn init_display_reports_scaffold_repair_without_runtime_path() {
+        let output = InitOutput {
+            paths: vec!["postgres/".to_string()],
+            already_initialized: true,
+        };
+        assert_eq!(
+            output.to_string(),
+            "Already initialized at .clickhouse/\nCreated project scaffold in postgres/"
+        );
+    }
+
+    #[test]
+    fn init_display_first_run_lists_created_scaffolds() {
+        let output = InitOutput {
+            paths: vec![
+                ".clickhouse/".to_string(),
+                "clickhouse/".to_string(),
+                "postgres/".to_string(),
+            ],
+            already_initialized: false,
+        };
+        assert_eq!(
+            output.to_string(),
+            "Initialized ClickHouse project in .clickhouse/\n\
+             Created project scaffold in clickhouse/\n\
+             Created project scaffold in postgres/"
         );
     }
 
@@ -1051,6 +2572,8 @@ mod tests {
             ],
             total_servers: 2,
             total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
         };
         let text = output.to_string();
         assert!(text.contains("Name"));
@@ -1066,7 +2589,92 @@ mod tests {
         assert!(text.contains("9000"));
         assert!(text.contains("test"));
         assert!(text.contains("stopped"));
+        let stopped = text
+            .lines()
+            .find(|line| line.contains("| test"))
+            .expect("stopped server row");
+        let cells: Vec<_> = stopped.split('|').map(str::trim).collect();
+        assert_eq!(cells, ["", "test", "stopped", "-", "-", "-", "-", ""]);
         assert!(text.contains("2 servers, 1 running"));
+    }
+
+    #[test]
+    fn server_list_display_marks_unavailable_postgres_and_global_fields() {
+        let postgres = ServerListOutput {
+            servers: vec![ServerListEntry {
+                name: "pg".to_string(),
+                running: true,
+                pid: None,
+                version: Some("postgres:18".to_string()),
+                http_port: None,
+                tcp_port: Some(5432),
+                project: None,
+                engine: "postgres".to_string(),
+                container_id: Some("1234567890abcdef".to_string()),
+            }],
+            total_servers: 1,
+            total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
+        }
+        .to_string();
+        let postgres_row = postgres
+            .lines()
+            .find(|line| line.contains("| pg"))
+            .expect("Postgres server row");
+        let postgres_cells: Vec<_> = postgres_row.split('|').map(str::trim).collect();
+        assert_eq!(
+            postgres_cells,
+            [
+                "",
+                "pg",
+                "postgres",
+                "running",
+                "1234567890ab",
+                "postgres:18",
+                "-",
+                "5432",
+                ""
+            ]
+        );
+
+        let global = ServerListOutput {
+            servers: vec![ServerListEntry {
+                name: "recovered".to_string(),
+                running: true,
+                pid: Some(42),
+                version: None,
+                http_port: None,
+                tcp_port: None,
+                project: Some("/project".to_string()),
+                engine: "clickhouse".to_string(),
+                container_id: None,
+            }],
+            total_servers: 1,
+            total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
+        }
+        .to_string();
+        let global_row = global
+            .lines()
+            .find(|line| line.contains("| recovered"))
+            .expect("globally discovered server row");
+        let global_cells: Vec<_> = global_row.split('|').map(str::trim).collect();
+        assert_eq!(
+            global_cells,
+            [
+                "",
+                "recovered",
+                "running",
+                "42",
+                "-",
+                "-",
+                "-",
+                "/project",
+                ""
+            ]
+        );
     }
 
     #[test]
@@ -1075,8 +2683,26 @@ mod tests {
             servers: vec![],
             total_servers: 0,
             total_running_servers: 0,
+            project_scope: None,
+            guidance: Vec::new(),
         };
         assert_eq!(output.to_string(), "No servers");
+    }
+
+    #[test]
+    fn server_list_display_empty_project_explains_exact_scope() {
+        let output = ServerListOutput {
+            servers: vec![],
+            total_servers: 0,
+            total_running_servers: 0,
+            project_scope: Some(exact_current_project_scope(Path::new("/project"))),
+            guidance: project_scope_guidance(None),
+        };
+        let text = output.to_string();
+        assert!(text.contains("No servers found in project '/project'"));
+        assert!(text.contains("exact current working directory"));
+        assert!(text.contains("parent `.clickhouse` directories are not searched"));
+        assert!(text.contains("clickhousectl local server list --global"));
     }
 
     #[test]
@@ -1090,11 +2716,13 @@ mod tests {
                 http_port: Some(8123),
                 tcp_port: Some(9000),
                 project: None,
-                    engine: "clickhouse".to_string(),
-                    container_id: None,
+                engine: "clickhouse".to_string(),
+                container_id: None,
             }],
             total_servers: 1,
             total_running_servers: 1,
+            project_scope: None,
+            guidance: Vec::new(),
         };
         let text = output.to_string();
         assert!(text.contains("1 server, 1 running"));
@@ -1105,6 +2733,7 @@ mod tests {
         let output = ServerStopOutput {
             name: "default".to_string(),
             already_stopped: false,
+            selection: Some(ServerSelection::Explicit),
         };
         assert_eq!(output.to_string(), "Server 'default' stopped");
     }
@@ -1115,27 +2744,33 @@ mod tests {
             servers: vec![
                 ServerStopEntry {
                     name: "default".to_string(),
+                    engine: "clickhouse".to_string(),
+                    version: None,
                     stopped: true,
                     error: None,
                 },
                 ServerStopEntry {
-                    name: "test".to_string(),
+                    name: "default".to_string(),
+                    engine: "postgres".to_string(),
+                    version: Some("postgres:18".to_string()),
                     stopped: false,
-                    error: Some("process not found".to_string()),
+                    error: Some("container not found".to_string()),
                 },
             ],
         };
         let text = output.to_string();
-        assert!(text.contains("Stopping 'default'... stopped"));
-        assert!(text.contains("Stopping 'test'... error: process not found"));
+        assert!(text.contains("Stopping 'default' (clickhouse)... stopped"));
+        assert!(
+            text.contains(
+                "Stopping 'default' (postgres, postgres:18)... error: container not found"
+            )
+        );
         assert!(text.contains("Done"));
     }
 
     #[test]
     fn server_stop_all_display_empty() {
-        let output = ServerStopAllOutput {
-            servers: vec![],
-        };
+        let output = ServerStopAllOutput { servers: vec![] };
         assert_eq!(output.to_string(), "No running servers");
     }
 
@@ -1143,6 +2778,7 @@ mod tests {
     fn server_remove_display() {
         let output = ServerRemoveOutput {
             name: "test".to_string(),
+            selection: Some(ServerSelection::Explicit),
         };
         assert_eq!(output.to_string(), "Server 'test' removed");
     }

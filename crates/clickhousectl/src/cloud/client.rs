@@ -1,5 +1,6 @@
-use crate::cloud::types::DeleteResponse;
+use crate::cloud::output::{CloudErrorCode, CloudErrorDetail};
 use crate::dotenv::DotenvVars;
+use crate::failure::{ApiFailure, FailureKind, FailureStage};
 use std::env;
 
 const DEFAULT_BASE_URL: &str = "https://api.clickhouse.cloud/v1";
@@ -15,6 +16,17 @@ pub enum CloudErrorKind {
 pub struct CloudError {
     pub message: String,
     pub kind: CloudErrorKind,
+    /// Structural classification of the failure behind this error (#450),
+    /// resolved from the library's typed error variant at the conversion
+    /// boundary or from the local operation that failed — never from the
+    /// message. `None` when no boundary claimed it, which
+    /// [`CloudError::at_stage`] reports as [`FailureKind::Other`].
+    pub failure: Option<ApiFailure>,
+    /// Machine-readable form of this failure, for `--json` mode (#644).
+    /// `None` for the ordinary case, where the message is the whole error;
+    /// `Some` when the remedy is structured enough that an agent should not
+    /// have to parse prose for it.
+    pub details: Option<Box<CloudErrorDetail>>,
 }
 
 impl CloudError {
@@ -22,6 +34,8 @@ impl CloudError {
         Self {
             message: message.into(),
             kind: CloudErrorKind::Generic,
+            failure: None,
+            details: None,
         }
     }
 
@@ -29,7 +43,44 @@ impl CloudError {
         Self {
             message: message.into(),
             kind: CloudErrorKind::Auth,
+            failure: None,
+            details: None,
         }
+    }
+
+    /// Attach the classification of the failure this error stands for.
+    pub fn with_failure(mut self, failure: ApiFailure) -> Self {
+        self.failure = Some(failure);
+        self
+    }
+
+    /// Attach the machine-readable form of this failure, which `--json` mode
+    /// emits instead of the prose message.
+    pub fn with_details(mut self, details: CloudErrorDetail) -> Self {
+        self.details = Some(Box::new(details));
+        self
+    }
+
+    /// Record this error against the stage whose boundary is returning it,
+    /// and hand it back unchanged — the shape `map_err` wants:
+    ///
+    /// ```ignore
+    /// client.create_api_key(org_id, &request)
+    ///     .await
+    ///     .map_err(|error| error.at_stage(FailureStage::KeyCreate))?;
+    /// ```
+    ///
+    /// The stage comes from the call site (which owns it) and the kind from
+    /// the error's own structural classification, so no category is ever
+    /// derived from the message. Recording is first-write-wins, so wrapping an
+    /// already-classified error at a coarser boundary is safe.
+    pub fn at_stage(self, stage: FailureStage) -> Self {
+        crate::failure::record(
+            stage,
+            self.failure
+                .unwrap_or_else(|| ApiFailure::new(FailureKind::Other)),
+        );
+        self
     }
 }
 
@@ -41,10 +92,22 @@ impl std::fmt::Display for CloudError {
 
 impl std::error::Error for CloudError {}
 
+impl From<std::io::Error> for CloudError {
+    fn from(error: std::io::Error) -> Self {
+        Self::new(error.to_string()).with_failure(ApiFailure::new(FailureKind::Io))
+    }
+}
+
+impl From<serde_json::Error> for CloudError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::new(error.to_string()).with_failure(ApiFailure::new(FailureKind::Other))
+    }
+}
+
 pub type Result<T> = std::result::Result<T, CloudError>;
 
 enum AuthMode {
-    Basic,
+    Basic { key: String, secret: String },
     Bearer,
 }
 
@@ -60,7 +123,7 @@ pub enum AuthSource {
     CredentialsFile,
     /// `CLICKHOUSE_CLOUD_API_KEY` / `CLICKHOUSE_CLOUD_API_SECRET` env vars
     EnvVars,
-    /// OAuth tokens saved by `cloud auth login` (`.clickhouse/tokens.json`)
+    /// OAuth tokens saved by `cloud auth login` (`~/.clickhouse/tokens.json`)
     OAuthTokens,
 }
 
@@ -98,7 +161,7 @@ fn real_env_lookup(key: &str) -> Option<String> {
 /// the env tier these tests are exercising.
 type CredentialsLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::credentials::Credentials>;
 
-/// Loader for the OAuth token tier (`.clickhouse/tokens.json`). Injected for
+/// Loader for the OAuth token tier (`~/.clickhouse/tokens.json`). Injected for
 /// the same reason as `CredentialsLookup`.
 type TokensLookup<'a> = &'a dyn Fn() -> Option<crate::cloud::auth::TokenStore>;
 
@@ -140,7 +203,8 @@ fn resolve_auth(
 /// `env_lookup`, `load_credentials`, and `load_tokens` are the injection
 /// points that let tests feed a controlled snapshot of every source without
 /// mutating the process environment or reading the real `.clickhouse/` files
-/// under the (un-isolated) test cwd.
+/// (credentials.json under cwd, tokens.json under the home dir) that `cargo
+/// test` does not isolate.
 fn resolve_auth_with_sources(
     api_key: Option<&str>,
     api_secret: Option<&str>,
@@ -157,12 +221,12 @@ fn resolve_auth_with_sources(
     };
 
     if api_key.is_some() || api_secret.is_some() {
-        let key = api_key
-            .map(String::from)
-            .ok_or_else(|| CloudError::auth("API key required when --api-key or --api-secret is set"))?;
-        let secret = api_secret
-            .map(String::from)
-            .ok_or_else(|| CloudError::auth("API secret required when --api-key or --api-secret is set"))?;
+        let key = api_key.map(String::from).ok_or_else(|| {
+            CloudError::auth("API key required when --api-key or --api-secret is set")
+        })?;
+        let secret = api_secret.map(String::from).ok_or_else(|| {
+            CloudError::auth("API secret required when --api-key or --api-secret is set")
+        })?;
         return Ok(ResolvedAuth {
             creds: ResolvedCreds::Basic { key, secret },
             source: AuthSource::CliFlags,
@@ -251,6 +315,7 @@ fn dotenv_env_provenance_with_sources(
 /// computed through the same `env_or_dotenv` merge the resolver uses so the
 /// `cloud auth status` table can never disagree with which source actually
 /// wins precedence. Empty values count as absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EnvCredPresence {
     pub key: bool,
     pub secret: bool,
@@ -291,7 +356,8 @@ impl AuthSource {
                 crate::cloud::credentials::credentials_path().display()
             ),
             AuthSource::EnvVars => {
-                let base = "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)";
+                let base =
+                    "environment variables (CLICKHOUSE_CLOUD_API_KEY, CLICKHOUSE_CLOUD_API_SECRET)";
                 match dotenv_env_provenance() {
                     Some(path) => format!("{base} (loaded from {})", path.display()),
                     None => base.to_string(),
@@ -299,13 +365,138 @@ impl AuthSource {
             }
             AuthSource::OAuthTokens => format!(
                 "OAuth tokens ({})",
-                crate::cloud::auth::tokens_path().display()
+                crate::cloud::auth::tokens_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "~/.clickhouse/tokens.json".to_string())
             ),
         }
     }
 }
 
+// ── by-identifier requests (issue #666) ───────────────────────────────────
+//
+// The API answers HTTP 400 `Invalid <thing> id string:"<id>"` for a
+// syntactically valid UUID that resolves to nothing, so `cloud postgres get
+// 00000000-0000-0000-0000-000000000000` reported a bad request rather than a
+// missing resource. The fix is structural, not textual: nothing here reads the
+// response prose (the message interpolates the id, so it could never become a
+// typed library variant either). A by-identifier request has exactly one
+// class of user-controlled input — the identifiers the CLI itself formatted
+// into the URL path — so when every one of those is a well-formed UUID, "the
+// identifier is invalid" is not what happened.
+//
+// A malformed identifier keeps the server's answer verbatim: there, "invalid"
+// is both true and the more useful thing to say.
+
+/// Which resource a by-identifier read was looking up.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceKind {
+    Service,
+    PostgresService,
+    Organization,
+}
+
+impl ResourceKind {
+    /// The noun the not-found message names the resource with.
+    const fn noun(self) -> &'static str {
+        match self {
+            ResourceKind::Service => "service",
+            ResourceKind::PostgresService => "Postgres service",
+            ResourceKind::Organization => "organization",
+        }
+    }
+
+    /// The command that lists what does exist, for the structured detail.
+    /// Takes the organization the request was scoped to, which the message
+    /// already names.
+    fn list_command(self, org_id: &str) -> String {
+        let base = match self {
+            ResourceKind::Service => "clickhousectl cloud service list",
+            ResourceKind::PostgresService => "clickhousectl cloud postgres list",
+            ResourceKind::Organization => "clickhousectl cloud org list",
+        };
+        match self {
+            // The organization *is* the identifier being looked up, so the
+            // command that lists the alternatives takes no scope flag.
+            ResourceKind::Organization => base.to_string(),
+            _ => format!("{base} --org-id {org_id}"),
+        }
+    }
+}
+
+/// The identifiers a by-identifier request put into its request path.
+///
+/// Built only through [`ResourceLookup::in_org`] and
+/// [`ResourceLookup::organization`], so the kind and the organization id
+/// cannot disagree: an organization lookup is always scoped to itself, and
+/// every other kind is always scoped to the organization it was read from.
+pub struct ResourceLookup<'a> {
+    kind: ResourceKind,
+    /// The resource's own identifier, as the user supplied it.
+    id: &'a str,
+    /// The organization the request was scoped to. Equal to `id` for an
+    /// organization lookup, whose only path identifier is the organization.
+    org_id: &'a str,
+}
+
+impl<'a> ResourceLookup<'a> {
+    /// A resource looked up inside an organization: both identifiers are in
+    /// the request path.
+    pub fn in_org(kind: ResourceKind, id: &'a str, org_id: &'a str) -> Self {
+        Self { kind, id, org_id }
+    }
+
+    /// An organization looked up by its own identifier, which is therefore
+    /// also the only scope the request had.
+    pub fn organization(id: &'a str) -> Self {
+        Self {
+            kind: ResourceKind::Organization,
+            id,
+            org_id: id,
+        }
+    }
+
+    /// Whether the API rejected a request whose every path identifier is a
+    /// well-formed UUID: 400 for an unknown ID (#666), or 404 for a deleted
+    /// resource (#831). Use only when the path identifies the resource itself
+    /// and the request has no other user-controlled input, never a subresource.
+    ///
+    /// The single implementation of that judgement: both
+    /// [`CloudClient::convert_error_for_lookup`] and the callers that turn
+    /// the rejection into an absent resource read it from here.
+    pub fn rejected_well_formed_ids(&self, err: &clickhouse_cloud_api::Error) -> bool {
+        matches!(
+            err,
+            clickhouse_cloud_api::Error::Api {
+                status: 400 | 404,
+                ..
+            }
+        ) && self
+            .identifiers()
+            .all(|id| uuid::Uuid::parse_str(id).is_ok())
+    }
+
+    /// Every identifier the CLI formatted into the request path.
+    fn identifiers(&self) -> impl Iterator<Item = &str> {
+        [self.id, self.org_id].into_iter()
+    }
+
+    /// The trailing scope clause, when the request was scoped to something
+    /// other than the resource being looked up.
+    fn scope_clause(&self) -> String {
+        match self.kind {
+            // Keyed on the kind, not on the two ids being equal, so the
+            // message never reads "organization X (organization X)".
+            ResourceKind::Organization => String::new(),
+            _ => format!(" (organization {})", self.org_id),
+        }
+    }
+}
+
 pub struct CloudClient {
+    organization_id: Option<String>,
+    organization_name: Option<String>,
+    resolved_organization_id: tokio::sync::OnceCell<String>,
     lib_client: clickhouse_cloud_api::Client,
     auth_mode: AuthMode,
     auth_source: AuthSource,
@@ -322,22 +513,63 @@ fn lib_base_url(cli_base_url: &str) -> String {
 }
 
 impl CloudClient {
+    /// Set the shared cloud organization scope without performing a lookup.
+    pub(super) fn with_organization_id(mut self, organization_id: Option<String>) -> Self {
+        self.organization_id = organization_id;
+        self.resolved_organization_id = tokio::sync::OnceCell::new();
+        self
+    }
+
+    pub(super) fn with_organization_name(mut self, name: Option<String>) -> Self {
+        self.organization_name = name;
+        self.resolved_organization_id = tokio::sync::OnceCell::new();
+        self
+    }
+
+    /// Resolve organization scope only when needed, caching successful detection.
+    pub(super) async fn resolve_organization_id(&self) -> Result<String> {
+        self.resolved_organization_id
+            .get_or_try_init(|| async {
+                match (&self.organization_id, &self.organization_name) {
+                    (Some(_), Some(_)) => {
+                        Err(CloudError::new("--org-id conflicts with --org-name"))
+                    }
+                    (Some(id), None) => Ok(id.clone()),
+                    (None, Some(name)) => {
+                        let rows = self.list_organizations().await?;
+                        crate::cloud::shared::select_named_id(
+                            "organization",
+                            name,
+                            rows.iter().map(|r| (r.name.as_deref(), r.id.as_ref())),
+                        )
+                    }
+                    (None, None) => self.get_default_org_id().await,
+                }
+            })
+            .await
+            .cloned()
+    }
+
     pub fn new(
         api_key: Option<&str>,
         api_secret: Option<&str>,
         url_override: Option<&str>,
     ) -> Result<Self> {
-        let http = reqwest::Client::builder()
-            .user_agent(crate::user_agent::user_agent())
+        let http = crate::http::client_builder()
             .build()
             .map_err(|e| CloudError::new(format!("Failed to create HTTP client: {}", e)))?;
 
         let resolved = resolve_auth(api_key, api_secret, url_override)?;
         let lib_url = lib_base_url(&resolved.base_url);
-        let (lib_client, auth_mode) = match &resolved.creds {
+        let (lib_client, auth_mode) = match resolved.creds {
             ResolvedCreds::Basic { key, secret } => (
-                clickhouse_cloud_api::Client::with_http_client(http, lib_url, key, secret),
-                AuthMode::Basic,
+                clickhouse_cloud_api::Client::with_http_client(
+                    http,
+                    lib_url,
+                    key.clone(),
+                    secret.clone(),
+                ),
+                AuthMode::Basic { key, secret },
             ),
             ResolvedCreds::Bearer { token } => (
                 clickhouse_cloud_api::Client::with_http_client_bearer(http, lib_url, token),
@@ -347,16 +579,56 @@ impl CloudClient {
 
         Ok(Self {
             lib_client,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode,
             auth_source: resolved.source,
             base_url: resolved.base_url,
         })
     }
 
+    /// An API-key client against `base_url`, for unit tests that drive a
+    /// handler against a local mock server.
+    #[cfg(test)]
+    pub(crate) fn for_tests(base_url: &str, query_host: Option<&str>) -> Self {
+        let http = reqwest::Client::builder().build().unwrap();
+        let mut lib_client = clickhouse_cloud_api::Client::with_http_client(
+            http,
+            lib_base_url(base_url),
+            "test_key",
+            "test_secret",
+        );
+        if let Some(query_host) = query_host {
+            lib_client = lib_client.with_query_host(query_host);
+        }
+        Self {
+            lib_client,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
+            auth_mode: AuthMode::Basic {
+                key: "test_key".into(),
+                secret: "test_secret".into(),
+            },
+            auth_source: AuthSource::CliFlags,
+            base_url: base_url.to_string(),
+        }
+    }
+
     /// Returns true if the client is using OAuth Bearer token authentication.
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {
-        matches!(self.auth_mode, AuthMode::Bearer)
+        matches!(&self.auth_mode, AuthMode::Bearer)
+    }
+
+    /// The active API key pair, for authenticating directly to a Query API
+    /// endpoint that already authorizes this key.
+    pub(crate) fn basic_auth_credentials(&self) -> Option<(&str, &str)> {
+        match &self.auth_mode {
+            AuthMode::Basic { key, secret } => Some((key, secret)),
+            AuthMode::Bearer => None,
+        }
     }
 
     /// The credential source that won precedence when constructing this client.
@@ -369,7 +641,7 @@ impl CloudClient {
         &self.base_url
     }
 
-    /// Access the library client for migrated commands.
+    /// Access the library client from domain-specific wrapper methods.
     pub fn api(&self) -> &clickhouse_cloud_api::Client {
         &self.lib_client
     }
@@ -383,9 +655,101 @@ impl CloudClient {
 
     /// Convert a library error into a `CloudError`, appending OAuth hints when relevant.
     pub fn convert_error(&self, err: clickhouse_cloud_api::Error) -> CloudError {
+        self.convert_error_with_organization(err, None)
+    }
+
+    /// Add safe request scope to otherwise context-free organization errors.
+    pub fn convert_error_for_organization(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        org_id: &str,
+    ) -> CloudError {
+        self.convert_error_with_organization(err, Some(org_id))
+    }
+
+    /// Re-present a by-identifier request's failure as a not-found when the
+    /// API rejected identifiers that are all well-formed UUIDs (#666).
+    ///
+    /// The discriminator is structural: the HTTP status the library reported,
+    /// plus `Uuid::parse_str` over inputs the CLI already held, both read
+    /// through [`ResourceLookup::rejected_well_formed_ids`]. No part of it
+    /// comes from the response message, which is appended verbatim so nothing
+    /// the server said is lost.
+    ///
+    /// Conversion still goes through [`Self::convert_error_with_organization`],
+    /// so the telemetry classification (#450) is inherited unchanged and
+    /// carried across the rewrite: the original HTTP status stays intact, and only the
+    /// user-facing message changes.
+    pub fn convert_error_for_lookup(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        lookup: ResourceLookup<'_>,
+    ) -> CloudError {
+        let rejected_well_formed_ids = lookup.rejected_well_formed_ids(&err);
+        // The lookup message supplies its own scope; leave the server detail
+        // untouched rather than appending the organization a second time.
+        let scope = (!rejected_well_formed_ids).then_some(lookup.org_id);
+        let error = self.convert_error_with_organization(err, scope);
+        if !rejected_well_formed_ids {
+            return error;
+        }
+        let message = format!(
+            "No such {}: {}{}. The API rejected the identifier: {}",
+            lookup.kind.noun(),
+            lookup.id,
+            lookup.scope_clause(),
+            error.message,
+        );
+        CloudError {
+            message: message.clone(),
+            ..error
+        }
+        .with_details(CloudErrorDetail {
+            code: CloudErrorCode::ResourceNotFound,
+            message,
+            host: None,
+            port: None,
+            command: Some(lookup.kind.list_command(lookup.org_id)),
+            api_key_id: None,
+            ip_access_list: None,
+        })
+    }
+
+    /// The single boundary where a typed library error becomes a
+    /// `CloudError`, so it is also the single place the failure
+    /// classification (#450) is attached: every cloud command inherits the
+    /// same variant-derived category without doing anything.
+    fn convert_error_with_organization(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        org_id: Option<&str>,
+    ) -> CloudError {
+        let failure = crate::failure::classify_api_error(&err);
+        self.convert_error_message(err, org_id)
+            .with_failure(failure)
+    }
+
+    fn convert_error_message(
+        &self,
+        err: clickhouse_cloud_api::Error,
+        org_id: Option<&str>,
+    ) -> CloudError {
         match &err {
-            clickhouse_cloud_api::Error::Api { status, message } => {
+            clickhouse_cloud_api::Error::Api { status, message }
+            | clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+                status, message, ..
+            } => {
                 let mut msg = message.clone();
+                let trimmed_message = message.trim();
+                if *status == 404
+                    && matches!(
+                        trimmed_message.to_ascii_uppercase().as_str(),
+                        "NOT_FOUND" | "NOT FOUND" | "NOT_FOUND: NOT FOUND"
+                    )
+                    && let Some(org_id) = org_id
+                {
+                    msg = format!("{trimmed_message}: request scoped to organization {org_id}");
+                }
                 if *status == 403 && self.is_bearer_auth() {
                     msg.push_str(
                         "\n\nHint: You are authenticated via OAuth, which provides read-only access. \
@@ -404,677 +768,6 @@ impl CloudClient {
             other => CloudError::new(other.to_string()),
         }
     }
-
-    // Organization endpoints (delegated to library client)
-    pub async fn list_organizations(
-        &self,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Organization>> {
-        let response = self
-            .api()
-            .organization_get_list()
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_organization(
-        &self,
-        org_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Organization> {
-        let response = self
-            .api()
-            .organization_get(org_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Service endpoints (delegated to library client)
-    pub async fn list_services(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Service>> {
-        let response = self
-            .api()
-            .instance_get_list(org_id, &[])
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn list_services_filtered(
-        &self,
-        org_id: &str,
-        filters: &[String],
-    ) -> Result<Vec<clickhouse_cloud_api::models::Service>> {
-        let filter_refs: Vec<&str> = filters.iter().map(|s| s.as_str()).collect();
-        let response = self
-            .api()
-            .instance_get_list(org_id, &filter_refs)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_service(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Service> {
-        let response = self
-            .api()
-            .instance_get(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_service(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::ServicePostRequest,
-    ) -> Result<clickhouse_cloud_api::models::ServicePostResponse> {
-        let response = self
-            .api()
-            .instance_create(org_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_service(&self, org_id: &str, service_id: &str) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .instance_delete(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
-        })
-    }
-
-    pub async fn change_service_state(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        command: clickhouse_cloud_api::models::ServiceStatePatchRequestCommand,
-    ) -> Result<clickhouse_cloud_api::models::Service> {
-        use clickhouse_cloud_api::models::ServiceStatePatchRequest;
-        let request = ServiceStatePatchRequest {
-            command: Some(command),
-        };
-        let response = self
-            .api()
-            .instance_state_update(org_id, service_id, &request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Backup endpoints (delegated to library client)
-    pub async fn list_backups(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Backup>> {
-        let response = self
-            .api()
-            .backup_get_list(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_backup(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        backup_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Backup> {
-        let response = self
-            .api()
-            .backup_get(org_id, service_id, backup_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Update service
-    pub async fn update_service(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ServicePatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::Service> {
-        let response = self
-            .api()
-            .instance_update(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Replica scaling
-    pub async fn update_replica_scaling(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ServiceReplicaScalingPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::ServiceScalingPatchResponse> {
-        let response = self
-            .api()
-            .instance_replica_scaling_update(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Reset password
-    pub async fn reset_password(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ServicePasswordPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::ServicePasswordPatchResponse> {
-        let response = self
-            .api()
-            .instance_password_update(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Query endpoint (delegated to library client)
-    pub async fn get_query_endpoint(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
-        let response = self
-            .api()
-            .instance_query_endpoint_get(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_query_endpoint(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::InstanceServiceQueryApiEndpointsPostRequest,
-    ) -> Result<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
-        let response = self
-            .api()
-            .instance_query_endpoint_upsert(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_query_endpoint(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .instance_query_endpoint_delete(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
-        })
-    }
-
-    // Private endpoint (delegated to library client)
-    pub async fn create_private_endpoint(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ServicPrivateEndpointePostRequest,
-    ) -> Result<clickhouse_cloud_api::models::InstancePrivateEndpoint> {
-        let response = self
-            .api()
-            .instance_private_endpoint_create(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Private endpoint config (delegated to library client)
-    pub async fn get_service_private_endpoint_config(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::PrivateEndpointConfig> {
-        let response = self
-            .api()
-            .instance_private_endpoint_config_get(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_service_prometheus(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        filtered_metrics: Option<bool>,
-    ) -> Result<String> {
-        let filtered = filtered_metrics.map(|b| b.to_string());
-        self.api()
-            .instance_prometheus_get(org_id, service_id, filtered.as_deref())
-            .await
-            .map_err(|e| self.convert_error(e))
-    }
-
-    // Organization endpoints (delegated to library client)
-    pub async fn update_organization(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::OrganizationPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::Organization> {
-        let response = self
-            .api()
-            .organization_update(org_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_org_prometheus(
-        &self,
-        org_id: &str,
-        filtered_metrics: Option<bool>,
-    ) -> Result<String> {
-        let fm_str = filtered_metrics.map(|b| if b { "true" } else { "false" });
-        self.api()
-            .organization_prometheus_get(org_id, fm_str)
-            .await
-            .map_err(|e| self.convert_error(e))
-    }
-
-    pub async fn get_org_usage(
-        &self,
-        org_id: &str,
-        from_date: &str,
-        to_date: &str,
-        filters: &[String],
-    ) -> Result<clickhouse_cloud_api::models::UsageCost> {
-        let filter_refs: Vec<&str> = filters.iter().map(|s| s.as_str()).collect();
-        let response = self
-            .api()
-            .usage_cost_get(org_id, from_date, to_date, &filter_refs)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Phase 4 - Member endpoints (delegated to library client)
-    pub async fn list_members(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Member>> {
-        let response = self
-            .api()
-            .member_get_list(org_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_member(
-        &self,
-        org_id: &str,
-        user_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Member> {
-        let response = self
-            .api()
-            .member_get(org_id, user_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_member(
-        &self,
-        org_id: &str,
-        user_id: &str,
-        request: &clickhouse_cloud_api::models::MemberPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::Member> {
-        let response = self
-            .api()
-            .member_update(org_id, user_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_member(&self, org_id: &str, user_id: &str) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .member_delete(org_id, user_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
-        })
-    }
-
-    // Phase 4 - Invitation endpoints (delegated to library client)
-    pub async fn list_invitations(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Invitation>> {
-        let response = self
-            .api()
-            .invitation_get_list(org_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_invitation(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::InvitationPostRequest,
-    ) -> Result<clickhouse_cloud_api::models::Invitation> {
-        let response = self
-            .api()
-            .invitation_create(org_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_invitation(
-        &self,
-        org_id: &str,
-        invitation_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Invitation> {
-        let response = self
-            .api()
-            .invitation_get(org_id, invitation_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_invitation(
-        &self,
-        org_id: &str,
-        invitation_id: &str,
-    ) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .invitation_delete(org_id, invitation_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
-        })
-    }
-
-    // Phase 5 - API Key endpoints (delegated to library client)
-    pub async fn list_api_keys(
-        &self,
-        org_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::ApiKey>> {
-        let response = self
-            .api()
-            .openapi_key_get_list(org_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_api_key(
-        &self,
-        org_id: &str,
-        request: &clickhouse_cloud_api::models::ApiKeyPostRequest,
-    ) -> Result<clickhouse_cloud_api::models::ApiKeyPostResponse> {
-        let response = self
-            .api()
-            .openapi_key_create(org_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_api_key(
-        &self,
-        org_id: &str,
-        key_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ApiKey> {
-        let response = self
-            .api()
-            .openapi_key_get(org_id, key_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_api_key(
-        &self,
-        org_id: &str,
-        key_id: &str,
-        request: &clickhouse_cloud_api::models::ApiKeyPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::ApiKey> {
-        let response = self
-            .api()
-            .openapi_key_update(org_id, key_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_api_key(&self, org_id: &str, key_id: &str) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .openapi_key_delete(org_id, key_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
-        })
-    }
-
-    // Phase 6 - Activity endpoints
-    pub async fn list_activities(
-        &self,
-        org_id: &str,
-        from_date: Option<&str>,
-        to_date: Option<&str>,
-    ) -> Result<Vec<clickhouse_cloud_api::models::Activity>> {
-        let response = self
-            .api()
-            .activity_get_list(org_id, from_date, to_date)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_activity(
-        &self,
-        org_id: &str,
-        activity_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::Activity> {
-        let response = self
-            .api()
-            .activity_get(org_id, activity_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Backup Config endpoints (delegated to library client)
-    pub async fn get_backup_config(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::BackupConfiguration> {
-        let response = self
-            .api()
-            .backup_configuration_get(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_backup_config(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::BackupConfigurationPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::BackupConfiguration> {
-        let response = self
-            .api()
-            .backup_configuration_update(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // ClickPipe endpoints (delegated to library client)
-    pub async fn list_clickpipes(
-        &self,
-        org_id: &str,
-        service_id: &str,
-    ) -> Result<Vec<clickhouse_cloud_api::models::ClickPipe>> {
-        let response = self
-            .api()
-            .click_pipe_get_list(org_id, service_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_clickpipe(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        let response = self
-            .api()
-            .click_pipe_get(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn create_clickpipe(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipePostRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        let response = self
-            .api()
-            .click_pipe_create(org_id, service_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn delete_clickpipe(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-    ) -> Result<DeleteResponse> {
-        let response = self
-            .api()
-            .click_pipe_delete(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Ok(DeleteResponse {
-            status: response.status.unwrap_or(0.0),
-            request_id: response.request_id.unwrap_or_default(),
-        })
-    }
-
-    pub async fn change_clickpipe_state(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-        command: clickhouse_cloud_api::models::ClickPipeStatePatchRequestCommand,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        use clickhouse_cloud_api::models::ClickPipeStatePatchRequest;
-        let request = ClickPipeStatePatchRequest {
-            command: Some(command),
-        };
-        let response = self
-            .api()
-            .click_pipe_state_update(org_id, service_id, clickpipe_id, &request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_clickpipe_scaling(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipeScalingPatchRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipe> {
-        let response = self
-            .api()
-            .click_pipe_scaling_update(org_id, service_id, clickpipe_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn get_clickpipe_settings(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettings> {
-        let response = self
-            .api()
-            .click_pipe_settings_get(org_id, service_id, clickpipe_id)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    pub async fn update_clickpipe_settings(
-        &self,
-        org_id: &str,
-        service_id: &str,
-        clickpipe_id: &str,
-        request: &clickhouse_cloud_api::models::ClickPipeSettingsPutRequest,
-    ) -> Result<clickhouse_cloud_api::models::ClickPipeSettings> {
-        let response = self
-            .api()
-            .click_pipe_settings_update(org_id, service_id, clickpipe_id, request)
-            .await
-            .map_err(|e| self.convert_error(e))?;
-        Self::unwrap_response(response)
-    }
-
-    // Helper to get the default organization
-    pub async fn get_default_org_id(&self) -> Result<String> {
-        let orgs = self.list_organizations().await?;
-        match orgs.len() {
-            0 => Err(CloudError::new("No organization found for this API key")),
-            1 => Ok(orgs[0].id.to_string()),
-            _ => Err(CloudError::new(
-                "Multiple organizations found. Specify --org-id to choose one. \
-                 Use `clickhousectl cloud org list` to see your organizations.",
-            )),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1082,6 +775,21 @@ mod tests {
     use super::*;
 
     const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
+
+    #[test]
+    fn typed_udf_dependency_error_keeps_message_and_http_classification() {
+        let error =
+            test_client().convert_error(clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+                status: 424,
+                message: "service unavailable".into(),
+                response: Box::default(),
+            });
+        assert_eq!(error.to_string(), "service unavailable");
+        assert_eq!(
+            error.failure.unwrap().kind,
+            crate::failure::FailureKind::Http4xx
+        );
+    }
 
     fn test_client() -> CloudClient {
         let http = reqwest::Client::builder().build().unwrap();
@@ -1093,10 +801,46 @@ mod tests {
         );
         CloudClient {
             lib_client,
-            auth_mode: AuthMode::Basic,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
+            auth_mode: AuthMode::Basic {
+                key: "test_key".into(),
+                secret: "test_secret".into(),
+            },
             auth_source: AuthSource::CliFlags,
             base_url: DEFAULT_BASE_URL.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn shared_organization_scope_is_lazy_and_caches_detection() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let client = CloudClient::for_tests(&server.uri(), None);
+        assert!(server.received_requests().await.unwrap().is_empty());
+        let organization = "00000000-0000-0000-0000-000000000001";
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"id": organization}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        for _ in 0..2 {
+            assert_eq!(
+                client.resolve_organization_id().await.unwrap(),
+                organization
+            );
+        }
+        let client = client.with_organization_id(Some("explicit-org".into()));
+        assert_eq!(
+            client.resolve_organization_id().await.unwrap(),
+            "explicit-org"
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[test]
@@ -1109,6 +853,9 @@ mod tests {
         );
         let client = CloudClient {
             lib_client,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
@@ -1120,6 +867,15 @@ mod tests {
     fn is_bearer_auth_returns_false_for_basic() {
         let client = test_client();
         assert!(!client.is_bearer_auth());
+    }
+
+    #[test]
+    fn basic_auth_credentials_returns_the_active_pair() {
+        let client = test_client();
+        assert_eq!(
+            client.basic_auth_credentials(),
+            Some(("test_key", "test_secret"))
+        );
     }
 
     #[test]
@@ -1156,7 +912,7 @@ mod tests {
     #[test]
     fn unwrap_response_extracts_result() {
         let response = clickhouse_cloud_api::models::ApiResponse {
-            status: Some(200.0),
+            status: Some(200),
             request_id: None,
             result: Some(vec!["hello".to_string()]),
             error: None,
@@ -1169,7 +925,7 @@ mod tests {
     fn unwrap_response_errors_on_empty_result() {
         let response: clickhouse_cloud_api::models::ApiResponse<String> =
             clickhouse_cloud_api::models::ApiResponse {
-                status: Some(200.0),
+                status: Some(200),
                 request_id: None,
                 result: None,
                 error: None,
@@ -1188,6 +944,9 @@ mod tests {
         );
         let client = CloudClient {
             lib_client,
+            organization_id: None,
+            organization_name: None,
+            resolved_organization_id: tokio::sync::OnceCell::new(),
             auth_mode: AuthMode::Bearer,
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
@@ -1215,7 +974,11 @@ mod tests {
                 .describe()
                 .contains("CLICKHOUSE_CLOUD_API_KEY")
         );
-        assert!(AuthSource::CredentialsFile.describe().contains("credentials"));
+        assert!(
+            AuthSource::CredentialsFile
+                .describe()
+                .contains("credentials")
+        );
         assert!(AuthSource::OAuthTokens.describe().contains("OAuth"));
     }
 
@@ -1264,6 +1027,326 @@ mod tests {
         assert_eq!(err.kind, CloudErrorKind::Generic);
     }
 
+    /// Conversion is the single boundary where a typed library error becomes a
+    /// `CloudError`, so every converted error carries its classification
+    /// (#450) whether or not a stage ever records it.
+    #[test]
+    fn convert_error_attaches_the_failure_classification() {
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 429,
+            message: "TOO_MANY_REQUESTS".into(),
+        });
+        assert_eq!(
+            err.failure,
+            Some(ApiFailure::with_status(FailureKind::RateLimited, 429))
+        );
+
+        // The OAuth hint rewrites the message; the classification is
+        // unaffected by it.
+        let err = test_client().convert_error(clickhouse_cloud_api::Error::Api {
+            status: 403,
+            message: "Forbidden".into(),
+        });
+        assert_eq!(
+            err.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 403))
+        );
+
+        // A locally-raised error has no classification until a boundary
+        // claims one, and local I/O is classified by its own conversion.
+        assert_eq!(CloudError::new("boom").failure, None);
+        assert_eq!(
+            CloudError::from(std::io::Error::other("disk gone")).failure,
+            Some(ApiFailure::new(FailureKind::Io))
+        );
+    }
+
+    #[test]
+    fn convert_error_adds_organization_scope_to_bare_not_found() {
+        let err = test_client().convert_error_for_organization(
+            clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: " NOT_FOUND\n".into(),
+            },
+            "00000000-0000-4000-8000-000000000001",
+        );
+        assert_eq!(
+            err.message,
+            "NOT_FOUND: request scoped to organization 00000000-0000-4000-8000-000000000001"
+        );
+        assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn convert_error_preserves_detailed_not_found() {
+        let err = test_client().convert_error_for_organization(
+            clickhouse_cloud_api::Error::Api {
+                status: 404,
+                message: "Service svc-1 not found".into(),
+            },
+            "org-1",
+        );
+        assert_eq!(err.message, "Service svc-1 not found");
+    }
+
+    // ── by-identifier reads (issue #666) ──────────────────────────────────
+    //
+    // The API answers 400 with "Invalid <thing> id" for a well-formed UUID
+    // that resolves to nothing. These pin the refinement to its two
+    // structural inputs — the status and whether the CLI's own path
+    // identifiers parse as UUIDs — and pin that nothing else moves.
+
+    /// A well-formed UUID that resolves to nothing. All-zero is still a
+    /// syntactically valid UUID, so it must count as well-formed.
+    const NIL_UUID: &str = "00000000-0000-0000-0000-000000000000";
+    const ORG_UUID: &str = "00000000-0000-4000-8000-000000000001";
+
+    fn invalid_id_400(thing: &str, id: &str) -> clickhouse_cloud_api::Error {
+        clickhouse_cloud_api::Error::Api {
+            status: 400,
+            message: format!("BAD_REQUEST: Invalid {thing} id string:\"{id}\""),
+        }
+    }
+
+    #[test]
+    fn lookup_400_over_well_formed_ids_reads_as_a_missing_service() {
+        let err = test_client().convert_error_for_lookup(
+            invalid_id_400("service", NIL_UUID),
+            ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID),
+        );
+        assert_eq!(
+            err.message,
+            format!(
+                "No such service: {NIL_UUID} (organization {ORG_UUID}). \
+                 The API rejected the identifier: \
+                 BAD_REQUEST: Invalid service id string:\"{NIL_UUID}\""
+            )
+        );
+        assert_eq!(err.kind, CloudErrorKind::Generic);
+    }
+
+    #[test]
+    fn lookup_400_over_well_formed_ids_reads_as_a_missing_postgres_service() {
+        let err = test_client().convert_error_for_lookup(
+            invalid_id_400("Postgres service", NIL_UUID),
+            ResourceLookup::in_org(ResourceKind::PostgresService, NIL_UUID, ORG_UUID),
+        );
+        assert_eq!(
+            err.message,
+            format!(
+                "No such Postgres service: {NIL_UUID} (organization {ORG_UUID}). \
+                 The API rejected the identifier: \
+                 BAD_REQUEST: Invalid Postgres service id string:\"{NIL_UUID}\""
+            )
+        );
+    }
+
+    /// The organization is itself the identifier being looked up, so the
+    /// message must not repeat it as request scope.
+    #[test]
+    fn lookup_400_over_a_well_formed_id_reads_as_a_missing_organization() {
+        let err = test_client().convert_error_for_lookup(
+            invalid_id_400("organization", NIL_UUID),
+            ResourceLookup::organization(NIL_UUID),
+        );
+        assert_eq!(
+            err.message,
+            format!(
+                "No such organization: {NIL_UUID}. \
+                 The API rejected the identifier: \
+                 BAD_REQUEST: Invalid organization id string:\"{NIL_UUID}\""
+            )
+        );
+        assert!(!err.message.contains("(organization"));
+    }
+
+    /// The organization parenthetical is keyed on the kind, not on the two
+    /// identifiers happening to be equal: an organization lookup never names
+    /// an organization as the scope it was read from, however it was built.
+    #[test]
+    fn an_organization_lookup_never_names_a_scope() {
+        let client = test_client();
+        for lookup in [
+            ResourceLookup::organization(NIL_UUID),
+            ResourceLookup::in_org(ResourceKind::Organization, NIL_UUID, ORG_UUID),
+        ] {
+            let err =
+                client.convert_error_for_lookup(invalid_id_400("organization", NIL_UUID), lookup);
+            assert_eq!(
+                err.message,
+                format!(
+                    "No such organization: {NIL_UUID}. \
+                     The API rejected the identifier: \
+                     BAD_REQUEST: Invalid organization id string:\"{NIL_UUID}\""
+                )
+            );
+            assert_eq!(
+                err.details.as_deref().unwrap().command.as_deref(),
+                Some("clickhousectl cloud org list")
+            );
+        }
+    }
+
+    /// Only the message changes: the server did answer 400, so the telemetry
+    /// classification must stay exactly what the status says (#450).
+    #[test]
+    fn lookup_refinement_keeps_the_failure_classification() {
+        let err = test_client().convert_error_for_lookup(
+            invalid_id_400("service", NIL_UUID),
+            ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID),
+        );
+        assert_eq!(
+            err.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 400))
+        );
+    }
+
+    /// `--json` gets a stable code plus the command that lists what does
+    /// exist, and the same text human mode prints.
+    #[test]
+    fn lookup_refinement_carries_a_structured_detail() {
+        let client = test_client();
+        let err = client.convert_error_for_lookup(
+            invalid_id_400("Postgres service", NIL_UUID),
+            ResourceLookup::in_org(ResourceKind::PostgresService, NIL_UUID, ORG_UUID),
+        );
+        let details = err.details.as_deref().expect("a structured detail");
+        assert_eq!(details.code, CloudErrorCode::ResourceNotFound);
+        assert_eq!(details.message, err.message);
+        assert_eq!(
+            details.command.as_deref(),
+            Some(format!("clickhousectl cloud postgres list --org-id {ORG_UUID}").as_str())
+        );
+        assert_eq!(details.api_key_id, None);
+        assert_eq!(details.ip_access_list, None);
+
+        // An organization lookup has no scope flag to suggest.
+        let err = client.convert_error_for_lookup(
+            invalid_id_400("organization", NIL_UUID),
+            ResourceLookup::organization(NIL_UUID),
+        );
+        assert_eq!(
+            err.details.as_deref().unwrap().command.as_deref(),
+            Some("clickhousectl cloud org list")
+        );
+    }
+
+    /// A malformed identifier keeps the server's answer: "invalid" is then
+    /// both true and more useful than "no such service".
+    #[test]
+    fn lookup_400_over_a_malformed_id_is_left_alone() {
+        let err = test_client().convert_error_for_lookup(
+            invalid_id_400("service", "not-a-uuid"),
+            ResourceLookup::in_org(ResourceKind::Service, "not-a-uuid", ORG_UUID),
+        );
+        assert_eq!(
+            err.message,
+            "BAD_REQUEST: Invalid service id string:\"not-a-uuid\""
+        );
+        assert!(err.details.is_none());
+    }
+
+    /// Every path identifier has to parse, not just the resource's own: a
+    /// malformed organization is as plausible a cause of the 400.
+    #[test]
+    fn lookup_400_with_a_malformed_organization_is_left_alone() {
+        let err = test_client().convert_error_for_lookup(
+            invalid_id_400("organization", "org-1"),
+            ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, "org-1"),
+        );
+        assert_eq!(
+            err.message,
+            "BAD_REQUEST: Invalid organization id string:\"org-1\""
+        );
+        assert!(err.details.is_none());
+    }
+
+    #[test]
+    fn lookup_404_refines_only_well_formed_ids_and_preserves_typed_failure() {
+        for message in ["NOT_FOUND: Not Found", "deleted", "arbitrary server detail"] {
+            for kind in [
+                ResourceKind::Service,
+                ResourceKind::PostgresService,
+                ResourceKind::Organization,
+            ] {
+                let lookup = if kind == ResourceKind::Organization {
+                    ResourceLookup::organization(NIL_UUID)
+                } else {
+                    ResourceLookup::in_org(kind, NIL_UUID, ORG_UUID)
+                };
+                let err = test_client().convert_error_for_lookup(
+                    clickhouse_cloud_api::Error::Api {
+                        status: 404,
+                        message: message.into(),
+                    },
+                    lookup,
+                );
+                let detail = err.details.expect("structured missing resource");
+                assert_eq!(detail.code, CloudErrorCode::ResourceNotFound);
+                assert!(detail.message.contains(message));
+                assert_eq!(
+                    err.failure,
+                    Some(ApiFailure::with_status(FailureKind::Http4xx, 404))
+                );
+            }
+        }
+        for (id, org_id) in [("service-name", ORG_UUID), (NIL_UUID, "org-name")] {
+            let err = test_client().convert_error_for_lookup(
+                clickhouse_cloud_api::Error::Api {
+                    status: 404,
+                    message: "original detail".into(),
+                },
+                ResourceLookup::in_org(ResourceKind::Service, id, org_id),
+            );
+            assert!(err.details.is_none());
+            assert_eq!(err.message, "original detail");
+        }
+    }
+
+    #[test]
+    fn lookup_auth_errors_are_not_missing_resources_even_with_not_found_text() {
+        for status in [401, 403] {
+            let err = test_client().convert_error_for_lookup(
+                clickhouse_cloud_api::Error::Api {
+                    status,
+                    message: "NOT_FOUND: Not Found".into(),
+                },
+                ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID),
+            );
+            assert_eq!(err.kind, CloudErrorKind::Auth);
+            assert!(err.details.is_none());
+            assert_eq!(
+                err.failure,
+                Some(ApiFailure::with_status(FailureKind::Http4xx, status))
+            );
+        }
+    }
+
+    /// Other statuses and non-API errors cannot imply a missing resource.
+    #[test]
+    fn lookup_leaves_every_other_status_unchanged() {
+        let client = test_client();
+        let lookup = || ResourceLookup::in_org(ResourceKind::Service, NIL_UUID, ORG_UUID);
+
+        let err = client.convert_error_for_lookup(
+            clickhouse_cloud_api::Error::Api {
+                status: 500,
+                message: "Internal Server Error".into(),
+            },
+            lookup(),
+        );
+        assert_eq!(err.message, "Internal Server Error");
+        assert!(err.details.is_none());
+
+        // A non-API failure has no status to reason from at all.
+        let err = client.convert_error_for_lookup(
+            clickhouse_cloud_api::Error::AuthMismatch("nope".into()),
+            lookup(),
+        );
+        assert!(err.details.is_none());
+        assert!(!err.message.starts_with("No such"));
+    }
+
     #[test]
     fn convert_error_treats_non_api_error_as_generic() {
         let err =
@@ -1296,10 +1379,15 @@ mod tests {
     }
 
     fn env_map(pairs: &[(&str, &str)]) -> std::collections::HashMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
-    fn lookup_from(map: &std::collections::HashMap<String, String>) -> impl Fn(&str) -> Option<String> + '_ {
+    fn lookup_from(
+        map: &std::collections::HashMap<String, String>,
+    ) -> impl Fn(&str) -> Option<String> + '_ {
         move |k: &str| map.get(k).cloned()
     }
 
@@ -1336,9 +1424,16 @@ mod tests {
             ("CLICKHOUSE_CLOUD_API_SECRET", "shell_s"),
         ]);
         let lookup = lookup_from(&env);
-        let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &some_credentials, &no_tokens)
-                .unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &some_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         assert_eq!(resolved.source, AuthSource::CredentialsFile);
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
@@ -1357,8 +1452,16 @@ mod tests {
         ]);
         let env = env_map(&[]);
         let lookup = lookup_from(&env);
-        let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &no_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         assert_eq!(resolved.source, AuthSource::EnvVars);
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
@@ -1388,8 +1491,16 @@ mod tests {
             ("CLICKHOUSE_CLOUD_API_SECRET", "shell_s"),
         ]);
         let lookup = lookup_from(&env);
-        let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &no_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
                 assert_eq!(key, "shell_k");
@@ -1407,8 +1518,16 @@ mod tests {
         let dotenv = dotenv_with(&[("CLICKHOUSE_CLOUD_API_SECRET", "dot_s")]);
         let env = env_map(&[("CLICKHOUSE_CLOUD_API_KEY", "shell_k")]);
         let lookup = lookup_from(&env);
-        let resolved =
-            resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &no_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
                 assert_eq!(key, "shell_k");
@@ -1441,7 +1560,16 @@ mod tests {
             ("CLICKHOUSE_CLOUD_API_SECRET", ""),
         ]);
         let lookup = lookup_from(&env);
-        let resolved = resolve_auth_with_sources(None, None, None, &dotenv, &lookup, &no_credentials, &no_tokens).unwrap();
+        let resolved = resolve_auth_with_sources(
+            None,
+            None,
+            None,
+            &dotenv,
+            &lookup,
+            &no_credentials,
+            &no_tokens,
+        )
+        .unwrap();
         match resolved.creds {
             ResolvedCreds::Basic { key, secret } => {
                 assert_eq!(key, "dot_k");
