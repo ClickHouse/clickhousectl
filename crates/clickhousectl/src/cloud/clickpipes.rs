@@ -458,8 +458,8 @@ impl ClickPipeCommands {
         }
     }
 
-    /// The `clickpipe create` validation message for a database source whose
-    /// flags cannot describe the chosen `--auth`, paired with the source
+    /// The `clickpipe create` validation message for invalid source or request
+    /// flags, paired with the source
     /// subcommand the usage error belongs to. clap cannot express "forbidden
     /// for this value of another argument", so these checks run after parsing.
     pub(crate) fn clickpipe_create_validation_error(&self) -> Option<(&'static str, String)> {
@@ -481,7 +481,9 @@ impl ClickPipeCommands {
             ),
             ClickPipeCreateCommands::Kinesis(args) => (
                 "kinesis",
-                build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis).err(),
+                build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis)
+                    .and_then(|_| resolve_kinesis_auth(&args.source))
+                    .err(),
             ),
             ClickPipeCreateCommands::Postgres(args) => {
                 ("postgres", validate_postgres_create_args(args).err())
@@ -502,6 +504,20 @@ impl ClickPipeCommands {
         };
 
         error.map(|error| (source, error.message))
+    }
+
+    pub(crate) fn clickpipe_schema_discover_validation_error(
+        &self,
+    ) -> Option<(&'static str, String)> {
+        let Self::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
+        } = self
+        else {
+            return None;
+        };
+        resolve_kinesis_auth(&args.source)
+            .err()
+            .map(|error| ("kinesis", error.message))
     }
 
     pub(crate) fn reverse_private_endpoint_create_validation_error(&self) -> Option<String> {
@@ -1234,23 +1250,25 @@ pub struct KinesisSourceFields {
     #[arg(long, value_parser = PossibleValuesParser::new(KINESIS_FORMATS))]
     pub format: String,
 
-    /// Authentication method
+    /// Authentication method (inferred when omitted)
+    ///
+    /// A complete access-key pair selects IAM_USER; otherwise IAM_ROLE.
+    /// IAM_ROLE cannot be combined with either access-key flag.
     #[arg(
         long,
-        default_value = "IAM_ROLE",
         value_parser = PossibleValuesParser::new(KINESIS_AUTHS),
     )]
-    pub auth: String,
+    pub auth: Option<String>,
 
-    /// IAM role ARN (with --auth IAM_ROLE)
+    /// IAM role ARN (conflicts with access keys and --auth IAM_USER)
     #[arg(long)]
     pub iam_role: Option<String>,
 
-    /// Access key ID for IAM_USER authentication
+    /// Access key ID (requires --secret-key; infers IAM_USER)
     #[arg(long, requires = "secret_key")]
     pub access_key_id: Option<String>,
 
-    /// Secret key for IAM_USER authentication
+    /// Secret key (requires --access-key-id; infers IAM_USER)
     #[arg(long, requires = "access_key_id")]
     pub secret_key: Option<String>,
 
@@ -2822,6 +2840,35 @@ fn build_kafka_source(
     build_kafka_source_with_exactly_once(args, None)
 }
 
+/// Resolve authentication without reading credentials or contacting Cloud.
+fn resolve_kinesis_auth(args: &KinesisSourceFields) -> CloudResult<&str> {
+    let has_keys = args.access_key_id.is_some() || args.secret_key.is_some();
+    if args.auth.as_deref() == Some("IAM_ROLE") && has_keys {
+        return Err(CloudError::new(
+            "--auth IAM_ROLE cannot be combined with --access-key-id or --secret-key; remove the key flags or use IAM_USER",
+        ));
+    }
+    if args.iam_role.is_some() && has_keys {
+        return Err(CloudError::new(
+            "--iam-role cannot be combined with --access-key-id or --secret-key; choose role authentication or an access-key pair",
+        ));
+    }
+    if args.auth.as_deref() == Some("IAM_USER") && args.iam_role.is_some() {
+        return Err(CloudError::new(
+            "--auth IAM_USER cannot be combined with --iam-role; remove --iam-role or use IAM_ROLE",
+        ));
+    }
+    if args.access_key_id.is_some() != args.secret_key.is_some() {
+        return Err(CloudError::new(
+            "--access-key-id and --secret-key must be supplied together",
+        ));
+    }
+    Ok(args
+        .auth
+        .as_deref()
+        .unwrap_or(if has_keys { "IAM_USER" } else { "IAM_ROLE" }))
+}
+
 /// Build a `ClickPipePostKinesisSource` from the CLI args. Shared by the
 /// `clickpipe create kinesis` and `clickpipe schema-discover kinesis <SERVICE_ID>`
 /// handlers.
@@ -2830,6 +2877,7 @@ fn build_kinesis_source(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKinesisSource> {
     use clickhouse_cloud_api::models::{ClickPipePostKinesisSource, MskIamUser};
 
+    let auth = resolve_kinesis_auth(args)?;
     let access_key = match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
         (Some(access_key_id), Some(secret_key)) => Some(MskIamUser {
             access_key_id: access_key_id.to_string(),
@@ -2843,7 +2891,7 @@ fn build_kinesis_source(
         format: parse_enum(&args.format)?,
         stream_name: args.stream_name.clone(),
         region: args.region.clone(),
-        authentication: parse_enum(&args.auth)?,
+        authentication: parse_enum(auth)?,
         iam_role: args.iam_role.clone(),
         access_key,
         use_enhanced_fan_out: if args.enhanced_fan_out {
@@ -7866,8 +7914,6 @@ mod tests {
             "Avro",
             "--auth",
             "IAM_USER",
-            "--iam-role",
-            "arn:role",
             "--access-key-id",
             "access",
             "--secret-key",
@@ -7896,8 +7942,8 @@ mod tests {
         assert_eq!(args.source.stream_name, "stream-1");
         assert_eq!(args.source.region, "us-east-1");
         assert_eq!(args.source.format, "Avro");
-        assert_eq!(args.source.auth, "IAM_USER");
-        assert_eq!(args.source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.source.auth.as_deref(), Some("IAM_USER"));
+        assert_eq!(args.source.iam_role, None);
         assert_eq!(args.source.access_key_id.as_deref(), Some("access"));
         assert_eq!(args.source.secret_key.as_deref(), Some("secret"));
         assert_eq!(args.source.iterator_type, "AT_TIMESTAMP");
@@ -7929,7 +7975,7 @@ mod tests {
         else {
             panic!("expected kinesis create");
         };
-        assert_eq!(args.source.auth, "IAM_ROLE");
+        assert_eq!(args.source.auth, None);
         assert_eq!(args.source.iam_role, None);
         assert_eq!(args.source.access_key_id, None);
         assert_eq!(args.source.secret_key, None);
@@ -7995,7 +8041,7 @@ mod tests {
         assert_eq!(args.service_id, "svc-kinesis");
         let args = args.source;
         assert_eq!(args.stream_name, "stream-1");
-        assert_eq!(args.auth, "IAM_ROLE");
+        assert_eq!(args.auth, None);
         assert_eq!(args.iterator_type, "TRIM_HORIZON");
     }
 
@@ -11069,7 +11115,7 @@ mod tests {
             stream_name: "stream".to_string(),
             region: "us-east-1".to_string(),
             format: "JSONEachRow".to_string(),
-            auth: "IAM_ROLE".to_string(),
+            auth: None,
             iam_role: None,
             access_key_id: None,
             secret_key: None,
@@ -13431,13 +13477,146 @@ mod tests {
         assert_eq!(registry.ca_certificate.as_deref(), Some("REGISTRY_CA"));
     }
 
+    fn parsed_kinesis_source(operation: &str, flags: &[&str]) -> KinesisSourceFields {
+        let mut args = vec![
+            operation,
+            "kinesis",
+            "svc-1",
+            "--stream-name",
+            "stream",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+        ];
+        if operation == "create" {
+            args.extend([
+                "--name",
+                "pipe",
+                "--database",
+                "default",
+                "--table",
+                "events",
+            ]);
+        }
+        args.extend(flags);
+        match parse_clickpipe(&args) {
+            ClickPipeCommands::Create {
+                command: ClickPipeCreateCommands::Kinesis(args),
+            } => args.source,
+            ClickPipeCommands::SchemaDiscover {
+                command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
+            } => args.source,
+            _ => panic!("expected Kinesis source"),
+        }
+    }
+
+    #[test]
+    fn kinesis_auth_parsing_and_builder_inference_agree_for_both_operations() {
+        for operation in ["create", "schema-discover"] {
+            for (flags, explicit, expected, role, keys) in [
+                (vec![], None, "IAM_ROLE", None, false),
+                (
+                    vec!["--iam-role", "arn:role"],
+                    None,
+                    "IAM_ROLE",
+                    Some("arn:role"),
+                    false,
+                ),
+                (
+                    vec!["--auth", "IAM_ROLE"],
+                    Some("IAM_ROLE"),
+                    "IAM_ROLE",
+                    None,
+                    false,
+                ),
+                (
+                    vec!["--access-key-id", "access", "--secret-key", "secret"],
+                    None,
+                    "IAM_USER",
+                    None,
+                    true,
+                ),
+                (
+                    vec![
+                        "--auth",
+                        "IAM_USER",
+                        "--access-key-id",
+                        "access",
+                        "--secret-key",
+                        "secret",
+                    ],
+                    Some("IAM_USER"),
+                    "IAM_USER",
+                    None,
+                    true,
+                ),
+            ] {
+                let args = parsed_kinesis_source(operation, &flags);
+                assert_eq!(args.auth.as_deref(), explicit);
+                assert_eq!(args.iam_role.as_deref(), role);
+                assert_eq!(args.access_key_id.as_deref(), keys.then_some("access"));
+                assert_eq!(args.secret_key.as_deref(), keys.then_some("secret"));
+                let source = build_kinesis_source(&args).unwrap();
+                assert_eq!(source.authentication.to_string(), expected);
+                assert_eq!(source.iam_role.as_deref(), role);
+                assert_eq!(
+                    source
+                        .access_key
+                        .as_ref()
+                        .map(|key| key.access_key_id.as_str()),
+                    keys.then_some("access")
+                );
+                assert_eq!(
+                    source
+                        .access_key
+                        .as_ref()
+                        .map(|key| key.secret_key.as_str()),
+                    keys.then_some("secret")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_kinesis_source_rejects_conflicts_and_incomplete_pairs() {
+        for (auth, role, access, secret) in [
+            (Some("IAM_ROLE"), false, true, true),
+            (Some("IAM_ROLE"), false, true, false),
+            (Some("IAM_ROLE"), false, false, true),
+            (None, true, true, true),
+            (None, true, true, false),
+            (None, true, false, true),
+            (Some("IAM_USER"), true, false, false),
+            (Some("IAM_USER"), true, true, true),
+            (None, false, true, false),
+            (None, false, false, true),
+            (Some("IAM_USER"), false, true, false),
+            (Some("IAM_USER"), false, false, true),
+        ] {
+            let mut args = parsed_kinesis_source("create", &[]);
+            args.auth = auth.map(str::to_string);
+            args.iam_role = role.then(|| "private-role-arn".into());
+            args.access_key_id = access.then(|| "private-access-id".into());
+            args.secret_key = secret.then(|| "private-secret-key".into());
+            let error = build_kinesis_source(&args).unwrap_err();
+            for value in [
+                "private-role-arn",
+                "private-access-id",
+                "private-secret-key",
+            ] {
+                assert!(!error.message.contains(value));
+            }
+        }
+    }
+
     #[test]
     fn build_kinesis_source_supports_minimal_fields() {
         let args = KinesisSourceFields {
             stream_name: "stream".into(),
             region: "us-east-1".into(),
             format: "JSONEachRow".into(),
-            auth: "IAM_ROLE".into(),
+            auth: None,
             iam_role: None,
             access_key_id: None,
             secret_key: None,
@@ -13464,8 +13643,8 @@ mod tests {
             stream_name: "stream".into(),
             region: "us-east-1".into(),
             format: "AvroConfluent".into(),
-            auth: "IAM_USER".into(),
-            iam_role: Some("arn:role".into()),
+            auth: Some("IAM_USER".into()),
+            iam_role: None,
             access_key_id: Some("access".into()),
             secret_key: Some("secret".into()),
             iterator_type: "AT_TIMESTAMP".into(),
@@ -13479,7 +13658,7 @@ mod tests {
         assert_eq!(source.format.to_string(), "AvroConfluent");
         assert_eq!(source.authentication.to_string(), "IAM_USER");
         assert_eq!(source.iterator_type.to_string(), "AT_TIMESTAMP");
-        assert_eq!(source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(source.iam_role, None);
         let access_key = source.access_key.expect("access key is populated");
         assert_eq!(access_key.access_key_id, "access");
         assert_eq!(access_key.secret_key, "secret");

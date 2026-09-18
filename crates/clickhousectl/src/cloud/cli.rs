@@ -79,10 +79,15 @@ impl CloudArgs {
             )
     }
 
-    /// The `clickpipe create <source>` validation message and the source
-    /// subcommand it belongs to, if the flags cannot describe the chosen
-    /// `--auth`. Covers both database sources whose credential flags depend on
-    /// `--auth`'s value: `postgres` and `mysql`.
+    /// The schema-discovery source's usage error, checked before credentials.
+    pub fn clickpipe_schema_discover_validation_error(&self) -> Option<(&'static str, String)> {
+        let CloudCommands::ClickPipe { command } = &self.command else {
+            return None;
+        };
+        command.clickpipe_schema_discover_validation_error()
+    }
+
+    /// The create source's usage error, checked before credentials.
     pub fn clickpipe_create_validation_error(&self) -> Option<(&'static str, String)> {
         let CloudCommands::ClickPipe { command } = &self.command else {
             return None;
