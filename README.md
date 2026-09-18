@@ -956,6 +956,14 @@ clickhousectl cloud service private-endpoint create <service-id> \
   --endpoint-id vpce-0123456789abcdef0 --description 'app vpc'
 clickhousectl cloud service private-endpoint get-config <service-id>
 
+# Service snapshots (Beta), distinct from backups
+clickhousectl cloud service snapshot list <service-id>
+clickhousectl cloud service snapshot get <service-id> --snapshot-id <snapshot-id>
+clickhousectl cloud service snapshot config get --name analytics
+clickhousectl cloud service snapshot config update <service-id> \
+  --enabled true --gap 30 --time-frame 1440
+clickhousectl cloud service snapshot config update <service-id> --enabled false
+
 # Backup configuration
 clickhousectl cloud service backup-config get <service-id>
 clickhousectl cloud service backup-config update <service-id> \
@@ -983,6 +991,10 @@ clickhousectl cloud service delete <service-id> --force
 Cloud validates replica counts against the service's current limits. The API maximum is 50; the
 first service in a warehouse requires at least 2 replicas, while a service created in an existing
 warehouse can use 1. Organization tier and per-warehouse limits may set a lower maximum.
+
+`snapshot config update` requires an ADMIN API key and at least one change. Omitted fields remain
+unchanged. Supply `--gap` and `--time-frame` together, in **minutes**; enabled schedules support
+pairs `(30, 1440)` or `(60, 2880)`. Cloud validates the resulting configuration, including partial updates.
 
 `backup-config update` requires at least one backup configuration flag. Backup retention must be a
 whole number of days from 24 through 1080 hours (1 through 45 days); Cloud validates the value.
