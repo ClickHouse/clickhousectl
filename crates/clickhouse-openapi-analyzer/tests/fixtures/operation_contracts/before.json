@@ -1,0 +1,242 @@
+{
+  "/v1/organizations/{organizationId}/keys": {
+    "get": {
+      "summary": "Get list of all keys",
+      "description": "Returns a list of all keys in the organization.",
+      "operationId": "openapiKeyGetList",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "organizationId",
+          "description": "ID of the requested organization.",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Successful response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "number",
+                    "description": "HTTP status code.",
+                    "example": 200
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "description": "Unique id assigned to every request. UUIDv4",
+                    "format": "uuid"
+                  },
+                  "result": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ApiKey"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "number",
+                    "description": "HTTP status code.",
+                    "example": 400
+                  },
+                  "error": {
+                    "type": "string",
+                    "description": "Detailed error description."
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "description": "Unique id assigned to every request. UUIDv4",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "500": {
+          "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "integer",
+                    "description": "HTTP status code.",
+                    "example": 500
+                  },
+                  "error": {
+                    "type": "string",
+                    "description": "Detailed error description."
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "description": "Unique id assigned to every request. UUIDv4",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "security": [
+        {
+          "basicAuth": [
+            "control-plane:organization:view-api-keys"
+          ]
+        }
+      ],
+      "tags": [
+        "API keys"
+      ]
+    }
+  },
+  "/v1/organizations/{organizationId}/serviceProfiles": {
+    "get": {
+      "summary": "List available service profiles",
+      "description": "Returns the custom instance profiles the organization can use in a region. Pass byoc_id to list the profiles configured for a BYOC infrastructure. The list is empty when the organization tier does not include custom hardware profiles.",
+      "operationId": "serviceProfilesList",
+      "parameters": [
+        {
+          "in": "path",
+          "name": "organizationId",
+          "description": "ID of the organization to list available profiles for.",
+          "required": true,
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        {
+          "in": "query",
+          "name": "region_id",
+          "description": "Region to list profiles for, e.g. us-east-1.",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "in": "query",
+          "name": "byoc_id",
+          "description": "ID of the BYOC infrastructure to list profiles for. BYOC profiles are only returned when this is set.",
+          "schema": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      ],
+      "responses": {
+        "200": {
+          "description": "Successful response",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "number",
+                    "description": "HTTP status code.",
+                    "example": 200
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "description": "Unique id assigned to every request. UUIDv4",
+                    "format": "uuid"
+                  },
+                  "result": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ServiceProfile"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "400": {
+          "description": "The request cannot be processed due to a client error. Please verify your request parameters and try again.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "number",
+                    "description": "HTTP status code.",
+                    "example": 400
+                  },
+                  "error": {
+                    "type": "string",
+                    "description": "Detailed error description."
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "description": "Unique id assigned to every request. UUIDv4",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "500": {
+          "description": "An internal server error has occurred. If this issue persists, please contact ClickHouse Cloud support for assistance.",
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "integer",
+                    "description": "HTTP status code.",
+                    "example": 500
+                  },
+                  "error": {
+                    "type": "string",
+                    "description": "Detailed error description."
+                  },
+                  "requestId": {
+                    "type": "string",
+                    "description": "Unique id assigned to every request. UUIDv4",
+                    "format": "uuid"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "security": [
+        {
+          "basicAuth": [
+            "control-plane:organization:view"
+          ]
+        }
+      ],
+      "tags": [
+        "Service"
+      ]
+    }
+  }
+}

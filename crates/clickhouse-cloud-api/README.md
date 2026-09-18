@@ -149,7 +149,21 @@ private per-domain files. That same analyzer powers the scheduled live-spec
 issue, so operation, model, field, optionality, beta, deprecation, enum,
 snapshot, and stale-exemption findings share one implementation. The single
 ignored test runs the same report against the live spec. The analyzer also checks
-inline union payload fields and request requiredness.
+inline union payload fields and request requiredness. Report schema version 9 also
+compares effective operation parameters against the snapshot (additions, removals,
+requiredness, and schema constraints), resolving local references and ignoring
+prose/example changes. Missing Rust arguments and incompatible optionality or
+scalar/array shapes remain actionable even after a snapshot refresh. Array
+arguments may use a pluralized name and represent omission with an empty slice.
+
+Successful JSON envelopes are checked against the method's actual returned
+struct, including generic `ApiResponse<T>`, aliases, and flattened structs. Missing
+envelope fields retain exact definition pointers through response/schema refs
+and `allOf`; unmappable envelopes and unsupported inline unions are actionable.
+These checks cover envelope field presence, not generic payload type substitution
+or HTTP serialization behavior. Parameter defaults, bounds, and other constraints
+are snapshot comparisons; scalar/array shape checks compare Rust argument types.
+External or unresolved contract references fail analysis rather than report clean.
 
 ### Optionality exemptions
 
