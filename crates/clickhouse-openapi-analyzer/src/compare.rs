@@ -15,6 +15,8 @@ pub(crate) fn compare(
 ) -> DriftReport {
     let mut report = DriftReport::default();
     compare_operations(rust, spec, config, &mut report);
+    compare_parameters(rust, spec, &mut report);
+    compare_success_responses(rust, spec, &mut report);
     compare_models_and_refs(rust, spec, &mut report);
     compare_inline_fields(rust, spec, config, &mut report);
     compare_additional_properties(rust, spec, &mut report);
@@ -146,6 +148,255 @@ fn compare_operations(
         &helper_hits,
         report,
     );
+}
+
+/// Check argument presence and representable shape independently of the
+/// snapshot, so refreshing it cannot hide an unsupported parameter.
+fn compare_parameters(rust: &RustInventory, spec: &OpenApiInventory, report: &mut DriftReport) {
+    for (operation_name, operation) in &spec.operations {
+        let Some(method) = rust.client_methods.get(operation_name) else {
+            continue;
+        };
+        for ((location, wire_name), parameter) in &operation.parameters {
+            let name = crate::openapi::camel_to_snake(wire_name);
+            let schema = parameter.contract.get("schema");
+            // Collection arguments conventionally pluralize the wire name;
+            // an empty collection represents omission without Option.
+            let array = schema
+                .and_then(|schema| schema.get("type"))
+                .is_some_and(|kind| {
+                    kind == "array"
+                        || kind
+                            .as_array()
+                            .is_some_and(|types| types.iter().any(|kind| kind == "array"))
+                });
+            let argument = method.arguments.get(&name).or_else(|| {
+                array
+                    .then(|| method.arguments.get(&format!("{name}s")))
+                    .flatten()
+            });
+            let Some(argument) = argument else {
+                report.findings.push(
+                    Finding::new(
+                        FindingKind::MissingOperationParameter,
+                        format!(
+                            "{operation_name} has no argument for {location} parameter {wire_name}"
+                        ),
+                    )
+                    .at_spec(&parameter.pointer)
+                    .at_rust(format!("client.rs::Client::{operation_name}::{name}"))
+                    .detail("operation", operation_name)
+                    .detail("parameter", wire_name)
+                    .detail("location", location),
+                );
+                continue;
+            };
+            let required = parameter
+                .contract
+                .get("required")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true);
+            let optional = parameter_is_optional(rust, argument) || (array && !required);
+            let nullable = schema.is_some_and(|schema| {
+                schema.get("nullable").and_then(serde_json::Value::as_bool) == Some(true)
+                    || schema
+                        .get("type")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|types| types.iter().any(|kind| kind == "null"))
+            });
+            let requiredness_mismatch = (required && !nullable) == optional;
+            let shape_mismatch =
+                schema.is_some_and(|schema| !parameter_shape_matches(rust, argument, schema));
+            if requiredness_mismatch || shape_mismatch {
+                report.findings.push(Finding::new(FindingKind::OperationParameterMismatch,
+                    format!("{operation_name} {location} parameter {wire_name} has incompatible {}{}Rust argument {}",
+                        if requiredness_mismatch { "requiredness; " } else { "" },
+                        if shape_mismatch { "schema shape; " } else { "" }, argument.display()))
+                    .at_spec(&parameter.pointer).at_rust(format!("client.rs::Client::{operation_name}::{name}"))
+                    .detail("operation", operation_name).detail("parameter", wire_name).detail("location", location)
+                    .detail("required", required.to_string()).detail("actual", argument.display()));
+            }
+        }
+    }
+}
+
+fn parameter_is_optional(rust: &RustInventory, ty: &TypeNode) -> bool {
+    match rust.resolve_alias(ty) {
+        TypeNode::Option(_) => true,
+        TypeNode::Reference(inner) | TypeNode::Boxed(inner) => parameter_is_optional(rust, inner),
+        _ => false,
+    }
+}
+
+fn parameter_shape_matches(
+    rust: &RustInventory,
+    ty: &TypeNode,
+    schema: &serde_json::Value,
+) -> bool {
+    let ty = rust.resolve_alias(ty);
+    match ty {
+        TypeNode::Option(inner) | TypeNode::Reference(inner) | TypeNode::Boxed(inner) => {
+            return parameter_shape_matches(rust, inner, schema);
+        }
+        _ => {}
+    }
+    if let Some(types) = schema.get("type").and_then(serde_json::Value::as_array) {
+        let types: Vec<_> = types.iter().filter(|kind| *kind != "null").collect();
+        return !types.is_empty()
+            && types.into_iter().all(|kind| {
+                let mut schema = schema.clone();
+                schema["type"] = kind.clone();
+                parameter_shape_matches(rust, ty, &schema)
+            });
+    }
+    match schema.get("type").and_then(serde_json::Value::as_str) {
+        Some("array") => {
+            matches!(ty, TypeNode::Vec(inner) if schema.get("items").is_some_and(|items| parameter_shape_matches(rust, inner, items)))
+        }
+        Some("string") => {
+            matches!(ty, TypeNode::Path(name) if matches!(name.as_str(), "String" | "str") || rust.enums.get(name).is_some_and(|info| info.is_value_enum && !info.uses_i64_serde_conversion))
+        }
+        Some("integer") => {
+            matches!(ty, TypeNode::Path(name) if matches!(name.as_str(), "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64" | "isize" | "usize") || rust.enums.get(name).is_some_and(|info| info.uses_i64_serde_conversion))
+        }
+        Some("number") => {
+            matches!(ty, TypeNode::Path(name) if matches!(name.as_str(), "f32" | "f64"))
+        }
+        Some("boolean") => matches!(ty, TypeNode::Path(name) if name == "bool"),
+        // Named object/union parameter schemas have their own model checks.
+        _ => true,
+    }
+}
+
+fn compare_success_responses(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    report: &mut DriftReport,
+) {
+    for response in &spec.success_responses {
+        let Some(method) = rust.client_methods.get(&response.operation) else {
+            continue;
+        };
+        for pointer in &response.unsupported {
+            // A named union is already checked through its concrete Rust enum
+            // and inline variant payloads. Merely being a component is not enough.
+            let named_union = pointer
+                .strip_prefix("/components/schemas/")
+                .and_then(|suffix| suffix.split_once('/'))
+                .filter(|(_, tail)| matches!(*tail, "oneOf" | "anyOf"))
+                .map(|(name, _)| name.replace("~1", "/").replace("~0", "~"));
+            if named_union.is_some_and(|schema_name| {
+                let expected = response_position_type(rust, spec, &pascalize(&schema_name));
+                rust.enums.contains_key(&expected)
+                    && method
+                        .success_type
+                        .as_ref()
+                        .and_then(|ty| response_root_type(rust, ty))
+                        .as_deref()
+                        == Some(expected.as_str())
+            }) {
+                continue;
+            }
+            report.findings.push(
+                Finding::new(
+                    FindingKind::UnsupportedResponseSchema,
+                    format!(
+                        "{} success response has an unsupported envelope composition",
+                        response.operation
+                    ),
+                )
+                .at_spec(pointer)
+                .at_rust(format!("client.rs::Client::{}", response.operation)),
+            );
+        }
+        if response.properties.is_empty() {
+            continue;
+        }
+        let name = method
+            .success_type
+            .as_ref()
+            .and_then(|ty| response_root_type(rust, ty));
+        let Some((name, info)) = name
+            .as_ref()
+            .and_then(|name| rust.structs.get(name).map(|info| (name, info)))
+        else {
+            report.findings.push(
+                Finding::new(
+                    FindingKind::UnsupportedResponseSchema,
+                    format!(
+                        "{} success envelope has no identifiable returned struct",
+                        response.operation
+                    ),
+                )
+                .at_spec(&response.pointer)
+                .at_rust(format!("client.rs::Client::{}", response.operation)),
+            );
+            continue;
+        };
+        for (field, pointer) in &response.properties {
+            if !response_field_present(rust, info, field, &mut BTreeSet::new()) {
+                report.findings.push(
+                    Finding::new(
+                        FindingKind::MissingStructField,
+                        format!(
+                            "{name}.{field} is missing from the {} success envelope",
+                            response.operation
+                        ),
+                    )
+                    .at_spec(pointer)
+                    .at_rust(format!("models.rs::{name}::{field}"))
+                    .detail("schema", name)
+                    .detail("field", field)
+                    .detail("operation", &response.operation),
+                );
+            }
+        }
+    }
+}
+
+/// Do not confuse an array's element or an error payload with the envelope.
+fn response_root_type<'a>(rust: &'a RustInventory, mut ty: &'a TypeNode) -> Option<String> {
+    let mut seen = BTreeSet::new();
+    loop {
+        match ty {
+            TypeNode::Option(inner) | TypeNode::Reference(inner) | TypeNode::Boxed(inner) => {
+                ty = inner
+            }
+            TypeNode::Path(name) => {
+                if !seen.insert(name) {
+                    return None;
+                }
+                match rust.aliases.get(name) {
+                    Some(alias) => ty = alias,
+                    None => return Some(name.clone()),
+                }
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn response_field_present(
+    rust: &RustInventory,
+    info: &crate::rust_inventory::StructInfo,
+    field: &str,
+    seen: &mut BTreeSet<String>,
+) -> bool {
+    info.fields.contains_key(field)
+        || info
+            .fields
+            .values()
+            .filter(|field| field.flatten)
+            .any(|flattened| {
+                let Some(name) = response_root_type(rust, &flattened.rust_type) else {
+                    return false;
+                };
+                seen.insert(name.clone())
+                    && rust
+                        .structs
+                        .get(&name)
+                        .is_some_and(|info| response_field_present(rust, info, field, seen))
+            })
 }
 
 fn stale_strings(
@@ -1250,6 +1501,60 @@ fn compare_snapshot(
         );
     }
 
+    for operation in live_operations.intersection(&snapshot_operations) {
+        let current = &spec.operations[operation].parameters;
+        let previous = &snapshot.operations[operation].parameters;
+        for (key, parameter) in current {
+            let kind = match previous.get(key) {
+                None => FindingKind::SnapshotAddedParameter,
+                Some(old) if old.contract != parameter.contract => {
+                    FindingKind::SnapshotChangedParameter
+                }
+                _ => continue,
+            };
+            let mut finding = Finding::new(
+                kind,
+                format!(
+                    "{operation} {} parameter {} differs from the snapshot",
+                    key.0, key.1
+                ),
+            )
+            .at_spec(&parameter.pointer)
+            .at_rust(format!("client.rs::Client::{operation}"))
+            .detail("operation", operation)
+            .detail("location", &key.0)
+            .detail("parameter", &key.1)
+            .detail("current_contract", parameter.contract.to_string());
+            if let Some(old) = previous.get(key) {
+                finding = finding
+                    .detail("previous_contract", old.contract.to_string())
+                    .detail("previous_spec_pointer", &old.pointer);
+            }
+            report.findings.push(finding);
+        }
+        for (key, parameter) in previous {
+            if !current.contains_key(key) {
+                report.findings.push(
+                    Finding::new(
+                        FindingKind::SnapshotRemovedParameter,
+                        format!(
+                            "{operation} {} parameter {} was removed from the target spec",
+                            key.0, key.1
+                        ),
+                    )
+                    // Removed locations are explicitly attributed to the snapshot.
+                    .at_spec(&spec.operations[operation].pointer)
+                    .at_rust(format!("client.rs::Client::{operation}"))
+                    .detail("operation", operation)
+                    .detail("location", &key.0)
+                    .detail("parameter", &key.1)
+                    .detail("previous_spec_pointer", &parameter.pointer)
+                    .detail("previous_contract", parameter.contract.to_string()),
+                );
+            }
+        }
+    }
+
     let live_schemas: BTreeSet<_> = spec.schemas.keys().cloned().collect();
     let snapshot_schemas: BTreeSet<_> = snapshot.schemas.keys().cloned().collect();
     for schema in live_schemas.difference(&snapshot_schemas) {
@@ -1509,7 +1814,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
             serde_json::json!({
-                "schema_version": 8,
+                "schema_version": 9,
                 "findings": expected_findings,
                 "unsupported_enum_constraints": [],
             })
@@ -1661,14 +1966,19 @@ mod tests {
         spec: serde_json::Value,
         config: AnalyzerConfig,
     ) -> DriftReport {
+        let response = if models.contains("WidgetResponse") {
+            "WidgetResponse"
+        } else {
+            "Widget"
+        };
         let rust = RustInventory::parse(
-            r#"
+            &r#"
                 pub struct Client;
                 impl Client {
-                    pub async fn mutate_widget(&self) {}
-                    pub async fn get_widget(&self) {}
+                    pub async fn mutate_widget(&self) -> RESPONSE {}
+                    pub async fn get_widget(&self) -> RESPONSE {}
                 }
-            "#,
+            "#.replace("RESPONSE", response),
             models,
             "pub const BETA_OPERATIONS: &[&str] = &[]; pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[];",
         )
@@ -1707,7 +2017,7 @@ mod tests {
             Some("models.rs::WidgetResponse")
         );
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 8);
+        assert_eq!(json["schema_version"], 9);
         assert_eq!(
             json["findings"][0]["kind"],
             "additional_properties_mismatch"
@@ -2004,14 +2314,19 @@ mod tests {
                 }
             }}
         });
-        let report = analyze_directional(
+        let rust = RustInventory::parse(
+            "pub struct Client; impl Client { pub async fn get_widget(&self) -> Envelope {} }",
             r#"
                 pub struct Widget { pub name: Option<String> }
                 pub struct WidgetResponse { pub name: Option<String> }
+                pub struct Envelope { pub plain: Option<Widget>, pub named: Option<WidgetResponse> }
             "#,
-            spec,
-            AnalyzerConfig::default(),
-        );
+            "",
+        )
+        .unwrap();
+        let config = AnalyzerConfig::default();
+        let inventory = OpenApiInventory::build(&spec, &config).unwrap();
+        let report = compare(&rust, &inventory, &inventory, &config);
         let missing: Vec<_> = report
             .findings
             .iter()
@@ -2284,7 +2599,7 @@ mod tests {
             "paths": {"/widgets": {"get": {
                 "operationId": "listWidgets",
                 "parameters": [{
-                    "name": "sortOrder",
+                    "in": "query", "name": "sortOrder",
                     "schema": {"enum": ["asc", "desc"]}
                 }]
             }}},
@@ -2727,5 +3042,294 @@ mod tests {
             .iter()
             .find(|f| f.kind == FindingKind::EnumValuesMismatch);
         assert!(mismatch.is_none());
+    }
+
+    fn parameter_spec() -> serde_json::Value {
+        serde_json::json!({
+            "paths": {"/things/~": {
+                "parameters": [{"$ref": "#/components/parameters/count~1~0"}],
+                "get": {"operationId": "listThings"}
+            }},
+            "components": {
+                "parameters": {"count/~": {
+                    "in": "query", "name": "count", "required": false,
+                    "schema": {"$ref": "#/components/schemas/Count"}
+                }},
+                "schemas": {"Count": {"type": "integer", "maximum": 250}}
+            }
+        })
+    }
+
+    #[test]
+    fn parameter_refs_shapes_overrides_and_removals_have_exact_pointers() {
+        let config = AnalyzerConfig::default();
+        let before = parameter_spec();
+        let previous = OpenApiInventory::build(&before, &config).unwrap();
+        let rust = RustInventory::parse(
+            "pub struct Client; impl Client { pub async fn list_things(&self, count: Option<i64>) {} }",
+            "pub type Count = i64;",
+            "",
+        )
+        .unwrap();
+        assert!(!compare(&rust, &previous, &previous, &config).has_drift());
+        for (field, value) in [
+            ("maximum", serde_json::json!(500)),
+            ("type", serde_json::json!("string")),
+        ] {
+            let mut after = before.clone();
+            after["components"]["schemas"]["Count"][field] = value;
+            let target = OpenApiInventory::build(&after, &config).unwrap();
+            let report = compare(&rust, &target, &previous, &config);
+            let changed = report
+                .findings
+                .iter()
+                .find(|f| f.kind == FindingKind::SnapshotChangedParameter)
+                .unwrap();
+            assert_eq!(
+                changed.spec_pointer.as_deref(),
+                Some("/components/parameters/count~1~0")
+            );
+            assert!(
+                after
+                    .pointer(changed.spec_pointer.as_ref().unwrap())
+                    .is_some()
+            );
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::OperationParameterMismatch),
+                field == "type"
+            );
+        }
+        let mut after = before.clone();
+        after["paths"]["/things/~"]["get"]["parameters"] = serde_json::json!([
+            {"in": "query", "name": "count", "required": true, "schema": {"type": "integer"}}
+        ]);
+        let target = OpenApiInventory::build(&after, &config).unwrap();
+        assert_eq!(target.operations["list_things"].parameters.len(), 1);
+        let report = compare(&rust, &target, &previous, &config);
+        let changed = report
+            .findings
+            .iter()
+            .find(|f| f.kind == FindingKind::SnapshotChangedParameter)
+            .unwrap();
+        assert_eq!(
+            changed.spec_pointer.as_deref(),
+            Some("/paths/~1things~1~0/get/parameters/0")
+        );
+        assert_eq!(
+            changed.details["previous_spec_pointer"],
+            "/components/parameters/count~1~0"
+        );
+        after["paths"]["/things/~"]
+            .as_object_mut()
+            .unwrap()
+            .remove("parameters");
+        after["paths"]["/things/~"]["get"]
+            .as_object_mut()
+            .unwrap()
+            .remove("parameters");
+        let target = OpenApiInventory::build(&after, &config).unwrap();
+        let report = compare(&rust, &target, &previous, &config);
+        let removed = report
+            .findings
+            .iter()
+            .find(|f| f.kind == FindingKind::SnapshotRemovedParameter)
+            .unwrap();
+        assert_eq!(
+            removed.spec_pointer.as_deref(),
+            Some("/paths/~1things~1~0/get")
+        );
+        assert_eq!(
+            removed.details["previous_spec_pointer"],
+            "/components/parameters/count~1~0"
+        );
+        assert!(
+            after
+                .pointer(removed.spec_pointer.as_ref().unwrap())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn nullable_31_parameter_types_still_check_shape_and_requiredness() {
+        let config = AnalyzerConfig::default();
+        let mut spec = parameter_spec();
+        spec["components"]["schemas"]["Count"]["type"] = serde_json::json!(["integer", "null"]);
+        spec["components"]["parameters"]["count/~"]["required"] = true.into();
+        let spec = OpenApiInventory::build(&spec, &config).unwrap();
+        for (argument, expected) in [
+            ("Option<i64>", false),
+            ("OptionalCount", false),
+            ("i64", true),
+            ("Option<String>", true),
+        ] {
+            let rust = RustInventory::parse(
+                &format!("pub struct Client; impl Client {{ pub async fn list_things(&self, count: {argument}) {{}} }}"),
+                "pub type Count = i64; pub type OptionalCount = Option<i64>;", "",
+            ).unwrap();
+            let report = compare(&rust, &spec, &spec, &config);
+            assert_eq!(
+                report
+                    .findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::OperationParameterMismatch),
+                expected,
+                "{}",
+                report.render_text()
+            );
+        }
+    }
+
+    #[test]
+    fn referenced_envelopes_follow_actual_success_return_and_flattened_fields() {
+        let config = AnalyzerConfig::default();
+        let spec = serde_json::json!({
+            "paths": {"/keys": {"get": {
+                "operationId": "listKeys", "responses": {"200": {"$ref": "#/components/responses/Page~1~0"}}
+            }}},
+            "components": {
+                "responses": {"Page/~": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/Page"}}}}},
+                "schemas": {"Page": {"allOf": [
+                    {"properties": {"result": {"type": "array", "items": {"type": "string"}}}},
+                    {"properties": {"next/~": {"type": ["string", "null"]}}}
+                ]}}
+            }
+        });
+        let inventory = OpenApiInventory::build(&spec, &config).unwrap();
+        for (extra, expected) in [
+            ("", true),
+            (
+                "#[serde(rename = \"next/~\")] pub next: Option<String>,",
+                false,
+            ),
+        ] {
+            let rust = RustInventory::parse(
+                "pub struct Client; impl Client { pub async fn list_keys(&self) -> Result<Alias, ErrorPayload> {} }",
+                &format!(r#"
+                    pub struct Page;
+                    pub type Alias = ApiResponse<Vec<String>>;
+                    pub struct ApiResponse<T> {{ #[serde(flatten)] pub fields: Fields, pub result: Option<T> }}
+                    pub struct Fields {{ {extra} }}
+                    pub struct ErrorPayload {{ #[serde(rename = "next/~")] pub next: Option<String> }}
+                "#), "",
+            ).unwrap();
+            let report = compare(&rust, &inventory, &inventory, &config);
+            let missing: Vec<_> = report
+                .findings
+                .iter()
+                .filter(|f| f.kind == FindingKind::MissingStructField)
+                .collect();
+            assert_eq!(
+                missing.len(),
+                usize::from(expected),
+                "{}",
+                report.render_text()
+            );
+            if expected {
+                assert_eq!(
+                    missing[0].spec_pointer.as_deref(),
+                    Some("/components/schemas/Page/allOf/1/properties/next~1~0")
+                );
+                assert_eq!(
+                    missing[0].rust_item.as_deref(),
+                    Some("models.rs::ApiResponse::next/~")
+                );
+                assert!(
+                    spec.pointer(missing[0].spec_pointer.as_ref().unwrap())
+                        .is_some()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn untyped_and_referenced_union_success_envelopes_are_actionable() {
+        let config = AnalyzerConfig::default();
+        for referenced in [false, true] {
+            let schema = serde_json::json!({"oneOf": [
+                {"properties": {"result": {"type": "string"}}},
+                {"properties": {"cursor": {"type": "string"}}}
+            ]});
+            let spec = serde_json::json!({
+                "paths": {"/keys": {"get": {"operationId": "listKeys", "responses": {"200": {"content": {"application/json": {
+                    "schema": if referenced { serde_json::json!({"$ref": "#/components/schemas/Page"}) } else { schema.clone() }
+                }}}}}}},
+                "components": {"schemas": if referenced { serde_json::json!({"Page": schema}) } else { serde_json::json!({}) }}
+            });
+            let rust = RustInventory::parse(
+                "pub struct Client; impl Client { pub async fn list_keys(&self) -> Result<serde_json::Value, Error> {} }",
+                "pub struct Page;", "",
+            ).unwrap();
+            let inventory = OpenApiInventory::build(&spec, &config).unwrap();
+            let report = compare(&rust, &inventory, &inventory, &config);
+            let unsupported = report
+                .findings
+                .iter()
+                .find(|f| f.kind == FindingKind::UnsupportedResponseSchema)
+                .unwrap();
+            assert!(
+                spec.pointer(unsupported.spec_pointer.as_ref().unwrap())
+                    .is_some()
+            );
+            assert_eq!(
+                unsupported.spec_pointer.as_deref(),
+                Some(if referenced {
+                    "/components/schemas/Page/oneOf"
+                } else {
+                    "/paths/~1keys/get/responses/200/content/application~1json/schema/oneOf"
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn untyped_and_array_returns_cannot_claim_object_envelope_coverage() {
+        let config = AnalyzerConfig::default();
+        let spec = serde_json::json!({
+            "paths": {"/keys": {"get": {"operationId": "listKeys", "responses": {"200": {"content": {"application/json": {
+                "schema": {"properties": {"cursor": {"type": "string"}}}
+            }}}}}}},
+            "components": {"schemas": {}}
+        });
+        let inventory = OpenApiInventory::build(&spec, &config).unwrap();
+        for response in ["serde_json::Value", "Vec<Envelope>"] {
+            let rust = RustInventory::parse(
+                &format!("pub struct Client; impl Client {{ pub async fn list_keys(&self) -> Result<{response}, Error> {{}} }}"),
+                "pub struct Envelope { pub cursor: Option<String> }", "",
+            ).unwrap();
+            let report = compare(&rust, &inventory, &inventory, &config);
+            assert_eq!(report.findings.len(), 1, "{}", report.render_text());
+            assert_eq!(
+                report.findings[0].kind,
+                FindingKind::UnsupportedResponseSchema
+            );
+        }
+    }
+
+    #[test]
+    fn response_reference_siblings_keep_their_own_property_pointer() {
+        let config = AnalyzerConfig::default();
+        let spec = serde_json::json!({
+            "paths": {"/keys": {"get": {"operationId": "listKeys", "responses": {"200": {"content": {"application/json": {
+                "schema": {"$ref": "#/components/schemas/Page", "properties": {"next/~": {"type": "string"}}}
+            }}}}}}},
+            "components": {"schemas": {"Page": {"properties": {"result": {"type": "string"}}}}}
+        });
+        let rust = RustInventory::parse(
+            "pub struct Client; impl Client { pub async fn list_keys(&self) -> Result<Page, Error> {} }",
+            "pub struct Page { pub result: Option<String> }", "",
+        ).unwrap();
+        let inventory = OpenApiInventory::build(&spec, &config).unwrap();
+        let report = compare(&rust, &inventory, &inventory, &config);
+        assert_eq!(report.findings.len(), 1, "{}", report.render_text());
+        assert_eq!(report.findings[0].kind, FindingKind::MissingStructField);
+        assert_eq!(
+            report.findings[0].spec_pointer.as_deref(),
+            Some(
+                "/paths/~1keys/get/responses/200/content/application~1json/schema/properties/next~1~0"
+            )
+        );
     }
 }

@@ -15,6 +15,23 @@ pub(crate) struct OperationInfo {
     pub(crate) method: String,
     pub(crate) path: String,
     pub(crate) summary: String,
+    /// Effective parameters, with operation definitions overriding path definitions.
+    pub(crate) parameters: BTreeMap<(String, String), ParameterInfo>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ParameterInfo {
+    pub(crate) pointer: String,
+    pub(crate) contract: Value,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SuccessResponseInfo {
+    pub(crate) operation: String,
+    pub(crate) pointer: String,
+    /// Resolved top-level properties retain pointers into their defining schema.
+    pub(crate) properties: BTreeMap<String, String>,
+    pub(crate) unsupported: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,6 +101,7 @@ pub(crate) struct EnumConstraint {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OpenApiInventory {
     pub(crate) operations: BTreeMap<String, OperationInfo>,
+    pub(crate) success_responses: Vec<SuccessResponseInfo>,
     /// Inline object branches retain their parent direction and exact spec pointer.
     pub(crate) inline_union_objects: Vec<(String, String, Value)>,
     /// Inline JSON responses, keyed by the conventional Rust model name
@@ -177,18 +195,77 @@ impl OpenApiInventory {
                     .ok_or_else(|| format!("{method} {path} has no operationId"))?;
                 let rust_name = camel_to_snake(operation_id);
                 let pointer = json_pointer(&["paths".to_string(), path.clone(), method.clone()]);
+                let mut parameters = BTreeMap::new();
+                for (owner, owner_pointer) in [
+                    (path_item, json_pointer(&["paths".into(), path.clone()])),
+                    (operation, pointer.clone()),
+                ] {
+                    if let Some(values) = owner.get("parameters").and_then(Value::as_array) {
+                        for (index, value) in values.iter().enumerate() {
+                            let (value, parameter_pointer) = resolve_reference(
+                                spec,
+                                value,
+                                &format!("{owner_pointer}/parameters/{index}"),
+                            )?;
+                            let location =
+                                value.get("in").and_then(Value::as_str).ok_or_else(|| {
+                                    format!("{parameter_pointer} has no parameter location")
+                                })?;
+                            let name =
+                                value.get("name").and_then(Value::as_str).ok_or_else(|| {
+                                    format!("{parameter_pointer} has no parameter name")
+                                })?;
+                            let mut contract =
+                                normalize_contract(spec, value, &mut BTreeSet::new())?;
+                            contract
+                                .as_object_mut()
+                                .unwrap()
+                                .entry("required")
+                                .or_insert(Value::Bool(false));
+                            parameters.insert(
+                                (location.to_owned(), name.to_owned()),
+                                ParameterInfo {
+                                    pointer: parameter_pointer,
+                                    contract,
+                                },
+                            );
+                        }
+                    }
+                }
                 if let Some(responses) = operation.get("responses").and_then(Value::as_object) {
                     for (status, response) in responses {
+                        let response_pointer =
+                            format!("{pointer}/responses/{}", escape_pointer(status));
+                        let (response, response_pointer) =
+                            resolve_reference(spec, response, &response_pointer)?;
+                        if status.starts_with('2')
+                            && let Some(schema) =
+                                response.pointer("/content/application~1json/schema")
+                        {
+                            let schema_pointer =
+                                format!("{response_pointer}/content/application~1json/schema");
+                            let mut info = SuccessResponseInfo {
+                                operation: rust_name.clone(),
+                                pointer: schema_pointer.clone(),
+                                properties: BTreeMap::new(),
+                                unsupported: Vec::new(),
+                            };
+                            collect_response_properties(
+                                spec,
+                                schema,
+                                &schema_pointer,
+                                &mut BTreeSet::new(),
+                                &mut info,
+                            )?;
+                            self.success_responses.push(info);
+                        }
                         if let Some(schema) = response.pointer("/content/application~1json/schema")
                             && schema.get("$ref").is_none()
                         {
                             self.inline_responses.insert(
                                 inline_response_name(operation_id, status),
                                 (
-                                    format!(
-                                        "{pointer}/responses/{}/content/application~1json/schema",
-                                        escape_pointer(status)
-                                    ),
+                                    format!("{response_pointer}/content/application~1json/schema"),
                                     schema.clone(),
                                 ),
                             );
@@ -214,6 +291,7 @@ impl OpenApiInventory {
                         operation_id: operation_id.to_string(),
                         method: method.to_ascii_uppercase(),
                         path: path.clone(),
+                        parameters,
                         summary: operation
                             .get("summary")
                             .and_then(Value::as_str)
@@ -348,6 +426,175 @@ impl OpenApiInventory {
         self.request_position_schemas = transitive_schema_closure(request_roots, &schema_refs);
         self.response_position_schemas = transitive_schema_closure(response_roots, &schema_refs);
     }
+}
+
+/// Resolve local references without losing the location of the definition.
+fn resolve_reference<'a>(
+    spec: &'a Value,
+    mut value: &'a Value,
+    pointer: &str,
+) -> Result<(&'a Value, String), String> {
+    let mut pointer = pointer.to_owned();
+    let mut seen = BTreeSet::new();
+    while let Some(reference) = value.get("$ref").and_then(Value::as_str) {
+        let target = reference
+            .strip_prefix('#')
+            .ok_or_else(|| format!("unsupported external reference {reference} at {pointer}"))?;
+        if !seen.insert(target.to_owned()) {
+            return Err(format!("cyclic reference {reference} at {pointer}"));
+        }
+        value = spec
+            .pointer(target)
+            .ok_or_else(|| format!("unresolved reference {reference} at {pointer}"))?;
+        pointer = target.to_owned();
+    }
+    Ok((value, pointer))
+}
+
+/// Normalize parameter/schema contracts, excluding prose and examples. Property
+/// names and literal default/enum/const values are data, never annotation keys.
+fn normalize_contract(
+    spec: &Value,
+    value: &Value,
+    seen: &mut BTreeSet<String>,
+) -> Result<Value, String> {
+    match value {
+        Value::Object(object) => {
+            let mut normalized = serde_json::Map::new();
+            if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
+                let target = reference
+                    .strip_prefix('#')
+                    .ok_or_else(|| format!("unsupported external reference {reference}"))?;
+                let resolved = spec
+                    .pointer(target)
+                    .ok_or_else(|| format!("unresolved reference {reference}"))?;
+                if seen.insert(reference.to_owned()) {
+                    if let Value::Object(fields) = normalize_contract(spec, resolved, seen)? {
+                        normalized.extend(fields);
+                    }
+                    seen.remove(reference);
+                } else {
+                    normalized.insert("$ref".into(), Value::String(reference.into()));
+                }
+            }
+            for (key, value) in object {
+                if matches!(
+                    key.as_str(),
+                    "$ref"
+                        | "description"
+                        | "summary"
+                        | "title"
+                        | "example"
+                        | "examples"
+                        | "externalDocs"
+                        | "$comment"
+                ) || key.starts_with("x-")
+                {
+                    continue;
+                }
+                let value = if matches!(key.as_str(), "default" | "const" | "enum") {
+                    let mut value = value.clone();
+                    if key == "enum"
+                        && let Some(values) = value.as_array_mut()
+                    {
+                        values.sort_by_key(Value::to_string);
+                        values.dedup();
+                    }
+                    value
+                } else if matches!(
+                    key.as_str(),
+                    "properties"
+                        | "patternProperties"
+                        | "$defs"
+                        | "definitions"
+                        | "dependentSchemas"
+                        | "content"
+                ) {
+                    let fields = value
+                        .as_object()
+                        .ok_or_else(|| format!("{key} must be an object"))?;
+                    Value::Object(
+                        fields
+                            .iter()
+                            .map(|(name, child)| {
+                                normalize_contract(spec, child, seen)
+                                    .map(|child| (name.clone(), child))
+                            })
+                            .collect::<Result<_, _>>()?,
+                    )
+                } else {
+                    let mut value = normalize_contract(spec, value, seen)?;
+                    if matches!(
+                        key.as_str(),
+                        "required" | "type" | "allOf" | "anyOf" | "oneOf"
+                    ) && let Some(values) = value.as_array_mut()
+                    {
+                        values.sort_by_key(Value::to_string);
+                        // Repeating a oneOf branch changes its meaning.
+                        if matches!(key.as_str(), "required" | "type") {
+                            values.dedup();
+                        }
+                    }
+                    value
+                };
+                normalized.insert(key.clone(), value);
+            }
+            Ok(Value::Object(normalized))
+        }
+        Value::Array(values) => values
+            .iter()
+            .map(|value| normalize_contract(spec, value, seen))
+            .collect(),
+        _ => Ok(value.clone()),
+    }
+}
+
+fn collect_response_properties(
+    spec: &Value,
+    schema: &Value,
+    pointer: &str,
+    seen: &mut BTreeSet<String>,
+    info: &mut SuccessResponseInfo,
+) -> Result<(), String> {
+    if !seen.insert(pointer.to_owned()) {
+        info.unsupported.push(pointer.to_owned());
+        return Ok(());
+    }
+    if let Some(reference) = schema.get("$ref").and_then(Value::as_str) {
+        let target = reference
+            .strip_prefix('#')
+            .ok_or_else(|| format!("unsupported external reference {reference} at {pointer}"))?;
+        let resolved = spec
+            .pointer(target)
+            .ok_or_else(|| format!("unresolved reference {reference} at {pointer}"))?;
+        collect_response_properties(spec, resolved, target, seen, info)?;
+    }
+    if let Some(properties) = schema.get("properties").and_then(Value::as_object) {
+        for name in properties.keys() {
+            info.properties.insert(
+                name.clone(),
+                format!("{pointer}/properties/{}", escape_pointer(name)),
+            );
+        }
+    }
+    if let Some(branches) = schema.get("allOf").and_then(Value::as_array) {
+        for (index, branch) in branches.iter().enumerate() {
+            collect_response_properties(
+                spec,
+                branch,
+                &format!("{pointer}/allOf/{index}"),
+                seen,
+                info,
+            )?;
+        }
+    }
+    for composition in ["oneOf", "anyOf"] {
+        if schema.get(composition).is_some() {
+            info.unsupported.push(format!("{pointer}/{composition}"));
+        }
+    }
+    seen.remove(pointer);
+    Ok(())
 }
 
 /// Collects the names of every `#/components/schemas/...` schema referenced
@@ -1094,7 +1341,7 @@ mod tests {
             "paths": {
                 "/widgets": {"get": {
                     "operationId": "listWidgets",
-                    "parameters": [{"name": "sortOrder", "schema": {"enum": ["asc", "desc"]}}]
+                    "parameters": [{"in": "query", "name": "sortOrder", "schema": {"enum": ["asc", "desc"]}}]
                 }}
             },
             "components": {"schemas": {
@@ -1359,10 +1606,10 @@ mod tests {
         let spec = serde_json::json!({
             "paths": {
                 "/widgets": {
-                    "parameters": [{"name": "f", "schema": {"$ref": "#/components/schemas/PathParamFilter"}}],
+                    "parameters": [{"in": "query", "name": "f", "schema": {"$ref": "#/components/schemas/PathParamFilter"}}],
                     "post": {
                         "operationId": "createWidget",
-                        "parameters": [{"name": "sort", "schema": {"$ref": "#/components/schemas/SortOrder"}}],
+                        "parameters": [{"in": "query", "name": "sort", "schema": {"$ref": "#/components/schemas/SortOrder"}}],
                         "requestBody": {"content": {"application/json": {
                             "schema": {"$ref": "#/components/schemas/WidgetPostRequest"}
                         }}},
@@ -1437,7 +1684,7 @@ mod tests {
             },
             "components": {
                 "parameters": {"SortOrder": {
-                    "name": "sort",
+                    "in": "query", "name": "sort",
                     "schema": {"$ref": "#/components/schemas/SortOrder"}
                 }},
                 "requestBodies": {"WidgetPost": {"content": {"application/json": {
@@ -1534,14 +1781,14 @@ mod tests {
                 },
                 "/widgets": {
                     "parameters": [{
-                        "name": "apiVersion",
+                        "in": "query", "name": "apiVersion",
                         "schema": {"enum": ["v1"]}
                     }],
                     "post": {
                         "operationId": "createWidget",
                         "parameters": [
                             {
-                                "name": "sortOrder",
+                                "in": "query", "name": "sortOrder",
                                 "example": {
                                     "schema": {"enum": ["example-schema"]}
                                 },
@@ -1556,7 +1803,7 @@ mod tests {
                                 }
                             },
                             {
-                                "name": "filter",
+                                "in": "query", "name": "filter",
                                 "content": {
                                     "application/json": {
                                         "schema": {"enum": ["active"]}
@@ -1637,5 +1884,51 @@ mod tests {
                 "/paths/~1widgets/post/responses/200/headers/X-Widget-Mode/schema".to_string(),
             ])
         );
+    }
+
+    #[test]
+    fn contract_annotations_do_not_erase_data_named_like_annotations() {
+        let spec = serde_json::json!({});
+        let before = serde_json::json!({
+            "description": "old prose", "schema": {
+                "type": "object", "properties": {"description": {"type": "string"}},
+                "default": {"description": "real data"}, "required": ["description", "title"]
+            }
+        });
+        let normalized = normalize_contract(&spec, &before, &mut BTreeSet::new()).unwrap();
+        let mut after = before.clone();
+        after["description"] = "new prose".into();
+        after["schema"]["properties"]["description"]["description"] = "more prose".into();
+        after["schema"]["required"] = serde_json::json!(["title", "description"]);
+        assert_eq!(
+            normalized,
+            normalize_contract(&spec, &after, &mut BTreeSet::new()).unwrap()
+        );
+        for pointer in [
+            "/schema/default/description",
+            "/schema/properties/description/type",
+        ] {
+            let mut changed = after.clone();
+            *changed.pointer_mut(pointer).unwrap() = "integer".into();
+            assert_ne!(
+                normalized,
+                normalize_contract(&spec, &changed, &mut BTreeSet::new()).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn unresolved_and_cyclic_parameter_references_fail_closed() {
+        for reference in [
+            "#/components/parameters/Missing",
+            "#/components/parameters/Loop",
+            "https://example.test/parameter",
+        ] {
+            let spec = serde_json::json!({
+                "paths": {"/keys": {"get": {"operationId": "listKeys", "parameters": [{"$ref": reference}]}}},
+                "components": {"schemas": {}, "parameters": {"Loop": {"$ref": "#/components/parameters/Loop"}}}
+            });
+            assert!(OpenApiInventory::build(&spec, &AnalyzerConfig::default()).is_err());
+        }
     }
 }
