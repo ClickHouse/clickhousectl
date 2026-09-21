@@ -365,9 +365,16 @@ fn detect_binary_version(binary_path: &std::path::Path) -> Result<String> {
         .map_err(|e| Error::Exec(format!("Failed to run clickhouse --version: {}", e)))?;
 
     if !output.status.success() {
-        return Err(Error::Exec(
-            "clickhouse --version returned non-zero exit code".to_string(),
-        ));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = stderr.trim();
+        return Err(Error::Exec(format!(
+            "clickhouse --version returned non-zero exit code. {}",
+            if stderr.is_empty() {
+                format!("status={}", output.status)
+            } else {
+                stderr.to_string()
+            }
+        )));
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
