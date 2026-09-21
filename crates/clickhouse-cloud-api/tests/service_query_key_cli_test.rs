@@ -1362,11 +1362,7 @@ async fn assert_single_owned_key(
     key_name: &str,
     api_key_id: &str,
 ) -> TestResult<()> {
-    let keys = client
-        .openapi_key_get_list(org_id)
-        .await?
-        .result
-        .ok_or("key list returned no result")?;
+    let keys = list_all_api_keys(client, org_id).await?;
     let owned: Vec<String> = keys
         .iter()
         .filter(|key| key.name.as_deref() == Some(key_name))
@@ -1659,11 +1655,7 @@ async fn key_inventory(
     client: &Client,
     org_id: &str,
 ) -> TestResult<std::collections::BTreeSet<String>> {
-    let keys = client
-        .openapi_key_get_list(org_id)
-        .await?
-        .result
-        .ok_or("key list returned no result")?;
+    let keys = list_all_api_keys(client, org_id).await?;
     Ok(keys.iter().map(|key| field_string(key.id)).collect())
 }
 

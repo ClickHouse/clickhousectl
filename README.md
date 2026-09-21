@@ -2830,7 +2830,23 @@ clickhousectl cloud invitation delete <invitation-id>
 
 ### Keys
 
+`cloud key list` fetches one page. `--limit` sets the page size (1–250; the server
+uses 250 when omitted), and `--cursor` resumes from an opaque continuation token.
+Use `--all` to fetch every page; `--limit` still controls each request's page size,
+and `--all` conflicts with `--cursor`. Name lookup for get, update, and delete
+always searches all pages and rejects ambiguous matches across pages.
+
+One-page JSON output is now an object rather than an array, with a `result` array
+and optional `nextCursor`,
+`limit`, and `totalCount` metadata. Missing or null metadata is omitted; only an
+absent `nextCursor` means the last page (an empty string remains a valid token).
+`--all --json` returns a single combined array, with no partial output on failure.
+
 ```bash
+clickhousectl cloud key list --limit 25 --json
+clickhousectl cloud key list --limit 25 --cursor='TOKEN_FROM_nextCursor' --json
+clickhousectl cloud key list --all --json
+
 clickhousectl cloud key list
 clickhousectl cloud key get <resource-id>
 # the key secret is printed once, at create time only

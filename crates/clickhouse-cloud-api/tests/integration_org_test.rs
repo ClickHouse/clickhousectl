@@ -1208,10 +1208,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     let org_id = ctx.org_id.clone();
                     let api_key_uuid = api_key_uuid_for_list.clone();
                     async move {
-                        let resp = client.openapi_key_get_list(&org_id).await?;
-                        let keys = resp
-                            .result
-                            .ok_or_else(|| "openapi_key_get_list returned no result".to_string())?;
+                        let keys = list_all_api_keys(&client, &org_id).await?;
                         if !keys.iter().any(|k| field_string(k.id) == api_key_uuid) {
                             return Err(format!(
                                 "openapi_key_get_list did not contain newly created key {api_key_uuid} (found {} keys)",
@@ -1370,5 +1367,50 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
         (Err(error), Err(cleanup_error)) => {
             Err(format!("{error}\ncleanup failed:\n{cleanup_error}").into())
         }
+    }
+}
+
+#[tokio::test]
+async fn key_inventory_walks_empty_pages_and_rejects_cursor_cycles() {
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    for cycle in [false, true] {
+        let server = MockServer::start().await;
+        let client = clickhouse_cloud_api::Client::with_base_url(server.uri(), "key", "secret");
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org/keys"))
+            .and(query_param_is_missing("cursor"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"name": "first"}], "nextCursor": ""
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org/keys"))
+            .and(query_param("cursor", ""))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [], "nextCursor": "opaque +/=&?雪"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org/keys"))
+            .and(query_param("cursor", "opaque +/=&?雪"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"name": "last"}], "nextCursor": if cycle { Some("") } else { None }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let result = list_all_api_keys(&client, "org").await;
+        if cycle {
+            assert!(result.unwrap_err().to_string().contains("repeated cursor"));
+        } else {
+            let names: Vec<_> = result.unwrap().into_iter().map(|key| key.name).collect();
+            assert_eq!(names, vec![Some("first".into()), Some("last".into())]);
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 3);
     }
 }

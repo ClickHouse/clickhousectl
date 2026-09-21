@@ -59,7 +59,7 @@ fn executable_and_library_return_the_same_vendored_report() {
 
 /// Operation fragments captured from the vendored snapshot at a65a9ca6 and
 /// https://api.clickhouse.cloud/v1 on 2026-09-18 for issue #978. Other operations
-/// and models remain the common snapshot, isolating the two changed contracts.
+/// and their referenced models are isolated from the evolving library source.
 fn contract_spec(after: bool) -> String {
     let mut spec: serde_json::Value = serde_json::from_str(SPEC).unwrap();
     let fragment: serde_json::Value = serde_json::from_str(if after {
@@ -68,20 +68,100 @@ fn contract_spec(after: bool) -> String {
         include_str!("fixtures/operation_contracts/before.json")
     })
     .unwrap();
-    for (path, methods) in fragment.as_object().unwrap() {
-        spec["paths"][path]["get"] = methods["get"].clone();
-    }
+    spec["paths"] = fragment;
+    spec["components"]["schemas"]
+        .as_object_mut()
+        .unwrap()
+        .retain(|name, _| {
+            matches!(
+                name.as_str(),
+                "ApiKey" | "ServiceProfile" | "AssignedRole" | "IpAccessListEntry"
+            )
+        });
     spec.to_string()
 }
 
+// The historical client shape is part of the regression fixture: otherwise
+// fixing the real library invalidates the before/after drift assertions.
 fn contract_report(target: &str, snapshot: &str) -> DriftReport {
+    let source = tempfile::tempdir().unwrap();
+    std::fs::write(
+        source.path().join("client.rs"),
+        r#"
+        impl Client {
+            pub async fn openapi_key_get_list(&self, organization_id: &str)
+                -> Result<ApiResponse<Vec<ApiKey>>, Error> { todo!() }
+            pub async fn service_profiles_list(&self, organization_id: &str,
+                region_id: &str, byoc_id: Option<&str>)
+                -> Result<ApiResponse<Vec<ServiceProfile>>, Error> { todo!() }
+        }
+    "#,
+    )
+    .unwrap();
+    std::fs::write(
+        source.path().join("models.rs"),
+        r#"
+        pub struct ApiResponse<T> {
+            pub status: Option<i64>,
+            #[serde(rename = "requestId")] pub request_id: Option<String>,
+            pub result: Option<T>,
+            pub error: Option<String>,
+        }
+        pub struct ApiKey {
+            pub id: Option<uuid::Uuid>,
+            pub name: Option<String>,
+            pub state: Option<ApiKeyState>,
+            #[cfg(feature = "deprecated-fields")] pub roles: Option<Vec<String>>,
+            #[serde(rename = "assignedRoles")] pub assigned_roles: Option<Vec<AssignedRole>>,
+            #[serde(rename = "keySuffix")] pub key_suffix: Option<String>,
+            #[serde(rename = "createdAt")] pub created_at: Option<chrono::DateTime<chrono::Utc>>,
+            #[serde(rename = "expireAt")] pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
+            #[serde(rename = "usedAt")] pub used_at: Option<chrono::DateTime<chrono::Utc>>,
+            #[serde(rename = "ipAccessList")] pub ip_access_list: Option<Vec<IpAccessListEntry>>,
+        }
+        pub enum ApiKeyState {
+            #[serde(rename = "enabled")] Enabled,
+            #[serde(rename = "disabled")] Disabled,
+            #[serde(untagged)] Unknown(String),
+        }
+        pub struct AssignedRole {
+            #[serde(rename = "roleId")] pub role_id: Option<uuid::Uuid>,
+            #[serde(rename = "roleName")] pub role_name: Option<String>,
+            #[serde(rename = "roleType")] pub role_type: Option<AssignedRoleRoletype>,
+        }
+        pub enum AssignedRoleRoletype {
+            #[serde(rename = "system")] System,
+            #[serde(rename = "custom")] Custom,
+            #[serde(untagged)] Unknown(String),
+        }
+        pub struct IpAccessListEntry { pub source: Option<String>, pub description: Option<String> }
+        pub struct ServiceProfile {
+            pub profile: Option<String>,
+            #[serde(rename = "cpuCores")] pub cpu_cores: Option<f64>,
+            #[serde(rename = "memoryGi")] pub memory_gi: Option<f64>,
+        }
+    "#,
+    )
+    .unwrap();
+    std::fs::write(
+        source.path().join("meta.rs"),
+        r#"
+        pub const BETA_OPERATIONS: &[&str] = &[];
+        pub const DEPRECATED_FIELDS: &[(&str, &str)] = &[("ApiKey", "roles")];
+    "#,
+    )
+    .unwrap();
+    let mut config = clickhouse_openapi_analyzer::config::AnalyzerConfig::default();
+    config
+        .acknowledged_unsupported_enum_pointers
+        .insert("/components/schemas/ApiKey/properties/roles/items".into());
     analyze(
         AnalysisInput {
             spec_json: target,
             snapshot_json: snapshot,
-            rust_source_root: &Path::new(API_ROOT).join("src"),
+            rust_source_root: source.path(),
         },
-        &clickhouse_cloud_config(),
+        &config,
     )
     .unwrap()
 }

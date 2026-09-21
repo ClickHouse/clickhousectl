@@ -16,6 +16,28 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub type TestResult<T> = Result<T, Box<dyn std::error::Error>>;
 
+/// Inventory assertions must see every key, including keys beyond the first page.
+pub async fn list_all_api_keys(client: &Client, org_id: &str) -> TestResult<Vec<ApiKey>> {
+    let mut keys = Vec::new();
+    let mut cursor = None;
+    let mut seen = std::collections::HashSet::new();
+    loop {
+        let response = client
+            .openapi_key_get_list(org_id, None, cursor.as_deref())
+            .await?;
+        keys.extend(response.result.ok_or("key list returned no result")?);
+        match response.next_cursor {
+            None => return Ok(keys),
+            Some(next) => {
+                if !seen.insert(next.clone()) {
+                    return Err("key list returned a repeated cursor".into());
+                }
+                cursor = Some(next);
+            }
+        }
+    }
+}
+
 const DEFAULT_CREATE_TIMEOUT_SECS: u64 = 1_800;
 const DEFAULT_DELETE_TIMEOUT_SECS: u64 = 900;
 const DEFAULT_STEADY_STATE_TIMEOUT_SECS: u64 = 1_800;

@@ -526,10 +526,85 @@ async fn list_api_keys() {
         .await;
 
     let client = Client::with_base_url(mock_server.uri(), "key", "secret");
-    let resp = client.openapi_key_get_list("org-1").await.unwrap();
+    let resp = client
+        .openapi_key_get_list("org-1", None, None)
+        .await
+        .unwrap();
     let keys = resp.result.unwrap();
     assert_eq!(keys.len(), 1);
     assert_eq!(keys[0].name.as_deref(), Some("Production Key"));
+}
+
+#[tokio::test]
+async fn list_api_keys_pagination_encodes_parameters_and_preserves_envelope() {
+    let (server, client) = setup().await;
+    let cursor = "opaque +/=&?雪";
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/keys"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200.0, "requestId": "req-page", "result": [],
+            "limit": 25, "totalCount": 100, "nextCursor": cursor
+        })))
+        .expect(4)
+        .mount(&server)
+        .await;
+    for (limit, cursor_arg) in [
+        (None, None),
+        (Some(25), None),
+        (None, Some(cursor)),
+        (Some(25), Some(cursor)),
+    ] {
+        let response = client
+            .openapi_key_get_list("org", limit, cursor_arg)
+            .await
+            .unwrap();
+        assert_eq!(response.status, Some(200));
+        assert_eq!(response.request_id.as_deref(), Some("req-page"));
+        assert_eq!(response.result, Some(vec![]));
+        assert_eq!(response.error, None);
+        assert_eq!(response.limit, Some(25));
+        assert_eq!(response.total_count, Some(100));
+        assert_eq!(response.next_cursor.as_deref(), Some(cursor));
+    }
+    let requests = server.received_requests().await.unwrap();
+    let queries: Vec<Vec<(String, String)>> = requests
+        .iter()
+        .map(|request| request.url.query_pairs().into_owned().collect())
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            vec![],
+            vec![("limit".into(), "25".into())],
+            vec![("cursor".into(), cursor.into())],
+            vec![
+                ("limit".into(), "25".into()),
+                ("cursor".into(), cursor.into())
+            ],
+        ]
+    );
+}
+
+#[tokio::test]
+async fn list_api_keys_preserves_api_errors() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/keys"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403.0, "error": "forbidden", "requestId": "req-denied"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let error = client
+        .openapi_key_get_list("org", Some(25), Some("cursor"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, clickhouse_cloud_api::Error::Api { status: 403, message } if message == "forbidden")
+    );
 }
 
 #[tokio::test]

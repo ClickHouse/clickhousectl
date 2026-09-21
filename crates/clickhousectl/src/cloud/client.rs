@@ -916,6 +916,7 @@ mod tests {
             request_id: None,
             result: Some(vec!["hello".to_string()]),
             error: None,
+            ..Default::default()
         };
         let result = CloudClient::unwrap_response(response).unwrap();
         assert_eq!(result, vec!["hello".to_string()]);
@@ -929,6 +930,7 @@ mod tests {
                 request_id: None,
                 result: None,
                 error: None,
+                ..Default::default()
             };
         let err = CloudClient::unwrap_response(response).unwrap_err();
         assert_eq!(err.message, "Empty response from API");
