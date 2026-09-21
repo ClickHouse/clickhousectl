@@ -638,12 +638,14 @@ pub enum PrivateEndpointCommands {
 pub enum ServiceProfileCommands {
     /// List available service profiles
     List {
-        /// Region ID, e.g. us-east-1, eu-west-1, us-central1
-        #[arg(long)]
-        region: String,
+        /// Region ID (required without --byoc-id)
+        #[arg(long, required_unless_present = "byoc_id")]
+        region: Option<String>,
 
-        /// BYOC infrastructure ID
-        #[arg(long)]
+        /// BYOC infrastructure ID (required without --region)
+        ///
+        /// Cloud validates any supplied region against this infrastructure.
+        #[arg(long, required_unless_present = "region")]
         byoc_id: Option<String>,
     },
 }
@@ -904,7 +906,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
         }
         ServiceCommands::Profile { command } => match command {
             ServiceProfileCommands::List { region, byoc_id } => {
-                service_profile_list(client, &region, byoc_id.as_deref(), json).await
+                service_profile_list(client, region.as_deref(), byoc_id.as_deref(), json).await
             }
         },
         ServiceCommands::Settings { command } => match command {
@@ -1675,7 +1677,7 @@ async fn upgrade_window_delete(
 
 async fn service_profile_list(
     client: &CloudClient,
-    region_id: &str,
+    region_id: Option<&str>,
     byoc_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
@@ -2613,7 +2615,7 @@ async fn validate_dynamic_byoc_profile(
         .ok_or_else(|| CloudError::new("dynamic profiles require --byoc-id"))?;
     let region = request.region.to_string();
     let profiles = client
-        .list_service_profiles(org_id, &region, Some(byoc_id))
+        .list_service_profiles(org_id, Some(&region), Some(byoc_id))
         .await?;
     let profile = profiles
         .iter()
@@ -4291,7 +4293,7 @@ impl CloudClient {
     pub async fn list_service_profiles(
         &self,
         org_id: &str,
-        region_id: &str,
+        region_id: Option<&str>,
         byoc_id: Option<&str>,
     ) -> crate::cloud::client::Result<Vec<ServiceProfile>> {
         let response = self
@@ -5043,32 +5045,33 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_profile_list_flags_and_requires_region() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "profile",
-            "list",
-            "--region",
-            "eu-west-1",
-            "--byoc-id",
-            "byoc-1",
-            "--org-id",
-            "org-1",
-        ]);
-        let ServiceCommands::Profile {
-            command: ServiceProfileCommands::List { region, byoc_id },
-        } = command
-        else {
-            panic!("expected service profile list");
-        };
-        assert_eq!(region, "eu-west-1");
-        assert_eq!(byoc_id.as_deref(), Some("byoc-1"));
+    fn parses_service_profile_list_region_or_byoc_flags() {
+        for (flags, expected_region, expected_byoc) in [
+            (vec!["--region", "eu-west-1"], Some("eu-west-1"), None),
+            (vec!["--byoc-id", "byoc-1"], None, Some("byoc-1")),
+            (
+                vec!["--region", "eu-west-1", "--byoc-id", "byoc-1"],
+                Some("eu-west-1"),
+                Some("byoc-1"),
+            ),
+        ] {
+            let mut args = vec!["clickhousectl", "cloud", "service", "profile", "list"];
+            args.extend(flags);
+            let command = parse_service(&args);
+            assert!(!command.is_write());
+            let ServiceCommands::Profile {
+                command: ServiceProfileCommands::List { region, byoc_id },
+            } = command
+            else {
+                panic!("expected service profile list");
+            };
+            assert_eq!(region.as_deref(), expected_region);
+            assert_eq!(byoc_id.as_deref(), expected_byoc);
+        }
 
         let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "profile", "list"])
             .err()
-            .expect("missing --region should fail");
+            .expect("missing both region and BYOC should fail");
         assert_eq!(
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument

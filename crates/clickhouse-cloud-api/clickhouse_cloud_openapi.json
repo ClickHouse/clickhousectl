@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1141075",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1152576",
       "email": "support@clickhouse.com"
     }
   },
@@ -674,6 +674,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "Role Management"
         ]
@@ -900,6 +907,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "Role Management"
         ]
@@ -1386,7 +1400,7 @@
     "/v1/organizations/{organizationId}/serviceProfiles": {
       "get": {
         "summary": "List available service profiles",
-        "description": "Returns the custom instance profiles the organization can use in a region. Pass byoc_id to list the profiles configured for a BYOC infrastructure. The list is empty when the organization tier does not include custom hardware profiles.",
+        "description": "Returns the custom instance profiles the organization can use in a region. Pass byoc_id to list the profiles configured for a BYOC infrastructure; the region is then taken from the infrastructure and region_id may be omitted. The list is empty when the organization tier does not include custom hardware profiles.",
         "operationId": "serviceProfilesList",
         "parameters": [
           {
@@ -1402,11 +1416,10 @@
           {
             "in": "query",
             "name": "region_id",
-            "description": "Region to list profiles for, e.g. us-east-1.",
+            "description": "Region to list profiles for, e.g. us-east-1. Required unless byoc_id is set; when both are set it must match the BYOC infrastructure's region.",
             "schema": {
               "type": "string"
-            },
-            "required": true
+            }
           },
           {
             "in": "query",
@@ -1978,6 +1991,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -3060,6 +3080,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Service"
         ]
@@ -5032,6 +5059,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-backups"
+            ]
+          }
+        ],
         "tags": [
           "Snapshot"
         ],
@@ -5159,6 +5193,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-backups"
+            ]
+          }
+        ],
         "tags": [
           "Snapshot"
         ],
@@ -6175,8 +6216,8 @@
     },
     "/v1/organizations/{organizationId}/keys": {
       "get": {
-        "summary": "Get list of all keys",
-        "description": "Returns a list of all keys in the organization.",
+        "summary": "Get list of keys",
+        "description": "Returns a list of keys in the organization, ordered by creation date, oldest first. Results are capped at `limit` (default and maximum 250) per page. Every response carries `limit`, `totalCount` and `nextCursor`; pass `nextCursor` as the `cursor` query parameter to fetch the next page, repeating until it is null.",
         "operationId": "openapiKeyGetList",
         "parameters": [
           {
@@ -6187,6 +6228,25 @@
             "schema": {
               "type": "string",
               "format": "uuid"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "description": "Maximum number of results to return.",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 250,
+              "default": 250
+            }
+          },
+          {
+            "in": "query",
+            "name": "cursor",
+            "description": "Opaque cursor from a previous response's `nextCursor`, marking where to resume the list.",
+            "schema": {
+              "type": "string"
             }
           }
         ],
@@ -6213,6 +6273,21 @@
                       "items": {
                         "$ref": "#/components/schemas/ApiKey"
                       }
+                    },
+                    "limit": {
+                      "type": "integer",
+                      "description": "Maximum number of results returned in this page."
+                    },
+                    "totalCount": {
+                      "type": "integer",
+                      "description": "Total number of results across all pages."
+                    },
+                    "nextCursor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "description": "Cursor for the next page, to be sent as the `cursor` query parameter. Null on the last page."
                     }
                   }
                 }
@@ -6630,6 +6705,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view-api-keys"
+            ]
+          }
+        ],
         "tags": [
           "API keys"
         ]
@@ -6736,6 +6818,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view-api-keys"
+            ]
+          }
+        ],
         "tags": [
           "API keys"
         ]
@@ -7782,6 +7871,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view-activities"
+            ]
+          }
+        ],
         "tags": [
           "Organization"
         ]
@@ -7892,6 +7988,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view-activities"
+            ]
+          }
+        ],
         "tags": [
           "Organization"
         ]
@@ -8394,6 +8497,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -8512,6 +8622,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -8623,6 +8740,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ],
@@ -8750,6 +8874,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -8878,6 +9009,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -8994,6 +9132,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -9115,6 +9260,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -9243,6 +9395,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -9363,6 +9522,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ],
@@ -9499,6 +9665,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -9629,6 +9802,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -9740,6 +9920,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -9858,6 +10045,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -9972,6 +10166,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -10229,6 +10430,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -10771,6 +10979,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -11022,6 +11237,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -11279,6 +11501,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -11673,6 +11902,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -12082,6 +12318,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -12603,6 +12846,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -12727,6 +12977,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -12853,6 +13110,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -12986,6 +13250,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -13107,6 +13378,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -13248,6 +13526,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -13505,6 +13790,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickstack-api"
+            ]
+          }
+        ],
         "tags": [
           "ClickStack"
         ],
@@ -13889,6 +14181,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:create-service"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -13997,6 +14296,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -14089,6 +14395,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "tags": [
           "Prometheus"
         ],
@@ -14206,6 +14519,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -14318,6 +14638,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -14442,6 +14769,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -14552,6 +14886,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -14678,6 +15019,14 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage",
+              "control-plane:organization:create-service"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -14804,6 +15153,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -14930,6 +15286,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -15056,6 +15419,14 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage",
+              "control-plane:organization:create-service"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -15173,6 +15544,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -15297,6 +15675,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -15421,6 +15806,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:manage"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -15676,6 +16068,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -15906,6 +16305,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -16076,6 +16482,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -16266,6 +16679,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:postgres-service:view"
+            ]
+          }
+        ],
         "tags": [
           "Postgres"
         ],
@@ -16509,6 +16929,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "Organization"
         ]
@@ -16617,6 +17044,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "Organization"
         ]
@@ -16735,6 +17169,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "tags": [
           "Organization"
         ]
@@ -16849,6 +17290,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -16967,6 +17415,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -17088,6 +17543,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -17204,6 +17666,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -17332,6 +17801,13 @@
             }
           }
         },
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-clickpipes"
+            ]
+          }
+        ],
         "tags": [
           "ClickPipes"
         ]
@@ -17344,6 +17820,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Creates a Query API endpoint.",
         "tags": [
           "Query API endpoints"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-query-api-endpoints"
+            ]
+          }
         ],
         "parameters": [
           {
@@ -17559,6 +18042,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns all active Query API endpoints for the service.",
         "tags": [
           "Query API endpoints"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-query-api-endpoints"
+            ]
+          }
         ],
         "parameters": [
           {
@@ -17788,6 +18278,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Deletes a Query API endpoint.",
         "tags": [
           "Query API endpoints"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-query-api-endpoints"
+            ]
+          }
         ],
         "parameters": [
           {
@@ -18073,6 +18570,13 @@
         "tags": [
           "Query API endpoints"
         ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:view-query-api-endpoints"
+            ]
+          }
+        ],
         "parameters": [
           {
             "in": "path",
@@ -18327,6 +18831,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Updates a Query API endpoint.",
         "tags": [
           "Query API endpoints"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:service:manage-query-api-endpoints"
+            ]
+          }
         ],
         "parameters": [
           {
@@ -18589,6 +19100,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Attaches one UDF version to a service, replacing the current version when necessary. When version is omitted, the latest ready version is attached.",
         "tags": [
           "UDF"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
         ],
         "parameters": [
           {
@@ -18926,6 +19444,13 @@
         "tags": [
           "UDF"
         ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "parameters": [
           {
             "in": "path",
@@ -19146,6 +19671,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Detaches a UDF from a service.",
         "tags": [
           "UDF"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
         ],
         "parameters": [
           {
@@ -19399,6 +19931,13 @@
         "tags": [
           "UDF"
         ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "parameters": [
           {
             "in": "path",
@@ -19630,6 +20169,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Creates a new UDF. See [User-defined functions in Cloud](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions).",
         "tags": [
           "UDF"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
         ],
         "parameters": [
           {
@@ -19904,6 +20450,13 @@
         "tags": [
           "UDF"
         ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "parameters": [
           {
             "in": "path",
@@ -20091,6 +20644,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Deletes every version of a UDF and detaches it from all services. Removal from services completes asynchronously.",
         "tags": [
           "UDF"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
         ],
         "parameters": [
           {
@@ -20330,6 +20890,13 @@
         "tags": [
           "UDF"
         ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "parameters": [
           {
             "in": "path",
@@ -20541,6 +21108,13 @@
         "tags": [
           "UDF"
         ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
+        ],
         "parameters": [
           {
             "in": "path",
@@ -20707,6 +21281,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Consumes a source archive, assigns a version, and starts the UDF build. Optional configuration fields omitted from the request use the defaults documented in the request schema; values are not inherited from the previous version. Retry by requesting a new upload URL and re-uploading.",
         "tags": [
           "UDF"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
         ],
         "parameters": [
           {
@@ -21025,6 +21606,13 @@
         "tags": [
           "UDF"
         ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:view"
+            ]
+          }
+        ],
         "parameters": [
           {
             "in": "path",
@@ -21256,6 +21844,13 @@
         "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Deletes a UDF version. The UDF must not be attached to any services.",
         "tags": [
           "UDF"
+        ],
+        "security": [
+          {
+            "basicAuth": [
+              "control-plane:organization:manage"
+            ]
+          }
         ],
         "parameters": [
           {

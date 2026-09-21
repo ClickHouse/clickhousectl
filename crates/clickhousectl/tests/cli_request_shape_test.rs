@@ -22935,6 +22935,104 @@ async fn service_profile_list_omits_byoc_and_accepts_empty_oauth_result() {
 }
 
 #[tokio::test]
+async fn service_profile_list_byoc_only_sends_no_region() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([{"profile": "custom-byoc", "memoryGi": 16.0}]);
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .and(query_param("byoc_id", "byoc-1"))
+        .and(wiremock::matchers::query_param_is_missing("region_id"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "profile",
+            "list",
+            "--byoc-id",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url.query_pairs().collect::<Vec<_>>(),
+        vec![("byoc_id".into(), "byoc-1".into())]
+    );
+}
+
+#[tokio::test]
+async fn service_profile_list_requires_region_or_byoc_before_credentials_or_network() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    for flags in [vec![], vec!["--region"], vec!["--byoc-id"]] {
+        let output = Command::new(clickhousectl_binary())
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", project.path())
+            .current_dir(project.path())
+            .args(["cloud", "--url", &mock.uri(), "service", "profile", "list"])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_profile_list_leaves_region_byoc_validation_to_cloud() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .and(query_param("region_id", "eu-west-1"))
+        .and(query_param("byoc_id", "byoc-1"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(
+            serde_json::json!({"error": "region does not match BYOC infrastructure"}),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "profile",
+            "list",
+            "--region",
+            "eu-west-1",
+            "--byoc-id",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let error = cloud_runtime_error(&output);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("region does not match BYOC infrastructure")
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.query_pairs().count(), 2);
+}
+
+#[tokio::test]
 async fn service_profile_list_renders_sparse_unknown_profiles() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))

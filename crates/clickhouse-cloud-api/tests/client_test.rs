@@ -4943,21 +4943,27 @@ async fn credit_balances_get_includes_trial_and_prepaid_balances() {
 }
 
 #[tokio::test]
-async fn service_profiles_list_encodes_region_and_optional_byoc() {
+async fn service_profiles_list_encodes_optional_region_and_byoc() {
     let (server, client) = setup().await;
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org/serviceProfiles"))
         .and(basic_auth("key", "secret"))
-        .and(query_param("region_id", "us-east-1"))
         .respond_with(ok_json(
             serde_json::json!([{"profile": "v1-standard-byoc-4", "cpuCores": 4, "memoryGi": 16}]),
         ))
-        .expect(2)
+        .expect(4)
         .mount(&server)
         .await;
-    for byoc in [None, Some("byoc +/id")] {
+    let region = "region +/=&?雪";
+    let byoc = "byoc +/=&?雪";
+    for (region_id, byoc_id) in [
+        (None, None),
+        (Some(region), None),
+        (None, Some(byoc)),
+        (Some(region), Some(byoc)),
+    ] {
         let result = client
-            .service_profiles_list("org", "us-east-1", byoc)
+            .service_profiles_list("org", region_id, byoc_id)
             .await
             .unwrap()
             .result
@@ -4967,17 +4973,21 @@ async fn service_profiles_list_encodes_region_and_optional_byoc() {
         assert_eq!(result[0].memory_gi, Some(16.0));
     }
     let requests = server.received_requests().await.unwrap();
-    assert!(
-        !requests[0]
-            .url
-            .query_pairs()
-            .any(|(key, _)| key == "byoc_id")
-    );
-    assert!(
-        requests[1]
-            .url
-            .query_pairs()
-            .any(|(key, value)| key == "byoc_id" && value == "byoc +/id")
+    let queries: Vec<Vec<(String, String)>> = requests
+        .iter()
+        .map(|request| request.url.query_pairs().into_owned().collect())
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            vec![],
+            vec![("region_id".into(), region.into())],
+            vec![("byoc_id".into(), byoc.into())],
+            vec![
+                ("region_id".into(), region.into()),
+                ("byoc_id".into(), byoc.into())
+            ],
+        ]
     );
 }
 
@@ -5019,7 +5029,7 @@ async fn new_discovery_operations_preserve_api_errors() {
     let errors = [
         client.credit_balances_get("org").await.unwrap_err(),
         client
-            .service_profiles_list("org", "region", None)
+            .service_profiles_list("org", Some("region"), None)
             .await
             .unwrap_err(),
         client

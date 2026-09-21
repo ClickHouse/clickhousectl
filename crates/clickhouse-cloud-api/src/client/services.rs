@@ -4,15 +4,22 @@ use crate::models::*;
 
 impl Client {
     /// List available custom service profiles.
+    ///
+    /// Supply `region_id` unless `byoc_id` selects an infrastructure. When both
+    /// are supplied, the region must match the infrastructure's region.
     pub async fn service_profiles_list(
         &self,
         organization_id: &str,
-        region_id: &str,
+        region_id: Option<&str>,
         byoc_id: Option<&str>,
     ) -> Result<ApiResponse<Vec<ServiceProfile>>, Error> {
         let path = format!("/v1/organizations/{organization_id}/serviceProfiles");
         let req = self.request(reqwest::Method::GET, &path);
-        let req = req.query(&[("region_id", region_id)]);
+        let req = if let Some(region_id) = region_id {
+            req.query(&[("region_id", region_id)])
+        } else {
+            req
+        };
         let req = if let Some(byoc_id) = byoc_id {
             req.query(&[("byoc_id", byoc_id)])
         } else {
