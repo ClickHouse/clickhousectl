@@ -101,7 +101,7 @@ def run_analyzer(spec: dict) -> dict:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError("OpenAPI analyzer emitted invalid JSON") from error
-    if report.get("schema_version") != 9:
+    if report.get("schema_version") != 10:
         raise RuntimeError(
             f"Unsupported DriftReport schema version: {report.get('schema_version')!r}"
         )
@@ -506,6 +506,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         "|--------|-------|",
         f"| Missing client methods | {counts['missing_client_method']} |",
         f"| Extra client methods | {counts['extra_client_method']} |",
+        f"| Permission and operation metadata changes | {total('unsupported_operation_security', 'snapshot_changed_permissions', 'missing_operation_metadata', 'extra_operation_metadata', 'invalid_operation_metadata', 'operation_metadata_mismatch', 'operation_permissions_mismatch', 'operation_catalog_mismatch')} |",
         f"| Missing operation parameters | {counts['missing_operation_parameter']} |",
         f"| Operation parameter mismatches | {counts['operation_parameter_mismatch']} |",
         f"| Unsupported success response schemas | {counts['unsupported_response_schema']} |",
@@ -556,7 +557,20 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
                 ]
             lines.append("")
 
+    permission_kinds = {
+        "unsupported_operation_security", "snapshot_changed_permissions",
+        "missing_operation_metadata", "extra_operation_metadata", "invalid_operation_metadata",
+        "operation_metadata_mismatch", "operation_permissions_mismatch", "operation_catalog_mismatch",
+    }
     simple_sections = [
+        ("unsupported_operation_security", "Unsupported Operation Security Requirements"),
+        ("snapshot_changed_permissions", "Changed Permission Requirements Since Snapshot"),
+        ("missing_operation_metadata", "Missing Operation Descriptors"),
+        ("extra_operation_metadata", "Stale Operation Descriptors"),
+        ("invalid_operation_metadata", "Invalid Operation Descriptors"),
+        ("operation_metadata_mismatch", "Operation Descriptor Identity Mismatches"),
+        ("operation_permissions_mismatch", "Operation Descriptor Permission Mismatches"),
+        ("operation_catalog_mismatch", "Operation Catalog Mismatches"),
         ("extra_client_method", "Extra Client Methods"),
         ("missing_operation_parameter", "Missing Operation Parameters"),
         ("operation_parameter_mismatch", "Operation Parameter Mismatches"),
@@ -599,6 +613,22 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
                 for key, label in [("previous_contract", "Snapshot contract"), ("current_contract", "Live contract"), ("previous_spec_pointer", "Snapshot location")]:
                     if key in details:
                         lines.append(f"  - {label}: `{details[key]}`")
+            if kind in permission_kinds:
+                details = finding.get("details", {})
+                for key, label in [
+                    ("operation_id", "Operation"),
+                    ("previous_requirement", "Previous requirement"),
+                    ("current_requirement", "Current requirement"),
+                    ("previous_permissions", "Previous permissions"),
+                    ("current_permissions", "Current permissions"),
+                    ("added_permissions", "Added permissions"),
+                    ("removed_permissions", "Removed permissions"),
+                    ("previous_spec_pointer", "Snapshot location"),
+                ]:
+                    if key in details:
+                        lines.append(f"  - {label}: `{details[key]}`")
+                if finding.get("rust_item"):
+                    lines.append(f"  - Rust metadata: `{finding['rust_item']}`")
             if kind == "acknowledged_enum_constraint_changed":
                 details = finding.get("details", {})
                 lines.append(

@@ -100,6 +100,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/src/client/udfs.rs",
                 "crates/clickhouse-cloud-api/src/convert/clickstack.rs",
                 "crates/clickhouse-cloud-api/src/meta.rs",
+                "crates/clickhouse-cloud-api/src/meta/operations.rs",
                 "crates/clickhouse-cloud-api/src/models/clickstack.rs",
                 "crates/clickhouse-cloud-api/src/models/clickstack_enums.rs",
                 "crates/clickhouse-cloud-api/src/models/quotas.rs",

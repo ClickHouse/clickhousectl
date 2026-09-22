@@ -15,6 +15,7 @@ pub(crate) struct OperationInfo {
     pub(crate) method: String,
     pub(crate) path: String,
     pub(crate) summary: String,
+    pub(crate) security: crate::permissions::SecurityInfo,
     /// Effective parameters, with operation definitions overriding path definitions.
     pub(crate) parameters: BTreeMap<(String, String), ParameterInfo>,
 }
@@ -284,9 +285,15 @@ impl OpenApiInventory {
                     self.beta_operations
                         .insert(rust_name.clone(), pointer.clone());
                 }
+                if self.operations.contains_key(&rust_name) {
+                    return Err(format!(
+                        "duplicate operation ID or Rust method mapping: {operation_id} -> {rust_name}"
+                    ));
+                }
                 self.operations.insert(
                     rust_name,
                     OperationInfo {
+                        security: crate::permissions::resolve_security(spec, operation, &pointer),
                         pointer,
                         operation_id: operation_id.to_string(),
                         method: method.to_ascii_uppercase(),

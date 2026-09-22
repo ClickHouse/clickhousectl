@@ -18,6 +18,28 @@ def generated_issue_body(body):
 
 
 class DriftScriptTests(unittest.TestCase):
+    def test_renders_permission_and_catalog_findings(self):
+        kinds = ["unsupported_operation_security", "snapshot_changed_permissions",
+                 "missing_operation_metadata", "extra_operation_metadata", "invalid_operation_metadata",
+                 "operation_metadata_mismatch", "operation_permissions_mismatch", "operation_catalog_mismatch"]
+        findings = [{"kind": kind, "message": kind, "spec_pointer": "/security",
+                     "rust_item": "meta::operations::INSTANCE_GET",
+                     "details": {"operation_id": "instanceGet",
+                                 "previous_requirement": '{"basicAuth":["before"]}',
+                                 "current_requirement": '{"basicAuth":["after"]}',
+                                 "previous_permissions": '["before"]',
+                                 "current_permissions": '["after"]',
+                                 "added_permissions": '["after"]',
+                                 "removed_permissions": '["before"]'}} for kind in kinds]
+        body = drift.build_issue_body({"schema_version": 10, "findings": findings}, {})
+        self.assertIn("| Permission and operation metadata changes | 8 |", body)
+        for finding in findings:
+            self.assertIn(f"- `/security` — {finding['message']}", body)
+        self.assertIn('Previous requirement: `{"basicAuth":["before"]}`', body)
+        self.assertIn('Added permissions: `["after"]`', body)
+        self.assertIn('Removed permissions: `["before"]`', body)
+        self.assertIn("Rust metadata: `meta::operations::INSTANCE_GET`", body)
+
     def test_renders_operation_contract_and_response_findings(self):
         kinds = ["missing_operation_parameter", "operation_parameter_mismatch",
                  "unsupported_response_schema", "snapshot_added_parameter",
@@ -27,7 +49,7 @@ class DriftScriptTests(unittest.TestCase):
                                  "current_contract": '{"required":false}',
                                  "previous_spec_pointer": "/components/parameters/Region"}}
                     for kind in kinds]
-        body = drift.build_issue_body({"schema_version": 9, "findings": findings}, {})
+        body = drift.build_issue_body({"schema_version": 10, "findings": findings}, {})
         for finding in findings:
             self.assertIn(f"- `{finding['spec_pointer']}` — {finding['message']}", body)
         self.assertIn("| Missing operation parameters | 1 |", body)
@@ -51,7 +73,7 @@ class DriftScriptTests(unittest.TestCase):
                 ("partial_required_schema", "Widget"),
             ]
         ]
-        report = {"schema_version": 9, "findings": findings}
+        report = {"schema_version": 10, "findings": findings}
         self.assertEqual(drift.findings_by_kind(report)["stale_exemption"], findings)
         body = drift.build_issue_body(report, {})
         self.assertIn("| Stale exemptions | 2 |", body)
@@ -62,7 +84,7 @@ class DriftScriptTests(unittest.TestCase):
 
     def test_groups_findings_and_renders_spec_snippets(self):
         report = {
-            "schema_version": 9,
+            "schema_version": 10,
             "findings": [
                 {
                     "kind": "missing_client_method",
@@ -115,7 +137,7 @@ class DriftScriptTests(unittest.TestCase):
         self.assertIn("## Enum VALUES Const Mismatches", body)
 
     def test_renders_additional_properties_mismatches(self):
-        report = {"schema_version": 9, "findings": [{
+        report = {"schema_version": 10, "findings": [{
             "kind": "additional_properties_mismatch",
             "message": "PgBouncerConfig must preserve additionalProperties in a typed string-keyed map",
             "spec_pointer": "/components/schemas/pgBouncerConfig/additionalProperties",
@@ -135,7 +157,7 @@ class DriftScriptTests(unittest.TestCase):
         ]:
             with self.subTest(previous=previous, current=current):
                 report = {
-                    "schema_version": 9,
+                    "schema_version": 10,
                     "findings": [{
                         "kind": "acknowledged_enum_constraint_changed",
                         "message": "acknowledged enum values differ from the vendored snapshot",
@@ -464,8 +486,8 @@ class DriftScriptTests(unittest.TestCase):
 
     def test_dry_run_never_queries_or_mutates_github(self):
         reports = [
-            {"schema_version": 9, "findings": []},
-            {"schema_version": 9, "findings": [{"kind": "missing_struct_field"}]},
+            {"schema_version": 10, "findings": []},
+            {"schema_version": 10, "findings": [{"kind": "missing_struct_field"}]},
         ]
         for report in reports:
             with self.subTest(findings=len(report["findings"])):
@@ -482,7 +504,7 @@ class DriftScriptTests(unittest.TestCase):
                 sync_issue.assert_not_called()
 
     def test_main_exits_nonzero_when_synchronization_fails(self):
-        report = {"schema_version": 9, "findings": []}
+        report = {"schema_version": 10, "findings": []}
         with (
             mock.patch.object(sys, "argv", [str(SCRIPT)]),
             mock.patch.object(drift, "fetch_live_spec", return_value={}),
@@ -686,7 +708,7 @@ class DriftScriptTests(unittest.TestCase):
     def test_analyzer_receives_the_rust_source_tree(self, run):
         run.return_value = SimpleNamespace(
             returncode=0,
-            stdout=json.dumps({"schema_version": 9, "findings": []}),
+            stdout=json.dumps({"schema_version": 10, "findings": []}),
             stderr="",
         )
 
