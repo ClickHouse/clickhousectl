@@ -2,12 +2,20 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const REPORT_SCHEMA_VERSION: u32 = 9;
+pub const REPORT_SCHEMA_VERSION: u32 = 10;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingKind {
     MissingClientMethod,
+    UnsupportedOperationSecurity,
+    SnapshotChangedPermissions,
+    MissingOperationMetadata,
+    ExtraOperationMetadata,
+    InvalidOperationMetadata,
+    OperationMetadataMismatch,
+    OperationPermissionsMismatch,
+    OperationCatalogMismatch,
     ExtraClientMethod,
     MissingModelType,
     MissingSchemaDefinition,
