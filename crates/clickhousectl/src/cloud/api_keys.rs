@@ -9,8 +9,9 @@ use clap::{Subcommand, builder::PossibleValuesParser};
 #[cfg(test)]
 use clickhouse_cloud_api::models::IpAccessListEntry;
 use clickhouse_cloud_api::models::{
-    ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
+    ApiKey, ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
 };
+use std::{borrow::Cow, collections::HashSet};
 use tabled::{Table, Tabled, settings::Style};
 
 const API_KEY_STATES: &[&str] = &["enabled", "disabled"];
@@ -18,7 +19,24 @@ const API_KEY_STATES: &[&str] = &["enabled", "disabled"];
 #[derive(Subcommand)]
 pub enum KeyCommands {
     /// List API keys
-    List,
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Returns one page by default; use --all to fetch every page.
+  JSON pages expose result, nextCursor, limit, and totalCount when provided.
+  Name lookup for get, update, and delete always searches every page.")]
+    List {
+        /// Maximum keys per page (1–250); omit for the server default
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=250))]
+        limit: Option<i64>,
+
+        /// Opaque continuation token; conflicts with --all
+        #[arg(long, allow_hyphen_values = true, conflicts_with = "all")]
+        cursor: Option<String>,
+
+        /// Fetch every page; --limit controls each page size
+        #[arg(long, conflicts_with = "cursor")]
+        all: bool,
+    },
 
     /// Create an API key
     #[command(after_help = "\
@@ -121,7 +139,7 @@ CONTEXT FOR AGENTS:
 impl KeyCommands {
     pub fn is_write(&self) -> bool {
         match self {
-            KeyCommands::List => false,
+            KeyCommands::List { .. } => false,
             KeyCommands::Get { .. } => false,
             KeyCommands::Create { .. } => true,
             KeyCommands::Update { .. } => true,
@@ -132,7 +150,9 @@ impl KeyCommands {
 
 pub async fn run(client: &CloudClient, command: KeyCommands, json: bool) -> CloudResult<()> {
     match command {
-        KeyCommands::List => key_list(client, json).await,
+        KeyCommands::List { limit, cursor, all } => {
+            key_list(client, limit, cursor.as_deref(), all, json).await
+        }
         KeyCommands::Create {
             name,
             role_id,
@@ -355,43 +375,107 @@ fn build_api_key_update_request(options: &KeyUpdateOptions) -> CloudResult<ApiKe
     })
 }
 
-async fn key_list(client: &CloudClient, json: bool) -> CloudResult<()> {
-    let org_id = resolve_org_id(client).await?;
-    let keys = client.list_api_keys(&org_id).await?;
+/// CLI page output retains continuation metadata while requiring a valid result.
+#[derive(serde::Serialize)]
+struct KeyPage {
+    result: Vec<ApiKey>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<i64>,
+    #[serde(rename = "totalCount", skip_serializing_if = "Option::is_none")]
+    total_count: Option<i64>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
 
-    if json {
-        println!("{}", serde_json::to_string_pretty(&keys)?);
+async fn key_list(
+    client: &CloudClient,
+    limit: Option<i64>,
+    cursor: Option<&str>,
+    all: bool,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let page = if all {
+        KeyPage {
+            result: client.list_api_keys(&org_id, limit).await?,
+            limit: None,
+            total_count: None,
+            next_cursor: None,
+        }
     } else {
-        if keys.is_empty() {
-            println!("No API keys found");
-            return Ok(());
+        client.list_api_keys_page(&org_id, limit, cursor).await?
+    };
+    if json {
+        if all {
+            println!("{}", serde_json::to_string_pretty(&page.result)?);
+        } else {
+            println!("{}", serde_json::to_string_pretty(&page)?);
         }
-        #[derive(Tabled)]
-        struct Row {
-            #[tabled(rename = "Name")]
-            name: String,
-            #[tabled(rename = "ID")]
-            id: String,
-            #[tabled(rename = "State")]
-            state: String,
-            #[tabled(rename = "Expires")]
-            expires: String,
+    } else {
+        print_key_table(page.result, all);
+        if let Some(cursor) = page.next_cursor {
+            if let (Some(cursor), Some(org)) = (
+                quote_shell_argument_for_display(&cursor),
+                quote_shell_argument_for_display(&org_id),
+            ) {
+                // Equals signs keep tokens beginning with '-' attached to their flags.
+                let limit = limit
+                    .map(|value| format!(" --limit={value}"))
+                    .unwrap_or_default();
+                println!(
+                    "More API keys are available. Rerun this command with --org-id={org}{limit} --cursor={cursor} to continue, or use --all."
+                );
+            } else {
+                println!(
+                    "More API keys are available. Use --json to read nextCursor and pass it with --cursor, or use --all."
+                );
+            }
         }
-        let rows: Vec<Row> = keys
-            .into_iter()
-            .map(|key| Row {
-                name: or_absent(key.name.as_deref()),
-                id: or_absent(key.id),
-                state: or_absent(key.state.as_ref()),
-                expires: key
-                    .expire_at
-                    .map(|time| time.to_rfc3339())
-                    .unwrap_or_else(|| "never".into()),
-            })
-            .collect();
-        println!("{}", Table::new(rows).with(Style::markdown()));
     }
     Ok(())
+}
+
+fn quote_shell_argument_for_display(value: &str) -> Option<Cow<'_, str>> {
+    // Control characters are unsafe to paste into an interactive shell, even when quoted.
+    if value.chars().any(char::is_control) {
+        return None;
+    }
+    shlex::try_quote(value).ok()
+}
+
+fn print_key_table(keys: Vec<ApiKey>, all: bool) {
+    if keys.is_empty() {
+        if all {
+            println!("No API keys found");
+        } else {
+            println!("No API keys found on this page");
+        }
+        return;
+    }
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Name")]
+        name: String,
+        #[tabled(rename = "ID")]
+        id: String,
+        #[tabled(rename = "State")]
+        state: String,
+        #[tabled(rename = "Expires")]
+        expires: String,
+    }
+    let rows: Vec<Row> = keys
+        .into_iter()
+        .map(|key| Row {
+            name: or_absent(key.name.as_deref()),
+            id: or_absent(key.id),
+            state: or_absent(key.state.as_ref()),
+            expires: key
+                .expire_at
+                .map(|time| time.to_rfc3339())
+                .unwrap_or_else(|| "never".into()),
+        })
+        .collect();
+    println!("{}", Table::new(rows).with(Style::markdown()));
 }
 
 #[derive(Debug)]
@@ -608,16 +692,52 @@ pub(crate) async fn cleanup_service_query_key(
 }
 
 impl CloudClient {
+    async fn list_api_keys_page(
+        &self,
+        org_id: &str,
+        limit: Option<i64>,
+        cursor: Option<&str>,
+    ) -> CloudResult<KeyPage> {
+        let mut response = self
+            .api()
+            .openapi_key_get_list(org_id, limit, cursor)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        let limit = response.limit;
+        let total_count = response.total_count;
+        let next_cursor = response.next_cursor.take();
+        Ok(KeyPage {
+            result: Self::unwrap_response(response)?,
+            limit,
+            total_count,
+            next_cursor,
+        })
+    }
+
+    /// Fetch all pages for explicit --all listing and exhaustive name resolution.
     pub async fn list_api_keys(
         &self,
         org_id: &str,
-    ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::ApiKey>> {
-        let response = self
-            .api()
-            .openapi_key_get_list(org_id)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
-        Self::unwrap_response(response)
+        limit: Option<i64>,
+    ) -> CloudResult<Vec<ApiKey>> {
+        let mut keys = Vec::new();
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+        loop {
+            let page = self
+                .list_api_keys_page(org_id, limit, cursor.as_deref())
+                .await?;
+            keys.extend(page.result);
+            match page.next_cursor {
+                None => return Ok(keys),
+                Some(next) => {
+                    if !seen_cursors.insert(next.clone()) {
+                        return Err(CloudError::new("API key list returned a repeated cursor"));
+                    }
+                    cursor = Some(next);
+                }
+            }
+        }
     }
 
     pub async fn create_api_key(
@@ -697,6 +817,72 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
+
+    #[test]
+    fn key_list_pagination_parses_defaults_bounds_and_opaque_cursors() {
+        let KeyCommands::List { limit, cursor, all } =
+            parse_key(&["clickhousectl", "cloud", "key", "list"])
+        else {
+            panic!("expected list")
+        };
+        assert_eq!(limit, None);
+        assert_eq!(cursor, None);
+        assert!(!all);
+        for size in ["1", "250"] {
+            for token in ["", "-opaque +/=&?雪"] {
+                let KeyCommands::List { limit, cursor, all } = parse_key(&[
+                    "clickhousectl",
+                    "cloud",
+                    "key",
+                    "list",
+                    "--limit",
+                    size,
+                    "--cursor",
+                    token,
+                ]) else {
+                    panic!("expected list")
+                };
+                assert_eq!(limit, Some(size.parse().unwrap()));
+                assert_eq!(cursor.as_deref(), Some(token));
+                assert!(!all);
+            }
+            let command = parse_key(&[
+                "clickhousectl",
+                "cloud",
+                "key",
+                "list",
+                "--all",
+                "--limit",
+                size,
+            ]);
+            assert!(matches!(
+                command,
+                KeyCommands::List {
+                    all: true,
+                    limit: Some(_),
+                    cursor: None
+                }
+            ));
+            assert!(!command.is_write());
+        }
+        for size in ["0", "251", "-1", "1.5", "many"] {
+            assert!(
+                Cli::try_parse_from(["clickhousectl", "cloud", "key", "list", "--limit", size])
+                    .is_err()
+            );
+        }
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "key",
+            "list",
+            "--all",
+            "--cursor=",
+        ])
+        .err()
+        .unwrap();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
 
     #[test]
     fn pre_hashed_credentials_require_all_three_fields() {

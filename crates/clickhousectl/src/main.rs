@@ -1,3 +1,6 @@
+#[macro_use]
+mod stdout;
+
 mod cli;
 mod cloud;
 mod dotenv;
@@ -69,7 +72,7 @@ async fn main() {
             let run_result = match validate_post_parse(&cli, &mut cmd) {
                 Ok(()) => run_parsed(cli, read_only_telemetry_status).await,
                 Err(e) => {
-                    let _ = e.print();
+                    stdout::record(e.print());
                     (e.exit_code(), false, false)
                 }
             };
@@ -89,11 +92,10 @@ async fn main() {
         }
         Err(e) => {
             // clap keeps its own formatting and colors; help/version print to
-            // stdout, usage errors to stderr. Print failures are swallowed
-            // like clap's own `Error::exit` swallows them: a broken pipe must
-            // not turn exit 2 into a panic (which would also bypass the
-            // telemetry tail below).
-            let _ = e.print();
+            // stdout, usage errors to stderr. A closed pipe is harmless;
+            // other output errors are handled by the common tail without
+            // replacing an established usage-error status.
+            stdout::record(e.print());
             match e.kind() {
                 // --version always hits the network to refresh the cache + timer,
                 // then prints the notice from the freshly-updated cache.
@@ -120,6 +122,17 @@ async fn main() {
     };
     let (exit_code, telemetry_invocation, defer_telemetry_notice, read_only_telemetry_status) =
         outcome;
+
+    // Help/version are printed by clap outside run_parsed. Finish their output
+    // too, preserving any established usage/command/child status.
+    let exit_code = match stdout::finish(Ok(())) {
+        Err(error) if exit_code == 0 => {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr(), "Error: {error}");
+            error.exit_code()
+        }
+        _ => exit_code,
+    };
 
     // Consent is evaluated here, after the command ran, so `telemetry disable`
     // silences its own event and `telemetry enable` sends one.
@@ -217,26 +230,30 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
         return Err(endpoint.error(ErrorKind::ArgumentConflict, message));
     }
 
-    // clap can require --iam-role for one auth value, but cannot express the
-    // inverse conflict, require the credential pair only for basic auth, or
-    // condition --replication-slot-name on another value.
-    let Some((source, message)) = args.clickpipe_create_validation_error() else {
-        return Ok(());
-    };
-    let create = cmd
+    // Source and request relationships that clap cannot express must be
+    // rejected before credentials or network access for both operations.
+    let (operation, source, message) =
+        if let Some((source, message)) = args.clickpipe_create_validation_error() {
+            ("create", source, message)
+        } else if let Some((source, message)) = args.clickpipe_schema_discover_validation_error() {
+            ("schema-discover", source, message)
+        } else {
+            return Ok(());
+        };
+    let operation_command = cmd
         .find_subcommand_mut("cloud")
         .and_then(|cloud| cloud.find_subcommand_mut("clickpipe"))
-        .and_then(|clickpipe| clickpipe.find_subcommand_mut("create"))
-        .expect("clickpipe create command must exist");
+        .and_then(|clickpipe| clickpipe.find_subcommand_mut(operation))
+        .expect("clickpipe operation command must exist");
     // The usage error belongs to the source subcommand. If the returned literal
-    // ever drifts from a `#[command(name)]`, report it against `clickpipe
-    // create` instead of panicking on a valid invocation.
-    let owner = if create.find_subcommand(source).is_some() {
-        create
+    // ever drifts from a `#[command(name)]`, report it against the parent
+    // operation instead of panicking on a valid invocation.
+    let owner = if operation_command.find_subcommand(source).is_some() {
+        operation_command
             .find_subcommand_mut(source)
             .expect("presence checked immediately above")
     } else {
-        create
+        operation_command
     };
     // ArgumentConflict is intentional for invalid relationships between valid
     // values, matching existing CLI validation and preserving exit code 2.
@@ -284,7 +301,7 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
         _ => false,
     };
 
-    let result = run(cli.command).await;
+    let result = stdout::finish(run(cli.command).await);
 
     // Give the cache refresh a brief window to finish so short-lived commands
     // don't always drop it before the write completes. The background HTTP
@@ -402,7 +419,7 @@ async fn run_update(args: UpdateArgs) -> Result<()> {
     } else {
         update::perform_update(json).await?
     };
-    result.write(&mut std::io::stdout(), json)
+    result.write(&mut stdout::stdout(), json)
 }
 
 async fn run_skills(args: SkillsArgs) -> Result<()> {

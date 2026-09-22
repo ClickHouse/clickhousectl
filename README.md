@@ -30,6 +30,8 @@
 
 `clickhousectl` also installs official ClickHouse skills into supported coding agents and helps move local ClickHouse development to ClickHouse Cloud.
 
+When a downstream reader closes stdout (for example, `clickhousectl cloud service list | head`), CLI-owned human and JSON output finish quietly with exit `0` if the command succeeds. Genuine command failures and native-client exit statuses are preserved; other output errors still fail.
+
 ## Installation
 
 ### Quick install
@@ -787,9 +789,11 @@ clickhousectl cloud service list
 clickhousectl cloud service get <service-id>
 clickhousectl cloud service get --name analytics
 
-# Discover profiles available in a region before choosing --profile
+# Discover profiles available in a region or BYOC infrastructure
 clickhousectl cloud service profile list --region us-east-1
-clickhousectl cloud service profile list --region us-east-1 --byoc-id <infrastructure-id> --json
+clickhousectl cloud service profile list --byoc-id <infrastructure-id> --json
+# If both are supplied, Cloud validates the region against the infrastructure
+clickhousectl cloud service profile list --region us-east-1 --byoc-id <infrastructure-id>
 
 # Create a BYOC service using the discovered profile and its exact memory size
 clickhousectl cloud service create --name my-byoc-service \
@@ -898,6 +902,8 @@ clickhousectl cloud service update <service-id> \
   --remove-tag legacy
 # --remove-* flags are idempotent: an entry that matched nothing still exits 0,
 # with one stderr warning per miss (tags match by key).
+# Add and remove tags in separate service update commands; --add-tag and
+# --remove-tag cannot be combined in one operation.
 
 # Update replica scaling (vertical autoscaling — fixed replica count, variable memory)
 clickhousectl cloud service scale <service-id> \
@@ -952,6 +958,14 @@ clickhousectl cloud service private-endpoint create <service-id> \
   --endpoint-id vpce-0123456789abcdef0 --description 'app vpc'
 clickhousectl cloud service private-endpoint get-config <service-id>
 
+# Service snapshots (Beta), distinct from backups
+clickhousectl cloud service snapshot list <service-id>
+clickhousectl cloud service snapshot get <service-id> --snapshot-id <snapshot-id>
+clickhousectl cloud service snapshot config get --name analytics
+clickhousectl cloud service snapshot config update <service-id> \
+  --enabled true --gap 30 --time-frame 1440
+clickhousectl cloud service snapshot config update <service-id> --enabled false
+
 # Backup configuration
 clickhousectl cloud service backup-config get <service-id>
 clickhousectl cloud service backup-config update <service-id> \
@@ -979,6 +993,10 @@ clickhousectl cloud service delete <service-id> --force
 Cloud validates replica counts against the service's current limits. The API maximum is 50; the
 first service in a warehouse requires at least 2 replicas, while a service created in an existing
 warehouse can use 1. Organization tier and per-warehouse limits may set a lower maximum.
+
+`snapshot config update` requires an ADMIN API key and at least one change. Omitted fields remain
+unchanged. Supply `--gap` and `--time-frame` together, in **minutes**; enabled schedules support
+pairs `(30, 1440)` or `(60, 2880)`. Cloud validates the resulting configuration, including partial updates.
 
 `backup-config update` requires at least one backup configuration flag. Backup retention must be a
 whole number of days from 24 through 1080 hours (1 through 45 days); Cloud validates the value.
@@ -1879,6 +1897,11 @@ leaves `validateSamples` out of the request, while explicit `false` remains an
 explicit value. The API documents sample validation as having no effect for
 PostgreSQL and MySQL.
 
+Kafka, Kinesis, object-storage, and Pub/Sub creates accept `--start-paused` to create
+in the `Stopped` state. Start ingestion later with `cloud clickpipe start <service-id> <clickpipe-id>`.
+Omission preserves immediate ingestion. Database ClickPipes (PostgreSQL, MySQL, MongoDB, BigQuery)
+do not support this flag and reject it before any request.
+
 Kafka, Kinesis, object-storage, and Pub/Sub creates also accept repeatable
 `--field-mapping '{"sourceField":"...","destinationField":"..."}'` values and
 initial scaling. Scaling is one complete allocation, so pass `--replicas`,
@@ -2062,11 +2085,11 @@ clickhousectl cloud clickpipe create kinesis <service-id> \
   --database default --table events \
   --column "event_id:Int64" --column "name:String"
 
-# Kinesis with access keys, enhanced fan-out, starting at a timestamp
+# Kinesis with inferred IAM_USER, enhanced fan-out, starting at a timestamp
 clickhousectl cloud clickpipe create kinesis <service-id> \
   --name my-kinesis-replay --stream-name events --region us-east-1 \
   --format JSONEachRow \
-  --auth IAM_USER --access-key-id "$AWS_ACCESS_KEY_ID" --secret-key "$AWS_SECRET_ACCESS_KEY" \
+  --access-key-id "$AWS_ACCESS_KEY_ID" --secret-key "$AWS_SECRET_ACCESS_KEY" \
   --iterator-type AT_TIMESTAMP --iterator-timestamp 1767225600 --enhanced-fan-out \
   --database default --table events \
   --column "event_id:Int64"
@@ -2297,6 +2320,15 @@ authentication can read the requested topics. Avro and Protobuf sources need a
 schema registry; Protobuf can instead use `--protobuf-schema-file <PATH|->`.
 See the [Kafka creation guide](https://clickhouse.com/docs/integrations/clickpipes/kafka/create-kafka-clickpipe)
 for the full connection flow.
+
+Kinesis create and schema discovery accept `--format Protobuf` with the required
+`--protobuf-schema-file <PATH|->`. Supply raw `.proto` source or a serialized descriptor set;
+the CLI base64-encodes it. Empty schemas and encoded schemas above 1 MiB are rejected.
+The schema flag is rejected for other formats.
+
+For Kinesis create and schema discovery, omitting `--auth` infers `IAM_USER`
+from a complete `--access-key-id` / `--secret-key` pair; otherwise it uses `IAM_ROLE`.
+Role ARNs and `IAM_ROLE` cannot be combined with access keys; `IAM_USER` cannot use `--iam-role`.
 
 For Kinesis, grant the IAM role or user permission to list streams and read the
 selected stream. Enhanced fan-out also needs consumer registration and shard
@@ -2534,6 +2566,10 @@ These are create-time decisions. The Cloud API can patch only
 snapshot and initial-load settings cannot be changed later on a pipe that was
 created without them. `clickpipe settings update` is a different endpoint for
 streaming and object-storage pipes and does not cover these settings.
+
+MongoDB create accepts `--initial-load-parallelism <WORKERS>` for workers **per collection**
+during the initial snapshot (integer, minimum 1). Omission keeps the Cloud default;
+`--snapshot-parallel-collections` separately controls how many collections load concurrently.
 
 MySQL and MongoDB expose the corresponding settings on their create commands.
 The integer fields enforce the Cloud API minima: sync interval, pull batch,
@@ -2796,7 +2832,26 @@ clickhousectl cloud invitation delete <invitation-id>
 
 ### Keys
 
+`cloud key list` fetches one page. `--limit` sets the page size (1–250; the server
+uses 250 when omitted), and `--cursor` resumes from an opaque continuation token.
+Use `--all` to fetch every page; `--limit` still controls each request's page size,
+and `--all` conflicts with `--cursor`. Name lookup for get, update, and delete
+always searches all pages and rejects ambiguous matches across pages.
+
+One-page JSON output is now an object rather than an array, with a `result` array
+and optional `nextCursor`,
+`limit`, and `totalCount` metadata. Missing or null metadata is omitted; only an
+absent `nextCursor` means the last page (an empty string remains a valid token).
+`--all --json` returns a single combined array, with no partial output on failure.
+
+Human output includes shell-quoted arguments for the next page. If a cursor or
+organization ID contains control characters, it directs you to `--json` or `--all`.
+
 ```bash
+clickhousectl cloud key list --limit 25 --json
+clickhousectl cloud key list --limit 25 --cursor='TOKEN_FROM_nextCursor' --json
+clickhousectl cloud key list --all --json
+
 clickhousectl cloud key list
 clickhousectl cloud key get <resource-id>
 # the key secret is printed once, at create time only

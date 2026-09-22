@@ -47,14 +47,13 @@ pub(crate) fn eprint_line(line: impl std::fmt::Display) {
     let _ = writeln!(std::io::stderr(), "{line}");
 }
 
-/// Write one line to stdout, discarding a write failure.
+/// Write one line through the shared stdout policy.
 ///
 /// The stdout counterpart of [`eprint_line`], for a result line printed after
 /// the operation it describes already succeeded: a closed stdout must not
 /// convert a completed deletion into a panic.
 pub(crate) fn print_line(line: impl std::fmt::Display) {
-    use std::io::Write;
-    let _ = writeln!(std::io::stdout(), "{line}");
+    println!("{line}");
 }
 
 // ── structured errors (issues #644, #825) ───────────────────────────────────

@@ -1404,7 +1404,7 @@ where
                     Some(version) => print!("Stopping '{}' ({}, {})...", name, engine, version),
                     None => print!("Stopping '{}' ({})...", name, engine),
                 }
-                let _ = std::io::stdout().flush();
+                crate::stdout::record(crate::stdout::stdout().flush());
             }
             let result = stop(&server.name);
             if !json {
@@ -1437,7 +1437,7 @@ fn stop_all_servers_global(json: bool) -> Result<()> {
                 s.engine.as_str(),
                 s.project
             );
-            let _ = std::io::stdout().flush();
+            crate::stdout::record(crate::stdout::stdout().flush());
         }
         match server::kill_server_by_pid(s.pid) {
             Ok(()) => {

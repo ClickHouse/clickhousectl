@@ -124,7 +124,7 @@ impl NameSelector {
                 )
             }
             NamedResource::Key => {
-                let rows = client.list_api_keys(&org).await?;
+                let rows = client.list_api_keys(&org, None).await?;
                 select_named_id(
                     "API key",
                     name,

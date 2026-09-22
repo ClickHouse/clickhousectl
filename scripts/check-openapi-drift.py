@@ -101,7 +101,7 @@ def run_analyzer(spec: dict) -> dict:
         report = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise RuntimeError("OpenAPI analyzer emitted invalid JSON") from error
-    if report.get("schema_version") != 8:
+    if report.get("schema_version") != 9:
         raise RuntimeError(
             f"Unsupported DriftReport schema version: {report.get('schema_version')!r}"
         )
@@ -506,6 +506,9 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         "|--------|-------|",
         f"| Missing client methods | {counts['missing_client_method']} |",
         f"| Extra client methods | {counts['extra_client_method']} |",
+        f"| Missing operation parameters | {counts['missing_operation_parameter']} |",
+        f"| Operation parameter mismatches | {counts['operation_parameter_mismatch']} |",
+        f"| Unsupported success response schemas | {counts['unsupported_response_schema']} |",
         f"| Missing model types | {counts['missing_model_type']} |",
         f"| Missing schema definitions | {counts['missing_schema_definition']} |",
         f"| Missing struct fields | {counts['missing_struct_field']} |",
@@ -517,7 +520,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         f"| Field optionality mismatches | {counts['field_optionality_mismatch']} |",
         f"| Beta status changes | {total('newly_beta_operation', 'graduated_beta_operation')} |",
         f"| Deprecated-field changes | {total('newly_deprecated_field', 'undeprecated_field', 'missing_deprecated_marker', 'stray_deprecated_marker')} |",
-        f"| Stale snapshot changes | {total('snapshot_added_operation', 'snapshot_removed_operation', 'snapshot_added_schema', 'snapshot_removed_schema')} |",
+        f"| Stale snapshot changes | {total('snapshot_added_operation', 'snapshot_removed_operation', 'snapshot_added_schema', 'snapshot_removed_schema', 'snapshot_added_parameter', 'snapshot_removed_parameter', 'snapshot_changed_parameter')} |",
         f"| Stale exemptions | {counts['stale_exemption']} |",
         f"| New unsupported enum constraints | {counts['unsupported_enum_constraint']} |",
         f"| Changed acknowledged enum constraints | {counts['acknowledged_enum_constraint_changed']} |",
@@ -555,6 +558,12 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
 
     simple_sections = [
         ("extra_client_method", "Extra Client Methods"),
+        ("missing_operation_parameter", "Missing Operation Parameters"),
+        ("operation_parameter_mismatch", "Operation Parameter Mismatches"),
+        ("unsupported_response_schema", "Unsupported Success Response Schemas"),
+        ("snapshot_added_parameter", "New Operation Parameters Missing From Snapshot"),
+        ("snapshot_removed_parameter", "Removed Operation Parameters Still In Snapshot"),
+        ("snapshot_changed_parameter", "Changed Operation Parameter Contracts"),
         ("missing_schema_definition", "Missing Schema Definitions"),
         ("missing_struct_field", "Missing Struct Fields"),
         ("extra_struct_field", "Extra Struct Fields"),
@@ -585,6 +594,11 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
         for finding in findings:
             location = finding.get("spec_pointer") or finding.get("rust_item") or "unknown"
             lines.append(f"- `{location}` — {finding['message']}")
+            if kind in {"snapshot_added_parameter", "snapshot_removed_parameter", "snapshot_changed_parameter"}:
+                details = finding.get("details", {})
+                for key, label in [("previous_contract", "Snapshot contract"), ("current_contract", "Live contract"), ("previous_spec_pointer", "Snapshot location")]:
+                    if key in details:
+                        lines.append(f"  - {label}: `{details[key]}`")
             if kind == "acknowledged_enum_constraint_changed":
                 details = finding.get("details", {})
                 lines.append(

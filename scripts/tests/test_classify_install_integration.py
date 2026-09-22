@@ -104,6 +104,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/src/local/symlink.rs",
                     "crates/clickhousectl/src/main.rs",
                     "crates/clickhousectl/src/paths.rs",
+                    "crates/clickhousectl/src/stdout.rs",
                     "crates/clickhousectl/src/user_agent.rs",
                     "crates/clickhousectl/tests/local_install_local_first_test.rs",
                     "crates/clickhousectl/tests/local_version_error_test.rs",
@@ -116,6 +117,8 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             classifier.NON_INSTALL_EXACT_PATHS,
             frozenset(
                 {
+                    "crates/clickhouse-openapi-analyzer/tests/fixtures/operation_contracts/before.json",
+                    "crates/clickhouse-openapi-analyzer/tests/fixtures/operation_contracts/after.json",
                     "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
                     "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
                     "crates/clickhousectl/src/cloud/clickstack.rs",
@@ -154,6 +157,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhousectl/tests/local_server_watchdog_pid_test.rs",
                     "crates/clickhousectl/tests/local_structured_errors_test.rs",
                     "crates/clickhousectl/tests/telemetry_test.rs",
+                    "crates/clickhousectl/tests/local_stdout_test.rs",
                     "crates/clickhousectl/tests/skills_usage_test.rs",
                 }
             ),

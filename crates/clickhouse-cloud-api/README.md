@@ -4,6 +4,20 @@ Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/
 
 ## Updated Cloud API surface
 
+`openapi_key_get_list(organization_id, limit, cursor)` returns one page of API keys.
+Migrate existing calls by passing `None, None` for the new arguments. The server
+accepts limits from 1–250 and defaults to 250; continue with the response's
+`next_cursor` until it is `None` to read all keys, including empty intermediate
+pages. Cursors are opaque: pass even an empty string unchanged. `ApiResponse<T>`
+now preserves optional `limit`, `total_count`, and `next_cursor` envelope metadata.
+Missing or null metadata becomes `None` and is omitted when serialized. Struct
+literal callers must supply the new fields or use `..Default::default()` when
+available. Callers that iterate pages should detect repeated cursors to avoid loops.
+
+`service_profiles_list` now takes `region_id: Option<&str>`: wrap existing region
+arguments in `Some(...)`, or pass `None` with `byoc_id` to use the infrastructure's
+region. When both are supplied, the region must match that infrastructure.
+
 The beta `snapshot_get_list` and `snapshot_get` methods return service `Snapshot`
 records, including the `throttled` status and full snapshot type. Snapshot response
 fields tolerate missing and null values; provider-specific bucket properties and
@@ -149,7 +163,21 @@ private per-domain files. That same analyzer powers the scheduled live-spec
 issue, so operation, model, field, optionality, beta, deprecation, enum,
 snapshot, and stale-exemption findings share one implementation. The single
 ignored test runs the same report against the live spec. The analyzer also checks
-inline union payload fields and request requiredness.
+inline union payload fields and request requiredness. Report schema version 9 also
+compares effective operation parameters against the snapshot (additions, removals,
+requiredness, and schema constraints), resolving local references and ignoring
+prose/example changes. Missing Rust arguments and incompatible optionality or
+scalar/array shapes remain actionable even after a snapshot refresh. Array
+arguments may use a pluralized name and represent omission with an empty slice.
+
+Successful JSON envelopes are checked against the method's actual returned
+struct, including generic `ApiResponse<T>`, aliases, and flattened structs. Missing
+envelope fields retain exact definition pointers through response/schema refs
+and `allOf`; unmappable envelopes and unsupported inline unions are actionable.
+These checks cover envelope field presence, not generic payload type substitution
+or HTTP serialization behavior. Parameter defaults, bounds, and other constraints
+are snapshot comparisons; scalar/array shape checks compare Rust argument types.
+External or unresolved contract references fail analysis rather than report clean.
 
 ### Optionality exemptions
 

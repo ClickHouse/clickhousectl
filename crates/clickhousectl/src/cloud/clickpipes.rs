@@ -41,7 +41,7 @@ const OBJECT_STORAGE_TYPES: &[&str] = &[
     "cloudflarer2",
     "ovhobjectstorage",
 ];
-const KINESIS_FORMATS: &[&str] = &["JSONEachRow", "Avro", "AvroConfluent"];
+const KINESIS_FORMATS: &[&str] = &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"];
 const KINESIS_AUTHS: &[&str] = &["IAM_ROLE", "IAM_USER"];
 const KINESIS_ITERATOR_TYPES: &[&str] = &["TRIM_HORIZON", "LATEST", "AT_TIMESTAMP"];
 const POSTGRES_TYPES: &[&str] = &[
@@ -458,8 +458,8 @@ impl ClickPipeCommands {
         }
     }
 
-    /// The `clickpipe create` validation message for a database source whose
-    /// flags cannot describe the chosen `--auth`, paired with the source
+    /// The `clickpipe create` validation message for invalid source or request
+    /// flags, paired with the source
     /// subcommand the usage error belongs to. clap cannot express "forbidden
     /// for this value of another argument", so these checks run after parsing.
     pub(crate) fn clickpipe_create_validation_error(&self) -> Option<(&'static str, String)> {
@@ -481,7 +481,9 @@ impl ClickPipeCommands {
             ),
             ClickPipeCreateCommands::Kinesis(args) => (
                 "kinesis",
-                build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis).err(),
+                build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis)
+                    .and_then(|_| resolve_kinesis_auth(&args.source))
+                    .err(),
             ),
             ClickPipeCreateCommands::Postgres(args) => {
                 ("postgres", validate_postgres_create_args(args).err())
@@ -502,6 +504,20 @@ impl ClickPipeCommands {
         };
 
         error.map(|error| (source, error.message))
+    }
+
+    pub(crate) fn clickpipe_schema_discover_validation_error(
+        &self,
+    ) -> Option<(&'static str, String)> {
+        let Self::SchemaDiscover {
+            command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
+        } = self
+        else {
+            return None;
+        };
+        resolve_kinesis_auth(&args.source)
+            .err()
+            .map(|error| ("kinesis", error.message))
     }
 
     pub(crate) fn reverse_private_endpoint_create_validation_error(&self) -> Option<String> {
@@ -854,6 +870,10 @@ pub struct ClickPipeCreateValidationArgs {
 /// Request controls shared by streaming and object-storage creates.
 #[derive(Args, Debug, Default)]
 pub struct ClickPipeCreateRequestArgs {
+    /// Create stopped; start ingestion later with `clickpipe start`
+    #[arg(long)]
+    pub start_paused: bool,
+
     #[command(flatten)]
     pub validation: ClickPipeCreateValidationArgs,
 
@@ -1234,23 +1254,31 @@ pub struct KinesisSourceFields {
     #[arg(long, value_parser = PossibleValuesParser::new(KINESIS_FORMATS))]
     pub format: String,
 
-    /// Authentication method
+    /// Protobuf schema file or - for stdin; requires --format Protobuf
+    ///
+    /// Required for Protobuf; accepts .proto source or a binary descriptor set.
+    #[arg(long, value_name = "PATH")]
+    pub protobuf_schema_file: Option<String>,
+
+    /// Authentication method (inferred when omitted)
+    ///
+    /// A complete access-key pair selects IAM_USER; otherwise IAM_ROLE.
+    /// IAM_ROLE cannot be combined with either access-key flag.
     #[arg(
         long,
-        default_value = "IAM_ROLE",
         value_parser = PossibleValuesParser::new(KINESIS_AUTHS),
     )]
-    pub auth: String,
+    pub auth: Option<String>,
 
-    /// IAM role ARN (with --auth IAM_ROLE)
+    /// IAM role ARN (conflicts with access keys and --auth IAM_USER)
     #[arg(long)]
     pub iam_role: Option<String>,
 
-    /// Access key ID for IAM_USER authentication
+    /// Access key ID (requires --secret-key; infers IAM_USER)
     #[arg(long, requires = "secret_key")]
     pub access_key_id: Option<String>,
 
-    /// Secret key for IAM_USER authentication
+    /// Secret key (requires --access-key-id; infers IAM_USER)
     #[arg(long, requires = "access_key_id")]
     pub secret_key: Option<String>,
 
@@ -1710,6 +1738,10 @@ pub struct MongoDbCreateArgs {
     /// Number of rows to pull in each CDC batch
     #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1..))]
     pub pull_batch_size: Option<i64>,
+
+    /// Parallel workers per collection during the initial snapshot
+    #[arg(long, value_name = "WORKERS", value_parser = clap::value_parser!(i64).range(1..))]
+    pub initial_load_parallelism: Option<i64>,
 
     /// Number of rows per partition during the snapshot phase
     #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1000..))]
@@ -2822,6 +2854,35 @@ fn build_kafka_source(
     build_kafka_source_with_exactly_once(args, None)
 }
 
+/// Resolve authentication without reading credentials or contacting Cloud.
+fn resolve_kinesis_auth(args: &KinesisSourceFields) -> CloudResult<&str> {
+    let has_keys = args.access_key_id.is_some() || args.secret_key.is_some();
+    if args.auth.as_deref() == Some("IAM_ROLE") && has_keys {
+        return Err(CloudError::new(
+            "--auth IAM_ROLE cannot be combined with --access-key-id or --secret-key; remove the key flags or use IAM_USER",
+        ));
+    }
+    if args.iam_role.is_some() && has_keys {
+        return Err(CloudError::new(
+            "--iam-role cannot be combined with --access-key-id or --secret-key; choose role authentication or an access-key pair",
+        ));
+    }
+    if args.auth.as_deref() == Some("IAM_USER") && args.iam_role.is_some() {
+        return Err(CloudError::new(
+            "--auth IAM_USER cannot be combined with --iam-role; remove --iam-role or use IAM_ROLE",
+        ));
+    }
+    if args.access_key_id.is_some() != args.secret_key.is_some() {
+        return Err(CloudError::new(
+            "--access-key-id and --secret-key must be supplied together",
+        ));
+    }
+    Ok(args
+        .auth
+        .as_deref()
+        .unwrap_or(if has_keys { "IAM_USER" } else { "IAM_ROLE" }))
+}
+
 /// Build a `ClickPipePostKinesisSource` from the CLI args. Shared by the
 /// `clickpipe create kinesis` and `clickpipe schema-discover kinesis <SERVICE_ID>`
 /// handlers.
@@ -2830,6 +2891,17 @@ fn build_kinesis_source(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKinesisSource> {
     use clickhouse_cloud_api::models::{ClickPipePostKinesisSource, MskIamUser};
 
+    if args.format == "Protobuf" && args.protobuf_schema_file.is_none() {
+        return Err(CloudError::new(
+            "--format Protobuf requires --protobuf-schema-file",
+        ));
+    }
+    if args.format != "Protobuf" && args.protobuf_schema_file.is_some() {
+        return Err(CloudError::new(
+            "--protobuf-schema-file can only be used with --format Protobuf",
+        ));
+    }
+    let auth = resolve_kinesis_auth(args)?;
     let access_key = match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
         (Some(access_key_id), Some(secret_key)) => Some(MskIamUser {
             access_key_id: access_key_id.to_string(),
@@ -2839,11 +2911,15 @@ fn build_kinesis_source(
     };
 
     Ok(ClickPipePostKinesisSource {
-        protobuf_schema: None,
+        protobuf_schema: args
+            .protobuf_schema_file
+            .as_deref()
+            .map(read_protobuf_schema_file)
+            .transpose()?,
         format: parse_enum(&args.format)?,
         stream_name: args.stream_name.clone(),
         region: args.region.clone(),
-        authentication: parse_enum(&args.auth)?,
+        authentication: parse_enum(auth)?,
         iam_role: args.iam_role.clone(),
         access_key,
         use_enhanced_fan_out: if args.enhanced_fan_out {
@@ -3977,6 +4053,7 @@ fn parse_create_field_mappings(
 
 #[derive(Debug)]
 struct BuiltCreateRequestArgs {
+    start_paused: bool,
     validate_samples: Option<bool>,
     scaling: Option<clickhouse_cloud_api::models::ClickPipeScaling>,
     settings: Option<clickhouse_cloud_api::models::ClickPipeSettings>,
@@ -3987,6 +4064,11 @@ fn build_create_request_args(
     args: &ClickPipeCreateRequestArgs,
     source: ClickPipeSourceKind,
 ) -> CloudResult<BuiltCreateRequestArgs> {
+    if args.start_paused && source.database_source_label().is_some() {
+        return Err(CloudError::new(
+            "--start-paused is not supported for database ClickPipes",
+        ));
+    }
     let scaling = match (args.replicas, args.cpu_millicores, args.memory_gb) {
         (None, None, None) => None,
         (Some(replicas), Some(cpu), Some(memory)) => {
@@ -4074,6 +4156,7 @@ fn build_create_request_args(
             });
 
     Ok(BuiltCreateRequestArgs {
+        start_paused: args.start_paused,
         validate_samples: args.validation.validate_samples,
         scaling,
         settings,
@@ -4083,6 +4166,7 @@ fn build_create_request_args(
 
 fn build_create_validation_args(args: &ClickPipeCreateValidationArgs) -> BuiltCreateRequestArgs {
     BuiltCreateRequestArgs {
+        start_paused: false,
         validate_samples: args.validate_samples,
         scaling: None,
         settings: None,
@@ -4094,6 +4178,7 @@ fn apply_create_request_args(
     request: &mut clickhouse_cloud_api::models::ClickPipePostRequest,
     args: BuiltCreateRequestArgs,
 ) {
+    request.start_paused = args.start_paused;
     request.source.validate_samples = args.validate_samples;
     request.scaling = args.scaling;
     request.settings = args.settings;
@@ -5388,6 +5473,11 @@ fn validate_mongodb_create_args(args: &MongoDbCreateArgs) -> CloudResult<()> {
         ("--sync-interval-seconds", args.sync_interval_seconds, 1),
         ("--pull-batch-size", args.pull_batch_size, 1),
         (
+            "--initial-load-parallelism",
+            args.initial_load_parallelism,
+            1,
+        ),
+        (
             "--snapshot-rows-per-partition",
             args.snapshot_rows_per_partition,
             1000,
@@ -5480,7 +5570,7 @@ fn build_mongodb_request(
             None
         },
         settings: ClickPipeMongoDBPipeSettings {
-            initial_load_parallelism: None,
+            initial_load_parallelism: args.initial_load_parallelism,
             replication_mode,
             delete_on_merge: args.delete_on_merge,
             pull_batch_size: args.pull_batch_size,
@@ -6925,12 +7015,110 @@ mod tests {
     }
 
     #[test]
+    fn start_paused_parsing_and_shared_builder_match_supported_sources() {
+        use clap::CommandFactory;
+        let cli = Cli::command();
+        let create = cli
+            .find_subcommand("cloud")
+            .unwrap()
+            .find_subcommand("clickpipe")
+            .unwrap()
+            .find_subcommand("create")
+            .unwrap();
+        for (source, kind) in [
+            ("kafka", ClickPipeSourceKind::Kafka),
+            ("kinesis", ClickPipeSourceKind::Kinesis),
+            ("object-storage", ClickPipeSourceKind::ObjectStorage),
+            ("pubsub", ClickPipeSourceKind::PubSub),
+        ] {
+            assert!(
+                create
+                    .find_subcommand(source)
+                    .unwrap()
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some("start-paused"))
+            );
+            for paused in [false, true] {
+                let args = ClickPipeCreateRequestArgs {
+                    start_paused: paused,
+                    ..Default::default()
+                };
+                let built = build_create_request_args(&args, kind).unwrap();
+                let mut request = clickhouse_cloud_api::models::ClickPipePostRequest::default();
+                apply_create_request_args(&mut request, built);
+                assert_eq!(request.start_paused, paused);
+                let json = serde_json::to_value(&request).unwrap();
+                assert_eq!(
+                    json.get("startPaused"),
+                    paused.then_some(&serde_json::Value::Bool(true))
+                );
+            }
+        }
+        for (source, kind) in [
+            ("postgres", ClickPipeSourceKind::Postgres),
+            ("mysql", ClickPipeSourceKind::MySql),
+            ("mongodb", ClickPipeSourceKind::MongoDb),
+            ("bigquery", ClickPipeSourceKind::BigQuery),
+        ] {
+            assert!(
+                !create
+                    .find_subcommand(source)
+                    .unwrap()
+                    .get_arguments()
+                    .any(|arg| arg.get_long() == Some("start-paused"))
+            );
+            let error = Cli::try_parse_from([
+                "chctl",
+                "cloud",
+                "clickpipe",
+                "create",
+                source,
+                "svc-1",
+                "--start-paused",
+            ])
+            .err()
+            .unwrap();
+            assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+            let args = ClickPipeCreateRequestArgs {
+                start_paused: true,
+                ..Default::default()
+            };
+            assert!(build_create_request_args(&args, kind).is_err());
+        }
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kinesis(args),
+        } = parse_clickpipe(&[
+            "create",
+            "kinesis",
+            "svc-1",
+            "--name",
+            "pipe",
+            "--stream-name",
+            "events",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+            "--database",
+            "default",
+            "--table",
+            "events",
+            "--start-paused",
+        ])
+        else {
+            panic!("kinesis");
+        };
+        assert!(args.request.start_paused);
+    }
+
+    #[test]
     fn build_create_request_args_preserves_omission_and_explicit_values() {
         let minimal = build_create_request_args(
             &ClickPipeCreateRequestArgs::default(),
             ClickPipeSourceKind::Kafka,
         )
         .unwrap();
+        assert!(!minimal.start_paused);
         assert_eq!(minimal.validate_samples, None);
         assert_eq!(minimal.scaling, None);
         assert_eq!(minimal.settings, None);
@@ -6938,6 +7126,7 @@ mod tests {
 
         let maximal = build_create_request_args(
             &ClickPipeCreateRequestArgs {
+                start_paused: true,
                 validation: ClickPipeCreateValidationArgs {
                     validate_samples: Some(false),
                 },
@@ -6962,6 +7151,7 @@ mod tests {
             ClickPipeSourceKind::Kafka,
         )
         .unwrap();
+        assert!(maximal.start_paused);
         assert_eq!(maximal.validate_samples, Some(false));
         let scaling = maximal.scaling.unwrap();
         assert_eq!(scaling.replicas, 1);
@@ -7866,8 +8056,6 @@ mod tests {
             "Avro",
             "--auth",
             "IAM_USER",
-            "--iam-role",
-            "arn:role",
             "--access-key-id",
             "access",
             "--secret-key",
@@ -7896,8 +8084,8 @@ mod tests {
         assert_eq!(args.source.stream_name, "stream-1");
         assert_eq!(args.source.region, "us-east-1");
         assert_eq!(args.source.format, "Avro");
-        assert_eq!(args.source.auth, "IAM_USER");
-        assert_eq!(args.source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(args.source.auth.as_deref(), Some("IAM_USER"));
+        assert_eq!(args.source.iam_role, None);
         assert_eq!(args.source.access_key_id.as_deref(), Some("access"));
         assert_eq!(args.source.secret_key.as_deref(), Some("secret"));
         assert_eq!(args.source.iterator_type, "AT_TIMESTAMP");
@@ -7929,7 +8117,7 @@ mod tests {
         else {
             panic!("expected kinesis create");
         };
-        assert_eq!(args.source.auth, "IAM_ROLE");
+        assert_eq!(args.source.auth, None);
         assert_eq!(args.source.iam_role, None);
         assert_eq!(args.source.access_key_id, None);
         assert_eq!(args.source.secret_key, None);
@@ -7995,7 +8183,7 @@ mod tests {
         assert_eq!(args.service_id, "svc-kinesis");
         let args = args.source;
         assert_eq!(args.stream_name, "stream-1");
-        assert_eq!(args.auth, "IAM_ROLE");
+        assert_eq!(args.auth, None);
         assert_eq!(args.iterator_type, "TRIM_HORIZON");
     }
 
@@ -9596,7 +9784,10 @@ mod tests {
                 "ovhobjectstorage",
             ]
         );
-        assert_eq!(KINESIS_FORMATS, &["JSONEachRow", "Avro", "AvroConfluent"]);
+        assert_eq!(
+            KINESIS_FORMATS,
+            &["JSONEachRow", "Avro", "AvroConfluent", "Protobuf"]
+        );
         assert_eq!(KINESIS_AUTHS, &["IAM_ROLE", "IAM_USER"]);
         assert_eq!(
             KINESIS_ITERATOR_TYPES,
@@ -11066,10 +11257,11 @@ mod tests {
     #[test]
     fn build_kinesis_source_rejects_out_of_range_iterator_timestamp() {
         let args = KinesisSourceFields {
+            protobuf_schema_file: None,
             stream_name: "stream".to_string(),
             region: "us-east-1".to_string(),
             format: "JSONEachRow".to_string(),
-            auth: "IAM_ROLE".to_string(),
+            auth: None,
             iam_role: None,
             access_key_id: None,
             secret_key: None,
@@ -12125,6 +12317,65 @@ mod tests {
         }
     }
 
+    #[test]
+    fn mongodb_initial_load_parallelism_parses_validates_and_preserves_omission() {
+        let base = [
+            "create",
+            "mongodb",
+            "svc-1",
+            "--name",
+            "pipe",
+            "--uri",
+            "mongodb://host/db",
+            "--username",
+            "user",
+            "--password",
+            "pass",
+            "--table-mapping",
+            "db.events:events",
+        ];
+        for (value, expected) in [
+            (None, None),
+            (Some("1"), Some(1)),
+            (Some("9223372036854775807"), Some(i64::MAX)),
+        ] {
+            let mut args = base.to_vec();
+            if let Some(value) = value {
+                args.extend(["--initial-load-parallelism", value]);
+            }
+            let ClickPipeCommands::Create {
+                command: ClickPipeCreateCommands::MongoDB(args),
+            } = parse_clickpipe(&args)
+            else {
+                panic!("mongodb");
+            };
+            assert_eq!(args.initial_load_parallelism, expected);
+            let request = build_mongodb_request(&args).unwrap();
+            assert_eq!(
+                request
+                    .source
+                    .mongodb
+                    .unwrap()
+                    .settings
+                    .initial_load_parallelism,
+                expected
+            );
+        }
+        for value in ["0", "-1", "1.5", "9223372036854775808"] {
+            let mut args = base.to_vec();
+            args.extend(["--initial-load-parallelism", value]);
+            assert_rejected(&args);
+        }
+        let mut args = mongodb_builder_args();
+        args.initial_load_parallelism = Some(0);
+        assert!(
+            build_mongodb_request(&args)
+                .unwrap_err()
+                .message
+                .contains("--initial-load-parallelism must be at least 1")
+        );
+    }
+
     fn mongodb_builder_args() -> MongoDbCreateArgs {
         MongoDbCreateArgs {
             service_id: "svc-1".into(),
@@ -12143,6 +12394,7 @@ mod tests {
             skip_cert_verification: false,
             sync_interval_seconds: None,
             pull_batch_size: None,
+            initial_load_parallelism: None,
             snapshot_rows_per_partition: None,
             snapshot_parallel_collections: None,
             delete_on_merge: None,
@@ -12170,6 +12422,7 @@ mod tests {
         assert_eq!(source.skip_cert_verification, None);
         assert_eq!(source.settings.sync_interval_seconds, None);
         assert_eq!(source.settings.pull_batch_size, None);
+        assert_eq!(source.settings.initial_load_parallelism, None);
         assert_eq!(source.settings.snapshot_num_rows_per_partition, None);
         assert_eq!(source.settings.snapshot_number_of_parallel_tables, None);
         assert_eq!(source.settings.delete_on_merge, None);
@@ -12192,6 +12445,7 @@ mod tests {
         args.skip_cert_verification = true;
         args.sync_interval_seconds = Some(1);
         args.pull_batch_size = Some(2);
+        args.initial_load_parallelism = Some(4);
         args.snapshot_rows_per_partition = Some(1000);
         args.snapshot_parallel_collections = Some(3);
         args.delete_on_merge = Some(false);
@@ -12215,6 +12469,7 @@ mod tests {
         assert_eq!(source.settings.replication_mode.to_string(), "snapshot");
         assert_eq!(source.settings.sync_interval_seconds, Some(1));
         assert_eq!(source.settings.pull_batch_size, Some(2));
+        assert_eq!(source.settings.initial_load_parallelism, Some(4));
         assert_eq!(source.settings.snapshot_num_rows_per_partition, Some(1000));
         assert_eq!(source.settings.snapshot_number_of_parallel_tables, Some(3));
         assert_eq!(source.settings.delete_on_merge, Some(false));
@@ -13432,12 +13687,239 @@ mod tests {
     }
 
     #[test]
+    fn kinesis_protobuf_parsing_and_builder_cover_create_and_discovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let schema = dir.path().join("schema.proto");
+        std::fs::write(&schema, b"syntax = \"proto3\"; message Event {}").unwrap();
+        for operation in ["create", "schema-discover"] {
+            let mut args = vec![
+                operation,
+                "kinesis",
+                "svc-1",
+                "--stream-name",
+                "stream",
+                "--region",
+                "us-east-1",
+                "--format",
+                "Protobuf",
+                "--protobuf-schema-file",
+                schema.to_str().unwrap(),
+            ];
+            if operation == "create" {
+                args.extend([
+                    "--name",
+                    "pipe",
+                    "--database",
+                    "default",
+                    "--table",
+                    "events",
+                ]);
+            }
+            let source_args = match parse_clickpipe(&args) {
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kinesis(args),
+                } => args.source,
+                ClickPipeCommands::SchemaDiscover {
+                    command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
+                } => args.source,
+                _ => panic!("Kinesis"),
+            };
+            assert_eq!(source_args.protobuf_schema_file.as_deref(), schema.to_str());
+            let source = build_kinesis_source(&source_args).unwrap();
+            assert_eq!(source.format.to_string(), "Protobuf");
+            assert_eq!(
+                source.protobuf_schema.as_deref(),
+                Some("c3ludGF4ID0gInByb3RvMyI7IG1lc3NhZ2UgRXZlbnQge30=")
+            );
+            assert_eq!(source.authentication.to_string(), "IAM_ROLE");
+        }
+    }
+
+    #[test]
+    fn kinesis_protobuf_rejects_missing_incompatible_and_invalid_files() {
+        let mut args = parsed_kinesis_source("create", &[]);
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap()
+                .protobuf_schema
+                .is_none()
+        );
+        args.protobuf_schema_file = Some("/missing/schema.proto".into());
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap_err()
+                .message
+                .contains("only be used")
+        );
+        args.format = "Protobuf".into();
+        assert!(build_kinesis_source(&args).is_err());
+        args.protobuf_schema_file = None;
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap_err()
+                .message
+                .contains("requires --protobuf-schema-file")
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let schema = dir.path().join("schema.proto");
+        args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
+        std::fs::write(&schema, b"").unwrap();
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap_err()
+                .message
+                .contains("empty")
+        );
+        std::fs::write(&schema, vec![0; PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH]).unwrap();
+        assert!(
+            build_kinesis_source(&args)
+                .unwrap_err()
+                .message
+                .contains("size limit")
+        );
+    }
+
+    fn parsed_kinesis_source(operation: &str, flags: &[&str]) -> KinesisSourceFields {
+        let mut args = vec![
+            operation,
+            "kinesis",
+            "svc-1",
+            "--stream-name",
+            "stream",
+            "--region",
+            "us-east-1",
+            "--format",
+            "JSONEachRow",
+        ];
+        if operation == "create" {
+            args.extend([
+                "--name",
+                "pipe",
+                "--database",
+                "default",
+                "--table",
+                "events",
+            ]);
+        }
+        args.extend(flags);
+        match parse_clickpipe(&args) {
+            ClickPipeCommands::Create {
+                command: ClickPipeCreateCommands::Kinesis(args),
+            } => args.source,
+            ClickPipeCommands::SchemaDiscover {
+                command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
+            } => args.source,
+            _ => panic!("expected Kinesis source"),
+        }
+    }
+
+    #[test]
+    fn kinesis_auth_parsing_and_builder_inference_agree_for_both_operations() {
+        for operation in ["create", "schema-discover"] {
+            for (flags, explicit, expected, role, keys) in [
+                (vec![], None, "IAM_ROLE", None, false),
+                (
+                    vec!["--iam-role", "arn:role"],
+                    None,
+                    "IAM_ROLE",
+                    Some("arn:role"),
+                    false,
+                ),
+                (
+                    vec!["--auth", "IAM_ROLE"],
+                    Some("IAM_ROLE"),
+                    "IAM_ROLE",
+                    None,
+                    false,
+                ),
+                (
+                    vec!["--access-key-id", "access", "--secret-key", "secret"],
+                    None,
+                    "IAM_USER",
+                    None,
+                    true,
+                ),
+                (
+                    vec![
+                        "--auth",
+                        "IAM_USER",
+                        "--access-key-id",
+                        "access",
+                        "--secret-key",
+                        "secret",
+                    ],
+                    Some("IAM_USER"),
+                    "IAM_USER",
+                    None,
+                    true,
+                ),
+            ] {
+                let args = parsed_kinesis_source(operation, &flags);
+                assert_eq!(args.auth.as_deref(), explicit);
+                assert_eq!(args.iam_role.as_deref(), role);
+                assert_eq!(args.access_key_id.as_deref(), keys.then_some("access"));
+                assert_eq!(args.secret_key.as_deref(), keys.then_some("secret"));
+                let source = build_kinesis_source(&args).unwrap();
+                assert_eq!(source.authentication.to_string(), expected);
+                assert_eq!(source.iam_role.as_deref(), role);
+                assert_eq!(
+                    source
+                        .access_key
+                        .as_ref()
+                        .map(|key| key.access_key_id.as_str()),
+                    keys.then_some("access")
+                );
+                assert_eq!(
+                    source
+                        .access_key
+                        .as_ref()
+                        .map(|key| key.secret_key.as_str()),
+                    keys.then_some("secret")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn build_kinesis_source_rejects_conflicts_and_incomplete_pairs() {
+        for (auth, role, access, secret) in [
+            (Some("IAM_ROLE"), false, true, true),
+            (Some("IAM_ROLE"), false, true, false),
+            (Some("IAM_ROLE"), false, false, true),
+            (None, true, true, true),
+            (None, true, true, false),
+            (None, true, false, true),
+            (Some("IAM_USER"), true, false, false),
+            (Some("IAM_USER"), true, true, true),
+            (None, false, true, false),
+            (None, false, false, true),
+            (Some("IAM_USER"), false, true, false),
+            (Some("IAM_USER"), false, false, true),
+        ] {
+            let mut args = parsed_kinesis_source("create", &[]);
+            args.auth = auth.map(str::to_string);
+            args.iam_role = role.then(|| "private-role-arn".into());
+            args.access_key_id = access.then(|| "private-access-id".into());
+            args.secret_key = secret.then(|| "private-secret-key".into());
+            let error = build_kinesis_source(&args).unwrap_err();
+            for value in [
+                "private-role-arn",
+                "private-access-id",
+                "private-secret-key",
+            ] {
+                assert!(!error.message.contains(value));
+            }
+        }
+    }
+
+    #[test]
     fn build_kinesis_source_supports_minimal_fields() {
         let args = KinesisSourceFields {
+            protobuf_schema_file: None,
             stream_name: "stream".into(),
             region: "us-east-1".into(),
             format: "JSONEachRow".into(),
-            auth: "IAM_ROLE".into(),
+            auth: None,
             iam_role: None,
             access_key_id: None,
             secret_key: None,
@@ -13461,11 +13943,12 @@ mod tests {
     #[test]
     fn build_kinesis_source_supports_maximal_fields() {
         let args = KinesisSourceFields {
+            protobuf_schema_file: None,
             stream_name: "stream".into(),
             region: "us-east-1".into(),
             format: "AvroConfluent".into(),
-            auth: "IAM_USER".into(),
-            iam_role: Some("arn:role".into()),
+            auth: Some("IAM_USER".into()),
+            iam_role: None,
             access_key_id: Some("access".into()),
             secret_key: Some("secret".into()),
             iterator_type: "AT_TIMESTAMP".into(),
@@ -13479,7 +13962,7 @@ mod tests {
         assert_eq!(source.format.to_string(), "AvroConfluent");
         assert_eq!(source.authentication.to_string(), "IAM_USER");
         assert_eq!(source.iterator_type.to_string(), "AT_TIMESTAMP");
-        assert_eq!(source.iam_role.as_deref(), Some("arn:role"));
+        assert_eq!(source.iam_role, None);
         let access_key = source.access_key.expect("access key is populated");
         assert_eq!(access_key.access_key_id, "access");
         assert_eq!(access_key.secret_key, "secret");

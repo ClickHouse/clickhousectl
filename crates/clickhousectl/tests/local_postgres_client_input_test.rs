@@ -603,3 +603,21 @@ fn postgres_client_name_forms_reach_the_same_managed_container() {
         );
     }
 }
+
+#[test]
+fn closed_stdout_keeps_docker_psql_diagnostics_and_exit_status() {
+    for exit_code in [0, 23] {
+        let fixture = Fixture::new(exit_code, false);
+        let (reader, writer) = std::io::pipe().unwrap();
+        drop(reader);
+        let output = fixture
+            .command(&["--query", "SELECT 1"])
+            .stdout(writer)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(exit_code), "{output:?}");
+        // This diagnostic follows the stdout frame. It must still be read,
+        // and neither a broken-pipe error nor a wrapper envelope is added.
+        assert_eq!(output.stderr, b"psql diagnostic\n");
+    }
+}

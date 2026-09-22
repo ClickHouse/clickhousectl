@@ -45,6 +45,8 @@ work on a branch, with an associated issue and a PR.
   `Error::AuthRequired`, `Generic` → `Error::CloudDetailed`, retaining existing details or deriving a fallback
   code from `FailureKind`. JSON mode renders every Cloud runtime failure via `cloud::output::print_error`,
   including auth and cancellation; rendering never changes exit codes. Human output keeps the same message.
+- CLI-owned stdout uses `src/stdout.rs`: crate-scoped `print!`/`println!` and `stdout::stdout()` suppress only typed
+  `BrokenPipe` errors. Keep new manual writers on that handle; never suppress command/API failures or child exits.
 - Exit codes: `0` success, else `Error::exit_code()` — `1` error, `3` cancelled, `4` auth required, and
   `ChildExit(code)` passes a spawned child's status through. Clap uses `2` for usage errors.
 

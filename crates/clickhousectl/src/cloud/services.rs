@@ -1,5 +1,5 @@
 use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanup};
-use crate::cloud::backups::BackupConfigCommands;
+use crate::cloud::backups::{BackupConfigCommands, SnapshotCommands};
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };
@@ -335,12 +335,20 @@ CONTEXT FOR AGENTS:
         #[arg(long)]
         transparent_data_encryption_key_id: Option<String>,
 
-        /// Tag to add. Format: key or key=value (repeatable)
-        #[arg(long = "add-tag", value_name = "KEY[=VALUE]")]
+        /// Tag to add (repeatable; cannot be combined with --remove-tag)
+        #[arg(
+            long = "add-tag",
+            value_name = "KEY[=VALUE]",
+            conflicts_with = "remove_tag"
+        )]
         add_tag: Vec<String>,
 
-        /// Tag to remove. Format: key or key=value (repeatable)
-        #[arg(long = "remove-tag", value_name = "KEY[=VALUE]")]
+        /// Tag to remove (repeatable; cannot be combined with --add-tag)
+        #[arg(
+            long = "remove-tag",
+            value_name = "KEY[=VALUE]",
+            conflicts_with = "add_tag"
+        )]
         remove_tag: Vec<String>,
 
         /// Enable or disable service core dump collection
@@ -452,6 +460,12 @@ CONTEXT FOR AGENTS:
     PrivateEndpoint {
         #[command(subcommand)]
         command: PrivateEndpointCommands,
+    },
+
+    /// Manage service snapshots (Beta)
+    Snapshot {
+        #[command(subcommand)]
+        command: SnapshotCommands,
     },
 
     /// Manage backup configuration
@@ -624,12 +638,14 @@ pub enum PrivateEndpointCommands {
 pub enum ServiceProfileCommands {
     /// List available service profiles
     List {
-        /// Region ID, e.g. us-east-1, eu-west-1, us-central1
-        #[arg(long)]
-        region: String,
+        /// Region ID (required without --byoc-id)
+        #[arg(long, required_unless_present = "byoc_id")]
+        region: Option<String>,
 
-        /// BYOC infrastructure ID
-        #[arg(long)]
+        /// BYOC infrastructure ID (required without --region)
+        ///
+        /// Cloud validates any supplied region against this infrastructure.
+        #[arg(long, required_unless_present = "region")]
         byoc_id: Option<String>,
     },
 }
@@ -871,6 +887,7 @@ impl ServiceCommands {
                 PrivateEndpointCommands::GetConfig { .. } => false,
             },
             ServiceCommands::BackupConfig { command } => command.is_write(),
+            ServiceCommands::Snapshot { command } => command.is_write(),
             ServiceCommands::UpgradeWindow { command } => command.is_write(),
         }
     }
@@ -889,7 +906,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
         }
         ServiceCommands::Profile { command } => match command {
             ServiceProfileCommands::List { region, byoc_id } => {
-                service_profile_list(client, &region, byoc_id.as_deref(), json).await
+                service_profile_list(client, region.as_deref(), byoc_id.as_deref(), json).await
             }
         },
         ServiceCommands::Settings { command } => match command {
@@ -1209,6 +1226,9 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 .await
             }
         },
+        ServiceCommands::Snapshot { command } => {
+            crate::cloud::backups::run_snapshot(client, command, json).await
+        }
         ServiceCommands::BackupConfig { command } => {
             crate::cloud::backups::run_config(client, command, json).await
         }
@@ -1657,7 +1677,7 @@ async fn upgrade_window_delete(
 
 async fn service_profile_list(
     client: &CloudClient,
-    region_id: &str,
+    region_id: Option<&str>,
     byoc_id: Option<&str>,
     json: bool,
 ) -> CloudResult<()> {
@@ -2595,7 +2615,7 @@ async fn validate_dynamic_byoc_profile(
         .ok_or_else(|| CloudError::new("dynamic profiles require --byoc-id"))?;
     let region = request.region.to_string();
     let profiles = client
-        .list_service_profiles(org_id, &region, Some(byoc_id))
+        .list_service_profiles(org_id, Some(&region), Some(byoc_id))
         .await?;
     let profile = profiles
         .iter()
@@ -3730,8 +3750,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
     use futures_util::StreamExt;
     use std::io::Write as _;
     let mut stream = response.bytes_stream();
-    let stdout = std::io::stdout();
-    let mut handle = stdout.lock();
+    let mut handle = crate::stdout::stdout();
     let mut byte_count = 0;
     let mut last_byte = None;
     // Both failure modes of the stream are classified here, at the boundary
@@ -4274,7 +4293,7 @@ impl CloudClient {
     pub async fn list_service_profiles(
         &self,
         org_id: &str,
-        region_id: &str,
+        region_id: Option<&str>,
         byoc_id: Option<&str>,
     ) -> crate::cloud::client::Result<Vec<ServiceProfile>> {
         let response = self
@@ -5026,32 +5045,33 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_profile_list_flags_and_requires_region() {
-        let command = parse_service(&[
-            "clickhousectl",
-            "cloud",
-            "service",
-            "profile",
-            "list",
-            "--region",
-            "eu-west-1",
-            "--byoc-id",
-            "byoc-1",
-            "--org-id",
-            "org-1",
-        ]);
-        let ServiceCommands::Profile {
-            command: ServiceProfileCommands::List { region, byoc_id },
-        } = command
-        else {
-            panic!("expected service profile list");
-        };
-        assert_eq!(region, "eu-west-1");
-        assert_eq!(byoc_id.as_deref(), Some("byoc-1"));
+    fn parses_service_profile_list_region_or_byoc_flags() {
+        for (flags, expected_region, expected_byoc) in [
+            (vec!["--region", "eu-west-1"], Some("eu-west-1"), None),
+            (vec!["--byoc-id", "byoc-1"], None, Some("byoc-1")),
+            (
+                vec!["--region", "eu-west-1", "--byoc-id", "byoc-1"],
+                Some("eu-west-1"),
+                Some("byoc-1"),
+            ),
+        ] {
+            let mut args = vec!["clickhousectl", "cloud", "service", "profile", "list"];
+            args.extend(flags);
+            let command = parse_service(&args);
+            assert!(!command.is_write());
+            let ServiceCommands::Profile {
+                command: ServiceProfileCommands::List { region, byoc_id },
+            } = command
+            else {
+                panic!("expected service profile list");
+            };
+            assert_eq!(region.as_deref(), expected_region);
+            assert_eq!(byoc_id.as_deref(), expected_byoc);
+        }
 
         let error = Cli::try_parse_from(["clickhousectl", "cloud", "service", "profile", "list"])
             .err()
-            .expect("missing --region should fail");
+            .expect("missing both region and BYOC should fail");
         assert_eq!(
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
@@ -5606,7 +5626,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_service_update_maximal_and_repeatable_flags() {
+    fn parses_service_update_maximal_and_repeatable_add_flags() {
         let command = parse_service(&[
             "clickhousectl",
             "cloud",
@@ -5639,8 +5659,6 @@ mod tests {
             "env=prod",
             "--add-tag",
             "team=analytics",
-            "--remove-tag",
-            "legacy",
             "--enable-core-dumps",
             "false",
             "--org-id",
@@ -5679,8 +5697,76 @@ mod tests {
         assert_eq!(disable_endpoint, vec!["mysql"]);
         assert_eq!(transparent_data_encryption_key_id.as_deref(), Some("tde-1"));
         assert_eq!(add_tag, vec!["env=prod", "team=analytics"]);
-        assert_eq!(remove_tag, vec!["legacy"]);
+        assert!(remove_tag.is_empty());
         assert_eq!(enable_core_dumps, Some(false));
+    }
+
+    #[test]
+    fn parses_service_update_repeatable_tag_removals_with_other_removals() {
+        let command = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "update",
+            "svc-1",
+            "--remove-tag",
+            "legacy",
+            "--remove-tag",
+            "owner=former-team",
+            "--remove-ip-allow",
+            "10.0.0.0/8",
+            "--remove-private-endpoint-id",
+            "pe-1",
+        ]);
+        let ServiceCommands::Update {
+            add_tag,
+            remove_tag,
+            remove_ip_allow,
+            remove_private_endpoint_id,
+            ..
+        } = command
+        else {
+            panic!("expected service update");
+        };
+
+        assert!(add_tag.is_empty());
+        assert_eq!(remove_tag, vec!["legacy", "owner=former-team"]);
+        assert_eq!(remove_ip_allow, vec!["10.0.0.0/8"]);
+        assert_eq!(remove_private_endpoint_id, vec!["pe-1"]);
+    }
+
+    #[test]
+    fn rejects_combining_service_update_tag_additions_and_removals() {
+        for (first_flag, first_value, second_flag, second_value) in [
+            ("--add-tag", "env=prod", "--remove-tag", "env=prod"),
+            ("--remove-tag", "env=prod", "--add-tag", "env=prod"),
+            ("--add-tag", "env=prod", "--remove-tag", "env=staging"),
+            ("--remove-tag", "env=staging", "--add-tag", "env=prod"),
+            ("--add-tag", "env=prod", "--remove-tag", "team=analytics"),
+            ("--remove-tag", "team=analytics", "--add-tag", "env=prod"),
+            ("--add-tag", "env", "--remove-tag", "team"),
+            ("--remove-tag", "team", "--add-tag", "env"),
+        ] {
+            let error = Cli::try_parse_from([
+                "clickhousectl",
+                "cloud",
+                "service",
+                "update",
+                "svc-1",
+                first_flag,
+                first_value,
+                second_flag,
+                second_value,
+            ])
+            .err()
+            .expect("mixed tag operations must conflict");
+
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{first_flag} {first_value} followed by {second_flag} {second_value}"
+            );
+        }
     }
 
     #[test]

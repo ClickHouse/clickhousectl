@@ -6581,6 +6581,7 @@ async fn mongodb_tls_host_absent_when_not_passed() {
     .await;
 
     let mongo = &body["source"]["mongodb"];
+    assert!(mongo["settings"].get("initialLoadParallelism").is_none());
     assert!(
         mongo.get("tlsHost").is_none(),
         "tlsHost leaked into mongodb source body: {mongo}",
@@ -6618,6 +6619,8 @@ async fn issue_593_mongodb_create_sends_every_source_tuning_and_tls_field() {
             "db.c:t",
             "--sync-interval-seconds",
             "1",
+            "--initial-load-parallelism",
+            "4",
             "--pull-batch-size",
             "2",
             "--snapshot-rows-per-partition",
@@ -6643,6 +6646,7 @@ async fn issue_593_mongodb_create_sends_every_source_tuning_and_tls_field() {
             "replicationMode": "cdc",
             "syncIntervalSeconds": 1,
             "pullBatchSize": 2,
+            "initialLoadParallelism": 4,
             "snapshotNumRowsPerPartition": 1000,
             "snapshotNumberOfParallelTables": 3,
             "deleteOnMerge": false,
@@ -6710,6 +6714,7 @@ fn append_sample_validation(args: &mut Vec<String>) {
 fn append_streaming_create_controls(args: &mut Vec<String>) {
     append_initial_scaling_and_validation(args);
     args.extend([
+        "--start-paused".into(),
         "--field-mapping".into(),
         r#"{"sourceField":"source:a=b","destinationField":"destination:x=y"}"#.into(),
         "--clickhouse-max-threads".into(),
@@ -6871,6 +6876,7 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
         assert_eq!(body["source"]["validateSamples"], true, "{source}");
         assert!(body["source"][source].is_object(), "{source}: {body}");
         if has_streaming_controls {
+            assert_eq!(body["startPaused"], true, "{source}");
             assert_eq!(
                 body["scaling"],
                 serde_json::json!({
@@ -6917,6 +6923,7 @@ async fn cross_source_create_controls_reach_all_eight_request_shapes() {
                 assert_eq!(body["settings"]["streaming_max_insert_wait_ms"], 500);
             }
         } else {
+            assert!(body.get("startPaused").is_none(), "{source}");
             assert!(body.get("scaling").is_none(), "{source}: {body}");
             assert!(body.get("fieldMappings").is_none(), "{source}: {body}");
             assert!(body.get("settings").is_none(), "{source}: {body}");
@@ -7451,6 +7458,204 @@ async fn kinesis_iam_user_omits_iam_role() {
         kinesis.get("iamRole").is_none(),
         "iamRole leaked when --auth IAM_USER: {kinesis}",
     );
+}
+
+fn kinesis_auth_args<'a>(operation: &'a str, flags: &[&'a str]) -> Vec<&'a str> {
+    let mut args = vec![
+        "clickpipe",
+        operation,
+        "kinesis",
+        "svc-id",
+        "--org-id",
+        "org",
+        "--stream-name",
+        "stream",
+        "--region",
+        "us-east-1",
+        "--format",
+        "JSONEachRow",
+    ];
+    if operation == "create" {
+        args.extend([
+            "--name",
+            "pipe",
+            "--database",
+            "default",
+            "--table",
+            "events",
+            "--column",
+            "id:Int64",
+        ]);
+    }
+    args.extend(flags);
+    args
+}
+
+#[tokio::test]
+async fn kinesis_auth_inference_sends_exact_credentials_for_create_and_discovery() {
+    for operation in ["create", "schema-discover"] {
+        for (flags, auth, role, keys) in [
+            (vec![], "IAM_ROLE", None, false),
+            (
+                vec!["--iam-role", "arn:aws:iam::123:role/x"],
+                "IAM_ROLE",
+                Some("arn:aws:iam::123:role/x"),
+                false,
+            ),
+            (
+                vec![
+                    "--auth",
+                    "IAM_ROLE",
+                    "--iam-role",
+                    "arn:aws:iam::123:role/x",
+                ],
+                "IAM_ROLE",
+                Some("arn:aws:iam::123:role/x"),
+                false,
+            ),
+            (
+                vec![
+                    "--access-key-id",
+                    "exact-access-id",
+                    "--secret-key",
+                    "exact/secret+key=",
+                ],
+                "IAM_USER",
+                None,
+                true,
+            ),
+            (
+                vec![
+                    "--auth",
+                    "IAM_USER",
+                    "--access-key-id",
+                    "exact-access-id",
+                    "--secret-key",
+                    "exact/secret+key=",
+                ],
+                "IAM_USER",
+                None,
+                true,
+            ),
+        ] {
+            let mock = if operation == "create" {
+                start_mock_clickpipes_api().await
+            } else {
+                start_mock_schema_discovery_api().await
+            };
+            let body = invoke_cli_capture_body(&mock, &kinesis_auth_args(operation, &flags)).await;
+            let mut expected = serde_json::json!({
+                "streamName": "stream", "region": "us-east-1", "format": "JSONEachRow",
+                "authentication": auth, "iteratorType": "TRIM_HORIZON",
+            });
+            if let Some(role) = role {
+                expected["iamRole"] = serde_json::json!(role);
+            }
+            if keys {
+                expected["accessKey"] = serde_json::json!({
+                    "accessKeyId": "exact-access-id", "secretKey": "exact/secret+key=",
+                });
+            }
+            assert_eq!(body["source"]["kinesis"], expected, "{operation}");
+            assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn kinesis_auth_conflicts_are_secret_free_usage_errors_before_credentials_or_http() {
+    let mock = MockServer::start().await;
+    let home = tempfile::tempdir().unwrap();
+    for operation in ["create", "schema-discover"] {
+        for flags in [
+            vec![
+                "--auth",
+                "IAM_ROLE",
+                "--access-key-id",
+                "private-access-id",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            vec!["--auth", "IAM_ROLE", "--access-key-id", "private-access-id"],
+            vec!["--auth", "IAM_ROLE", "--secret-key", "private-secret-key"],
+            vec![
+                "--iam-role",
+                "private-role-arn",
+                "--access-key-id",
+                "private-access-id",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            vec![
+                "--iam-role",
+                "private-role-arn",
+                "--access-key-id",
+                "private-access-id",
+            ],
+            vec![
+                "--iam-role",
+                "private-role-arn",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            vec!["--auth", "IAM_USER", "--iam-role", "private-role-arn"],
+            vec![
+                "--auth",
+                "IAM_USER",
+                "--iam-role",
+                "private-role-arn",
+                "--access-key-id",
+                "private-access-id",
+                "--secret-key",
+                "private-secret-key",
+            ],
+            vec!["--access-key-id", "private-access-id"],
+            vec!["--secret-key", "private-secret-key"],
+            vec!["--auth", "IAM_USER", "--access-key-id", "private-access-id"],
+            vec!["--auth", "IAM_USER", "--secret-key", "private-secret-key"],
+        ] {
+            // Reverse flag pairs to ensure precedence cannot silently select one mode.
+            for ordered_flags in [
+                flags.clone(),
+                flags
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .rev()
+                    .flatten()
+                    .copied()
+                    .collect(),
+            ] {
+                for credentials in [false, true] {
+                    let mut command = Command::new(clickhousectl_binary());
+                    command
+                        .env_clear()
+                        .env("HOME", home.path())
+                        .env("DO_NOT_TRACK", "1")
+                        .args(["cloud", "--url", &mock.uri(), "--json"])
+                        .args(kinesis_auth_args(operation, &ordered_flags));
+                    if credentials {
+                        command
+                            .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+                            .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests");
+                    }
+                    let output = command.output().unwrap();
+                    assert_eq!(output.status.code(), Some(2), "{operation}: {output:?}");
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    assert!(stderr.contains("--"), "actionable flags missing: {stderr}");
+                    for value in [
+                        "private-role-arn",
+                        "private-access-id",
+                        "private-secret-key",
+                    ] {
+                        assert!(!stderr.contains(value), "credential leaked: {stderr}");
+                        assert!(!String::from_utf8_lossy(&output.stdout).contains(value));
+                    }
+                }
+            }
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 // ── BigQuery ───────────────────────────────────────────────────────────────
@@ -16701,6 +16906,8 @@ async fn service_update_warns_on_unmatched_private_endpoint_and_tag_removal() {
             "pe-missing",
             "--remove-tag",
             "missing",
+            "--remove-tag",
+            "env",
         ],
     );
 
@@ -16712,6 +16919,17 @@ async fn service_update_warns_on_unmatched_private_endpoint_and_tag_removal() {
          on the service; nothing was removed\n\
          Warning: --remove-tag missing did not match any tag on the service; nothing was \
          removed\n"
+    );
+
+    let requests = mock.received_requests().await.unwrap();
+    let patch = requests
+        .iter()
+        .find(|request| request.method.as_str() == "PATCH")
+        .unwrap();
+    let body: Value = serde_json::from_slice(&patch.body).unwrap();
+    assert_eq!(
+        body["tags"]["remove"],
+        serde_json::json!([{ "key": "missing" }, { "key": "env" }])
     );
 }
 
@@ -16747,6 +16965,10 @@ async fn service_update_skips_get_when_no_removals_requested() {
             "org-1",
             "--new-name",
             "renamed",
+            "--add-tag",
+            "env=prod",
+            "--add-tag",
+            "team=analytics",
         ],
     );
 
@@ -16756,6 +16978,42 @@ async fn service_update_skips_get_when_no_removals_requested() {
         "unexpected stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    let requests = mock.received_requests().await.unwrap();
+    let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["name"], "renamed");
+    assert_eq!(
+        body["tags"]["add"],
+        serde_json::json!([
+            { "key": "env", "value": "prod" },
+            { "key": "team", "value": "analytics" },
+        ])
+    );
+}
+
+#[tokio::test]
+async fn service_update_rejects_mixed_tag_operations_before_auth_or_http() {
+    let mock = MockServer::start().await;
+
+    for args in [
+        ["--add-tag", "env=prod", "--remove-tag", "env=prod"],
+        ["--remove-tag", "env=staging", "--add-tag", "env=prod"],
+        ["--add-tag", "env=prod", "--remove-tag", "team=analytics"],
+        ["--remove-tag", "team", "--add-tag", "env"],
+    ] {
+        let mut command = vec!["service", "update", "svc-1"]
+            .into_iter()
+            .map(String::from)
+            .collect::<Vec<_>>();
+        command.extend(args.into_iter().map(String::from));
+
+        let output = invoke_cli_without_cloud_credentials(&mock, &command);
+
+        assert_eq!(output.status.code(), Some(2), "{command:?}");
+        assert!(output.stdout.is_empty(), "{command:?}");
+    }
+
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 // ── Private endpoint ID format validation (issue #611) ─────────────────────
@@ -22677,6 +22935,104 @@ async fn service_profile_list_omits_byoc_and_accepts_empty_oauth_result() {
 }
 
 #[tokio::test]
+async fn service_profile_list_byoc_only_sends_no_region() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([{"profile": "custom-byoc", "memoryGi": 16.0}]);
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .and(query_param("byoc_id", "byoc-1"))
+        .and(wiremock::matchers::query_param_is_missing("region_id"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "profile",
+            "list",
+            "--byoc-id",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url.query_pairs().collect::<Vec<_>>(),
+        vec![("byoc_id".into(), "byoc-1".into())]
+    );
+}
+
+#[tokio::test]
+async fn service_profile_list_requires_region_or_byoc_before_credentials_or_network() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    for flags in [vec![], vec!["--region"], vec!["--byoc-id"]] {
+        let output = Command::new(clickhousectl_binary())
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", project.path())
+            .current_dir(project.path())
+            .args(["cloud", "--url", &mock.uri(), "service", "profile", "list"])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn service_profile_list_leaves_region_byoc_validation_to_cloud() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(SERVICE_PROFILES_PATH))
+        .and(query_param("region_id", "eu-west-1"))
+        .and(query_param("byoc_id", "byoc-1"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(
+            serde_json::json!({"error": "region does not match BYOC infrastructure"}),
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "profile",
+            "list",
+            "--region",
+            "eu-west-1",
+            "--byoc-id",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let error = cloud_runtime_error(&output);
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("region does not match BYOC infrastructure")
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.query_pairs().count(), 2);
+}
+
+#[tokio::test]
 async fn service_profile_list_renders_sparse_unknown_profiles() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
@@ -26672,5 +27028,755 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
         assert!(output.stdout.is_empty());
         assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
         assert!(!token_dir.join("tokens.json").exists());
+    }
+}
+
+// A pipe with no reader before spawn makes failure deterministic, even if the
+// scheduler never runs the reader until after the CLI has produced its output.
+fn closed_stdout() -> std::io::PipeWriter {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    writer
+}
+
+#[tokio::test]
+async fn closed_stdout_large_cloud_list_succeeds_in_human_and_json_modes() {
+    let mock = MockServer::start().await;
+    let services: Vec<_> = (0..512)
+        .map(|id| serde_json::json!({"id": format!("00000000-0000-0000-0000-{id:012x}"), "name": "x".repeat(4096)}))
+        .collect();
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": services})),
+        )
+        .mount(&mock)
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    for json in [false, true] {
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .env_clear()
+            .env("HOME", home.path())
+            .env("DO_NOT_TRACK", "1")
+            .current_dir(project.path())
+            .args([
+                "cloud",
+                "--url",
+                &mock.uri(),
+                "--api-key",
+                "test-key",
+                "--api-secret",
+                "test-secret",
+                "service",
+                "list",
+                "--org-id",
+                "org-1",
+            ]);
+        if json {
+            command.arg("--json");
+        }
+        // Check that both forms really exceed ordinary pipe buffer sizes.
+        let complete = command.output().unwrap();
+        assert_success(&complete);
+        assert!(complete.stdout.len() > 1024 * 1024);
+        let output = command.stdout(closed_stdout()).output().unwrap();
+        assert_success(&output);
+        assert!(output.stderr.is_empty(), "{output:?}");
+    }
+}
+
+#[tokio::test]
+async fn closed_stdout_keeps_a_genuine_cloud_failure_and_error_envelope() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("Denied"))
+        .mount(&mock)
+        .await;
+    let home = tempfile::tempdir().unwrap();
+    for json in [false, true] {
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .env_clear()
+            .env("HOME", home.path())
+            .env("DO_NOT_TRACK", "1")
+            .current_dir(home.path())
+            .args([
+                "cloud",
+                "--url",
+                &mock.uri(),
+                "--api-key",
+                "test-key",
+                "--api-secret",
+                "test-secret",
+                "service",
+                "list",
+                "--org-id",
+                "org-1",
+            ])
+            .stdout(closed_stdout());
+        if json {
+            command.arg("--json");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(4), "{output:?}");
+        if json {
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+            assert_eq!(error["error"]["code"], "auth_required");
+        } else {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("Error:"));
+        }
+    }
+}
+
+#[tokio::test]
+async fn service_snapshots_routes_preserve_json_and_human_output() {
+    let mock = MockServer::start().await;
+    let snapshot = serde_json::json!({"id": "00000000-0000-0000-0000-000000000001", "status": "done", "startedAt": "2026-09-18T10:00:00Z", "bucket": {"region": "us-east-1"}});
+    for (args, suffix, result) in [
+        (
+            vec!["list", "svc-1"],
+            "snapshots",
+            serde_json::json!([snapshot, {}]),
+        ),
+        (
+            vec!["get", "svc-1", "--snapshot-id", "snap-1"],
+            "snapshots/snap-1",
+            snapshot,
+        ),
+        (
+            vec!["config", "get", "svc-1"],
+            "snapshotConfiguration",
+            serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1/organizations/org-1/services/svc-1/{suffix}"
+            )))
+            .and(header(
+                "authorization",
+                "Basic ZmFrZS1rZXktZm9yLXRlc3RzOmZha2Utc2VjcmV0LWZvci10ZXN0cw==",
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+            )
+            .expect(2)
+            .mount(&mock)
+            .await;
+        let mut full = vec!["service", "snapshot"];
+        full.extend(args);
+        full.extend(["--org-id", "org-1"]);
+        let json = invoke_cli_with_cloud_credentials(&mock, &full);
+        assert_success(&json);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+            result
+        );
+        let human = invoke_cli_with_cloud_credentials_human(&mock, &full);
+        assert_success(&human);
+        assert!(!human.stdout.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn service_snapshot_config_patch_preserves_omission_and_pairs() {
+    for (flags, body) in [
+        (
+            vec!["--enabled", "false"],
+            serde_json::json!({"enabled": false}),
+        ),
+        (
+            vec!["--gap", "60", "--time-frame", "2880"],
+            serde_json::json!({"gap": 60.0, "timeFrame": 2880.0}),
+        ),
+        (
+            vec!["--enabled", "true", "--gap", "30", "--time-frame", "1440"],
+            serde_json::json!({"enabled": true, "gap": 30.0, "timeFrame": 1440.0}),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        Mock::given(method("PATCH"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/snapshotConfiguration",
+            ))
+            .and(body_json(&body))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": body})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut args = vec![
+            "service", "snapshot", "config", "update", "svc-1", "--org-id", "org-1",
+        ];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_success(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            body
+        );
+    }
+}
+
+#[tokio::test]
+async fn kinesis_protobuf_create_and_discovery_forward_file_and_stdin() {
+    let dir = tempfile::tempdir().unwrap();
+    let schema = dir.path().join("events.proto");
+    let raw = "syntax = \"proto3\"; message Event {}";
+    std::fs::write(&schema, raw).unwrap();
+    for operation in ["create", "schema-discover"] {
+        for input in [schema.to_str().unwrap(), "-"] {
+            let mock = if operation == "create" {
+                start_mock_clickpipes_api().await
+            } else {
+                start_mock_schema_discovery_api().await
+            };
+            let mut args = vec![
+                "clickpipe",
+                operation,
+                "kinesis",
+                "svc-id",
+                "--org-id",
+                "org",
+                "--stream-name",
+                "events",
+                "--region",
+                "us-east-1",
+                "--format",
+                "Protobuf",
+                "--protobuf-schema-file",
+                input,
+                "--access-key-id",
+                "access",
+                "--secret-key",
+                "secret",
+            ];
+            if operation == "create" {
+                args.extend([
+                    "--name",
+                    "pipe",
+                    "--database",
+                    "default",
+                    "--table",
+                    "events",
+                ]);
+            }
+            let body = if input == "-" {
+                invoke_cli_capture_body_with_stdin(&mock, &args, raw.as_bytes()).await
+            } else {
+                invoke_cli_capture_body(&mock, &args).await
+            };
+            let source = &body["source"]["kinesis"];
+            assert_eq!(source["format"], "Protobuf");
+            assert_eq!(
+                source["protobufSchema"],
+                "c3ludGF4ID0gInByb3RvMyI7IG1lc3NhZ2UgRXZlbnQge30="
+            );
+            assert_eq!(source["authentication"], "IAM_USER");
+            assert_eq!(
+                source["accessKey"],
+                serde_json::json!({"accessKeyId": "access", "secretKey": "secret"})
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn start_paused_omission_and_database_rejection_are_preserved() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(&mock, &kafka_args_minimal()).await;
+    assert!(body.get("startPaused").is_none());
+    for source in ["postgres", "mysql", "mongodb", "bigquery"] {
+        let mock = MockServer::start().await;
+        let output = invoke_cli_without_cloud_credentials(
+            &mock,
+            &["clickpipe", "create", source, "svc-1", "--start-paused"].map(str::to_string),
+        );
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{source}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(mock.received_requests().await.unwrap().is_empty());
+    }
+}
+
+// API-key pagination: explicit pages, all-page listing, and exhaustive name lookup.
+const API_KEYS_PATH: &str = "/v1/organizations/org-1/keys";
+const KEY_PAGE_CURSOR: &str = "opaque +/&?=雪";
+const PAGED_KEY_ID: &str = "11111111-2222-3333-4444-555555555555";
+const OTHER_PAGED_KEY_ID: &str = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+async fn mount_key_page(mock: &MockServer, cursor: Option<&str>, status: u16, body: Value) {
+    let matcher = Mock::given(method("GET")).and(path(API_KEYS_PATH));
+    let matcher = match cursor {
+        Some(cursor) => matcher.and(query_param("cursor", cursor)),
+        None => matcher.and(wiremock::matchers::query_param_is_missing("cursor")),
+    };
+    matcher
+        .respond_with(ResponseTemplate::new(status).set_body_json(body))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+async fn assert_key_page_requests(mock: &MockServer, cursors: &[Option<&str>]) {
+    let requests = mock.received_requests().await.unwrap();
+    let pages: Vec<_> = requests
+        .iter()
+        .filter(|request| request.url.path() == API_KEYS_PATH)
+        .collect();
+    assert_eq!(pages.len(), cursors.len());
+    for (request, cursor) in pages.iter().zip(cursors) {
+        assert_eq!(request.method, "GET");
+        assert!(request.body.is_empty());
+        let expected: Vec<_> = cursor
+            .iter()
+            .map(|cursor| ("cursor".to_owned(), (*cursor).to_owned()))
+            .collect();
+        assert_eq!(
+            request.url.query_pairs().into_owned().collect::<Vec<_>>(),
+            expected
+        );
+        assert_eq!(
+            request.headers["authorization"].to_str().unwrap(),
+            "Basic ZmFrZS1rZXktZm9yLXRlc3RzOmZha2Utc2VjcmV0LWZvci10ZXN0cw=="
+        );
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_list_collects_all_pages_in_json_and_human_output() {
+    for human in [false, true] {
+        let mock = MockServer::start().await;
+        let first = serde_json::json!({"id": OTHER_PAGED_KEY_ID, "name": "first-key"});
+        let last = serde_json::json!({"id": PAGED_KEY_ID, "name": "last-key"});
+        mount_key_page(
+            &mock,
+            None,
+            200,
+            serde_json::json!({
+                "result": [first], "nextCursor": KEY_PAGE_CURSOR, "limit": 1, "totalCount": 2
+            }),
+        )
+        .await;
+        // An empty page is not a terminator when the server supplies another cursor.
+        mount_key_page(
+            &mock,
+            Some(KEY_PAGE_CURSOR),
+            200,
+            serde_json::json!({
+                "result": [], "nextCursor": "last-page"
+            }),
+        )
+        .await;
+        mount_key_page(
+            &mock,
+            Some("last-page"),
+            200,
+            serde_json::json!({
+                "result": [last], "nextCursor": null
+            }),
+        )
+        .await;
+        let args = ["key", "list", "--all", "--org-id", "org-1"];
+        let output = if human {
+            invoke_cli_with_cloud_credentials_human(&mock, &args)
+        } else {
+            invoke_cli_with_cloud_credentials(&mock, &args)
+        };
+        assert_success(&output);
+        if human {
+            let stdout = String::from_utf8(output.stdout).unwrap();
+            assert!(stdout.contains("| first-key"), "{stdout}");
+            assert!(stdout.contains("| last-key"), "{stdout}");
+        } else {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                serde_json::json!([first, last])
+            );
+        }
+        assert_key_page_requests(&mock, &[None, Some(KEY_PAGE_CURSOR), Some("last-page")]).await;
+        assert_eq!(mock.received_requests().await.unwrap().len(), 3);
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_accepts_unpaginated_and_null_cursor_responses() {
+    for next_cursor in [None, Some(Value::Null)] {
+        for result in [
+            serde_json::json!([]),
+            serde_json::json!([{ "id": PAGED_KEY_ID, "name": "only-key" }]),
+        ] {
+            let mock = MockServer::start().await;
+            let mut body = serde_json::json!({"result": result});
+            if let Some(cursor) = &next_cursor {
+                body["nextCursor"] = cursor.clone();
+            }
+            mount_key_page(&mock, None, 200, body).await;
+            let output =
+                invoke_cli_with_cloud_credentials(&mock, &["key", "list", "--org-id", "org-1"]);
+            assert_success(&output);
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                serde_json::json!({"result": result})
+            );
+            assert_key_page_requests(&mock, &[None]).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_name_lookup_finds_later_match_and_rejects_cross_page_ambiguity() {
+    for (command, http_method) in [("get", "GET"), ("update", "PATCH"), ("delete", "DELETE")] {
+        for ambiguous in [false, true] {
+            let mock = MockServer::start().await;
+            mount_key_page(&mock, None, 200, serde_json::json!({
+            "result": [{"id": OTHER_PAGED_KEY_ID, "name": if ambiguous { "target" } else { "other" }}],
+            "nextCursor": KEY_PAGE_CURSOR
+        })).await;
+            let target = serde_json::json!({"id": PAGED_KEY_ID, "name": "target"});
+            mount_key_page(
+                &mock,
+                Some(KEY_PAGE_CURSOR),
+                200,
+                serde_json::json!({"result": [target]}),
+            )
+            .await;
+            Mock::given(method(http_method))
+                .and(path(format!("{API_KEYS_PATH}/{PAGED_KEY_ID}")))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": target})),
+                )
+                .expect(if ambiguous { 0 } else { 1 })
+                .mount(&mock)
+                .await;
+            let output = invoke_cli_with_cloud_credentials(
+                &mock,
+                &["key", command, "--name", "target", "--org-id", "org-1"],
+            );
+            if ambiguous {
+                assert_eq!(output.status.code(), Some(1));
+                assert!(output.stdout.is_empty());
+                let error = cloud_runtime_error(&output);
+                let message = error["message"].as_str().unwrap();
+                assert!(message.contains("found 2 API key resources"), "{message}");
+            } else {
+                assert_success(&output);
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                    if command == "delete" {
+                        serde_json::json!({})
+                    } else {
+                        target
+                    }
+                );
+            }
+            assert_key_page_requests(&mock, &[None, Some(KEY_PAGE_CURSOR)]).await;
+            assert_eq!(
+                mock.received_requests().await.unwrap().len(),
+                if ambiguous { 2 } else { 3 }
+            );
+        }
+    }
+}
+#[tokio::test]
+async fn key_pagination_later_page_errors_prevent_partial_output_and_name_resolution() {
+    for lookup in [false, true] {
+        for (status, exit) in [(400, 1), (403, 4)] {
+            let mock = MockServer::start().await;
+            mount_key_page(&mock, None, 200, serde_json::json!({
+                "result": [{"id": PAGED_KEY_ID, "name": "target"}], "nextCursor": KEY_PAGE_CURSOR
+            })).await;
+            mount_key_page(
+                &mock,
+                Some(KEY_PAGE_CURSOR),
+                status,
+                serde_json::json!({"error": "later page denied"}),
+            )
+            .await;
+            let args = if lookup {
+                vec!["key", "get", "--name", "target", "--org-id", "org-1"]
+            } else {
+                vec!["key", "list", "--all", "--org-id", "org-1"]
+            };
+            let output = invoke_cli_with_cloud_credentials(&mock, &args);
+            assert_eq!(output.status.code(), Some(exit), "{output:?}");
+            assert!(output.stdout.is_empty());
+            let error = cloud_runtime_error(&output);
+            assert!(
+                error["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("later page denied")
+            );
+            assert_key_page_requests(&mock, &[None, Some(KEY_PAGE_CURSOR)]).await;
+            assert_eq!(mock.received_requests().await.unwrap().len(), 2);
+        }
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_repeated_cursors_fail_before_another_request() {
+    for lookup in [false, true] {
+        let mock = MockServer::start().await;
+        mount_key_page(
+            &mock,
+            None,
+            200,
+            serde_json::json!({
+                "result": [{"id": PAGED_KEY_ID, "name": "target"}], "nextCursor": KEY_PAGE_CURSOR
+            }),
+        )
+        .await;
+        mount_key_page(
+            &mock,
+            Some(KEY_PAGE_CURSOR),
+            200,
+            serde_json::json!({
+                "result": [], "nextCursor": "intermediate"
+            }),
+        )
+        .await;
+        mount_key_page(
+            &mock,
+            Some("intermediate"),
+            200,
+            serde_json::json!({
+                "result": [], "nextCursor": KEY_PAGE_CURSOR
+            }),
+        )
+        .await;
+        let args = if lookup {
+            vec!["key", "get", "--name", "target", "--org-id", "org-1"]
+        } else {
+            vec!["key", "list", "--all", "--org-id", "org-1"]
+        };
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stdout.is_empty());
+        let error = cloud_runtime_error(&output);
+        let message = error["message"].as_str().unwrap();
+        assert!(message.contains("repeated cursor"), "{message}");
+        assert!(!message.contains(KEY_PAGE_CURSOR), "{message}");
+        assert_key_page_requests(&mock, &[None, Some(KEY_PAGE_CURSOR), Some("intermediate")]).await;
+        assert_eq!(mock.received_requests().await.unwrap().len(), 3);
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_preserves_oauth_and_treats_empty_cursor_as_opaque() {
+    let mock = MockServer::start().await;
+    mount_key_page(
+        &mock,
+        None,
+        200,
+        serde_json::json!({"result": [], "nextCursor": ""}),
+    )
+    .await;
+    let result = serde_json::json!([{"id": PAGED_KEY_ID, "name": "oauth-key"}]);
+    mount_key_page(&mock, Some(""), 200, serde_json::json!({"result": result})).await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "key",
+            "list",
+            "--all",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in &requests {
+        assert_eq!(request.headers["authorization"], "Bearer test-bearer-token");
+    }
+    assert!(requests[0].url.query().is_none());
+    assert_eq!(
+        requests[1].url.query_pairs().collect::<Vec<_>>(),
+        vec![("cursor".into(), "".into())]
+    );
+}
+
+#[tokio::test]
+async fn key_pagination_default_is_one_page_with_metadata() {
+    let mock = MockServer::start().await;
+    let body = serde_json::json!({
+        "result": [{"id": PAGED_KEY_ID, "name": "first"}],
+        "limit": 250, "totalCount": 501, "nextCursor": KEY_PAGE_CURSOR
+    });
+    mount_key_page(&mock, None, 200, body.clone()).await;
+    let output = invoke_cli_with_cloud_credentials(&mock, &["key", "list", "--org-id", "org-1"]);
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        body
+    );
+    assert_key_page_requests(&mock, &[None]).await;
+}
+
+#[tokio::test]
+async fn key_pagination_explicit_page_forwards_limit_and_opaque_cursor() {
+    for cursor in ["", "-opaque +/=&?'雪"] {
+        let mock = MockServer::start().await;
+        mount_key_page(
+            &mock,
+            Some(cursor),
+            200,
+            serde_json::json!({
+                "result": [], "limit": 25, "totalCount": 0
+            }),
+        )
+        .await;
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &[
+                "key", "list", "--org-id", "org-1", "--limit", "25", "--cursor", cursor,
+            ],
+        );
+        assert_success(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            serde_json::json!({
+                "result": [], "limit": 25, "totalCount": 0
+            })
+        );
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].url.query_pairs().collect::<Vec<_>>(),
+            vec![
+                ("limit".into(), "25".into()),
+                ("cursor".into(), cursor.into())
+            ]
+        );
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_all_sends_limit_on_every_page() {
+    let mock = MockServer::start().await;
+    mount_key_page(
+        &mock,
+        None,
+        200,
+        serde_json::json!({"result": [], "nextCursor": ""}),
+    )
+    .await;
+    mount_key_page(&mock, Some(""), 200, serde_json::json!({"result": []})).await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["key", "list", "--org-id", "org-1", "--all", "--limit", "1"],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!([])
+    );
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 2);
+    for request in requests {
+        assert!(
+            request
+                .url
+                .query_pairs()
+                .any(|(key, value)| key == "limit" && value == "1")
+        );
+    }
+}
+
+#[tokio::test]
+async fn key_pagination_invalid_flags_fail_before_network_or_credentials() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    for flags in [
+        vec!["--limit", "0"],
+        vec!["--limit", "251"],
+        vec!["--all", "--cursor="],
+    ] {
+        let output = Command::new(clickhousectl_binary())
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", project.path())
+            .current_dir(project.path())
+            .args(["cloud", "--url", &mock.uri(), "key", "list"])
+            .args(flags)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{output:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn key_pagination_human_continuation_preserves_shell_tokens_and_page_context() {
+    for cursor in [
+        "",
+        "plain-token",
+        "-leading-hyphen",
+        "-opaque +/=&?'雪",
+        "$(printf injected); `printf injected`",
+        "{one,two}\u{a0}three",
+        "\"double\" \\backslash",
+        "nul\0byte",
+        "tab\there",
+        "return\rhere",
+        "\n\u{1b}[31m",
+    ] {
+        let mock = MockServer::start().await;
+        mount_key_page(
+            &mock,
+            None,
+            200,
+            serde_json::json!({"result": [], "nextCursor": cursor}),
+        )
+        .await;
+        let output = invoke_cli_with_cloud_credentials_human(
+            &mock,
+            &["key", "list", "--org-id", "org-1", "--limit", "25"],
+        );
+        assert_success(&output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        if cursor.chars().any(char::is_control) {
+            assert!(!stdout.contains(cursor), "{stdout}");
+            assert!(stdout.contains("--json"), "{stdout}");
+            assert!(!stdout.contains('\u{1b}'), "{stdout}");
+        } else {
+            let (_, flags) = stdout.split_once("with --org-id=").unwrap();
+            let (flags, _) = flags.split_once(" to continue").unwrap();
+            let roundtrip = Command::new("sh")
+                .args(["-c", &format!("printf '%s\\n' --org-id={flags}")])
+                .output()
+                .unwrap();
+            assert!(roundtrip.status.success());
+            assert_eq!(
+                String::from_utf8(roundtrip.stdout).unwrap(),
+                format!("--org-id=org-1\n--limit=25\n--cursor={cursor}\n")
+            );
+        }
+        assert_eq!(mock.received_requests().await.unwrap().len(), 1);
     }
 }
