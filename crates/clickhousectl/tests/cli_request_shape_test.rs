@@ -27637,8 +27637,15 @@ async fn key_pagination_invalid_flags_fail_before_network_or_credentials() {
 async fn key_pagination_human_continuation_preserves_shell_tokens_and_page_context() {
     for cursor in [
         "",
+        "plain-token",
+        "-leading-hyphen",
         "-opaque +/=&?'雪",
         "$(printf injected); `printf injected`",
+        "{one,two}\u{a0}three",
+        "\"double\" \\backslash",
+        "nul\0byte",
+        "tab\there",
+        "return\rhere",
         "\n\u{1b}[31m",
     ] {
         let mock = MockServer::start().await;

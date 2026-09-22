@@ -11,7 +11,7 @@ use clickhouse_cloud_api::models::IpAccessListEntry;
 use clickhouse_cloud_api::models::{
     ApiKey, ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
 };
-use std::collections::HashSet;
+use std::{borrow::Cow, collections::HashSet};
 use tabled::{Table, Tabled, settings::Style};
 
 const API_KEY_STATES: &[&str] = &["enabled", "disabled"];
@@ -414,25 +414,33 @@ async fn key_list(
     } else {
         print_key_table(page.result, all);
         if let Some(cursor) = page.next_cursor {
-            if cursor.chars().any(char::is_control) {
-                println!(
-                    "More API keys are available. Use --json to read nextCursor and pass it with --cursor, or use --all."
-                );
-            } else {
-                // Single quotes preserve shell metacharacters, including embedded quotes.
+            if let (Some(cursor), Some(org)) = (
+                quote_shell_argument_for_display(&cursor),
+                quote_shell_argument_for_display(&org_id),
+            ) {
                 // Equals signs keep tokens beginning with '-' attached to their flags.
-                let cursor = cursor.replace('\'', "'\"'\"'");
-                let org = org_id.replace('\'', "'\"'\"'");
                 let limit = limit
                     .map(|value| format!(" --limit={value}"))
                     .unwrap_or_default();
                 println!(
-                    "More API keys are available. Rerun this command with --org-id='{org}'{limit} --cursor='{cursor}' to continue, or use --all."
+                    "More API keys are available. Rerun this command with --org-id={org}{limit} --cursor={cursor} to continue, or use --all."
+                );
+            } else {
+                println!(
+                    "More API keys are available. Use --json to read nextCursor and pass it with --cursor, or use --all."
                 );
             }
         }
     }
     Ok(())
+}
+
+fn quote_shell_argument_for_display(value: &str) -> Option<Cow<'_, str>> {
+    // Control characters are unsafe to paste into an interactive shell, even when quoted.
+    if value.chars().any(char::is_control) {
+        return None;
+    }
+    shlex::try_quote(value).ok()
 }
 
 fn print_key_table(keys: Vec<ApiKey>, all: bool) {

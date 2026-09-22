@@ -2842,6 +2842,9 @@ and optional `nextCursor`,
 absent `nextCursor` means the last page (an empty string remains a valid token).
 `--all --json` returns a single combined array, with no partial output on failure.
 
+Human output includes shell-quoted arguments for the next page. If a cursor or
+organization ID contains control characters, it directs you to `--json` or `--all`.
+
 ```bash
 clickhousectl cloud key list --limit 25 --json
 clickhousectl cloud key list --limit 25 --cursor='TOKEN_FROM_nextCursor' --json
