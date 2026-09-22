@@ -1,3 +1,153 @@
+use super::permissions::{Conditional, Declaration as Permission};
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api("service list", &[&op::INSTANCE_GET_LIST]),
+    Permission::api("service get", &[&op::INSTANCE_GET])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service profile list", &[&op::SERVICE_PROFILES_LIST]),
+    Permission::api(
+        "service settings list",
+        &[&op::SERVICE_CLICKHOUSE_SETTINGS_LIST_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service settings get",
+        &[&op::SERVICE_CLICKHOUSE_SETTING_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service settings schema",
+        &[&op::SERVICE_CLICKHOUSE_SETTINGS_SCHEMA_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service settings set",
+        &[&op::SERVICE_CLICKHOUSE_SETTINGS_UPDATE],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service settings unset",
+        &[&op::SERVICE_CLICKHOUSE_SETTING_DELETE],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service scaling-schedule get", &[&op::SCALING_SCHEDULE_GET])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service scaling-schedule set",
+        &[&op::SCALING_SCHEDULE_UPSERT],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service scaling-schedule delete",
+        &[&op::SCALING_SCHEDULE_DELETE],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service start", &[&op::INSTANCE_STATE_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service wake", &[&op::INSTANCE_STATE_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service stop", &[&op::INSTANCE_STATE_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service scale", &[&op::INSTANCE_REPLICA_SCALING_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service reset-password", &[&op::INSTANCE_PASSWORD_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service query-endpoint get",
+        &[&op::INSTANCE_QUERY_ENDPOINT_GET],
+    )
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        Conditional::new("If endpoint is absent", &[&op::INSTANCE_GET]),
+    ]),
+    Permission::api(
+        "service query-endpoint create",
+        &[
+            &op::INSTANCE_QUERY_ENDPOINT_GET,
+            &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
+        ],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service query-endpoint delete",
+        &[&op::INSTANCE_QUERY_ENDPOINT_DELETE],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service private-endpoint create",
+        &[&op::INSTANCE_PRIVATE_ENDPOINT_CREATE],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service private-endpoint get-config",
+        &[&op::INSTANCE_PRIVATE_ENDPOINT_CONFIG_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service upgrade-window get", &[&op::UPGRADE_WINDOW_GET])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service upgrade-window set", &[&op::UPGRADE_WINDOW_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service upgrade-window delete",
+        &[&op::UPGRADE_WINDOW_DELETE],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service prometheus", &[&op::INSTANCE_PROMETHEUS_GET])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service create", &[&op::INSTANCE_CREATE]).when(&[Conditional::new(
+        "Dynamic BYOC profile",
+        &[&op::SERVICE_PROFILES_LIST],
+    )]),
+    Permission::api("service delete", &[&op::INSTANCE_DELETE]).when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        Conditional::flag("force", &[&op::INSTANCE_GET, &op::INSTANCE_STATE_UPDATE]),
+        Conditional::new("Owned query-key cleanup", &[&op::OPENAPI_KEY_DELETE]),
+    ]),
+    Permission::api("service update", &[&op::INSTANCE_UPDATE]).when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        Conditional::new("Removing IPs/endpoints/tags", &[&op::INSTANCE_GET]),
+    ]),
+    Permission::api("service query", &[])
+        .when(&[
+            Conditional::new("service ID", &[&op::INSTANCE_GET]),
+            Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+            Conditional::new(
+                "auto-enable",
+                &[
+                    &op::OPENAPI_KEY_CREATE,
+                    &op::OPENAPI_KEY_DELETE,
+                    &op::INSTANCE_QUERY_ENDPOINT_GET,
+                    &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
+                ],
+            ),
+            Conditional::new(
+                "key diagnosis",
+                &[&op::OPENAPI_KEY_GET, &op::INSTANCE_QUERY_ENDPOINT_GET],
+            ),
+            Conditional::new("key cleanup", &[&op::OPENAPI_KEY_DELETE]),
+        ])
+        .authorization("SQL uses database privileges; OAuth permits read-only SELECT."),
+    Permission::api(
+        "service repair-query-key",
+        &[
+            &op::INSTANCE_QUERY_ENDPOINT_GET,
+            &op::OPENAPI_KEY_CREATE,
+            &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
+            &op::OPENAPI_KEY_DELETE,
+        ],
+    )
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        Conditional::new("Verifying the repaired key", &[&op::INSTANCE_GET]),
+        Conditional::new(
+            "Rollback of a new endpoint",
+            &[&op::INSTANCE_QUERY_ENDPOINT_DELETE],
+        ),
+    ]),
+];
+
 use crate::cloud::api_keys::{cleanup_service_query_key, service_query_key_cleanup};
 use crate::cloud::backups::{BackupConfigCommands, SnapshotCommands};
 use crate::cloud::client::{
@@ -501,14 +651,8 @@ CONTEXT FOR AGENTS:
         group(ArgGroup::new("service_selector").required(true).args(["name", "id", "service_id"])),
         after_help = "\
 CONTEXT FOR AGENTS:
-  One statement per request: a ';'-separated script is rejected. Run statements one call at a time.
-  A timeout may include wake delays; SQL may have executed. The CLI never retries a timeout.
-  For long statements on a running service, use the native `clickhouse client`.
-  SQL is read from stdin unless --query or --queries-file is given; --query never reads stdin.
-  This proxied path does not use the service IP access list; API key queries still use the key's access list.
-  API key auth runs read+write SQL; OAuth is read-only SELECT.
-  Queries request an idle service wake; a stopped one needs `cloud service start <id>` first.
-  A stored query key rejected with 401/403 is never replaced automatically: `cloud service repair-query-key <id>`."
+  Run one SQL statement; a timeout may follow execution or wake delays, and is never retried.
+  Stored-key 401/403 never rotates keys automatically; deliberate repair: `cloud service repair-query-key <id>`."
     )]
     Query {
         /// Service ID to query
@@ -547,14 +691,9 @@ CONTEXT FOR AGENTS:
     /// Replace clickhousectl's stored Query API key
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  An explicit write: needs API key auth, and is never run automatically after a query fails.
-  Replaces only this service's stored key and its endpoint binding, deletes the key it replaced,
-    and leaves every other binding and credential untouched.
-  Records without exact ownership metadata (legacy, or not created by clickhousectl) are refused.
-  On a running service it waits for a probe query with the new key to succeed; the result reports
-    it under `verification`.
-  Exit 1 after the readiness window still means the repair stands — do not rerun it, run
-    `cloud service query <id>` instead.")]
+  Deliberately replaces this service's owned key/binding; preserves other bindings and credentials.
+  Records without exact ownership metadata are refused; legacy and external keys cannot be repaired.
+  Verification timeout exits 1 but repair stands: retry `cloud service query <id>`, not repair.")]
     RepairQueryKey {
         /// Service ID
         #[command(flatten)]

@@ -1,3 +1,12 @@
+use super::permissions::Declaration as Permission;
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api("activity list", &[&op::ACTIVITY_GET_LIST]),
+    Permission::api("activity get", &[&op::ACTIVITY_GET]),
+];
+
 use crate::cloud::client::{CloudClient, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human};
 use crate::cloud::shared::{parse_date_only, resolve_org_id};
