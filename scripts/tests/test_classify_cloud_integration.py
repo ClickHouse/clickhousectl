@@ -19,6 +19,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             "crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json": classifier.NO_SUITES,
             "crates/clickhouse-cloud-api/README.md": classifier.NO_SUITES,
             "crates/clickhousectl/src/cloud/client.rs": classifier.NO_SUITES,
+            "crates/clickhousectl/src/cloud/permissions.rs": classifier.NO_SUITES,
             "Cargo.lock": classifier.ALL_SUITES,
             "crates/clickhousectl/Cargo.toml": classifier.ALL_SUITES,
             ".cargo/config.toml": classifier.ALL_SUITES,

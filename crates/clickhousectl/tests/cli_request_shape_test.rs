@@ -25,6 +25,156 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const SERVICE_PROFILES_PATH: &str = "/v1/organizations/org-1/serviceProfiles";
 const SCALING_SCHEDULE_PATH: &str = "/v1/organizations/org-1/services/svc-1/scalingSchedule";
 
+/// Inspect the real help path without ambient credentials or a writable real home.
+fn permission_help(mock: &MockServer, command: &[&str], help_flag: &str) -> String {
+    let project = tempfile::tempdir().unwrap();
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", project.path())
+        .current_dir(project.path())
+        .args(["cloud", "--url", &mock.uri()])
+        .args(command)
+        .arg(help_flag)
+        .output()
+        .expect("run permission help");
+    assert_success(&output);
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn advertised_permission_ids(help: &str) -> std::collections::BTreeSet<&str> {
+    help.split(|c: char| !c.is_ascii_alphanumeric() && !matches!(c, ':' | '_' | '-'))
+        .filter(|word| word.starts_with("control-plane:"))
+        .collect()
+}
+
+fn permission_path_matches(template: &str, actual: &str) -> bool {
+    let template: Vec<_> = template.split('/').collect();
+    let actual: Vec<_> = actual.split('/').collect();
+    template.len() == actual.len()
+        && template.iter().zip(actual).all(|(expected, actual)| {
+            *expected == actual
+                || (expected.starts_with('{') && expected.ends_with('}') && !actual.is_empty())
+        })
+}
+
+/// Check observed HTTP calls rather than duplicating the command's declared list.
+async fn assert_observed_permissions_advertised(mock: &MockServer, help: &str) {
+    let advertised = advertised_permission_ids(help);
+    let requests = mock.received_requests().await.unwrap();
+    assert!(
+        !requests.is_empty(),
+        "call-path coverage must not be vacuous"
+    );
+    for request in requests {
+        let operations: Vec<_> = clickhouse_cloud_api::meta::operations::ALL
+            .iter()
+            .filter(|operation| {
+                operation.method == request.method.as_str()
+                    && permission_path_matches(operation.path, request.url.path())
+            })
+            .collect();
+        assert_eq!(
+            operations.len(),
+            1,
+            "unmapped or ambiguous observed operation: {} {}",
+            request.method,
+            request.url.path()
+        );
+        for permission in operations[0].required_permissions {
+            assert!(
+                advertised.contains(permission),
+                "help omitted {permission} needed by observed {}",
+                operations[0].operation_id
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn permission_help_is_offline_and_exposes_multi_permission_operations() {
+    let mock = MockServer::start().await;
+    for flag in ["-h", "--help"] {
+        let help = permission_help(&mock, &["postgres", "read-replica", "create"], flag);
+        let advertised = advertised_permission_ids(&help);
+        let required =
+            clickhouse_cloud_api::meta::operations::POSTGRES_INSTANCE_CREATE_READ_REPLICA
+                .required_permissions;
+        assert!(required.len() > 1, "fixture must exercise conjunctions");
+        for permission in required {
+            assert!(advertised.contains(permission), "missing {permission}");
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn permission_help_does_not_attach_leaf_permissions_to_parent_groups() {
+    let mock = MockServer::start().await;
+    for command in [&["service"][..], &["postgres", "read-replica"][..]] {
+        let help = permission_help(&mock, command, "--help");
+        assert!(advertised_permission_ids(&help).is_empty());
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn permission_help_covers_force_delete_and_managed_query_key_cleanup_calls() {
+    let mock = MockServer::start().await;
+    let help = permission_help(&mock, &["service", "delete"], "--help");
+    assert!(mock.received_requests().await.unwrap().is_empty());
+    let service_path = format!("/v1/organizations/org-1/services/{DELETE_TEST_SERVICE_ID}");
+    Mock::given(method("GET"))
+        .and(path(&service_path))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "result": {"id": DELETE_TEST_SERVICE_ID, "state": "stopped"},
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(&service_path))
+        .respond_with(successful_delete_response("permission-service-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("DELETE"))
+        .and(path(format!(
+            "/v1/organizations/org-1/keys/{DELETE_TEST_API_KEY_ID}"
+        )))
+        .respond_with(successful_delete_response("permission-key-delete"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    write_service_query_key(project.path(), Some("org-1"), Some(DELETE_TEST_API_KEY_ID));
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", project.path())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "--org-id",
+            "org-1",
+            "service",
+            "delete",
+            DELETE_TEST_SERVICE_ID,
+            "--force",
+        ])
+        .output()
+        .expect("run compound service deletion");
+    assert_success(&output);
+    assert_eq!(mock.received_requests().await.unwrap().len(), 3);
+    assert_observed_permissions_advertised(&mock, &help).await;
+}
+
 /// Locate the `clickhousectl` binary. cargo populates `CARGO_BIN_EXE_<name>`
 /// for integration tests in the same package — so this is just the absolute
 /// path to the build output, no `cargo build` shellout needed.
@@ -1812,6 +1962,7 @@ fn manual_query_endpoint_response(result: Value) -> ResponseTemplate {
 async fn query_endpoint_create_sends_typed_roles_and_explicit_first_origins() {
     for origins in ["https://app.example.com", "*"] {
         let mock = manual_query_endpoint_mock(ResponseTemplate::new(404)).await;
+        let help = permission_help(&mock, &["service", "query-endpoint", "create"], "--help");
         let output = invoke_cli_with_cloud_credentials(
             &mock,
             &manual_query_endpoint_args(&[
@@ -1830,6 +1981,7 @@ async fn query_endpoint_create_sends_typed_roles_and_explicit_first_origins() {
         assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].method, wiremock::http::Method::GET);
         assert_eq!(requests[1].method, wiremock::http::Method::POST);
+        assert_observed_permissions_advertised(&mock, &help).await;
         assert_eq!(
             requests[1].body_json::<Value>().unwrap(),
             serde_json::json!({

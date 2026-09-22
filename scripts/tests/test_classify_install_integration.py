@@ -50,6 +50,7 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
             "crates/clickhousectl/tests/local_postgres_readiness_test.rs": False,
             "crates/clickhousectl/tests/local_server_metadata_test.rs": False,
             "crates/clickhousectl/src/cloud/services.rs": False,
+            "crates/clickhousectl/src/cloud/permissions.rs": False,
             "README.md": False,
         }
         for path, expected in cases.items():
@@ -124,7 +125,8 @@ class InstallIntegrationClassifierTests(unittest.TestCase):
                     "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
                     "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
                     "crates/clickhousectl/src/cloud/clickstack.rs",
-                    "crates/clickhousectl/src/cloud/config.rs",
+                "crates/clickhousectl/src/cloud/config.rs",
+                "crates/clickhousectl/src/cloud/permissions.rs",
                     "crates/clickhousectl/src/cloud/query_api_endpoints.rs",
                     "crates/clickhousectl/src/cloud/udfs.rs",
                     "crates/clickhousectl/src/dotenv.rs",
