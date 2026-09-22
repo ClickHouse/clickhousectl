@@ -1,3 +1,77 @@
+use super::permissions::{Conditional, Declaration as Permission};
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api("clickpipe list", &[&op::CLICK_PIPE_GET_LIST]),
+    Permission::api("clickpipe get", &[&op::CLICK_PIPE_GET])
+        .when(&[Conditional::flag("name", &[&op::CLICK_PIPE_GET_LIST])]),
+    Permission::api("clickpipe update", &[&op::CLICK_PIPE_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_PIPE_GET_LIST])]),
+    Permission::api("clickpipe delete", &[&op::CLICK_PIPE_DELETE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_PIPE_GET_LIST])]),
+    Permission::api("clickpipe start", &[&op::CLICK_PIPE_STATE_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_PIPE_GET_LIST])]),
+    Permission::api("clickpipe stop", &[&op::CLICK_PIPE_STATE_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_PIPE_GET_LIST])]),
+    Permission::api("clickpipe resync", &[&op::CLICK_PIPE_STATE_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_PIPE_GET_LIST])]),
+    Permission::api("clickpipe scale", &[&op::CLICK_PIPE_SCALING_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_PIPE_GET_LIST])]),
+    Permission::api(
+        "clickpipe cdc-scaling get",
+        &[&op::CLICK_PIPE_CDC_SCALING_GET],
+    ),
+    Permission::api(
+        "clickpipe cdc-scaling update",
+        &[&op::CLICK_PIPE_CDC_SCALING_UPDATE],
+    ),
+    Permission::api(
+        "clickpipe settings get",
+        &[&op::CLICK_PIPE_GET, &op::CLICK_PIPE_SETTINGS_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::CLICK_PIPE_GET_LIST])]),
+    Permission::api(
+        "clickpipe context get",
+        &[&op::CLICK_PIPES_SERVICE_CONTEXT_GET],
+    ),
+    Permission::api(
+        "clickpipe settings update",
+        &[&op::CLICK_PIPE_GET, &op::CLICK_PIPE_SETTINGS_UPDATE],
+    )
+    .when(&[
+        Conditional::flag("name", &[&op::CLICK_PIPE_GET_LIST]),
+        Conditional::new(
+            "Kafka: keep read-committed",
+            &[&op::CLICK_PIPE_SETTINGS_GET],
+        ),
+    ]),
+    Permission::api(
+        "clickpipe schema-discover kafka",
+        &[&op::CLICK_PIPE_SCHEMA_DISCOVERY],
+    ),
+    Permission::api(
+        "clickpipe schema-discover kinesis",
+        &[&op::CLICK_PIPE_SCHEMA_DISCOVERY],
+    ),
+    Permission::api(
+        "clickpipe schema-discover object-storage",
+        &[&op::CLICK_PIPE_SCHEMA_DISCOVERY],
+    ),
+    Permission::api(
+        "clickpipe schema-discover pubsub",
+        &[&op::CLICK_PIPE_SCHEMA_DISCOVERY],
+    ),
+    Permission::api("clickpipe create object-storage", &[&op::CLICK_PIPE_CREATE]),
+    Permission::api("clickpipe create kafka", &[&op::CLICK_PIPE_CREATE]),
+    Permission::api("clickpipe create kinesis", &[&op::CLICK_PIPE_CREATE]),
+    Permission::api("clickpipe create postgres", &[&op::CLICK_PIPE_CREATE]),
+    Permission::api("clickpipe create mysql", &[&op::CLICK_PIPE_CREATE]),
+    Permission::api("clickpipe create mongodb", &[&op::CLICK_PIPE_CREATE]),
+    Permission::api("clickpipe create bigquery", &[&op::CLICK_PIPE_CREATE]),
+    Permission::api("clickpipe create pubsub", &[&op::CLICK_PIPE_CREATE]),
+];
+
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{config_source_label, deserialize_strict_config, read_config_value};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
@@ -791,8 +865,7 @@ CONTEXT FOR AGENTS:
   For CDC the source needs logical replication, a publication containing every
   mapped table, and REPLICATION on the source user:
   https://clickhouse.com/docs/integrations/clickpipes/postgres
-  TLS and certificate verification are on by default; prefer --ca-certificate
-  over either security opt-out for a private source CA.
+  TLS verifies certificates by default; use --ca-certificate for a private CA instead of disabling verification.
   Managed Postgres: save its CA with `cloud postgres certs get <pg-id> --output ca.pem`,
   then pass ca.pem to --ca-certificate.
   Only --sync-interval-seconds and --pull-batch-size can change after creation.")]

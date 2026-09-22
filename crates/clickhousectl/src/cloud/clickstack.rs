@@ -1,3 +1,126 @@
+use super::permissions::{Conditional, Declaration as Permission};
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api("clickstack source list", &[&op::CLICK_STACK_LIST_SOURCES]),
+    Permission::api("clickstack source get", &[&op::CLICK_STACK_GET_SOURCE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_SOURCES])]),
+    Permission::api(
+        "clickstack source create",
+        &[&op::CLICK_STACK_CREATE_SOURCE],
+    ),
+    Permission::api(
+        "clickstack source update",
+        &[&op::CLICK_STACK_UPDATE_SOURCE],
+    )
+    .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_SOURCES])]),
+    Permission::api(
+        "clickstack source delete",
+        &[&op::CLICK_STACK_DELETE_SOURCE],
+    )
+    .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_SOURCES])]),
+    Permission::api("clickstack role list", &[&op::CLICK_STACK_LIST_ROLES]),
+    Permission::api("clickstack role get", &[&op::CLICK_STACK_GET_ROLE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ROLES])]),
+    Permission::api("clickstack role create", &[&op::CLICK_STACK_CREATE_ROLE]),
+    Permission::api("clickstack role update", &[&op::CLICK_STACK_UPDATE_ROLE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ROLES])]),
+    Permission::api("clickstack role delete", &[&op::CLICK_STACK_DELETE_ROLE])
+        .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ROLES])]),
+    Permission::api(
+        "clickstack dashboard list",
+        &[&op::CLICK_STACK_LIST_DASHBOARDS],
+    ),
+    Permission::api(
+        "clickstack dashboard get",
+        &[&op::CLICK_STACK_GET_DASHBOARD],
+    )
+    .when(&[Conditional::flag(
+        "name",
+        &[&op::CLICK_STACK_LIST_DASHBOARDS],
+    )]),
+    Permission::api(
+        "clickstack dashboard create",
+        &[&op::CLICK_STACK_CREATE_DASHBOARD],
+    ),
+    Permission::api(
+        "clickstack dashboard update",
+        &[&op::CLICK_STACK_UPDATE_DASHBOARD],
+    )
+    .when(&[Conditional::flag(
+        "name",
+        &[&op::CLICK_STACK_LIST_DASHBOARDS],
+    )]),
+    Permission::api(
+        "clickstack dashboard delete",
+        &[&op::CLICK_STACK_DELETE_DASHBOARD],
+    )
+    .when(&[Conditional::flag(
+        "name",
+        &[&op::CLICK_STACK_LIST_DASHBOARDS],
+    )]),
+    Permission::api("clickstack alert list", &[&op::CLICK_STACK_LIST_ALERTS]),
+    Permission::api("clickstack alert get", &[&op::CLICK_STACK_GET_ALERT])
+        .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ALERTS])]),
+    Permission::api("clickstack alert create", &[&op::CLICK_STACK_CREATE_ALERT]),
+    Permission::api("clickstack alert update", &[&op::CLICK_STACK_UPDATE_ALERT])
+        .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ALERTS])]),
+    Permission::api("clickstack alert delete", &[&op::CLICK_STACK_DELETE_ALERT])
+        .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_ALERTS])]),
+    Permission::api("clickstack webhook list", &[&op::CLICK_STACK_LIST_WEBHOOKS]),
+    Permission::api(
+        "clickstack webhook create",
+        &[&op::CLICK_STACK_CREATE_WEBHOOK],
+    ),
+    Permission::api(
+        "clickstack webhook update",
+        &[&op::CLICK_STACK_UPDATE_WEBHOOK],
+    )
+    .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_WEBHOOKS])]),
+    Permission::api(
+        "clickstack webhook delete",
+        &[&op::CLICK_STACK_DELETE_WEBHOOK],
+    )
+    .when(&[Conditional::flag("name", &[&op::CLICK_STACK_LIST_WEBHOOKS])]),
+    Permission::api(
+        "clickstack saved-search list",
+        &[&op::CLICK_STACK_LIST_SAVED_SEARCHES],
+    ),
+    Permission::api(
+        "clickstack saved-search get",
+        &[&op::CLICK_STACK_GET_SAVED_SEARCH],
+    )
+    .when(&[Conditional::flag(
+        "name",
+        &[&op::CLICK_STACK_LIST_SAVED_SEARCHES],
+    )]),
+    Permission::api(
+        "clickstack saved-search create",
+        &[&op::CLICK_STACK_CREATE_SAVED_SEARCH],
+    ),
+    Permission::api(
+        "clickstack saved-search update",
+        &[&op::CLICK_STACK_UPDATE_SAVED_SEARCH],
+    )
+    .when(&[Conditional::flag(
+        "name",
+        &[&op::CLICK_STACK_LIST_SAVED_SEARCHES],
+    )]),
+    Permission::api(
+        "clickstack saved-search delete",
+        &[&op::CLICK_STACK_DELETE_SAVED_SEARCH],
+    )
+    .when(&[Conditional::flag(
+        "name",
+        &[&op::CLICK_STACK_LIST_SAVED_SEARCHES],
+    )]),
+    Permission::api(
+        "clickstack dashboard validate",
+        &[&op::CLICK_STACK_VALIDATE_DASHBOARD],
+    ),
+];
+
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value, read_typed_config};
 use crate::cloud::output::{or_absent, print_human};

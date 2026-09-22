@@ -98,11 +98,32 @@ module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new l
    `crate::cloud::output::or_absent` (`-`) or `ABSENT`, and have `--filter` predicates treat absence as non-matching.
 8. Add `Cli::try_parse_from` coverage next to the domain command definition for the new command's body-related
    flags, asserting parsed values.
+9. Declare the workflow in the owning domain's `PERMISSIONS` table using typed
+   `clickhouse_cloud_api::meta::operations` references. Include every call: read-before-write, polling,
+   cleanup/rollback, and selector lookups; put optional calls in labeled `Conditional` groups.
+   `Conditional::flag` also validates that the triggering flag exists on that command. For example:
+
+   ```rust
+   Permission::api("service delete", &[&op::INSTANCE_DELETE]).when(&[
+       Conditional::flag("force", &[&op::INSTANCE_GET, &op::INSTANCE_STATE_UPDATE]),
+       Conditional::new("Owned query-key cleanup", &[&op::OPENAPI_KEY_DELETE]),
+       Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+   ])
+   ```
+
+   `Permission::api` includes conditional organization discovery; use `.unscoped()` only when the handler
+   never resolves organization scope. Non-OpenAPI commands need `Permission::non_api` with a nonempty reason;
+   mixed workflows can add `.authorization(...)` for SQL or other authorization. The shared `Cli` command
+   factory refuses missing, duplicate, stale, or invalid declarations for every executable Cloud command,
+   including a runnable parent such as `org prometheus`. Tests enforce the same decorated tree used to parse
+   and display help. Declaration coverage does not prove the Rust call graph: review changed handlers and
+   use subprocess/request tests for compound or conditional workflows.
 
 ## Writing help text
 
 - Help lives in `#[command(about/after_help)]` and arg doc comments in `src/cli.rs`, `src/local/cli.rs`,
   `src/cloud/cli.rs`, and `src/cloud/<domain>.rs`; one block is `const INSTALL_AFTER_HELP` in `src/local/cli.rs`.
+  `src/cloud/permissions.rs` adds permission context from domain declarations and API-library metadata.
 - A help screen has only: one-line `about`, clap's `Usage:`, `Arguments:`/`Options:`, `Commands:`, and an optional
   trailing `CONTEXT FOR AGENTS:` block via `after_help`. No `long_about`; no other `after_help` header.
 - `about`: imperative verb phrase, ≤ ~60 chars, no trailing period, no implementation detail; keep siblings parallel
@@ -125,8 +146,10 @@ module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new l
   agent does; a `Typical flow:` line; at most one docs URL.
   It must NOT hold implementation details, crates/files, HTTP or API mechanics, storage paths, history or
   compatibility notes, reassurance, or anything already in the flag list, `[default:]`, or the `about` line.
-- Put shared context (auth model, how to find IDs, typical flow) on the parent (`cloud service`, `local server`);
-  leaves add a block only for a leaf-specific gotcha. A plain `get`/`list` usually needs none.
+- Put shared context (auth model, how to find IDs, typical flow) on the parent (`cloud service`, `local server`).
+  The permission helper adds API-key requirements to every executable Cloud command; pure grouping commands
+  stay unchanged. Keep other leaf context specific to a gotcha. Permission lines count toward the 8-line cap;
+  move longer operational guidance to the README when necessary.
 - Do not write tests that pin help or README wording (`help.contains("some sentence")`, `include_str!` on
   `README.md`, whole-screen equality). They protect phrasing, not facts, and turn every rewording into a test edit.
   Test structure instead: `try_parse_from` outcomes, `ErrorKind`, defaults and value names clap renders, hidden
