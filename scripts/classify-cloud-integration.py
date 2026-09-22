@@ -52,6 +52,8 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/error.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/lib.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/meta.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/meta/operations.rs": NO_SUITES,
+    "crates/clickhouse-openapi-analyzer/src/permissions.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/models/activity.rs": frozenset(
         {"organization"}
