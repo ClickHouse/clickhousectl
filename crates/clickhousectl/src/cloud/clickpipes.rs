@@ -1450,24 +1450,24 @@ pub struct PostgresCreateArgs {
     #[arg(long)]
     pub replication_slot_name: Option<String>,
 
-    /// Interval in seconds to sync data from Postgres during CDC replication
-    #[arg(long, value_name = "SECONDS")]
+    /// CDC sync interval in seconds (at least 1)
+    #[arg(long, value_name = "SECONDS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub sync_interval_seconds: Option<i64>,
 
-    /// Number of rows to pull in each batch during CDC replication
-    #[arg(long, value_name = "ROWS")]
+    /// Rows to pull per CDC batch (at least 1)
+    #[arg(long, value_name = "ROWS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub pull_batch_size: Option<i64>,
 
-    /// Parallel workers per table in the initial snapshot phase (create-time only)
-    #[arg(long, value_name = "WORKERS")]
+    /// Snapshot workers per table (at least 1; create-time only)
+    #[arg(long, value_name = "WORKERS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub initial_load_parallelism: Option<i64>,
 
-    /// Number of rows per partition during the snapshot phase (create-time only)
-    #[arg(long, value_name = "ROWS")]
+    /// Snapshot rows per partition (at least 1,000; create-time only)
+    #[arg(long, value_name = "ROWS", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1000..))]
     pub snapshot_rows_per_partition: Option<i64>,
 
-    /// Tables to snapshot in parallel during the initial load phase (create-time only)
-    #[arg(long, value_name = "TABLES")]
+    /// Tables to snapshot in parallel (at least 1; create-time only)
+    #[arg(long, value_name = "TABLES", allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..))]
     pub snapshot_parallel_tables: Option<i64>,
 
     /// Preserve Postgres nullability; defaults to false (create-time only)
@@ -8631,6 +8631,61 @@ mod tests {
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
         let message = error.to_string();
         assert!(message.contains("--allow-nullable-columns"), "{message}");
+    }
+
+    #[test]
+    fn postgres_numeric_settings_reject_values_below_their_minimums() {
+        for (flag, values) in [
+            ("--sync-interval-seconds", vec!["0", "-1"]),
+            ("--pull-batch-size", vec!["0", "-1"]),
+            ("--initial-load-parallelism", vec!["0", "-1"]),
+            ("--snapshot-rows-per-partition", vec!["0", "-1", "999"]),
+            ("--snapshot-parallel-tables", vec!["0", "-1"]),
+        ] {
+            for value in values {
+                let mut args = postgres_cli_args(Some("public.events:events"));
+                args.extend([flag, value]);
+                let error = clickpipe_parse_error(&args);
+                assert_eq!(error.kind(), clap::error::ErrorKind::ValueValidation);
+                assert!(error.to_string().contains(flag), "{error}");
+            }
+        }
+    }
+
+    #[test]
+    fn postgres_numeric_settings_parse_and_build_valid_minimums() {
+        let mut cli_args = postgres_cli_args(Some("public.events:events"));
+        cli_args.extend([
+            "--sync-interval-seconds",
+            "1",
+            "--pull-batch-size",
+            "1",
+            "--initial-load-parallelism",
+            "1",
+            "--snapshot-rows-per-partition",
+            "1000",
+            "--snapshot-parallel-tables",
+            "1",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Postgres(args),
+        } = parse_clickpipe(&cli_args)
+        else {
+            panic!("expected postgres create");
+        };
+        assert_eq!(args.sync_interval_seconds, Some(1));
+        assert_eq!(args.pull_batch_size, Some(1));
+        assert_eq!(args.initial_load_parallelism, Some(1));
+        assert_eq!(args.snapshot_rows_per_partition, Some(1000));
+        assert_eq!(args.snapshot_parallel_tables, Some(1));
+
+        let request = build_postgres_request(&args).unwrap();
+        let settings = request.source.postgres.unwrap().settings;
+        assert_eq!(settings.sync_interval_seconds, Some(1));
+        assert_eq!(settings.pull_batch_size, Some(1));
+        assert_eq!(settings.initial_load_parallelism, Some(1));
+        assert_eq!(settings.snapshot_num_rows_per_partition, Some(1000));
+        assert_eq!(settings.snapshot_number_of_parallel_tables, Some(1));
     }
 
     #[test]

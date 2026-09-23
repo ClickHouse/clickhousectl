@@ -2561,17 +2561,20 @@ left out of the request:
 
 | Flag | Meaning |
 | --- | --- |
-| `--sync-interval-seconds <SECONDS>` | Interval in seconds to sync data from Postgres during CDC replication. |
-| `--pull-batch-size <ROWS>` | Number of rows to pull in each batch during CDC replication. |
-| `--initial-load-parallelism <WORKERS>` | Number of parallel workers to use per table in the initial snapshot phase. |
-| `--snapshot-rows-per-partition <ROWS>` | Number of rows per partition during the snapshot phase. |
-| `--snapshot-parallel-tables <TABLES>` | Number of tables to snapshot in parallel during the initial load phase. |
+| `--sync-interval-seconds <SECONDS>` | Interval in seconds to sync data from Postgres during CDC replication; at least 1. |
+| `--pull-batch-size <ROWS>` | Number of rows to pull in each batch during CDC replication; at least 1. |
+| `--initial-load-parallelism <WORKERS>` | Number of parallel workers to use per table in the initial snapshot phase; at least 1. |
+| `--snapshot-rows-per-partition <ROWS>` | Number of rows per partition during the snapshot phase; at least 1,000. |
+| `--snapshot-parallel-tables <TABLES>` | Number of tables to snapshot in parallel during the initial load phase; at least 1. |
 | `--allow-nullable-columns <true\|false>` | Preserve Postgres nullability in the destination table, creating columns without `NOT NULL` as `Nullable(...)`. Nullable types carry a performance cost in ClickHouse. |
 | `--enable-failover-slots <true\|false>` | Enable failover support for the replication slot on PG17 and newer. Applies only when ClickPipes creates the slot, so not with `--replication-slot-name`. |
 | `--delete-on-merge <true\|false>` | Enable hard delete behaviour in `ReplacingMergeTree` for PostgreSQL `DELETE` operations. |
 
 `--allow-nullable-columns`, `--enable-failover-slots`, and `--delete-on-merge`
 take an explicit `true` or `false` value and default to `false` when omitted.
+
+Numeric values below these minimums are rejected locally with usage exit `2`,
+before any API request. Omitting a numeric flag leaves its setting omitted.
 
 These are create-time decisions. The Cloud API can patch only
 `syncIntervalSeconds` and `pullBatchSize` after the pipe exists, so the
