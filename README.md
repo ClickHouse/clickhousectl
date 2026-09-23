@@ -691,6 +691,9 @@ Credential resolution order:
 4. Environment variables from `.env`
 5. OAuth tokens.
 
+Supplying only `--api-key` or only `--api-secret` blocks fallback to other sources.
+`cloud auth status` still succeeds with no active authentication; `--debug` identifies the missing flag.
+
 When environment credentials are configured but a credentials file or explicit
 CLI flags take precedence, clickhousectl prints a one-line note to stderr.
 `cloud auth status` also marks the environment credentials as configured but

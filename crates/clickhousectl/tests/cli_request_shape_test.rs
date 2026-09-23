@@ -2865,6 +2865,119 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials_or_contact
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn auth_status_incomplete_flags_explain_missing_credential_without_falling_back() {
+    let mock = MockServer::start().await;
+    for configured_source in [None, Some("API key"), Some("Env vars"), Some("OAuth")] {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir(&home).unwrap();
+        if configured_source == Some("API key") {
+            write_project_api_credentials(dir.path(), "file-key", "file-secret");
+        }
+        if configured_source == Some("OAuth") {
+            let token_dir = home.join(".clickhouse");
+            std::fs::create_dir(&token_dir).unwrap();
+            write_oauth_tokens(&token_dir, &mock.uri());
+        }
+        for (supplied, missing) in [("--api-key", "--api-secret"), ("--api-secret", "--api-key")] {
+            for json in [false, true] {
+                let mut command = Command::new(clickhousectl_binary());
+                command
+                    .env_clear()
+                    .env("DO_NOT_TRACK", "1")
+                    .env("HOME", &home)
+                    .current_dir(dir.path())
+                    .args([
+                        "cloud",
+                        "auth",
+                        "status",
+                        supplied,
+                        "flag-credential",
+                        "--url",
+                        &mock.uri(),
+                        "--debug",
+                    ]);
+                if configured_source == Some("Env vars") {
+                    command.env("CLICKHOUSE_CLOUD_API_KEY", "env-key");
+                    command.env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret");
+                }
+                if json {
+                    command.arg("--json");
+                }
+                let output = command.output().unwrap();
+                assert_success(&output);
+                let stdout = String::from_utf8(output.stdout).unwrap();
+                let stderr = String::from_utf8(output.stderr).unwrap();
+                assert_eq!(
+                    stderr,
+                    format!(
+                        "[debug] auth source: none (incomplete CLI flags: missing {missing})\n"
+                    ),
+                    "supplied={supplied}, configured_source={configured_source:?}, json={json}"
+                );
+                for credential in [
+                    "flag-credential",
+                    "file-key",
+                    "file-secret",
+                    "env-key",
+                    "env-secret",
+                    "test-bearer-token",
+                    "unused",
+                ] {
+                    assert!(!stdout.contains(credential), "credential exposed on stdout");
+                    assert!(!stderr.contains(credential), "credential exposed on stderr");
+                }
+                let rows: Vec<Vec<String>> = if json {
+                    serde_json::from_str::<Vec<Value>>(&stdout)
+                        .unwrap()
+                        .iter()
+                        .map(|row| {
+                            ["type", "status", "scope", "active"]
+                                .map(|field| row[field].as_str().unwrap().to_owned())
+                                .to_vec()
+                        })
+                        .collect()
+                } else {
+                    stdout
+                        .lines()
+                        .skip(2)
+                        .map(|line| {
+                            line.trim_matches('|')
+                                .split('|')
+                                .map(|cell| cell.trim().to_owned())
+                                .collect()
+                        })
+                        .collect()
+                };
+                assert_eq!(rows.len(), 4);
+                for row in rows {
+                    assert_eq!(row.len(), 4);
+                    assert_eq!(row[3], "-", "no source should be active: {row:?}");
+                    if row[0] == "CLI flags" {
+                        assert_eq!(row[1], format!("Incomplete (missing {missing})"));
+                        assert_eq!(row[2], "-");
+                    } else if Some(row[0].as_str()) == configured_source {
+                        assert_eq!(row[1], "Configured (inactive)");
+                        assert_eq!(
+                            row[2],
+                            if row[0] == "OAuth" {
+                                "read-only"
+                            } else {
+                                "read/write"
+                            }
+                        );
+                    } else {
+                        assert_eq!(row[1], "Not configured");
+                        assert_eq!(row[2], "-");
+                    }
+                }
+            }
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[test]
 fn auth_status_marks_outranked_environment_credentials_inactive() {
     let dir = tempfile::tempdir().unwrap();

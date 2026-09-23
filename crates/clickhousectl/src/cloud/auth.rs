@@ -310,6 +310,16 @@ pub async fn run(
                     Some(source) => {
                         eprint_line(format!("[debug] auth source: {}", source.describe()))
                     }
+                    None if api_key.is_some() != api_secret.is_some() => {
+                        let missing = if api_key.is_some() {
+                            "--api-secret"
+                        } else {
+                            "--api-key"
+                        };
+                        eprint_line(format!(
+                            "[debug] auth source: none (incomplete CLI flags: missing {missing})"
+                        ));
+                    }
                     None => eprint_line("[debug] auth source: none (no credentials configured)"),
                 }
             }
