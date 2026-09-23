@@ -58,7 +58,15 @@ fn ignored_env_credentials_notice(
 pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
     // Auth subcommands don't need a client.
     if let CloudCommands::Auth { command } = args.command {
-        return auth::run(command, args.url.as_deref(), args.debug, json).await;
+        return auth::run(
+            command,
+            args.api_key.as_deref(),
+            args.api_secret.as_deref(),
+            args.url.as_deref(),
+            args.debug,
+            json,
+        )
+        .await;
     }
 
     // Refresh OAuth tokens if needed. Errors here are filesystem failures

@@ -280,8 +280,13 @@ fn resolve_auth_with_sources(
 /// Used by `cloud auth status`, which has to render correctly even when no
 /// credentials are configured (the case `CloudClient::new` errors out on).
 /// Returns `None` if nothing usable is configured.
-pub fn resolve_active_auth_source() -> Option<AuthSource> {
-    resolve_auth(None, None, None).ok().map(|r| r.source)
+pub fn resolve_active_auth_source(
+    api_key: Option<&str>,
+    api_secret: Option<&str>,
+) -> Option<AuthSource> {
+    resolve_auth(api_key, api_secret, None)
+        .ok()
+        .map(|r| r.source)
 }
 
 /// The path of the `.env` file that supplied env-tier credentials, if any.

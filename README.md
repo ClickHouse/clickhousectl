@@ -693,8 +693,10 @@ Credential resolution order:
 
 When environment credentials are configured but a credentials file or explicit
 CLI flags take precedence, clickhousectl prints a one-line note to stderr.
-`cloud auth status` also marks the environment credentials as configured but
-inactive and identifies the source that outranked them.
+`cloud auth status` includes any `--api-key`/`--api-secret` supplied to that
+command and marks exactly which source wins, keeping other configured sources
+visible as inactive. Status inspects local configuration; it does not verify
+credentials with the server or print their values.
 
 ### Debugging which credential source was used
 
