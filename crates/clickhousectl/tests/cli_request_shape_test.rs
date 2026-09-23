@@ -8824,9 +8824,9 @@ async fn postgres_table_mapping_json_reproduces_every_field_in_the_body() {
             "useCustomSortingKey": false,
             "partitionByExpr": "",
             "partitionKey": "",
-            "tableEngine": "MergeTree",
+            "tableEngine": "ReplacingMergeTree",
         }),
-        "the simple form's wire shape must not change",
+        "the simple form uses the CDC engine default",
     );
     assert_eq!(
         mappings[1],
@@ -8843,6 +8843,39 @@ async fn postgres_table_mapping_json_reproduces_every_field_in_the_body() {
             "tableEngine": "ReplacingMergeTree",
         }),
     );
+}
+
+#[tokio::test]
+async fn postgres_table_mapping_engine_defaults_and_explicit_overrides_reach_the_api() {
+    for explicit_engine in [
+        None,
+        Some("MergeTree"),
+        Some("ReplacingMergeTree"),
+        Some("Null"),
+    ] {
+        let mock = start_mock_clickpipes_api().await;
+        let mut args = postgres_args_minimal();
+        let mut mapping = serde_json::json!({
+            "sourceSchemaName": "public",
+            "sourceTable": "users",
+            "targetTable": "users",
+        });
+        if let Some(engine) = explicit_engine {
+            mapping["tableEngine"] = engine.into();
+        }
+        args.extend(["--table-mapping-json".into(), mapping.to_string()]);
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+        let mappings = body["source"]["postgres"]["tableMappings"]
+            .as_array()
+            .unwrap();
+        assert_eq!(mappings.len(), 2);
+        assert_eq!(mappings[0]["tableEngine"], "ReplacingMergeTree");
+        assert_eq!(
+            mappings[1]["tableEngine"],
+            explicit_engine.unwrap_or("ReplacingMergeTree")
+        );
+    }
 }
 
 #[tokio::test]

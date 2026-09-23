@@ -793,9 +793,9 @@ CONTEXT FOR AGENTS:
   https://clickhouse.com/docs/integrations/clickpipes/postgres
   TLS and certificate verification are on by default; prefer --ca-certificate
   over either security opt-out for a private source CA.
-  Managed Postgres: save its CA with `cloud postgres certs get <pg-id> --output ca.pem`,
-  then pass ca.pem to --ca-certificate.
-  Only --sync-interval-seconds and --pull-batch-size can change after creation.")]
+  Managed Postgres CA: `cloud postgres certs get <pg-id> --output ca.pem`.
+  Only --sync-interval-seconds and --pull-batch-size can change after creation.
+  Current-state queries: SELECT ... FROM target FINAL WHERE _peerdb_is_deleted = 0.")]
     Postgres(PostgresCreateArgs),
 
     /// Create a ClickPipe from MySQL
@@ -1379,7 +1379,7 @@ pub struct PostgresCreateArgs {
 
     /// Table mappings as schema.table:target_table (repeatable)
     ///
-    /// Leaves every other per-table option at the ClickPipes default.
+    /// Uses ReplacingMergeTree; override tableEngine with --table-mapping-json.
     #[arg(
         long = "table-mapping",
         value_name = "SCHEMA.TABLE:TARGET_TABLE",
@@ -1389,10 +1389,9 @@ pub struct PostgresCreateArgs {
 
     /// Full table mapping as a JSON object (repeatable)
     ///
-    /// Takes the API's table mapping object verbatim, for the per-table
-    /// options the simple form cannot express: excludedColumns, sortingKeys,
-    /// useCustomSortingKey, partitionByExpr, partitionKey and tableEngine.
-    /// Combinable with --table-mapping; unknown fields are rejected.
+    /// Supports per-table options, including an explicit tableEngine override.
+    /// Omitted tableEngine uses ReplacingMergeTree. Combinable with
+    /// --table-mapping; unknown fields are rejected.
     #[arg(long = "table-mapping-json", value_name = "JSON")]
     pub table_mappings_json: Vec<String>,
 
@@ -4988,7 +4987,7 @@ fn parse_postgres_table_mapping_json(
             ClickPipePostgresPipeTableMappingTableengine::VALUES,
         )
         .map_err(|error| invalid(error.message))?,
-        None => ClickPipePostgresPipeTableMappingTableengine::default(),
+        None => ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
     };
 
     Ok(ClickPipePostgresPipeTableMapping {
@@ -5077,6 +5076,7 @@ fn validate_postgres_create_args(
             source_schema_name,
             source_table,
             target_table,
+            table_engine: ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
             ..Default::default()
         });
     }
@@ -11576,7 +11576,7 @@ mod tests {
                 use_custom_sorting_key: false,
                 partition_by_expr: String::new(),
                 partition_key: String::new(),
-                table_engine: ClickPipePostgresPipeTableMappingTableengine::MergeTree,
+                table_engine: ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
             }
         );
     }
@@ -11942,6 +11942,7 @@ mod tests {
                 source_schema_name: "public".into(),
                 source_table: "events".into(),
                 target_table: "events".into(),
+                table_engine: ClickPipePostgresPipeTableMappingTableengine::ReplacingMergeTree,
                 ..Default::default()
             }
         );
