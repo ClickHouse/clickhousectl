@@ -9273,6 +9273,66 @@ async fn postgres_cdc_settings_are_absent_unless_their_flags_are_passed() {
 }
 
 #[tokio::test]
+async fn postgres_numeric_settings_below_minimums_are_usage_errors_before_http() {
+    let mock = MockServer::start().await;
+    for (flag, values) in [
+        ("--sync-interval-seconds", vec!["0", "-1"]),
+        ("--pull-batch-size", vec!["0", "-1"]),
+        ("--initial-load-parallelism", vec!["0", "-1"]),
+        ("--snapshot-rows-per-partition", vec!["0", "-1", "999"]),
+        ("--snapshot-parallel-tables", vec!["0", "-1"]),
+    ] {
+        for value in values {
+            let mut args = postgres_args_minimal();
+            args.extend([flag.into(), value.into()]);
+            let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+            let output = invoke_cli_with_cloud_credentials(&mock, &arg_refs);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert_eq!(output.status.code(), Some(2), "{flag} {value}: {stderr}");
+            assert!(stderr.contains(flag), "{flag} {value}: {stderr}");
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn postgres_numeric_settings_minimums_are_sent_exactly() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = postgres_args_minimal();
+    args.extend(
+        [
+            "--sync-interval-seconds",
+            "1",
+            "--pull-batch-size",
+            "1",
+            "--initial-load-parallelism",
+            "1",
+            "--snapshot-rows-per-partition",
+            "1000",
+            "--snapshot-parallel-tables",
+            "1",
+        ]
+        .map(String::from),
+    );
+    let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    let body = invoke_cli_capture_body(&mock, &arg_refs).await;
+    assert_eq!(
+        body["source"]["postgres"]["settings"],
+        serde_json::json!({
+            "replicationMode": "cdc",
+            "allowNullableColumns": false,
+            "deleteOnMerge": false,
+            "enableFailoverSlots": false,
+            "syncIntervalSeconds": 1,
+            "pullBatchSize": 1,
+            "initialLoadParallelism": 1,
+            "snapshotNumRowsPerPartition": 1000,
+            "snapshotNumberOfParallelTables": 1,
+        })
+    );
+}
+
+#[tokio::test]
 async fn postgres_cdc_settings_serialize_exactly_the_flags_that_were_passed() {
     let mock = start_mock_clickpipes_api().await;
     let mut args = postgres_args_minimal();
