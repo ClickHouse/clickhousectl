@@ -1179,7 +1179,7 @@ fn render_postgres_connection_guidance(svc: &PostgresService) {
 
     print_line("");
     print_line(format!(
-        "Connection: host={host} port=5432 database=postgres user={username}; TLS required"
+        "Connection: host={host} port=5432 database=postgres user={username}; use verified TLS"
     ));
     print_line(format!(
         "Next: clickhousectl cloud postgres get {postgres_id} (wait for state=running and fill any placeholders)"
