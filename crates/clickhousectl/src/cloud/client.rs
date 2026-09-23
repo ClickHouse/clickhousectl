@@ -235,10 +235,13 @@ fn resolve_auth_with_sources(
     }
 
     if let Some(creds) = load_credentials()
-        && let (Some(key), Some(secret)) = (creds.api_key, creds.api_secret)
+        && let Some((key, secret)) = creds.api_credentials()
     {
         return Ok(ResolvedAuth {
-            creds: ResolvedCreds::Basic { key, secret },
+            creds: ResolvedCreds::Basic {
+                key: key.to_owned(),
+                secret: secret.to_owned(),
+            },
             source: AuthSource::CredentialsFile,
             base_url: normalized_default(),
         });
@@ -1416,6 +1419,49 @@ mod tests {
             api_secret: Some("file_s".to_string()),
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn empty_saved_credentials_do_not_shadow_usable_sources() {
+        for (key, secret) in [("", ""), ("", "file_s"), ("file_k", "")] {
+            let saved = || {
+                Some(crate::cloud::credentials::Credentials {
+                    api_key: Some(key.to_owned()),
+                    api_secret: Some(secret.to_owned()),
+                    ..Default::default()
+                })
+            };
+            let dotenv = dotenv_with(&[]);
+            let env = env_map(&[
+                ("CLICKHOUSE_CLOUD_API_KEY", "env_k"),
+                ("CLICKHOUSE_CLOUD_API_SECRET", "env_s"),
+            ]);
+            let resolved = resolve_auth_with_sources(
+                None,
+                None,
+                None,
+                &dotenv,
+                &lookup_from(&env),
+                &saved,
+                &no_tokens,
+            )
+            .unwrap();
+            assert_eq!(resolved.source, AuthSource::EnvVars);
+            let ResolvedCreds::Basic { key, secret } = resolved.creds else {
+                panic!("expected environment API key credentials");
+            };
+            assert_eq!(key, "env_k");
+            assert_eq!(secret, "env_s");
+            let result =
+                resolve_auth_with_sources(None, None, None, &dotenv, &|_| None, &saved, &no_tokens);
+            assert!(matches!(
+                result,
+                Err(CloudError {
+                    kind: CloudErrorKind::Auth,
+                    ..
+                })
+            ));
+        }
     }
 
     #[test]

@@ -653,6 +653,8 @@ clickhousectl cloud auth login --interactive
 
 `auth login --interactive` saves credentials to `.clickhouse/credentials.json` (project-local). API keys are org-scoped, so they stay per-project; OAuth tokens represent your user identity and are stored globally in `~/.clickhouse/tokens.json`.
 
+Flag-based login requires both `--api-key` and `--api-secret` to be nonempty; invalid input leaves saved credentials unchanged. Saved pairs with missing or empty values are skipped during authentication and shown as incomplete by `cloud auth status`.
+
 For CI and other automation, inject credentials through your secret manager:
 
 ```bash

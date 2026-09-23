@@ -192,14 +192,14 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
     // Login's credentials are global arguments. Validate after propagation so
     // a pair split across command levels remains valid.
     if let cloud::cli::CloudCommands::Auth { command } = &args.command
-        && let Some(message) = command.login_validation_error()
+        && let Some((kind, message)) = command.login_validation_error()
     {
         let login = cmd
             .find_subcommand_mut("cloud")
             .and_then(|cloud| cloud.find_subcommand_mut("auth"))
             .and_then(|auth| auth.find_subcommand_mut("login"))
             .expect("cloud auth login command must exist");
-        return Err(login.error(ErrorKind::MissingRequiredArgument, message));
+        return Err(login.error(kind, message));
     }
 
     if args.has_explicit_json_format_conflict() {
@@ -431,6 +431,53 @@ async fn run_skills(args: SkillsArgs) -> Result<()> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn login_rejects_empty_values_after_global_flag_propagation() {
+        for (key, secret, invalid_flag) in [
+            ("", "", "--api-key"),
+            ("", "secret", "--api-key"),
+            ("key", "", "--api-secret"),
+        ] {
+            for args in [
+                vec![
+                    "clickhousectl",
+                    "cloud",
+                    "auth",
+                    "login",
+                    "--api-key",
+                    key,
+                    "--api-secret",
+                    secret,
+                ],
+                vec![
+                    "clickhousectl",
+                    "cloud",
+                    "--api-key",
+                    key,
+                    "--api-secret",
+                    secret,
+                    "auth",
+                    "login",
+                ],
+                vec![
+                    "clickhousectl",
+                    "cloud",
+                    "--api-key",
+                    key,
+                    "auth",
+                    "login",
+                    "--api-secret",
+                    secret,
+                ],
+            ] {
+                let error = parse_and_validate(&args).err().expect("empty credential");
+                assert_eq!(error.kind(), ErrorKind::InvalidValue);
+                assert_eq!(error.exit_code(), 2);
+                assert!(error.to_string().contains(invalid_flag));
+            }
+        }
+    }
 
     #[test]
     fn login_credential_pairs_are_validated_after_global_flag_propagation() {
