@@ -23,8 +23,6 @@ const SOURCE_SCHEMA: &str = "public";
 const SOURCE_TABLE: &str = "cdc_users";
 const TARGET_TABLE: &str = "cdc_users";
 const PUBLICATION: &str = "clickpipe_pub";
-const SEED_ROW_COUNT: i64 = 3;
-const POST_SEED_ROW_COUNT: i64 = 8;
 
 const DEFAULT_CLICKPIPE_READY_TIMEOUT_SECS: u64 = 600;
 const DEFAULT_CDC_LAG_TIMEOUT_SECS: u64 = 300;
@@ -411,62 +409,39 @@ async fn cloud_clickpipe_postgres_cli_cdc() -> TestResult<()> {
             &clickhouse_password,
         );
 
-        poll_until(
-            "seed row count in ClickHouse",
+        verify_current_rows(
+            &pg_client,
+            &ch_query,
+            "snapshot",
             cdc_lag_timeout,
             ctx.poll_interval,
-            || {
-                let ch_query = ch_query.clone();
-                async move {
-                    match ch_query.count_rows(TARGET_TABLE).await {
-                        Ok(count) if count >= SEED_ROW_COUNT => Ok(Some(count)),
-                        Ok(_) => Ok(None),
-                        Err(e) => Err(e),
-                    }
-                }
-            },
         )
         .await?;
 
-        let alice_name = ch_query
-            .scalar_string(&format!(
-                "SELECT name FROM default.{TARGET_TABLE} WHERE id = 1 LIMIT 1"
-            ))
-            .await?;
-        assert_eq!(
-            alice_name.as_deref(),
-            Some("alice"),
-            "row id=1 spot-check failed"
-        );
-
-        // ── Insert more rows and verify ongoing CDC ─────────────────
-
-        log_phase("Verify ongoing CDC");
-
-        pg_client
-            .execute(
-                "INSERT INTO cdc_users (id, name) VALUES \
-                 (4, 'dave'), (5, 'eve'), (6, 'frank'), (7, 'grace'), (8, 'henry')",
-                &[],
+        // Compare every ID and value after each mutation, rather than accepting
+        // a count that could include stale versions or deleted rows.
+        for (phase, sql) in [
+            (
+                "INSERT",
+                "INSERT INTO cdc_users (id, name) VALUES (4, 'dave'), (5, 'eve')",
+            ),
+            (
+                "UPDATE",
+                "UPDATE cdc_users SET name = 'alice-updated' WHERE id = 1",
+            ),
+            ("DELETE", "DELETE FROM cdc_users WHERE id = 2"),
+        ] {
+            log_phase(&format!("Verify CDC after {phase}"));
+            pg_client.execute(sql, &[]).await?;
+            verify_current_rows(
+                &pg_client,
+                &ch_query,
+                phase,
+                cdc_lag_timeout,
+                ctx.poll_interval,
             )
             .await?;
-
-        poll_until(
-            "post-seed row count in ClickHouse",
-            cdc_lag_timeout,
-            ctx.poll_interval,
-            || {
-                let ch_query = ch_query.clone();
-                async move {
-                    match ch_query.count_rows(TARGET_TABLE).await {
-                        Ok(count) if count >= POST_SEED_ROW_COUNT => Ok(Some(count)),
-                        Ok(_) => Ok(None),
-                        Err(e) => Err(e),
-                    }
-                }
-            },
-        )
-        .await?;
+        }
 
         // ── Explicit teardown ───────────────────────────────────────
 
@@ -825,26 +800,54 @@ impl ClickHouseQuery {
         Ok(body)
     }
 
-    async fn count_rows(&self, table: &str) -> TestResult<i64> {
-        // Cloud ClickPipes tables use SharedMergeTree storage, which rejects
-        // FINAL. This fixture inserts distinct IDs, so the raw count is exact.
+    async fn current_rows(&self) -> TestResult<Vec<CdcRow>> {
         let body = self
             .run_query(&format!(
-                "SELECT count() FROM default.{table} FORMAT TabSeparated"
+                "SELECT id, name FROM default.{TARGET_TABLE} FINAL \
+             WHERE _peerdb_is_deleted = 0 ORDER BY id \
+             SETTINGS output_format_json_quote_64bit_integers = 0 FORMAT JSONEachRow"
             ))
             .await?;
-        Ok(body.trim().parse::<i64>()?)
+        body.lines()
+            .map(|line| serde_json::from_str(line).map_err(Into::into))
+            .collect()
     }
+}
 
-    async fn scalar_string(&self, query: &str) -> TestResult<Option<String>> {
-        let body = self
-            .run_query(&format!("{query} FORMAT TabSeparated"))
-            .await?;
-        let value = body.trim();
-        if value.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(value.to_string()))
-        }
-    }
+#[derive(Debug, PartialEq, Eq, serde::Deserialize)]
+struct CdcRow {
+    id: i64,
+    name: String,
+}
+
+async fn verify_current_rows(
+    postgres: &tokio_postgres::Client,
+    clickhouse: &ClickHouseQuery,
+    phase: &str,
+    timeout: Duration,
+    interval: Duration,
+) -> TestResult<()> {
+    let expected: Vec<CdcRow> = postgres
+        .query("SELECT id, name FROM cdc_users ORDER BY id", &[])
+        .await?
+        .into_iter()
+        .map(|row| CdcRow {
+            id: row.get(0),
+            name: row.get(1),
+        })
+        .collect();
+    poll_until(
+        &format!("exact current rows after {phase}"),
+        timeout,
+        interval,
+        || async {
+            let actual = clickhouse.current_rows().await?;
+            if actual == expected {
+                Ok(Some(()))
+            } else {
+                Err(format!("{phase}: expected {expected:?}, got {actual:?}").into())
+            }
+        },
+    )
+    .await
 }

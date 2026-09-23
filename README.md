@@ -2417,13 +2417,14 @@ only supported `--replication-mode` value.
 are repeatable and may be given together. At least one mapping from either
 flag is required.
 
-`--table-mapping schema.table:target_table` is unchanged: it maps one source
-table to one destination table and leaves every other per-table option at the
-ClickPipes default.
+`--table-mapping schema.table:target_table` maps one source table to one
+destination table using `ReplacingMergeTree`. Other per-table options keep
+their defaults.
 
-`--table-mapping-json <JSON>` takes the API's table mapping object verbatim,
-for the options that shape the destination table ClickPipes creates and
-therefore cannot be changed once the pipe exists:
+`--table-mapping-json <JSON>` accepts the API's table mapping fields, including
+an explicit `tableEngine` override. An omitted engine also uses
+`ReplacingMergeTree`. These options shape the destination table ClickPipes
+creates and therefore cannot be changed once the pipe exists:
 
 ```bash
 clickhousectl cloud clickpipe create postgres <service-id> \
@@ -2452,7 +2453,18 @@ clickhousectl cloud clickpipe create postgres <service-id> \
 | `useCustomSortingKey` | Whether the API applies `sortingKeys`. Set to `true` automatically when `sortingKeys` is given. |
 | `partitionByExpr` | `PARTITION BY` expression for the destination table, for example `toYYYYMM(created_at)`. |
 | `partitionKey` | Column used to partition the initial snapshot for parallelism. Unrelated to the destination table's `PARTITION BY`. |
-| `tableEngine` | One of `MergeTree`, `ReplacingMergeTree` or `Null`. Defaults to `MergeTree`, which is what the simple form sends. |
+| `tableEngine` | One of `MergeTree`, `ReplacingMergeTree` or `Null`. Defaults to `ReplacingMergeTree`, as does the simple form. Explicit values are preserved. |
+
+For current-state CDC queries, use `FINAL` and exclude deletion markers:
+
+```sql
+SELECT * FROM public_users FINAL WHERE _peerdb_is_deleted = 0;
+```
+
+The engine alone does not make a raw `SELECT` return deduplicated current
+state. See the [Postgres CDC deduplication guide](https://clickhouse.com/docs/integrations/clickpipes/postgres/deduplication).
+An explicit `MergeTree` override retains row versions and does not support
+`FINAL`; choose it only when you intend to process those events yourself.
 
 Every value is validated before any request is made, and a failure is a usage
 error (exit code 2):
