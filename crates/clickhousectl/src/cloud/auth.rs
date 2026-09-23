@@ -86,6 +86,8 @@ impl AuthCommands {
 
 pub async fn run(
     command: AuthCommands,
+    api_key: Option<&str>,
+    api_secret: Option<&str>,
     api_url: Option<&str>,
     debug: bool,
     json: bool,
@@ -180,7 +182,7 @@ pub async fn run(
                 active: String,
             }
 
-            let active = resolve_active_auth_source();
+            let active = resolve_active_auth_source(api_key, api_secret);
             let mark = |source: AuthSource| -> String {
                 if active == Some(source) {
                     "yes".into()
@@ -189,13 +191,33 @@ pub async fn run(
                 }
             };
 
+            let configured_status = |source: AuthSource| -> String {
+                if active == Some(source) {
+                    "Active".into()
+                } else {
+                    "Configured (inactive)".into()
+                }
+            };
+
             let mut rows = Vec::new();
+            let (status, scope) = match (api_key.is_some(), api_secret.is_some()) {
+                (true, true) => (configured_status(AuthSource::CliFlags), "read/write"),
+                (true, false) => ("Incomplete (missing --api-secret)".into(), "-"),
+                (false, true) => ("Incomplete (missing --api-key)".into(), "-"),
+                (false, false) => ("Not configured".into(), "-"),
+            };
+            rows.push(AuthRow {
+                auth_type: "CLI flags".into(),
+                status,
+                scope: scope.into(),
+                active: mark(AuthSource::CliFlags),
+            });
 
             match load_tokens() {
                 Some(tokens) if is_token_valid(&tokens) => {
                     rows.push(AuthRow {
                         auth_type: "OAuth".into(),
-                        status: "Active".into(),
+                        status: configured_status(AuthSource::OAuthTokens),
                         scope: "read-only".into(),
                         active: mark(AuthSource::OAuthTokens),
                     });
@@ -221,7 +243,7 @@ pub async fn run(
             if credentials::load_credentials().is_some() {
                 rows.push(AuthRow {
                     auth_type: "API key".into(),
-                    status: "Active".into(),
+                    status: configured_status(AuthSource::CredentialsFile),
                     scope: "read/write".into(),
                     active: mark(AuthSource::CredentialsFile),
                 });
@@ -242,6 +264,9 @@ pub async fn run(
                         .unwrap_or_default();
                     let status = match active {
                         Some(AuthSource::EnvVars) => format!("Active{provenance}"),
+                        Some(AuthSource::CliFlags) => {
+                            format!("Configured{provenance} (inactive, outranked by CLI flags)")
+                        }
                         Some(AuthSource::CredentialsFile) => format!(
                             "Configured{provenance} (inactive, outranked by credentials file)"
                         ),
@@ -284,6 +309,16 @@ pub async fn run(
                 match active {
                     Some(source) => {
                         eprint_line(format!("[debug] auth source: {}", source.describe()))
+                    }
+                    None if api_key.is_some() != api_secret.is_some() => {
+                        let missing = if api_key.is_some() {
+                            "--api-secret"
+                        } else {
+                            "--api-key"
+                        };
+                        eprint_line(format!(
+                            "[debug] auth source: none (incomplete CLI flags: missing {missing})"
+                        ));
                     }
                     None => eprint_line("[debug] auth source: none (no credentials configured)"),
                 }
@@ -776,6 +811,52 @@ mod tests {
                 .command,
         ];
         assert!(commands.iter().all(|command| !command.is_write()));
+    }
+
+    #[test]
+    fn auth_status_receives_credentials_from_every_command_level() {
+        for args in [
+            vec![
+                "cloud",
+                "--api-key",
+                "key",
+                "--api-secret",
+                "secret",
+                "auth",
+                "status",
+            ],
+            vec![
+                "cloud",
+                "auth",
+                "--api-key",
+                "key",
+                "--api-secret",
+                "secret",
+                "status",
+            ],
+            vec![
+                "cloud",
+                "auth",
+                "status",
+                "--api-key",
+                "key",
+                "--api-secret",
+                "secret",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(std::iter::once("clickhousectl").chain(args)).unwrap();
+            let Commands::Cloud(args) = cli.command else {
+                panic!("expected cloud command");
+            };
+            assert_eq!(args.api_key.as_deref(), Some("key"));
+            assert_eq!(args.api_secret.as_deref(), Some("secret"));
+            assert!(matches!(
+                args.command,
+                crate::cloud::cli::CloudCommands::Auth {
+                    command: AuthCommands::Status
+                }
+            ));
+        }
     }
 
     #[test]
