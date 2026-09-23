@@ -2327,7 +2327,8 @@ for the full connection flow.
 Kinesis create and schema discovery accept `--format Protobuf` with the required
 `--protobuf-schema-file <PATH|->`. Supply raw `.proto` source or a serialized descriptor set;
 the CLI base64-encodes it. Empty schemas and encoded schemas above 1 MiB are rejected.
-The schema flag is rejected for other formats.
+Missing or incompatible schema flags and empty or oversized schemas are usage errors
+(exit 2); file and stdin read failures remain runtime errors (exit 1).
 
 For Kinesis create and schema discovery, omitting `--auth` infers `IAM_USER`
 from a complete `--access-key-id` / `--secret-key` pair; otherwise it uses `IAM_ROLE`.

@@ -10,6 +10,7 @@ pub enum CloudErrorKind {
     #[default]
     Generic,
     Auth,
+    Usage,
 }
 
 #[derive(Debug)]
@@ -45,6 +46,14 @@ impl CloudError {
             kind: CloudErrorKind::Auth,
             failure: None,
             details: None,
+        }
+    }
+
+    /// Invalid user input discovered while reading command inputs.
+    pub fn usage(message: impl Into<String>) -> Self {
+        Self {
+            kind: CloudErrorKind::Usage,
+            ..Self::new(message)
         }
     }
 

@@ -482,7 +482,7 @@ impl ClickPipeCommands {
             ClickPipeCreateCommands::Kinesis(args) => (
                 "kinesis",
                 build_create_request_args(&args.request, ClickPipeSourceKind::Kinesis)
-                    .and_then(|_| resolve_kinesis_auth(&args.source))
+                    .and_then(|_| validate_kinesis_source_args(&args.source))
                     .err(),
             ),
             ClickPipeCreateCommands::Postgres(args) => {
@@ -515,7 +515,7 @@ impl ClickPipeCommands {
         else {
             return None;
         };
-        resolve_kinesis_auth(&args.source)
+        validate_kinesis_source_args(&args.source)
             .err()
             .map(|error| ("kinesis", error.message))
     }
@@ -1257,7 +1257,7 @@ pub struct KinesisSourceFields {
     /// Protobuf schema file or - for stdin; requires --format Protobuf
     ///
     /// Required for Protobuf; accepts .proto source or a binary descriptor set.
-    #[arg(long, value_name = "PATH")]
+    #[arg(long, value_name = "PATH", required_if_eq("format", "Protobuf"))]
     pub protobuf_schema_file: Option<String>,
 
     /// Authentication method (inferred when omitted)
@@ -2708,7 +2708,12 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
     Ok(())
 }
 
-fn read_protobuf_schema_file(path: &str) -> CloudResult<String> {
+// Keep I/O failures typed; the source chooses how invalid schema content is
+// reported independently of failures to open or read its input.
+fn read_protobuf_schema_file(
+    path: &str,
+    invalid_input: fn(String) -> CloudError,
+) -> CloudResult<String> {
     let contents = if path == "-" {
         use std::io::Read as _;
         let mut contents = Vec::new();
@@ -2718,7 +2723,7 @@ fn read_protobuf_schema_file(path: &str) -> CloudResult<String> {
         std::fs::read(path)?
     };
     if contents.is_empty() {
-        return Err(CloudError::new(if path == "-" {
+        return Err(invalid_input(if path == "-" {
             "no Protobuf schema received on stdin".to_string()
         } else {
             format!("Protobuf schema file '{path}' was empty")
@@ -2727,7 +2732,7 @@ fn read_protobuf_schema_file(path: &str) -> CloudResult<String> {
 
     let encoded = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, contents);
     if encoded.len() > PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH {
-        return Err(CloudError::new(format!(
+        return Err(invalid_input(format!(
             "Protobuf schema exceeds the encoded size limit of {PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH} bytes"
         )));
     }
@@ -2811,7 +2816,7 @@ fn build_kafka_source_with_exactly_once(
     let protobuf_schema = args
         .protobuf_schema_file
         .as_deref()
-        .map(read_protobuf_schema_file)
+        .map(|path| read_protobuf_schema_file(path, CloudError::new))
         .transpose()?;
 
     Ok(ClickPipePostKafkaSource {
@@ -2882,6 +2887,20 @@ fn resolve_kinesis_auth(args: &KinesisSourceFields) -> CloudResult<&str> {
         .unwrap_or(if has_keys { "IAM_USER" } else { "IAM_ROLE" }))
 }
 
+fn validate_kinesis_source_args(args: &KinesisSourceFields) -> CloudResult<&str> {
+    if args.format == "Protobuf" && args.protobuf_schema_file.is_none() {
+        return Err(CloudError::usage(
+            "--format Protobuf requires --protobuf-schema-file",
+        ));
+    }
+    if args.format != "Protobuf" && args.protobuf_schema_file.is_some() {
+        return Err(CloudError::usage(
+            "--protobuf-schema-file can only be used with --format Protobuf",
+        ));
+    }
+    resolve_kinesis_auth(args)
+}
+
 /// Build a `ClickPipePostKinesisSource` from the CLI args. Shared by the
 /// `clickpipe create kinesis` and `clickpipe schema-discover kinesis <SERVICE_ID>`
 /// handlers.
@@ -2890,17 +2909,7 @@ fn build_kinesis_source(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKinesisSource> {
     use clickhouse_cloud_api::models::{ClickPipePostKinesisSource, MskIamUser};
 
-    if args.format == "Protobuf" && args.protobuf_schema_file.is_none() {
-        return Err(CloudError::new(
-            "--format Protobuf requires --protobuf-schema-file",
-        ));
-    }
-    if args.format != "Protobuf" && args.protobuf_schema_file.is_some() {
-        return Err(CloudError::new(
-            "--protobuf-schema-file can only be used with --format Protobuf",
-        ));
-    }
-    let auth = resolve_kinesis_auth(args)?;
+    let auth = validate_kinesis_source_args(args)?;
     let access_key = match (args.access_key_id.as_deref(), args.secret_key.as_deref()) {
         (Some(access_key_id), Some(secret_key)) => Some(MskIamUser {
             access_key_id: access_key_id.to_string(),
@@ -2913,7 +2922,7 @@ fn build_kinesis_source(
         protobuf_schema: args
             .protobuf_schema_file
             .as_deref()
-            .map(read_protobuf_schema_file)
+            .map(|path| read_protobuf_schema_file(path, CloudError::usage))
             .transpose()?,
         format: parse_enum(&args.format)?,
         stream_name: args.stream_name.clone(),
@@ -13792,7 +13801,39 @@ mod tests {
     }
 
     #[test]
+    fn kinesis_protobuf_schema_is_required_at_parse_time() {
+        for operation in ["create", "schema-discover"] {
+            let mut args = vec![
+                operation,
+                "kinesis",
+                "svc-1",
+                "--stream-name",
+                "stream",
+                "--region",
+                "us-east-1",
+                "--format",
+                "Protobuf",
+            ];
+            if operation == "create" {
+                args.extend([
+                    "--name",
+                    "pipe",
+                    "--database",
+                    "default",
+                    "--table",
+                    "events",
+                ]);
+            }
+            assert_eq!(
+                clickpipe_parse_error(&args).kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+    }
+
+    #[test]
     fn kinesis_protobuf_rejects_missing_incompatible_and_invalid_files() {
+        use crate::cloud::client::CloudErrorKind;
         let mut args = parsed_kinesis_source("create", &[]);
         assert!(
             build_kinesis_source(&args)
@@ -13801,38 +13842,36 @@ mod tests {
                 .is_none()
         );
         args.protobuf_schema_file = Some("/missing/schema.proto".into());
-        assert!(
-            build_kinesis_source(&args)
-                .unwrap_err()
-                .message
-                .contains("only be used")
+        assert_eq!(
+            build_kinesis_source(&args).unwrap_err().kind,
+            CloudErrorKind::Usage
         );
         args.format = "Protobuf".into();
-        assert!(build_kinesis_source(&args).is_err());
+        let error = build_kinesis_source(&args).unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert_eq!(error.failure.unwrap().kind, crate::failure::FailureKind::Io);
         args.protobuf_schema_file = None;
-        assert!(
-            build_kinesis_source(&args)
-                .unwrap_err()
-                .message
-                .contains("requires --protobuf-schema-file")
+        assert_eq!(
+            build_kinesis_source(&args).unwrap_err().kind,
+            CloudErrorKind::Usage
         );
         let dir = tempfile::tempdir().unwrap();
         let schema = dir.path().join("schema.proto");
         args.protobuf_schema_file = Some(schema.to_string_lossy().into_owned());
-        std::fs::write(&schema, b"").unwrap();
-        assert!(
-            build_kinesis_source(&args)
-                .unwrap_err()
-                .message
-                .contains("empty")
-        );
-        std::fs::write(&schema, vec![0; PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH]).unwrap();
-        assert!(
-            build_kinesis_source(&args)
-                .unwrap_err()
-                .message
-                .contains("size limit")
-        );
+        for contents in [vec![], vec![0; PROTOBUF_SCHEMA_MAX_ENCODED_LENGTH]] {
+            std::fs::write(&schema, contents).unwrap();
+            assert_eq!(
+                build_kinesis_source(&args).unwrap_err().kind,
+                CloudErrorKind::Usage
+            );
+            // The shared reader preserves Kafka's existing error classification.
+            assert_eq!(
+                read_protobuf_schema_file(schema.to_str().unwrap(), CloudError::new)
+                    .unwrap_err()
+                    .kind,
+                CloudErrorKind::Generic
+            );
+        }
     }
 
     fn parsed_kinesis_source(operation: &str, flags: &[&str]) -> KinesisSourceFields {
