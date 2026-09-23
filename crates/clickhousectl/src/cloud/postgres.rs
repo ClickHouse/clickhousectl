@@ -121,8 +121,7 @@ CONTEXT FOR AGENTS:
     /// Update a Postgres service's name, size, HA type or tags
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  --new-name also changes the service host name and its certificates: stored connection strings and
-  pinned CAs break, so re-read `cloud postgres get` and `cloud postgres certs get` afterwards.")]
+  --new-name changes the service hostname; re-read `cloud postgres get` and update connection strings.")]
     Update {
         /// Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
