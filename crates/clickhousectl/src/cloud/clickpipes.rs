@@ -1742,7 +1742,7 @@ pub struct MongoDbCreateArgs {
     #[arg(long, value_name = "WORKERS", value_parser = clap::value_parser!(i64).range(1..))]
     pub initial_load_parallelism: Option<i64>,
 
-    /// Number of rows per partition during the snapshot phase
+    /// Rows per partition during the snapshot (at least 1,000)
     #[arg(long, value_name = "ROWS", value_parser = clap::value_parser!(i64).range(1000..))]
     pub snapshot_rows_per_partition: Option<i64>,
 
