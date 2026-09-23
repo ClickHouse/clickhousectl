@@ -6308,7 +6308,7 @@ mod tests {
 
     fn assert_kinesis_value(flag: &str, value: &str) {
         if flag == "--format" {
-            parse_clickpipe(&[
+            let mut args = vec![
                 "create",
                 "kinesis",
                 "svc-1",
@@ -6324,7 +6324,11 @@ mod tests {
                 "db",
                 "--table",
                 "events",
-            ]);
+            ];
+            if value == "Protobuf" {
+                args.extend(["--protobuf-schema-file", "schema.proto"]);
+            }
+            parse_clickpipe(&args);
             return;
         }
         parse_clickpipe(&[
