@@ -185,7 +185,8 @@ pub use organization_private_endpoints::{
 };
 pub use organizations::{
     ActiveBalance, ActiveBalances, CreditBalance, CreditBalanceType, CreditBalances, Organization,
-    OrganizationPatchRequest, PrometheusDiscoveryLabels, PrometheusDiscoveryTargetGroup,
+    OrganizationCapabilities, OrganizationPatchRequest, PrometheusDiscoveryLabels,
+    PrometheusDiscoveryTargetGroup,
 };
 pub use postgres::{
     BasePostgresService, PgBouncerConfig, PgBouncerConfigResponse, PgConfig,

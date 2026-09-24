@@ -2275,6 +2275,8 @@ pub struct ClickPipeKafkaSource {
     pub schema_registry: Option<ClickPipeKafkaSchemaRegistry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub topics: Option<String>,
+    #[serde(rename = "tombstoneMode", skip_serializing_if = "Option::is_none")]
+    pub tombstone_mode: Option<ClickPipeKafkaSourceTombstonemode>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub r#type: Option<ClickPipeKafkaSourceType>,
 }
@@ -2292,12 +2294,60 @@ pub struct ClickPipeKinesisSource {
     pub iterator_type: Option<ClickPipeKinesisSourceIteratortype>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    #[serde(rename = "schemaRegistry", skip_serializing_if = "Option::is_none")]
+    pub schema_registry: Option<ClickPipeKinesisSchemaRegistryResponse>,
     #[serde(rename = "streamName", skip_serializing_if = "Option::is_none")]
     pub stream_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timestamp: Option<i64>,
     #[serde(rename = "useEnhancedFanOut", skip_serializing_if = "Option::is_none")]
     pub use_enhanced_fan_out: Option<bool>,
+}
+
+/// Values of `ClickPipeKinesisSchemaRegistry.type` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipeKinesisSchemaRegistryType {
+    #[serde(rename = "glue")]
+    #[default]
+    Glue,
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKinesisSchemaRegistryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Glue => write!(f, "glue"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `ClickPipeKinesisSchemaRegistry` for Kinesis create requests.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeKinesisSchemaRegistry {
+    #[serde(rename = "type")]
+    pub r#type: ClickPipeKinesisSchemaRegistryType,
+    #[serde(rename = "glueRegion")]
+    pub glue_region: String,
+    #[serde(rename = "glueRegistryName")]
+    pub glue_registry_name: String,
+    /// Omit to use the Kinesis source's IAM identity for Glue access.
+    #[serde(rename = "glueRoleArn", skip_serializing_if = "Option::is_none")]
+    pub glue_role_arn: Option<String>,
+}
+
+/// `ClickPipeKinesisSchemaRegistry` in a Kinesis source response.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeKinesisSchemaRegistryResponse {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickPipeKinesisSchemaRegistryType>,
+    #[serde(rename = "glueRegion", skip_serializing_if = "Option::is_none")]
+    pub glue_region: Option<String>,
+    #[serde(rename = "glueRegistryName", skip_serializing_if = "Option::is_none")]
+    pub glue_registry_name: Option<String>,
+    #[serde(rename = "glueRoleArn", skip_serializing_if = "Option::is_none")]
+    pub glue_role_arn: Option<String>,
 }
 
 /// `ClickPipeMongoDBPipeSettings` from the ClickHouse Cloud API.
@@ -3124,7 +3174,48 @@ pub struct ClickPipePostKafkaSource {
     #[serde(rename = "schemaRegistry", skip_serializing_if = "Option::is_none")]
     pub schema_registry: Option<ClickPipeMutateKafkaSchemaRegistry>,
     pub topics: String,
+    /// Deleting Kafka tombstones requires exactly-once delivery and can only be set on creation.
+    #[serde(rename = "tombstoneMode", skip_serializing_if = "Option::is_none")]
+    pub tombstone_mode: Option<ClickPipePostKafkaSourceTombstonemode>,
     pub r#type: ClickPipePostKafkaSourceType,
+}
+
+/// Inline enum for `ClickPipePostKafkaSource.tombstoneMode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipePostKafkaSourceTombstonemode {
+    #[serde(rename = "delete")]
+    #[default]
+    Delete,
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipePostKafkaSourceTombstonemode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Delete => write!(f, "delete"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// Inline enum for `ClickPipeKafkaSource.tombstoneMode`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipeKafkaSourceTombstonemode {
+    #[serde(rename = "delete")]
+    #[default]
+    Delete,
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKafkaSourceTombstonemode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Delete => write!(f, "delete"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
 }
 
 /// `ClickPipePostKinesisSource` from the ClickHouse Cloud API.
@@ -3139,6 +3230,8 @@ pub struct ClickPipePostKinesisSource {
     #[serde(rename = "iteratorType")]
     pub iterator_type: ClickPipePostKinesisSourceIteratortype,
     pub region: String,
+    #[serde(rename = "schemaRegistry", skip_serializing_if = "Option::is_none")]
+    pub schema_registry: Option<ClickPipeKinesisSchemaRegistry>,
     #[serde(rename = "streamName")]
     pub stream_name: String,
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -52,6 +52,8 @@ Postgres slow-query aggregate durations (`*DurationUs`) and execution `durationU
 
 Kinesis source format enums now include `Protobuf`. Set `ClickPipePostKinesisSource.protobuf_schema` to the base64-encoded `.proto` source or serialized `FileDescriptorSet` for that format; omit it for other formats. Organization Prometheus discovery has graduated from beta and is no longer listed in `BETA_OPERATIONS`.
 
+`Organization.capabilities.snapshots` reports snapshot eligibility as an optional boolean. Kinesis create requests accept `ClickPipeKinesisSchemaRegistry` for AWS Glue; supply `type`, `glue_region`, and `glue_registry_name`, and optionally `glue_role_arn` to assume a different role from the Kinesis source. Kinesis responses use `ClickPipeKinesisSchemaRegistryResponse`, whose fields tolerate absence and null; convert it with `TryFrom` before writing it back. Kafka create requests accept `tombstone_mode: Some(Delete)` to delete matching destination rows for tombstone records. This requires exactly-once delivery and is set only at creation. Struct-literal callers of `Organization`, `ClickPipeKinesisSource`, `ClickPipeKafkaSource`, `ClickPipePostKinesisSource`, and `ClickPipePostKafkaSource` need to supply the new optional fields as `None` or use `..Default::default()`.
+
 The beta Query API endpoint management methods are `query_api_endpoint_create`, `query_api_endpoint_get`, `query_api_endpoint_list`, `query_api_endpoint_update`, and `query_api_endpoint_delete`. Create and update take `PublicQueryApiEndpointRequest`; list accepts an optional cursor and limit (1–100) and returns `items` with `pagination.next_cursor`. User-owned endpoints can be listed and read, but cannot be updated or deleted through this API.
 
 ### ClickHouse settings models

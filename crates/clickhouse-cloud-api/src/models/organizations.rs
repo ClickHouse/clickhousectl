@@ -73,6 +73,8 @@ pub struct PrometheusDiscoveryTargetGroup {
 pub struct Organization {
     #[serde(rename = "byocConfig", skip_serializing_if = "Option::is_none")]
     pub byoc_config: Option<Vec<ByocConfig>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capabilities: Option<OrganizationCapabilities>,
     #[serde(rename = "createdAt", skip_serializing_if = "Option::is_none")]
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "enableCoreDumps", skip_serializing_if = "Option::is_none")]
@@ -83,6 +85,13 @@ pub struct Organization {
     pub name: Option<String>,
     #[serde(rename = "privateEndpoints", skip_serializing_if = "Option::is_none")]
     pub private_endpoints: Option<Vec<OrganizationPrivateEndpoint>>,
+}
+
+/// `OrganizationCapabilities` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct OrganizationCapabilities {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshots: Option<bool>,
 }
 
 /// `OrganizationPatchRequest` from the ClickHouse Cloud API.
