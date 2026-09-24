@@ -69,6 +69,18 @@ fn extracted_models_keep_root_and_models_paths() {
         api::ActiveBalances::default(),
         api::models::ActiveBalances::default(),
     );
+    assert_same_type(
+        api::OrganizationCapabilities::default(),
+        api::models::OrganizationCapabilities::default(),
+    );
+    assert_same_type(
+        api::ClickPipeKinesisSchemaRegistry::default(),
+        api::models::ClickPipeKinesisSchemaRegistry::default(),
+    );
+    assert_same_type(
+        api::ClickPipeKinesisSchemaRegistryResponse::default(),
+        api::models::ClickPipeKinesisSchemaRegistryResponse::default(),
+    );
     assert_same_type(api::Activity::default(), api::models::Activity::default());
     assert_same_type(api::ApiKey::default(), api::models::ApiKey::default());
     assert_same_type(

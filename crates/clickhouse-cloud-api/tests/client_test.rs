@@ -95,6 +95,25 @@ async fn get_organization() {
 }
 
 #[tokio::test]
+async fn get_organization_preserves_snapshot_capability() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1"))
+        .respond_with(ok_json(serde_json::json!({
+            "capabilities": {"snapshots": false}
+        })))
+        .mount(&server)
+        .await;
+    let org = client
+        .organization_get("org-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(org.capabilities.unwrap().snapshots, Some(false));
+}
+
+#[tokio::test]
 async fn get_active_balances_with_pagination() {
     let (s, c) = setup().await;
 
@@ -1908,6 +1927,83 @@ async fn create_click_pipe() {
     let resp = c.click_pipe_create("org-1", "svc-1", &body).await.unwrap();
     let pipe = resp.result.unwrap();
     assert_eq!(pipe.name.as_deref(), Some("new-pipe"));
+}
+
+#[tokio::test]
+async fn create_kinesis_click_pipe_sends_glue_registry() {
+    let (server, client) = setup().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services/svc-1/clickpipes"))
+        .and(body_partial_json(serde_json::json!({
+            "source": {"kinesis": {"schemaRegistry": {
+                "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events"
+            }}}
+        })))
+        .respond_with(ok_json(serde_json::json!({"name": "kinesis-pipe"})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let request = ClickPipePostRequest {
+        name: "kinesis-pipe".into(),
+        source: ClickPipePostSource {
+            kinesis: Some(ClickPipePostKinesisSource {
+                schema_registry: Some(ClickPipeKinesisSchemaRegistry {
+                    r#type: ClickPipeKinesisSchemaRegistryType::Glue,
+                    glue_region: "us-east-1".into(),
+                    glue_registry_name: "events".into(),
+                    glue_role_arn: None,
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let response = client
+        .click_pipe_create("org-1", "svc-1", &request)
+        .await
+        .unwrap();
+    assert_eq!(
+        response.result.unwrap().name.as_deref(),
+        Some("kinesis-pipe")
+    );
+}
+
+#[tokio::test]
+async fn get_click_pipe_preserves_nullable_kinesis_registry() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/clickpipes/pipe-1",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "source": {"kinesis": {"schemaRegistry": {
+                "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": null
+            }}}
+        })))
+        .mount(&server)
+        .await;
+    let pipe = client
+        .click_pipe_get("org-1", "svc-1", "pipe-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    let registry = pipe
+        .source
+        .unwrap()
+        .kinesis
+        .unwrap()
+        .schema_registry
+        .unwrap();
+    assert_eq!(registry.glue_region.as_deref(), Some("us-east-1"));
+    assert_eq!(registry.glue_registry_name, None);
+    assert_eq!(
+        ClickPipeKinesisSchemaRegistry::try_from(registry)
+            .unwrap_err()
+            .fields(),
+        &["glueRegistryName"]
+    );
 }
 
 #[tokio::test]

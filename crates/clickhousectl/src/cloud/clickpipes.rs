@@ -2847,6 +2847,7 @@ fn build_kafka_source_with_exactly_once(
         }),
         schema_registry,
         protobuf_schema,
+        tombstone_mode: None,
         ca_certificate,
         reverse_private_endpoint_ids: args.reverse_private_endpoint_ids.clone(),
     })
@@ -2930,6 +2931,7 @@ fn build_kinesis_source(
         authentication: parse_enum(auth)?,
         iam_role: args.iam_role.clone(),
         access_key,
+        schema_registry: None,
         use_enhanced_fan_out: if args.enhanced_fan_out {
             Some(true)
         } else {

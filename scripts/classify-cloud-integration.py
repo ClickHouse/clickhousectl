@@ -42,6 +42,9 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/client/udfs.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/convert.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/convert/clickstack.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/convert/clickpipes.rs": frozenset(
+        {"clickpipes"}
+    ),
     "crates/clickhouse-cloud-api/src/convert/postgres.rs": frozenset(
         {"postgres", "clickpipes"}
     ),

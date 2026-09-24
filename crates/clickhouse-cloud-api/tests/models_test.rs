@@ -7097,6 +7097,157 @@ fn kinesis_protobuf_schema_round_trips_and_other_formats_omit_it() {
 }
 
 #[test]
+fn organization_capabilities_tolerate_absence_null_and_false() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"capabilities": null}),
+    ] {
+        let org: Organization = serde_json::from_value(wire).unwrap();
+        assert_eq!(org.capabilities, None);
+        assert_eq!(serde_json::to_value(org).unwrap(), serde_json::json!({}));
+    }
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"snapshots": null}),
+    ] {
+        let capabilities: OrganizationCapabilities = serde_json::from_value(wire).unwrap();
+        assert_eq!(capabilities.snapshots, None);
+        assert_eq!(
+            serde_json::to_value(capabilities).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    let org: Organization = serde_json::from_value(serde_json::json!({
+        "capabilities": {"snapshots": false}
+    }))
+    .unwrap();
+    assert_eq!(org.capabilities.unwrap().snapshots, Some(false));
+}
+
+#[test]
+fn kinesis_registry_request_is_strict_and_response_is_tolerant() {
+    let full = serde_json::json!({
+        "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events"
+    });
+    let request: ClickPipeKinesisSchemaRegistry = serde_json::from_value(full.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), full);
+    for field in ["type", "glueRegion", "glueRegistryName"] {
+        let mut missing = full.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<ClickPipeKinesisSchemaRegistry>(missing).is_err());
+        let mut null = full.clone();
+        null[field] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ClickPipeKinesisSchemaRegistry>(null).is_err());
+    }
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "type": null, "glueRegion": null, "glueRegistryName": null, "glueRoleArn": null
+        }),
+    ] {
+        let response: ClickPipeKinesisSchemaRegistryResponse =
+            serde_json::from_value(wire).unwrap();
+        assert_eq!(response, ClickPipeKinesisSchemaRegistryResponse::default());
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[test]
+fn kinesis_registry_conversion_reports_nested_missing_fields_and_preserves_unknown_type() {
+    let response: ClickPipeKinesisSchemaRegistryResponse =
+        serde_json::from_value(serde_json::json!({
+            "type": "future", "glueRegion": "us-east-1", "glueRoleArn": "arn:aws:iam::123:role/Glue"
+        }))
+        .unwrap();
+    let error = ClickPipeKinesisSchemaRegistry::try_from(response.clone()).unwrap_err();
+    assert_eq!(error.fields(), &["glueRegistryName"]);
+    let mut complete = response;
+    complete.glue_registry_name = Some("events".into());
+    let request = ClickPipeKinesisSchemaRegistry::try_from(complete).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({
+            "type": "future", "glueRegion": "us-east-1", "glueRegistryName": "events",
+            "glueRoleArn": "arn:aws:iam::123:role/Glue"
+        })
+    );
+    assert_eq!(
+        ClickPipeKinesisSchemaRegistryType::Unknown("future".into()).to_string(),
+        "future"
+    );
+}
+
+#[test]
+fn kafka_tombstone_mode_is_lossless_and_optional() {
+    let request = ClickPipePostKafkaSource::default();
+    assert!(
+        serde_json::to_value(request)
+            .unwrap()
+            .get("tombstoneMode")
+            .is_none()
+    );
+    let response: ClickPipeKafkaSource = serde_json::from_value(serde_json::json!({
+        "tombstoneMode": "future"
+    }))
+    .unwrap();
+    assert!(
+        matches!(response.tombstone_mode, Some(ClickPipeKafkaSourceTombstonemode::Unknown(ref value)) if value == "future")
+    );
+    let request = ClickPipePostKafkaSource {
+        tombstone_mode: Some(ClickPipePostKafkaSourceTombstonemode::Delete),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["tombstoneMode"],
+        "delete"
+    );
+    assert_eq!(
+        ClickPipePostKafkaSourceTombstonemode::Delete.to_string(),
+        "delete"
+    );
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"tombstoneMode": null}),
+    ] {
+        let response: ClickPipeKafkaSource = serde_json::from_value(wire).unwrap();
+        assert_eq!(response.tombstone_mode, None);
+        assert!(
+            serde_json::to_value(response)
+                .unwrap()
+                .get("tombstoneMode")
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn kinesis_sources_omit_missing_or_null_registry() {
+    let request = ClickPipePostKinesisSource::default();
+    assert!(
+        serde_json::to_value(request)
+            .unwrap()
+            .get("schemaRegistry")
+            .is_none()
+    );
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"schemaRegistry": null}),
+    ] {
+        let response: ClickPipeKinesisSource = serde_json::from_value(wire).unwrap();
+        assert_eq!(response.schema_registry, None);
+        assert!(
+            serde_json::to_value(response)
+                .unwrap()
+                .get("schemaRegistry")
+                .is_none()
+        );
+    }
+}
+
+#[test]
 fn query_api_endpoint_request_is_strict_and_omits_optional_fields() {
     let required = serde_json::json!({
         "name": "orders",
