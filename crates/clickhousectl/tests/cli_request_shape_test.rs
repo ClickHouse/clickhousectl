@@ -1047,6 +1047,123 @@ fn invoke_api_key_login(project_dir: &Path) -> std::process::Output {
         .expect("failed to spawn clickhousectl")
 }
 
+#[tokio::test]
+async fn api_key_login_rejects_empty_values_before_touching_saved_credentials_or_http() {
+    let mock = MockServer::start().await;
+    for (key, secret, invalid_flag) in [
+        ("", "", "--api-key"),
+        ("", "new-secret", "--api-key"),
+        ("new-key", "", "--api-secret"),
+    ] {
+        for existing_credentials in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let credentials_dir = dir.path().join(".clickhouse");
+            let credentials_path = credentials_dir.join("credentials.json");
+            let original = if existing_credentials {
+                write_project_api_credentials(dir.path(), "saved-key", "saved-secret");
+                Some(std::fs::read(&credentials_path).unwrap())
+            } else {
+                None
+            };
+            let output = Command::new(clickhousectl_binary())
+                .env_clear()
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", dir.path().join("home"))
+                .current_dir(dir.path())
+                .args([
+                    "cloud",
+                    "auth",
+                    "login",
+                    "--api-key",
+                    key,
+                    "--api-secret",
+                    secret,
+                    "--url",
+                    &mock.uri(),
+                    "--json",
+                ])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(2));
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(invalid_flag), "{stderr}");
+            assert!(stderr.contains("Usage:"), "{stderr}");
+            for credential in ["new-key", "new-secret", "saved-key", "saved-secret"] {
+                assert!(!stderr.contains(credential));
+            }
+            if let Some(original) = original {
+                assert_eq!(std::fs::read(&credentials_path).unwrap(), original);
+            } else {
+                assert!(!credentials_dir.exists());
+            }
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[test]
+fn api_key_login_saves_a_nonempty_pair_and_status_selects_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = invoke_api_key_login(dir.path());
+    assert_success(&output);
+    let saved: Value = serde_json::from_slice(
+        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(saved["api_key"], "new-key");
+    assert_eq!(saved["api_secret"], "new-secret");
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .current_dir(dir.path())
+        .args(["cloud", "auth", "status", "--json"])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let rows: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let saved = rows.iter().find(|row| row["type"] == "API key").unwrap();
+    assert_eq!(saved["status"], "Active");
+    assert_eq!(saved["scope"], "read/write");
+    assert_eq!(saved["active"], "yes");
+}
+
+#[test]
+fn auth_status_never_selects_empty_saved_credentials() {
+    for (key, secret) in [("", ""), ("", "saved-secret"), ("saved-key", "")] {
+        for with_env in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            write_project_api_credentials(dir.path(), key, secret);
+            let mut command = Command::new(clickhousectl_binary());
+            command
+                .env_clear()
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", dir.path().join("home"))
+                .current_dir(dir.path())
+                .args(["cloud", "auth", "status", "--json"]);
+            if with_env {
+                command.env("CLICKHOUSE_CLOUD_API_KEY", "env-key");
+                command.env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret");
+            }
+            let output = command.output().unwrap();
+            assert_success(&output);
+            let rows: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+            let saved = rows.iter().find(|row| row["type"] == "API key").unwrap();
+            assert!(saved["status"].as_str().unwrap().starts_with("Incomplete"));
+            assert_eq!(saved["scope"], "-");
+            assert_eq!(saved["active"], "-");
+            let active: Vec<_> = rows.iter().filter(|row| row["active"] == "yes").collect();
+            if with_env {
+                assert_eq!(active.len(), 1);
+                assert_eq!(active[0]["type"], "Env vars");
+            } else {
+                assert!(active.is_empty());
+            }
+        }
+    }
+}
+
 #[test]
 fn api_key_login_preserves_malformed_credentials() {
     let dir = tempfile::tempdir().unwrap();

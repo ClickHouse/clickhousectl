@@ -19,6 +19,15 @@ pub struct Credentials {
     pub service_query_keys: HashMap<String, ServiceQueryKey>,
 }
 
+impl Credentials {
+    /// A usable management credential pair, shared by resolution and status.
+    pub(crate) fn api_credentials(&self) -> Option<(&str, &str)> {
+        let key = self.api_key.as_deref()?;
+        let secret = self.api_secret.as_deref()?;
+        (!key.is_empty() && !secret.is_empty()).then_some((key, secret))
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceQueryKey {
     /// Organization in which the management API key was provisioned.
