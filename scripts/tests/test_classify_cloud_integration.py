@@ -78,6 +78,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             },
             frozenset({"clickpipes"}): {
                 "crates/clickhouse-cloud-api/src/client/clickpipes.rs",
+                "crates/clickhouse-cloud-api/src/convert/clickpipes.rs",
                 "crates/clickhouse-cloud-api/src/models/clickpipes.rs",
             },
             frozenset({"service", "organization"}): {
