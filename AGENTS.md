@@ -180,6 +180,9 @@ Use `cargo add` with the latest version and an explicit crate, e.g. `cargo add -
   takes the version from `crates/clickhousectl/Cargo.toml` via `dynamic = ["version"]`.
 - `clickhouse-cloud-api` publishes to crates.io; `clickhousectl` to GitHub releases, crates.io, npm and PyPI from
   the same workflow in separate jobs (crates.io uses a token, npm and PyPI use OIDC).
+- Homebrew publishing renders `homebrew/clickhousectl.rb.tmpl` with `scripts/update-homebrew-formula.sh` and
+  pushes to `ClickHouse/homebrew-tap` using `HOMEBREW_TAP_DEPLOY_KEY` in the `release-publishing` environment.
+  The script requires the tag version to match Cargo and verifies mirror archive hashes before publishing.
 
 ## Git workflow and documentation
 
