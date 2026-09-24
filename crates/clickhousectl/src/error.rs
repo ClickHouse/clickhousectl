@@ -698,6 +698,10 @@ pub enum Error {
     #[error("{}", .0.message)]
     CloudDetailed(Box<crate::cloud::output::CloudErrorDetail>),
 
+    /// A clap usage failure found while reading command inputs.
+    #[error(transparent)]
+    Usage(Box<clap::Error>),
+
     #[error("{0}")]
     AuthRequired(String),
 
@@ -749,6 +753,7 @@ impl Error {
     /// `4` auth required. Clap reserves `2` for usage errors.
     pub fn exit_code(&self) -> i32 {
         match self {
+            Error::Usage(error) => error.exit_code(),
             Error::AuthRequired(_) => 4,
             Error::Cancelled => 3,
             Error::ChildExit(code) => *code,

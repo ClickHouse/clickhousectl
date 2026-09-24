@@ -315,10 +315,13 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
         Err(e) => {
             let is_child_exit = matches!(&e, Error::ChildExit(_));
             // All Cloud runtime failures share one envelope, including auth
-            // and cancellation. Keep child output and exit statuses intact.
-            let structured_cloud_error = cloud_json && !is_child_exit;
+            // and cancellation. Usage failures keep clap formatting; child
+            // output and exit statuses pass through intact.
+            let is_usage_error = matches!(&e, Error::Usage(_));
+            let structured_cloud_error = cloud_json && !is_child_exit && !is_usage_error;
             if !is_child_exit {
                 match &e {
+                    Error::Usage(error) => stdout::record(error.print()),
                     _ if local_json => local::output::print_error(&e),
                     _ if cloud_json => cloud::output::print_error(&e),
                     _ => {
@@ -332,7 +335,7 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
             (
                 e.exit_code(),
                 is_child_exit,
-                (local_json && !is_child_exit) || structured_cloud_error,
+                (local_json && !is_child_exit && !is_usage_error) || structured_cloud_error,
             )
         }
     };

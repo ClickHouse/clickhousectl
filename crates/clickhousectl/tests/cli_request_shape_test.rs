@@ -27662,6 +27662,98 @@ async fn service_snapshot_config_patch_preserves_omission_and_pairs() {
     }
 }
 
+fn kinesis_protobuf_args<'a>(
+    operation: &'a str,
+    format: &'a str,
+    schema: Option<&'a str>,
+) -> Vec<&'a str> {
+    let mut args = kinesis_auth_args(operation, &[]);
+    let format_index = args.iter().position(|arg| *arg == "--format").unwrap() + 1;
+    args[format_index] = format;
+    if let Some(schema) = schema {
+        args.extend(["--protobuf-schema-file", schema]);
+    }
+    args
+}
+
+#[tokio::test]
+async fn kinesis_protobuf_relationships_are_usage_errors_before_auth_files_or_http() {
+    let mock = MockServer::start().await;
+    for operation in ["create", "schema-discover"] {
+        for (format, schema) in [
+            ("Protobuf", None),
+            ("JSONEachRow", Some("/missing/schema.proto")),
+            ("Avro", Some("/missing/schema.proto")),
+            ("AvroConfluent", Some("/missing/schema.proto")),
+        ] {
+            let args = kinesis_protobuf_args(operation, format, schema);
+            for credentials in [false, true] {
+                let output = if credentials {
+                    invoke_cli_with_cloud_credentials(&mock, &args)
+                } else {
+                    invoke_cli_without_cloud_credentials(
+                        &mock,
+                        &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
+                    )
+                };
+                assert_eq!(
+                    output.status.code(),
+                    Some(2),
+                    "{operation} {format}: {output:?}"
+                );
+                assert!(output.stdout.is_empty());
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.contains("--protobuf-schema-file"), "{stderr}");
+                assert!(stderr.contains(&format!("{operation} kinesis")), "{stderr}");
+                assert!(serde_json::from_slice::<Value>(&output.stderr).is_err());
+            }
+        }
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn kinesis_protobuf_empty_stdin_is_a_usage_error_and_missing_file_stays_io() {
+    let mock = MockServer::start().await;
+    for operation in ["create", "schema-discover"] {
+        let args = kinesis_protobuf_args(operation, "Protobuf", Some("-"));
+        for json in [false, true] {
+            let project = tempfile::tempdir().unwrap();
+            let mut command = Command::new(clickhousectl_binary());
+            command
+                .env_clear()
+                .env("DO_NOT_TRACK", "1")
+                .env("HOME", project.path())
+                .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
+                .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
+                .current_dir(project.path())
+                .args(["cloud", "--url", &mock.uri()])
+                .args(&args)
+                .stdin(Stdio::null());
+            if json {
+                command.arg("--json");
+            }
+            let output = command.output().unwrap();
+            assert_eq!(output.status.code(), Some(2), "{operation}: {output:?}");
+            assert!(output.stdout.is_empty());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("Protobuf") && stderr.contains("stdin"),
+                "{stderr}"
+            );
+            assert!(serde_json::from_slice::<Value>(&output.stderr).is_err());
+        }
+        let output = invoke_cli_with_cloud_credentials(
+            &mock,
+            &kinesis_protobuf_args(operation, "Protobuf", Some("/missing/schema.proto")),
+        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert_eq!(cloud_runtime_error(&output)["code"], "io");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn kinesis_protobuf_create_and_discovery_forward_file_and_stdin() {
     let dir = tempfile::tempdir().unwrap();

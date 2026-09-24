@@ -494,6 +494,7 @@ impl LocalErrorOutput {
             | Error::Cloud(_)
             | Error::CloudDetailed(_)
             | Error::AuthRequired(_)
+            | Error::Usage(_)
             | Error::Skills(_)
             | Error::ChildExit(_) => {
                 Mapping::redacted(LocalErrorCode::LocalError, "Local command failed")

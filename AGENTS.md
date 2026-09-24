@@ -40,11 +40,14 @@ work on a branch, with an associated issue and a PR.
   call `client.api()` directly (`postgres.rs` also uses a local `unwrap_api` instead of `unwrap_response`).
 - Cloud handlers support `--json` unless there is good reason not to. JSON is emitted automatically when `--json`
   is passed or a coding agent is detected — `json_output()` in `main.rs` wraps `is_ai_agent::detect()`.
-- `CloudError` carries `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials, else `Generic`) and an
+- `CloudError` carries `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials,
+  `Usage` for input validation discovered during execution, else `Generic`) and an
   optional `details: CloudErrorDetail`. `cloud_error_to_top_level` (entered from `cloud::run`) maps `Auth` →
-  `Error::AuthRequired`, `Generic` → `Error::CloudDetailed`, retaining existing details or deriving a fallback
+  `Error::AuthRequired`, `Usage` → `Error::Usage` (clap rendering and exit 2), `Generic` →
+  `Error::CloudDetailed`, retaining existing details or deriving a fallback
   code from `FailureKind`. JSON mode renders every Cloud runtime failure via `cloud::output::print_error`,
-  including auth and cancellation; rendering never changes exit codes. Human output keeps the same message.
+  including auth and cancellation; usage failures keep clap's text. Rendering never changes exit codes.
+  Human output keeps the same message.
 - CLI-owned stdout uses `src/stdout.rs`: crate-scoped `print!`/`println!` and `stdout::stdout()` suppress only typed
   `BrokenPipe` errors. Keep new manual writers on that handle; never suppress command/API failures or child exits.
 - Exit codes: `0` success, else `Error::exit_code()` — `1` error, `3` cancelled, `4` auth required, and
