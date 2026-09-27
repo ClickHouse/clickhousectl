@@ -1,0 +1,30 @@
+name: Test Homebrew
+
+on:
+  pull_request:
+    paths:
+      - "homebrew/**"
+      - "scripts/update-homebrew-formula.sh"
+      - "scripts/tests/test_update_homebrew_formula.py"
+      - "crates/clickhousectl/Cargo.toml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/test-homebrew.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  homebrew-formula:
+    name: Homebrew formula
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: ruby/setup-ruby@a0102e0972be65f351c307e2d64b9314a57c8073 # master @ 2026-09-18
+        with:
+          ruby-version: "3.3"
+      - name: Check publisher shell script
+        run: shellcheck scripts/update-homebrew-formula.sh
+      - name: Test formula generation and publishing guards
+        run: python3 -m unittest discover -s scripts/tests -p 'test_update_homebrew_formula.py' -v
