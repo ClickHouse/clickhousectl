@@ -70,10 +70,9 @@ requires `sql` and accepts an optional `database`; omission uses `postgres`.
 Basic/API-key clients receive `Error::AuthMismatch` before any network request. The method neither provisions query credentials nor wakes the
 service or retries queries.
 
-This console Query API route is outside the published OpenAPI. It requires
-[control-plane #41025](https://github.com/ClickHouse/control-plane/pull/41025) to
-be merged and deployed before `clickhousectl` OAuth tokens can authenticate;
-live compatibility is unverified while that dependency is pending.
+This console Query API route is outside the published OpenAPI. It accepts
+`clickhousectl` audience OAuth tokens with read-only database access; Cloud API
+keys are unsupported.
 
 The returned `reqwest::Response` supports streaming and automatically decompresses
 gzip using the default HTTP client. Its fixed format is
@@ -85,8 +84,8 @@ their status and body.
 Query host selection follows `with_query_host`, `CLICKHOUSE_CLOUD_QUERY_HOST`,
 and the management API environment, in that order.
 
-After the upstream change is deployed, the ignored smoke test checks a read and
-an empty result against an existing service without creating resources. Supply
+The ignored smoke test checks a read and an empty result against an existing
+service without creating resources. Supply
 `CLICKHOUSE_CLOUD_TEST_BEARER_TOKEN` (a `clickhousectl` audience OAuth token),
 `CLICKHOUSE_CLOUD_TEST_ORG_ID`, and `CLICKHOUSE_CLOUD_TEST_POSTGRES_SERVICE_ID`.
 Optionally set `CLICKHOUSE_CLOUD_TEST_POSTGRES_DATABASE`,
@@ -97,10 +96,9 @@ or environment. Run:
 cargo test -p clickhouse-cloud-api --test run_query_test live_postgres_query_bearer_smoke -- --ignored --nocapture
 ```
 
-Before marking the integration ready, also verify that the deployed route rejects
-write statements, expired tokens, and tokens without access to the organization or
-service, and repeat the smoke test with an explicit non-default database. These
-checks remain pending alongside the smoke test until upstream authentication ships.
+For additional live coverage, verify that the route rejects write statements,
+invalid tokens, and tokens without access to the requested organization or service,
+and repeat the smoke test with an explicit non-default database.
 
 ## Development
 
