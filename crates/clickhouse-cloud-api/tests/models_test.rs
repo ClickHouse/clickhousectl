@@ -7381,3 +7381,124 @@ fn api_response_pagination_round_trips_values_and_omits_last_page_cursor() {
         assert_eq!(serde_json::to_value(response).unwrap(), value);
     }
 }
+
+#[test]
+fn activity_type_approved_domain_and_org_update_values_round_trip() {
+    let cases = [
+        (
+            "organization_approved_domain_auto_invite",
+            ActivityType::Organization_approved_domain_auto_invite,
+        ),
+        (
+            "organization_approved_domain_auto_join",
+            ActivityType::Organization_approved_domain_auto_join,
+        ),
+        (
+            "organization_approved_domain_delete",
+            ActivityType::Organization_approved_domain_delete,
+        ),
+        (
+            "organization_approved_domain_update",
+            ActivityType::Organization_approved_domain_update,
+        ),
+        (
+            "organization_approved_domain_verify",
+            ActivityType::Organization_approved_domain_verify,
+        ),
+        (
+            "organization_update_public_preview",
+            ActivityType::Organization_update_public_preview,
+        ),
+        (
+            "organization_update_saml_query_ownership_migration",
+            ActivityType::Organization_update_saml_query_ownership_migration,
+        ),
+    ];
+    for (wire, expected) in cases {
+        let parsed: ActivityType = serde_json::from_str(&format!("\"{wire}\"")).unwrap();
+        assert_eq!(parsed, expected, "{wire} should not be Unknown");
+        assert_eq!(parsed.to_string(), wire);
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn byoc_config_state_new_values_round_trip() {
+    let cases = [
+        ("infra-degraded", ByocConfigState::Infra_degraded),
+        ("infra-terminating", ByocConfigState::Infra_terminating),
+        ("infra-upgrading", ByocConfigState::Infra_upgrading),
+    ];
+    for (wire, expected) in cases {
+        let parsed: ByocConfigState = serde_json::from_str(&format!("\"{wire}\"")).unwrap();
+        assert_eq!(parsed, expected, "{wire} should not be Unknown");
+        assert_eq!(parsed.to_string(), wire);
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), wire);
+    }
+}
+
+#[test]
+fn kafka_tombstone_mode_soft_delete_round_trips() {
+    let parsed: ClickPipeKafkaSourceTombstonemode =
+        serde_json::from_str(r#""soft_delete""#).unwrap();
+    assert_eq!(parsed, ClickPipeKafkaSourceTombstonemode::Soft_delete);
+    assert_eq!(parsed.to_string(), "soft_delete");
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), "soft_delete");
+
+    let parsed: ClickPipePostKafkaSourceTombstonemode =
+        serde_json::from_str(r#""soft_delete""#).unwrap();
+    assert_eq!(parsed, ClickPipePostKafkaSourceTombstonemode::Soft_delete);
+    assert_eq!(parsed.to_string(), "soft_delete");
+    let request = ClickPipePostKafkaSource {
+        tombstone_mode: Some(ClickPipePostKafkaSourceTombstonemode::Soft_delete),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(request).unwrap()["tombstoneMode"],
+        "soft_delete"
+    );
+}
+
+#[test]
+fn byoc_config_account_id_deserializes_and_tolerates_absence() {
+    let config: ByocConfig = serde_json::from_value(serde_json::json!({
+        "accountId": "123456789012",
+        "state": "infra-ready"
+    }))
+    .unwrap();
+    assert_eq!(config.account_id.as_deref(), Some("123456789012"));
+    assert_eq!(
+        serde_json::to_value(&config).unwrap()["accountId"],
+        "123456789012"
+    );
+
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({ "accountId": null }),
+    ] {
+        let config: ByocConfig = serde_json::from_value(wire).unwrap();
+        assert_eq!(config.account_id, None);
+        assert!(
+            serde_json::to_value(&config)
+                .unwrap()
+                .get("accountId")
+                .is_none()
+        );
+    }
+}
+
+#[cfg(not(feature = "deprecated-fields"))]
+#[test]
+fn byoc_config_deprecated_account_name_is_hidden_by_default() {
+    let config: ByocConfig = serde_json::from_value(serde_json::json!({
+        "accountId": "123456789012",
+        "accountName": "123456789012"
+    }))
+    .unwrap();
+    assert!(
+        serde_json::to_value(&config)
+            .unwrap()
+            .get("accountName")
+            .is_none()
+    );
+}

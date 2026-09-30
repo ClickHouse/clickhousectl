@@ -318,6 +318,20 @@ pub enum ActivityType {
     Warehouse_update_name,
     #[serde(rename = "warehouse_update_release_channel")]
     Warehouse_update_release_channel,
+    #[serde(rename = "organization_approved_domain_auto_invite")]
+    Organization_approved_domain_auto_invite,
+    #[serde(rename = "organization_approved_domain_auto_join")]
+    Organization_approved_domain_auto_join,
+    #[serde(rename = "organization_approved_domain_delete")]
+    Organization_approved_domain_delete,
+    #[serde(rename = "organization_approved_domain_update")]
+    Organization_approved_domain_update,
+    #[serde(rename = "organization_approved_domain_verify")]
+    Organization_approved_domain_verify,
+    #[serde(rename = "organization_update_public_preview")]
+    Organization_update_public_preview,
+    #[serde(rename = "organization_update_saml_query_ownership_migration")]
+    Organization_update_saml_query_ownership_migration,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -521,6 +535,27 @@ impl std::fmt::Display for ActivityType {
             Self::Warehouse_update_name => write!(f, "warehouse_update_name"),
             Self::Warehouse_update_release_channel => {
                 write!(f, "warehouse_update_release_channel")
+            }
+            Self::Organization_approved_domain_auto_invite => {
+                write!(f, "organization_approved_domain_auto_invite")
+            }
+            Self::Organization_approved_domain_auto_join => {
+                write!(f, "organization_approved_domain_auto_join")
+            }
+            Self::Organization_approved_domain_delete => {
+                write!(f, "organization_approved_domain_delete")
+            }
+            Self::Organization_approved_domain_update => {
+                write!(f, "organization_approved_domain_update")
+            }
+            Self::Organization_approved_domain_verify => {
+                write!(f, "organization_approved_domain_verify")
+            }
+            Self::Organization_update_public_preview => {
+                write!(f, "organization_update_public_preview")
+            }
+            Self::Organization_update_saml_query_ownership_migration => {
+                write!(f, "organization_update_saml_query_ownership_migration")
             }
             Self::Unknown(s) => write!(f, "{s}"),
         }

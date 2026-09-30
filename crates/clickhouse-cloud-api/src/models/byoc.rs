@@ -124,6 +124,12 @@ pub enum ByocConfigState {
     Infra_provisioning,
     #[serde(rename = "infra-terminated")]
     Infra_terminated,
+    #[serde(rename = "infra-terminating")]
+    Infra_terminating,
+    #[serde(rename = "infra-degraded")]
+    Infra_degraded,
+    #[serde(rename = "infra-upgrading")]
+    Infra_upgrading,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -135,6 +141,9 @@ impl std::fmt::Display for ByocConfigState {
             Self::Infra_ready => write!(f, "infra-ready"),
             Self::Infra_provisioning => write!(f, "infra-provisioning"),
             Self::Infra_terminated => write!(f, "infra-terminated"),
+            Self::Infra_terminating => write!(f, "infra-terminating"),
+            Self::Infra_degraded => write!(f, "infra-degraded"),
+            Self::Infra_upgrading => write!(f, "infra-upgrading"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -267,6 +276,9 @@ impl std::fmt::Display for ByocAvailabilityZoneSuffix {
 /// `ByocConfig` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ByocConfig {
+    #[serde(rename = "accountId", skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[cfg(feature = "deprecated-fields")]
     #[serde(rename = "accountName", skip_serializing_if = "Option::is_none")]
     pub account_name: Option<String>,
     #[serde(rename = "cloudProvider", skip_serializing_if = "Option::is_none")]
