@@ -60,6 +60,8 @@ The beta BYOC infrastructure methods `organization_byoc_infrastructure_get` (ret
 
 The beta Query API endpoint management methods are `query_api_endpoint_create`, `query_api_endpoint_get`, `query_api_endpoint_list`, `query_api_endpoint_update`, and `query_api_endpoint_delete`. Create and update take `PublicQueryApiEndpointRequest`; list accepts an optional cursor and limit (1–100) and returns `items` with `pagination.next_cursor`. User-owned endpoints can be listed and read, but cannot be updated or deleted through this API.
 
+The beta saved query methods are `saved_query_create`, `saved_query_get`, `saved_query_list`, `saved_query_update`, and `saved_query_delete`, scoped to a service. Create and update take `PublicSavedQueryRequest` (update replaces the whole query); get returns `PublicSavedQuery` and list returns `PublicSavedQueryListItem` entries. List accepts an optional cursor and limit (1–100) and, unlike the Query API endpoint list, reports pagination on the envelope: `ApiResponse::next_cursor` (`None` on the last page), `limit`, and `total_count`.
+
 ### ClickHouse settings models
 
 `ServiceClickhouseSettingsPatchRequest` uses a map of setting names to JSON values, and `ServiceClickhouseSettingsPatchResponse.settings` returns the applied map. The published OpenAPI now describes both fields as nonempty objects with string or integer values. Use `ServiceClickhouseSettingsPatchRequest<ServiceClickhouseSettingsMap>` and `ServiceClickhouseSettingValue` for typed requests; the default JSON-value map remains source-compatible with existing callers. Explicit `ServiceClickhouseSettingsPatchRequest<String>` callers remain supported: encoded objects are validated and serialized as objects before sending.

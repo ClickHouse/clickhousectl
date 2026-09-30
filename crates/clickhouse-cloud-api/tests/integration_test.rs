@@ -189,6 +189,181 @@ async fn cloud_saved_query_endpoint_lifecycle(
     Ok(())
 }
 
+fn assert_saved_query(
+    query: &PublicSavedQuery,
+    expected: &PublicSavedQueryRequest,
+) -> TestResult<()> {
+    let parameters = expected.parameters.clone().unwrap_or_default();
+    if query.name.as_ref() != Some(&expected.name)
+        || query.sql.as_ref() != Some(&expected.sql)
+        || query.database.as_ref() != Some(&expected.database)
+        || query.parameters.as_ref() != Some(&parameters)
+    {
+        return Err(format!("saved query did not preserve its configuration: {query:?}").into());
+    }
+    Ok(())
+}
+
+/// Page through a disposable service's saved queries using the envelope cursor.
+async fn list_saved_queries(
+    client: &Client,
+    org: &str,
+    service: &str,
+) -> TestResult<Vec<PublicSavedQueryListItem>> {
+    let mut cursor: Option<String> = None;
+    let mut seen_cursors = std::collections::BTreeSet::new();
+    let mut seen_ids = std::collections::BTreeSet::new();
+    let mut listed = Vec::new();
+    for _ in 0..100 {
+        let page = client
+            .saved_query_list(org, service, cursor.as_deref(), Some(1))
+            .await?;
+        let items = page.result.ok_or("saved query list returned no result")?;
+        if items.len() > 1 || page.limit != Some(1) {
+            return Err("saved query list did not respect limit=1".into());
+        }
+        for item in items {
+            let id = item.id.ok_or("saved query list item omitted id")?;
+            if !seen_ids.insert(id) {
+                return Err("saved query pagination repeated a query".into());
+            }
+            listed.push(item);
+        }
+        cursor = page.next_cursor;
+        let Some(next_cursor) = &cursor else {
+            if page.total_count != Some(listed.len() as i64) {
+                return Err("saved query pagination total does not match items".into());
+            }
+            return Ok(listed);
+        };
+        if !seen_cursors.insert(next_cursor.clone()) {
+            return Err("saved query pagination repeated a cursor".into());
+        }
+    }
+    Err("saved query pagination exceeded 100 pages on a disposable service".into())
+}
+
+/// Reuse the lifecycle's disposable service. Register each newly created ID
+/// before assertions so the outer teardown also covers early failures.
+async fn cloud_saved_query_lifecycle(
+    client: &Client,
+    cleanup: &mut CleanupRegistry,
+    org: &str,
+    service: &str,
+    name: &str,
+) -> TestResult<()> {
+    let mut request = PublicSavedQueryRequest {
+        name: format!("{name}-saved-query"),
+        sql: "SELECT 1 AS value".to_string(),
+        database: "default".to_string(),
+        parameters: None,
+    };
+    let mut created_ids = Vec::new();
+    // Two queries guarantee that limit=1 exercises a subsequent cursor page.
+    for suffix in ["first", "second"] {
+        request.name = format!("{name}-saved-query-{suffix}");
+        let created = client
+            .saved_query_create(org, service, &request)
+            .await?
+            .result
+            .ok_or("saved query create returned no result")?;
+        let id = created.id.ok_or("saved query create omitted id")?;
+        cleanup.register_saved_query(service, id.to_string());
+        created_ids.push(id);
+        assert_saved_query(&created, &request)?;
+        let fetched = client
+            .saved_query_get(org, service, &id.to_string())
+            .await?
+            .result
+            .ok_or("saved query get returned no result")?;
+        if fetched.id != Some(id) {
+            return Err("saved query get returned a different id".into());
+        }
+        assert_saved_query(&fetched, &request)?;
+    }
+
+    // A duplicate name is a documented 409.
+    match client.saved_query_create(org, service, &request).await {
+        Err(clickhouse_cloud_api::Error::Api { status: 409, .. }) => {}
+        Ok(response) => {
+            if let Some(id) = response.result.and_then(|query| query.id) {
+                cleanup.register_saved_query(service, id.to_string());
+            }
+            return Err("saved query create accepted a duplicate name".into());
+        }
+        Err(other) => {
+            return Err(format!("expected 409 for a duplicate saved query, got {other:?}").into());
+        }
+    }
+
+    let listed = list_saved_queries(client, org, service).await?;
+    for id in &created_ids {
+        let item = listed
+            .iter()
+            .find(|item| item.id == Some(*id))
+            .ok_or("saved query list omitted a created query")?;
+        if item.database.as_ref() != Some(&request.database) || item.name.is_none() {
+            return Err("saved query list did not preserve query metadata".into());
+        }
+    }
+
+    request.name = format!("{name}-saved-query-updated");
+    request.sql = "SELECT {value:UInt32} AS value".to_string();
+    request.parameters = Some(std::collections::BTreeMap::from([(
+        "value".to_string(),
+        "42".to_string(),
+    )]));
+    let updated_id = created_ids[0];
+    let updated = client
+        .saved_query_update(org, service, &updated_id.to_string(), &request)
+        .await?
+        .result
+        .ok_or("saved query update returned no result")?;
+    if updated.id != Some(updated_id) {
+        return Err("saved query update changed its id".into());
+    }
+    assert_saved_query(&updated, &request)?;
+    let fetched = client
+        .saved_query_get(org, service, &updated_id.to_string())
+        .await?
+        .result
+        .ok_or("saved query get after update returned no result")?;
+    if fetched.id != Some(updated_id) {
+        return Err("saved query get after update returned a different id".into());
+    }
+    assert_saved_query(&fetched, &request)?;
+    let listed = list_saved_queries(client, org, service).await?;
+    if !listed
+        .iter()
+        .any(|item| item.id == Some(updated_id) && item.name.as_ref() == Some(&request.name))
+    {
+        return Err("saved query list did not reflect the update".into());
+    }
+
+    for id in &created_ids {
+        client
+            .saved_query_delete(org, service, &id.to_string())
+            .await?;
+        cleanup.unregister_saved_query(service, &id.to_string());
+        match client.saved_query_get(org, service, &id.to_string()).await {
+            Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+            other => {
+                return Err(
+                    format!("expected 404 after saved query deletion, got {other:?}").into(),
+                );
+            }
+        }
+    }
+    let remaining = list_saved_queries(client, org, service).await?;
+    if remaining
+        .iter()
+        .any(|item| item.id.is_some_and(|id| created_ids.contains(&id)))
+    {
+        return Err("saved query list still includes a deleted query".into());
+    }
+    Ok(())
+}
+
 /// Use the lifecycle's disposable service and restore its seeded overrides.
 async fn cloud_clickhouse_settings_native_contract(
     client: &Client,
@@ -1309,6 +1484,25 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         &ctx.org_id,
                         &service_id,
                         &api_key_uuid,
+                        &ctx.run_id,
+                    )
+                },
+            )
+            .await?;
+
+        // Saved queries are service-scoped and independent of API keys.
+        log_phase("Saved Queries");
+        failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "saved query create/get/list/update/delete",
+                || {
+                    cloud_saved_query_lifecycle(
+                        &client,
+                        &mut cleanup,
+                        &ctx.org_id,
+                        &service_id,
                         &ctx.run_id,
                     )
                 },

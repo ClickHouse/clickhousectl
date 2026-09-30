@@ -139,6 +139,7 @@ mod postgres;
 mod query_api_endpoints;
 mod quotas;
 mod rbac;
+mod saved_queries;
 mod scim;
 mod services;
 mod shared;
@@ -221,6 +222,7 @@ pub use rbac::{
     RBACPolicyTags, RBACPolicyTagsResponse, RBACPolicyTagsRolev2, RBACRole, RBACRoleType,
     RoleCreateRequest, RoleUpdateRequest,
 };
+pub use saved_queries::{PublicSavedQuery, PublicSavedQueryListItem, PublicSavedQueryRequest};
 pub use scim::{
     ScimAuthenticationScheme, ScimBooleanFeature, ScimEnterpriseManager, ScimEnterpriseUser,
     ScimGroup, ScimGroupListResponse, ScimGroupMember, ScimGroupMeta, ScimGroupPostRequest,

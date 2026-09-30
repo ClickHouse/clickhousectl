@@ -12,6 +12,7 @@ mod clickstack;
 mod organizations;
 mod postgres;
 mod query_api_endpoints;
+mod saved_queries;
 mod services;
 mod udfs;
 
