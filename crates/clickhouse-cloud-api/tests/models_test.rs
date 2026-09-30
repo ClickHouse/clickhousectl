@@ -1346,15 +1346,15 @@ fn serialize_postgres_read_replica_request() {
 fn serialize_byoc_infrastructure_post_request() {
     let req = ByocInfrastructurePostRequest {
         account_id: "123456789012".to_string(),
-        availability_zone_suffixes: vec![
+        availability_zone_suffixes: Some(vec![
             ByocAvailabilityZoneSuffix::A,
             ByocAvailabilityZoneSuffix::B,
             ByocAvailabilityZoneSuffix::C,
             ByocAvailabilityZoneSuffix::D,
             ByocAvailabilityZoneSuffix::E,
             ByocAvailabilityZoneSuffix::F,
-        ],
-        display_name: "My BYOC".to_string(),
+        ]),
+        display_name: Some("My BYOC".to_string()),
         ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
@@ -1364,6 +1364,299 @@ fn serialize_byoc_infrastructure_post_request() {
         serde_json::json!(["a", "b", "c", "d", "e", "f"])
     );
     assert_eq!(json["displayName"], "My BYOC");
+}
+
+#[test]
+fn byoc_infrastructure_post_request_requires_only_account_and_region() {
+    // Compile-time strictness: accountId and regionId are the spec's only required fields.
+    let req = ByocInfrastructurePostRequest {
+        account_id: "123456789012".to_string(),
+        region_id: ByocInfrastructurePostRequestRegionid::Eastus,
+        availability_zone_suffixes: None,
+        display_name: None,
+        external_id: None,
+        gcp_pod_cidr_range_names: None,
+        gcp_shared_vpc_host_project_id: None,
+        private_subnet_ids: None,
+        public_subnet_ids: None,
+        service_principal_client_id: None,
+        tags: None,
+        tenant_id: None,
+        vpc_cidr_range: None,
+        vpc_id: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        serde_json::json!({"accountId": "123456789012", "regionId": "eastus"})
+    );
+}
+
+#[test]
+fn byoc_infrastructure_post_request_serializes_every_optional_field() {
+    let req = ByocInfrastructurePostRequest {
+        account_id: "project-1".to_string(),
+        region_id: ByocInfrastructurePostRequestRegionid::Us_central1,
+        availability_zone_suffixes: Some(vec![ByocAvailabilityZoneSuffix::A]),
+        display_name: Some("gcp".to_string()),
+        external_id: Some("ext".to_string()),
+        gcp_pod_cidr_range_names: Some(vec!["pods".to_string()]),
+        gcp_shared_vpc_host_project_id: Some("host".to_string()),
+        private_subnet_ids: Some(vec!["private".to_string()]),
+        public_subnet_ids: Some(vec!["public".to_string()]),
+        service_principal_client_id: Some("sp".to_string()),
+        tags: Some(ByocInfrastructureTags::from([(
+            "env".to_string(),
+            "prod".to_string(),
+        )])),
+        tenant_id: Some("tenant".to_string()),
+        vpc_cidr_range: Some("10.0.0.0/16".to_string()),
+        vpc_id: Some("network".to_string()),
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        serde_json::json!({
+            "accountId": "project-1",
+            "regionId": "us-central1",
+            "availabilityZoneSuffixes": ["a"],
+            "displayName": "gcp",
+            "externalId": "ext",
+            "gcpPodCidrRangeNames": ["pods"],
+            "gcpSharedVpcHostProjectId": "host",
+            "privateSubnetIds": ["private"],
+            "publicSubnetIds": ["public"],
+            "servicePrincipalClientId": "sp",
+            "tags": {"env": "prod"},
+            "tenantId": "tenant",
+            "vpcCidrRange": "10.0.0.0/16",
+            "vpcId": "network"
+        })
+    );
+}
+
+#[test]
+fn byoc_infrastructure_validate_post_request_is_strict_on_account_and_region() {
+    let req = ByocInfrastructureValidatePostRequest {
+        account_id: "sub-1".to_string(),
+        region_id: ByocInfrastructureValidatePostRequestRegionid::Westus3,
+        availability_zone_suffixes: None,
+        external_id: None,
+        gcp_pod_cidr_range_names: None,
+        gcp_shared_vpc_host_project_id: None,
+        private_subnet_ids: None,
+        public_subnet_ids: None,
+        service_principal_client_id: Some("sp".to_string()),
+        tags: None,
+        tenant_id: Some("tenant".to_string()),
+        vpc_cidr_range: None,
+        vpc_id: None,
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        serde_json::json!({
+            "accountId": "sub-1",
+            "regionId": "westus3",
+            "servicePrincipalClientId": "sp",
+            "tenantId": "tenant"
+        })
+    );
+}
+
+#[test]
+fn byoc_infrastructure_tags_preserve_dynamic_keys() {
+    let tags: ByocInfrastructureTags =
+        serde_json::from_str(r#"{"team":"data","kubernetes.io/cluster":"owned","":"empty"}"#)
+            .unwrap();
+    assert_eq!(tags.len(), 3);
+    assert_eq!(tags["team"], "data");
+    assert_eq!(tags["kubernetes.io/cluster"], "owned");
+    assert_eq!(tags[""], "empty");
+    assert_eq!(
+        serde_json::to_value(&tags).unwrap(),
+        serde_json::json!({"team": "data", "kubernetes.io/cluster": "owned", "": "empty"})
+    );
+}
+
+#[test]
+fn byoc_infrastructure_details_missing_and_null_fields_are_none() {
+    let missing: ByocInfrastructureDetails = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocInfrastructureDetails::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocInfrastructureDetails = serde_json::from_value(serde_json::json!({
+        "id": null, "state": null, "accountId": null, "regionId": null,
+        "cloudProvider": null, "displayName": null, "enablePrivateLink": null,
+        "enablePrivateLoadBalancer": null, "enablePublicLoadBalancer": null,
+        "vpcCidrRange": null, "vpcAvailabilityZoneList": null, "isByoVpc": null,
+        "byoVpcId": null, "byoVpcPrivateSubnetIds": null, "byoVpcPodCidrRangeNames": null,
+        "byoVpcSharedVpcHostProjectId": null, "gcpPscSubnetId": null
+    }))
+    .unwrap();
+    assert_eq!(null, ByocInfrastructureDetails::default());
+}
+
+#[test]
+fn byoc_infrastructure_details_enums_preserve_unknown_values() {
+    let details: ByocInfrastructureDetails = serde_json::from_value(serde_json::json!({
+        "state": "infra-hibernating",
+        "regionId": "mars-north-1",
+        "cloudProvider": "oci"
+    }))
+    .unwrap();
+    assert_eq!(
+        details.state,
+        Some(ByocInfrastructureDetailsState::Unknown(
+            "infra-hibernating".to_string()
+        ))
+    );
+    assert_eq!(
+        details.region_id,
+        Some(ByocInfrastructureDetailsRegionid::Unknown(
+            "mars-north-1".to_string()
+        ))
+    );
+    assert_eq!(
+        details.cloud_provider,
+        Some(ByocInfrastructureDetailsCloudprovider::Unknown(
+            "oci".to_string()
+        ))
+    );
+}
+
+#[test]
+fn byoc_infrastructure_progress_missing_and_null_fields_are_none() {
+    let missing: ByocInfrastructureProgress = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocInfrastructureProgress::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocInfrastructureProgress = serde_json::from_value(serde_json::json!({
+        "id": null, "status": null, "updatedAt": null, "stages": null
+    }))
+    .unwrap();
+    assert_eq!(null, ByocInfrastructureProgress::default());
+}
+
+#[test]
+fn byoc_infrastructure_progress_stage_missing_and_null_fields_are_none() {
+    let missing: ByocInfrastructureProgressStage = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocInfrastructureProgressStage::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocInfrastructureProgressStage = serde_json::from_value(serde_json::json!({
+        "name": null, "status": null, "updatedAt": null, "message": null, "subStages": null
+    }))
+    .unwrap();
+    assert_eq!(null, ByocInfrastructureProgressStage::default());
+}
+
+#[test]
+fn byoc_infrastructure_progress_stages_nest_recursively() {
+    let progress: ByocInfrastructureProgress = serde_json::from_value(serde_json::json!({
+        "id": "byoc-1",
+        "status": "waiting",
+        "stages": [{
+            "name": "network",
+            "status": "in_progress",
+            "subStages": [{
+                "name": "vpc",
+                "status": "ready",
+                "updatedAt": "2026-09-30T10:00:00Z",
+                "subStages": [{
+                    "name": "subnet-a",
+                    "status": "not_started",
+                    "message": "queued"
+                }]
+            }]
+        }]
+    }))
+    .unwrap();
+    assert_eq!(
+        progress.status,
+        Some(ByocInfrastructureProgressStatus::Waiting)
+    );
+    let network = &progress.stages.as_ref().unwrap()[0];
+    assert_eq!(
+        network.status,
+        Some(ByocInfrastructureProgressStageStatus::InProgress)
+    );
+    let vpc = &network.sub_stages.as_ref().unwrap()[0];
+    assert_eq!(vpc.name.as_deref(), Some("vpc"));
+    assert!(vpc.updated_at.is_some());
+    let leaf = &vpc.sub_stages.as_ref().unwrap()[0];
+    assert_eq!(leaf.name.as_deref(), Some("subnet-a"));
+    assert_eq!(
+        leaf.status,
+        Some(ByocInfrastructureProgressStageStatus::NotStarted)
+    );
+    assert_eq!(leaf.message.as_deref(), Some("queued"));
+    assert_eq!(leaf.sub_stages, None);
+
+    let reserialized = serde_json::to_value(&progress).unwrap();
+    assert_eq!(
+        reserialized["stages"][0]["subStages"][0]["subStages"][0]["status"],
+        "not_started"
+    );
+    assert!(
+        reserialized["stages"][0]["subStages"][0]["subStages"][0]
+            .get("subStages")
+            .is_none()
+    );
+}
+
+#[test]
+fn byoc_infrastructure_progress_status_preserves_unknown_values() {
+    let status: ByocInfrastructureProgressStatus =
+        serde_json::from_str(r#""rolling_back""#).unwrap();
+    assert_eq!(
+        status,
+        ByocInfrastructureProgressStatus::Unknown("rolling_back".to_string())
+    );
+    assert_eq!(status.to_string(), "rolling_back");
+    assert_eq!(
+        ByocInfrastructureProgressStageStatus::NotStarted.to_string(),
+        "not_started"
+    );
+}
+
+#[test]
+fn byoc_infrastructure_validation_missing_and_null_fields_are_none() {
+    let missing: ByocInfrastructureValidation = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocInfrastructureValidation::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocInfrastructureValidation = serde_json::from_value(serde_json::json!({
+        "cloudProvider": null, "allPassed": null, "anyPassed": null,
+        "supported": null, "checks": null
+    }))
+    .unwrap();
+    assert_eq!(null, ByocInfrastructureValidation::default());
+}
+
+#[test]
+fn byoc_infrastructure_validation_check_missing_and_null_fields_are_none() {
+    let missing: ByocInfrastructureValidationCheck = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocInfrastructureValidationCheck::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocInfrastructureValidationCheck = serde_json::from_value(serde_json::json!({
+        "name": null, "action": null, "allowed": null, "reason": null, "group": null
+    }))
+    .unwrap();
+    assert_eq!(null, ByocInfrastructureValidationCheck::default());
 }
 
 #[test]

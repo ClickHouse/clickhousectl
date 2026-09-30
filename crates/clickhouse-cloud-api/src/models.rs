@@ -167,8 +167,15 @@ pub use backups::{
 };
 pub use byoc::{
     ByocAvailabilityZoneSuffix, ByocConfig, ByocConfigCloudprovider, ByocConfigRegionid,
-    ByocConfigState, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
-    ByocInfrastructurePostRequestRegionid,
+    ByocConfigState, ByocInfrastructureDetails, ByocInfrastructureDetailsCloudprovider,
+    ByocInfrastructureDetailsRegionid, ByocInfrastructureDetailsState,
+    ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
+    ByocInfrastructurePostRequestRegionid, ByocInfrastructureProgress,
+    ByocInfrastructureProgressStage, ByocInfrastructureProgressStageStatus,
+    ByocInfrastructureProgressStatus, ByocInfrastructureTags,
+    ByocInfrastructureValidatePostRequest, ByocInfrastructureValidatePostRequestRegionid,
+    ByocInfrastructureValidation, ByocInfrastructureValidationCheck,
+    ByocInfrastructureValidationCloudprovider,
 };
 pub use clickpipes::*;
 pub use clickstack::*;
