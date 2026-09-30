@@ -253,7 +253,7 @@ async fn cloud_saved_query_lifecycle(
     name: &str,
 ) -> TestResult<()> {
     let mut request = PublicSavedQueryRequest {
-        name: format!("{name}-saved-query"),
+        name: format!("{name}-sq"),
         sql: "SELECT 1 AS value".to_string(),
         database: "default".to_string(),
         parameters: None,
@@ -261,7 +261,7 @@ async fn cloud_saved_query_lifecycle(
     let mut created_ids = Vec::new();
     // Two queries guarantee that limit=1 exercises a subsequent cursor page.
     for suffix in ["first", "second"] {
-        request.name = format!("{name}-saved-query-{suffix}");
+        request.name = format!("{name}-sq-{suffix}");
         let created = client
             .saved_query_create(org, service, &request)
             .await?
@@ -307,7 +307,7 @@ async fn cloud_saved_query_lifecycle(
         }
     }
 
-    request.name = format!("{name}-saved-query-updated");
+    request.name = format!("{name}-sq-updated");
     request.sql = "SELECT {value:UInt32} AS value".to_string();
     request.parameters = Some(std::collections::BTreeMap::from([(
         "value".to_string(),
