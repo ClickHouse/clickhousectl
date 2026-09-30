@@ -63,14 +63,16 @@ use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{EmailSelector, NameSelector, NamedResource};
 use crate::cloud::shared::{parse_date_only, parse_tag_filter, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
-use clap::Subcommand;
+use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::{
-    ByocAvailabilityZoneSuffix, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
-    ByocInfrastructurePostRequestRegionid, InvitationPostRequest, MemberPatchRequest,
-    OrganizationPatchPrivateEndpoint, OrganizationPatchPrivateEndpointCloudprovider,
-    OrganizationPatchPrivateEndpointRegion, OrganizationPatchRequest,
-    OrganizationPrivateEndpointsPatch, RBACPolicyCreateRequest, RBACPolicyCreateRequestAllowdeny,
-    RBACPolicyTagsRolev2, RoleCreateRequest, RoleUpdateRequest,
+    ByocAvailabilityZoneSuffix, ByocInfrastructureDetails, ByocInfrastructurePatchRequest,
+    ByocInfrastructurePostRequest, ByocInfrastructurePostRequestRegionid,
+    ByocInfrastructureProgress, ByocInfrastructureTags, ByocInfrastructureValidatePostRequest,
+    ByocInfrastructureValidatePostRequestRegionid, ByocInfrastructureValidation,
+    InvitationPostRequest, MemberPatchRequest, OrganizationPatchPrivateEndpoint,
+    OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
+    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, RBACPolicyCreateRequest,
+    RBACPolicyCreateRequestAllowdeny, RBACPolicyTagsRolev2, RoleCreateRequest, RoleUpdateRequest,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -244,31 +246,47 @@ impl RoleCommands {
 
 #[derive(Subcommand)]
 pub enum ByocCommands {
+    /// Get BYOC infrastructure details
+    Get {
+        /// BYOC infrastructure ID
+        #[command(flatten)]
+        byoc_id: NameSelector,
+    },
+
+    /// Get BYOC infrastructure provisioning progress (Beta)
+    Progress {
+        /// BYOC infrastructure ID
+        #[command(flatten)]
+        byoc_id: NameSelector,
+    },
+
+    /// Validate cloud account readiness for BYOC (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Preflight only: simulates the cloud permissions ClickHouse needs and creates nothing.
+  Requires API key auth, like `create`; OAuth is read-only.
+  Takes the same flags as `cloud org byoc create`; a passing payload is accepted by create.
+  Exits 1 after printing the result when any check is denied.
+  `supported: false` means nothing was verified, not that everything passed.")]
+    Validate {
+        #[command(flatten)]
+        infrastructure: Box<ByocInfrastructureArgs>,
+    },
+
     /// Create BYOC infrastructure
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Wait for `cloud org get --org-id <org-id>` to show state `infra-ready` before creating a service.
+  Preflight the same flags with `cloud org byoc validate` before creating.
+  Watch provisioning with `cloud org byoc progress <id>`.
+  Wait for `cloud org byoc get <id>` to show state `infra-ready` before creating a service.
   Discover profiles with `cloud service profile list --region <region> --byoc-id <id>`.")]
     Create {
-        /// Cloud region ID
-        #[arg(long)]
-        region: String,
-
-        /// Cloud account ID
-        #[arg(long)]
-        account_id: String,
-
-        /// Availability-zone suffix (repeatable)
-        #[arg(long, required = true)]
-        availability_zone_suffix: Vec<String>,
-
-        /// VPC CIDR range
-        #[arg(long)]
-        vpc_cidr_range: String,
+        #[command(flatten)]
+        infrastructure: Box<ByocInfrastructureArgs>,
 
         /// Human-readable infrastructure name
         #[arg(long)]
-        display_name: String,
+        display_name: Option<String>,
     },
 
     /// Update BYOC infrastructure
@@ -290,9 +308,73 @@ CONTEXT FOR AGENTS:
     },
 }
 
+/// Infrastructure flags shared by `cloud org byoc create` and `validate`.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+pub struct ByocInfrastructureArgs {
+    /// Cloud region ID
+    #[arg(long)]
+    region: String,
+
+    /// Cloud account ID: AWS account, GCP project, or Azure subscription
+    #[arg(long)]
+    account_id: String,
+
+    /// Availability-zone suffix (repeatable)
+    #[arg(long)]
+    availability_zone_suffix: Vec<String>,
+
+    /// CIDR range for a ClickHouse-managed VPC; not with BYO-VPC flags
+    #[arg(
+        long,
+        conflicts_with_all = ["vpc_id", "private_subnet_id", "public_subnet_id"]
+    )]
+    vpc_cidr_range: Option<String>,
+
+    /// BYO-VPC ID or network name (AWS, GCP); requires --private-subnet-id
+    #[arg(long, requires = "private_subnet_id")]
+    vpc_id: Option<String>,
+
+    /// BYO-VPC private subnet ID or name (repeatable; AWS 1-6, GCP 1)
+    #[arg(long)]
+    private_subnet_id: Vec<String>,
+
+    /// AWS BYO-VPC public subnet ID (repeatable; at most 6)
+    #[arg(long)]
+    public_subnet_id: Vec<String>,
+
+    /// AWS ExternalID in the ClickHouse management role trust policy
+    #[arg(long)]
+    external_id: Option<String>,
+
+    /// GCP BYO-VPC secondary range name for pod IPs (repeatable)
+    #[arg(long)]
+    gcp_pod_cidr_range_name: Vec<String>,
+
+    /// GCP Shared VPC host project, when it differs from --account-id
+    #[arg(long)]
+    gcp_shared_vpc_host_project_id: Option<String>,
+
+    /// Azure Entra tenant ID; required for Azure regions
+    #[arg(long)]
+    tenant_id: Option<String>,
+
+    /// Azure service principal client ID; required for Azure regions
+    #[arg(long)]
+    service_principal_client_id: Option<String>,
+
+    /// Tag for the infrastructure's cloud resources (repeatable)
+    #[arg(long = "tag", value_name = "KEY=VALUE")]
+    tags: Vec<String>,
+}
+
 impl ByocCommands {
     fn is_write(&self) -> bool {
         match self {
+            ByocCommands::Get { .. } => false,
+            ByocCommands::Progress { .. } => false,
+            // A preflight that creates nothing, but the endpoint requires the
+            // organization manage scope, which OAuth (read-only) never has.
+            ByocCommands::Validate { .. } => true,
             ByocCommands::Create { .. } => true,
             ByocCommands::Update { .. } => true,
             ByocCommands::Delete { .. } => true,
@@ -487,20 +569,31 @@ async fn run_role(client: &CloudClient, command: RoleCommands, json: bool) -> Cl
 
 async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> CloudResult<()> {
     match command {
+        ByocCommands::Get { byoc_id } => {
+            byoc_get(
+                client,
+                &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                json,
+            )
+            .await
+        }
+        ByocCommands::Progress { byoc_id } => {
+            byoc_progress(
+                client,
+                &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                json,
+            )
+            .await
+        }
+        ByocCommands::Validate { infrastructure } => {
+            let request = build_byoc_validate_request(&infrastructure)?;
+            byoc_validate(client, request, json).await
+        }
         ByocCommands::Create {
-            region,
-            account_id,
-            availability_zone_suffix,
-            vpc_cidr_range,
+            infrastructure,
             display_name,
         } => {
-            let request = build_byoc_create_request(
-                &region,
-                &account_id,
-                &availability_zone_suffix,
-                &vpc_cidr_range,
-                &display_name,
-            )?;
+            let request = build_byoc_create_request(&infrastructure, display_name.as_deref())?;
             byoc_create(client, request, json).await
         }
         ByocCommands::Update {
@@ -736,64 +829,167 @@ fn build_org_update_request(options: &OrgUpdateOptions) -> CloudResult<Organizat
     })
 }
 
-fn parse_byoc_region(value: &str) -> CloudResult<ByocInfrastructurePostRequestRegionid> {
-    let region = serde_json::from_value::<ByocInfrastructurePostRequestRegionid>(
-        serde_json::Value::String(value.to_string()),
-    )
-    .map_err(|error| CloudError::new(format!("invalid region: {error}")))?;
-    if matches!(region, ByocInfrastructurePostRequestRegionid::Unknown(_)) {
+/// Parse a known value of a generated BYOC enum, rejecting values that only
+/// deserialize into its `Unknown` catch-all.
+fn parse_known_byoc_value<T: serde::de::DeserializeOwned>(
+    field: &str,
+    unknown: &str,
+    value: &str,
+    is_unknown: fn(&T) -> bool,
+) -> CloudResult<T> {
+    let parsed = serde_json::from_value::<T>(serde_json::Value::String(value.to_string()))
+        .map_err(|error| CloudError::new(format!("invalid {field}: {error}")))?;
+    if is_unknown(&parsed) {
         return Err(CloudError::new(format!(
-            "invalid region: unsupported BYOC region '{value}'"
+            "invalid {field}: {unknown} '{value}'"
         )));
     }
-    Ok(region)
+    Ok(parsed)
+}
+
+fn parse_byoc_region(value: &str) -> CloudResult<ByocInfrastructurePostRequestRegionid> {
+    parse_known_byoc_value("region", "unsupported BYOC region", value, |region| {
+        matches!(region, ByocInfrastructurePostRequestRegionid::Unknown(_))
+    })
+}
+
+fn parse_byoc_validate_region(
+    value: &str,
+) -> CloudResult<ByocInfrastructureValidatePostRequestRegionid> {
+    parse_known_byoc_value("region", "unsupported BYOC region", value, |region| {
+        matches!(
+            region,
+            ByocInfrastructureValidatePostRequestRegionid::Unknown(_)
+        )
+    })
 }
 
 fn parse_byoc_availability_zone_suffix(value: &str) -> CloudResult<ByocAvailabilityZoneSuffix> {
-    let suffix = serde_json::from_value::<ByocAvailabilityZoneSuffix>(serde_json::Value::String(
-        value.to_string(),
-    ))
-    .map_err(|error| CloudError::new(format!("invalid availability zone suffix: {error}")))?;
-    if matches!(suffix, ByocAvailabilityZoneSuffix::Unknown(_)) {
-        return Err(CloudError::new(format!(
-            "invalid availability zone suffix '{value}'"
-        )));
-    }
-    Ok(suffix)
+    parse_known_byoc_value(
+        "availability zone suffix",
+        "unsupported suffix",
+        value,
+        |suffix| matches!(suffix, ByocAvailabilityZoneSuffix::Unknown(_)),
+    )
 }
 
-fn build_byoc_create_request(
-    region: &str,
-    account_id: &str,
-    availability_zone_suffixes: &[String],
-    vpc_cidr_range: &str,
-    display_name: &str,
-) -> CloudResult<ByocInfrastructurePostRequest> {
-    let availability_zone_suffixes = availability_zone_suffixes
+/// Parse repeatable `--tag KEY=VALUE` values into the BYOC tag map. Values
+/// may be empty or contain `=`; keys must be nonempty and unique.
+fn parse_byoc_tags(values: &[String]) -> CloudResult<Option<ByocInfrastructureTags>> {
+    if values.is_empty() {
+        return Ok(None);
+    }
+    let mut tags = ByocInfrastructureTags::new();
+    for raw in values {
+        let Some((key, value)) = raw.split_once('=') else {
+            return Err(CloudError::usage(format!(
+                "invalid tag '{raw}': expected KEY=VALUE"
+            )));
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(CloudError::usage(format!(
+                "invalid tag '{raw}': tag key cannot be empty"
+            )));
+        }
+        if tags.insert(key.to_string(), value.to_string()).is_some() {
+            return Err(CloudError::usage(format!(
+                "invalid tag '{raw}': duplicate tag key '{key}'"
+            )));
+        }
+    }
+    Ok(Some(tags))
+}
+
+fn non_empty(values: &[String]) -> Option<Vec<String>> {
+    (!values.is_empty()).then(|| values.to_vec())
+}
+
+/// The region-independent part of a BYOC create/validate body, parsed once so
+/// both requests reject the same inputs the same way.
+struct ByocInfrastructureFields {
+    account_id: String,
+    availability_zone_suffixes: Option<Vec<ByocAvailabilityZoneSuffix>>,
+    external_id: Option<String>,
+    gcp_pod_cidr_range_names: Option<Vec<String>>,
+    gcp_shared_vpc_host_project_id: Option<String>,
+    private_subnet_ids: Option<Vec<String>>,
+    public_subnet_ids: Option<Vec<String>>,
+    service_principal_client_id: Option<String>,
+    tags: Option<ByocInfrastructureTags>,
+    tenant_id: Option<String>,
+    vpc_cidr_range: Option<String>,
+    vpc_id: Option<String>,
+}
+
+fn parse_byoc_infrastructure_fields(
+    args: &ByocInfrastructureArgs,
+) -> CloudResult<ByocInfrastructureFields> {
+    let availability_zone_suffixes = args
+        .availability_zone_suffix
         .iter()
         .map(|suffix| parse_byoc_availability_zone_suffix(suffix))
         .collect::<CloudResult<Vec<_>>>()?;
-    if availability_zone_suffixes.is_empty() {
-        return Err(CloudError::new(
-            "at least one --availability-zone-suffix is required",
-        ));
-    }
+    Ok(ByocInfrastructureFields {
+        account_id: args.account_id.clone(),
+        availability_zone_suffixes: (!availability_zone_suffixes.is_empty())
+            .then_some(availability_zone_suffixes),
+        external_id: args.external_id.clone(),
+        gcp_pod_cidr_range_names: non_empty(&args.gcp_pod_cidr_range_name),
+        gcp_shared_vpc_host_project_id: args.gcp_shared_vpc_host_project_id.clone(),
+        private_subnet_ids: non_empty(&args.private_subnet_id),
+        public_subnet_ids: non_empty(&args.public_subnet_id),
+        service_principal_client_id: args.service_principal_client_id.clone(),
+        tags: parse_byoc_tags(&args.tags)?,
+        tenant_id: args.tenant_id.clone(),
+        vpc_cidr_range: args.vpc_cidr_range.clone(),
+        vpc_id: args.vpc_id.clone(),
+    })
+}
 
+fn build_byoc_create_request(
+    args: &ByocInfrastructureArgs,
+    display_name: Option<&str>,
+) -> CloudResult<ByocInfrastructurePostRequest> {
+    let region_id = parse_byoc_region(&args.region)?;
+    let fields = parse_byoc_infrastructure_fields(args)?;
     Ok(ByocInfrastructurePostRequest {
-        account_id: account_id.to_string(),
-        availability_zone_suffixes: Some(availability_zone_suffixes),
-        display_name: Some(display_name.to_string()),
-        external_id: None,
-        gcp_pod_cidr_range_names: None,
-        gcp_shared_vpc_host_project_id: None,
-        private_subnet_ids: None,
-        public_subnet_ids: None,
-        region_id: parse_byoc_region(region)?,
-        service_principal_client_id: None,
-        tags: None,
-        tenant_id: None,
-        vpc_cidr_range: Some(vpc_cidr_range.to_string()),
-        vpc_id: None,
+        account_id: fields.account_id,
+        availability_zone_suffixes: fields.availability_zone_suffixes,
+        display_name: display_name.map(str::to_string),
+        external_id: fields.external_id,
+        gcp_pod_cidr_range_names: fields.gcp_pod_cidr_range_names,
+        gcp_shared_vpc_host_project_id: fields.gcp_shared_vpc_host_project_id,
+        private_subnet_ids: fields.private_subnet_ids,
+        public_subnet_ids: fields.public_subnet_ids,
+        region_id,
+        service_principal_client_id: fields.service_principal_client_id,
+        tags: fields.tags,
+        tenant_id: fields.tenant_id,
+        vpc_cidr_range: fields.vpc_cidr_range,
+        vpc_id: fields.vpc_id,
+    })
+}
+
+fn build_byoc_validate_request(
+    args: &ByocInfrastructureArgs,
+) -> CloudResult<ByocInfrastructureValidatePostRequest> {
+    let region_id = parse_byoc_validate_region(&args.region)?;
+    let fields = parse_byoc_infrastructure_fields(args)?;
+    Ok(ByocInfrastructureValidatePostRequest {
+        account_id: fields.account_id,
+        availability_zone_suffixes: fields.availability_zone_suffixes,
+        external_id: fields.external_id,
+        gcp_pod_cidr_range_names: fields.gcp_pod_cidr_range_names,
+        gcp_shared_vpc_host_project_id: fields.gcp_shared_vpc_host_project_id,
+        private_subnet_ids: fields.private_subnet_ids,
+        public_subnet_ids: fields.public_subnet_ids,
+        region_id,
+        service_principal_client_id: fields.service_principal_client_id,
+        tags: fields.tags,
+        tenant_id: fields.tenant_id,
+        vpc_cidr_range: fields.vpc_cidr_range,
+        vpc_id: fields.vpc_id,
     })
 }
 
@@ -1039,6 +1235,74 @@ async fn org_update(
         );
     }
     Ok(())
+}
+
+async fn byoc_get(client: &CloudClient, byoc_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let infrastructure = client.get_byoc_infrastructure(&org_id, byoc_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&infrastructure)?);
+    } else {
+        print_human(&infrastructure)?;
+    }
+    Ok(())
+}
+
+async fn byoc_progress(client: &CloudClient, byoc_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let progress = client
+        .get_byoc_infrastructure_progress(&org_id, byoc_id)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&progress)?);
+    } else {
+        print_human(&progress)?;
+    }
+    Ok(())
+}
+
+/// The error a completed validation maps to, or `None` when it passed. Only an
+/// explicit `allPassed: false` or an explicitly denied check fails; an
+/// unsupported configuration verified nothing and is not a failure.
+fn byoc_validation_failure(validation: &ByocInfrastructureValidation) -> Option<CloudError> {
+    let checks = validation.checks.as_deref().unwrap_or_default();
+    let denied = checks
+        .iter()
+        .filter(|check| check.allowed == Some(false))
+        .count();
+    if validation.all_passed != Some(false) && denied == 0 {
+        return None;
+    }
+    Some(CloudError::new(format!(
+        "BYOC validation failed: {denied} of {} checks denied",
+        checks.len()
+    )))
+}
+
+async fn byoc_validate(
+    client: &CloudClient,
+    request: ByocInfrastructureValidatePostRequest,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let validation = client
+        .validate_byoc_infrastructure(&org_id, &request)
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&validation)?);
+    } else {
+        print_human(&validation)?;
+        if validation.supported == Some(false) {
+            println!(
+                "Preflight validation is not supported for this cloud and configuration; nothing was verified."
+            );
+        }
+    }
+    match byoc_validation_failure(&validation) {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 async fn byoc_create(
@@ -1511,6 +1775,45 @@ impl CloudClient {
         let response = self
             .api()
             .organization_update(org_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_byoc_infrastructure(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+    ) -> crate::cloud::client::Result<ByocInfrastructureDetails> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_get(org_id, byoc_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_byoc_infrastructure_progress(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+    ) -> crate::cloud::client::Result<ByocInfrastructureProgress> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_progress_get(org_id, byoc_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn validate_byoc_infrastructure(
+        &self,
+        org_id: &str,
+        request: &ByocInfrastructureValidatePostRequest,
+    ) -> crate::cloud::client::Result<ByocInfrastructureValidation> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_validate(org_id, request)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
@@ -2596,9 +2899,77 @@ mod tests {
         }
     }
 
+    fn parse_byoc_command(args: &[&str]) -> ByocCommands {
+        let CloudCommands::Org { command } = parse_cloud_command(args) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::Byoc { command } = command else {
+            panic!("expected BYOC command");
+        };
+        command
+    }
+
+    fn byoc_args(extra: &[&str]) -> Vec<String> {
+        let mut args: Vec<String> = [
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "create",
+            "--region",
+            "us-east-1",
+            "--account-id",
+            "123456789012",
+        ]
+        .iter()
+        .map(|arg| arg.to_string())
+        .collect();
+        args.extend(extra.iter().map(|arg| arg.to_string()));
+        args
+    }
+
+    fn minimal_infrastructure_args() -> ByocInfrastructureArgs {
+        ByocInfrastructureArgs {
+            region: "us-east-1".into(),
+            account_id: "123456789012".into(),
+            availability_zone_suffix: vec![],
+            vpc_cidr_range: None,
+            vpc_id: None,
+            private_subnet_id: vec![],
+            public_subnet_id: vec![],
+            external_id: None,
+            gcp_pod_cidr_range_name: vec![],
+            gcp_shared_vpc_host_project_id: None,
+            tenant_id: None,
+            service_principal_client_id: None,
+            tags: vec![],
+        }
+    }
+
+    fn maximal_infrastructure_args() -> ByocInfrastructureArgs {
+        ByocInfrastructureArgs {
+            region: "eastus".into(),
+            account_id: "subscription-1".into(),
+            availability_zone_suffix: ["a", "b", "c", "d", "e", "f"].map(String::from).to_vec(),
+            vpc_cidr_range: None,
+            vpc_id: Some("vpc-1".into()),
+            private_subnet_id: vec!["subnet-a".into(), "subnet-b".into()],
+            public_subnet_id: vec!["subnet-pub".into()],
+            external_id: Some("external-1".into()),
+            gcp_pod_cidr_range_name: vec!["pods-1".into(), "pods-2".into()],
+            gcp_shared_vpc_host_project_id: Some("host-project".into()),
+            tenant_id: Some("tenant-1".into()),
+            service_principal_client_id: Some("client-1".into()),
+            tags: vec!["team=data".into(), "note=a=b".into(), "empty=".into()],
+        }
+    }
+
     #[test]
     fn parses_byoc_create_update_and_delete_commands() {
-        let CloudCommands::Org { command } = parse_cloud_command(&[
+        let ByocCommands::Create {
+            infrastructure,
+            display_name,
+        } = parse_byoc_command(&[
             "clickhousectl",
             "cloud",
             "org",
@@ -2618,29 +2989,23 @@ mod tests {
             "production",
             "--org-id",
             "org-1",
-        ]) else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Byoc {
-            command:
-                ByocCommands::Create {
-                    region,
-                    account_id,
-                    availability_zone_suffix,
-                    vpc_cidr_range,
-                    display_name,
-                },
-        } = command
+        ])
         else {
             panic!("expected BYOC create");
         };
-        assert_eq!(region, "us-east-1");
-        assert_eq!(account_id, "123456789012");
-        assert_eq!(availability_zone_suffix, vec!["a", "b"]);
-        assert_eq!(vpc_cidr_range, "10.0.0.0/16");
-        assert_eq!(display_name, "production");
+        assert_eq!(infrastructure.region, "us-east-1");
+        assert_eq!(infrastructure.account_id, "123456789012");
+        assert_eq!(infrastructure.availability_zone_suffix, vec!["a", "b"]);
+        assert_eq!(
+            infrastructure.vpc_cidr_range.as_deref(),
+            Some("10.0.0.0/16")
+        );
+        assert_eq!(display_name.as_deref(), Some("production"));
 
-        let CloudCommands::Org { command } = parse_cloud_command(&[
+        let ByocCommands::Update {
+            byoc_id,
+            display_name,
+        } = parse_byoc_command(&[
             "clickhousectl",
             "cloud",
             "org",
@@ -2649,16 +3014,7 @@ mod tests {
             "byoc-1",
             "--display-name",
             "renamed",
-        ]) else {
-            panic!("expected org command");
-        };
-        let OrgCommands::Byoc {
-            command:
-                ByocCommands::Update {
-                    byoc_id,
-                    display_name,
-                },
-        } = command
+        ])
         else {
             panic!("expected BYOC update");
         };
@@ -2681,8 +3037,86 @@ mod tests {
     }
 
     #[test]
-    fn byoc_create_requires_an_availability_zone_suffix() {
-        let result = Cli::try_parse_from([
+    fn byoc_get_and_progress_are_reads_selected_by_id_or_name() {
+        for subcommand in ["get", "progress"] {
+            let command = parse_byoc_command(&[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "byoc",
+                subcommand,
+                "byoc-1",
+            ]);
+            let byoc_id = match command {
+                ByocCommands::Get { byoc_id } | ByocCommands::Progress { byoc_id } => byoc_id,
+                _ => panic!("expected BYOC {subcommand}"),
+            };
+            assert_eq!(byoc_id.id.as_deref(), Some("byoc-1"));
+            assert_write(
+                &[
+                    "clickhousectl",
+                    "cloud",
+                    "org",
+                    "byoc",
+                    subcommand,
+                    "byoc-1",
+                ],
+                false,
+            );
+
+            let command = parse_byoc_command(&[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "byoc",
+                subcommand,
+                "--name",
+                "production",
+            ]);
+            let (ByocCommands::Get { byoc_id } | ByocCommands::Progress { byoc_id }) = command
+            else {
+                panic!("expected BYOC {subcommand}");
+            };
+            assert_eq!(byoc_id.name.as_deref(), Some("production"));
+
+            let error = Cli::try_parse_from(["clickhousectl", "cloud", "org", "byoc", subcommand])
+                .err()
+                .expect("an ID or --name is required");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument
+            );
+        }
+    }
+
+    #[test]
+    fn byoc_validate_and_create_are_writes() {
+        // Validate creates nothing, but its endpoint needs the organization
+        // manage scope, which read-only OAuth never has.
+        for subcommand in ["validate", "create"] {
+            assert_write(
+                &[
+                    "clickhousectl",
+                    "cloud",
+                    "org",
+                    "byoc",
+                    subcommand,
+                    "--region",
+                    "us-east-1",
+                    "--account-id",
+                    "123456789012",
+                ],
+                true,
+            );
+        }
+    }
+
+    #[test]
+    fn byoc_create_needs_only_region_and_account() {
+        let ByocCommands::Create {
+            infrastructure,
+            display_name,
+        } = parse_byoc_command(&[
             "clickhousectl",
             "cloud",
             "org",
@@ -2692,43 +3126,184 @@ mod tests {
             "us-east-1",
             "--account-id",
             "123456789012",
-            "--vpc-cidr-range",
-            "10.0.0.0/16",
-            "--display-name",
-            "production",
-        ]);
-        let Err(error) = result else {
-            panic!("missing availability zone suffix must fail");
+        ])
+        else {
+            panic!("expected BYOC create");
         };
+        assert_eq!(*infrastructure, minimal_infrastructure_args());
+        assert_eq!(display_name, None);
+
+        for missing in ["--region", "--account-id"] {
+            let args: Vec<String> = byoc_args(&[]);
+            let index = args.iter().position(|arg| arg == missing).unwrap();
+            let mut args = args;
+            args.drain(index..index + 2);
+            let error = Cli::try_parse_from(&args).err().expect("must fail");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{missing}"
+            );
+        }
+    }
+
+    #[test]
+    fn byoc_validate_shares_create_flags_and_rejects_display_name() {
+        let flags = [
+            "--region",
+            "eastus",
+            "--account-id",
+            "subscription-1",
+            "--availability-zone-suffix",
+            "a",
+            "--availability-zone-suffix",
+            "b",
+            "--availability-zone-suffix",
+            "c",
+            "--availability-zone-suffix",
+            "d",
+            "--availability-zone-suffix",
+            "e",
+            "--availability-zone-suffix",
+            "f",
+            "--vpc-id",
+            "vpc-1",
+            "--private-subnet-id",
+            "subnet-a",
+            "--private-subnet-id",
+            "subnet-b",
+            "--public-subnet-id",
+            "subnet-pub",
+            "--external-id",
+            "external-1",
+            "--gcp-pod-cidr-range-name",
+            "pods-1",
+            "--gcp-pod-cidr-range-name",
+            "pods-2",
+            "--gcp-shared-vpc-host-project-id",
+            "host-project",
+            "--tenant-id",
+            "tenant-1",
+            "--service-principal-client-id",
+            "client-1",
+            "--tag",
+            "team=data",
+            "--tag",
+            "note=a=b",
+            "--tag",
+            "empty=",
+        ];
+        let mut validate = vec!["clickhousectl", "cloud", "org", "byoc", "validate"];
+        validate.extend(flags);
+        let ByocCommands::Validate { infrastructure } = parse_byoc_command(&validate) else {
+            panic!("expected BYOC validate");
+        };
+        assert_eq!(*infrastructure, maximal_infrastructure_args());
+
+        let mut create = vec!["clickhousectl", "cloud", "org", "byoc", "create"];
+        create.extend(flags);
+        create.extend(["--display-name", "production"]);
+        let ByocCommands::Create {
+            infrastructure,
+            display_name,
+        } = parse_byoc_command(&create)
+        else {
+            panic!("expected BYOC create");
+        };
+        assert_eq!(*infrastructure, maximal_infrastructure_args());
+        assert_eq!(display_name.as_deref(), Some("production"));
+
+        let mut validate_with_name = validate.clone();
+        validate_with_name.extend(["--display-name", "production"]);
+        let error = Cli::try_parse_from(&validate_with_name)
+            .err()
+            .expect("validate has no --display-name");
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    #[test]
+    fn byoc_vpc_cidr_range_conflicts_with_byo_vpc_flags() {
+        for byo_vpc in [
+            ["--vpc-id", "vpc-1"],
+            ["--private-subnet-id", "subnet-a"],
+            ["--public-subnet-id", "subnet-pub"],
+        ] {
+            let mut extra = vec!["--vpc-cidr-range", "10.0.0.0/16"];
+            extra.extend(byo_vpc);
+            if byo_vpc[0] == "--vpc-id" {
+                extra.extend(["--private-subnet-id", "subnet-a"]);
+            }
+            let error = Cli::try_parse_from(byoc_args(&extra))
+                .err()
+                .expect("managed and BYO VPC flags conflict");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{byo_vpc:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn byoc_vpc_id_requires_a_private_subnet() {
+        let error = Cli::try_parse_from(byoc_args(&["--vpc-id", "vpc-1"]))
+            .err()
+            .expect("--vpc-id needs --private-subnet-id");
         assert_eq!(
             error.kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+        assert!(
+            Cli::try_parse_from(byoc_args(&[
+                "--vpc-id",
+                "vpc-1",
+                "--private-subnet-id",
+                "subnet-a"
+            ]))
+            .is_ok()
+        );
     }
 
     #[test]
-    fn build_byoc_create_request_supports_minimal_and_maximal_zones() {
-        let minimal = build_byoc_create_request(
-            "us-east-1",
-            "123456789012",
-            &["a".to_string()],
-            "10.0.0.0/16",
-            "production",
-        )
-        .unwrap();
+    fn build_byoc_create_request_minimal_sends_only_region_and_account() {
+        let minimal = build_byoc_create_request(&minimal_infrastructure_args(), None).unwrap();
         assert_eq!(
             minimal.region_id,
             ByocInfrastructurePostRequestRegionid::Us_east_1
         );
         assert_eq!(minimal.account_id, "123456789012");
-        assert_eq!(
-            minimal.availability_zone_suffixes,
-            Some(vec![ByocAvailabilityZoneSuffix::A])
-        );
-        assert_eq!(minimal.vpc_cidr_range.as_deref(), Some("10.0.0.0/16"));
-        assert_eq!(minimal.display_name.as_deref(), Some("production"));
+        assert_eq!(minimal.availability_zone_suffixes, None);
+        assert_eq!(minimal.display_name, None);
+        assert_eq!(minimal.vpc_cidr_range, None);
+        assert_eq!(minimal.vpc_id, None);
+        assert_eq!(minimal.private_subnet_ids, None);
+        assert_eq!(minimal.public_subnet_ids, None);
+        assert_eq!(minimal.external_id, None);
+        assert_eq!(minimal.gcp_pod_cidr_range_names, None);
+        assert_eq!(minimal.gcp_shared_vpc_host_project_id, None);
+        assert_eq!(minimal.tenant_id, None);
+        assert_eq!(minimal.service_principal_client_id, None);
+        assert_eq!(minimal.tags, None);
         assert_eq!(
             serde_json::to_value(&minimal).unwrap(),
+            serde_json::json!({"accountId": "123456789012", "regionId": "us-east-1"})
+        );
+    }
+
+    #[test]
+    fn build_byoc_create_request_keeps_the_managed_vpc_shape() {
+        let args = ByocInfrastructureArgs {
+            availability_zone_suffix: vec!["a".into()],
+            vpc_cidr_range: Some("10.0.0.0/16".into()),
+            ..minimal_infrastructure_args()
+        };
+        let request = build_byoc_create_request(&args, Some("production")).unwrap();
+        assert_eq!(
+            request.availability_zone_suffixes,
+            Some(vec![ByocAvailabilityZoneSuffix::A])
+        );
+        assert_eq!(
+            serde_json::to_value(&request).unwrap(),
             serde_json::json!({
                 "accountId": "123456789012",
                 "availabilityZoneSuffixes": ["a"],
@@ -2737,62 +3312,219 @@ mod tests {
                 "vpcCidrRange": "10.0.0.0/16"
             })
         );
+    }
 
-        let maximal = build_byoc_create_request(
-            "eastus",
-            "azure-account",
-            &[
-                "a".to_string(),
-                "b".to_string(),
-                "c".to_string(),
-                "d".to_string(),
-                "e".to_string(),
-                "f".to_string(),
-            ],
-            "10.20.0.0/16",
-            "all-zones",
-        )
-        .unwrap();
+    fn expected_tags() -> ByocInfrastructureTags {
+        ByocInfrastructureTags::from([
+            ("team".to_string(), "data".to_string()),
+            ("note".to_string(), "a=b".to_string()),
+            ("empty".to_string(), String::new()),
+        ])
+    }
+
+    #[test]
+    fn build_byoc_create_request_maximal_maps_every_flag() {
+        let maximal =
+            build_byoc_create_request(&maximal_infrastructure_args(), Some("all-zones")).unwrap();
         assert_eq!(
             maximal.region_id,
             ByocInfrastructurePostRequestRegionid::Eastus
         );
+        assert_eq!(maximal.account_id, "subscription-1");
         assert_eq!(
             maximal.availability_zone_suffixes.as_ref().map(Vec::len),
             Some(6)
         );
-        assert_eq!(maximal.vpc_cidr_range.as_deref(), Some("10.20.0.0/16"));
         assert_eq!(maximal.display_name.as_deref(), Some("all-zones"));
+        assert_eq!(maximal.vpc_cidr_range, None);
+        assert_eq!(maximal.vpc_id.as_deref(), Some("vpc-1"));
+        assert_eq!(
+            maximal.private_subnet_ids,
+            Some(vec!["subnet-a".to_string(), "subnet-b".to_string()])
+        );
+        assert_eq!(
+            maximal.public_subnet_ids,
+            Some(vec!["subnet-pub".to_string()])
+        );
+        assert_eq!(maximal.external_id.as_deref(), Some("external-1"));
+        assert_eq!(
+            maximal.gcp_pod_cidr_range_names,
+            Some(vec!["pods-1".to_string(), "pods-2".to_string()])
+        );
+        assert_eq!(
+            maximal.gcp_shared_vpc_host_project_id.as_deref(),
+            Some("host-project")
+        );
+        assert_eq!(maximal.tenant_id.as_deref(), Some("tenant-1"));
+        assert_eq!(
+            maximal.service_principal_client_id.as_deref(),
+            Some("client-1")
+        );
+        assert_eq!(maximal.tags, Some(expected_tags()));
+    }
+
+    #[test]
+    fn build_byoc_validate_request_minimal_and_maximal() {
+        let minimal = build_byoc_validate_request(&minimal_infrastructure_args()).unwrap();
+        assert_eq!(
+            minimal.region_id,
+            ByocInfrastructureValidatePostRequestRegionid::Us_east_1
+        );
+        assert_eq!(minimal.account_id, "123456789012");
+        assert_eq!(minimal.availability_zone_suffixes, None);
+        assert_eq!(minimal.tags, None);
+        assert_eq!(
+            serde_json::to_value(&minimal).unwrap(),
+            serde_json::json!({"accountId": "123456789012", "regionId": "us-east-1"})
+        );
+
+        let maximal = build_byoc_validate_request(&maximal_infrastructure_args()).unwrap();
+        assert_eq!(
+            maximal.region_id,
+            ByocInfrastructureValidatePostRequestRegionid::Eastus
+        );
+        assert_eq!(maximal.account_id, "subscription-1");
+        assert_eq!(
+            maximal.availability_zone_suffixes.as_ref().map(Vec::len),
+            Some(6)
+        );
+        assert_eq!(maximal.vpc_cidr_range, None);
+        assert_eq!(maximal.vpc_id.as_deref(), Some("vpc-1"));
+        assert_eq!(
+            maximal.private_subnet_ids,
+            Some(vec!["subnet-a".to_string(), "subnet-b".to_string()])
+        );
+        assert_eq!(
+            maximal.public_subnet_ids,
+            Some(vec!["subnet-pub".to_string()])
+        );
+        assert_eq!(maximal.external_id.as_deref(), Some("external-1"));
+        assert_eq!(
+            maximal.gcp_pod_cidr_range_names,
+            Some(vec!["pods-1".to_string(), "pods-2".to_string()])
+        );
+        assert_eq!(
+            maximal.gcp_shared_vpc_host_project_id.as_deref(),
+            Some("host-project")
+        );
+        assert_eq!(maximal.tenant_id.as_deref(), Some("tenant-1"));
+        assert_eq!(
+            maximal.service_principal_client_id.as_deref(),
+            Some("client-1")
+        );
+        assert_eq!(maximal.tags, Some(expected_tags()));
+
+        // Create and validate share one parse, so their bodies match apart
+        // from create's display name.
+        let mut create = serde_json::to_value(
+            build_byoc_create_request(&maximal_infrastructure_args(), None).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(create, serde_json::to_value(&maximal).unwrap());
+        create["displayName"] = serde_json::json!("ignored");
+        assert_ne!(create, serde_json::to_value(&maximal).unwrap());
+    }
+
+    #[test]
+    fn build_byoc_requests_reject_bad_tags_as_usage_errors() {
+        for (tags, expected) in [
+            (vec!["team"], "expected KEY=VALUE"),
+            (vec!["=data"], "tag key cannot be empty"),
+            (vec![" =data"], "tag key cannot be empty"),
+            (vec!["team=a", "team=b"], "duplicate tag key 'team'"),
+        ] {
+            let args = ByocInfrastructureArgs {
+                tags: tags.iter().map(|tag| tag.to_string()).collect(),
+                ..minimal_infrastructure_args()
+            };
+            for error in [
+                build_byoc_create_request(&args, None).unwrap_err(),
+                build_byoc_validate_request(&args).unwrap_err(),
+            ] {
+                assert!(error.to_string().contains(expected), "{tags:?}: {error}");
+                assert_eq!(
+                    error.kind,
+                    crate::cloud::client::CloudErrorKind::Usage,
+                    "{tags:?}"
+                );
+            }
+        }
     }
 
     #[test]
     fn build_byoc_requests_validate_enums_and_update_only_the_name() {
-        assert!(
-            build_byoc_create_request(
-                "future-region",
-                "account",
-                &["a".to_string()],
-                "10.0.0.0/16",
-                "name",
-            )
-            .is_err()
-        );
-        assert!(
-            build_byoc_create_request(
-                "us-east-1",
-                "account",
-                &["z".to_string()],
-                "10.0.0.0/16",
-                "name",
-            )
-            .is_err()
-        );
+        let unknown_region = ByocInfrastructureArgs {
+            region: "future-region".into(),
+            ..minimal_infrastructure_args()
+        };
+        assert!(build_byoc_create_request(&unknown_region, None).is_err());
+        assert!(build_byoc_validate_request(&unknown_region).is_err());
+        let unknown_zone = ByocInfrastructureArgs {
+            availability_zone_suffix: vec!["z".into()],
+            ..minimal_infrastructure_args()
+        };
+        assert!(build_byoc_create_request(&unknown_zone, None).is_err());
+        assert!(build_byoc_validate_request(&unknown_zone).is_err());
 
         let update = build_byoc_update_request("renamed");
         assert_eq!(update.display_name.as_deref(), Some("renamed"));
         assert_eq!(
             serde_json::to_value(update).unwrap(),
             serde_json::json!({"displayName": "renamed"})
+        );
+    }
+
+    fn validation(value: serde_json::Value) -> ByocInfrastructureValidation {
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn byoc_validation_fails_only_on_explicit_denial() {
+        assert!(
+            byoc_validation_failure(&validation(serde_json::json!({
+                "allPassed": true,
+                "checks": [{"name": "a", "allowed": true}]
+            })))
+            .is_none()
+        );
+        // Nothing verified is reported, not failed.
+        assert!(
+            byoc_validation_failure(&validation(serde_json::json!({
+                "supported": false,
+                "checks": []
+            })))
+            .is_none()
+        );
+        // Absent outcomes are not treated as denials.
+        assert!(byoc_validation_failure(&validation(serde_json::json!({}))).is_none());
+        assert!(
+            byoc_validation_failure(&validation(serde_json::json!({
+                "checks": [{"name": "a"}]
+            })))
+            .is_none()
+        );
+
+        let error = byoc_validation_failure(&validation(serde_json::json!({
+            "allPassed": false,
+            "checks": [{"name": "a", "allowed": true}, {"name": "b", "allowed": false}]
+        })))
+        .expect("a denied check fails");
+        assert_eq!(
+            error.message,
+            "BYOC validation failed: 1 of 2 checks denied"
+        );
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Generic);
+
+        let error = byoc_validation_failure(&validation(serde_json::json!({
+            "checks": [{"name": "b", "allowed": false}]
+        })))
+        .expect("a denied check fails even without allPassed");
+        assert_eq!(
+            error.message,
+            "BYOC validation failed: 1 of 1 checks denied"
+        );
+        assert!(
+            byoc_validation_failure(&validation(serde_json::json!({"allPassed": false}))).is_some()
         );
     }
 
