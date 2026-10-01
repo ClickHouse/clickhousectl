@@ -7756,6 +7756,179 @@ async fn kafka_iam_role_serializes_iam_role_field() {
     );
 }
 
+fn kafka_glue_args() -> Vec<&'static str> {
+    vec![
+        "clickpipe",
+        "create",
+        "kafka",
+        "svc-id",
+        "--name",
+        "glue-pipe",
+        "--brokers",
+        "broker:9098",
+        "--topics",
+        "events",
+        "--format",
+        "Avro",
+        "--database",
+        "default",
+        "--table",
+        "events",
+        "--column",
+        "id:Int64",
+        "--kafka-type",
+        "msk",
+        "--org-id",
+        "org",
+        "--schema-registry-type",
+        "glue",
+        "--glue-region",
+        "us-east-1",
+        "--glue-registry-name",
+        "my-registry",
+    ]
+}
+
+#[tokio::test]
+async fn kafka_create_sends_the_exact_glue_schema_registry_body() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_glue_args();
+    args.extend([
+        "--username",
+        "u",
+        "--password",
+        "p",
+        "--glue-role-arn",
+        "arn:aws:iam::123456789012:role/Glue",
+    ]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+    assert_eq!(
+        body["source"]["kafka"]["schemaRegistry"],
+        serde_json::json!({
+            "type": "glue",
+            "glueRegion": "us-east-1",
+            "glueRegistryName": "my-registry",
+            "glueRoleArn": "arn:aws:iam::123456789012:role/Glue"
+        })
+    );
+    assert_eq!(body["source"]["kafka"]["authentication"], "PLAIN");
+
+    // With IAM role authentication the Glue role ARN may be omitted: the API
+    // falls back to the source's iamRole.
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_glue_args();
+    args.extend(["--iam-role", "arn:aws:iam::123456789012:role/Source"]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+    assert_eq!(
+        body["source"]["kafka"]["schemaRegistry"],
+        serde_json::json!({
+            "type": "glue",
+            "glueRegion": "us-east-1",
+            "glueRegistryName": "my-registry"
+        })
+    );
+    assert_eq!(
+        body["source"]["kafka"]["iamRole"],
+        "arn:aws:iam::123456789012:role/Source"
+    );
+}
+
+#[tokio::test]
+async fn kafka_create_sends_type_only_for_an_explicit_confluent_registry() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_args_minimal();
+    args.extend([
+        "--schema-registry-type",
+        "confluent",
+        "--schema-registry-url",
+        "https://registry.example",
+    ]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+    assert_eq!(
+        body["source"]["kafka"]["schemaRegistry"],
+        serde_json::json!({
+            "type": "confluent",
+            "url": "https://registry.example",
+            "authentication": "PLAIN",
+            "credentials": { "username": "", "password": "" }
+        })
+    );
+
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_args_minimal();
+    args.extend(["--schema-registry-url", "https://registry.example"]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+    assert!(
+        body["source"]["kafka"]["schemaRegistry"]
+            .get("type")
+            .is_none(),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn kafka_glue_schema_registry_misuse_is_a_usage_error_before_any_request() {
+    let mock = MockServer::start().await;
+    let cases: [(&[&str], &[&str]); 7] = [
+        // Glue conflicts with every Confluent registry flag.
+        (
+            &kafka_glue_args(),
+            &[
+                "--iam-role",
+                "arn:role",
+                "--schema-registry-url",
+                "https://registry.example",
+            ],
+        ),
+        (
+            &kafka_glue_args(),
+            &["--iam-role", "arn:role", "--schema-registry-username", "u"],
+        ),
+        // Glue needs a role: from --glue-role-arn or the source's --iam-role.
+        (&kafka_glue_args(), &["--username", "u", "--password", "p"]),
+        // Glue requires both region and registry name.
+        (
+            &kafka_args_without_auth(),
+            &[
+                "--schema-registry-type",
+                "glue",
+                "--glue-region",
+                "us-east-1",
+            ],
+        ),
+        // Glue flags require the glue registry type.
+        (&kafka_args_without_auth(), &["--glue-region", "us-east-1"]),
+        (
+            &kafka_args_without_auth(),
+            &[
+                "--schema-registry-type",
+                "confluent",
+                "--schema-registry-url",
+                "https://registry.example",
+                "--glue-registry-name",
+                "my-registry",
+            ],
+        ),
+        // An explicit Confluent registry needs its URL.
+        (
+            &kafka_args_without_auth(),
+            &["--schema-registry-type", "confluent"],
+        ),
+    ];
+    for (base, extra) in cases {
+        let mut args = base.to_vec();
+        args.extend(extra);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{extra:?}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn kafka_iam_user_credentials_shape() {
     let mock = start_mock_clickpipes_api().await;
@@ -15461,6 +15634,46 @@ async fn mount_clickpipe_get(mock: &MockServer, source: Value) {
         .respond_with(ResponseTemplate::new(200).set_body_json(stub_pipe))
         .mount(mock)
         .await;
+}
+
+#[tokio::test]
+async fn clickpipe_get_renders_a_glue_schema_registry_and_keeps_json_verbatim() {
+    let source = serde_json::json!({
+        "kafka": {
+            "type": "msk",
+            "format": "Avro",
+            "brokers": "broker:9098",
+            "topics": "events",
+            "authentication": "IAM_ROLE",
+            "iamRole": "arn:aws:iam::123456789012:role/Source",
+            "schemaRegistry": {
+                "type": "glue",
+                "glueRegion": "us-east-1",
+                "glueRegistryName": "my-registry",
+                "glueRoleArn": "arn:aws:iam::123456789012:role/Glue"
+            }
+        }
+    });
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(&mock, source.clone()).await;
+    let args = ["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"];
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&output);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["source"], source);
+
+    let output = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in [
+        "type: glue",
+        "glueRegion: us-east-1",
+        "glueRegistryName: my-registry",
+        "glueRoleArn: arn:aws:iam::123456789012:role/Glue",
+    ] {
+        assert!(stdout.contains(line), "{line}\n{stdout}");
+    }
 }
 
 async fn mount_clickpipe_settings_put(mock: &MockServer, result: Value) {
@@ -24349,6 +24562,123 @@ async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
         ],
     );
     assert_success(&output);
+}
+
+fn backup_encryption_config_document() -> Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "restore_key_pairs": [{
+            "customer_managed_encryption_key": {
+                "aws_kms_key_arn": "arn:aws:kms:us-east-1:111122223333:key/1234abcd"
+            },
+            "encrypted_dek": "d3JhcHBlZA==",
+            "future_field": { "nested": [1, null, true] }
+        }]
+    })
+}
+
+async fn mount_service_create_with_backup_encryption_config(mock: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services"))
+        .and(body_json(serde_json::json!({
+            "name": "restored",
+            "provider": "aws",
+            "region": "us-east-1",
+            "ipAccessList": [{
+                "source": "0.0.0.0/0",
+                "description": "Allow all (created by clickhousectl)"
+            }],
+            "backupId": "a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6",
+            "backupEncryptionConfig": backup_encryption_config_document()
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "service": {"id": "22222222-3333-4444-5555-666666666666", "name": "restored"},
+                "password": "generated-password"
+            },
+            "status": 200,
+            "requestId": "stub-restore-service-create"
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+const BACKUP_RESTORE_ARGS: [&str; 7] = [
+    "service",
+    "create",
+    "--name",
+    "restored",
+    "--backup-id",
+    "a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6",
+    "--backup-encryption-config",
+];
+
+#[tokio::test]
+async fn service_create_passes_backup_encryption_config_file_through_unchanged() {
+    let mock = MockServer::start().await;
+    mount_service_create_with_backup_encryption_config(&mock).await;
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("encryption_config.json");
+    std::fs::write(
+        &config,
+        serde_json::to_string_pretty(&backup_encryption_config_document()).unwrap(),
+    )
+    .unwrap();
+
+    let mut args = BACKUP_RESTORE_ARGS.to_vec();
+    args.extend([config.to_str().unwrap(), "--org-id", "org-1"]);
+    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn service_create_reads_backup_encryption_config_from_stdin() {
+    let mock = MockServer::start().await;
+    mount_service_create_with_backup_encryption_config(&mock).await;
+
+    let mut args = BACKUP_RESTORE_ARGS.to_vec();
+    args.extend(["-", "--org-id", "org-1"]);
+    let output = invoke_cli_with_cloud_credentials_and_stdin(
+        &mock,
+        &args,
+        &backup_encryption_config_document().to_string(),
+    );
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn service_create_rejects_bad_backup_encryption_config_before_any_request() {
+    let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing.json");
+    for stdin in ["[1, 2, 3]", "\"just a string\"", "{not json"] {
+        let mut args = BACKUP_RESTORE_ARGS.to_vec();
+        args.extend(["-", "--org-id", "org-1"]);
+        let output = invoke_cli_with_cloud_credentials_and_stdin(&mock, &args, stdin);
+        assert_eq!(output.status.code(), Some(2), "{stdin}");
+    }
+    let mut args = BACKUP_RESTORE_ARGS.to_vec();
+    args.extend([missing.to_str().unwrap(), "--org-id", "org-1"]);
+    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_eq!(output.status.code(), Some(2));
+
+    // Clap requires --backup-id alongside the config.
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "create",
+            "--name",
+            "restored",
+            "--backup-encryption-config",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
 #[tokio::test]

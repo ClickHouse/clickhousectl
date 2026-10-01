@@ -860,6 +860,14 @@ clickhousectl cloud service create --name restored-service \
   --ip-allow <trusted-public-ip>/32 \
   --backup-id <backup-uuid>
 
+# Restore a TDE service's backup from your own bucket (private preview): pass the
+# backup's encryption_config.json unchanged, or - to read it from stdin
+clickhousectl cloud service create --name restored-service \
+  --provider aws \
+  --region us-east-1 \
+  --ip-allow <trusted-public-ip>/32 \
+  --backup-id <backup-uuid> --backup-encryption-config ./encryption_config.json
+
 # Create with release channel
 clickhousectl cloud service create --name my-service \
   --provider aws \
@@ -2117,6 +2125,17 @@ clickhousectl cloud clickpipe create kafka <service-id> \
   --schema-registry-ca-certificate ./sr-ca.crt \
   --auth MUTUAL_TLS --client-certificate ./client.crt --client-key ./client.key \
   --offset from_timestamp --offset-timestamp 2026-01-01T00:00 \
+  --database default --table events \
+  --column "event_id:Int64"
+
+# Avro via the AWS Glue Schema Registry on MSK; --glue-role-arn defaults to
+# --iam-role and is required when the source does not use --iam-role
+clickhousectl cloud clickpipe create kafka <service-id> \
+  --name my-glue-pipe \
+  --brokers 'broker:9098' --topics events --kafka-type msk \
+  --format Avro --iam-role arn:aws:iam::123456789012:role/ClickPipes \
+  --schema-registry-type glue \
+  --glue-region us-east-1 --glue-registry-name my-registry \
   --database default --table events \
   --column "event_id:Int64"
 
