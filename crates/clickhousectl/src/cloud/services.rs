@@ -158,7 +158,7 @@ use crate::cloud::credentials;
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
-use crate::cloud::service_query::{RepairVerification, existing_open_api_keys};
+use crate::cloud::service_query::{CallerKeyBinding, RepairVerification, existing_open_api_keys};
 use crate::cloud::shared::{NameSelector, NamedResource};
 use crate::cloud::shared::{
     parse_ip_access_entries, parse_serde_enum, parse_tag_filter, parse_tags, resolve_org_id,
@@ -604,8 +604,9 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   Only needed to share Query API access with other tools: `cloud service query` binds the
     authenticated API key itself.
-  Editing this endpoint by hand can unbind the key `cloud service query` stored — repair it with
-    `cloud service repair-query-key <id>`."
+  Hand edits can unbind the key `cloud service query` uses; the next query rebinds it unless
+    `--no-auto-enable` is passed.
+  A stored per-service key is repaired with `cloud service repair-query-key <id>`."
     )]
     QueryEndpoint {
         #[command(subcommand)]
@@ -3912,24 +3913,59 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                     // endpoint and the query re-runs with it (#1043). The bind
                     // records `BoundCallerKey` itself once it succeeds.
                     failure::set_provisioning_state(ProvisioningState::Provisioning);
-                    crate::cloud::service_query::bind_caller_query_key(
+                    let binding = crate::cloud::service_query::bind_caller_query_key(
                         client,
                         &org_id,
                         &service_id,
                     )
                     .await
                     .map_err(|error| error.at_stage(FailureStage::QueryRequest))?;
-                    run_just_provisioned_service_query(
-                        client,
-                        key_id,
-                        key_secret,
-                        &sql,
-                        options.database.as_deref(),
-                        &format,
-                        target,
-                        QUERY_ENDPOINT_READINESS,
-                    )
-                    .await
+                    match binding {
+                        CallerKeyBinding::Bound => {
+                            run_just_provisioned_service_query(
+                                client,
+                                key_id,
+                                key_secret,
+                                &sql,
+                                options.database.as_deref(),
+                                &format,
+                                target,
+                                QUERY_ENDPOINT_READINESS,
+                            )
+                            .await
+                        }
+                        // Nothing was written. A concurrent run may have bound
+                        // the key while this one waited for the lock, so the
+                        // query is retried once, with no readiness wait; a
+                        // second rejection means rebinding cannot help.
+                        CallerKeyBinding::AlreadyBound { caller_uuid } => {
+                            failure::set_provisioning_state(ProvisioningState::ManagementKey);
+                            match run_basic_service_query(
+                                client,
+                                &service_id,
+                                key_id,
+                                key_secret,
+                                &sql,
+                                options.database.as_deref(),
+                                &format,
+                                &service_name,
+                                false,
+                            )
+                            .await
+                            {
+                                Err(error) if query_endpoint_readiness_error(&error.error) => Err(
+                                    crate::cloud::service_query::bound_caller_key_rejected_error(
+                                        &service_id,
+                                        &org_id,
+                                        &caller_uuid,
+                                        &error.error,
+                                    )
+                                    .at_stage(FailureStage::EndpointGet),
+                                ),
+                                other => other.map_err(convert),
+                            }
+                        }
+                    }
                 }
                 other => other.map_err(convert),
             }

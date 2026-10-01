@@ -102,6 +102,10 @@ pub enum CloudErrorCode {
     /// rejecting the replacement for the whole readiness window. The repair
     /// is committed; rerunning it would rotate a key that may be fine (#658).
     QueryKeyRepairUnverified,
+    /// `cloud service query` found the authenticated API key already bound to
+    /// the service's Query API endpoint, yet the Query API rejected it; no
+    /// upsert was made, since rebinding cannot help (#1043).
+    QueryKeyBoundRejected,
     /// A by-identifier read named a resource that does not exist: the API
     /// rejected an identifier that is, structurally, a well-formed UUID
     /// (#666). `command` lists what does exist in the same scope.
@@ -146,6 +150,7 @@ impl CloudErrorCode {
         Self::QueryKeyRejected,
         Self::QueryKeyUnverified,
         Self::QueryKeyRepairUnverified,
+        Self::QueryKeyBoundRejected,
         Self::ResourceNotFound,
     ];
 }
@@ -714,6 +719,7 @@ mod tests {
                 "query_key_rejected",
                 "query_key_unverified",
                 "query_key_repair_unverified",
+                "query_key_bound_rejected",
                 "resource_not_found",
             ]
         );

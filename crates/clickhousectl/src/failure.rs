@@ -57,7 +57,7 @@ pub enum FailureStage {
     /// the query endpoint, including rejecting a caller that is not an API
     /// key of the resolved organization (#1043).
     Whoami,
-    /// Creating the auto-provisioned Query API key.
+    /// Creating the replacement Query API key during `repair-query-key`.
     KeyCreate,
     /// Reading the management record of the stored Query API key, to tell a
     /// stale local credential from an intentional revocation (#528).
@@ -66,9 +66,9 @@ pub enum FailureStage {
     EndpointGet,
     /// Writing (upserting) the query-endpoint configuration.
     EndpointUpsert,
-    /// Deleting a superseded or no-longer-needed auto-provisioned Query API
+    /// Deleting a superseded or no-longer-needed stored per-service Query API
     /// key: the retired key after a repair, a pending retirement retried on a
-    /// later run, or the owned keys of a service being deleted (#527).
+    /// later run, or the stored keys of a service being deleted (#527).
     KeyDelete,
     /// Streaming a statement's response body to stdout.
     ResponseStream,

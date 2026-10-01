@@ -13986,14 +13986,122 @@ async fn first_use_prunes_only_bound_keys_the_organization_reports_deleted() {
 
 #[tokio::test]
 async fn first_use_never_looks_up_the_caller_key_it_is_binding() {
+    // The caller is already bound next to a deleted key: pruning that key is
+    // a real change, so the upsert runs, and the caller's own key is neither
+    // looked up nor dropped.
     let control = start_mock_control_plane_with_service().await;
-    let (_project, body) =
-        assert_first_use_binds(&control, Some(serde_json::json!([CALLER_KEY_UUID]))).await;
+    mount_bound_key_lookup(&control, DELETED_BOUND_KEY, 404).await;
+    let (_project, body) = assert_first_use_binds(
+        &control,
+        Some(serde_json::json!([CALLER_KEY_UUID, DELETED_BOUND_KEY])),
+    )
+    .await;
     assert_eq!(body["openApiKeys"], serde_json::json!([CALLER_KEY_UUID]));
     assert_eq!(
         control_plane_requests_to(&control, &first_use_key_path(CALLER_KEY_UUID)).await,
         0
     );
+}
+
+#[tokio::test]
+async fn first_use_keeps_an_existing_endpoints_roles_and_origins() {
+    // Roles are endpoint-wide: binding the caller to an existing read-only
+    // endpoint must not grant every bound key `sql_console_admin`.
+    let control = start_mock_control_plane_with_service().await;
+    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_bound_key_lookup(&control, BOUND_KEY_A, 200).await;
+    Mock::given(method("GET"))
+        .and(path(first_use_endpoint_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "ep-1",
+                "allowedOrigins": "https://app.example.com",
+                "openApiKeys": [BOUND_KEY_A],
+                "roles": ["sql_console_read_only"],
+            },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    mount_first_use_endpoint_upsert(&control, endpoint_upsert_ok()).await;
+    let query_host = start_query_host_rejecting_the_first_query().await;
+
+    let (_project, output) = run_first_use_query(&control, &query_host, &[]).await;
+    assert_success(&output);
+    let upsert = control
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::POST
+                && request.url.path() == first_use_endpoint_path()
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&upsert.body).unwrap(),
+        serde_json::json!({
+            "allowedOrigins": "https://app.example.com",
+            "openApiKeys": [BOUND_KEY_A, CALLER_KEY_UUID],
+            "roles": ["sql_console_read_only"],
+        })
+    );
+}
+
+#[tokio::test]
+async fn first_use_fails_fast_when_the_caller_is_already_bound_yet_rejected() {
+    // Rebinding a key the endpoint already lists changes nothing, so the run
+    // makes no upsert, retries the query once without a readiness wait (a
+    // concurrent run may have just bound it), and says where to look.
+    for json in [false, true] {
+        let control = start_mock_control_plane_with_service().await;
+        mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+        mount_bound_key_lookup(&control, BOUND_KEY_A, 200).await;
+        // The caller is listed in uppercase: still the same key.
+        mount_first_use_endpoint_get(
+            &control,
+            Some(serde_json::json!([
+                BOUND_KEY_A,
+                CALLER_KEY_UUID.to_ascii_uppercase()
+            ])),
+        )
+        .await;
+        mount_first_use_endpoint_upsert(&control, endpoint_upsert_ok()).await;
+        let query_host = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+            .mount(&query_host)
+            .await;
+        let args: &[&str] = if json { &["--json"] } else { &[] };
+        let (project, output) = run_first_use_query(&control, &query_host, args).await;
+
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let message = if json {
+            let envelope: Value =
+                serde_json::from_str(&stderr[stderr.find('{').unwrap()..]).unwrap();
+            assert_eq!(envelope["error"]["code"], "query_key_bound_rejected");
+            assert_eq!(envelope["error"]["api_key_id"], CALLER_KEY_UUID);
+            envelope["error"]["message"].as_str().unwrap().to_string()
+        } else {
+            stderr.to_string()
+        };
+        for fragment in [
+            CALLER_KEY_UUID,
+            "already bound",
+            "cloud service query-endpoint get",
+            "cloud key get",
+        ] {
+            assert!(message.contains(fragment), "{fragment}: {message}");
+        }
+        assert!(control_plane_writes(&control).await.is_empty());
+        // The rejected query and its one immediate retry; no readiness wait.
+        assert_eq!(query_host.received_requests().await.unwrap().len(), 2);
+        assert!(!project.path().join(".clickhouse/credentials.json").exists());
+    }
 }
 
 #[tokio::test]
@@ -14069,28 +14177,43 @@ async fn first_use_with_no_auto_enable_refuses_before_identifying_the_key() {
 }
 
 #[tokio::test]
-async fn first_use_refuses_to_rebind_an_endpoint_whose_keys_are_unknown() {
-    // A 200 endpoint GET whose `openApiKeys` is absent leaves the bound keys
-    // unknown. The upsert replaces the list wholesale, so binding on top of an
-    // assumed-empty list would revoke them.
-    let control = start_mock_control_plane_with_service().await;
-    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
-    Mock::given(method("GET"))
-        .and(path(first_use_endpoint_path()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "id": "ep-1", "roles": ["sql_console_admin"] },
-            "status": 200,
-            "requestId": "stub-endpoint-get",
-        })))
-        .mount(&control)
-        .await;
-    let query_host = start_query_host_rejecting_the_first_query().await;
-    let (_project, output) = run_first_use_query(&control, &query_host, &[]).await;
+async fn first_use_refuses_to_rebind_an_endpoint_whose_settings_are_unknown() {
+    // A 200 endpoint GET that omits `openApiKeys` leaves the bound keys
+    // unknown: the upsert replaces the list wholesale, so binding on top of an
+    // assumed-empty list would revoke them. An omitted `roles` or
+    // `allowedOrigins` cannot be echoed back, and a default would rewrite it.
+    let complete = serde_json::json!({
+        "id": "ep-1",
+        "allowedOrigins": "*",
+        "openApiKeys": [],
+        "roles": ["sql_console_admin"],
+    });
+    for (field, expected) in [
+        ("openApiKeys", "'openApiKeys'"),
+        ("roles", "'query endpoint roles'"),
+        ("allowedOrigins", "'query endpoint allowedOrigins'"),
+    ] {
+        let mut result = complete.clone();
+        result.as_object_mut().unwrap().remove(field);
+        let control = start_mock_control_plane_with_service().await;
+        mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+        Mock::given(method("GET"))
+            .and(path(first_use_endpoint_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": result,
+                "status": 200,
+                "requestId": "stub-endpoint-get",
+            })))
+            .mount(&control)
+            .await;
+        let query_host = start_query_host_rejecting_the_first_query().await;
+        let (_project, output) = run_first_use_query(&control, &query_host, &[]).await;
 
-    assert_eq!(output.status.code(), Some(1), "{output:?}");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("'openApiKeys'"), "{stderr}");
-    assert!(control_plane_writes(&control).await.is_empty());
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{field}: {stderr}");
+        assert!(control_plane_writes(&control).await.is_empty());
+    }
 }
 
 #[tokio::test]
@@ -14160,7 +14283,12 @@ async fn concurrent_first_use_binds_serialize_and_leave_credentials_untouched() 
                     "error": "not found", "status": 404, "requestId": "stub-endpoint-get"
                 })),
                 Some(keys) => ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "result": { "id": "ep-1", "openApiKeys": keys },
+                    "result": {
+                        "id": "ep-1",
+                        "allowedOrigins": "*",
+                        "openApiKeys": keys,
+                        "roles": ["sql_console_admin"],
+                    },
                     "status": 200,
                     "requestId": "stub-endpoint-get"
                 })),
@@ -14178,7 +14306,7 @@ async fn concurrent_first_use_binds_serialize_and_leave_credentials_untouched() 
             upsert_flag.store(true, Ordering::SeqCst);
             endpoint_upsert_ok()
         })
-        .expect(PROCESS_COUNT as u64)
+        .expect(1)
         .mount(&control)
         .await;
 
@@ -14239,18 +14367,18 @@ async fn concurrent_first_use_binds_serialize_and_leave_credentials_untouched() 
         })
         .map(|request| serde_json::from_slice(&request.body).unwrap())
         .collect();
-    assert_eq!(upserts.len(), PROCESS_COUNT);
-    for upsert in &upserts {
-        assert_eq!(
-            upsert["openApiKeys"],
-            serde_json::json!([CALLER_KEY_UUID]),
-            "serialized binds never duplicate or drop the caller's key"
-        );
-    }
+    // The first bind writes; every later one, serialized behind it, finds the
+    // caller already bound, writes nothing and retries its query once.
+    assert_eq!(upserts.len(), 1);
+    assert_eq!(
+        upserts[0]["openApiKeys"],
+        serde_json::json!([CALLER_KEY_UUID]),
+        "serialized binds never duplicate or drop the caller's key"
+    );
     assert_eq!(
         control_plane_writes(&control).await.len(),
-        PROCESS_COUNT,
-        "the upserts are the only writes"
+        1,
+        "the upsert is the only write"
     );
     let credentials: Value = serde_json::from_slice(
         &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),

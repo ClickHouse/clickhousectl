@@ -55,9 +55,10 @@ const DEFAULT_REPAIR_STRESS_ITERATIONS: u64 = 6;
 /// Deleted-key recovery rounds (delete, classify, repair, query) run by the
 /// propagation stress case (#658).
 const DEFAULT_RECOVERY_STRESS_ITERATIONS: u64 = 2;
-/// The CLI's stderr notice while it waits for a new key to propagate (#658).
+/// The CLI's stderr notice while it waits for a key binding to propagate
+/// (#658).
 const KEY_PROPAGATION_NOTICE: &str =
-    "Waiting for the new API key to become visible to the Query API endpoint...";
+    "Waiting for the Query API endpoint to accept the API key binding...";
 /// The CLI's stderr notice when it binds the caller's own key (#1043).
 const BIND_NOTICE: &str = "Binding the authenticated API key to the Query API endpoint";
 /// How long the test's own endpoint upsert may retry a `400` while a key it
@@ -201,9 +202,11 @@ async fn cloud_service_query_binds_the_callers_own_key_on_first_use() -> TestRes
             .result
             .and_then(|endpoint| endpoint.roles)
             .unwrap_or_default();
+        // The endpoint existed before the bind, so it keeps the roles the
+        // test seeded it with (`sql_console_admin`): a bind never rewrites them.
         assert!(
             roles.contains(&QueryEndpointRole::SqlConsoleAdmin),
-            "the endpoint must grant sql_console_admin: {roles:?}"
+            "the endpoint must keep its sql_console_admin role: {roles:?}"
         );
 
         // ── Second query reuses the binding ─────────────────────────
@@ -1866,8 +1869,9 @@ async fn caller_api_key_id(client: &Client, org_id: &str) -> TestResult<String> 
     let Whoami::WhoamiApiKey(key) = identity else {
         return Err(format!("whoami did not identify an API key: {identity:?}").into());
     };
-    let organization = require_field(key.organization_id, "organizationId")?.to_string();
-    if organization != org_id {
+    let organization = require_field(key.organization_id, "organizationId")?;
+    // Compared as UUIDs, so the configured org id's case does not matter.
+    if uuid::Uuid::parse_str(org_id).ok() != Some(organization) {
         return Err("the test API key belongs to another organization".into());
     }
     require_field(key.key_id, "keyId")
