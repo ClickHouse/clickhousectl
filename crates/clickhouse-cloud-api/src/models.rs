@@ -236,8 +236,9 @@ pub use scim::{
     ScimX509Certificate,
 };
 pub use services::{
-    AutoscalingMode, CurrentScaling, CurrentScalingEffectiveautoscalingmode,
-    InstancePrivateEndpoint, InstancePrivateEndpointCloudprovider, InstancePrivateEndpointRegion,
+    AutoscalingMode, BackupEncryptionConfig, CurrentScaling,
+    CurrentScalingEffectiveautoscalingmode, InstancePrivateEndpoint,
+    InstancePrivateEndpointCloudprovider, InstancePrivateEndpointRegion,
     InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch,
     PrivateEndpointConfig, QueryEndpointRole, ScalingSchedule, ScalingScheduleBaseConfig,
     ScalingScheduleEntry, ScalingScheduleEntryRequest, ScalingSchedulePostRequest,

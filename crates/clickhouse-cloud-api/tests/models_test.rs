@@ -7877,3 +7877,67 @@ fn byoc_config_deprecated_account_name_is_hidden_by_default() {
             .is_none()
     );
 }
+
+#[test]
+fn activity_type_postgres_action_round_trips() {
+    let parsed: ActivityType = serde_json::from_str("\"postgres_action\"").unwrap();
+    assert_eq!(parsed, ActivityType::Postgres_action);
+    assert_eq!(parsed.to_string(), "postgres_action");
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), "postgres_action");
+}
+
+fn sample_backup_encryption_config() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "restore_key_pairs": [
+            {
+                "customer_managed_encryption_key": {
+                    "aws_kms_key_arn": "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+                },
+                "encrypted_dek": "d3JhcHBlZA==",
+                "future_field": null
+            }
+        ],
+        "provider_extension": {"nested": [1, 2.5, true, "x"]}
+    })
+}
+
+#[test]
+fn backup_encryption_config_round_trips_opaque_nested_contents() {
+    let file = sample_backup_encryption_config();
+    let config: BackupEncryptionConfig = serde_json::from_value(file.clone()).unwrap();
+    assert_eq!(config["schema_version"], 1);
+    assert_eq!(
+        config["restore_key_pairs"][0]["customer_managed_encryption_key"]["aws_kms_key_arn"],
+        "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+    );
+    assert_eq!(serde_json::to_value(&config).unwrap(), file);
+
+    // The file is an object; a non-object is not a valid config.
+    assert!(serde_json::from_value::<BackupEncryptionConfig>(serde_json::json!([1])).is_err());
+}
+
+#[test]
+fn service_post_request_backup_encryption_config_serialization() {
+    let base = ServicePostRequest {
+        name: "restored".to_string(),
+        provider: ServicePostRequestProvider::Aws,
+        region: ServicePostRequestRegion::Us_east_1,
+        backup_id: Some(uuid::Uuid::nil()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&base).unwrap();
+    assert!(json.get("backupEncryptionConfig").is_none());
+
+    let file = sample_backup_encryption_config();
+    let req = ServicePostRequest {
+        backup_encryption_config: Some(serde_json::from_value(file.clone()).unwrap()),
+        ..base
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["backupEncryptionConfig"], file);
+    assert_eq!(json["backupId"], uuid::Uuid::nil().to_string());
+
+    let parsed: ServicePostRequest = serde_json::from_value(json).unwrap();
+    assert_eq!(parsed, req);
+}
