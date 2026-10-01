@@ -144,6 +144,7 @@ mod scim;
 mod services;
 mod shared;
 mod udfs;
+mod whoami;
 
 pub use activity::{Activity, ActivityActortype, ActivityKeyupdatetype, ActivityType};
 pub use api_keys::{
@@ -201,15 +202,15 @@ pub use postgres::{
     PgConfigDefaultTransactionIsolation, PgConfigResponse, PgConfigSslMinProtocolVersion,
     PgConfigWalCompression, PgCreatedAtProperty, PgHaType, PgIdProperty, PgIsPrimaryProperty,
     PgNameProperty, PgPassword, PgPitrRestoreTargetProperty, PgProvider, PgRegion, PgSize,
-    PgStateProperty, PgStorageSize, PgTags, PgTagsResponse, PgVersion, PostgresInstanceConfig,
-    PostgresInstanceConfigResponse, PostgresInstanceUpdateConfigResponse, PostgresLogEntry,
-    PostgresLogsGetListSortorder, PostgresMetric, PostgresMetricDataPoint, PostgresMetricSeries,
-    PostgresMetrics, PostgresQueryExecution, PostgresService, PostgresServiceListItem,
-    PostgresServicePasswordResource, PostgresServicePatchRequest, PostgresServicePostRequest,
-    PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest, PostgresServiceSetPassword,
-    PostgresServiceSetState, PostgresServiceSetStateCommand, PostgresSlowQueryPattern,
-    PostgresSlowQueryPatternDetail, RunPostgresQueryRequest, SlowQueryPatternsGetListSortby,
-    SlowQueryPatternsGetListSortorder,
+    PgStateProperty, PgStorageSize, PgTags, PgTagsResponse, PgVersion, PostgresBackup,
+    PostgresInstanceConfig, PostgresInstanceConfigResponse, PostgresInstanceUpdateConfigResponse,
+    PostgresLogEntry, PostgresLogsGetListSortorder, PostgresMetric, PostgresMetricDataPoint,
+    PostgresMetricSeries, PostgresMetrics, PostgresQueryExecution, PostgresService,
+    PostgresServiceListItem, PostgresServicePasswordResource, PostgresServicePatchRequest,
+    PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
+    PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
+    PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail, RunPostgresQueryRequest,
+    SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
 };
 pub use query_api_endpoints::{
     PublicQueryApiEndpoint, PublicQueryApiEndpointListItem,
@@ -275,4 +276,8 @@ pub use udfs::{
     UdfStatus, UdfType, UdfUploadSession, UdfVersionCreateRequest, UdfVersionCreateRequestV1,
     UdfVersionCreateRequestV1Type, UdfVersionCreateRequestV2, UdfVersionCreateRequestV2Type,
     UdfVersionListResponse,
+};
+pub use whoami::{
+    Whoami, WhoamiApiKey, WhoamiApiKeyActortype, WhoamiOrganization, WhoamiUser,
+    WhoamiUserActortype,
 };

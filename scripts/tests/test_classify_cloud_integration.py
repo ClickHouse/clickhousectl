@@ -99,6 +99,8 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/src/models/invitations.rs",
                 "crates/clickhouse-cloud-api/src/models/members.rs",
                 "crates/clickhouse-cloud-api/src/models/rbac.rs",
+                "crates/clickhouse-cloud-api/src/client/whoami.rs",
+                "crates/clickhouse-cloud-api/src/models/whoami.rs",
             },
             classifier.NO_SUITES: {
                 "crates/clickhouse-cloud-api/src/client/clickstack.rs",

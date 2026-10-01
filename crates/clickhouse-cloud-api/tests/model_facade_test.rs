@@ -105,6 +105,34 @@ fn extracted_models_keep_root_and_models_paths() {
         api::ClickPipeMutateKafkaConfluentSchemaRegistry::default(),
         api::models::ClickPipeMutateKafkaConfluentSchemaRegistry::default(),
     );
+    assert_same_type(
+        api::PostgresBackup::default(),
+        api::models::PostgresBackup::default(),
+    );
+    assert_same_type(
+        api::WhoamiUser::default(),
+        api::models::WhoamiUser::default(),
+    );
+    assert_same_type(
+        api::WhoamiApiKey::default(),
+        api::models::WhoamiApiKey::default(),
+    );
+    assert_same_type(
+        api::WhoamiOrganization::default(),
+        api::models::WhoamiOrganization::default(),
+    );
+    assert_same_type(
+        api::WhoamiUserActortype::default(),
+        api::models::WhoamiUserActortype::default(),
+    );
+    assert_same_type(
+        api::WhoamiApiKeyActortype::default(),
+        api::models::WhoamiApiKeyActortype::default(),
+    );
+    assert_same_type(
+        api::Whoami::Unknown(serde_json::Value::Null),
+        api::models::Whoami::Unknown(serde_json::Value::Null),
+    );
     assert_same_type(api::Activity::default(), api::models::Activity::default());
     assert_same_type(api::ApiKey::default(), api::models::ApiKey::default());
     assert_same_type(
