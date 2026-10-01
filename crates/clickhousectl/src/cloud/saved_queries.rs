@@ -1,3 +1,18 @@
+use super::permissions::{Conditional, Declaration as Permission};
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api("saved-query list", &[&op::SAVED_QUERY_LIST]),
+    Permission::api("saved-query get", &[&op::SAVED_QUERY_GET])
+        .when(&[Conditional::flag("name", &[&op::SAVED_QUERY_LIST])]),
+    Permission::api("saved-query create", &[&op::SAVED_QUERY_CREATE]),
+    Permission::api("saved-query update", &[&op::SAVED_QUERY_UPDATE])
+        .when(&[Conditional::flag("name", &[&op::SAVED_QUERY_LIST])]),
+    Permission::api("saved-query delete", &[&op::SAVED_QUERY_DELETE])
+        .when(&[Conditional::flag("name", &[&op::SAVED_QUERY_LIST])]),
+];
+
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{or_absent, print_human, print_line};
 use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
