@@ -28312,3 +28312,449 @@ async fn key_pagination_human_continuation_preserves_shell_tokens_and_page_conte
         assert_eq!(mock.received_requests().await.unwrap().len(), 1);
     }
 }
+
+// ── UDF packaging, waiting and waking (#1030) ───────────────────────────────
+
+fn udf_source_dir(project: &Path, name: &str, runtime: &str) -> std::path::PathBuf {
+    let dir = project.join("clickhouse/udfs").join(name);
+    std::fs::create_dir_all(dir.join("lib")).unwrap();
+    std::fs::write(
+        dir.join("udf.json"),
+        serde_json::json!({
+            "functionName": name, "type": "executable", "runtime": runtime,
+            "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(dir.join("main.py"), "import sys\n").unwrap();
+    std::fs::write(dir.join("lib/helper.py"), "x = 1\n").unwrap();
+    std::fs::write(dir.join(".env"), "SECRET=1\n").unwrap();
+    dir
+}
+
+async fn mount_udf_upload_session(server: &MockServer, storage: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfUploads/url"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+                "uploadId": "fresh-upload",
+                "uploadUrl": format!("{}/artifact?signature=upload-secret", storage.uri())
+            }})),
+        )
+        .expect(1)
+        .mount(server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/artifact"))
+        .and(header("content-type", "application/zip"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(storage)
+        .await;
+}
+
+fn zip_entry_names(bytes: &[u8]) -> Vec<String> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+    (0..archive.len())
+        .map(|index| archive.by_index(index).unwrap().name().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn udf_source_dir_packages_a_zip_and_reads_udf_json() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    udf_source_dir(project.path(), "my_udf", "python3.11");
+    mount_udf_upload_session(&server, &storage).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .and(body_json(serde_json::json!({
+            "functionName": "my_udf", "type": "executable", "runtime": "python3.11",
+            "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64",
+            "uploadId": "fresh-upload"
+        })))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(serde_json::json!({"result": {
+                "functionName": "my_udf", "version": 1, "status": "building"
+            }})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["create", "--source-dir", "clickhouse/udfs/my_udf"],
+    )
+    .output()
+    .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["status"],
+        "building"
+    );
+    let upload = storage.received_requests().await.unwrap().pop().unwrap();
+    assert!(upload.body.starts_with(b"PK\x03\x04"));
+    assert_eq!(
+        zip_entry_names(&upload.body),
+        ["lib/", "lib/helper.py", "main.py"]
+    );
+    assert!(!upload.headers.contains_key("authorization"));
+}
+
+#[tokio::test]
+async fn udf_version_create_source_dir_drops_the_name_and_file_overrides_it() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    udf_source_dir(project.path(), "my_udf", "native");
+    mount_udf_upload_session(&server, &storage).await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf/versions"))
+        .and(body_json(serde_json::json!({
+            "type": "executable", "runtime": "native",
+            "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64",
+            "uploadId": "fresh-upload"
+        })))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(serde_json::json!({"result": {
+                "functionName": "my_udf", "version": 2, "status": "building"
+            }})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &[
+            "version",
+            "create",
+            "my_udf",
+            "--source-dir",
+            "clickhouse/udfs/my_udf",
+        ],
+    )
+    .output()
+    .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        zip_entry_names(
+            &storage
+                .received_requests()
+                .await
+                .unwrap()
+                .pop()
+                .unwrap()
+                .body
+        ),
+        ["lib/", "lib/helper.py", "main.py"]
+    );
+
+    // A name mismatch is a usage error and never reaches the API.
+    let mismatch = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &[
+            "version",
+            "create",
+            "other",
+            "--source-dir",
+            "clickhouse/udfs/my_udf",
+        ],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(mismatch.status.code(), Some(2));
+    assert!(
+        String::from_utf8_lossy(&mismatch.stderr).contains("names function my_udf"),
+        "{}",
+        String::from_utf8_lossy(&mismatch.stderr)
+    );
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
+
+    // --file overrides DIR/udf.json while the directory is still archived.
+    let override_server = MockServer::start().await;
+    let override_storage = MockServer::start().await;
+    mount_udf_upload_session(&override_server, &override_storage).await;
+    std::fs::write(
+        project.path().join("override.json"),
+        serde_json::json!({
+            "functionName": "renamed", "type": "executable_pool", "runtime": "native",
+            "arguments": [{"name": "y", "type": "String"}], "returnType": "String", "poolSize": 2
+        })
+        .to_string(),
+    )
+    .unwrap();
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .and(body_json(serde_json::json!({
+            "functionName": "renamed", "type": "executable_pool", "runtime": "native",
+            "arguments": [{"name": "y", "type": "String"}], "returnType": "String", "poolSize": 2,
+            "uploadId": "fresh-upload"
+        })))
+        .respond_with(
+            ResponseTemplate::new(201).set_body_json(serde_json::json!({"result": {
+                "functionName": "renamed", "version": 1, "status": "building"
+            }})),
+        )
+        .expect(1)
+        .mount(&override_server)
+        .await;
+    let output = udf_test_command(
+        &override_server,
+        project.path(),
+        false,
+        true,
+        &[
+            "create",
+            "--source-dir",
+            "clickhouse/udfs/my_udf",
+            "--file",
+            "override.json",
+        ],
+    )
+    .output()
+    .unwrap();
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn udf_source_dir_problems_fail_before_any_request() {
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let dir = udf_source_dir(project.path(), "my_udf", "python3.11");
+    std::os::unix::fs::symlink(dir.join("main.py"), dir.join("link.py")).unwrap();
+    for (setup, expected) in [
+        ("symlink", "symbolic link"),
+        ("missing_main", "is missing main.py"),
+    ] {
+        if setup == "missing_main" {
+            std::fs::remove_file(dir.join("link.py")).unwrap();
+            std::fs::remove_file(dir.join("main.py")).unwrap();
+        }
+        let output = udf_test_command(
+            &server,
+            project.path(),
+            false,
+            true,
+            &["create", "--source-dir", "clickhouse/udfs/my_udf"],
+        )
+        .output()
+        .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{setup}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{setup}: {stderr}");
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn udf_create_wait_follows_the_build_to_ready_error_or_timeout() {
+    for (scenario, statuses, timeout) in [
+        ("ready", vec!["building", "ready"], "60"),
+        ("error", vec!["error"], "60"),
+        ("timeout", vec!["building"], "1"),
+    ] {
+        let server = MockServer::start().await;
+        let storage = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(project.path().join("code.zip"), b"PK\x03\x04test").unwrap();
+        std::fs::write(
+            project.path().join("definition.json"),
+            udf_definition("executable", true).to_string(),
+        )
+        .unwrap();
+        mount_udf_upload_session(&server, &storage).await;
+        Mock::given(method("POST"))
+            .and(path("/v1/organizations/org-1/udfs"))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(serde_json::json!({"result": {
+                    "functionName": "my_udf", "version": 2, "status": "building"
+                }})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        for (index, status) in statuses.iter().enumerate() {
+            let mut mock = Mock::given(method("GET"))
+                .and(path("/v1/organizations/org-1/udfs/my_udf"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+                    "functionName": "my_udf", "version": 2, "status": status,
+                    "error": if *status == "error" { serde_json::json!("pip install failed") } else { Value::Null }
+                }})));
+            if index + 1 < statuses.len() {
+                mock = mock.up_to_n_times(1);
+            }
+            mock.mount(&server).await;
+        }
+        let output = udf_test_command(
+            &server,
+            project.path(),
+            false,
+            scenario != "ready",
+            &[
+                "create",
+                "--file",
+                "definition.json",
+                "--artifact",
+                "code.zip",
+                "--wait",
+                "--timeout",
+                timeout,
+            ],
+        )
+        .output()
+        .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        match scenario {
+            "ready" => {
+                assert_success(&output);
+                assert!(
+                    stdout.contains("status: ready") || stdout.contains("ready"),
+                    "{stdout}"
+                );
+                assert!(
+                    !stdout.contains("building"),
+                    "final object printed once: {stdout}"
+                );
+                assert!(
+                    stderr.contains("Waiting for the build of UDF my_udf version 2"),
+                    "{stderr}"
+                );
+                assert!(stderr.contains("state: building"), "{stderr}");
+            }
+            "error" => {
+                assert_eq!(output.status.code(), Some(1));
+                assert!(stderr.contains("pip install failed"), "{stderr}");
+            }
+            _ => {
+                assert_eq!(output.status.code(), Some(1));
+                assert!(stderr.contains("did not finish within 1s"), "{stderr}");
+                let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+                assert_eq!(error["error"]["code"], "timeout");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn udf_attach_reports_idle_services_and_wakes_them_with_wake() {
+    let idle_424 = ResponseTemplate::new(424).set_body_json(serde_json::json!({
+        "error": "service is idle", "code": "SERVICE_IDLE", "serviceState": "idle",
+        "canWake": true, "status": 424
+    }));
+
+    // Without --wake: the typed reason and the remedy are in the message, and
+    // no wake request is sent.
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(idle_424.clone())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["attach", "my_udf", "svc-1"],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("service is idle (SERVICE_IDLE, service state idle)"),
+        "{message}"
+    );
+    assert!(message.contains("--wake"), "{message}");
+    assert_eq!(server.received_requests().await.unwrap().len(), 1);
+
+    // With --wake --wait: 424 → PATCH awake → service running → attach → deployed.
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(idle_424)
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1/state"))
+        .and(body_json(serde_json::json!({"command": "awake"})))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"state": "awaking"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"state": "running"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf/attachments/svc-1"))
+        .and(body_json(serde_json::json!({"version": 2})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+            "functionName": "my_udf", "serviceId": "svc-1", "version": 2, "status": "provisioning"
+        }})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+                "functionName": "my_udf", "serviceId": "svc-1", "version": 2, "status": "deployed"
+            }})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &[
+            "attach",
+            "my_udf",
+            "svc-1",
+            "--version",
+            "2",
+            "--wake",
+            "--wait",
+        ],
+    )
+    .output()
+    .unwrap();
+    assert_success(&output);
+    let attachment: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(attachment["status"], "deployed");
+    assert_eq!(attachment["version"], 2);
+}

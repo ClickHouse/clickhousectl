@@ -202,6 +202,16 @@ pub fn validate_definition(value: &Value, require_name: bool) -> Result<String, 
     Ok(kind)
 }
 
+/// Remove `functionName` from a definition, as version-create requests
+/// carry the name in the URL instead. Returns the removed name when it was a
+/// string.
+pub fn strip_function_name(value: &mut Value) -> Option<String> {
+    value
+        .as_object_mut()?
+        .remove("functionName")
+        .and_then(|name| name.as_str().map(str::to_owned))
+}
+
 /// One file or directory inside a UDF source directory.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceEntry {
@@ -466,6 +476,15 @@ mod tests {
             validate_definition(&json!([]), false).unwrap_err(),
             "UDF definition must be a JSON object"
         );
+    }
+
+    #[test]
+    fn strip_function_name_removes_and_returns_the_name() {
+        let mut value = definition("executable", true);
+        assert_eq!(strip_function_name(&mut value).as_deref(), Some("my_udf"));
+        assert!(value.get("functionName").is_none());
+        assert_eq!(strip_function_name(&mut value), None);
+        assert_eq!(strip_function_name(&mut json!(1)), None);
     }
 
     #[test]
