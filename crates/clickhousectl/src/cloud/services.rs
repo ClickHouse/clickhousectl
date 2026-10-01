@@ -116,8 +116,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
             Conditional::new(
                 "auto-enable",
                 &[
-                    &op::OPENAPI_KEY_CREATE,
-                    &op::OPENAPI_KEY_DELETE,
+                    &op::WHOAMI_GET,
+                    &op::OPENAPI_KEY_GET,
                     &op::INSTANCE_QUERY_ENDPOINT_GET,
                     &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
                 ],
@@ -158,7 +158,7 @@ use crate::cloud::credentials;
 use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
-use crate::cloud::service_query::{RepairVerification, existing_open_api_keys};
+use crate::cloud::service_query::{CallerKeyBinding, RepairVerification, existing_open_api_keys};
 use crate::cloud::shared::{NameSelector, NamedResource};
 use crate::cloud::shared::{
     parse_ip_access_entries, parse_serde_enum, parse_tag_filter, parse_tags, resolve_org_id,
@@ -602,10 +602,11 @@ CONTEXT FOR AGENTS:
         name = "query-endpoint",
         after_help = "\
 CONTEXT FOR AGENTS:
-  Only needed to share Query API access with other tools: `cloud service query` provisions and
-    binds its own key.
-  Editing this endpoint by hand can unbind the key `cloud service query` stored — repair it with
-    `cloud service repair-query-key <id>`."
+  Only needed to share Query API access with other tools: `cloud service query` binds the
+    authenticated API key itself.
+  Hand edits can unbind the key `cloud service query` uses; the next query rebinds it unless
+    `--no-auto-enable` is passed.
+  A stored per-service key is repaired with `cloud service repair-query-key <id>`."
     )]
     QueryEndpoint {
         #[command(subcommand)]
@@ -690,7 +691,7 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "json")]
         format: Option<String>,
 
-        /// Fail instead of auto-provisioning a per-service Query API key (API key auth only)
+        /// Fail rather than bind the API key to the Query API endpoint
         #[arg(long)]
         no_auto_enable: bool,
     },
@@ -3673,6 +3674,35 @@ async fn run_just_provisioned_service_query(
     target: QueryTarget<'_>,
     readiness: QueryEndpointReadiness,
 ) -> CloudResult<reqwest::Response> {
+    run_just_provisioned_service_query_or(
+        client,
+        key_id,
+        key_secret,
+        sql,
+        database,
+        format,
+        target,
+        readiness,
+        query_readiness_timeout_error,
+    )
+    .await
+}
+
+/// [`run_just_provisioned_service_query`], reporting an exhausted readiness
+/// window with `on_timeout` (given the window) instead of the generic
+/// timeout error. Every other failure converts as usual.
+#[allow(clippy::too_many_arguments)]
+async fn run_just_provisioned_service_query_or(
+    client: &CloudClient,
+    key_id: &str,
+    key_secret: &str,
+    sql: &str,
+    database: Option<&str>,
+    format: &str,
+    target: QueryTarget<'_>,
+    readiness: QueryEndpointReadiness,
+    on_timeout: impl FnOnce(Duration) -> CloudError,
+) -> CloudResult<reqwest::Response> {
     let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
         client.api().run_query(
             target.service_id,
@@ -3686,7 +3716,7 @@ async fn run_just_provisioned_service_query(
     })
     .await
     .map_err(|error| match error {
-        QueryReadinessError::TimedOut(timeout) => query_readiness_timeout_error(timeout),
+        QueryReadinessError::TimedOut(timeout) => on_timeout(timeout),
         QueryReadinessError::Api(error) => convert_query_error(client, error, target),
     })?;
 
@@ -3733,8 +3763,8 @@ fn stored_query_key_rejection_status(error: &clickhouse_cloud_api::Error) -> Opt
 }
 
 /// The `--no-auto-enable` refusal: the Query API rejected the management key
-/// (401/403/404) and provisioning would have fixed that, but the caller forbade
-/// it. The message is the CLI's; the classification stays the API's actual
+/// (401/403/404) and binding that key to the endpoint would have fixed that,
+/// but the caller forbade it. The message is the CLI's; the classification stays the API's actual
 /// rejection, carried across from the variant rather than reset to `other`
 /// (#450).
 fn refused_query_provisioning_error(
@@ -3743,7 +3773,7 @@ fn refused_query_provisioning_error(
 ) -> CloudError {
     CloudError::new(format!(
         "the authenticated API key cannot use the Query API endpoint for service {service_id}, \
-         and --no-auto-enable prevents provisioning"
+         and --no-auto-enable prevents binding it to the endpoint"
     ))
     .with_failure(failure::classify_api_error(rejection))
 }
@@ -3803,7 +3833,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
 
     // The `query_request` classifications below are a *fallback*: recording
     // is first-write-wins, so an inner boundary that knows the exact stage
-    // (`key_create`, `endpoint_get`, ...) keeps its record and only failures
+    // (`whoami`, `endpoint_get`, ...) keeps its record and only failures
     // no boundary claimed -- an unusable local credential store, say -- land
     // on the coarse `query_request` stage rather than going unclassified
     // (#450).
@@ -3904,30 +3934,64 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                             .at_stage(FailureStage::QueryRequest));
                     }
                     eprint_line(format!(
-                        "Provisioning Query API endpoint + key for service '{}'...",
+                        "Binding the authenticated API key to the Query API endpoint for \
+                         service '{}'...",
                         service_name
                     ));
+                    // No key is created: the caller's own key is bound to the
+                    // endpoint and the query re-runs with it (#1043). The bind
+                    // records `BoundCallerKey` itself once it succeeds.
                     failure::set_provisioning_state(ProvisioningState::Provisioning);
-                    let key = crate::cloud::service_query::ensure_service_query_setup(
+                    let binding = crate::cloud::service_query::bind_caller_query_key(
                         client,
                         &org_id,
                         &service_id,
-                        &service_name,
                     )
                     .await
                     .map_err(|error| error.at_stage(FailureStage::QueryRequest))?;
-                    failure::set_provisioning_state(ProvisioningState::Provisioned);
-                    run_just_provisioned_service_query(
-                        client,
-                        &key.key_id,
-                        &key.key_secret,
-                        &sql,
-                        options.database.as_deref(),
-                        &format,
-                        target,
-                        QUERY_ENDPOINT_READINESS,
-                    )
-                    .await
+                    match binding {
+                        CallerKeyBinding::Bound => {
+                            run_just_provisioned_service_query(
+                                client,
+                                key_id,
+                                key_secret,
+                                &sql,
+                                options.database.as_deref(),
+                                &format,
+                                target,
+                                QUERY_ENDPOINT_READINESS,
+                            )
+                            .await
+                        }
+                        // Nothing was written. A concurrent run may have bound
+                        // the key while this one waited for the lock, so wait
+                        // for the endpoint as the binder does; only a key
+                        // still rejected for the whole window means rebinding
+                        // cannot help.
+                        CallerKeyBinding::AlreadyBound { caller_uuid } => {
+                            failure::set_provisioning_state(ProvisioningState::ManagementKey);
+                            run_just_provisioned_service_query_or(
+                                client,
+                                key_id,
+                                key_secret,
+                                &sql,
+                                options.database.as_deref(),
+                                &format,
+                                target,
+                                QUERY_ENDPOINT_READINESS,
+                                |waited| {
+                                    crate::cloud::service_query::bound_caller_key_rejected_error(
+                                        &service_id,
+                                        &org_id,
+                                        &caller_uuid,
+                                        waited,
+                                    )
+                                    .at_stage(FailureStage::EndpointGet)
+                                },
+                            )
+                            .await
+                        }
+                    }
                 }
                 other => other.map_err(convert),
             }
