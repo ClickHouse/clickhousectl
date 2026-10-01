@@ -8,6 +8,9 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
     Permission::api("postgres logs", &[&op::POSTGRES_LOGS_GET_LIST])
         .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres query", &[])
+        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])])
+        .authorization("OAuth only; SQL uses database privileges and must be read-only."),
     Permission::api("postgres create", &[&op::POSTGRES_SERVICE_CREATE]),
     Permission::api(
         "postgres delete",
