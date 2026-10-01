@@ -9,12 +9,12 @@
 use crate::cloud::client::{CloudClient, CloudError, CloudErrorKind, Result as CloudResult};
 use crate::cloud::credentials::{self, ServiceQueryKey};
 use crate::cloud::output::{CloudErrorCode, CloudErrorDetail, eprint_line};
-use crate::failure::{ApiFailure, FailureKind, FailureStage};
+use crate::failure::{ApiFailure, FailureKind, FailureStage, ProvisioningState};
 use chrono::{DateTime, Utc};
 use clickhouse_cloud_api::models::{
     ApiKey, ApiKeyPostRequest, ApiKeyPostRequestState, ApiKeyPostResponse, ApiKeyState,
     InstanceServiceQueryApiEndpointsPostRequest, IpAccessListEntry, QueryEndpointRole,
-    ServiceQueryAPIEndpoint,
+    ServiceQueryAPIEndpoint, Whoami,
 };
 use serde::Serialize;
 use std::time::Duration;
@@ -1328,6 +1328,59 @@ async fn unbind_query_endpoint(
     Ok(())
 }
 
+/// The keys currently bound to the service's query endpoint, or none when the
+/// service has no endpoint yet. Both failures belong to the endpoint read.
+async fn read_bound_open_api_keys(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+) -> CloudResult<Vec<String>> {
+    match client
+        .get_query_endpoint_for_binding(org_id, service_id)
+        .await
+        .map_err(|error| error.at_stage(FailureStage::EndpointGet))?
+    {
+        Some(endpoint) => existing_open_api_keys(endpoint)
+            .map_err(|error| error.at_stage(FailureStage::EndpointGet)),
+        None => Ok(Vec::new()),
+    }
+}
+
+/// The `openApiKeys` to upsert: the existing bindings minus those known to be
+/// `gone`, without duplicates and in their original order, with `api_key_uuid`
+/// appended when it is not already bound. Never drops a key it was not told is
+/// gone, so the upsert cannot silently revoke another binding.
+fn merged_open_api_keys(existing: Vec<String>, api_key_uuid: &str, gone: &[String]) -> Vec<String> {
+    let mut merged: Vec<String> = Vec::with_capacity(existing.len() + 1);
+    for key in existing {
+        if key != api_key_uuid && gone.contains(&key) {
+            continue;
+        }
+        if !merged.contains(&key) {
+            merged.push(key);
+        }
+    }
+    if !merged.iter().any(|key| key == api_key_uuid) {
+        merged.push(api_key_uuid.to_string());
+    }
+    merged
+}
+
+/// The upsert body that binds `open_api_keys` to the endpoint. Only the key
+/// list comes from the caller: `roles` and `allowedOrigins` are always this
+/// module's values, replacing whatever an existing endpoint had.
+fn build_bind_endpoint_request(
+    open_api_keys: Vec<String>,
+) -> InstanceServiceQueryApiEndpointsPostRequest {
+    InstanceServiceQueryApiEndpointsPostRequest {
+        // The binding grants read/write SQL access only through this service's
+        // endpoint; it does not assign an organization-level role to the key.
+        roles: vec![QueryEndpointRole::SqlConsoleAdmin],
+        open_api_keys,
+        allowed_origins: ALLOWED_ORIGINS.to_string(),
+    }
+}
+
 /// Bind `api_key_uuid` to the service's query endpoint, merging into the
 /// endpoint's existing `openApiKeys` so we don't silently revoke other
 /// key bindings the user set up. Only the key list is merged: the upsert
@@ -1338,31 +1391,123 @@ async fn bind_query_endpoint(
     service_id: &str,
     api_key_uuid: &str,
 ) -> CloudResult<clickhouse_cloud_api::models::ServiceQueryAPIEndpoint> {
-    let mut open_api_keys = match client
-        .get_query_endpoint_for_binding(org_id, service_id)
-        .await
-        .map_err(|error| error.at_stage(FailureStage::EndpointGet))?
-    {
-        Some(endpoint) => existing_open_api_keys(endpoint)
-            .map_err(|error| error.at_stage(FailureStage::EndpointGet))?,
-        None => Vec::new(),
-    };
-    if !open_api_keys.iter().any(|k| k == api_key_uuid) {
-        open_api_keys.push(api_key_uuid.to_string());
-    }
-
-    let endpoint_request = InstanceServiceQueryApiEndpointsPostRequest {
-        // The binding grants read/write SQL access only through this service's
-        // endpoint; it does not assign an organization-level role to the key.
-        roles: vec![QueryEndpointRole::SqlConsoleAdmin],
-        open_api_keys,
-        allowed_origins: ALLOWED_ORIGINS.to_string(),
-    };
+    let existing = read_bound_open_api_keys(client, org_id, service_id).await?;
+    let endpoint_request =
+        build_bind_endpoint_request(merged_open_api_keys(existing, api_key_uuid, &[]));
 
     client
         .bind_created_query_key(org_id, service_id, &endpoint_request, KEY_PROPAGATION)
         .await
         .map_err(|error| error.at_stage(FailureStage::EndpointUpsert))
+}
+
+/// The resource UUID of the caller's own API key — the value `openApiKeys`
+/// takes — from a `whoami` answer (#1043). Refuses anything but an API key
+/// that names its UUID and belongs to `org_id`: binding a key of another
+/// organization, or guessing at a user's identity, must fail before any write.
+fn caller_key_uuid(identity: &Whoami, org_id: &str) -> CloudResult<String> {
+    const PREFIX: &str = "cannot bind the caller's API key to the query endpoint";
+    let key = match identity {
+        Whoami::WhoamiApiKey(key) => key,
+        Whoami::WhoamiUser(_) => {
+            return Err(CloudError::new(format!(
+                "{PREFIX}: the Cloud API identified the caller as a user, not an API key"
+            )));
+        }
+        Whoami::Unknown(_) => {
+            return Err(CloudError::new(format!(
+                "{PREFIX}: the Cloud API identified the caller as an unrecognized actor type"
+            )));
+        }
+    };
+    let key_id = key
+        .key_id
+        .as_deref()
+        .filter(|key_id| !key_id.is_empty())
+        .ok_or_else(|| {
+            CloudError::new(format!(
+                "{PREFIX}: the identity response is missing field 'keyId'"
+            ))
+        })?;
+    let key_org = key.organization_id.ok_or_else(|| {
+        CloudError::new(format!(
+            "{PREFIX}: the identity response is missing field 'organizationId'"
+        ))
+    })?;
+    if uuid::Uuid::parse_str(org_id).ok() != Some(key_org) {
+        return Err(CloudError::new(format!(
+            "{PREFIX}: the API key belongs to organization {key_org}, not {org_id}"
+        )));
+    }
+    Ok(key_id.to_string())
+}
+
+/// Whether a bound key's lookup proves it was deleted. Only a confirmed
+/// absence counts: a lookup that failed says nothing about the key, so the
+/// binding is kept rather than revoked on uncertainty.
+fn bound_key_is_gone(lookup: &CloudResult<Option<ApiKey>>) -> bool {
+    matches!(lookup, Ok(None))
+}
+
+/// The bound keys other than `caller_uuid` that the organization no longer
+/// has. A deleted key's UUID left in `openApiKeys` makes every later upsert
+/// fail with `400` (#659), so it is pruned before the caller's key is merged.
+/// A failed lookup never aborts the bind and records no failure stage: the
+/// key is simply kept.
+async fn dangling_bound_keys(
+    client: &CloudClient,
+    org_id: &str,
+    bound: &[String],
+    caller_uuid: &str,
+) -> Vec<String> {
+    let mut gone: Vec<String> = Vec::new();
+    for key in bound {
+        if key == caller_uuid || gone.contains(key) {
+            continue;
+        }
+        let lookup = client.get_api_key_if_exists(org_id, key).await;
+        if bound_key_is_gone(&lookup) {
+            gone.push(key.clone());
+        }
+    }
+    gone
+}
+
+/// Bind the caller's own API key to the service's query endpoint (#1043),
+/// creating the endpoint when absent. Identifies the key with `whoami`,
+/// refusing before any write unless it is an API key of `org_id`; then, under
+/// the project's provisioning lock, prunes bindings to deleted keys and merges
+/// the caller's UUID into the rest. Creates no key and writes no local
+/// credential, so a later failure has nothing to roll back. On success the
+/// run's provisioning state becomes [`ProvisioningState::BoundCallerKey`].
+// wired in by the next commit (#1043)
+#[allow(dead_code)]
+pub(crate) async fn bind_caller_query_key(
+    client: &CloudClient,
+    org_id: &str,
+    service_id: &str,
+) -> CloudResult<()> {
+    let identity = client
+        .get_whoami()
+        .await
+        .map_err(|error| error.at_stage(FailureStage::Whoami))?;
+    let caller_uuid =
+        caller_key_uuid(&identity, org_id).map_err(|error| error.at_stage(FailureStage::Whoami))?;
+
+    // Serialize the read-merge-upsert across CLI processes in this project, so
+    // two concurrent binds cannot each overwrite the other's merge.
+    let _provisioning_lock = credentials::lock_query_provisioning().await?;
+
+    let existing = read_bound_open_api_keys(client, org_id, service_id).await?;
+    let gone = dangling_bound_keys(client, org_id, &existing, &caller_uuid).await;
+    let request = build_bind_endpoint_request(merged_open_api_keys(existing, &caller_uuid, &gone));
+
+    client
+        .bind_created_query_key(org_id, service_id, &request, KEY_PROPAGATION)
+        .await
+        .map_err(|error| error.at_stage(FailureStage::EndpointUpsert))?;
+    crate::failure::set_provisioning_state(ProvisioningState::BoundCallerKey);
+    Ok(())
 }
 
 impl CloudClient {
@@ -1732,6 +1877,124 @@ mod tests {
         );
         #[cfg(feature = "deprecated-fields")]
         assert!(request.roles.is_none());
+    }
+
+    // ── binding the caller's own key (issue #1043) ──────────────────────
+
+    const ORG: &str = "5fae43a3-0000-4000-8000-000000000001";
+
+    fn whoami_key(key_id: Option<&str>, org: Option<&str>) -> Whoami {
+        Whoami::WhoamiApiKey(clickhouse_cloud_api::models::WhoamiApiKey {
+            actor_type: Some(clickhouse_cloud_api::models::WhoamiApiKeyActortype::ApiKey),
+            key_id: key_id.map(str::to_string),
+            name: Some("ci".into()),
+            organization_id: org.map(|org| uuid::Uuid::parse_str(org).unwrap()),
+        })
+    }
+
+    #[test]
+    fn whoami_api_key_of_the_resolved_org_yields_its_resource_uuid() {
+        let identity = whoami_key(Some("key-uuid-1"), Some(ORG));
+        assert_eq!(caller_key_uuid(&identity, ORG).unwrap(), "key-uuid-1");
+        // The resolved org is compared as a UUID, not as text.
+        assert_eq!(
+            caller_key_uuid(&identity, &ORG.to_uppercase()).unwrap(),
+            "key-uuid-1"
+        );
+    }
+
+    #[test]
+    fn whoami_user_is_refused() {
+        let identity = Whoami::WhoamiUser(clickhouse_cloud_api::models::WhoamiUser::default());
+        let error = caller_key_uuid(&identity, ORG).unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert!(error.message.contains("user"), "{error}");
+    }
+
+    #[test]
+    fn whoami_unknown_actor_is_refused() {
+        let identity = Whoami::Unknown(serde_json::json!({ "actorType": "robot" }));
+        let error = caller_key_uuid(&identity, ORG).unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert!(error.message.contains("unrecognized"), "{error}");
+    }
+
+    #[test]
+    fn whoami_without_a_key_id_is_refused() {
+        for key_id in [None, Some("")] {
+            let error = caller_key_uuid(&whoami_key(key_id, Some(ORG)), ORG).unwrap_err();
+            assert!(error.message.contains("'keyId'"), "{error}");
+        }
+    }
+
+    #[test]
+    fn whoami_without_an_organization_is_refused() {
+        let error = caller_key_uuid(&whoami_key(Some("key-uuid-1"), None), ORG).unwrap_err();
+        assert!(error.message.contains("'organizationId'"), "{error}");
+    }
+
+    #[test]
+    fn whoami_key_of_another_organization_is_refused() {
+        let other = "5fae43a3-0000-4000-8000-000000000002";
+        let error = caller_key_uuid(&whoami_key(Some("key-uuid-1"), Some(other)), ORG).unwrap_err();
+        assert_eq!(error.kind, CloudErrorKind::Generic);
+        assert!(
+            error.message.contains(other) && error.message.contains(ORG),
+            "{error}"
+        );
+        // An org id that is not a UUID can never match.
+        assert!(caller_key_uuid(&whoami_key(Some("key-uuid-1"), Some(ORG)), "acme").is_err());
+    }
+
+    #[test]
+    fn only_a_confirmed_absence_prunes_a_bound_key() {
+        assert!(bound_key_is_gone(&Ok(None)));
+        assert!(!bound_key_is_gone(&Ok(Some(ApiKey::default()))));
+        assert!(!bound_key_is_gone(&Err(CloudError::new("boom"))));
+        assert!(!bound_key_is_gone(&Err(CloudError::auth("forbidden"))));
+    }
+
+    #[test]
+    fn merging_drops_gone_keys_dedupes_and_appends_the_caller_once() {
+        let existing = vec![
+            "keep-a".to_string(),
+            "gone-b".to_string(),
+            "keep-a".to_string(),
+            "keep-c".to_string(),
+        ];
+        assert_eq!(
+            merged_open_api_keys(existing, "caller", &["gone-b".to_string()]),
+            ["keep-a", "keep-c", "caller"]
+        );
+        // An already-bound caller keeps its position and is never pruned.
+        assert_eq!(
+            merged_open_api_keys(
+                vec!["caller".to_string(), "keep-a".to_string()],
+                "caller",
+                &["caller".to_string()],
+            ),
+            ["caller", "keep-a"]
+        );
+    }
+
+    #[test]
+    fn bind_request_for_a_new_endpoint_binds_only_the_caller() {
+        let request = build_bind_endpoint_request(merged_open_api_keys(vec![], "caller", &[]));
+        assert_eq!(request.open_api_keys, ["caller"]);
+        assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleAdmin]);
+        assert_eq!(request.allowed_origins, ALLOWED_ORIGINS);
+    }
+
+    #[test]
+    fn bind_request_for_an_existing_endpoint_keeps_live_keys_and_module_settings() {
+        let request = build_bind_endpoint_request(merged_open_api_keys(
+            vec!["other-1".into(), "deleted".into(), "other-2".into()],
+            "caller",
+            &["deleted".to_string()],
+        ));
+        assert_eq!(request.open_api_keys, ["other-1", "other-2", "caller"]);
+        assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleAdmin]);
+        assert_eq!(request.allowed_origins, ALLOWED_ORIGINS);
     }
 
     #[test]
