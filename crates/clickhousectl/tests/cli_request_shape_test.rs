@@ -28464,3 +28464,448 @@ async fn key_pagination_human_continuation_preserves_shell_tokens_and_page_conte
         assert_eq!(mock.received_requests().await.unwrap().len(), 1);
     }
 }
+
+// Postgres uses the OAuth-only non-OpenAPI Query API, without native clients.
+const POSTGRES_QUERY_ID: &str = "11111111-2222-3333-4444-555555555555";
+const POSTGRES_QUERY_ROWS: &str = "[\"answer\",\"answer\",\"nullable\"]\n[\"Int32\",\"String\",\"String\"]\n[42,\"hello\\tworld\\nnext\",null]\n";
+
+fn postgres_query_command(root: &Path, control: &MockServer, query_host: &str) -> Command {
+    let cloud_dir = root.join("home/.clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &control.uri());
+    let mut command = Command::new(clickhousectl_binary());
+    command
+        .env_clear()
+        .env("HOME", root.join("home"))
+        .env("DO_NOT_TRACK", "1")
+        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host)
+        .current_dir(root)
+        .args(["cloud", "--url", &control.uri(), "postgres", "query"])
+        .stdin(Stdio::null());
+    command
+}
+
+async fn mount_postgres_query(query: &MockServer, response: ResponseTemplate) {
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{POSTGRES_QUERY_ID}/runPostgres")))
+        .and(query_param("orgId", "org-1"))
+        .and(query_param("format", "JSONCompactEachRowWithNamesAndTypes"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .and(header("x-service-type", "postgres"))
+        .and(header("content-type", "application/json"))
+        .respond_with(response)
+        .expect(1)
+        .mount(query)
+        .await;
+}
+
+#[tokio::test]
+async fn postgres_query_streams_compact_json_in_explicit_and_agent_modes() {
+    for mode in ["json", "agent"] {
+        let control = MockServer::start().await;
+        let query = MockServer::start().await;
+        mount_postgres_query(
+            &query,
+            ResponseTemplate::new(200).set_body_string(POSTGRES_QUERY_ROWS),
+        )
+        .await;
+        let root = tempfile::tempdir().unwrap();
+        let mut command = postgres_query_command(root.path(), &control, &query.uri());
+        command.args([
+            POSTGRES_QUERY_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 42",
+        ]);
+        if mode == "json" {
+            command.arg("--json");
+        } else {
+            command.env("CLAUDECODE", "1");
+        }
+        let output = command.output().unwrap();
+        assert_success(&output);
+        assert_eq!(output.stdout, POSTGRES_QUERY_ROWS.as_bytes());
+        let requests = query.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
+            serde_json::json!({"sql": "SELECT 42"})
+        );
+        assert!(!requests[0].headers.contains_key("auth-provider"));
+        assert!(!requests[0].headers.contains_key("wake-service"));
+        assert!(control.received_requests().await.unwrap().is_empty());
+        assert!(
+            !root.path().join(".clickhouse").exists(),
+            "no client downloads or service query keys"
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_query_human_output_preserves_duplicate_columns_and_escapes_cells() {
+    let control = MockServer::start().await;
+    let query = MockServer::start().await;
+    mount_postgres_query(
+        &query,
+        ResponseTemplate::new(200).set_body_string(POSTGRES_QUERY_ROWS),
+    )
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    let output = postgres_query_command(root.path(), &control, &query.uri())
+        .args([
+            POSTGRES_QUERY_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 42",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let lines: Vec<_> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert_eq!(lines[0], "answer\tanswer\tnullable");
+    assert_eq!(
+        lines[1].split('\t').count(),
+        3,
+        "escaped data cannot introduce columns"
+    );
+    assert!(lines[1].contains("hello\\tworld\\nnext"));
+}
+
+#[tokio::test]
+async fn postgres_query_resolves_name_and_sends_database_and_script_unchanged() {
+    let control = MockServer::start().await;
+    let query = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/postgres"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(
+            serde_json::json!({"result": [{"id": POSTGRES_QUERY_ID, "name": "reporting"}]}),
+        ))
+        .expect(1)
+        .mount(&control)
+        .await;
+    mount_postgres_query(
+        &query,
+        ResponseTemplate::new(200).set_body_string(POSTGRES_QUERY_ROWS),
+    )
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    let sql = "SELECT 1;\nSELECT current_database();\n";
+    std::fs::write(root.path().join("queries.sql"), sql).unwrap();
+    let output = postgres_query_command(root.path(), &control, &query.uri())
+        .args([
+            "--name",
+            "reporting",
+            "--org-id",
+            "org-1",
+            "--database",
+            "analytics",
+            "--queries-file",
+            "queries.sql",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    let requests = query.received_requests().await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
+        serde_json::json!({"sql": sql, "database": "analytics"})
+    );
+    assert_eq!(control.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn postgres_query_accepts_default_and_explicit_stdin_and_ignores_it_with_inline_sql() {
+    for source in ["implicit", "file-dash", "inline"] {
+        let control = MockServer::start().await;
+        let query = MockServer::start().await;
+        mount_postgres_query(
+            &query,
+            ResponseTemplate::new(200).set_body_string(POSTGRES_QUERY_ROWS),
+        )
+        .await;
+        let root = tempfile::tempdir().unwrap();
+        let mut command = postgres_query_command(root.path(), &control, &query.uri());
+        command.args([POSTGRES_QUERY_ID, "--org-id", "org-1", "--json"]);
+        match source {
+            "file-dash" => {
+                command.args(["--queries-file", "-"]);
+            }
+            "inline" => {
+                command.args(["--query", "SELECT 2"]);
+            }
+            _ => {}
+        }
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"SELECT 1\n").unwrap();
+        // Keep stdin open with --query: the binary must not wait for EOF.
+        if source != "inline" {
+            drop(stdin);
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while child.try_wait().unwrap().is_none() {
+            if std::time::Instant::now() >= deadline {
+                child.kill().unwrap();
+                panic!("Postgres query waited for unused stdin or failed to complete");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child.wait_with_output().unwrap();
+        assert_success(&output);
+        let requests = query.received_requests().await.unwrap();
+        let expected = if source == "inline" {
+            "SELECT 2"
+        } else {
+            "SELECT 1\n"
+        };
+        assert_eq!(
+            serde_json::from_slice::<Value>(&requests[0].body).unwrap()["sql"],
+            expected
+        );
+    }
+}
+
+#[tokio::test]
+async fn postgres_query_rejects_api_keys_even_with_saved_oauth_before_input_or_http() {
+    let control = MockServer::start().await;
+    let query = MockServer::start().await;
+    let root = tempfile::tempdir().unwrap();
+    let output = postgres_query_command(root.path(), &control, &query.uri())
+        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key")
+        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret")
+        .args([
+            "--name",
+            "reporting",
+            "--org-id",
+            "org-1",
+            "--queries-file",
+            "does-not-exist.sql",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    let error = cloud_runtime_error(&output);
+    assert_eq!(error["code"], "auth_required");
+    assert!(error["message"].as_str().unwrap().contains("OAuth"));
+    assert!(query.received_requests().await.unwrap().is_empty());
+    assert!(control.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn postgres_query_rejects_bad_sql_sources_before_network() {
+    for (source, bytes) in [
+        ("empty", b" \n".as_slice()),
+        ("invalid", b"SELECT \xff".as_slice()),
+        ("missing", b"".as_slice()),
+    ] {
+        let control = MockServer::start().await;
+        let query = MockServer::start().await;
+        let root = tempfile::tempdir().unwrap();
+        if source != "missing" {
+            std::fs::write(root.path().join("queries.sql"), bytes).unwrap();
+        }
+        let output = postgres_query_command(root.path(), &control, &query.uri())
+            .args([
+                "--name",
+                "reporting",
+                "--org-id",
+                "org-1",
+                "--queries-file",
+                "queries.sql",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if source == "empty" { 2 } else { 1 })
+        );
+        assert!(output.stdout.is_empty());
+        assert!(query.received_requests().await.unwrap().is_empty());
+        assert!(control.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn postgres_query_preserves_structured_failures_without_retries_or_provisioning() {
+    for (status, body, exit, code) in [
+        (
+            400,
+            r#"{"error":{"code":"POSTGRES_ERROR","details":"permission denied for relation private_table"}}"#,
+            1,
+            "sql_error",
+        ),
+        (401, r#"{"error":"Unauthorized"}"#, 4, "auth_required"),
+        (403, r#"{"error":"Forbidden"}"#, 4, "auth_required"),
+        (404, "route missing", 1, "http_4xx"),
+        (429, "rate limited", 1, "rate_limited"),
+        (500, r#"{"error":"Timeout error."}"#, 1, "timeout"),
+        (502, "upstream unavailable", 1, "http_5xx"),
+    ] {
+        let control = MockServer::start().await;
+        let query = MockServer::start().await;
+        mount_postgres_query(&query, ResponseTemplate::new(status).set_body_string(body)).await;
+        let root = tempfile::tempdir().unwrap();
+        let output = postgres_query_command(root.path(), &control, &query.uri())
+            .args([
+                POSTGRES_QUERY_ID,
+                "--org-id",
+                "org-1",
+                "--query",
+                "SELECT 1",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(exit),
+            "status {status}: {output:?}"
+        );
+        assert!(output.stdout.is_empty());
+        let error = cloud_runtime_error(&output);
+        assert_eq!(error["code"], code, "status {status}: {error}");
+        if status == 403 {
+            assert!(!error["message"].as_str().unwrap().contains("--api-key"));
+        }
+        assert_eq!(query.received_requests().await.unwrap().len(), 1);
+        assert!(control.received_requests().await.unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn postgres_query_accepts_empty_success_and_empty_rowsets() {
+    for body in ["", "[\"answer\"]\n[\"Int32\"]\n"] {
+        let control = MockServer::start().await;
+        let query = MockServer::start().await;
+        mount_postgres_query(&query, ResponseTemplate::new(200).set_body_string(body)).await;
+        let root = tempfile::tempdir().unwrap();
+        let output = postgres_query_command(root.path(), &control, &query.uri())
+            .args([
+                POSTGRES_QUERY_ID,
+                "--org-id",
+                "org-1",
+                "--query",
+                "SELECT 1 WHERE false",
+                "--json",
+            ])
+            .output()
+            .unwrap();
+        assert_success(&output);
+        assert_eq!(output.stdout, body.as_bytes());
+    }
+}
+
+#[tokio::test]
+async fn postgres_query_decodes_gzip_with_the_cli_http_client() {
+    let control = MockServer::start().await;
+    let query = MockServer::start().await;
+    // The upstream Postgres runner always gzips its compact JSON stream.
+    let compressed: Vec<u8> = vec![
+        31, 139, 8, 0, 0, 0, 0, 0, 2, 255, 139, 86, 74, 204, 43, 46, 79, 45, 82, 138, 229, 138, 86,
+        242, 204, 43, 49, 54, 2, 177, 76, 140, 98, 185, 0, 244, 250, 162, 112, 26, 0, 0, 0,
+    ];
+    mount_postgres_query(
+        &query,
+        ResponseTemplate::new(200)
+            .insert_header("content-encoding", "gzip")
+            .set_body_bytes(compressed),
+    )
+    .await;
+    let root = tempfile::tempdir().unwrap();
+    let output = postgres_query_command(root.path(), &control, &query.uri())
+        .args([
+            POSTGRES_QUERY_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 42",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(output.stdout, b"[\"answer\"]\n[\"Int32\"]\n[42]\n");
+}
+
+#[tokio::test]
+async fn postgres_query_reports_truncated_stream_as_failure() {
+    use std::io::{BufRead, Read};
+    let control = MockServer::start().await;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let server = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().unwrap();
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+            .unwrap();
+        let mut reader = std::io::BufReader::new(socket.try_clone().unwrap());
+        let mut content_length = 0;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                content_length = value.trim().parse::<usize>().unwrap();
+            }
+        }
+        let mut body = vec![0; content_length];
+        reader.read_exact(&mut body).unwrap();
+        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 200\r\nConnection: close\r\n\r\n[\"answer\"]\n").unwrap();
+    });
+    let root = tempfile::tempdir().unwrap();
+    let output = postgres_query_command(root.path(), &control, &url)
+        .args([
+            POSTGRES_QUERY_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 42",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(cloud_runtime_error(&output)["code"], "transport");
+    assert!(control.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn postgres_query_closed_stdout_keeps_successful_query_successful() {
+    let control = MockServer::start().await;
+    let query = MockServer::start().await;
+    let body = format!("[\"answer\"]\n[\"Int32\"]\n{}", "[42]\n".repeat(100_000));
+    mount_postgres_query(&query, ResponseTemplate::new(200).set_body_string(body)).await;
+    let root = tempfile::tempdir().unwrap();
+    let mut child = postgres_query_command(root.path(), &control, &query.uri())
+        .args([
+            POSTGRES_QUERY_ID,
+            "--org-id",
+            "org-1",
+            "--query",
+            "SELECT 42",
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let output = child.wait_with_output().unwrap();
+    assert_success(&output);
+}
