@@ -725,7 +725,7 @@ Every executable Cloud command documents authorization in its `--help`, without 
 
 These are the upstream-declared Cloud API-key requirements bundled with this CLI version. An empty upstream permission list means a valid API key with no additional named permissions, not anonymous access. This help does not inspect your key or change the OAuth read-only restriction; database/SQL authorization and commands without a Cloud API call are described separately.
 
-Select services, Postgres services, keys, roles, BYOC infrastructure, ClickPipes, Query API endpoints, and ClickStack resources by positional ID or exact `--name`. Name lookups require list access within the selected organization or required parent service; child `--name` never selects the parent.
+Select services, Postgres services, keys, roles, BYOC infrastructure, ClickPipes, Query API endpoints, saved queries, and ClickStack resources by positional ID or exact `--name`. Name lookups require list access within the selected organization or required parent service; child `--name` never selects the parent.
 
 Reading a service, Postgres service or organization — or deleting a service or Postgres service — by an identifier that resolves to nothing (HTTP 400 or 404, including deleted IDs) reports `No such <resource>: <id> (organization <org-id>). The API rejected the identifier: <server text>`, and the stable code `resource_not_found` under `--json`. `org get` omits the `(organization ...)` clause. Every other resource relays the API's own error, so do not branch on `resource_not_found` for a ClickPipe, key, member, backup or endpoint. The organization clause names the scope checked: the resource may belong to another organization; verify `--org-id` and use the suggested list command. `service query-endpoint get` checks the parent service after a 404 so a missing endpoint on an existing service is not reported as a missing service. A malformed (non-UUID) identifier keeps the API's own message; use the corresponding `list` command to find IDs (or select a service explicitly with `--name`).
 
@@ -1222,6 +1222,23 @@ curl --user "$QUERY_KEY_ID:$QUERY_KEY_SECRET" "$ENDPOINT_URL" \
 ```
 
 GET requests use `param_status=paid` and `format=JSONEachRow` query parameters instead. `allowedOrigins` controls browser CORS access; it does not prevent an authenticated non-browser client from executing the endpoint. An empty list grants no cross-origin browser access; `["*"]` allows any origin.
+
+#### Saved queries (beta)
+
+`cloud saved-query` manages a service's saved SQL queries: a name, the SQL, the database it runs against, and default parameters.
+
+```bash
+clickhousectl cloud saved-query create <service-id> --name "Order count" \
+  --sql 'SELECT count() FROM orders WHERE status = {status:String}' \
+  --database default --param status=paid
+clickhousectl cloud saved-query list <service-id> --limit 10 --json
+clickhousectl cloud saved-query get <service-id> <query-id>
+clickhousectl cloud saved-query update <service-id> --name "Order count" --new-name "Order count" \
+  --sql-file order_count.sql --database default
+clickhousectl cloud saved-query delete <service-id> --name "Order count"
+```
+
+`--sql-file -` reads the SQL from stdin. Update replaces the whole saved query, so pass every field again; omitted `--param` values reset to empty. List returns one page; pass `nextCursor` from JSON output to `--cursor`. List/get support OAuth; create/update/delete require API key authentication.
 
 ### Postgres (beta)
 
