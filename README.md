@@ -677,6 +677,7 @@ Learn how to [create API keys](https://clickhouse.com/docs/cloud/manage/openapi?
 
 ```bash
 clickhousectl cloud auth status    # Show current auth state (including read-only/read-write labels)
+clickhousectl cloud auth whoami    # (Beta) Ask the Cloud API who the active credentials belong to
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 clickhousectl cloud auth logout --oauth      # Clear only OAuth tokens, keep API keys
 clickhousectl cloud auth logout --api-keys   # Clear only API keys, keep OAuth tokens
@@ -693,6 +694,8 @@ Credential resolution order:
 
 Supplying only `--api-key` or only `--api-secret` blocks fallback to other sources.
 `cloud auth status` still succeeds with no active authentication; `--debug` identifies the missing flag.
+`cloud auth whoami` works with OAuth or API keys and needs no organization: a user shows its ID, email,
+name and organizations; an API key shows its key ID, name and owning organization ID.
 
 When environment credentials are configured but a credentials file or explicit
 CLI flags take precedence, clickhousectl prints a one-line note to stderr.
@@ -1361,7 +1364,11 @@ clickhousectl cloud postgres certs get <pg-id> --output ca.pem
 PGSSLMODE=verify-full PGSSLROOTCERT=ca.pem psql --host <host-from-get> --port 5432 \
   --username <username-from-get> --dbname postgres
 
-# Read replica and PITR restore
+# Retained base backups, newest first; follow `Next cursor:` (JSON: nextCursor) with --cursor
+clickhousectl cloud postgres backup list <pg-id> --limit 20
+clickhousectl cloud postgres backup list <pg-id> --cursor <next-cursor>
+
+# Read replica and PITR restore (restore takes a point in time, not a backup key)
 clickhousectl cloud postgres read-replica create --source-name primary --name replica-1
 clickhousectl cloud postgres read-replica create <pg-id> --name replica-2 \
   --tag env=prod --pg-config-file ./pg.json

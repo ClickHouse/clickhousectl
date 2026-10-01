@@ -29863,3 +29863,294 @@ async fn saved_query_invalid_input_and_oauth_writes_fail_before_http() {
     }
     assert!(server.received_requests().await.unwrap().is_empty());
 }
+
+const POSTGRES_BACKUPS_PATH: &str = "/v1/organizations/org-1/postgres/pg-1/backups";
+const WHOAMI_USER_ID: &str = "44444444-5555-4666-8777-888888888888";
+const WHOAMI_ORG_ID: &str = "55555555-6666-4777-8888-999999999999";
+
+/// Run a cloud command with API-key flags, or with saved OAuth tokens only.
+fn invoke_cloud_as(
+    server: &MockServer,
+    project: &Path,
+    oauth: bool,
+    json: bool,
+    args: &[&str],
+) -> std::process::Output {
+    let home = project.join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    if oauth {
+        write_oauth_tokens(&cloud_dir, &server.uri());
+    }
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("HOME", home)
+        .env("DO_NOT_TRACK", "1")
+        .current_dir(project)
+        .args(["cloud", "--url", &server.uri()]);
+    if !oauth {
+        command.args(["--api-key", "drift-key", "--api-secret", "drift-secret"]);
+    }
+    if json {
+        command.arg("--json");
+    }
+    command.args(args).stdin(Stdio::null()).output().unwrap()
+}
+
+fn postgres_backup_page(result: Value, next_cursor: Option<&str>) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": 200,
+        "requestId": "postgres-backup-list",
+        "result": result,
+        "limit": 2,
+        "totalCount": 3,
+        "nextCursor": next_cursor
+    }))
+}
+
+#[tokio::test]
+async fn postgres_backup_list_sends_pagination_and_renders_json_and_table() {
+    let server = MockServer::start().await;
+    let backups = serde_json::json!([
+        {
+            "key": "basebackups_005/000000010000000000000002_backup_stop_sentinel.json",
+            "lastModified": "2026-03-31T18:17:37Z"
+        },
+        {}
+    ]);
+    Mock::given(method("GET"))
+        .and(path(POSTGRES_BACKUPS_PATH))
+        .and(wiremock::matchers::basic_auth("drift-key", "drift-secret"))
+        .and(query_param("cursor", "page /+?"))
+        .and(query_param("limit", "2"))
+        .respond_with(postgres_backup_page(backups.clone(), Some("next /+?")))
+        .with_priority(1)
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(POSTGRES_BACKUPS_PATH))
+        .respond_with(postgres_backup_page(serde_json::json!([]), None))
+        .with_priority(10)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let args = [
+        "postgres", "backup", "list", "pg-1", "--cursor", "page /+?", "--limit", "2", "--org-id",
+        "org-1",
+    ];
+
+    let json = invoke_cloud_as(&server, project.path(), false, true, &args);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!({
+            "result": backups,
+            "limit": 2,
+            "totalCount": 3,
+            "nextCursor": "next /+?"
+        })
+    );
+
+    let human = invoke_cloud_as(&server, project.path(), false, false, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    for expected in [
+        "Key",
+        "Last modified",
+        "basebackups_005/000000010000000000000002_backup_stop_sentinel.json",
+        "2026-03-31T18:17:37Z",
+        "Next cursor: next /+?",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected}: {stdout}");
+    }
+
+    // Without pagination flags nothing is added to the query string.
+    let empty = invoke_cloud_as(
+        &server,
+        project.path(),
+        false,
+        false,
+        &["postgres", "backup", "list", "pg-1", "--org-id", "org-1"],
+    );
+    assert_success(&empty);
+    assert!(!String::from_utf8_lossy(&empty.stdout).contains("Next cursor"));
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].url.query().is_none(), "{:?}", requests[2].url);
+}
+
+#[tokio::test]
+async fn postgres_backup_list_supports_oauth_and_reports_not_found() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(POSTGRES_BACKUPS_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(postgres_backup_page(serde_json::json!([]), None))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let args = ["postgres", "backup", "list", "pg-1", "--org-id", "org-1"];
+    let oauth = invoke_cloud_as(&server, project.path(), true, true, &args);
+    assert_success(&oauth);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&oauth.stdout).unwrap()["result"],
+        serde_json::json!([])
+    );
+
+    let missing = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(POSTGRES_BACKUPS_PATH))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "requestId": "postgres-backup-missing",
+            "error": "Postgres service pg-1 was not found"
+        })))
+        .expect(1)
+        .mount(&missing)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let output = invoke_cloud_as(&missing, project.path(), false, false, &args);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Postgres service pg-1 was not found"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn whoami_envelope(result: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": 200,
+        "requestId": "whoami",
+        "result": result
+    }))
+}
+
+#[tokio::test]
+async fn auth_whoami_renders_both_identities_without_an_organization() {
+    let user = serde_json::json!({
+        "actorType": "user",
+        "userId": WHOAMI_USER_ID,
+        "email": "ada@example.com",
+        "name": "Ada Lovelace",
+        "organizations": [
+            {"organizationId": WHOAMI_ORG_ID, "organizationName": "Analytical Engines"}
+        ]
+    });
+    let api_key = serde_json::json!({
+        "actorType": "apiKey",
+        "keyId": "key-123",
+        "name": "ci deploy",
+        "organizationId": WHOAMI_ORG_ID
+    });
+    let future = serde_json::json!({"actorType": "robot", "robotId": "r2"});
+
+    for (identity, oauth, human_expected) in [
+        (
+            user.clone(),
+            true,
+            vec![
+                "actorType: user",
+                WHOAMI_USER_ID,
+                "ada@example.com",
+                "Ada Lovelace",
+                WHOAMI_ORG_ID,
+                "Analytical Engines",
+            ],
+        ),
+        (
+            api_key.clone(),
+            false,
+            vec!["actorType: apiKey", "key-123", "ci deploy", WHOAMI_ORG_ID],
+        ),
+        (
+            future.clone(),
+            false,
+            vec!["actorType: robot", "robotId: r2"],
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let auth = if oauth {
+            header("authorization", "Bearer test-bearer-token")
+        } else {
+            header(
+                "authorization",
+                "Basic ZHJpZnQta2V5OmRyaWZ0LXNlY3JldA==", // drift-key:drift-secret
+            )
+        };
+        Mock::given(method("GET"))
+            .and(path("/v1/whoami"))
+            .and(auth)
+            .respond_with(whoami_envelope(identity.clone()))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let project = tempfile::tempdir().unwrap();
+
+        let json = invoke_cloud_as(&server, project.path(), oauth, true, &["auth", "whoami"]);
+        assert_success(&json);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+            identity
+        );
+
+        let human = invoke_cloud_as(&server, project.path(), oauth, false, &["auth", "whoami"]);
+        assert_success(&human);
+        let stdout = String::from_utf8_lossy(&human.stdout);
+        for expected in human_expected {
+            assert!(stdout.contains(expected), "missing {expected}: {stdout}");
+        }
+
+        // No organization lookup or other call: exactly the two whoami requests.
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.url.path() == "/v1/whoami" && request.url.query().is_none())
+        );
+    }
+}
+
+#[tokio::test]
+async fn auth_whoami_auth_failures_exit_4() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "status": 401,
+            "requestId": "whoami-401",
+            "error": "Invalid credentials"
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    for json in [false, true] {
+        let output = invoke_cloud_as(&server, project.path(), false, json, &["auth", "whoami"]);
+        assert_eq!(output.status.code(), Some(4), "json={json}");
+        assert!(output.stdout.is_empty(), "json={json}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Invalid credentials"), "{stderr}");
+        if json {
+            let error: Value = serde_json::from_str(&stderr).unwrap();
+            assert_eq!(error["error"]["code"], "auth_required");
+        }
+    }
+
+    // With no credentials at all, whoami fails as auth-required before any request.
+    let empty = MockServer::start().await;
+    let output = invoke_cli_without_cloud_credentials(&empty, &["auth".into(), "whoami".into()]);
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(empty.received_requests().await.unwrap().is_empty());
+}
