@@ -167,14 +167,14 @@ fn start_writes_ports_to_a_config_file_that_merges_after_the_user_overlay() {
         "got: {managed}"
     );
 
-    // The user overlay is staged, and ClickHouse merges it first, so the
-    // assigned ports win over the ones it sets.
+    // The user and UDF overlays are staged, and ClickHouse merges them first,
+    // so the assigned ports win over the ones they set.
     let mut staged: Vec<String> = std::fs::read_dir(&config_d)
         .unwrap()
         .map(|e| e.unwrap().file_name().into_string().unwrap())
         .collect();
     staged.sort();
-    assert_eq!(staged, ["chctl-config.xml", MANAGED_FILE]);
+    assert_eq!(staged, ["chctl-config.xml", "chctl-udf.xml", MANAGED_FILE]);
 
     // Server metadata records the same assigned ports.
     assert_eq!(body["http_port"].as_u64().unwrap().to_string(), http);

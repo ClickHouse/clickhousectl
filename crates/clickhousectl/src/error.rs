@@ -722,6 +722,57 @@ pub enum Error {
     )]
     InvalidConfigName(String),
 
+    /// `udf.json` is not JSON at all. The serde text is foreign output, so
+    /// structured output replaces it with a fixed summary.
+    #[error("UDF definition '{}' is not valid JSON: {source}", path.display())]
+    UdfDefinitionParse {
+        path: PathBuf,
+        #[source]
+        source: serde_json::Error,
+    },
+
+    /// `udf.json` parsed but fails the shared shape check or the local typed
+    /// schema. Self-composed guidance, rendered verbatim.
+    #[error("UDF definition '{}' is invalid: {reason}", path.display())]
+    UdfDefinitionInvalid { path: PathBuf, reason: String },
+
+    /// The UDF source directory cannot be deployed: missing, missing its
+    /// definition or entrypoint, or containing a symbolic link.
+    #[error("UDF source directory '{}' {reason}", path.display())]
+    UdfSourceInvalid { path: PathBuf, reason: String },
+
+    #[error("UDF '{name}' is not deployed to server '{server}'")]
+    UdfNotFound { name: String, server: String },
+
+    #[error("{0}")]
+    UdfInterpreterNotFound(String),
+
+    /// The local server answered a UDF query with an error. The details are
+    /// ClickHouse's response text, so structured output redacts them.
+    #[error("ClickHouse server '{server}' rejected the query: {details}")]
+    UdfQueryFailed { server: String, details: String },
+
+    /// The named server has neither metadata nor a data directory. `local udf`
+    /// never creates servers, so the remedy is to start one.
+    #[error("Server '{0}' not found; create it with `clickhousectl local server start {0}`")]
+    UdfServerNotFound(String),
+
+    /// Native UDFs are Linux amd64/arm64 binaries; this host cannot run them.
+    #[error("{0}")]
+    UdfRuntimeUnsupported(String),
+
+    /// A running server accepted the files but never listed the function.
+    /// Names the log file, never its contents.
+    #[error(
+        "UDF {name} was deployed to server {server} but ClickHouse did not load it; the reason is in {}",
+        log_path.display()
+    )]
+    UdfNotLoaded {
+        name: String,
+        server: String,
+        log_path: PathBuf,
+    },
+
     #[error("Docker is not available: {0}")]
     DockerNotAvailable(String),
 
