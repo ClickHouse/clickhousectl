@@ -9,7 +9,7 @@ use crate::cloud::output::{
     ABSENT, CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
 };
 use crate::cloud::service_query::{RepairVerification, existing_open_api_keys};
-use crate::cloud::shared::{NameSelector, NamedResource};
+use crate::cloud::shared::{NameSelector, NamedResource, PollProgress};
 use crate::cloud::shared::{
     parse_ip_access_entries, parse_serde_enum, parse_tag_filter, parse_tags, resolve_org_id,
 };
@@ -2666,19 +2666,6 @@ fn classify_stop_poll_state(state: Option<&ServiceState>) -> CloudResult<bool> {
     Ok(false)
 }
 
-#[derive(Default)]
-struct StopPollProgress {
-    previous_state: Option<String>,
-}
-
-impl StopPollProgress {
-    fn render(&mut self, state: &str, verbose: bool) -> Option<String> {
-        let changed = self.previous_state.as_deref() != Some(state);
-        self.previous_state = Some(state.to_string());
-        (verbose || changed).then(|| format!("  state: {state}"))
-    }
-}
-
 fn service_delete_conflict(error: CloudError, service_id: &str) -> CloudError {
     let api_message = error.message.clone();
     let message = format!(
@@ -2739,7 +2726,7 @@ async fn service_delete(
 
             let verbose_polling =
                 std::io::stderr().is_terminal() && !json && std::env::var_os("CI").is_none();
-            let mut progress = StopPollProgress::default();
+            let mut progress = PollProgress::default();
             loop {
                 tokio::time::sleep(STOP_POLL_INTERVAL).await;
                 let service = client.get_service(&org_id, service_id).await?;
@@ -6891,31 +6878,6 @@ mod tests {
         );
         assert!(classify_stop_poll_state(Some(&ServiceState::Failed)).is_err());
         assert!(classify_stop_poll_state(Some(&ServiceState::Unknown("deleted".into()))).is_err());
-    }
-
-    #[test]
-    fn stop_poll_progress_collapses_repeats_but_keeps_transitions() {
-        let mut progress = StopPollProgress::default();
-        assert_eq!(
-            progress.render("stopping", false).as_deref(),
-            Some("  state: stopping")
-        );
-        assert_eq!(progress.render("stopping", false), None);
-        assert_eq!(
-            progress.render("running", false).as_deref(),
-            Some("  state: running")
-        );
-        assert_eq!(
-            progress.render("stopped", false).as_deref(),
-            Some("  state: stopped")
-        );
-    }
-
-    #[test]
-    fn stop_poll_progress_keeps_repeats_in_verbose_mode() {
-        let mut progress = StopPollProgress::default();
-        assert!(progress.render("stopping", true).is_some());
-        assert!(progress.render("stopping", true).is_some());
     }
 
     #[test]

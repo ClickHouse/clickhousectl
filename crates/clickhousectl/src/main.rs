@@ -13,6 +13,7 @@ mod paths;
 mod skills;
 #[cfg(feature = "telemetry")]
 mod telemetry;
+mod udf;
 mod update;
 mod user_agent;
 mod version_manager;

@@ -382,7 +382,8 @@ clickhouse/
 ├── tables/                 # Table definitions (CREATE TABLE ...)
 ├── materialized_views/     # Materialized view definitions
 ├── queries/                # Saved queries
-└── seed/                   # Seed data / INSERT statements
+├── seed/                   # Seed data / INSERT statements
+└── udfs/                   # Executable UDF sources, one directory per function
 postgres/
 ├── tables/                 # Table definitions (CREATE TABLE ...)
 ├── views/                  # View definitions (CREATE VIEW ...)
@@ -390,6 +391,8 @@ postgres/
 ├── queries/                # Saved queries
 └── seed/                   # Seed data / INSERT statements
 ```
+
+`clickhousectl local udf init <name>` scaffolds `clickhouse/udfs/<name>/` with a `udf.json` definition (the same shape `cloud udf create --file` accepts) and an executable entrypoint: `main.py` for `--runtime python3.11` (the default) or `main` for `--runtime native`. Pass `--type executable_pool` for a pooled function and `--dir PATH` for a different parent directory. Re-running keeps existing files and reports only the ones it created.
 
 ### Running queries
 
@@ -542,6 +545,47 @@ The selection is not remembered: starting without `--config` removes chctl's pre
 
 ClickHouse merges partial configurations recursively; XML `replace` and `remove` attributes explicitly replace or delete settings. See [ClickHouse configuration files](https://clickhouse.com/docs/operations/configuration-files) for merge rules and XML/YAML syntax.
 
+#### Executable UDFs
+
+`local udf` deploys [executable user-defined functions](https://clickhouse.com/docs/sql-reference/functions/udf#executable-user-defined-functions) to a local server from the same source directory `cloud udf` uses: a `udf.json` definition in the Cloud API's field names next to the function's files. Develop and test locally, then deploy the identical directory to Cloud.
+
+```bash
+clickhousectl local udf init is_business_hours        # clickhouse/udfs/is_business_hours/{udf.json,main.py}
+clickhousectl local server start
+clickhousectl local udf deploy clickhouse/udfs/is_business_hours
+clickhousectl local udf call is_business_hours "2026-03-20 10:00:00"
+clickhousectl local udf list
+clickhousectl local udf reload
+clickhousectl local udf remove is_business_hours
+```
+
+Every `local udf` command takes `--server NAME` (default `default`). `deploy`, `list` and `remove` work whether or not the server is running; `reload` and `call` need it running. Deploying to a server that was never started creates its data directory; the name does not appear in `local server list` until the server starts, and `local server remove <name>` deletes the staged functions along with that directory.
+
+`deploy` validates `udf.json` exactly as `cloud udf create --file` does, rejects symbolic links (Cloud rejects archives that contain them), requires `main.py` at the root for runtime `python3.11`, and writes, under `.clickhouse/servers/<name>/data/`:
+
+| Path | Contents |
+|---|---|
+| `config.d/chctl-udf.xml` | Managed overlay pointing `user_defined_executable_functions_config` and `user_scripts_path` at the two directories below. Also rewritten on every `server start`; it sorts after `chctl-config.xml`, so these two settings win over a named config. |
+| `user_defined_functions/<name>_function.xml` | The rendered `<function>` block, plus a `<name>.json` copy of the definition that `list` reads. |
+| `user_scripts/<name>/` | The source directory minus `udf.json`, hidden entries and `__pycache__`. Redeploying replaces it. |
+
+Field mapping from `udf.json` to the XML (units are identical on both targets):
+
+| `udf.json` | `<function>` element |
+|---|---|
+| `functionName`, `type`, `arguments[].name/type`, `returnType`, `returnName` | `name`, `type`, `argument/name`, `argument/type`, `return_type`, `return_name` |
+| `format` | `format` (`TabSeparated` when omitted) |
+| `commandReadTimeout`, `commandWriteTimeout` (ms) | `command_read_timeout`, `command_write_timeout` |
+| `poolSize`, `maxCommandExecutionTime` (s) | `pool_size`, `max_command_execution_time` (written for `executable_pool` only) |
+| `sendChunkHeader`, `deterministic` | `send_chunk_header`, `deterministic` |
+| `runtime: python3.11` | `execute_direct` `0` and `command` = the absolute interpreter and `main.py` paths, so no shebang or execute bit is needed, as on Cloud. The interpreter is `--python PATH`, else `python3.11`, else `python3` from `PATH`, resolved at deploy time and baked into the file: redeploy after moving the project or the interpreter. |
+| `runtime: native` | `execute_direct` `1` and `command` = `<name>/main` (`--entrypoint FILE` overrides the file name); the entrypoint is made executable. |
+| `memoryLimitMib`, `sandboxType`, `sandboxVersion` | No local equivalent; accepted and reported as ignored. |
+
+A running server is asked to `SYSTEM RELOAD FUNCTIONS` and `deploy` then confirms the function appears in `system.functions` (`loaded: true` in `--json`). If it does not, the definition was rejected: the ClickHouse error is in `.clickhouse/servers/<name>/server.log`. A stopped server picks the files up on its next start. ClickHouse also rescans the function directory on its own every few seconds, so `reload` is rarely needed outside scripts.
+
+`call NAME [ARG...]` runs `SELECT NAME(args)` over the server's HTTP interface as the `default` user and prints the raw result (`--format` selects the ClickHouse output format). Integer and float arguments stay bare; everything else is passed as a quoted String literal, which ClickHouse casts to the declared argument type. For expressions or table data use `local client --query`.
+
 #### Local Postgres (Docker-backed)
 
 When you also need a local Postgres alongside ClickHouse — e.g. for testing CDC pipelines or ingesting from Postgres — use `local postgres`. Each instance is keyed on `(name, major version)` so the same name can host multiple Postgres majors with isolated data: data lives at `.clickhouse/servers/<name>-pg<major>/data/`, metadata at `.clickhouse/servers/<name>-pg<major>.json`, and the container is `clickhousectl-pg-<name>-<major>`. ClickHouse paths (`<name>/data/`, `<name>.json`) stay separate, so a name can be used by both engines. Requires Docker to be installed and running.
@@ -618,7 +662,11 @@ All project-local server data lives inside `.clickhouse/` in your project direct
 └── servers/
     ├── default.json         # ClickHouse identity and runtime state
     ├── default/
+    │   ├── server.log      # stdout/stderr of the "default" server
     │   └── data/           # ClickHouse data files for "default" server
+    │       ├── config.d/   # chctl-config.<ext> (--config overlay) and chctl-udf.xml (managed)
+    │       ├── user_defined_functions/   # <name>_function.xml rendered by `local udf deploy`
+    │       └── user_scripts/             # <name>/ sources copied by `local udf deploy`
     ├── dev.json             # ClickHouse identity and runtime state
     └── dev/
         └── data/           # ClickHouse data files for "dev" server
@@ -2929,6 +2977,8 @@ Successful structured output follows the command's response contract. Cloud reso
 | `cloud clickpipe settings get --json` | Object with schema-defined snake_case settings such as `object_storage_max_file_count` and `kafka_read_committed`. |
 | `cloud postgres metrics --json` | Object with `metrics`; `metrics[].series[].dataPoints[].timestamp` values are numbers in epoch seconds. |
 | `local server list --json` | CLI-defined snake_case object with `servers`, `total_servers`, and `project_scope` fields. |
+| `local udf deploy --json` | CLI-defined snake_case object: `name`, `server`, `type`, `runtime`, `server_running`, `reloaded`, `loaded` (`null` when the server is not running), `interpreter`, `ignored_fields`, `function_config`, `scripts_dir`, `log_path`. |
+| `local udf list --json` | Object with `server`, `server_running` and a `udfs` array of `name`, `type`, `runtime`, `loaded` (`null` when the server is not running). |
 
 This is API-shaped output, not a byte-for-byte copy of an HTTP response: the CLI deserializes responses into typed models before serializing them, and optional fields may therefore be omitted. Scripts should target the documented shape of the specific command they invoke; a universal `jq` assumption about casing, wrappers, or every list being an array is not portable. The CLI does not opportunistically rename keys, add or remove wrappers, or coerce number and timestamp types for consistency, since each would be a compatibility change.
 
@@ -3005,6 +3055,11 @@ The schema and meanings of existing codes are stable. New optional fields or cod
 | Code | Meaning |
 | ---- | ------- |
 | `server_not_found` | The selected local server does not exist |
+| `udf_definition_invalid` | `udf.json` is not valid JSON (message redacted) or fails validation (message carries the reason) |
+| `udf_source_invalid` | The UDF directory is missing, has no `udf.json` or entrypoint, or contains a symbolic link |
+| `udf_not_found` | No UDF of that name is deployed to the selected server |
+| `udf_interpreter_not_found` | No `python3.11`/`python3` on `PATH` and no usable `--python` |
+| `udf_query_failed` | The local server rejected a UDF statement; the server's text is redacted, human output shows it |
 | `managed_client_server_not_found` | Managed client lookup did not find the selected server in the current project |
 | `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
 | `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |
@@ -3210,9 +3265,12 @@ Create a JSON definition and a [source ZIP archive](https://clickhouse.com/docs/
 
 ```bash
 clickhousectl cloud udf create --file udf.json --artifact source.zip
+# Or let the CLI archive a directory holding udf.json and the sources, and follow the build
+clickhousectl cloud udf create --source-dir clickhouse/udfs/my_udf --wait
 clickhousectl cloud udf get my_udf
-# Wait for status ready, then attach the latest ready version (or --version 2)
-clickhousectl cloud udf attach my_udf <service-id>
+# Wait for status ready, then attach the latest ready version (or --version 2);
+# --wake wakes an idle service first and --wait returns once it is deployed
+clickhousectl cloud udf attach my_udf <service-id> --wake --wait
 clickhousectl cloud udf attachment list my_udf
 clickhousectl cloud udf attachment get my_udf <service-id>
 clickhousectl cloud udf list --limit 20
@@ -3222,6 +3280,7 @@ clickhousectl cloud udf version list my_udf
 
 # version.json contains the complete definition without functionName or uploadId
 clickhousectl cloud udf version create my_udf --file version.json --artifact source-v2.zip
+clickhousectl cloud udf version create my_udf --source-dir clickhouse/udfs/my_udf --wait
 clickhousectl cloud udf attach my_udf <service-id> --version 2
 clickhousectl cloud udf detach my_udf <service-id>
 # Detach from every service before deleting an individual version
@@ -3233,7 +3292,11 @@ Required definition fields are `type`, `runtime`, `arguments`, and `returnType`;
 
 Version creation uses defaults for omitted options, without inheriting the previous version's configuration. Supply a complete request definition; GET output includes response-only fields and cannot be used directly as a request. Unknown fields, unsupported enum values, missing required fields and invalid limits fail before upload. Nullable options may be omitted or set to null; both use the API's default behavior.
 
-Creation and version creation each request a new upload URL, stream the ZIP archive, and submit its upload ID once. Failed uploads never submit a create request. Uploads time out after five minutes; rerun the command to obtain a fresh session after any failure. The target service must be running; wake an idle service before attaching. Attachment replaces the service's existing version; omitted `--version` selects the latest ready version. A dependency failure (HTTP 424) exits with an error; inspect the UDF and service before retrying. The latest version and versions still building cannot be deleted individually. A whole UDF cannot be deleted while any version is still building; wait for all versions to finish building first. Deleting a UDF deletes all its versions and detaches it from every service; service removal finishes asynchronously.
+`--source-dir DIR` replaces `--artifact`: the CLI archives the directory itself, deterministically, excluding `udf.json`, hidden entries and `__pycache__`, rejecting symbolic links (Cloud rejects archives that contain them) and requiring `main.py` at the root for runtime `python3.11`. `DIR/udf.json` is the definition unless `--file` is also given; for `version create` its `functionName` must match the command's name and is dropped from the request. This is the same directory `local udf deploy` uses, so a function tested locally deploys to Cloud unchanged.
+
+`--wait` polls every five seconds until the build is `ready` (exit 0, printing the final UDF once) or `error` (exit 1 with the build error), up to `--timeout` seconds (default 1800); `attach --wait` waits for the attachment to be `deployed` (default 600 seconds). In human mode progress goes to stderr on each state change. A timeout exits 1 with the `timeout` error code; the build or deployment may still complete, so check `udf get` or `attachment get` before retrying.
+
+Creation and version creation each request a new upload URL, stream the ZIP archive, and submit its upload ID once. Failed uploads never submit a create request. Uploads time out after five minutes; rerun the command to obtain a fresh session after any failure. The target service must be running: `attach --wake` wakes an idle service (HTTP 424 with `SERVICE_IDLE`), waits up to ten minutes for it to reach `running`, and retries once; without `--wake` the error names the code, the service state and the `cloud service wake` command. A stopped service must be started first. Attachment replaces the service's existing version; omitted `--version` selects the latest ready version. The latest version and versions still building cannot be deleted individually. A whole UDF cannot be deleted while any version is still building; wait for all versions to finish building first. Deleting a UDF deletes all its versions and detaches it from every service; service removal finishes asynchronously.
 
 All three list commands expose `--cursor` and `--limit` (1–100). JSON output retains the API's pagination object unchanged; human output summarizes the total record count, page limit, and available cursors. Detail and list output tolerate missing fields and new response status values.
 
