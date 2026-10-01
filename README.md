@@ -721,6 +721,10 @@ clickhousectl cloud --url https://api.control-plane.example.com service list
 
 Manage ClickHouse, Postgres, and other ClickHouse Cloud resources via the API.
 
+Every executable Cloud command documents authorization in its `--help`, without credentials or a network request. For example, `clickhousectl cloud service get --help` shows the API-key permission `control-plane:service:view`. Commands that make several API calls combine their permission requirements; additional permissions for name lookups, optional flags, or key provisioning are labeled with their conditions. All applicable permissions are required.
+
+These are the upstream-declared Cloud API-key requirements bundled with this CLI version. An empty upstream permission list means a valid API key with no additional named permissions, not anonymous access. This help does not inspect your key or change the OAuth read-only restriction; database/SQL authorization and commands without a Cloud API call are described separately.
+
 Select services, Postgres services, keys, roles, BYOC infrastructure, ClickPipes, Query API endpoints, and ClickStack resources by positional ID or exact `--name`. Name lookups require list access within the selected organization or required parent service; child `--name` never selects the parent.
 
 Reading a service, Postgres service or organization — or deleting a service or Postgres service — by an identifier that resolves to nothing (HTTP 400 or 404, including deleted IDs) reports `No such <resource>: <id> (organization <org-id>). The API rejected the identifier: <server text>`, and the stable code `resource_not_found` under `--json`. `org get` omits the `(organization ...)` clause. Every other resource relays the API's own error, so do not branch on `resource_not_found` for a ClickPipe, key, member, backup or endpoint. The organization clause names the scope checked: the resource may belong to another organization; verify `--org-id` and use the suggested list command. `service query-endpoint get` checks the parent service after a 404 so a missing endpoint on an existing service is not reported as a missing service. A malformed (non-UUID) identifier keeps the API's own message; use the corresponding `list` command to find IDs (or select a service explicitly with `--name`).
@@ -1213,6 +1217,14 @@ clickhousectl cloud postgres list --filter state=running
 clickhousectl cloud postgres list --filter region=us-east-1 --filter isPrimary=true
 clickhousectl cloud postgres get <pg-id>
 
+# Read-only SQL through the Cloud query endpoint (OAuth login required)
+clickhousectl cloud postgres query <pg-id> --query "SELECT version()"
+clickhousectl cloud postgres query --name my-postgres -q "SELECT current_database()" \
+  --database reporting
+clickhousectl cloud postgres query <pg-id> --queries-file report.sql
+printf 'SELECT 1' | clickhousectl cloud postgres query <pg-id>
+clickhousectl cloud postgres query <pg-id> --queries-file - --json < report.sql
+
 # Time-bucketed metrics (omit --bucket-size-seconds to let the API choose)
 clickhousectl cloud postgres metrics <pg-id> \
   --from-date 2026-04-16T12:00:00Z \
@@ -1361,6 +1373,12 @@ Human detail output preserves explicit empty values: configuration sections show
 `postgres restart` likewise returns after the API accepts the request. Service state and readiness do not confirm a restart; a successful readiness check establishes only that the database accepts connections. Record `SELECT pg_postmaster_start_time()` immediately before the request and run it again after connections recover; a later timestamp confirms the server restarted after that baseline. PostgreSQL documents [`pg_postmaster_start_time()`](https://www.postgresql.org/docs/current/functions-info.html) as the time the server started.
 
 Use `clickhousectl cloud postgres create --help` for the complete option list. Save any initial password and connection string in the create response because later `postgres get` responses do not return credentials. If both are omitted, run `clickhousectl cloud postgres reset-password <postgres-id> --generate`.
+
+`postgres query` runs read-only SQL using OAuth from `cloud auth login`, without a database password or a local `psql` installation. API key authentication is unsupported on this route: remove higher-priority key flags, saved project credentials and API-key environment variables before using OAuth. The server enforces read-only access; use `psql` with database credentials for writes and interactive sessions.
+
+Supply one SQL source: `--query` (`-q`), `--queries-file PATH`, or stdin. `--queries-file -` also reads stdin; with no SQL flag, piped stdin is read by default. Inline SQL never reads stdin. SQL must be nonempty UTF-8 text. `--database` selects the database; omission uses the server default, `postgres`. SQL scripts run on the server, and only the final statement’s result is returned. Queries are sent once without automatic retries or endpoint provisioning.
+
+Human query output streams tab-separated rows with a column-name header; nulls display as `NULL`, and strings containing control characters, quotes or backslashes are JSON-quoted. With `--json`, including automatic coding-agent mode, the server's `JSONCompactEachRowWithNamesAndTypes` response is streamed unchanged: one JSON array of column names, one array of types, then one array per row. This is a sequence of JSON values, not one JSON document; duplicate column names and number representations are preserved. A successful empty response emits no stdout. A response or connection failure after streaming begins can leave partial output, so check the exit status before using results.
 
 `postgres get` supplies the service host and username. The documented connection examples use port `5432` and database `postgres`. Export the service-specific CA with `certs get --output` and use `sslmode=verify-full`, as recommended for production in the [Managed Postgres connection guide](https://clickhouse.com/docs/products/managed-postgres/connection). The example above omits the password so `psql` can prompt for it when needed. A passwordless URI is also valid: `postgresql://<username>@<host>:5432/postgres?sslmode=verify-full&sslrootcert=ca.pem`. If an application requires a password in that URI, percent-encode the username and password as URI components first; shell quoting does not replace percent-encoding.
 
@@ -2918,7 +2936,7 @@ clickhousectl cloud --json service list
 clickhousectl cloud --json service get <service-id>
 ```
 
-`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `local client` and `local postgres client` keep native output in interactive, query and query-file modes, regardless of explicit or automatic JSON mode; the legacy `cloud org prometheus` command and `cloud service prometheus` emit raw Prometheus exposition text on success even with `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, and Postgres runtime configuration is JSON already.
+`clickhousectl` auto-detects coding-agent contexts (Claude Code, Cursor, Codex, Gemini CLI, Goose, Devin, others, and any tool that sets the standard `AGENT` / `AI_AGENT` env vars) and emits JSON to stdout automatically without setting `--json`. Protocol-oriented commands retain their natural output: `local client` and `local postgres client` keep native output in interactive, query and query-file modes, regardless of explicit or automatic JSON mode; the legacy `cloud org prometheus` command and `cloud service prometheus` emit raw Prometheus exposition text on success even with `--json`, `cloud service query` uses a ClickHouse format such as `JSONEachRow`, `cloud postgres query` streams JSON arrays with column names and types followed by rows, and Postgres runtime configuration is JSON already.
 
 Successful structured output follows the command's response contract. Cloud resource responses are serialized from typed API models, so field names keep the API's spelling and casing (usually camelCase). Some API schemas intentionally use snake_case, including ClickPipe ingestion settings. A list command may return a bare array or a command-specific object wrapper; do not assume one top-level shape across commands. Response fields that are absent or `null` are generally omitted because the typed response fields are optional. Numbers and timestamps keep the JSON types defined by their models: for example, `sizeInBytes` is a JSON number (the current model is `f64`, so an integral value can appear as `7139565.0`), while Postgres metric data-point `timestamp` values are integer epoch seconds. A timestamp modelled as a date-time serializes as a timestamp string.
 
@@ -2927,6 +2945,7 @@ Successful structured output follows the command's response contract. Cloud reso
 | `cloud service list --json` | Bare array; API names such as `createdAt` and `idleScaling` remain camelCase. |
 | `cloud service settings list --json` | Object with a `settings` array; each item has `name` and `value`, and setting values retain their JSON number or string type. |
 | `cloud clickpipe settings get --json` | Object with schema-defined snake_case settings such as `object_storage_max_file_count` and `kafka_read_committed`. |
+| `cloud postgres query --json` | JSON array lines: column names, column types, then rows; a successful response can be empty. |
 | `cloud postgres metrics --json` | Object with `metrics`; `metrics[].series[].dataPoints[].timestamp` values are numbers in epoch seconds. |
 | `local server list --json` | CLI-defined snake_case object with `servers`, `total_servers`, and `project_scope` fields. |
 

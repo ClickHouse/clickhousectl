@@ -17,6 +17,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhousectl/src/stdout.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/clickstack.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/config.rs": NO_SUITES,
+    "crates/clickhousectl/src/cloud/permissions.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/query_api_endpoints.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/udfs.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/client.rs": ALL_SUITES,
@@ -36,6 +37,7 @@ SOURCE_PATH_SUITES = {
         {"postgres", "clickpipes"}
     ),
     "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs": frozenset({"service"}),
+    "crates/clickhouse-cloud-api/src/client/saved_queries.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/services.rs": frozenset(
         {"service", "clickpipes"}
     ),
@@ -55,6 +57,8 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/error.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/lib.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/meta.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/meta/operations.rs": NO_SUITES,
+    "crates/clickhouse-openapi-analyzer/src/permissions.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/models/activity.rs": frozenset(
         {"organization"}
@@ -89,6 +93,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/models/quotas.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/rbac.rs": frozenset({"organization"}),
+    "crates/clickhouse-cloud-api/src/models/saved_queries.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/models/scim.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models/services.rs": frozenset(
         {"service", "clickpipes"}

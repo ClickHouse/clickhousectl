@@ -19,6 +19,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             "crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json": classifier.NO_SUITES,
             "crates/clickhouse-cloud-api/README.md": classifier.NO_SUITES,
             "crates/clickhousectl/src/cloud/client.rs": classifier.NO_SUITES,
+            "crates/clickhousectl/src/cloud/permissions.rs": classifier.NO_SUITES,
             "Cargo.lock": classifier.ALL_SUITES,
             "crates/clickhousectl/Cargo.toml": classifier.ALL_SUITES,
             ".cargo/config.toml": classifier.ALL_SUITES,
@@ -63,8 +64,10 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             frozenset({"service"}): {
                 "crates/clickhouse-cloud-api/src/client/backups.rs",
                 "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
+                "crates/clickhouse-cloud-api/src/client/saved_queries.rs",
                 "crates/clickhouse-cloud-api/src/models/backups.rs",
                 "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
+                "crates/clickhouse-cloud-api/src/models/saved_queries.rs",
             },
             frozenset({"service", "clickpipes"}): {
                 "crates/clickhouse-cloud-api/src/client/services.rs",
@@ -101,6 +104,7 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
                 "crates/clickhouse-cloud-api/src/client/udfs.rs",
                 "crates/clickhouse-cloud-api/src/convert/clickstack.rs",
                 "crates/clickhouse-cloud-api/src/meta.rs",
+                "crates/clickhouse-cloud-api/src/meta/operations.rs",
                 "crates/clickhouse-cloud-api/src/models/clickstack.rs",
                 "crates/clickhouse-cloud-api/src/models/clickstack_enums.rs",
                 "crates/clickhouse-cloud-api/src/models/quotas.rs",

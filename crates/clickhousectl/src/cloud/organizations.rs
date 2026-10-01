@@ -1,3 +1,62 @@
+use super::permissions::{Conditional, Declaration as Permission};
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api("org list", &[&op::ORGANIZATION_GET_LIST]).unscoped(),
+    Permission::api("org get", &[&op::ORGANIZATION_GET]),
+    Permission::api("org balance", &[&op::CREDIT_BALANCES_GET]),
+    Permission::api("org update", &[&op::ORGANIZATION_UPDATE]),
+    Permission::api("org prometheus", &[&op::ORGANIZATION_PROMETHEUS_GET]),
+    Permission::api(
+        "org prometheus discovery",
+        &[&op::ORGANIZATION_PROMETHEUS_DISCOVERY_GET],
+    ),
+    Permission::api("org usage", &[&op::USAGE_COST_GET]),
+    Permission::api("org quota list", &[&op::ORGANIZATION_QUOTAS_GET_LIST]),
+    Permission::api("org quota get", &[&op::ORGANIZATION_QUOTA_GET]),
+    Permission::api(
+        "org byoc create",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_CREATE],
+    ),
+    Permission::api(
+        "org byoc update",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_UPDATE],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc delete",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api("org role list", &[&op::ORGANIZATION_ROLES_GET_LIST]),
+    Permission::api("org role get", &[&op::ORGANIZATION_ROLE_GET]).when(&[Conditional::flag(
+        "name",
+        &[&op::ORGANIZATION_ROLES_GET_LIST],
+    )]),
+    Permission::api("org role create", &[&op::ORGANIZATION_ROLE_POST]),
+    Permission::api("org role update", &[&op::ORGANIZATION_ROLE_PATCH]).when(&[Conditional::flag(
+        "name",
+        &[&op::ORGANIZATION_ROLES_GET_LIST],
+    )]),
+    Permission::api("org role delete", &[&op::ORGANIZATION_ROLE_DELETE]).when(&[
+        Conditional::flag("name", &[&op::ORGANIZATION_ROLES_GET_LIST]),
+    ]),
+    Permission::api("member list", &[&op::MEMBER_GET_LIST]),
+    Permission::api("member get", &[&op::MEMBER_GET])
+        .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
+    Permission::api("member update", &[&op::MEMBER_UPDATE])
+        .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
+    Permission::api("member remove", &[&op::MEMBER_DELETE])
+        .when(&[Conditional::flag("email", &[&op::MEMBER_GET_LIST])]),
+    Permission::api("invitation list", &[&op::INVITATION_GET_LIST]),
+    Permission::api("invitation create", &[&op::INVITATION_CREATE]),
+    Permission::api("invitation get", &[&op::INVITATION_GET])
+        .when(&[Conditional::flag("email", &[&op::INVITATION_GET_LIST])]),
+    Permission::api("invitation delete", &[&op::INVITATION_DELETE])
+        .when(&[Conditional::flag("email", &[&op::INVITATION_GET_LIST])]),
+];
+
 use crate::cloud::client::{CloudClient, CloudError, ResourceLookup, Result as CloudResult};
 use crate::cloud::config::read_typed_config;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
@@ -722,10 +781,19 @@ fn build_byoc_create_request(
 
     Ok(ByocInfrastructurePostRequest {
         account_id: account_id.to_string(),
-        availability_zone_suffixes,
-        display_name: display_name.to_string(),
+        availability_zone_suffixes: Some(availability_zone_suffixes),
+        display_name: Some(display_name.to_string()),
+        external_id: None,
+        gcp_pod_cidr_range_names: None,
+        gcp_shared_vpc_host_project_id: None,
+        private_subnet_ids: None,
+        public_subnet_ids: None,
         region_id: parse_byoc_region(region)?,
-        vpc_cidr_range: vpc_cidr_range.to_string(),
+        service_principal_client_id: None,
+        tags: None,
+        tenant_id: None,
+        vpc_cidr_range: Some(vpc_cidr_range.to_string()),
+        vpc_id: None,
     })
 }
 
@@ -2655,10 +2723,20 @@ mod tests {
         assert_eq!(minimal.account_id, "123456789012");
         assert_eq!(
             minimal.availability_zone_suffixes,
-            vec![ByocAvailabilityZoneSuffix::A]
+            Some(vec![ByocAvailabilityZoneSuffix::A])
         );
-        assert_eq!(minimal.vpc_cidr_range, "10.0.0.0/16");
-        assert_eq!(minimal.display_name, "production");
+        assert_eq!(minimal.vpc_cidr_range.as_deref(), Some("10.0.0.0/16"));
+        assert_eq!(minimal.display_name.as_deref(), Some("production"));
+        assert_eq!(
+            serde_json::to_value(&minimal).unwrap(),
+            serde_json::json!({
+                "accountId": "123456789012",
+                "availabilityZoneSuffixes": ["a"],
+                "displayName": "production",
+                "regionId": "us-east-1",
+                "vpcCidrRange": "10.0.0.0/16"
+            })
+        );
 
         let maximal = build_byoc_create_request(
             "eastus",
@@ -2679,7 +2757,12 @@ mod tests {
             maximal.region_id,
             ByocInfrastructurePostRequestRegionid::Eastus
         );
-        assert_eq!(maximal.availability_zone_suffixes.len(), 6);
+        assert_eq!(
+            maximal.availability_zone_suffixes.as_ref().map(Vec::len),
+            Some(6)
+        );
+        assert_eq!(maximal.vpc_cidr_range.as_deref(), Some("10.20.0.0/16"));
+        assert_eq!(maximal.display_name.as_deref(), Some("all-zones"));
     }
 
     #[test]

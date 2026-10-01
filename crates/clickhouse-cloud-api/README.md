@@ -54,13 +54,57 @@ Kinesis source format enums now include `Protobuf`. Set `ClickPipePostKinesisSou
 
 `Organization.capabilities.snapshots` reports snapshot eligibility as an optional boolean. Kinesis create requests accept `ClickPipeKinesisSchemaRegistry` for AWS Glue; supply `type`, `glue_region`, and `glue_registry_name`, and optionally `glue_role_arn` to assume a different role from the Kinesis source. Kinesis responses use `ClickPipeKinesisSchemaRegistryResponse`, whose fields tolerate absence and null; convert it with `TryFrom` before writing it back. Kafka create requests accept `tombstone_mode: Some(Delete)` to delete matching destination rows for tombstone records. This requires exactly-once delivery and is set only at creation. Struct-literal callers of `Organization`, `ClickPipeKinesisSource`, `ClickPipeKafkaSource`, `ClickPipePostKinesisSource`, and `ClickPipePostKafkaSource` need to supply the new optional fields as `None` or use `..Default::default()`.
 
+`ByocConfig.account_id` reports the cloud account the BYOC infrastructure is bound to (AWS account ID, GCP project ID, or Azure subscription ID). `ByocConfig.account_name` is deprecated in the spec and is now available only with the `deprecated-fields` feature; read `account_id` instead. `ByocConfigState` adds `Infra_terminating`, `Infra_degraded`, and `Infra_upgrading`; `ActivityType` adds the approved-domain, public-preview, and SAML query-ownership-migration activity types; and both Kafka tombstone-mode enums add `Soft_delete`. Exhaustive matches without a wildcard arm need the new variants, and struct-literal callers of `ByocConfig` need `account_id` or `..Default::default()`.
+
+The beta BYOC infrastructure methods `organization_byoc_infrastructure_get` (returns `ByocInfrastructureDetails`, including BYO-VPC and load-balancer settings), `organization_byoc_infrastructure_progress_get` (returns `ByocInfrastructureProgress`, whose `ByocInfrastructureProgressStage` entries nest through `sub_stages`), and `organization_byoc_infrastructure_validate` (takes `ByocInfrastructureValidatePostRequest` and returns `ByocInfrastructureValidation` permission checks without creating infrastructure) are available. `ByocInfrastructurePostRequest` now requires only `account_id` and `region_id`: `availability_zone_suffixes`, `display_name`, and `vpc_cidr_range` are `Option`, so wrap existing values in `Some(...)`. It also gains optional BYO-VPC (`vpc_id`, `private_subnet_ids`, `public_subnet_ids`, `gcp_pod_cidr_range_names`, `gcp_shared_vpc_host_project_id`), AWS `external_id`, Azure `tenant_id` and `service_principal_client_id`, and `tags` (`ByocInfrastructureTags`, a string map of at most 50 entries) fields; struct-literal callers supply them as `None` or use `..Default::default()`.
+
 The beta Query API endpoint management methods are `query_api_endpoint_create`, `query_api_endpoint_get`, `query_api_endpoint_list`, `query_api_endpoint_update`, and `query_api_endpoint_delete`. Create and update take `PublicQueryApiEndpointRequest`; list accepts an optional cursor and limit (1–100) and returns `items` with `pagination.next_cursor`. User-owned endpoints can be listed and read, but cannot be updated or deleted through this API.
+
+The beta saved query methods are `saved_query_create`, `saved_query_get`, `saved_query_list`, `saved_query_update`, and `saved_query_delete`, scoped to a service. Create and update take `PublicSavedQueryRequest` (update replaces the whole query); get returns `PublicSavedQuery` and list returns `PublicSavedQueryListItem` entries. List accepts an optional cursor and limit (1–100) and, unlike the Query API endpoint list, reports pagination on the envelope: `ApiResponse::next_cursor` (`None` on the last page), `limit`, and `total_count`.
 
 ### ClickHouse settings models
 
 `ServiceClickhouseSettingsPatchRequest` uses a map of setting names to JSON values, and `ServiceClickhouseSettingsPatchResponse.settings` returns the applied map. The published OpenAPI now describes both fields as nonempty objects with string or integer values. Use `ServiceClickhouseSettingsPatchRequest<ServiceClickhouseSettingsMap>` and `ServiceClickhouseSettingValue` for typed requests; the default JSON-value map remains source-compatible with existing callers. Explicit `ServiceClickhouseSettingsPatchRequest<String>` callers remain supported: encoded objects are validated and serialized as objects before sending.
 
 `ServiceClickhouseSetting.value` is `Option<serde_json::Value>`: the published contract permits strings and integers. The response aliases `ServiceClickhouseSettingValueResponse` and `ServiceClickhouseSettingsMapResponse` retain arbitrary JSON to tolerate future response types. Values retain their JSON types; missing and null values remain absent.
+
+## Postgres Query API
+
+`Client::run_postgres_query_bearer(org_id, service_id, &RunPostgresQueryRequest)`
+runs read-only SQL over HTTPS with the client's OAuth Bearer token. The request
+requires `sql` and accepts an optional `database`; omission uses `postgres`.
+Basic/API-key clients receive `Error::AuthMismatch` before any network request. The method neither provisions query credentials nor wakes the
+service or retries queries.
+
+This console Query API route is outside the published OpenAPI. It accepts
+`clickhousectl` audience OAuth tokens with read-only database access; Cloud API
+keys are unsupported.
+
+The returned `reqwest::Response` supports streaming and automatically decompresses
+gzip using the default HTTP client. Its fixed format is
+`JSONCompactEachRowWithNamesAndTypes`: a JSON array of column names, then an array
+of type names, followed by one array per row, all newline-delimited. An empty
+result can have an empty body. SQL errors retain their status, server `code`
+(currently `POSTGRES_ERROR`), and `details` in `Error::Sql`; other HTTP errors retain
+their status and body.
+Query host selection follows `with_query_host`, `CLICKHOUSE_CLOUD_QUERY_HOST`,
+and the management API environment, in that order.
+
+The ignored smoke test checks a read and an empty result against an existing
+service without creating resources. Supply
+`CLICKHOUSE_CLOUD_TEST_BEARER_TOKEN` (a `clickhousectl` audience OAuth token),
+`CLICKHOUSE_CLOUD_TEST_ORG_ID`, and `CLICKHOUSE_CLOUD_TEST_POSTGRES_SERVICE_ID`.
+Optionally set `CLICKHOUSE_CLOUD_TEST_POSTGRES_DATABASE`,
+`CLICKHOUSE_CLOUD_API_BASE_URL`, or `CLICKHOUSE_CLOUD_QUERY_HOST` for another database
+or environment. Run:
+
+```bash
+cargo test -p clickhouse-cloud-api --test run_query_test live_postgres_query_bearer_smoke -- --ignored --nocapture
+```
+
+For additional live coverage, verify that the route rejects write statements,
+invalid tokens, and tokens without access to the requested organization or service,
+and repeat the smoke test with an explicit non-default database.
 
 ## Development
 
@@ -165,7 +209,7 @@ private per-domain files. That same analyzer powers the scheduled live-spec
 issue, so operation, model, field, optionality, beta, deprecation, enum,
 snapshot, and stale-exemption findings share one implementation. The single
 ignored test runs the same report against the live spec. The analyzer also checks
-inline union payload fields and request requiredness. Report schema version 9 also
+inline union payload fields and request requiredness. Report schema version 10 also
 compares effective operation parameters against the snapshot (additions, removals,
 requiredness, and schema constraints), resolving local references and ignoring
 prose/example changes. Missing Rust arguments and incompatible optionality or
@@ -214,4 +258,32 @@ Rust callers receive `Error::UdfAttachmentUnavailable` for a structured attachme
 
 ### OpenAPI response coverage
 
-The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 8.
+The OpenAPI analyzer checks inline union payload fields and request requiredness, plus inline JSON response objects named `{PascalizedOperationId}Response{Status}` and reachable through client return types or error payloads. It reports obsolete helper exclusions and requiredness overrides as stale exemptions. Acknowledged unsupported enum locations are checked against the snapshot: changed value sets are actionable, while reordering is ignored. Deprecated API-key `roles` fields remain strings behind `deprecated-fields` for source compatibility. Its report format is version 10.
+
+
+### Operation permissions and metadata
+
+`meta::operations` exposes offline endpoint descriptors alongside the existing typed `Client` methods:
+
+```rust
+use clickhouse_cloud_api::meta::operations;
+
+let endpoint = &operations::INSTANCE_GET;
+assert_eq!(endpoint.operation_id, "instanceGet");
+assert_eq!(endpoint.rust_method, "instance_get");
+assert_eq!(endpoint.required_permissions, &["control-plane:service:view"]);
+assert_eq!(operations::by_operation_id("instanceGet"), Some(endpoint));
+```
+
+Each descriptor includes the exact operation ID, Rust method name, HTTP method, path template, and required Cloud API-key permission IDs. **All listed permissions are required.** An empty slice means the spec requires a valid key without additional named permissions. Unknown operation IDs return `None`; they never appear as an empty permission list. `operations::ALL` iterates every descriptor. These requirements describe API-key authorization; they do not replace OAuth restrictions or SQL privileges. A caller making several API requests can union the permission slices of those operations.
+
+The committed catalog is generated by the shared analyzer, without runtime parsing or network access:
+
+```sh
+cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- \
+  --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json \
+  --generate-operations crates/clickhouse-cloud-api/src/meta/operations.rs
+cargo fmt --all
+```
+
+The analyzer's `clickhouse_cloud_config()` enables `check_operation_permissions`; generic `AnalyzerConfig::default()` leaves this Cloud-specific convention disabled. Enabled analysis resolves operation security overrides and root inheritance, normalizes permission sets, and reports unknown, malformed, anonymous, alternative, or multiple-scheme requirements as actionable findings. Generation refuses these unsupported forms. Permission changes are compared both against the snapshot and against the Rust descriptors, so refreshing the snapshot alone cannot hide stale permissions. Descriptor identity, matching client methods, coverage, and the complete sorted catalog are checked too.

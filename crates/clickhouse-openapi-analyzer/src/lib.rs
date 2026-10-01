@@ -20,6 +20,9 @@
 
 mod compare;
 mod openapi;
+mod permissions;
+
+pub use permissions::generate_operation_metadata;
 mod rust_inventory;
 
 pub mod config;

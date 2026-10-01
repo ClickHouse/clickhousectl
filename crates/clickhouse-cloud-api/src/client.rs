@@ -12,6 +12,7 @@ mod clickstack;
 mod organizations;
 mod postgres;
 mod query_api_endpoints;
+mod saved_queries;
 mod services;
 mod udfs;
 
@@ -66,7 +67,7 @@ fn derive_query_host(base_url: &str) -> Option<String> {
     Some(format!("{}://queries.{}{}", parsed.scheme(), rest, port))
 }
 
-/// The ClickHouse error code and details a Query API failure body carries, or
+/// The SQL error code and details a Query API failure body carries, or
 /// `None` when the body is not a SQL-level error report.
 fn query_api_sql_error(body: &str) -> Option<(String, String)> {
     let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
@@ -233,7 +234,7 @@ impl Client {
     }
 
     /// Override the Query API host used by [`Client::run_query`] and
-    /// [`Client::run_query_bearer`].
+    /// [`Client::run_query_bearer`], and [`Client::run_postgres_query_bearer`].
     ///
     /// When not set, the host is taken from the `CLICKHOUSE_CLOUD_QUERY_HOST`
     /// env var if present, otherwise derived from the client's base URL
