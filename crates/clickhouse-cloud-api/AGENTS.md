@@ -137,6 +137,10 @@ intended Rust location. The analyzer executable exits successfully after produci
      matching `#[cfg(feature = "deprecated-fields")]` marker in their model domain file. The generators work from
      the spec, which knows nothing about split variants, so a deprecated field on a split schema needs the
      `{Name}Response` entry and its marker added by hand.
+   - Operation permissions: regenerate the literal catalog with
+     `cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json --generate-operations crates/clickhouse-cloud-api/src/meta/operations.rs`.
+     The generator shares security resolution with the analyzer; unsupported security must be modeled deliberately,
+     never flattened into an empty or conjunctive permission list. Run `cargo fmt --all` after generation.
    - Stale exemption: remove or narrow the configuration entry. Never change comparison logic to preserve one.
    - Unsupported enum constraint: prefer changing the Rust scalar to a concrete value enum. Acknowledgement is
      the fallback policy below.
