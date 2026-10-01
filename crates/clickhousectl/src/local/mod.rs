@@ -6,6 +6,7 @@ pub mod output;
 pub mod postgres;
 pub mod server;
 pub mod symlink;
+pub mod udf;
 
 use cli::{ClientVersionArg, InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
 
@@ -76,6 +77,7 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         ),
         LocalCommands::Server { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
+        LocalCommands::Udf { command } => udf::run(command, json).await,
     }
 }
 
@@ -389,11 +391,11 @@ fn run_client(
                 None,
             )
         };
-        let metadata_lock = server::lock_metadata().map_err(&project_state_error)?;
+        let metadata_lock = server::lock_metadata().map_err(project_state_error)?;
         server::recover_current_project_servers_locked(&metadata_lock)
-            .map_err(&project_state_error)?;
+            .map_err(project_state_error)?;
         let entry = server::server_entry_locked(server_name, &metadata_lock)
-            .map_err(&project_state_error)?
+            .map_err(project_state_error)?
             .ok_or_else(|| managed_error(ManagedClientErrorKind::ServerNotFound, None))?;
         if !entry.running {
             return Err(managed_error(
@@ -665,6 +667,10 @@ async fn start_server(
     // flags below are command-line overrides that still win over the file, so
     // the managed lifecycle is preserved regardless of the file's contents.
     config::apply_config_overlay(&data_dir, resolved_config.as_deref())?;
+    // Point the embedded config at this server's executable UDF directories.
+    // Sorted after `chctl-config.*`, so the managed paths win if a named
+    // config also sets them; deploy/remove rewrite the same file.
+    udf::write_overlay(&data_dir)?;
 
     cmd.current_dir(&data_dir);
     cmd.args(init::server_flags());
