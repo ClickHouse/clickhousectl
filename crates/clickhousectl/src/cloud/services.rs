@@ -116,8 +116,8 @@ pub(super) const PERMISSIONS: &[Permission] = &[
             Conditional::new(
                 "auto-enable",
                 &[
-                    &op::OPENAPI_KEY_CREATE,
-                    &op::OPENAPI_KEY_DELETE,
+                    &op::WHOAMI_GET,
+                    &op::OPENAPI_KEY_GET,
                     &op::INSTANCE_QUERY_ENDPOINT_GET,
                     &op::INSTANCE_QUERY_ENDPOINT_UPSERT,
                 ],
@@ -602,8 +602,8 @@ CONTEXT FOR AGENTS:
         name = "query-endpoint",
         after_help = "\
 CONTEXT FOR AGENTS:
-  Only needed to share Query API access with other tools: `cloud service query` provisions and
-    binds its own key.
+  Only needed to share Query API access with other tools: `cloud service query` binds the
+    authenticated API key itself.
   Editing this endpoint by hand can unbind the key `cloud service query` stored — repair it with
     `cloud service repair-query-key <id>`."
     )]
@@ -690,7 +690,7 @@ CONTEXT FOR AGENTS:
         #[arg(long, conflicts_with = "json")]
         format: Option<String>,
 
-        /// Fail instead of auto-provisioning a per-service Query API key (API key auth only)
+        /// Fail rather than bind the API key to the Query API endpoint
         #[arg(long)]
         no_auto_enable: bool,
     },
@@ -3733,8 +3733,8 @@ fn stored_query_key_rejection_status(error: &clickhouse_cloud_api::Error) -> Opt
 }
 
 /// The `--no-auto-enable` refusal: the Query API rejected the management key
-/// (401/403/404) and provisioning would have fixed that, but the caller forbade
-/// it. The message is the CLI's; the classification stays the API's actual
+/// (401/403/404) and binding that key to the endpoint would have fixed that,
+/// but the caller forbade it. The message is the CLI's; the classification stays the API's actual
 /// rejection, carried across from the variant rather than reset to `other`
 /// (#450).
 fn refused_query_provisioning_error(
@@ -3743,7 +3743,7 @@ fn refused_query_provisioning_error(
 ) -> CloudError {
     CloudError::new(format!(
         "the authenticated API key cannot use the Query API endpoint for service {service_id}, \
-         and --no-auto-enable prevents provisioning"
+         and --no-auto-enable prevents binding it to the endpoint"
     ))
     .with_failure(failure::classify_api_error(rejection))
 }
@@ -3803,7 +3803,7 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
 
     // The `query_request` classifications below are a *fallback*: recording
     // is first-write-wins, so an inner boundary that knows the exact stage
-    // (`key_create`, `endpoint_get`, ...) keeps its record and only failures
+    // (`whoami`, `endpoint_get`, ...) keeps its record and only failures
     // no boundary claimed -- an unusable local credential store, say -- land
     // on the coarse `query_request` stage rather than going unclassified
     // (#450).
@@ -3904,23 +3904,25 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                             .at_stage(FailureStage::QueryRequest));
                     }
                     eprint_line(format!(
-                        "Provisioning Query API endpoint + key for service '{}'...",
+                        "Binding the authenticated API key to the Query API endpoint for \
+                         service '{}'...",
                         service_name
                     ));
+                    // No key is created: the caller's own key is bound to the
+                    // endpoint and the query re-runs with it (#1043). The bind
+                    // records `BoundCallerKey` itself once it succeeds.
                     failure::set_provisioning_state(ProvisioningState::Provisioning);
-                    let key = crate::cloud::service_query::ensure_service_query_setup(
+                    crate::cloud::service_query::bind_caller_query_key(
                         client,
                         &org_id,
                         &service_id,
-                        &service_name,
                     )
                     .await
                     .map_err(|error| error.at_stage(FailureStage::QueryRequest))?;
-                    failure::set_provisioning_state(ProvisioningState::Provisioned);
                     run_just_provisioned_service_query(
                         client,
-                        &key.key_id,
-                        &key.key_secret,
+                        key_id,
+                        key_secret,
                         &sql,
                         options.database.as_deref(),
                         &format,

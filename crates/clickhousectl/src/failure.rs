@@ -180,11 +180,9 @@ pub enum ProvisioningState {
     StoredKey,
     /// The authenticated management API key was used directly.
     ManagementKey,
-    /// Provisioning was in flight: binding the caller's key to the endpoint,
-    /// or, on the legacy path, creating and binding a dedicated key.
+    /// Provisioning was in flight: the caller's own API key was being bound
+    /// to the query endpoint.
     Provisioning,
-    /// Provisioning completed during this run and the query used the new key.
-    Provisioned,
     /// The caller's own API key was bound to the query endpoint during this
     /// run, and the query used it; no key was created (#1043).
     BoundCallerKey,
@@ -200,7 +198,6 @@ impl ProvisioningState {
             Self::StoredKey => "stored_key",
             Self::ManagementKey => "management_key",
             Self::Provisioning => "provisioning",
-            Self::Provisioned => "provisioned",
             Self::BoundCallerKey => "bound_caller_key",
             Self::Refused => "refused",
         }
@@ -212,7 +209,6 @@ impl ProvisioningState {
         Self::StoredKey,
         Self::ManagementKey,
         Self::Provisioning,
-        Self::Provisioned,
         Self::BoundCallerKey,
         Self::Refused,
     ];
@@ -500,7 +496,6 @@ mod tests {
                 "stored_key",
                 "management_key",
                 "provisioning",
-                "provisioned",
                 "bound_caller_key",
                 "refused",
             ]
