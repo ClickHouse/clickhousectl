@@ -1,33 +1,37 @@
-//! Live coverage of rejected stored Query API key classification (#528)
-//! through the real `clickhousectl` binary.
+//! Live coverage of `cloud service query` Query API access through the real
+//! `clickhousectl` binary.
 //!
-//! Provisions a disposable ClickHouse Cloud service, lets `cloud service
-//! query` auto-provision and store a per-service key, then disables and later
-//! expires that exact key through the management API. Each time, the CLI must
-//! report the state with its stable JSON code, keep the local record
-//! byte-for-byte, and create nothing in the organization. Finally the explicit
-//! `repair-query-key` command, the documented way forward, replaces the
-//! expired key and a query succeeds again.
+//! The first case covers first use (#1043): with no stored record, the CLI
+//! binds the caller's own API key (its `whoami` key ID) to the service's
+//! endpoint, keeping the keys already bound and pruning one the organization
+//! has deleted, creates no key and writes no record; a second query reuses
+//! the binding. When the service has no endpoint, the bind creates it.
 //!
-//! A second case covers the retirement lifecycle (#527): each repair deletes
-//! the key it replaces and unbinds it from the endpoint, so repeated repairs do
-//! not grow the organization's key inventory or the endpoint binding; a
-//! retirement left pending on the local record is retried by the next query;
-//! and `cloud service delete` deletes the current key and every pending
-//! retirement along with the service.
+//! The other cases cover per-service keys that earlier CLI versions created
+//! and stored. Each seeds such a record exactly as those versions wrote it: a
+//! dedicated key bound to the endpoint, stored in `.clickhouse/credentials.json`.
 //!
-//! A third case stresses key propagation (#658): the endpoint upsert can refuse
-//! a key created moments earlier, and the CLI waits that out. Repeated repairs,
-//! each followed at once by a query, plus repeated first-use provisioning after
-//! the key was deleted out from under the CLI, must all succeed first time and
-//! leave exactly one owned key.
+//! - Rejected stored key classification (#528): the stored key is disabled and
+//!   later expired through the management API. Each time, the CLI must report
+//!   the state with its stable JSON code, keep the local record byte-for-byte,
+//!   and create nothing in the organization. Finally `repair-query-key`
+//!   replaces the expired key and a query succeeds again.
+//! - The retirement lifecycle (#527): each repair deletes the key it replaces
+//!   and unbinds it from the endpoint; a retirement left pending on the local
+//!   record is retried by the next query; and `cloud service delete` deletes
+//!   the current key and every pending retirement along with the service.
+//! - Key propagation (#658): the endpoint upsert can refuse a key created
+//!   moments earlier, and the CLI waits that out. Repeated repairs, each
+//!   followed at once by a query, and deleted-key recoveries must all succeed
+//!   first time and leave exactly one owned key.
 //!
-//! Every resource is created here and torn down here: the service, the keys the
-//! CLI provisions and the repairs create, the keys the retirement case injects,
-//! and the query endpoint binding.
+//! Every resource is created here and torn down here: the services, the keys
+//! the test seeds and the repairs create, the query endpoints, and the
+//! caller's own binding.
 
 mod common;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -51,12 +55,246 @@ const DEFAULT_REPAIR_STRESS_ITERATIONS: u64 = 6;
 /// Deleted-key recovery rounds (delete, classify, repair, query) run by the
 /// propagation stress case (#658).
 const DEFAULT_RECOVERY_STRESS_ITERATIONS: u64 = 2;
-/// Pure first-use provisioning rounds run by the propagation stress case: the
-/// create-then-bind path of `cloud service query` itself (#658).
-const DEFAULT_FIRST_USE_STRESS_ITERATIONS: u64 = 1;
 /// The CLI's stderr notice while it waits for a new key to propagate (#658).
 const KEY_PROPAGATION_NOTICE: &str =
     "Waiting for the new API key to become visible to the Query API endpoint...";
+/// The CLI's stderr notice when it binds the caller's own key (#1043).
+const BIND_NOTICE: &str = "Binding the authenticated API key to the Query API endpoint";
+/// How long the test's own endpoint upsert may retry a `400` while a key it
+/// created moments earlier propagates (#658).
+const SEED_PROPAGATION_TIMEOUT: Duration = Duration::from_secs(90);
+
+#[tokio::test]
+#[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
+async fn cloud_service_query_binds_the_callers_own_key_on_first_use() -> TestResult<()> {
+    let ctx = TestContext::from_env()?;
+    let clickhousectl = clickhousectl_binary()?;
+    let cli_workspace = tempfile::tempdir()?;
+    let cli_home = cli_workspace.path().join("home");
+    std::fs::create_dir(&cli_home)?;
+    let cli = Cli {
+        binary: clickhousectl,
+        workdir: cli_workspace.path().to_path_buf(),
+        home: cli_home,
+        api_url: clickhouse_cloud_api_url(),
+        org_id: ctx.org_id.clone(),
+    };
+    let rejection_timeout = duration_from_env_or(
+        "CLICKHOUSE_CLOUD_TEST_TIMEOUT_QUERY_KEY_REJECTION_SECS",
+        DEFAULT_REJECTION_TIMEOUT_SECS,
+    )?;
+
+    let client = create_client()?;
+    let mut cleanup = CleanupRegistry::default();
+    let service_name = format!("{}-qb", ctx.service_name());
+    // The name earlier versions gave the key they minted on first use.
+    let minted_key_name = format!("clickhousectl-query-{service_name}");
+
+    let test_result = async {
+        log_run_header(
+            "cloud_service_query_binds_the_callers_own_key_on_first_use",
+            &ctx,
+        );
+        let mut failures = FailureRecorder::default();
+
+        // ── Provision ───────────────────────────────────────────────
+
+        let service_id =
+            create_running_service(&ctx, &client, &mut failures, &mut cleanup, &service_name)
+                .await?;
+        let caller = failures
+            .run(
+                &ctx,
+                StepKind::Blocking,
+                "whoami identifies the caller's API key in this organization",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    async move { caller_api_key_id(&client, &org_id).await }
+                },
+            )
+            .await?
+            .expect("blocking steps always return a value");
+
+        // ── An endpoint with a live and a deleted binding ───────────
+        //
+        // The endpoint already binds a key the test owns and one the
+        // organization has since deleted. The bind must keep the first and
+        // prune the second: a dangling UUID makes every upsert fail (#659).
+
+        log_phase("Endpoint already binds a live key and a deleted one");
+
+        let kept = create_owned_key(
+            &ctx,
+            &client,
+            &mut failures,
+            &mut cleanup,
+            &format!("{service_name}-kept"),
+        )
+        .await?
+        .id;
+        let dangling = create_owned_key(
+            &ctx,
+            &client,
+            &mut failures,
+            &mut cleanup,
+            &format!("{service_name}-dangling"),
+        )
+        .await?
+        .id;
+        cleanup.register_query_endpoint(service_id.clone());
+        upsert_binding(
+            &client,
+            &ctx.org_id,
+            &service_id,
+            vec![kept.clone(), dangling.clone()],
+        )
+        .await?;
+        client.openapi_key_delete(&ctx.org_id, &dangling).await?;
+        cleanup.unregister_api_key(&dangling);
+        assert_key_gone(&client, &ctx.org_id, &dangling).await?;
+        eprintln!(
+            "  diag: the deleted key's UUID is still bound: {}",
+            bound_keys(&client, &ctx.org_id, &service_id)
+                .await?
+                .contains(&dangling)
+        );
+
+        // ── First query binds the caller's key ──────────────────────
+
+        log_phase("First query binds the caller's own key");
+
+        let inventory_before = key_names(&client, &ctx.org_id).await?;
+        let first_query = cli.query(&service_id, false)?;
+        if !first_query.status.success() {
+            return Err(cli_failure("service query (first use)", &first_query).into());
+        }
+        let stdout = String::from_utf8_lossy(&first_query.stdout);
+        if stdout.trim() != "1" {
+            return Err(format!("expected `SELECT 1` to print 1, got {stdout:?}").into());
+        }
+        assert!(
+            String::from_utf8_lossy(&first_query.stderr).contains(BIND_NOTICE),
+            "the first query must bind the caller's key"
+        );
+        assert_no_key_minted(
+            &client,
+            &ctx.org_id,
+            &inventory_before,
+            &minted_key_name,
+            &mut cleanup,
+        )
+        .await?;
+        assert!(
+            cli.stored_record(&service_id)?.is_none(),
+            "the bind must not write a per-service record"
+        );
+        let bound = bound_key_set(&client, &ctx.org_id, &service_id).await?;
+        assert_eq!(
+            bound,
+            [kept.clone(), caller.clone()].into_iter().collect(),
+            "the endpoint must bind the kept key and the caller's key, and nothing else"
+        );
+        let roles = client
+            .instance_query_endpoint_get(&ctx.org_id, &service_id)
+            .await?
+            .result
+            .and_then(|endpoint| endpoint.roles)
+            .unwrap_or_default();
+        assert!(
+            roles.contains(&QueryEndpointRole::SqlConsoleAdmin),
+            "the endpoint must grant sql_console_admin: {roles:?}"
+        );
+
+        // ── Second query reuses the binding ─────────────────────────
+
+        log_phase("Second query reuses the binding");
+
+        // `--no-auto-enable` refuses any bind, so its success shows none was
+        // needed.
+        let second_query = cli.query_with(&service_id, false, &["--no-auto-enable"])?;
+        if !second_query.status.success() {
+            return Err(cli_failure("service query (reuse)", &second_query).into());
+        }
+        assert!(
+            !String::from_utf8_lossy(&second_query.stderr).contains(BIND_NOTICE),
+            "the second query must not bind again"
+        );
+        assert_eq!(
+            bound_key_set(&client, &ctx.org_id, &service_id).await?,
+            bound,
+            "the second query must leave the binding unchanged"
+        );
+        assert!(cli.stored_record(&service_id)?.is_none());
+
+        log_phase("Unbind the caller's key");
+        unbind_key(&client, &ctx.org_id, &service_id, &caller).await?;
+        assert_eq!(
+            bound_keys(&client, &ctx.org_id, &service_id).await?,
+            std::slice::from_ref(&kept)
+        );
+
+        // ── No endpoint: the bind creates it ────────────────────────
+
+        log_phase("No endpoint: the bind creates one");
+
+        client
+            .instance_query_endpoint_delete(&ctx.org_id, &service_id)
+            .await?;
+        // The Query API may honour the old binding for a moment; wait until
+        // it refuses the caller, so the next query must bind.
+        cli.poll_for_refusal_without_auto_enable(&service_id, rejection_timeout, ctx.poll_interval)
+            .await?;
+        let inventory_before = key_names(&client, &ctx.org_id).await?;
+        let created = cli.query(&service_id, false)?;
+        if !created.status.success() {
+            return Err(cli_failure("service query (no endpoint)", &created).into());
+        }
+        assert!(
+            String::from_utf8_lossy(&created.stderr).contains(BIND_NOTICE),
+            "the query must bind the caller's key"
+        );
+        assert_eq!(String::from_utf8_lossy(&created.stdout).trim(), "1");
+        assert_no_key_minted(
+            &client,
+            &ctx.org_id,
+            &inventory_before,
+            &minted_key_name,
+            &mut cleanup,
+        )
+        .await?;
+        assert!(cli.stored_record(&service_id)?.is_none());
+        assert_eq!(
+            bound_keys(&client, &ctx.org_id, &service_id).await?,
+            std::slice::from_ref(&caller),
+            "the created endpoint must bind exactly the caller's key"
+        );
+
+        // Leave the caller's key bound nowhere: the endpoint goes now, and
+        // cleanup deletes it again (a 404 is fine) should anything above fail.
+        log_phase("Remove the caller's binding");
+        client
+            .instance_query_endpoint_delete(&ctx.org_id, &service_id)
+            .await?;
+
+        failures.finish()
+    }
+    .await;
+
+    log_phase("Cleanup");
+    let cleanup_result = cleanup
+        .cleanup(
+            &client,
+            &ctx.org_id,
+            ctx.delete_timeout,
+            ctx.poll_interval,
+            None,
+        )
+        .await;
+
+    test_result?;
+    cleanup_result.map_err(|error| error.into())
+}
 
 #[tokio::test]
 #[ignore = "requires live ClickHouse Cloud credentials and provisions real resources"]
@@ -95,42 +333,28 @@ async fn cloud_service_query_key_disabled_and_expired_are_never_replaced() -> Te
             create_running_service(&ctx, &client, &mut failures, &mut cleanup, &service_name)
                 .await?;
 
-        // ── First query provisions and stores a key ─────────────────
+        // ── A stored per-service key ────────────────────────────────
 
-        log_phase("First query provisions a per-service key");
-
-        let first_query = failures
-            .run(
-                &ctx,
-                StepKind::Blocking,
-                "first query auto-provisions and stores a per-service key",
-                || {
-                    let cli = cli.clone();
-                    let service_id = service_id.clone();
-                    async move { cli.query(&service_id, false) }
-                },
-            )
-            .await?
-            .expect("blocking steps always return a value");
-        // Register whatever the CLI provisioned *before* judging the run, so a
-        // failed assertion below never leaves the key behind. The endpoint
-        // binding dies with the service; the key does not.
-        cleanup.register_query_endpoint(service_id.clone());
-        let stored = cli.stored_key(&service_id);
-        if let Ok(stored) = &stored {
-            cleanup.register_api_key(stored.api_key_id.clone());
-        }
-        if !first_query.status.success() {
-            return Err(cli_failure("service query (first use)", &first_query).into());
-        }
-        let stdout = String::from_utf8_lossy(&first_query.stdout);
-        if stdout.trim() != "1" {
-            return Err(format!("expected `SELECT 1` to print 1, got {stdout:?}").into());
-        }
-        // The record must carry the exact ownership metadata the classifier
-        // and the repair command rely on.
-        let stored = stored?;
+        let stored = seed_legacy_query_key(
+            &ctx,
+            &cli,
+            &client,
+            &mut failures,
+            &mut cleanup,
+            &service_id,
+            &service_name,
+        )
+        .await?;
         let api_key_id = stored.api_key_id.clone();
+        query_until_success(
+            &ctx,
+            &cli,
+            &mut failures,
+            "a query succeeds with the stored key",
+            &service_id,
+            rejection_timeout,
+        )
+        .await?;
         let credentials_before = cli.credentials_file()?;
 
         // ── Disabled ────────────────────────────────────────────────
@@ -364,44 +588,15 @@ async fn cloud_service_query_key_disabled_and_expired_are_never_replaced() -> Te
             .await?;
         cleanup.unregister_api_key(&api_key_id);
 
-        failures
-            .run(
-                &ctx,
-                StepKind::Blocking,
-                "a query succeeds with the replacement key",
-                || {
-                    let cli = cli.clone();
-                    let service_id = service_id.clone();
-                    async move {
-                        // A fresh binding can be rejected for a moment while it
-                        // converges; the CLI does not retry on this path, so
-                        // the test does.
-                        poll_until(
-                            "query success with the replacement key",
-                            rejection_timeout,
-                            ctx.poll_interval,
-                            || {
-                                let cli = cli.clone();
-                                let service_id = service_id.clone();
-                                async move {
-                                    let output = cli.query(&service_id, false)?;
-                                    if output.status.success() {
-                                        Ok(Some(()))
-                                    } else {
-                                        eprintln!(
-                                            "  poll: query not yet accepted: {}",
-                                            first_line(&String::from_utf8_lossy(&output.stderr))
-                                        );
-                                        Ok(None)
-                                    }
-                                }
-                            },
-                        )
-                        .await
-                    }
-                },
-            )
-            .await?;
+        query_until_success(
+            &ctx,
+            &cli,
+            &mut failures,
+            "a query succeeds with the replacement key",
+            &service_id,
+            rejection_timeout,
+        )
+        .await?;
 
         failures.finish()
     }
@@ -461,32 +656,28 @@ async fn cloud_service_query_key_repairs_retire_keys_and_service_delete_cleans_u
             create_running_service(&ctx, &client, &mut failures, &mut cleanup, &service_name)
                 .await?;
 
-        // ── First query provisions and stores a key ─────────────────
+        // ── A stored per-service key ────────────────────────────────
 
-        log_phase("First query provisions a per-service key");
-
-        let first_query = failures
-            .run(
-                &ctx,
-                StepKind::Blocking,
-                "first query auto-provisions and stores a per-service key",
-                || {
-                    let cli = cli.clone();
-                    let service_id = service_id.clone();
-                    async move { cli.query(&service_id, false) }
-                },
-            )
-            .await?
-            .expect("blocking steps always return a value");
-        cleanup.register_query_endpoint(service_id.clone());
-        let stored = cli.stored_key(&service_id);
-        if let Ok(stored) = &stored {
-            cleanup.register_api_key(stored.api_key_id.clone());
-        }
-        if !first_query.status.success() {
-            return Err(cli_failure("service query (first use)", &first_query).into());
-        }
-        let mut current_api_key_id = stored?.api_key_id;
+        let mut current_api_key_id = seed_legacy_query_key(
+            &ctx,
+            &cli,
+            &client,
+            &mut failures,
+            &mut cleanup,
+            &service_id,
+            &service_name,
+        )
+        .await?
+        .api_key_id;
+        query_until_success(
+            &ctx,
+            &cli,
+            &mut failures,
+            "a query succeeds with the stored key",
+            &service_id,
+            rejection_timeout,
+        )
+        .await?;
 
         // ── Two repairs in a row ────────────────────────────────────
         //
@@ -559,41 +750,15 @@ async fn cloud_service_query_key_repairs_retire_keys_and_service_delete_cleans_u
             current_api_key_id = new_api_key_id;
         }
 
-        failures
-            .run(
-                &ctx,
-                StepKind::Blocking,
-                "a query succeeds with the latest replacement key",
-                || {
-                    let cli = cli.clone();
-                    let service_id = service_id.clone();
-                    async move {
-                        poll_until(
-                            "query success with the replacement key",
-                            rejection_timeout,
-                            ctx.poll_interval,
-                            || {
-                                let cli = cli.clone();
-                                let service_id = service_id.clone();
-                                async move {
-                                    let output = cli.query(&service_id, false)?;
-                                    if output.status.success() {
-                                        Ok(Some(()))
-                                    } else {
-                                        eprintln!(
-                                            "  poll: query not yet accepted: {}",
-                                            first_line(&String::from_utf8_lossy(&output.stderr))
-                                        );
-                                        Ok(None)
-                                    }
-                                }
-                            },
-                        )
-                        .await
-                    }
-                },
-            )
-            .await?;
+        query_until_success(
+            &ctx,
+            &cli,
+            &mut failures,
+            "a query succeeds with the latest replacement key",
+            &service_id,
+            rejection_timeout,
+        )
+        .await?;
 
         // ── A pending retirement is retried by the next query ───────
         //
@@ -610,7 +775,8 @@ async fn cloud_service_query_key_repairs_retire_keys_and_service_delete_cleans_u
             &mut cleanup,
             &format!("{key_name}-retired-1"),
         )
-        .await?;
+        .await?
+        .id;
         cli.add_pending_retirement(&service_id, &retired_for_query)?;
         let query = failures
             .run(
@@ -665,7 +831,8 @@ async fn cloud_service_query_key_repairs_retire_keys_and_service_delete_cleans_u
             &mut cleanup,
             &format!("{key_name}-retired-2"),
         )
-        .await?;
+        .await?
+        .id;
         cli.add_pending_retirement(&service_id, &retired_for_delete)?;
 
         // The CLI's own `--force` stop is exercised by its subprocess tests;
@@ -785,10 +952,6 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
         "CLICKHOUSE_CLOUD_TEST_RECOVERY_STRESS_ITERATIONS",
         DEFAULT_RECOVERY_STRESS_ITERATIONS,
     )?;
-    let first_use_iterations = count_from_env_or(
-        "CLICKHOUSE_CLOUD_TEST_FIRST_USE_STRESS_ITERATIONS",
-        DEFAULT_FIRST_USE_STRESS_ITERATIONS,
-    )?;
     let rejection_timeout = duration_from_env_or(
         "CLICKHOUSE_CLOUD_TEST_TIMEOUT_QUERY_KEY_REJECTION_SECS",
         DEFAULT_REJECTION_TIMEOUT_SECS,
@@ -803,9 +966,11 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
         "cloud_service_query_key_repair_survives_key_propagation_delay",
         &ctx,
     );
-    let inventory_before = key_inventory(&client, &ctx.org_id).await?;
+    // Scoped to this case's key name: the other cases run concurrently in the
+    // same organization and create and delete keys of their own.
+    let inventory_before = key_inventory(&client, &ctx.org_id, &key_name).await?;
     eprintln!(
-        "  step: organization holds {} keys before the run",
+        "  step: organization holds {} keys named {key_name} before the run",
         inventory_before.len()
     );
 
@@ -818,20 +983,27 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
             create_running_service(&ctx, &client, &mut failures, &mut cleanup, &service_name)
                 .await?;
 
-        log_phase("First query provisions a per-service key");
-
-        let first_query = cli.query(&service_id, false)?;
-        cleanup.register_query_endpoint(service_id.clone());
-        let stored = cli.stored_key(&service_id);
-        if let Ok(stored) = &stored {
-            cleanup.register_api_key(stored.api_key_id.clone());
-        }
-        if !first_query.status.success() {
-            return Err(cli_failure("service query (first use)", &first_query).into());
-        }
-        let mut current_api_key_id = stored?.api_key_id;
+        let mut current_api_key_id = seed_legacy_query_key(
+            &ctx,
+            &cli,
+            &client,
+            &mut failures,
+            &mut cleanup,
+            &service_id,
+            &service_name,
+        )
+        .await?
+        .api_key_id;
+        query_until_success(
+            &ctx,
+            &cli,
+            &mut failures,
+            "a query succeeds with the stored key",
+            &service_id,
+            rejection_timeout,
+        )
+        .await?;
         let mut summary = StressSummary::default();
-        summary.note_provision(&first_query, Duration::ZERO);
 
         // ── Repairs back to back, each followed at once by a query ──
         //
@@ -1025,53 +1197,6 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
             current_api_key_id = new_api_key_id;
         }
 
-        // ── Pure first-use provisioning ─────────────────────────────
-        //
-        // The other create-then-bind path is `cloud service query` itself
-        // when no record exists. To reach it with a clean endpoint, the test
-        // acts as an administrator who cleaned up fully (unbound and deleted
-        // the key) and then drops the local record by hand, as the README
-        // tells a user with a legacy record to do.
-
-        log_phase(&format!(
-            "{first_use_iterations} first-use provisioning rounds"
-        ));
-
-        for round in 1..=first_use_iterations {
-            unbind_key(&client, &ctx.org_id, &service_id, &current_api_key_id).await?;
-            client
-                .openapi_key_delete(&ctx.org_id, &current_api_key_id)
-                .await?;
-            cleanup.unregister_api_key(&current_api_key_id);
-            cli.forget_stored_key(&service_id)?;
-
-            let started = std::time::Instant::now();
-            let provisioned = cli.query(&service_id, false)?;
-            let elapsed = started.elapsed();
-            let stored = cli.stored_key(&service_id);
-            if let Ok(stored) = &stored {
-                cleanup.register_api_key(stored.api_key_id.clone());
-            }
-            if !provisioned.status.success() {
-                summary.print(repair_iterations);
-                return Err(cli_failure("service query (first use)", &provisioned).into());
-            }
-            eprintln!(
-                "  step: first-use round {round}: provisioned in {:.1}s",
-                elapsed.as_secs_f64()
-            );
-            summary.note_provision(&provisioned, elapsed);
-            current_api_key_id = stored?.api_key_id;
-            assert_single_owned_key(
-                &client,
-                &ctx.org_id,
-                &service_id,
-                &key_name,
-                &current_api_key_id,
-            )
-            .await?;
-        }
-
         summary.print(repair_iterations);
         summary.assert_every_query_succeeded_first_time()?;
         failures.finish()
@@ -1091,11 +1216,11 @@ async fn cloud_service_query_key_repair_survives_key_propagation_delay() -> Test
 
     // The organization must hold exactly the keys it held before: nothing
     // this run created may survive it, and nothing it did not create may go.
-    let inventory_after = key_inventory(&client, &ctx.org_id).await?;
+    let inventory_after = key_inventory(&client, &ctx.org_id, &key_name).await?;
     let leaked: Vec<&String> = inventory_after.difference(&inventory_before).collect();
     let missing: Vec<&String> = inventory_before.difference(&inventory_after).collect();
     eprintln!(
-        "  step: organization holds {} keys after the run (leaked: {leaked:?}, missing: {missing:?})",
+        "  step: organization holds {} keys named {key_name} after the run (leaked: {leaked:?}, missing: {missing:?})",
         inventory_after.len()
     );
 
@@ -1156,6 +1281,11 @@ impl Cli {
     /// the CLI switches to JSON on its own when it detects a coding agent in
     /// the environment, and this harness may well run under one.
     fn query(&self, service_id: &str, json: bool) -> TestResult<Output> {
+        self.query_with(service_id, json, &[])
+    }
+
+    /// [`Self::query`] with extra flags.
+    fn query_with(&self, service_id: &str, json: bool, extra: &[&str]) -> TestResult<Output> {
         let mut args = vec![
             "service",
             "query",
@@ -1171,6 +1301,7 @@ impl Cli {
         } else {
             args.extend_from_slice(&["--format", "TabSeparated"]);
         }
+        args.extend_from_slice(extra);
         self.command(&args)
     }
 
@@ -1227,20 +1358,46 @@ impl Cli {
         Ok(std::fs::read(self.credentials_path())?)
     }
 
-    /// Drop the service's record from the credentials file, the way a user
-    /// with a legacy record is told to, so the next query provisions afresh.
-    fn forget_stored_key(&self, service_id: &str) -> TestResult<()> {
-        let mut credentials: Value = serde_json::from_slice(&self.credentials_file()?)?;
-        credentials["service_query_keys"]
+    /// Write `record` as the service's entry under `service_query_keys`,
+    /// creating the project's credentials file as the CLI would (#1043: no
+    /// current version writes one on first use, so the test seeds it).
+    fn write_stored_record(&self, service_id: &str, record: Value) -> TestResult<()> {
+        let path = self.credentials_path();
+        let mut credentials = match std::fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice(&bytes)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                serde_json::json!({})
+            }
+            Err(error) => return Err(error.into()),
+        };
+        credentials
+            .as_object_mut()
+            .ok_or("credentials.json is not an object")?
+            .entry("service_query_keys")
+            .or_insert_with(|| serde_json::json!({}))
             .as_object_mut()
             .ok_or("service_query_keys is not an object")?
-            .remove(service_id)
-            .ok_or("the CLI stored no per-service query key")?;
-        std::fs::write(
-            self.credentials_path(),
-            serde_json::to_vec_pretty(&credentials)?,
-        )?;
+            .insert(service_id.to_string(), record);
+        std::fs::create_dir_all(path.parent().ok_or("credentials path has no parent")?)?;
+        std::fs::write(&path, serde_json::to_vec_pretty(&credentials)?)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+        }
         Ok(())
+    }
+
+    /// The service's stored record, or `None` when there is none (or no
+    /// credentials file at all).
+    fn stored_record(&self, service_id: &str) -> TestResult<Option<Value>> {
+        let bytes = match std::fs::read(self.credentials_path()) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let credentials: Value = serde_json::from_slice(&bytes)?;
+        Ok(credentials["service_query_keys"].get(service_id).cloned())
     }
 
     fn stored_key(&self, service_id: &str) -> TestResult<StoredQueryKey> {
@@ -1293,6 +1450,40 @@ impl Cli {
                         .into());
                     }
                     Ok(Some(error))
+                }
+            },
+        )
+        .await
+    }
+
+    /// Run `--no-auto-enable` queries until the CLI refuses because the
+    /// caller's key would need binding. A success means the Query API still
+    /// honours a binding that was just removed.
+    async fn poll_for_refusal_without_auto_enable(
+        &self,
+        service_id: &str,
+        timeout: Duration,
+        interval: Duration,
+    ) -> TestResult<()> {
+        poll_until(
+            "the Query API to refuse the unbound caller key",
+            timeout,
+            interval,
+            || {
+                let cli = self.clone();
+                let service_id = service_id.to_string();
+                async move {
+                    let output = cli.query_with(&service_id, false, &["--no-auto-enable"])?;
+                    if output.status.success() {
+                        eprintln!("  poll: the Query API still accepts the caller key");
+                        return Ok(None);
+                    }
+                    let stderr = String::from_utf8_lossy(&output.stderr);
+                    if stderr.contains("--no-auto-enable") {
+                        Ok(Some(()))
+                    } else {
+                        Err(cli_failure("service query --no-auto-enable", &output).into())
+                    }
                 }
             },
         )
@@ -1520,16 +1711,23 @@ async fn repair(
     Ok(result)
 }
 
+/// A key the test created: its management ID and the credential pair.
+struct CreatedKey {
+    id: String,
+    key_id: String,
+    key_secret: String,
+}
+
 /// Create a key this test owns, with no organization role (like the CLI's own
-/// query keys), and register it for cleanup. Returns its management ID.
+/// query keys), and register it for cleanup.
 async fn create_owned_key(
     ctx: &TestContext,
     client: &Client,
     failures: &mut FailureRecorder,
     cleanup: &mut CleanupRegistry,
     name: &str,
-) -> TestResult<String> {
-    let key_id = failures
+) -> TestResult<CreatedKey> {
+    let key = failures
         .run(
             ctx,
             StepKind::Blocking,
@@ -1555,14 +1753,163 @@ async fn create_owned_key(
                     let resp = client.openapi_key_create(&org_id, &body).await?;
                     let created = resp.result.ok_or("key create returned no result")?;
                     let key = created.key.ok_or("key create returned no key")?;
-                    Ok(require_field(key.id, "key.id")?.to_string())
+                    Ok(CreatedKey {
+                        id: require_field(key.id, "key.id")?.to_string(),
+                        key_id: require_field(created.key_id, "keyId")?,
+                        key_secret: require_field(created.key_secret, "keySecret")?,
+                    })
                 }
             },
         )
         .await?
         .expect("blocking steps always return a value");
-    cleanup.register_api_key(key_id.clone());
-    Ok(key_id)
+    cleanup.register_api_key(key.id.clone());
+    Ok(key)
+}
+
+/// Seed the per-service record an earlier CLI version wrote on first use: a
+/// dedicated `clickhousectl-query-<service>` key with no organization role,
+/// bound to the service's endpoint as `sql_console_admin`, stored under
+/// `service_query_keys.<service-id>` with full ownership metadata. The key
+/// and the endpoint are registered for cleanup before anything can fail.
+async fn seed_legacy_query_key(
+    ctx: &TestContext,
+    cli: &Cli,
+    client: &Client,
+    failures: &mut FailureRecorder,
+    cleanup: &mut CleanupRegistry,
+    service_id: &str,
+    service_name: &str,
+) -> TestResult<StoredQueryKey> {
+    log_phase("Seed a per-service key stored by an earlier version");
+
+    let key = create_owned_key(
+        ctx,
+        client,
+        failures,
+        cleanup,
+        &format!("clickhousectl-query-{service_name}"),
+    )
+    .await?;
+    cleanup.register_query_endpoint(service_id.to_string());
+    let endpoint = failures
+        .run(
+            ctx,
+            StepKind::Blocking,
+            "bind the seeded key to the query endpoint",
+            || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let service_id = service_id.to_string();
+                let api_key_id = key.id.clone();
+                async move { upsert_binding(&client, &org_id, &service_id, vec![api_key_id]).await }
+            },
+        )
+        .await?
+        .expect("blocking steps always return a value");
+    let endpoint_id = require_field(endpoint.id, "query endpoint id")?;
+    cli.write_stored_record(
+        service_id,
+        serde_json::json!({
+            "organization_id": ctx.org_id,
+            "api_key_id": key.id,
+            "key_id": key.key_id,
+            "key_secret": key.key_secret,
+            "endpoint_id": endpoint_id,
+            "service_name": service_name,
+            "created_at": Utc::now().to_rfc3339(),
+        }),
+    )?;
+    Ok(StoredQueryKey {
+        api_key_id: key.id,
+        key_secret: key.key_secret,
+        pending_cleanup_api_key_ids: vec![],
+    })
+}
+
+/// Upsert the service's endpoint to bind exactly `open_api_keys` as
+/// `sql_console_admin`, creating it if absent. A key created moments ago may
+/// not be visible to the endpoint service yet and the upsert answers `400`
+/// until it is (#658), so a `400` is retried for a bounded time.
+async fn upsert_binding(
+    client: &Client,
+    org_id: &str,
+    service_id: &str,
+    open_api_keys: Vec<String>,
+) -> TestResult<ServiceQueryAPIEndpoint> {
+    let request = InstanceServiceQueryApiEndpointsPostRequest {
+        roles: vec![QueryEndpointRole::SqlConsoleAdmin],
+        open_api_keys,
+        allowed_origins: "*".to_string(),
+    };
+    let response = retry_api_call(
+        "query endpoint upsert",
+        SEED_PROPAGATION_TIMEOUT,
+        Duration::from_secs(3),
+        || client.instance_query_endpoint_upsert(org_id, service_id, &request),
+        |error| matches!(error, clickhouse_cloud_api::Error::Api { status: 400, .. }),
+    )
+    .await?;
+    Ok(response
+        .result
+        .ok_or("query endpoint upsert returned no result")?)
+}
+
+/// The resource UUID of the caller's own API key, from `whoami` — the value
+/// the CLI binds on first use (#1043).
+async fn caller_api_key_id(client: &Client, org_id: &str) -> TestResult<String> {
+    let identity = client
+        .whoami_get()
+        .await?
+        .result
+        .ok_or("whoami returned no result")?;
+    let Whoami::WhoamiApiKey(key) = identity else {
+        return Err(format!("whoami did not identify an API key: {identity:?}").into());
+    };
+    let organization = require_field(key.organization_id, "organizationId")?.to_string();
+    if organization != org_id {
+        return Err("the test API key belongs to another organization".into());
+    }
+    require_field(key.key_id, "keyId")
+}
+
+/// Run `SELECT 1` until it succeeds. A binding the test just made can be
+/// rejected for a moment while it converges; the stored-record path of the
+/// CLI does not retry, so the test does.
+async fn query_until_success(
+    ctx: &TestContext,
+    cli: &Cli,
+    failures: &mut FailureRecorder,
+    step: &str,
+    service_id: &str,
+    timeout: Duration,
+) -> TestResult<()> {
+    failures
+        .run(ctx, StepKind::Blocking, step, || {
+            let cli = cli.clone();
+            let service_id = service_id.to_string();
+            async move {
+                poll_until("query success", timeout, ctx.poll_interval, || {
+                    let cli = cli.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let output = cli.query(&service_id, false)?;
+                        if output.status.success() {
+                            Ok(Some(()))
+                        } else {
+                            eprintln!(
+                                "  poll: query not yet accepted: {}",
+                                first_line(&String::from_utf8_lossy(&output.stderr))
+                            );
+                            Ok(None)
+                        }
+                    }
+                })
+                .await
+            }
+        })
+        .await?;
+    Ok(())
 }
 
 /// `GET /keys/{id}` answers 404.
@@ -1640,6 +1987,18 @@ async fn unbind_key(
     Ok(())
 }
 
+/// The keys the service's query endpoint currently binds, as a set.
+async fn bound_key_set(
+    client: &Client,
+    org_id: &str,
+    service_id: &str,
+) -> TestResult<BTreeSet<String>> {
+    Ok(bound_keys(client, org_id, service_id)
+        .await?
+        .into_iter()
+        .collect())
+}
+
 /// The keys the service's query endpoint currently binds.
 async fn bound_keys(client: &Client, org_id: &str, service_id: &str) -> TestResult<Vec<String>> {
     let endpoint = client
@@ -1650,13 +2009,64 @@ async fn bound_keys(client: &Client, org_id: &str, service_id: &str) -> TestResu
     Ok(endpoint.open_api_keys.unwrap_or_default())
 }
 
-/// The management IDs of every key in the organization.
+/// The management IDs of every key in the organization whose name starts
+/// with `name_prefix`.
 async fn key_inventory(
     client: &Client,
     org_id: &str,
-) -> TestResult<std::collections::BTreeSet<String>> {
+    name_prefix: &str,
+) -> TestResult<BTreeSet<String>> {
+    Ok(key_names(client, org_id)
+        .await?
+        .into_iter()
+        .filter(|(_, name)| name.starts_with(name_prefix))
+        .map(|(id, _)| id)
+        .collect())
+}
+
+/// Every key in the organization, management ID to name.
+async fn key_names(client: &Client, org_id: &str) -> TestResult<BTreeMap<String, String>> {
     let keys = list_all_api_keys(client, org_id).await?;
-    Ok(keys.iter().map(|key| field_string(key.id)).collect())
+    Ok(keys
+        .iter()
+        .map(|key| (field_string(key.id), key.name.clone().unwrap_or_default()))
+        .collect())
+}
+
+/// No key appeared since `before` under the name earlier CLI versions gave
+/// the key they minted on first use. Other new keys are logged: the other
+/// cases run concurrently in this organization and create keys of their own.
+/// A minted key is registered for cleanup before the assertion fails.
+async fn assert_no_key_minted(
+    client: &Client,
+    org_id: &str,
+    before: &BTreeMap<String, String>,
+    minted_key_name: &str,
+    cleanup: &mut CleanupRegistry,
+) -> TestResult<()> {
+    let after = key_names(client, org_id).await?;
+    let new: Vec<(&String, &String)> = after
+        .iter()
+        .filter(|(id, _)| !before.contains_key(*id))
+        .collect();
+    eprintln!(
+        "  step: {} keys before, {} after; new keys: {new:?}",
+        before.len(),
+        after.len()
+    );
+    let minted: Vec<String> = after
+        .iter()
+        .filter(|(_, name)| name.starts_with(minted_key_name))
+        .map(|(id, _)| id.clone())
+        .collect();
+    for id in &minted {
+        cleanup.register_api_key(id.clone());
+    }
+    if minted.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("the CLI minted keys named {minted_key_name}: {minted:?}").into())
+    }
 }
 
 /// Per-round record of the propagation stress case, printed as one line per
@@ -1665,7 +2075,6 @@ async fn key_inventory(
 struct StressSummary {
     repairs: Vec<(u64, Duration, bool, bool, Duration)>,
     recoveries: Vec<(u64, Duration, bool, bool, Duration)>,
-    provisions: Vec<(bool, Duration)>,
 }
 
 impl StressSummary {
@@ -1701,11 +2110,6 @@ impl StressSummary {
             query_first_try,
             query_elapsed,
         ));
-    }
-
-    fn note_provision(&mut self, output: &Output, elapsed: Duration) {
-        let waited = String::from_utf8_lossy(&output.stderr).contains(KEY_PROPAGATION_NOTICE);
-        self.provisions.push((waited, elapsed));
     }
 
     fn print(&self, planned_repairs: u64) {
@@ -1750,18 +2154,6 @@ impl StressSummary {
                     "REJECTED first time"
                 },
                 query.as_secs_f64(),
-            );
-        }
-        for (index, (waited, elapsed)) in self.provisions.iter().enumerate() {
-            eprintln!(
-                "  summary: provision {}: {:.1}s{}",
-                index + 1,
-                elapsed.as_secs_f64(),
-                if *waited {
-                    " (waited on key propagation)"
-                } else {
-                    ""
-                },
             );
         }
     }

@@ -683,7 +683,7 @@ clickhousectl cloud auth logout --oauth      # Clear only OAuth tokens, keep API
 clickhousectl cloud auth logout --api-keys   # Clear only API keys, keep OAuth tokens
 ```
 
-Both forms that clear API keys delete `.clickhouse/credentials.json` entirely, including the per-service Query API key records under `service_query_keys`. Delete the cloud-side keys first (`cloud service delete`, or `cloud key delete <key-id>`) or their IDs are lost.
+Both forms that clear API keys delete `.clickhouse/credentials.json` entirely, including any per-service Query API key records under `service_query_keys` (stored by earlier versions or by `repair-query-key`). Delete the cloud-side keys first (`cloud service delete`, or `cloud key delete <key-id>`) or their IDs are lost.
 
 Credential resolution order:
 1. CLI flags
@@ -724,7 +724,7 @@ clickhousectl cloud --url https://api.control-plane.example.com service list
 
 Manage ClickHouse, Postgres, and other ClickHouse Cloud resources via the API.
 
-Every executable Cloud command documents authorization in its `--help`, without credentials or a network request. For example, `clickhousectl cloud service get --help` shows the API-key permission `control-plane:service:view`. Commands that make several API calls combine their permission requirements; additional permissions for name lookups, optional flags, or key provisioning are labeled with their conditions. All applicable permissions are required.
+Every executable Cloud command documents authorization in its `--help`, without credentials or a network request. For example, `clickhousectl cloud service get --help` shows the API-key permission `control-plane:service:view`. Commands that make several API calls combine their permission requirements; additional permissions for name lookups, optional flags, or binding the caller's key to a query endpoint are labeled with their conditions. All applicable permissions are required.
 
 These are the upstream-declared Cloud API-key requirements bundled with this CLI version. An empty upstream permission list means a valid API key with no additional named permissions, not anonymous access. This help does not inspect your key or change the OAuth read-only restriction; database/SQL authorization and commands without a Cloud API call are described separately.
 
@@ -913,8 +913,8 @@ echo "SELECT 1+1" | clickhousectl cloud service query --name my-service
 clickhousectl cloud service query --name my-service --query "SELECT 1" --no-auto-enable
 # Loading a CSV: see the stdin INSERT example below
 
-# Deliberately replace clickhousectl's stored Query API key for exactly one
-# service (the way forward after a disabled, expired, unbound or IP-restricted key)
+# Deliberately replace a per-service Query API key stored by an earlier version
+# (the way forward after a disabled, expired, unbound or IP-restricted key)
 clickhousectl cloud service repair-query-key <service-id> --org-id <org-id>
 
 # Select a service by name and rename it
@@ -1160,14 +1160,15 @@ The command sends SQL to ClickHouse Cloud's Query API gateway, which proxies the
 
 It works with both credential modes:
 
-- **API key auth** (read + write SQL): when no per-service key is stored, `cloud service query` first uses the authenticated API key directly. This supports services whose Query API endpoint already authorizes that key without requiring permission to create another key. If the key or endpoint is not authorized, the CLI provisions a dedicated API key and binds it to the service with role `sql_console_admin`. Those generated query credentials, the endpoint ID, exact management API key ID, and provisioning organization ID are stored in `.clickhouse/credentials.json` under `service_query_keys.<service-id>`, alongside any user-level API key. Subsequent queries use that key. The generated key is scoped to a single service, so it can read and write (SELECT, INSERT, DDL) against that service but cannot reach any other service in the org. Pass `--no-auto-enable` to fail instead of provisioning.
-- **OAuth** (`cloud auth login`): the query runs as your own identity — the CLI sends your bearer token straight to the Query API, which grants **read-only** SQL access (SELECT and other read statements only; no INSERT, DDL, or other writes). No Query API key is provisioned or stored, and no query endpoint needs to be configured on the service. Use API key auth if you need to write. `--no-auto-enable` has no effect in this mode.
+- **API key auth** (read + write SQL): when no per-service key is stored, `cloud service query` uses the authenticated API key directly. If the service's Query API endpoint does not authorize that key yet (or the service has no endpoint), the CLI binds the key itself: it identifies the key with `whoami`, adds it to the endpoint's `openApiKeys` with role `sql_console_admin` (creating the endpoint if needed, keeping every other bound key, and dropping only keys the organization reports as deleted), and reruns the query. No key is created and nothing is written to `.clickhouse/credentials.json`; later queries reuse the binding. Pass `--no-auto-enable` to fail instead of binding.
+- **OAuth** (`cloud auth login`): the query runs as your own identity — the CLI sends your bearer token straight to the Query API, which grants **read-only** SQL access (SELECT and other read statements only; no INSERT, DDL, or other writes). No Query API key is bound or stored, and no query endpoint needs to be configured on the service. Use API key auth if you need to write. `--no-auto-enable` has no effect in this mode.
 
-Provisioning happens lazily (rather than at `service create` time) because the endpoint can only be bound once the service has finished provisioning, which can take several minutes — `service create` returns immediately instead of blocking on it.
+The bind gives the authenticated key `sql_console_admin` (read and write SQL) on that service's endpoint; if that is unwanted, authenticate with a dedicated low-privilege key.
+To remove the binding, run `cloud service query-endpoint delete <service-id>`, or `query-endpoint create` with `--replace-open-api-keys` listing the keys to keep.
 
-Provisioning is single-flight per project directory; provisioning the same service concurrently from two different project directories can still lose a binding.
+The bind happens lazily (rather than at `service create` time) because the endpoint can only be bound once the service has finished provisioning, which can take several minutes — `service create` returns immediately instead of blocking on it. It is serialized per project directory; binding the same service concurrently from two different project directories can still lose a binding.
 
-The API key itself has no org-level roles, so the binding is the only thing that grants it any access. After deleting a service, `cloud service delete` deletes the auto-provisioned key by its stored management and organization IDs, along with any retired key still listed under `pending_cleanup_api_key_ids`, then removes the local record. Every key is attempted even if one fails; on failure the command exits non-zero naming the keys that remain and keeps the local record so their IDs are not lost. Legacy records without that metadata remain readable, but service deletion will not guess at a cloud key by name; a partial record with a management ID is retained for manual recovery.
+Earlier versions instead created a dedicated per-service key and stored it in `.clickhouse/credentials.json` under `service_query_keys.<service-id>`. Such a record is still used first, and everything below applies only to it. Those keys have no org-level roles, so the endpoint binding is the only thing that grants them any access. After deleting a service, `cloud service delete` deletes the stored key by its stored management and organization IDs, along with any retired key still listed under `pending_cleanup_api_key_ids`, then removes the local record. Every key is attempted even if one fails; on failure the command exits non-zero naming the keys that remain and keeps the local record so their IDs are not lost. Records without that metadata remain readable, but service deletion will not guess at a cloud key by name; a partial record with a management ID is retained for manual recovery.
 
 If a query with a stored per-service key receives HTTP 401/403, the CLI does not read the rejection as proof that the local secret is stale: an administrator may equally have disabled the key, let it expire, unbound it from the endpoint, or narrowed its IP access list, and replacing the key would undo that decision. Before anything is touched, the CLI reads the key's management record (by the stored organization and management key ID) and, when the key is still enabled, the service's Query API endpoint binding, then classifies the rejection. No verdict changes anything, locally or in the organization; each one names the key ID, the reason, and the deliberate way forward:
 
@@ -1178,15 +1179,15 @@ If a query with a stored per-service key receives HTTP 401/403, the CLI does not
 
 In `--json` mode the failure is one object on stderr with a stable `code` (`query_key_deleted`, `query_key_disabled`, `query_key_expired`, `query_key_unbound`, `query_key_rejected`, `query_key_unverified`), the `api_key_id`, a recovery `command` where one is safe to suggest, and, for `query_key_rejected`, the `ip_access_list`. No path prints the stored secret.
 
-Repair is an explicit API-key-authenticated write operation, and the only way a disabled, expired, unbound or IP-restricted key is ever replaced. It verifies the stored organization, management key ID, and endpoint ID, replaces only that key ID in the endpoint binding, and preserves every other binding and project credential. Concurrent repairs in the same project reuse the first process's replacement instead of rotating it again. Legacy or incomplete records without exact ownership metadata are refused.
+Repair is an explicit API-key-authenticated write operation, needs a stored record, and is the only way a disabled, expired, unbound or IP-restricted stored key is ever replaced; it creates the replacement key and stores it. It verifies the stored organization, management key ID, and endpoint ID, replaces only that key ID in the endpoint binding, and preserves every other binding and project credential. Concurrent repairs in the same project reuse the first process's replacement instead of rotating it again. Legacy or incomplete records without exact ownership metadata are refused.
 
 A newly created key can take a few seconds to become visible to the endpoint; clickhousectl retries the binding for up to 30 seconds, then fails with the API's own error and rolls the binding back.
 
-The new binding also takes a moment to reach the Query API host, and a query issued in between is rejected. Both first-use provisioning and `repair-query-key` wait for the endpoint to accept the new key, and the repair result reports the outcome under `verification`: `verified`, `skipped` (the key was not probed) or `failed` (the probe failed for a reason unrelated to readiness). Skipped and failed exit 0, print one `Note:` or `Warning:` line on stderr, and leave the next `cloud service query` to verify the key. Only a key the Query API keeps rejecting for the whole readiness window (about two minutes) exits 1, and even then the repair stands: the result is printed with `verification: failed`, followed by an error with code `query_key_repair_unverified`. Do not rerun `repair-query-key` in that case: it would rotate a key that may only be slow to propagate.
+The new binding also takes a moment to reach the Query API host, and a query issued in between is rejected. Both a first-use bind and `repair-query-key` wait for the endpoint to accept the key, and the repair result reports the outcome under `verification`: `verified`, `skipped` (the key was not probed) or `failed` (the probe failed for a reason unrelated to readiness). Skipped and failed exit 0, print one `Note:` or `Warning:` line on stderr, and leave the next `cloud service query` to verify the key. Only a key the Query API keeps rejecting for the whole readiness window (about two minutes) exits 1, and even then the repair stands: the result is printed with `verification: failed`, followed by an error with code `query_key_repair_unverified`. Do not rerun `repair-query-key` in that case: it would rotate a key that may only be slow to propagate.
 
 A repair also retires the key it replaced and deletes it best-effort; a failed deletion is reported (as `pendingCleanupApiKeyIds` under `--json`) and retried by the next query. Only keys the CLI itself created are ever deleted, identified by the exact management key IDs in the stored record. Delete one by hand with `cloud key delete <key-id>`.
 
-Do not modify the same query endpoint concurrently with a repair, and let a first-use query finish provisioning before running one.
+Do not modify the same query endpoint concurrently with a repair or a first-use bind.
 
 Querying an **idled** service requests a wake in both auth modes. If the Query API refuses execution and asks for a wake confirmation, the CLI prints a notice to stderr and resends with that confirmation. The request may succeed while the service wakes, or time out before a result arrives; a timeout is never retried automatically. A **stopped** service is never woken: the query fails with a hint to run `cloud service start`.
 
@@ -1615,9 +1616,9 @@ table's `<destination_table_name>_clickpipes_error` table. See the official
 [ClickPipes error-reporting guide](https://clickhouse.com/docs/integrations/clickpipes/home#error-reporting).
 
 Both routes use the current Cloud login. Under OAuth, `service query` is
-read-only. Under API key authentication, its first use may provision and bind a
-per-service Query API key; pass `--no-auto-enable` to require an existing usable
-binding. See [Query API auth modes](#query-api-auth-modes).
+read-only. Under API key authentication, its first use may bind the authenticated
+API key to the service's Query API endpoint; pass `--no-auto-enable` to require an
+existing usable binding. See [Query API auth modes](#query-api-auth-modes).
 
 `clickpipe scale` accepts replicas 1–40, CPU 125–2000 millicores, and memory
 0.5–8 GB. Out-of-range and non-finite values fail with usage exit 2 before any
@@ -3237,11 +3238,11 @@ There is no install ID, no device ID, and no fingerprinting of any kind. The pay
 
 A failed *runtime* invocation may also carry up to six failure-classification fields, so that "exit code 1" stops being the only thing we know about a broken command. Each one is a closed vocabulary defined in the source, and nothing else can ever appear in it:
 
-- `failure_stage` — which stage failed: `sql_input`, `org_resolution`, `service_resolution`, `query_request`, `key_create`, `key_get`, `key_delete`, `endpoint_get`, `endpoint_upsert`, `response_stream`
+- `failure_stage` — which stage failed: `sql_input`, `org_resolution`, `service_resolution`, `query_request`, `whoami`, `key_create`, `key_get`, `key_delete`, `endpoint_get`, `endpoint_upsert`, `response_stream`
 - `failure_kind` — what kind of failure it was: `io`, `transport`, `http_4xx`, `http_5xx`, `sql_error`, `service_stopped`, `timeout`, `rate_limited`, `other`
 - `http_status` — the exact HTTP status, and only if it is one of a fixed list of common statuses; anything else is dropped (its class is already in `failure_kind`)
 - `retry_bucket` — how many retries the run made, as a bucket (`0`, `1`, `2`, `3_5`, `6_10`, `gt_10`), never an exact count
-- `provisioning_state` — how far Query API credential provisioning had got: `bearer`, `stored_key`, `management_key`, `provisioning`, `provisioned`, `refused`
+- `provisioning_state` — how far Query API credential setup had got: `bearer`, `stored_key`, `management_key`, `provisioning`, `bound_caller_key`, `refused`
 - `duration_bucket` — how long the operation ran before failing, as a bucket (`lt_250ms`, `lt_1s`, `lt_5s`, `lt_30s`, `lt_2m`, `ge_2m`)
 
 These are fixed strings compiled into the binary (plus one allowlisted status), set only where a failure is owned — never derived from an error text. No classification is attached to a successful run.
