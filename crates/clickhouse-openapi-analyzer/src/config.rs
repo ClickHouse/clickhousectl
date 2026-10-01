@@ -2,6 +2,9 @@ use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Default)]
 pub struct AnalyzerConfig {
+    /// Enforce ClickHouse Cloud's basicAuth permission convention and the public
+    /// operation catalog. Generic OpenAPI analysis leaves this disabled.
+    pub check_operation_permissions: bool,
     /// Intentional helpers without an OpenAPI operation. Removed helpers and
     /// helpers that gain a matching operation are reported as stale.
     pub non_openapi_client_methods: BTreeSet<String>,
@@ -41,7 +44,14 @@ fn pairs(values: &[(&str, &str)]) -> BTreeSet<(String, String)> {
 /// Canonical comparison policy for the ClickHouse Cloud API library.
 pub fn clickhouse_cloud_config() -> AnalyzerConfig {
     AnalyzerConfig {
-        non_openapi_client_methods: strings(&["run_query", "run_query_bearer"]),
+        check_operation_permissions: true,
+        // These query-host routes are implemented by the SQL console service,
+        // independently of the management API's published OpenAPI specification.
+        non_openapi_client_methods: strings(&[
+            "run_query",
+            "run_query_bearer",
+            "run_postgres_query_bearer",
+        ]),
         optionality_exemptions: pairs(OPTIONALITY_EXEMPTIONS),
         fractional_response_exemptions: pairs(FRACTIONAL_RESPONSE_EXEMPTIONS),
         extra_field_exemptions: BTreeSet::new(),

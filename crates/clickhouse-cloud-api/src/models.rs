@@ -200,7 +200,7 @@ pub use postgres::{
     PostgresServicePasswordResource, PostgresServicePatchRequest, PostgresServicePostRequest,
     PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest, PostgresServiceSetPassword,
     PostgresServiceSetState, PostgresServiceSetStateCommand, PostgresSlowQueryPattern,
-    PostgresSlowQueryPatternDetail, SlowQueryPatternsGetListSortby,
+    PostgresSlowQueryPatternDetail, RunPostgresQueryRequest, SlowQueryPatternsGetListSortby,
     SlowQueryPatternsGetListSortorder,
 };
 pub use query_api_endpoints::{

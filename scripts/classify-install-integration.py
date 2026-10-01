@@ -43,6 +43,8 @@ INSTALL_PREFIXES = ("crates/clickhousectl/src/version_manager/",)
 # inventory test to reject an unclassified new shared/local source or test.
 NON_INSTALL_EXACT_PATHS = frozenset(
     {
+        "crates/clickhouse-cloud-api/src/meta/operations.rs",
+        "crates/clickhouse-openapi-analyzer/src/permissions.rs",
         "crates/clickhouse-openapi-analyzer/tests/fixtures/operation_contracts/before.json",
         "crates/clickhouse-openapi-analyzer/tests/fixtures/operation_contracts/after.json",
         "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
@@ -50,6 +52,7 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
         "crates/clickhousectl/src/cloud/clickstack.rs",
         "crates/clickhousectl/src/cloud/config.rs",
+        "crates/clickhousectl/src/cloud/permissions.rs",
         "crates/clickhousectl/src/cloud/query_api_endpoints.rs",
         "crates/clickhousectl/src/cloud/udfs.rs",
         "crates/clickhousectl/src/dotenv.rs",
