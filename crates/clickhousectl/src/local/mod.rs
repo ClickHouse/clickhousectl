@@ -389,11 +389,11 @@ fn run_client(
                 None,
             )
         };
-        let metadata_lock = server::lock_metadata().map_err(&project_state_error)?;
+        let metadata_lock = server::lock_metadata().map_err(project_state_error)?;
         server::recover_current_project_servers_locked(&metadata_lock)
-            .map_err(&project_state_error)?;
+            .map_err(project_state_error)?;
         let entry = server::server_entry_locked(server_name, &metadata_lock)
-            .map_err(&project_state_error)?
+            .map_err(project_state_error)?
             .ok_or_else(|| managed_error(ManagedClientErrorKind::ServerNotFound, None))?;
         if !entry.running {
             return Err(managed_error(
