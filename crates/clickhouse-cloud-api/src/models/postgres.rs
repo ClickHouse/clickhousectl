@@ -1,6 +1,16 @@
 use super::{ResourceTagsV1, ResourceTagsV1Response};
 use serde::{Deserialize, Serialize};
 
+/// Request body for the non-OpenAPI Postgres Query API endpoint.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunPostgresQueryRequest {
+    /// SQL statement to run with read-only access.
+    pub sql: String,
+    /// Database to query; omission uses `postgres`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
+}
+
 /// `pgHaType` enum from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgHaType {
