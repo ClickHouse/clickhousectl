@@ -3674,6 +3674,35 @@ async fn run_just_provisioned_service_query(
     target: QueryTarget<'_>,
     readiness: QueryEndpointReadiness,
 ) -> CloudResult<reqwest::Response> {
+    run_just_provisioned_service_query_or(
+        client,
+        key_id,
+        key_secret,
+        sql,
+        database,
+        format,
+        target,
+        readiness,
+        query_readiness_timeout_error,
+    )
+    .await
+}
+
+/// [`run_just_provisioned_service_query`], reporting an exhausted readiness
+/// window with `on_timeout` (given the window) instead of the generic
+/// timeout error. Every other failure converts as usual.
+#[allow(clippy::too_many_arguments)]
+async fn run_just_provisioned_service_query_or(
+    client: &CloudClient,
+    key_id: &str,
+    key_secret: &str,
+    sql: &str,
+    database: Option<&str>,
+    format: &str,
+    target: QueryTarget<'_>,
+    readiness: QueryEndpointReadiness,
+    on_timeout: impl FnOnce(Duration) -> CloudError,
+) -> CloudResult<reqwest::Response> {
     let confirmed_idle = wait_for_query_endpoint_readiness(readiness, || {
         client.api().run_query(
             target.service_id,
@@ -3687,7 +3716,7 @@ async fn run_just_provisioned_service_query(
     })
     .await
     .map_err(|error| match error {
-        QueryReadinessError::TimedOut(timeout) => query_readiness_timeout_error(timeout),
+        QueryReadinessError::TimedOut(timeout) => on_timeout(timeout),
         QueryReadinessError::Api(error) => convert_query_error(client, error, target),
     })?;
 
@@ -3935,35 +3964,32 @@ async fn service_query(client: &CloudClient, options: ServiceQueryOptions) -> Cl
                             .await
                         }
                         // Nothing was written. A concurrent run may have bound
-                        // the key while this one waited for the lock, so the
-                        // query is retried once, with no readiness wait; a
-                        // second rejection means rebinding cannot help.
+                        // the key while this one waited for the lock, so wait
+                        // for the endpoint as the binder does; only a key
+                        // still rejected for the whole window means rebinding
+                        // cannot help.
                         CallerKeyBinding::AlreadyBound { caller_uuid } => {
                             failure::set_provisioning_state(ProvisioningState::ManagementKey);
-                            match run_basic_service_query(
+                            run_just_provisioned_service_query_or(
                                 client,
-                                &service_id,
                                 key_id,
                                 key_secret,
                                 &sql,
                                 options.database.as_deref(),
                                 &format,
-                                &service_name,
-                                false,
-                            )
-                            .await
-                            {
-                                Err(error) if query_endpoint_readiness_error(&error.error) => Err(
+                                target,
+                                QUERY_ENDPOINT_READINESS,
+                                |waited| {
                                     crate::cloud::service_query::bound_caller_key_rejected_error(
                                         &service_id,
                                         &org_id,
                                         &caller_uuid,
-                                        &error.error,
+                                        waited,
                                     )
-                                    .at_stage(FailureStage::EndpointGet),
-                                ),
-                                other => other.map_err(convert),
-                            }
+                                    .at_stage(FailureStage::EndpointGet)
+                                },
+                            )
+                            .await
                         }
                     }
                 }

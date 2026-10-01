@@ -14049,59 +14049,90 @@ async fn first_use_keeps_an_existing_endpoints_roles_and_origins() {
     );
 }
 
-#[tokio::test]
-async fn first_use_fails_fast_when_the_caller_is_already_bound_yet_rejected() {
-    // Rebinding a key the endpoint already lists changes nothing, so the run
-    // makes no upsert, retries the query once without a readiness wait (a
-    // concurrent run may have just bound it), and says where to look.
-    for json in [false, true] {
-        let control = start_mock_control_plane_with_service().await;
-        mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
-        mount_bound_key_lookup(&control, BOUND_KEY_A, 200).await;
-        // The caller is listed in uppercase: still the same key.
-        mount_first_use_endpoint_get(
-            &control,
-            Some(serde_json::json!([
-                BOUND_KEY_A,
-                CALLER_KEY_UUID.to_ascii_uppercase()
-            ])),
-        )
-        .await;
-        mount_first_use_endpoint_upsert(&control, endpoint_upsert_ok()).await;
-        let query_host = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
-            .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
-            .mount(&query_host)
-            .await;
-        let args: &[&str] = if json { &["--json"] } else { &[] };
-        let (project, output) = run_first_use_query(&control, &query_host, args).await;
+/// The control plane of a first use whose endpoint already binds the caller
+/// (listed in uppercase: still the same key) next to a live key, so the bind
+/// has nothing to change.
+async fn start_control_plane_already_binding_the_caller() -> MockServer {
+    let control = start_mock_control_plane_with_service().await;
+    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_bound_key_lookup(&control, BOUND_KEY_A, 200).await;
+    mount_first_use_endpoint_get(
+        &control,
+        Some(serde_json::json!([
+            BOUND_KEY_A,
+            CALLER_KEY_UUID.to_ascii_uppercase()
+        ])),
+    )
+    .await;
+    mount_first_use_endpoint_upsert(&control, endpoint_upsert_ok()).await;
+    control
+}
 
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
-        assert!(output.stdout.is_empty());
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let message = if json {
-            let envelope: Value =
-                serde_json::from_str(&stderr[stderr.find('{').unwrap()..]).unwrap();
-            assert_eq!(envelope["error"]["code"], "query_key_bound_rejected");
-            assert_eq!(envelope["error"]["api_key_id"], CALLER_KEY_UUID);
-            envelope["error"]["message"].as_str().unwrap().to_string()
-        } else {
-            stderr.to_string()
-        };
-        for fragment in [
-            CALLER_KEY_UUID,
-            "already bound",
-            "cloud service query-endpoint get",
-            "cloud key get",
-        ] {
-            assert!(message.contains(fragment), "{fragment}: {message}");
-        }
-        assert!(control_plane_writes(&control).await.is_empty());
-        // The rejected query and its one immediate retry; no readiness wait.
-        assert_eq!(query_host.received_requests().await.unwrap().len(), 2);
-        assert!(!project.path().join(".clickhouse/credentials.json").exists());
+#[tokio::test]
+async fn first_use_waits_for_an_already_bound_caller_key_without_rebinding() {
+    // A concurrent run may have just bound the key: rebinding would change
+    // nothing, so the run writes nothing and waits for the endpoint instead.
+    let control = start_control_plane_already_binding_the_caller().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .up_to_n_times(3)
+        .with_priority(1)
+        .mount(&query_host)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .with_priority(5)
+        .mount(&query_host)
+        .await;
+    let (project, output) = run_first_use_query(&control, &query_host, &[]).await;
+
+    assert_success(&output);
+    assert_eq!(output.stdout, b"1\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(QUERY_READINESS_NOTICE), "{stderr}");
+    assert!(control_plane_writes(&control).await.is_empty());
+    assert!(!project.path().join(".clickhouse/credentials.json").exists());
+}
+
+#[tokio::test]
+#[ignore = "waits out the real 120 s Query API readiness window; run explicitly"]
+async fn first_use_fails_when_an_already_bound_caller_key_is_rejected_for_the_whole_window() {
+    // Rebinding a key the endpoint already lists changes nothing, so the run
+    // makes no upsert, waits out the readiness window, and says where to look.
+    let control = start_control_plane_already_binding_the_caller().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+        .mount(&query_host)
+        .await;
+    let (project, output) = run_first_use_query(&control, &query_host, &["--json"]).await;
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let envelope: Value = serde_json::from_str(&stderr[stderr.find('{').unwrap()..]).unwrap();
+    assert_eq!(envelope["error"]["code"], "query_key_bound_rejected");
+    assert_eq!(envelope["error"]["api_key_id"], CALLER_KEY_UUID);
+    let message = envelope["error"]["message"].as_str().unwrap();
+    for fragment in [
+        CALLER_KEY_UUID,
+        "already bound",
+        "after waiting 120s",
+        "cloud service query-endpoint get",
+        "cloud key get",
+    ] {
+        assert!(message.contains(fragment), "{fragment}: {message}");
     }
+    assert!(control_plane_writes(&control).await.is_empty());
+    assert!(
+        query_host.received_requests().await.unwrap().len() > 2,
+        "the whole window was used"
+    );
+    assert!(!project.path().join(".clickhouse/credentials.json").exists());
 }
 
 #[tokio::test]

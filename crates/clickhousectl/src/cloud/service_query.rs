@@ -1280,37 +1280,35 @@ pub(crate) enum CallerKeyBinding {
     Bound,
     /// The endpoint already listed the caller's key and no stale binding was
     /// pruned, so nothing was written. Another process may have just bound
-    /// it; otherwise rebinding cannot fix the rejection.
+    /// it, so the binding may still have to reach the Query API host;
+    /// otherwise rebinding cannot fix the rejection.
     AlreadyBound { caller_uuid: String },
 }
 
-/// The caller's key is already bound to the endpoint and nothing stale was
-/// pruned, so an upsert would change nothing and the Query API goes on
-/// rejecting the key. The verdict comes from the endpoint read (the caller
-/// records that stage); the failure classification stays the Query API's own
-/// rejection (#450).
+/// The caller's key was already bound to the endpoint, nothing stale was
+/// pruned, and the Query API kept rejecting the key for the whole readiness
+/// window `waited`, so rebinding cannot help. The verdict comes from the
+/// endpoint read (the caller records that stage); like any exhausted
+/// readiness window it is classified as a timeout (#450).
 pub(crate) fn bound_caller_key_rejected_error(
     service_id: &str,
     org_id: &str,
     caller_uuid: &str,
-    rejection: &clickhouse_cloud_api::Error,
+    waited: Duration,
 ) -> CloudError {
-    let status = match rejection {
-        clickhouse_cloud_api::Error::Api { status, .. } => format!(" (HTTP {status})"),
-        _ => String::new(),
-    };
     let inspect =
         format!("clickhousectl cloud service query-endpoint get {service_id} --org-id {org_id}");
     let message = format!(
         "the authenticated API key {caller_uuid} is already bound to the Query API endpoint of \
-         service {service_id}, yet the Query API rejected it{status}. Nothing was changed. Likely \
-         causes: the endpoint's roles or allowed origins, the key's IP access list not covering \
-         this machine, or the key's role. A binding made moments ago may also still be \
-         propagating; retry shortly in that case. Inspect the endpoint with\n  {inspect}\nand \
-         the key with\n  clickhousectl cloud key get {caller_uuid} --org-id {org_id}"
+         service {service_id}, yet the Query API still rejected it after waiting {}s. Nothing \
+         was changed. Likely causes: the endpoint's roles or allowed origins, the key's IP \
+         access list not covering this machine, or the key's role. Inspect the endpoint \
+         with\n  {inspect}\nand the key with\n  clickhousectl cloud key get {caller_uuid} \
+         --org-id {org_id}",
+        waited.as_secs()
     );
     CloudError::new(message.clone())
-        .with_failure(crate::failure::classify_api_error(rejection))
+        .with_failure(ApiFailure::new(FailureKind::Timeout))
         .with_details(CloudErrorDetail {
             code: CloudErrorCode::QueryKeyBoundRejected,
             message,
@@ -1405,10 +1403,10 @@ async fn dangling_bound_keys(
 ///
 /// When the endpoint already lists the caller and nothing was pruned, an
 /// upsert would change nothing, so none is made and the result is
-/// [`CallerKeyBinding::AlreadyBound`]: the caller retries the query once and,
-/// if the Query API still rejects the key, fails with
-/// [`bound_caller_key_rejected_error`] instead of waiting for a readiness
-/// that will never come.
+/// [`CallerKeyBinding::AlreadyBound`]: the caller still waits for the
+/// endpoint (a concurrent run may have just bound the key) and, if the Query
+/// API rejects the key for the whole window, fails with
+/// [`bound_caller_key_rejected_error`].
 pub(crate) async fn bind_caller_query_key(
     client: &CloudClient,
     org_id: &str,
@@ -1945,16 +1943,17 @@ mod tests {
     }
 
     #[test]
-    fn an_already_bound_rejection_names_the_key_and_where_to_look() {
-        let rejection = clickhouse_cloud_api::Error::Api {
-            status: 403,
-            message: "forbidden".into(),
-        };
-        let error = bound_caller_key_rejected_error("svc-1", "org-1", "key-uuid-1", &rejection);
+    fn an_already_bound_rejection_names_the_key_the_wait_and_where_to_look() {
+        let error = bound_caller_key_rejected_error(
+            "svc-1",
+            "org-1",
+            "key-uuid-1",
+            Duration::from_secs(120),
+        );
         assert_eq!(error.kind, CloudErrorKind::Generic);
         for needle in [
             "key-uuid-1",
-            "HTTP 403",
+            "after waiting 120s",
             "cloud service query-endpoint get svc-1 --org-id org-1",
             "cloud key get key-uuid-1 --org-id org-1",
         ] {
@@ -1971,9 +1970,7 @@ mod tests {
             details.command.as_deref(),
             Some("clickhousectl cloud service query-endpoint get svc-1 --org-id org-1")
         );
-        let failure = error.failure.unwrap();
-        assert_eq!(failure.kind, FailureKind::Http4xx);
-        assert_eq!(failure.http_status, Some(403));
+        assert_eq!(error.failure.unwrap().kind, FailureKind::Timeout);
     }
 
     #[test]

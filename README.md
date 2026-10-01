@@ -1165,7 +1165,7 @@ It works with both credential modes:
 
 Endpoint roles apply to every bound key. A new endpoint is created with `sql_console_admin` (read and write SQL); an existing endpoint keeps its roles and allowed origins, and only `openApiKeys` changes. If `sql_console_admin` is unwanted, authenticate with a dedicated low-privilege key.
 To remove the binding, run `cloud service query-endpoint delete <service-id>`, or `query-endpoint create` with `--replace-open-api-keys` listing the keys to keep; the next query with the same key binds it again unless `--no-auto-enable` is passed.
-If the endpoint already lists the key and the Query API still rejects it, the CLI writes nothing, retries the query once, then fails (`--json` code `query_key_bound_rejected`) pointing at `cloud service query-endpoint get` and `cloud key get`.
+If the endpoint already lists the key, the CLI writes nothing and waits for the endpoint to accept it; if the Query API still rejects the key once the wait ends, it fails (`--json` code `query_key_bound_rejected`) pointing at `cloud service query-endpoint get` and `cloud key get`.
 
 The bind happens lazily (rather than at `service create` time) because the endpoint can only be bound once the service has finished provisioning, which can take several minutes — `service create` returns immediately instead of blocking on it. It is serialized per project directory; binding the same service concurrently from two different project directories can still lose a binding.
 
