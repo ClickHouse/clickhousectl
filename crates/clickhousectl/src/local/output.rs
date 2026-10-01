@@ -908,6 +908,30 @@ impl fmt::Display for InitOutput {
     }
 }
 
+// ── udf ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UdfInitOutput {
+    pub name: String,
+    /// The UDF directory as given or defaulted, e.g. `clickhouse/udfs/my_fn`.
+    pub dir: String,
+    /// File names this invocation created; empty when everything existed.
+    pub created: Vec<String>,
+}
+
+impl fmt::Display for UdfInitOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.created.is_empty() {
+            return write!(f, "UDF {} already exists in {}", self.name, self.dir);
+        }
+        write!(f, "Scaffolded UDF {} in {}", self.name, self.dir)?;
+        for file in &self.created {
+            write!(f, "\nCreated {}/{file}", self.dir)?;
+        }
+        Ok(())
+    }
+}
+
 // ── server configs ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]

@@ -382,7 +382,8 @@ clickhouse/
 ├── tables/                 # Table definitions (CREATE TABLE ...)
 ├── materialized_views/     # Materialized view definitions
 ├── queries/                # Saved queries
-└── seed/                   # Seed data / INSERT statements
+├── seed/                   # Seed data / INSERT statements
+└── udfs/                   # Executable UDF sources, one directory per function
 postgres/
 ├── tables/                 # Table definitions (CREATE TABLE ...)
 ├── views/                  # View definitions (CREATE VIEW ...)
@@ -390,6 +391,8 @@ postgres/
 ├── queries/                # Saved queries
 └── seed/                   # Seed data / INSERT statements
 ```
+
+`clickhousectl local udf init <name>` scaffolds `clickhouse/udfs/<name>/` with a `udf.json` definition (the same shape `cloud udf create --file` accepts) and an executable entrypoint: `main.py` for `--runtime python3.11` (the default) or `main` for `--runtime native`. Pass `--type executable_pool` for a pooled function and `--dir PATH` for a different parent directory. Re-running keeps existing files and reports only the ones it created.
 
 ### Running queries
 
