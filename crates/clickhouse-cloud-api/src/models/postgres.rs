@@ -1422,3 +1422,18 @@ pub struct PostgresInstanceUpdateConfigResponse {
     #[serde(rename = "pgConfig", skip_serializing_if = "Option::is_none")]
     pub pg_config: Option<PgConfigResponse>,
 }
+
+/// `PostgresBackup` from the ClickHouse Cloud API: one retained base backup of
+/// a Postgres service.
+///
+/// Used in response position only: every field is `Option<T>`, so a field the
+/// API drops or sends as `null` deserializes to `None` instead of failing.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct PostgresBackup {
+    /// Identifier of the base backup.
+    #[serde(rename = "key", skip_serializing_if = "Option::is_none")]
+    pub key: Option<String>,
+    /// Time the backup was last written to.
+    #[serde(rename = "lastModified", skip_serializing_if = "Option::is_none")]
+    pub last_modified: Option<chrono::DateTime<chrono::Utc>>,
+}

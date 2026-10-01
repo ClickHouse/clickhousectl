@@ -6099,3 +6099,252 @@ async fn clickstack_list_pagination_encodes_only_supplied_parameters() {
         }
     }
 }
+
+// ===========================================================================
+// Postgres service backups
+// ===========================================================================
+
+#[tokio::test]
+async fn postgres_service_backup_get_list_encodes_cursor_and_reads_envelope_pagination() {
+    for (cursor, limit) in [
+        (None, None),
+        (Some("next+/=&? page"), None),
+        (None, Some(25)),
+        (Some("next+/=&? page"), Some(25)),
+    ] {
+        let (server, client) = setup().await;
+        let backups = serde_json::json!([
+            {
+                "key": "basebackups_005/000000010000000000000002_backup_stop_sentinel.json",
+                "lastModified": "2026-03-31T18:17:37Z"
+            }
+        ]);
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/postgres/pg-1/backups"))
+            .and(basic_auth("key", "secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 200,
+                "requestId": "req-test",
+                "result": backups,
+                "limit": 25,
+                "totalCount": 2,
+                "nextCursor": "another-page"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client
+            .postgres_service_backup_get_list("org-1", "pg-1", cursor, limit)
+            .await
+            .unwrap();
+        assert_eq!(response.limit, Some(25));
+        assert_eq!(response.total_count, Some(2));
+        assert_eq!(response.next_cursor.as_deref(), Some("another-page"));
+        let result = response.result.unwrap();
+        assert_eq!(
+            result[0].key.as_deref(),
+            Some("basebackups_005/000000010000000000000002_backup_stop_sentinel.json")
+        );
+        assert_eq!(
+            result[0].last_modified,
+            Some(
+                chrono::DateTime::parse_from_rfc3339("2026-03-31T18:17:37Z")
+                    .unwrap()
+                    .with_timezone(&Utc)
+            )
+        );
+        let requests = server.received_requests().await.unwrap();
+        let query: std::collections::HashMap<_, _> =
+            requests[0].url.query_pairs().into_owned().collect();
+        let mut expected = std::collections::HashMap::new();
+        if let Some(cursor) = cursor {
+            expected.insert("cursor".to_owned(), cursor.to_owned());
+        }
+        if let Some(limit) = limit {
+            expected.insert("limit".to_owned(), limit.to_string());
+        }
+        assert_eq!(query, expected);
+        if cursor.is_none() && limit.is_none() {
+            assert!(requests[0].url.query().is_none());
+        }
+        assert!(requests[0].body.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn postgres_service_backup_get_list_last_page_has_null_next_cursor() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/postgres/pg/backups"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "req-test",
+            "result": [],
+            "limit": 100,
+            "totalCount": 0,
+            "nextCursor": null
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client
+        .postgres_service_backup_get_list("org", "pg", None, None)
+        .await
+        .unwrap();
+    assert_eq!(response.result, Some(vec![]));
+    assert_eq!(response.next_cursor, None);
+    assert_eq!(response.total_count, Some(0));
+}
+
+#[tokio::test]
+async fn postgres_service_backup_get_list_propagates_api_errors() {
+    for (status, body, expected_message) in [
+        (
+            404,
+            serde_json::json!({"status": 404, "error": "Postgres service not found"}).to_string(),
+            "Postgres service not found",
+        ),
+        (500, "upstream failed".to_owned(), "upstream failed"),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org/postgres/pg/backups"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = client
+            .postgres_service_backup_get_list("org", "pg", None, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, clickhouse_cloud_api::Error::Api { status: actual_status, ref message } if actual_status == status && message == expected_message),
+            "unexpected error: {error:?}"
+        );
+    }
+}
+
+// ===========================================================================
+// Whoami
+// ===========================================================================
+
+#[tokio::test]
+async fn whoami_get_parses_user_identity_with_bearer_auth() {
+    let server = MockServer::start().await;
+    let client = Client::with_bearer_token(server.uri(), "token");
+    let wire = serde_json::json!({
+        "actorType": "user",
+        "userId": "00000000-0000-4000-8000-000000000001",
+        "email": "user@example.com",
+        "name": "Example User",
+        "organizations": [
+            {
+                "organizationId": "00000000-0000-4000-8000-000000000002",
+                "organizationName": "Example Org"
+            }
+        ]
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .and(bearer_token("token"))
+        .respond_with(ok_json(wire.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client.whoami_get().await.unwrap();
+    assert_eq!(response.status, Some(200));
+    let whoami = response.result.unwrap();
+    let Whoami::WhoamiUser(user) = &whoami else {
+        panic!("expected a user identity, got {whoami:?}");
+    };
+    assert_eq!(user.actor_type, Some(WhoamiUserActortype::User));
+    assert_eq!(
+        user.user_id,
+        Some(uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000001").unwrap())
+    );
+    assert_eq!(user.email.as_deref(), Some("user@example.com"));
+    assert_eq!(user.name.as_deref(), Some("Example User"));
+    let organizations = user.organizations.as_ref().unwrap();
+    assert_eq!(
+        organizations[0].organization_id,
+        Some(uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000002").unwrap())
+    );
+    assert_eq!(
+        organizations[0].organization_name.as_deref(),
+        Some("Example Org")
+    );
+    assert_eq!(serde_json::to_value(&whoami).unwrap(), wire);
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(requests[0].url.query().is_none());
+    assert!(requests[0].body.is_empty());
+}
+
+#[tokio::test]
+async fn whoami_get_parses_api_key_identity_with_basic_auth() {
+    let (server, client) = setup().await;
+    let wire = serde_json::json!({
+        "actorType": "apiKey",
+        "keyId": "key-1",
+        "name": "ci key",
+        "organizationId": "00000000-0000-4000-8000-000000000002"
+    });
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(wire.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let whoami = client.whoami_get().await.unwrap().result.unwrap();
+    let Whoami::WhoamiApiKey(key) = &whoami else {
+        panic!("expected an API key identity, got {whoami:?}");
+    };
+    assert_eq!(key.actor_type, Some(WhoamiApiKeyActortype::ApiKey));
+    assert_eq!(key.key_id.as_deref(), Some("key-1"));
+    assert_eq!(key.name.as_deref(), Some("ci key"));
+    assert_eq!(
+        key.organization_id,
+        Some(uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000002").unwrap())
+    );
+    assert_eq!(serde_json::to_value(&whoami).unwrap(), wire);
+}
+
+#[tokio::test]
+async fn whoami_get_keeps_unknown_actor_type_verbatim() {
+    let (server, client) = setup().await;
+    let wire = serde_json::json!({"actorType": "serviceAccount", "accountId": "sa-1"});
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(ok_json(wire.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let whoami = client.whoami_get().await.unwrap().result.unwrap();
+    assert_eq!(whoami, Whoami::Unknown(wire));
+}
+
+#[tokio::test]
+async fn whoami_get_propagates_api_errors() {
+    for (status, body, expected_message) in [
+        (
+            401,
+            serde_json::json!({"status": 401, "error": "Unauthorized"}).to_string(),
+            "Unauthorized",
+        ),
+        (500, "upstream failed".to_owned(), "upstream failed"),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/whoami"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let error = client.whoami_get().await.unwrap_err();
+        assert!(
+            matches!(error, clickhouse_cloud_api::Error::Api { status: actual_status, ref message } if actual_status == status && message == expected_message),
+            "unexpected error: {error:?}"
+        );
+    }
+}

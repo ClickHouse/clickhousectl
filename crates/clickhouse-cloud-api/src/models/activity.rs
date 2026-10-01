@@ -332,6 +332,8 @@ pub enum ActivityType {
     Organization_update_public_preview,
     #[serde(rename = "organization_update_saml_query_ownership_migration")]
     Organization_update_saml_query_ownership_migration,
+    #[serde(rename = "postgres_action")]
+    Postgres_action,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -557,6 +559,7 @@ impl std::fmt::Display for ActivityType {
             Self::Organization_update_saml_query_ownership_migration => {
                 write!(f, "organization_update_saml_query_ownership_migration")
             }
+            Self::Postgres_action => write!(f, "postgres_action"),
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
