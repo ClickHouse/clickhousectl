@@ -545,6 +545,47 @@ The selection is not remembered: starting without `--config` removes chctl's pre
 
 ClickHouse merges partial configurations recursively; XML `replace` and `remove` attributes explicitly replace or delete settings. See [ClickHouse configuration files](https://clickhouse.com/docs/operations/configuration-files) for merge rules and XML/YAML syntax.
 
+#### Executable UDFs
+
+`local udf` deploys [executable user-defined functions](https://clickhouse.com/docs/sql-reference/functions/udf#executable-user-defined-functions) to a local server from the same source directory `cloud udf` uses: a `udf.json` definition in the Cloud API's field names next to the function's files. Develop and test locally, then deploy the identical directory to Cloud.
+
+```bash
+clickhousectl local udf init is_business_hours        # clickhouse/udfs/is_business_hours/{udf.json,main.py}
+clickhousectl local server start
+clickhousectl local udf deploy clickhouse/udfs/is_business_hours
+clickhousectl local udf call is_business_hours "2026-03-20 10:00:00"
+clickhousectl local udf list
+clickhousectl local udf reload
+clickhousectl local udf remove is_business_hours
+```
+
+Every `local udf` command takes `--server NAME` (default `default`). `deploy`, `list` and `remove` work whether or not the server is running; `reload` and `call` need it running. Deploying to a server that was never started creates its data directory; the name does not appear in `local server list` until the server starts, and `local server remove <name>` deletes the staged functions along with that directory.
+
+`deploy` validates `udf.json` exactly as `cloud udf create --file` does, rejects symbolic links (Cloud rejects archives that contain them), requires `main.py` at the root for runtime `python3.11`, and writes, under `.clickhouse/servers/<name>/data/`:
+
+| Path | Contents |
+|---|---|
+| `config.d/chctl-udf.xml` | Managed overlay pointing `user_defined_executable_functions_config` and `user_scripts_path` at the two directories below. Also rewritten on every `server start`; it sorts after `chctl-config.xml`, so these two settings win over a named config. |
+| `user_defined_functions/<name>_function.xml` | The rendered `<function>` block, plus a `<name>.json` copy of the definition that `list` reads. |
+| `user_scripts/<name>/` | The source directory minus `udf.json`, hidden entries and `__pycache__`. Redeploying replaces it. |
+
+Field mapping from `udf.json` to the XML (units are identical on both targets):
+
+| `udf.json` | `<function>` element |
+|---|---|
+| `functionName`, `type`, `arguments[].name/type`, `returnType`, `returnName` | `name`, `type`, `argument/name`, `argument/type`, `return_type`, `return_name` |
+| `format` | `format` (`TabSeparated` when omitted) |
+| `commandReadTimeout`, `commandWriteTimeout` (ms) | `command_read_timeout`, `command_write_timeout` |
+| `poolSize`, `maxCommandExecutionTime` (s) | `pool_size`, `max_command_execution_time` (written for `executable_pool` only) |
+| `sendChunkHeader`, `deterministic` | `send_chunk_header`, `deterministic` |
+| `runtime: python3.11` | `execute_direct` `0` and `command` = the absolute interpreter and `main.py` paths, so no shebang or execute bit is needed, as on Cloud. The interpreter is `--python PATH`, else `python3.11`, else `python3` from `PATH`, resolved at deploy time and baked into the file: redeploy after moving the project or the interpreter. |
+| `runtime: native` | `execute_direct` `1` and `command` = `<name>/main` (`--entrypoint FILE` overrides the file name); the entrypoint is made executable. |
+| `memoryLimitMib`, `sandboxType`, `sandboxVersion` | No local equivalent; accepted and reported as ignored. |
+
+A running server is asked to `SYSTEM RELOAD FUNCTIONS` and `deploy` then confirms the function appears in `system.functions` (`loaded: true` in `--json`). If it does not, the definition was rejected: the ClickHouse error is in `.clickhouse/servers/<name>/server.log`. A stopped server picks the files up on its next start. ClickHouse also rescans the function directory on its own every few seconds, so `reload` is rarely needed outside scripts.
+
+`call NAME [ARG...]` runs `SELECT NAME(args)` over the server's HTTP interface as the `default` user and prints the raw result (`--format` selects the ClickHouse output format). Integer and float arguments stay bare; everything else is passed as a quoted String literal, which ClickHouse casts to the declared argument type. For expressions or table data use `local client --query`.
+
 #### Local Postgres (Docker-backed)
 
 When you also need a local Postgres alongside ClickHouse — e.g. for testing CDC pipelines or ingesting from Postgres — use `local postgres`. Each instance is keyed on `(name, major version)` so the same name can host multiple Postgres majors with isolated data: data lives at `.clickhouse/servers/<name>-pg<major>/data/`, metadata at `.clickhouse/servers/<name>-pg<major>.json`, and the container is `clickhousectl-pg-<name>-<major>`. ClickHouse paths (`<name>/data/`, `<name>.json`) stay separate, so a name can be used by both engines. Requires Docker to be installed and running.
@@ -621,7 +662,11 @@ All project-local server data lives inside `.clickhouse/` in your project direct
 └── servers/
     ├── default.json         # ClickHouse identity and runtime state
     ├── default/
+    │   ├── server.log      # stdout/stderr of the "default" server
     │   └── data/           # ClickHouse data files for "default" server
+    │       ├── config.d/   # chctl-config.<ext> (--config overlay) and chctl-udf.xml (managed)
+    │       ├── user_defined_functions/   # <name>_function.xml rendered by `local udf deploy`
+    │       └── user_scripts/             # <name>/ sources copied by `local udf deploy`
     ├── dev.json             # ClickHouse identity and runtime state
     └── dev/
         └── data/           # ClickHouse data files for "dev" server
@@ -2932,6 +2977,8 @@ Successful structured output follows the command's response contract. Cloud reso
 | `cloud clickpipe settings get --json` | Object with schema-defined snake_case settings such as `object_storage_max_file_count` and `kafka_read_committed`. |
 | `cloud postgres metrics --json` | Object with `metrics`; `metrics[].series[].dataPoints[].timestamp` values are numbers in epoch seconds. |
 | `local server list --json` | CLI-defined snake_case object with `servers`, `total_servers`, and `project_scope` fields. |
+| `local udf deploy --json` | CLI-defined snake_case object: `name`, `server`, `type`, `runtime`, `server_running`, `reloaded`, `loaded` (`null` when the server is not running), `interpreter`, `ignored_fields`, `function_config`, `scripts_dir`, `log_path`. |
+| `local udf list --json` | Object with `server`, `server_running` and a `udfs` array of `name`, `type`, `runtime`, `loaded` (`null` when the server is not running). |
 
 This is API-shaped output, not a byte-for-byte copy of an HTTP response: the CLI deserializes responses into typed models before serializing them, and optional fields may therefore be omitted. Scripts should target the documented shape of the specific command they invoke; a universal `jq` assumption about casing, wrappers, or every list being an array is not portable. The CLI does not opportunistically rename keys, add or remove wrappers, or coerce number and timestamp types for consistency, since each would be a compatibility change.
 
@@ -3008,6 +3055,11 @@ The schema and meanings of existing codes are stable. New optional fields or cod
 | Code | Meaning |
 | ---- | ------- |
 | `server_not_found` | The selected local server does not exist |
+| `udf_definition_invalid` | `udf.json` is not valid JSON (message redacted) or fails validation (message carries the reason) |
+| `udf_source_invalid` | The UDF directory is missing, has no `udf.json` or entrypoint, or contains a symbolic link |
+| `udf_not_found` | No UDF of that name is deployed to the selected server |
+| `udf_interpreter_not_found` | No `python3.11`/`python3` on `PATH` and no usable `--python` |
+| `udf_query_failed` | The local server rejected a UDF statement; the server's text is redacted, human output shows it |
 | `managed_client_server_not_found` | Managed client lookup did not find the selected server in the current project |
 | `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
 | `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |

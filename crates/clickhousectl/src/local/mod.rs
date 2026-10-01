@@ -667,6 +667,10 @@ async fn start_server(
     // flags below are command-line overrides that still win over the file, so
     // the managed lifecycle is preserved regardless of the file's contents.
     config::apply_config_overlay(&data_dir, resolved_config.as_deref())?;
+    // Point the embedded config at this server's executable UDF directories.
+    // Sorted after `chctl-config.*`, so the managed paths win if a named
+    // config also sets them; deploy/remove rewrite the same file.
+    udf::write_overlay(&data_dir)?;
 
     cmd.current_dir(&data_dir);
     cmd.args(init::server_flags());

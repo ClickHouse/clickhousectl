@@ -38,6 +38,13 @@ enum LocalErrorCode {
     UnsupportedArgument,
     ConfigNotFound,
     InvalidConfigName,
+    UdfDefinitionInvalid,
+    UdfSourceInvalid,
+    UdfNotFound,
+    UdfInterpreterNotFound,
+    /// The local server answered a UDF statement with an error. The server's
+    /// text is foreign output, so the structured message is a fixed summary.
+    UdfQueryFailed,
     InvalidVersion,
     /// The version is not installed locally. Distinct from
     /// [`Self::VersionUnavailable`], which means it could not be resolved or
@@ -335,6 +342,30 @@ impl LocalErrorOutput {
                 .command("clickhousectl local server configs"),
             Error::InvalidConfigName(_) => Mapping::parity(LocalErrorCode::InvalidConfigName)
                 .command("clickhousectl local server configs"),
+
+            // ── local UDFs ──────────────────────────────────────────────────
+            Error::UdfDefinitionParse { .. } => Mapping::redacted(
+                LocalErrorCode::UdfDefinitionInvalid,
+                "UDF definition is not valid JSON",
+            )
+            .command("clickhousectl local udf init --help"),
+            Error::UdfDefinitionInvalid { .. } => {
+                Mapping::parity(LocalErrorCode::UdfDefinitionInvalid)
+                    .command("clickhousectl local udf init --help")
+            }
+            Error::UdfSourceInvalid { .. } => Mapping::parity(LocalErrorCode::UdfSourceInvalid)
+                .command("clickhousectl local udf deploy --help"),
+            Error::UdfNotFound { server, .. } => Mapping::parity(LocalErrorCode::UdfNotFound)
+                .command(format!("clickhousectl local udf list --server {server}")),
+            Error::UdfInterpreterNotFound(_) => {
+                Mapping::parity(LocalErrorCode::UdfInterpreterNotFound)
+                    .command("clickhousectl local udf deploy --help")
+            }
+            Error::UdfQueryFailed { server, .. } => Mapping::redacted(
+                LocalErrorCode::UdfQueryFailed,
+                format!("ClickHouse server '{server}' rejected the query"),
+            )
+            .command("clickhousectl local server list"),
 
             // ── versions ────────────────────────────────────────────────────
             Error::InvalidVersion(_) => Mapping::parity(LocalErrorCode::InvalidVersion)
@@ -929,6 +960,172 @@ impl fmt::Display for UdfInitOutput {
             write!(f, "\nCreated {}/{file}", self.dir)?;
         }
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UdfDeployOutput {
+    pub name: String,
+    pub server: String,
+    pub r#type: String,
+    pub runtime: String,
+    pub server_running: bool,
+    /// Whether `SYSTEM RELOAD FUNCTIONS` was issued (only on a running server).
+    pub reloaded: bool,
+    /// Whether the server reports the function as loaded; `None` when the
+    /// server is not running.
+    pub loaded: Option<bool>,
+    /// Absolute interpreter baked into the command for runtime python3.11.
+    pub interpreter: Option<String>,
+    /// Cloud-only definition fields that have no local equivalent.
+    pub ignored_fields: Vec<String>,
+    pub function_config: String,
+    pub scripts_dir: String,
+    pub log_path: String,
+}
+
+impl fmt::Display for UdfDeployOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "Deployed UDF {} to server '{}' ({}, {})",
+            self.name, self.server, self.runtime, self.r#type
+        )?;
+        writeln!(f, "  definition: {}", self.function_config)?;
+        writeln!(f, "  scripts:    {}", self.scripts_dir)?;
+        if let Some(interpreter) = &self.interpreter {
+            writeln!(f, "  interpreter: {interpreter}")?;
+        }
+        if !self.ignored_fields.is_empty() {
+            writeln!(
+                f,
+                "  ignored Cloud-only fields: {}",
+                self.ignored_fields.join(", ")
+            )?;
+        }
+        match (self.server_running, self.loaded) {
+            (false, _) => write!(
+                f,
+                "Server '{}' is not running; the function loads on its next start.",
+                self.server
+            ),
+            (true, Some(true)) => write!(f, "Reloaded functions; {} is loaded.", self.name),
+            (true, _) => write!(
+                f,
+                "Reloaded functions, but {} is not loaded yet; check {} for the ClickHouse error.",
+                self.name, self.log_path
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UdfListEntry {
+    pub name: String,
+    pub r#type: Option<String>,
+    pub runtime: Option<String>,
+    /// `None` when the server is not running.
+    pub loaded: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UdfListOutput {
+    pub server: String,
+    pub server_running: bool,
+    pub udfs: Vec<UdfListEntry>,
+}
+
+#[derive(Tabled)]
+struct UdfListRow {
+    #[tabled(rename = "Name")]
+    name: String,
+    #[tabled(rename = "Type")]
+    kind: String,
+    #[tabled(rename = "Runtime")]
+    runtime: String,
+    #[tabled(rename = "Loaded")]
+    loaded: String,
+}
+
+impl fmt::Display for UdfListOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.udfs.is_empty() {
+            return write!(f, "No UDFs deployed to server '{}'", self.server);
+        }
+        let rows: Vec<UdfListRow> = self
+            .udfs
+            .iter()
+            .map(|udf| UdfListRow {
+                name: udf.name.clone(),
+                kind: udf.r#type.clone().unwrap_or_else(|| "-".into()),
+                runtime: udf.runtime.clone().unwrap_or_else(|| "-".into()),
+                loaded: match udf.loaded {
+                    Some(true) => "yes".into(),
+                    Some(false) => "no".into(),
+                    None => "-".into(),
+                },
+            })
+            .collect();
+        write!(f, "{}", Table::new(rows).with(Style::markdown()))?;
+        if !self.server_running {
+            write!(
+                f,
+                "\nServer '{}' is not running; loaded state is unknown until it starts.",
+                self.server
+            )?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UdfRemoveOutput {
+    pub name: String,
+    pub server: String,
+    pub reloaded: bool,
+}
+
+impl fmt::Display for UdfRemoveOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Removed UDF {} from server '{}'", self.name, self.server)?;
+        if self.reloaded {
+            write!(f, " and reloaded functions")
+        } else {
+            write!(f, "; the change applies on its next start")
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UdfReloadOutput {
+    pub server: String,
+    /// Executable UDFs the server reports as loaded after the reload.
+    pub loaded: Vec<String>,
+}
+
+impl fmt::Display for UdfReloadOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Reloaded functions on server '{}'", self.server)?;
+        if self.loaded.is_empty() {
+            write!(f, "; no executable UDFs are loaded")
+        } else {
+            write!(f, "; loaded: {}", self.loaded.join(", "))
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UdfCallOutput {
+    pub name: String,
+    pub server: String,
+    pub query: String,
+    /// The server's response body in the requested format.
+    pub result: String,
+}
+
+impl fmt::Display for UdfCallOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.result.trim_end_matches('\n'))
     }
 }
 
@@ -1657,11 +1854,99 @@ mod tests {
                 },
                 "binary_not_launchable",
             ),
+            (
+                Error::UdfDefinitionParse {
+                    path: "clickhouse/udfs/my_fn/udf.json".into(),
+                    source: serde_json::from_str::<serde_json::Value>("{")
+                        .expect_err("invalid fixture must fail to parse"),
+                },
+                "udf_definition_invalid",
+            ),
+            (
+                Error::UdfDefinitionInvalid {
+                    path: "clickhouse/udfs/my_fn/udf.json".into(),
+                    reason: "UDF definition requires functionName".into(),
+                },
+                "udf_definition_invalid",
+            ),
+            (
+                Error::UdfSourceInvalid {
+                    path: "clickhouse/udfs/my_fn".into(),
+                    reason: "contains a symbolic link at link.py".into(),
+                },
+                "udf_source_invalid",
+            ),
+            (
+                Error::UdfNotFound {
+                    name: "my_fn".into(),
+                    server: "dev".into(),
+                },
+                "udf_not_found",
+            ),
+            (
+                Error::UdfInterpreterNotFound("No python3.11 or python3 found".into()),
+                "udf_interpreter_not_found",
+            ),
+            (
+                Error::UdfQueryFailed {
+                    server: "default".into(),
+                    details: "Code: 46. DB::Exception: Unknown function".into(),
+                },
+                "udf_query_failed",
+            ),
         ];
 
         for (error, expected) in cases {
             assert_eq!(error_json(&error)["error"]["code"], expected);
         }
+    }
+
+    #[test]
+    fn udf_errors_redact_foreign_text_and_keep_self_composed_detail() {
+        let parse = error_json(&Error::UdfDefinitionParse {
+            path: "clickhouse/udfs/my_fn/udf.json".into(),
+            source: serde_json::from_str::<serde_json::Value>("{ nope").unwrap_err(),
+        });
+        assert_eq!(
+            parse["error"]["message"],
+            "UDF definition is not valid JSON"
+        );
+        assert_eq!(
+            parse["error"]["command"],
+            "clickhousectl local udf init --help"
+        );
+
+        let query = error_json(&Error::UdfQueryFailed {
+            server: "dev".into(),
+            details: "Code: 46. DB::Exception: secret-ish server text".into(),
+        });
+        assert_eq!(
+            query["error"]["message"],
+            "ClickHouse server 'dev' rejected the query"
+        );
+        assert_eq!(query["error"]["command"], "clickhousectl local server list");
+
+        let missing = error_json(&Error::UdfNotFound {
+            name: "my_fn".into(),
+            server: "dev".into(),
+        });
+        assert_eq!(
+            missing["error"]["message"],
+            "UDF 'my_fn' is not deployed to server 'dev'"
+        );
+        assert_eq!(
+            missing["error"]["command"],
+            "clickhousectl local udf list --server dev"
+        );
+
+        let source = error_json(&Error::UdfSourceInvalid {
+            path: "clickhouse/udfs/my_fn".into(),
+            reason: "is missing main.py, the entrypoint required by runtime python3.11".into(),
+        });
+        assert_eq!(
+            source["error"]["message"],
+            "UDF source directory 'clickhouse/udfs/my_fn' is missing main.py, the entrypoint required by runtime python3.11"
+        );
     }
 
     /// An installed-but-unlaunchable build is a different failure from a
