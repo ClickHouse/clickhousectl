@@ -14,7 +14,7 @@ pub(crate) mod help_order {
     pub const DEBUG: usize = 906;
 }
 
-#[derive(Parser)]
+#[derive(Args)]
 #[command(name = "clickhousectl")]
 #[command(about = "The official CLI for ClickHouse: local and cloud", long_about = None)]
 #[command(version, disable_version_flag = true)]
@@ -35,6 +35,21 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
 }
+
+// Parsing and all help consumers use the same decorated command tree.
+impl clap::CommandFactory for Cli {
+    fn command() -> clap::Command {
+        crate::cloud::permissions::decorate(Self::augment_args(clap::Command::new("clickhousectl")))
+    }
+
+    fn command_for_update() -> clap::Command {
+        crate::cloud::permissions::decorate(Self::augment_args_for_update(clap::Command::new(
+            "clickhousectl",
+        )))
+    }
+}
+
+impl Parser for Cli {}
 
 #[derive(Subcommand)]
 pub enum Commands {

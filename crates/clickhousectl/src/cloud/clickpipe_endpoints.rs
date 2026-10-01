@@ -8,6 +8,33 @@
 //! The surface lives in its own module rather than in `clickpipes.rs`, which is
 //! already several thousand lines of pipe-creation surface.
 
+use super::permissions::Declaration as Permission;
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api(
+        "clickpipe reverse-private-endpoint list",
+        &[&op::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_GET_LIST],
+    ),
+    Permission::api(
+        "clickpipe reverse-private-endpoint get",
+        &[&op::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_GET],
+    ),
+    Permission::api(
+        "clickpipe reverse-private-endpoint create",
+        &[&op::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_CREATE],
+    ),
+    Permission::api(
+        "clickpipe reverse-private-endpoint update",
+        &[&op::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_UPDATE],
+    ),
+    Permission::api(
+        "clickpipe reverse-private-endpoint delete",
+        &[&op::CLICK_PIPE_REVERSE_PRIVATE_ENDPOINT_DELETE],
+    ),
+];
+
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{parse_serde_enum, resolve_org_id};
