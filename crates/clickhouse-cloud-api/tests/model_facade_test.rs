@@ -81,6 +81,30 @@ fn extracted_models_keep_root_and_models_paths() {
         api::ClickPipeKinesisSchemaRegistryResponse::default(),
         api::models::ClickPipeKinesisSchemaRegistryResponse::default(),
     );
+    assert_same_type(
+        api::ClickPipeKafkaSchemaRegistry::default(),
+        api::models::ClickPipeKafkaSchemaRegistry::default(),
+    );
+    assert_same_type(
+        api::ClickPipeKafkaConfluentSchemaRegistry::default(),
+        api::models::ClickPipeKafkaConfluentSchemaRegistry::default(),
+    );
+    assert_same_type(
+        api::ClickPipeKafkaGlueSchemaRegistry::default(),
+        api::models::ClickPipeKafkaGlueSchemaRegistry::default(),
+    );
+    assert_same_type(
+        api::ClickPipeKafkaGlueSchemaRegistryResponse::default(),
+        api::models::ClickPipeKafkaGlueSchemaRegistryResponse::default(),
+    );
+    assert_same_type(
+        api::ClickPipeMutateKafkaSchemaRegistry::default(),
+        api::models::ClickPipeMutateKafkaSchemaRegistry::default(),
+    );
+    assert_same_type(
+        api::ClickPipeMutateKafkaConfluentSchemaRegistry::default(),
+        api::models::ClickPipeMutateKafkaConfluentSchemaRegistry::default(),
+    );
     assert_same_type(api::Activity::default(), api::models::Activity::default());
     assert_same_type(api::ApiKey::default(), api::models::ApiKey::default());
     assert_same_type(

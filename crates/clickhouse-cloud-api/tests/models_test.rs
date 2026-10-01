@@ -275,7 +275,9 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
         BackupBucketPostRequest,
         BackupBucketProperties,
         ClickPipeBigQuerySource,
+        ClickPipeKafkaSchemaRegistry,
         ClickPipeMutateBigQuerySource,
+        ClickPipeMutateKafkaSchemaRegistry,
         ClickPipePostPubSubSource,
         ClickStackSavedFilterValue,
         ClickStackSavedFilterValueResponse,
@@ -7470,6 +7472,246 @@ fn kinesis_registry_conversion_reports_nested_missing_fields_and_preserves_unkno
     assert_eq!(
         ClickPipeKinesisSchemaRegistryType::Unknown("future".into()).to_string(),
         "future"
+    );
+}
+
+#[test]
+fn kafka_schema_registry_response_dispatches_legacy_confluent_and_glue() {
+    // Payloads written before Glue support carry no `type`; they stay Confluent.
+    for wire in [
+        serde_json::json!({
+            "url": "https://registry.example", "authentication": "PLAIN",
+            "caCertificate": "CA"
+        }),
+        serde_json::json!({
+            "type": "confluent", "url": "https://registry.example",
+            "authentication": "PLAIN", "caCertificate": "CA"
+        }),
+    ] {
+        let registry: ClickPipeKafkaSchemaRegistry = serde_json::from_value(wire.clone()).unwrap();
+        let ClickPipeKafkaSchemaRegistry::ClickPipeKafkaConfluentSchemaRegistry(confluent) =
+            &registry
+        else {
+            panic!("expected Confluent, got {registry:?}");
+        };
+        assert_eq!(confluent.url.as_deref(), Some("https://registry.example"));
+        assert_eq!(
+            confluent.authentication,
+            Some(ClickPipeKafkaConfluentSchemaRegistryAuthentication::PLAIN)
+        );
+        assert_eq!(confluent.ca_certificate.as_deref(), Some("CA"));
+        assert_eq!(serde_json::to_value(&registry).unwrap(), wire);
+    }
+
+    let glue = serde_json::json!({
+        "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events",
+        "glueRoleArn": "arn:aws:iam::123:role/Glue"
+    });
+    let registry: ClickPipeKafkaSchemaRegistry = serde_json::from_value(glue.clone()).unwrap();
+    let ClickPipeKafkaSchemaRegistry::ClickPipeKafkaGlueSchemaRegistryResponse(response) =
+        &registry
+    else {
+        panic!("expected Glue, got {registry:?}");
+    };
+    assert_eq!(
+        response.r#type,
+        Some(ClickPipeKafkaGlueSchemaRegistryType::Glue)
+    );
+    assert_eq!(response.glue_region.as_deref(), Some("us-east-1"));
+    assert_eq!(response.glue_registry_name.as_deref(), Some("events"));
+    assert_eq!(serde_json::to_value(&registry).unwrap(), glue);
+
+    // A Glue payload that lost its discriminator, or a future registry type,
+    // is kept verbatim instead of being misread as Confluent.
+    for wire in [
+        serde_json::json!({"glueRegion": "us-east-1", "glueRegistryName": "events"}),
+        serde_json::json!({"type": "future", "url": "https://registry.example"}),
+    ] {
+        let registry: ClickPipeKafkaSchemaRegistry = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(registry, ClickPipeKafkaSchemaRegistry::Unknown(wire));
+    }
+
+    let default = serde_json::to_value(ClickPipeKafkaSchemaRegistry::default()).unwrap();
+    assert_eq!(default, serde_json::json!({}));
+    assert_eq!(
+        serde_json::from_value::<ClickPipeKafkaSchemaRegistry>(default).unwrap(),
+        ClickPipeKafkaSchemaRegistry::default()
+    );
+}
+
+#[test]
+fn kafka_schema_registry_variants_tolerate_missing_and_null_fields() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "type": null, "url": null, "authentication": null, "caCertificate": null
+        }),
+    ] {
+        let confluent: ClickPipeKafkaConfluentSchemaRegistry =
+            serde_json::from_value(wire).unwrap();
+        assert_eq!(confluent, ClickPipeKafkaConfluentSchemaRegistry::default());
+        assert_eq!(
+            serde_json::to_value(confluent).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "type": null, "glueRegion": null, "glueRegistryName": null, "glueRoleArn": null
+        }),
+    ] {
+        let glue: ClickPipeKafkaGlueSchemaRegistryResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(glue, ClickPipeKafkaGlueSchemaRegistryResponse::default());
+        assert_eq!(serde_json::to_value(glue).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn kafka_source_response_schema_registry_may_be_missing_or_null() {
+    for wire in [
+        serde_json::json!({"brokers": "broker:9092"}),
+        serde_json::json!({"brokers": "broker:9092", "schemaRegistry": null}),
+    ] {
+        let source: ClickPipeKafkaSource = serde_json::from_value(wire).unwrap();
+        assert_eq!(source.schema_registry, None);
+        assert!(
+            serde_json::to_value(source)
+                .unwrap()
+                .get("schemaRegistry")
+                .is_none()
+        );
+    }
+    let source: ClickPipeKafkaSource = serde_json::from_value(serde_json::json!({
+        "schemaRegistry": {"type": "glue", "glueRegion": "eu-west-1", "glueRegistryName": "r"}
+    }))
+    .unwrap();
+    assert!(matches!(
+        source.schema_registry,
+        Some(ClickPipeKafkaSchemaRegistry::ClickPipeKafkaGlueSchemaRegistryResponse(_))
+    ));
+}
+
+#[test]
+fn kafka_schema_registry_requests_serialize_each_variant_wire_shape() {
+    let confluent: ClickPipeMutateKafkaSchemaRegistry =
+        ClickPipeMutateKafkaConfluentSchemaRegistry {
+            r#type: None,
+            url: "https://registry.example".into(),
+            authentication: ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::PLAIN,
+            credentials: ClickPipeKafkaSchemaRegistryCredentials {
+                username: "user".into(),
+                password: "secret".into(),
+            },
+            ca_certificate: None,
+        }
+        .into();
+    assert_eq!(
+        serde_json::to_value(&confluent).unwrap(),
+        serde_json::json!({
+            "url": "https://registry.example", "authentication": "PLAIN",
+            "credentials": {"username": "user", "password": "secret"}
+        })
+    );
+    let ClickPipeMutateKafkaSchemaRegistry::ClickPipeMutateKafkaConfluentSchemaRegistry(
+        mut explicit,
+    ) = confluent
+    else {
+        unreachable!()
+    };
+    explicit.r#type = Some(ClickPipeMutateKafkaConfluentSchemaRegistryType::Confluent);
+    explicit.ca_certificate = Some("CA".into());
+    let explicit = ClickPipeMutateKafkaSchemaRegistry::from(explicit);
+    let wire = serde_json::json!({
+        "type": "confluent", "url": "https://registry.example", "authentication": "PLAIN",
+        "credentials": {"username": "user", "password": "secret"}, "caCertificate": "CA"
+    });
+    assert_eq!(serde_json::to_value(&explicit).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMutateKafkaSchemaRegistry>(wire).unwrap(),
+        explicit
+    );
+
+    let glue: ClickPipeMutateKafkaSchemaRegistry = ClickPipeKafkaGlueSchemaRegistry {
+        r#type: ClickPipeKafkaGlueSchemaRegistryType::Glue,
+        glue_region: "us-east-1".into(),
+        glue_registry_name: "events".into(),
+        glue_role_arn: None,
+    }
+    .into();
+    let wire = serde_json::json!({
+        "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events"
+    });
+    assert_eq!(serde_json::to_value(&glue).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMutateKafkaSchemaRegistry>(wire).unwrap(),
+        glue
+    );
+    let source = ClickPipePostKafkaSource {
+        schema_registry: Some(glue),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(source).unwrap()["schemaRegistry"]["type"],
+        "glue"
+    );
+}
+
+#[test]
+fn kafka_schema_registry_request_variants_are_strict() {
+    let confluent = serde_json::json!({
+        "url": "https://registry.example", "authentication": "PLAIN",
+        "credentials": {"username": "user", "password": "secret"}
+    });
+    serde_json::from_value::<ClickPipeMutateKafkaConfluentSchemaRegistry>(confluent.clone())
+        .unwrap();
+    for field in ["url", "authentication", "credentials"] {
+        let mut missing = confluent.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<ClickPipeMutateKafkaConfluentSchemaRegistry>(missing).is_err()
+        );
+    }
+    let glue = serde_json::json!({
+        "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events"
+    });
+    for field in ["type", "glueRegion", "glueRegistryName"] {
+        let mut missing = glue.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<ClickPipeKafkaGlueSchemaRegistry>(missing).is_err());
+        let mut null = glue.clone();
+        null[field] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ClickPipeKafkaGlueSchemaRegistry>(null).is_err());
+    }
+}
+
+#[test]
+fn kafka_glue_registry_conversion_reports_missing_fields() {
+    let response: ClickPipeKafkaGlueSchemaRegistryResponse =
+        serde_json::from_value(serde_json::json!({
+            "glueRegion": "us-east-1", "glueRoleArn": "arn:aws:iam::123:role/Glue"
+        }))
+        .unwrap();
+    let error = ClickPipeKafkaGlueSchemaRegistry::try_from(response.clone()).unwrap_err();
+    assert_eq!(error.fields(), &["type", "glueRegistryName"]);
+    let mut complete = response;
+    complete.r#type = Some(ClickPipeKafkaGlueSchemaRegistryType::Glue);
+    complete.glue_registry_name = Some("events".into());
+    let request = ClickPipeKafkaGlueSchemaRegistry::try_from(complete).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({
+            "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events",
+            "glueRoleArn": "arn:aws:iam::123:role/Glue"
+        })
+    );
+    assert_eq!(
+        ClickPipeKafkaGlueSchemaRegistryType::Glue.to_string(),
+        "glue"
+    );
+    assert_eq!(
+        ClickPipeKafkaConfluentSchemaRegistryType::Confluent.to_string(),
+        "confluent"
     );
 }
 
