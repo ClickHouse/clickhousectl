@@ -15,6 +15,17 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("org usage", &[&op::USAGE_COST_GET]),
     Permission::api("org quota list", &[&op::ORGANIZATION_QUOTAS_GET_LIST]),
     Permission::api("org quota get", &[&op::ORGANIZATION_QUOTA_GET]),
+    Permission::api("org byoc get", &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_GET])
+        .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc progress",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_PROGRESS_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc validate",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_VALIDATE],
+    ),
     Permission::api(
         "org byoc create",
         &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_CREATE],
