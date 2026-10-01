@@ -813,12 +813,39 @@ pub const ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE: OperationMetadata = Operation
     required_permissions: &["control-plane:organization:manage"],
 };
 
+/// `GET /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}` (`organizationByocInfrastructureGet`).
+pub const ORGANIZATION_BYOC_INFRASTRUCTURE_GET: OperationMetadata = OperationMetadata {
+    operation_id: "organizationByocInfrastructureGet",
+    rust_method: "organization_byoc_infrastructure_get",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}",
+    required_permissions: &["control-plane:organization:view"],
+};
+
+/// `GET /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/progress` (`organizationByocInfrastructureProgressGet`).
+pub const ORGANIZATION_BYOC_INFRASTRUCTURE_PROGRESS_GET: OperationMetadata = OperationMetadata {
+    operation_id: "organizationByocInfrastructureProgressGet",
+    rust_method: "organization_byoc_infrastructure_progress_get",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/progress",
+    required_permissions: &["control-plane:organization:view"],
+};
+
 /// `PATCH /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}` (`organizationByocInfrastructureUpdate`).
 pub const ORGANIZATION_BYOC_INFRASTRUCTURE_UPDATE: OperationMetadata = OperationMetadata {
     operation_id: "organizationByocInfrastructureUpdate",
     rust_method: "organization_byoc_infrastructure_update",
     method: "PATCH",
     path: "/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}",
+    required_permissions: &["control-plane:organization:manage"],
+};
+
+/// `POST /v1/organizations/{organizationId}/byocInfrastructure/validate` (`organizationByocInfrastructureValidate`).
+pub const ORGANIZATION_BYOC_INFRASTRUCTURE_VALIDATE: OperationMetadata = OperationMetadata {
+    operation_id: "organizationByocInfrastructureValidate",
+    rust_method: "organization_byoc_infrastructure_validate",
+    method: "POST",
+    path: "/v1/organizations/{organizationId}/byocInfrastructure/validate",
     required_permissions: &["control-plane:organization:manage"],
 };
 
@@ -1141,6 +1168,51 @@ pub const QUERY_API_ENDPOINT_UPDATE: OperationMetadata = OperationMetadata {
     method: "PUT",
     path: "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
     required_permissions: &["control-plane:service:manage-query-api-endpoints"],
+};
+
+/// `POST /v1/organizations/{organizationId}/services/{serviceId}/saved-queries` (`savedQueryCreate`).
+pub const SAVED_QUERY_CREATE: OperationMetadata = OperationMetadata {
+    operation_id: "savedQueryCreate",
+    rust_method: "saved_query_create",
+    method: "POST",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/saved-queries",
+    required_permissions: &["control-plane:service:manage"],
+};
+
+/// `DELETE /v1/organizations/{organizationId}/services/{serviceId}/saved-queries/{queryId}` (`savedQueryDelete`).
+pub const SAVED_QUERY_DELETE: OperationMetadata = OperationMetadata {
+    operation_id: "savedQueryDelete",
+    rust_method: "saved_query_delete",
+    method: "DELETE",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/saved-queries/{queryId}",
+    required_permissions: &["control-plane:service:manage"],
+};
+
+/// `GET /v1/organizations/{organizationId}/services/{serviceId}/saved-queries/{queryId}` (`savedQueryGet`).
+pub const SAVED_QUERY_GET: OperationMetadata = OperationMetadata {
+    operation_id: "savedQueryGet",
+    rust_method: "saved_query_get",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/saved-queries/{queryId}",
+    required_permissions: &["control-plane:service:view"],
+};
+
+/// `GET /v1/organizations/{organizationId}/services/{serviceId}/saved-queries` (`savedQueryList`).
+pub const SAVED_QUERY_LIST: OperationMetadata = OperationMetadata {
+    operation_id: "savedQueryList",
+    rust_method: "saved_query_list",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/saved-queries",
+    required_permissions: &["control-plane:service:view"],
+};
+
+/// `PUT /v1/organizations/{organizationId}/services/{serviceId}/saved-queries/{queryId}` (`savedQueryUpdate`).
+pub const SAVED_QUERY_UPDATE: OperationMetadata = OperationMetadata {
+    operation_id: "savedQueryUpdate",
+    rust_method: "saved_query_update",
+    method: "PUT",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/saved-queries/{queryId}",
+    required_permissions: &["control-plane:service:manage"],
 };
 
 /// `DELETE /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule` (`scalingScheduleDelete`).
@@ -1514,7 +1586,10 @@ pub const ALL: &[OperationMetadata] = &[
     OPENAPI_KEY_UPDATE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_CREATE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE,
+    ORGANIZATION_BYOC_INFRASTRUCTURE_GET,
+    ORGANIZATION_BYOC_INFRASTRUCTURE_PROGRESS_GET,
     ORGANIZATION_BYOC_INFRASTRUCTURE_UPDATE,
+    ORGANIZATION_BYOC_INFRASTRUCTURE_VALIDATE,
     ORGANIZATION_GET,
     ORGANIZATION_GET_LIST,
     ORGANIZATION_PRIVATE_ENDPOINT_CONFIG_GET_LIST,
@@ -1550,6 +1625,11 @@ pub const ALL: &[OperationMetadata] = &[
     QUERY_API_ENDPOINT_GET,
     QUERY_API_ENDPOINT_LIST,
     QUERY_API_ENDPOINT_UPDATE,
+    SAVED_QUERY_CREATE,
+    SAVED_QUERY_DELETE,
+    SAVED_QUERY_GET,
+    SAVED_QUERY_LIST,
+    SAVED_QUERY_UPDATE,
     SCALING_SCHEDULE_DELETE,
     SCALING_SCHEDULE_GET,
     SCALING_SCHEDULE_UPSERT,
