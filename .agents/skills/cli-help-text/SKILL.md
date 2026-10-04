@@ -72,7 +72,7 @@ Include only what changes what the agent does next:
 - Rarely, a docs URL: only when help can't cover something the agent needs. Never more than one.
 
 NEVER include implementation details, crate or file names, HTTP and API mechanics, storage paths, history or
-compatibility notes, reassurance, and anything already in the `about` line, the flag list or `[default:]`.
+compatibility notes, reassurance, or anything already in the `about` line, the flag list or `[default:]`.
 
 Put shared context (auth model, typical flow) on the parent command, such as `cloud service` or
 `local server`. A leaf gets a block only for its own gotcha. A plain `get` or `list` usually needs none.
