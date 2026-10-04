@@ -68,10 +68,11 @@ CONTEXT FOR AGENTS:
   Credentials, first wins: --api-key/--api-secret, saved API keys,
   CLICKHOUSE_CLOUD_API_KEY/CLICKHOUSE_CLOUD_API_SECRET (shell then .env), OAuth.
   API keys are read+write; OAuth is read-only and every write command fails on it.
+  `cloud auth login` and `cloud auth whoami` print who you are and your orgs.
   `cloud auth status` shows the active source; --org-id auto-detects only with exactly one org.
   delete/remove act immediately — there is no confirmation prompt.
   Exit codes: 0 success, 1 error, 2 usage error, 3 cancelled, 4 auth required.
-  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud org list` -> `cloud service list`")]
+  Typical flow: `cloud auth login --api-key X --api-secret Y` -> `cloud service list`")]
     Cloud(Box<CloudArgs>),
 
     /// Install ClickHouse agent skills into supported coding agents

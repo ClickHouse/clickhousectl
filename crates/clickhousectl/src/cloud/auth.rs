@@ -3,18 +3,12 @@ use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
 pub(super) const PERMISSIONS: &[Permission] = &[
-    Permission::non_api(
-        "auth login",
-        "Saves API keys or starts OAuth login; no Cloud API-key permissions.",
-    ),
+    Permission::api("auth login", &[&op::WHOAMI_GET]).unscoped(),
     Permission::non_api(
         "auth logout",
         "Clears local credentials; no Cloud API call.",
     ),
-    Permission::non_api(
-        "auth status",
-        "Reads local authentication state; no Cloud API call.",
-    ),
+    Permission::api("auth status", &[&op::WHOAMI_GET]).unscoped(),
     Permission::non_api("auth signup", "Opens account signup; no Cloud API call."),
     Permission::api("auth whoami", &[&op::WHOAMI_GET]).unscoped(),
 ];
@@ -42,7 +36,8 @@ pub enum AuthCommands {
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   No flags: OAuth device flow, opens a browser, needs a human; the tokens are read-only.
-  --api-key/--api-secret: no browser, read+write.
+  --api-key/--api-secret: no browser, read+write; a key the API rejects is not saved (exit 4).
+  Prints the verified identity; offline, the key is saved unverified with a warning.
   Create API keys: https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl")]
     Login {
         /// Prompt for an API key and secret instead of using flags
@@ -71,12 +66,16 @@ CONTEXT FOR AGENTS:
         api_keys: bool,
     },
     /// Show current authentication status
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Also checks the active credentials with whoami: verified, rejected or unavailable.
+  Always exits 0, even when the credentials are rejected or the API is unreachable.")]
     Status,
     /// Show the identity behind the active credentials (Beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Works with OAuth or API key credentials and needs no --org-id.
-  `cloud auth status` shows which credential source is active.")]
+  Use it to confirm who you are and which orgs you can use; exits 4 if the credentials are rejected.")]
     Whoami,
     /// Create a ClickHouse Cloud account
     #[command(after_help = "\
@@ -188,7 +187,9 @@ pub async fn run(
             api_secret,
         } => {
             if interactive {
-                auth_interactive().map_err(|error| Error::Cloud(error.to_string()))
+                let (key, secret) =
+                    prompt_api_credentials().map_err(|error| Error::Cloud(error.to_string()))?;
+                login_with_api_key(&key, &secret, api_url, json).await
             } else if api_key.is_some() || api_secret.is_some() {
                 let key = api_key.ok_or_else(|| {
                     Error::AuthRequired(
@@ -200,23 +201,20 @@ pub async fn run(
                         "--api-secret is required when --api-key is provided".into(),
                     )
                 })?;
-                credentials::set_api_credentials(key, secret)
-                    .map_err(|error| Error::Cloud(error.to_string()))?;
-                println!(
-                    "Credentials saved to {}",
-                    credentials::credentials_path().display()
-                );
-                Ok(())
+                login_with_api_key(&key, &secret, api_url, json).await
             } else {
                 let url = api_url.unwrap_or("https://api.clickhouse.cloud");
                 let tokens = device_auth_login(url)
                     .await
                     .map_err(|error| Error::Cloud(error.to_string()))?;
                 save_tokens(&tokens).map_err(|error| Error::Cloud(error.to_string()))?;
-                println!("Logged in successfully.");
                 let tokens_path = tokens_path().map_err(|error| Error::Cloud(error.to_string()))?;
-                println!("Tokens saved to {}", tokens_path.display());
-                Ok(())
+                let report = oauth_login_report(&tokens, tokens_path.display().to_string()).await;
+                if !json {
+                    println!("Logged in successfully.");
+                    println!("Tokens saved to {}", report.saved);
+                }
+                print_login_report(&report, json)
             }
         }
         AuthCommands::Whoami => unreachable!("whoami runs through run_with_client"),
@@ -415,17 +413,203 @@ pub async fn run(
                 }
             }
 
+            let identity = match active {
+                Some(_) => IdentityCheck::from(
+                    verify_identity(CloudClient::new_with_timeout(
+                        api_key,
+                        api_secret,
+                        api_url,
+                        VERIFY_TIMEOUT,
+                    ))
+                    .await,
+                ),
+                None => IdentityCheck::skipped(),
+            };
+
             if json {
-                println!("{}", serde_json::to_string_pretty(&rows)?);
+                #[derive(Serialize)]
+                struct StatusOutput<'a> {
+                    sources: Vec<AuthRow>,
+                    #[serde(flatten)]
+                    identity: &'a IdentityCheck,
+                }
+                let output = StatusOutput {
+                    sources: rows,
+                    identity: &identity,
+                };
+                println!("{}", serde_json::to_string_pretty(&output)?);
             } else {
                 println!("{}", Table::new(rows).with(Style::markdown()));
+                match (&identity.identity, &identity.warning) {
+                    (Some(whoami), _) => {
+                        println!();
+                        println!("Identity:");
+                        print_human(whoami)?;
+                    }
+                    (None, Some(warning)) => {
+                        println!();
+                        println!("Identity: {} ({warning})", identity.verification);
+                    }
+                    (None, None) => {}
+                }
             }
             Ok(())
         }
     }
 }
 
-fn auth_interactive() -> std::result::Result<(), Box<dyn std::error::Error>> {
+/// How long `auth login` and `auth status` wait for whoami, so working
+/// offline never hangs on the identity check.
+const VERIFY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The result of asking whoami about a credential set.
+enum Verification {
+    Verified(Whoami),
+    /// The API refused the credentials (401/403).
+    Rejected(super::CloudError),
+    /// Anything else: offline, timeout, 5xx, or an unbuildable client.
+    Unavailable(super::CloudError),
+}
+
+async fn verify_identity(client: CloudResult<CloudClient>) -> Verification {
+    let result = match client {
+        Ok(client) => client.get_whoami().await,
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(identity) => Verification::Verified(identity),
+        Err(error) if error.kind == super::CloudErrorKind::Auth => Verification::Rejected(error),
+        Err(error) => Verification::Unavailable(error),
+    }
+}
+
+/// The identity part of `auth status`; also flattened into its JSON output.
+#[derive(Serialize)]
+struct IdentityCheck {
+    identity: Option<Whoami>,
+    /// `verified`, `rejected`, `unavailable`, or `skipped` (no active credentials).
+    verification: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+}
+
+impl IdentityCheck {
+    fn skipped() -> Self {
+        Self {
+            identity: None,
+            verification: "skipped",
+            warning: None,
+        }
+    }
+}
+
+impl From<Verification> for IdentityCheck {
+    fn from(verification: Verification) -> Self {
+        match verification {
+            Verification::Verified(identity) => Self {
+                identity: Some(identity),
+                verification: "verified",
+                warning: None,
+            },
+            Verification::Rejected(error) => Self {
+                identity: None,
+                verification: "rejected",
+                warning: Some(error.message),
+            },
+            Verification::Unavailable(error) => Self {
+                identity: None,
+                verification: "unavailable",
+                warning: Some(error.message),
+            },
+        }
+    }
+}
+
+/// What `auth login` reports once credentials are saved.
+#[derive(Serialize)]
+struct LoginReport {
+    saved: String,
+    identity: Option<Whoami>,
+    /// `verified` or `unverified`.
+    verification: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warning: Option<String>,
+}
+
+impl LoginReport {
+    fn new(saved: String, verification: Verification, unverified: &str) -> Self {
+        match verification {
+            Verification::Verified(identity) => Self {
+                saved,
+                identity: Some(identity),
+                verification: "verified",
+                warning: None,
+            },
+            Verification::Rejected(error) | Verification::Unavailable(error) => Self {
+                saved,
+                identity: None,
+                verification: "unverified",
+                warning: Some(format!("{unverified}: {}", error.message)),
+            },
+        }
+    }
+}
+
+/// Verify an API key pair with whoami, then save it. Only a clear auth
+/// rejection blocks the save; any other failure saves with a warning, so
+/// credentials can still be set up offline.
+async fn login_with_api_key(
+    key: &str,
+    secret: &str,
+    api_url: Option<&str>,
+    json: bool,
+) -> crate::error::Result<()> {
+    let verification = verify_identity(CloudClient::for_api_key(
+        key,
+        secret,
+        api_url,
+        VERIFY_TIMEOUT,
+    ))
+    .await;
+    if let Verification::Rejected(error) = verification {
+        return Err(Error::AuthRequired(format!(
+            "{}\n\nCredentials were not saved.",
+            error.message
+        )));
+    }
+    credentials::set_api_credentials(key.to_owned(), secret.to_owned())
+        .map_err(|error| Error::Cloud(error.to_string()))?;
+    let saved = credentials::credentials_path().display().to_string();
+    let report = LoginReport::new(saved, verification, "could not verify the credentials");
+    if !json {
+        println!("Credentials saved to {}", report.saved);
+    }
+    print_login_report(&report, json)
+}
+
+/// Report who just logged in with OAuth. The device flow already proved the
+/// token works, so a whoami failure only warns.
+async fn oauth_login_report(tokens: &TokenStore, saved: String) -> LoginReport {
+    let verification = verify_identity(CloudClient::for_oauth_tokens(tokens, VERIFY_TIMEOUT)).await;
+    LoginReport::new(saved, verification, "could not fetch your identity")
+}
+
+fn print_login_report(report: &LoginReport, json: bool) -> crate::error::Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(report)?);
+        return Ok(());
+    }
+    if let Some(identity) = &report.identity {
+        println!("Logged in as:");
+        print_human(identity)?;
+    }
+    if let Some(warning) = &report.warning {
+        eprint_line(format!("warning: {warning}"));
+    }
+    Ok(())
+}
+
+fn prompt_api_credentials() -> std::result::Result<(String, String), Box<dyn std::error::Error>> {
     use std::io::Write;
 
     print!("API Key: ");
@@ -446,13 +630,7 @@ fn auth_interactive() -> std::result::Result<(), Box<dyn std::error::Error>> {
         return Err("API secret cannot be empty".into());
     }
 
-    credentials::set_api_credentials(api_key, api_secret)?;
-
-    println!(
-        "Credentials saved to {}",
-        credentials::credentials_path().display()
-    );
-    Ok(())
+    Ok((api_key, api_secret))
 }
 
 struct AuthConfig {
@@ -1229,5 +1407,79 @@ mod tests {
             normalize_api_url("https://api.control-plane.clickhouse-staging.com/v1/"),
             "https://api.control-plane.clickhouse-staging.com/v1"
         );
+    }
+
+    fn tokens_for(server: &wiremock::MockServer) -> TokenStore {
+        TokenStore {
+            access_token: "fresh-bearer".into(),
+            api_url: normalize_api_url(&server.uri()),
+            ..sample_tokens()
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_login_report_names_the_user_and_organizations() {
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let user = serde_json::json!({
+            "actorType": "user",
+            "email": "ada@example.com",
+            "name": "Ada Lovelace",
+            "organizations": [
+                {"organizationId": "55555555-6666-4777-8888-999999999999", "organizationName": "Engines"}
+            ]
+        });
+        Mock::given(method("GET"))
+            .and(path("/v1/whoami"))
+            .and(header("authorization", "Bearer fresh-bearer"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"status": 200, "result": user})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let report = oauth_login_report(&tokens_for(&server), "tokens.json".into()).await;
+        let report = serde_json::to_value(&report).unwrap();
+        assert_eq!(
+            report,
+            serde_json::json!({
+                "saved": "tokens.json",
+                "identity": user,
+                "verification": "verified",
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_login_report_only_warns_when_whoami_fails() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        for status in [401, 500] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/v1/whoami"))
+                .respond_with(
+                    ResponseTemplate::new(status).set_body_json(
+                        serde_json::json!({"status": status, "error": "whoami failed"}),
+                    ),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let report = oauth_login_report(&tokens_for(&server), "tokens.json".into()).await;
+            assert_eq!(report.verification, "unverified", "{status}");
+            assert!(report.identity.is_none());
+            let warning = report.warning.unwrap();
+            assert!(
+                warning.starts_with("could not fetch your identity: "),
+                "{warning}"
+            );
+        }
     }
 }

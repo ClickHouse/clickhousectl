@@ -1177,7 +1177,7 @@ fn write_project_api_credentials(root: &Path, key: &str, secret: &str) {
     .unwrap();
 }
 
-fn invoke_api_key_login(project_dir: &Path) -> std::process::Output {
+fn invoke_api_key_login(project_dir: &Path, url: &str) -> std::process::Output {
     let mut command = Command::new(clickhousectl_binary());
     clear_inherited_env(&mut command);
     command
@@ -1192,6 +1192,8 @@ fn invoke_api_key_login(project_dir: &Path) -> std::process::Output {
             "new-key",
             "--api-secret",
             "new-secret",
+            "--url",
+            url,
         ])
         .output()
         .expect("failed to spawn clickhousectl")
@@ -1252,10 +1254,16 @@ async fn api_key_login_rejects_empty_values_before_touching_saved_credentials_or
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
-#[test]
-fn api_key_login_saves_a_nonempty_pair_and_status_selects_it() {
+#[tokio::test]
+async fn api_key_login_saves_a_nonempty_pair_and_status_selects_it() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_envelope(whoami_api_key_identity()))
+        .mount(&mock)
+        .await;
     let dir = tempfile::tempdir().unwrap();
-    let output = invoke_api_key_login(dir.path());
+    let output = invoke_api_key_login(dir.path(), &mock.uri());
     assert_success(&output);
     let saved: Value = serde_json::from_slice(
         &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
@@ -1268,19 +1276,22 @@ fn api_key_login_saves_a_nonempty_pair_and_status_selects_it() {
         .env("DO_NOT_TRACK", "1")
         .env("HOME", dir.path().join("home"))
         .current_dir(dir.path())
-        .args(["cloud", "auth", "status", "--json"])
+        .args(["cloud", "auth", "status", "--json", "--url", &mock.uri()])
         .output()
         .unwrap();
     assert_success(&output);
-    let rows: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["verification"], "verified");
+    let rows = status["sources"].as_array().unwrap();
     let saved = rows.iter().find(|row| row["type"] == "API key").unwrap();
     assert_eq!(saved["status"], "Active");
     assert_eq!(saved["scope"], "read/write");
     assert_eq!(saved["active"], "yes");
 }
 
-#[test]
-fn auth_status_never_selects_empty_saved_credentials() {
+#[tokio::test]
+async fn auth_status_never_selects_empty_saved_credentials() {
+    let mock = MockServer::start().await;
     for (key, secret) in [("", ""), ("", "saved-secret"), ("saved-key", "")] {
         for with_env in [false, true] {
             let dir = tempfile::tempdir().unwrap();
@@ -1291,14 +1302,15 @@ fn auth_status_never_selects_empty_saved_credentials() {
                 .env("DO_NOT_TRACK", "1")
                 .env("HOME", dir.path().join("home"))
                 .current_dir(dir.path())
-                .args(["cloud", "auth", "status", "--json"]);
+                .args(["cloud", "auth", "status", "--json", "--url", &mock.uri()]);
             if with_env {
                 command.env("CLICKHOUSE_CLOUD_API_KEY", "env-key");
                 command.env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret");
             }
             let output = command.output().unwrap();
             assert_success(&output);
-            let rows: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+            let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+            let rows = status["sources"].as_array().unwrap();
             let saved = rows.iter().find(|row| row["type"] == "API key").unwrap();
             assert!(saved["status"].as_str().unwrap().starts_with("Incomplete"));
             assert_eq!(saved["scope"], "-");
@@ -1314,8 +1326,14 @@ fn auth_status_never_selects_empty_saved_credentials() {
     }
 }
 
-#[test]
-fn api_key_login_preserves_malformed_credentials() {
+#[tokio::test]
+async fn api_key_login_preserves_malformed_credentials() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_envelope(whoami_api_key_identity()))
+        .mount(&mock)
+        .await;
     let dir = tempfile::tempdir().unwrap();
     let credentials_dir = dir.path().join(".clickhouse");
     let credentials_path = credentials_dir.join("credentials.json");
@@ -1323,7 +1341,7 @@ fn api_key_login_preserves_malformed_credentials() {
     let original = b"{malformed credentials\n";
     std::fs::write(&credentials_path, original).unwrap();
 
-    let output = invoke_api_key_login(dir.path());
+    let output = invoke_api_key_login(dir.path(), &mock.uri());
 
     assert_eq!(output.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3018,8 +3036,13 @@ async fn cloud_command_survives_closed_stderr_with_credential_notice_and_debug()
 }
 
 #[tokio::test]
-async fn auth_status_explicit_flags_win_without_revealing_credentials_or_contacting_api() {
+async fn auth_status_explicit_flags_win_without_revealing_credentials() {
     let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_envelope(whoami_api_key_identity()))
+        .mount(&mock)
+        .await;
     for configure_other_sources in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -3076,7 +3099,11 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials_or_contact
             assert!(stderr.contains("CLI flags"), "{stderr}");
             // Compare the same source, scope and selection fields in both formats.
             let rows: Vec<(String, String, String, String)> = if json {
-                serde_json::from_str::<Vec<Value>>(&stdout)
+                let status: Value = serde_json::from_str(&stdout).unwrap();
+                assert_eq!(status["verification"], "verified");
+                assert_eq!(status["identity"]["keyId"], "key-123");
+                status["sources"]
+                    .as_array()
                     .unwrap()
                     .iter()
                     .map(|row| {
@@ -3089,9 +3116,12 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials_or_contact
                     })
                     .collect()
             } else {
+                assert!(stdout.contains("Identity:\n"), "{stdout}");
+                assert!(stdout.contains("key-123"), "{stdout}");
                 stdout
                     .lines()
                     .skip(2)
+                    .take_while(|line| !line.is_empty())
                     .map(|line| {
                         let cells: Vec<_> =
                             line.trim_matches('|').split('|').map(str::trim).collect();
@@ -3131,7 +3161,16 @@ async fn auth_status_explicit_flags_win_without_revealing_credentials_or_contact
             }
         }
     }
-    assert!(mock.received_requests().await.unwrap().is_empty());
+    // The identity check uses the winning source: the explicit flags.
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in requests {
+        assert_eq!(request.url.path(), "/v1/whoami");
+        assert_eq!(
+            request.headers.get("authorization").unwrap(),
+            "Basic ZmxhZy1rZXk6ZmxhZy1zZWNyZXQ=" // flag-key:flag-secret
+        );
+    }
 }
 
 #[tokio::test]
@@ -3198,7 +3237,11 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
                     assert!(!stderr.contains(credential), "credential exposed on stderr");
                 }
                 let rows: Vec<Vec<String>> = if json {
-                    serde_json::from_str::<Vec<Value>>(&stdout)
+                    let status: Value = serde_json::from_str(&stdout).unwrap();
+                    assert_eq!(status["verification"], "skipped");
+                    assert!(status["identity"].is_null());
+                    status["sources"]
+                        .as_array()
                         .unwrap()
                         .iter()
                         .map(|row| {
@@ -3208,6 +3251,7 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
                         })
                         .collect()
                 } else {
+                    assert!(!stdout.contains("Identity"), "{stdout}");
                     stdout
                         .lines()
                         .skip(2)
@@ -3247,8 +3291,14 @@ async fn auth_status_incomplete_flags_explain_missing_credential_without_falling
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
-#[test]
-fn auth_status_marks_outranked_environment_credentials_inactive() {
+#[tokio::test]
+async fn auth_status_marks_outranked_environment_credentials_inactive() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_envelope(whoami_api_key_identity()))
+        .mount(&mock)
+        .await;
     let dir = tempfile::tempdir().unwrap();
     write_project_api_credentials(dir.path(), "file-key", "file-secret");
     let output = Command::new(clickhousectl_binary())
@@ -3257,14 +3307,14 @@ fn auth_status_marks_outranked_environment_credentials_inactive() {
         .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
         .env("CLICKHOUSE_CLOUD_API_SECRET", "env-secret")
         .current_dir(dir.path())
-        .args(["cloud", "--json", "auth", "status"])
+        .args(["cloud", "--json", "--url", &mock.uri(), "auth", "status"])
         .output()
         .expect("failed to spawn clickhousectl");
 
     assert_success(&output);
     assert!(output.stderr.is_empty());
-    let rows: Value = serde_json::from_slice(&output.stdout).unwrap();
-    let env = rows
+    let status: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let env = status["sources"]
         .as_array()
         .unwrap()
         .iter()
@@ -27031,12 +27081,19 @@ async fn global_org_id_scopes_requests_at_every_hierarchy_depth() {
 #[tokio::test]
 async fn global_org_id_does_not_add_lookup_to_auth_help_or_org_list() {
     let mock = MockServer::start().await;
-    for args in [
-        vec!["--org-id", "ignored-scope", "auth", "status"],
-        vec!["service", "get", "--org-id", "ignored-scope", "--help"],
-    ] {
-        assert_success(&invoke_cli_with_cloud_credentials(&mock, &args));
-    }
+    let status_mock = MockServer::start().await;
+    assert_success(&invoke_cli_with_cloud_credentials(
+        &status_mock,
+        &["--org-id", "ignored-scope", "auth", "status"],
+    ));
+    // Only the identity check: no organization lookup.
+    let requests = status_mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url.path(), "/v1/whoami");
+    assert_success(&invoke_cli_with_cloud_credentials(
+        &mock,
+        &["service", "get", "--org-id", "ignored-scope", "--help"],
+    ));
     assert!(mock.received_requests().await.unwrap().is_empty());
     // A list call must return every org even if a shared selector is supplied.
     let organizations = serde_json::json!([
@@ -30021,6 +30078,15 @@ async fn postgres_backup_list_supports_oauth_and_reports_not_found() {
     );
 }
 
+fn whoami_api_key_identity() -> Value {
+    serde_json::json!({
+        "actorType": "apiKey",
+        "keyId": "key-123",
+        "name": "ci deploy",
+        "organizationId": WHOAMI_ORG_ID
+    })
+}
+
 fn whoami_envelope(result: Value) -> ResponseTemplate {
     ResponseTemplate::new(200).set_body_json(serde_json::json!({
         "status": 200,
@@ -30151,4 +30217,249 @@ async fn auth_whoami_auth_failures_exit_4() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(empty.received_requests().await.unwrap().is_empty());
+}
+
+// ── auth login / status verify the identity via whoami (#1044) ────────────
+
+fn whoami_rejected() -> ResponseTemplate {
+    ResponseTemplate::new(401).set_body_json(serde_json::json!({
+        "status": 401,
+        "requestId": "whoami-401",
+        "error": "Invalid credentials"
+    }))
+}
+
+/// A URL nothing listens on, so requests fail before any HTTP response.
+fn unreachable_url() -> String {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    format!("http://127.0.0.1:{port}")
+}
+
+fn invoke_auth(project: &Path, url: &str, json: bool, args: &[&str]) -> std::process::Output {
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", project.join("home"))
+        .current_dir(project)
+        .args(["cloud", "--url", url, "auth"])
+        .args(args);
+    if json {
+        command.arg("--json");
+    }
+    command.stdin(Stdio::null()).output().unwrap()
+}
+
+const LOGIN_ARGS: &[&str] = &[
+    "login",
+    "--api-key",
+    "new-key",
+    "--api-secret",
+    "new-secret",
+];
+
+#[tokio::test]
+async fn api_key_login_verifies_and_prints_the_identity_before_saving() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .and(header(
+            "authorization",
+            "Basic bmV3LWtleTpuZXctc2VjcmV0", // new-key:new-secret
+        ))
+        .respond_with(whoami_envelope(whoami_api_key_identity()))
+        .expect(2)
+        .mount(&server)
+        .await;
+    for json in [false, true] {
+        let project = tempfile::tempdir().unwrap();
+        let output = invoke_auth(project.path(), &server.uri(), json, LOGIN_ARGS);
+        assert_success(&output);
+        assert!(output.stderr.is_empty(), "json={json}");
+        let saved = project.path().join(".clickhouse/credentials.json");
+        assert!(saved.exists());
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for secret in ["new-key", "new-secret"] {
+            assert!(!stdout.contains(secret), "credential exposed: {stdout}");
+        }
+        if json {
+            let report: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(report["verification"], "verified");
+            assert_eq!(report["identity"], whoami_api_key_identity());
+            assert!(
+                report["saved"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("credentials.json")
+            );
+            assert!(report.get("warning").is_none());
+        } else {
+            for expected in [
+                "Credentials saved to",
+                "key-123",
+                "ci deploy",
+                WHOAMI_ORG_ID,
+            ] {
+                assert!(stdout.contains(expected), "missing {expected}: {stdout}");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn api_key_login_rejected_by_whoami_exits_4_and_saves_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_rejected())
+        .expect(2)
+        .mount(&server)
+        .await;
+    for json in [false, true] {
+        let project = tempfile::tempdir().unwrap();
+        let output = invoke_auth(project.path(), &server.uri(), json, LOGIN_ARGS);
+        assert_eq!(output.status.code(), Some(4), "json={json}");
+        assert!(output.stdout.is_empty(), "json={json}");
+        assert!(!project.path().join(".clickhouse/credentials.json").exists());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Invalid credentials"), "{stderr}");
+        if json {
+            let error: Value = serde_json::from_str(&stderr).unwrap();
+            assert_eq!(error["error"]["code"], "auth_required");
+        }
+    }
+}
+
+#[tokio::test]
+async fn api_key_login_saves_with_a_warning_when_whoami_is_unreachable() {
+    let url = unreachable_url();
+    for json in [false, true] {
+        let project = tempfile::tempdir().unwrap();
+        let output = invoke_auth(project.path(), &url, json, LOGIN_ARGS);
+        assert_success(&output);
+        let saved: Value = serde_json::from_slice(
+            &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(saved["api_key"], "new-key");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if json {
+            assert!(stderr.is_empty(), "{stderr}");
+            let report: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(report["verification"], "unverified");
+            assert!(report["identity"].is_null());
+            assert!(
+                report["warning"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("could not verify the credentials")
+            );
+        } else {
+            assert!(stdout.contains("Credentials saved to"), "{stdout}");
+            assert!(
+                stderr.starts_with("warning: could not verify the credentials"),
+                "{stderr}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn auth_status_without_credentials_skips_the_identity_check() {
+    let server = MockServer::start().await;
+    for json in [false, true] {
+        let project = tempfile::tempdir().unwrap();
+        let output = invoke_auth(project.path(), &server.uri(), json, &["status"]);
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if json {
+            let status: Value = serde_json::from_str(&stdout).unwrap();
+            assert_eq!(status["verification"], "skipped");
+            assert!(status["identity"].is_null());
+            assert_eq!(status["sources"].as_array().unwrap().len(), 4);
+        } else {
+            assert!(!stdout.contains("Identity"), "{stdout}");
+        }
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn auth_status_reports_the_identity_and_never_fails_on_it() {
+    let user = serde_json::json!({
+        "actorType": "user",
+        "userId": WHOAMI_USER_ID,
+        "email": "ada@example.com",
+        "name": "Ada Lovelace",
+        "organizations": [
+            {"organizationId": WHOAMI_ORG_ID, "organizationName": "Analytical Engines"}
+        ]
+    });
+    // (response, oauth, expected verification, expected human line)
+    for (response, oauth, verification, human) in [
+        (
+            Some(whoami_envelope(whoami_api_key_identity())),
+            false,
+            "verified",
+            "key-123",
+        ),
+        (
+            Some(whoami_envelope(user.clone())),
+            true,
+            "verified",
+            "ada@example.com",
+        ),
+        (
+            Some(whoami_rejected()),
+            false,
+            "rejected",
+            "Identity: rejected (",
+        ),
+        (None, false, "unavailable", "Identity: unavailable ("),
+    ] {
+        let server = MockServer::start().await;
+        let url = match response {
+            Some(response) => {
+                Mock::given(method("GET"))
+                    .and(path("/v1/whoami"))
+                    .respond_with(response)
+                    .expect(2)
+                    .mount(&server)
+                    .await;
+                server.uri()
+            }
+            None => unreachable_url(),
+        };
+        for json in [false, true] {
+            let project = tempfile::tempdir().unwrap();
+            if oauth {
+                let cloud_dir = project.path().join("home/.clickhouse");
+                std::fs::create_dir_all(&cloud_dir).unwrap();
+                write_oauth_tokens(&cloud_dir, &url);
+            } else {
+                write_project_api_credentials(project.path(), "file-key", "file-secret");
+            }
+            let output = invoke_auth(project.path(), &url, json, &["status"]);
+            assert_success(&output);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if json {
+                let status: Value = serde_json::from_str(&stdout).unwrap();
+                assert_eq!(status["verification"], verification, "{stdout}");
+                assert_eq!(status["identity"].is_null(), verification != "verified");
+                assert_eq!(status["warning"].is_string(), verification != "verified");
+                let active = status["sources"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|row| row["active"] == "yes")
+                    .count();
+                assert_eq!(active, 1);
+            } else {
+                assert!(stdout.contains(human), "missing {human}: {stdout}");
+            }
+        }
+    }
 }
