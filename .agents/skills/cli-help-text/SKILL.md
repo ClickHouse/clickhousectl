@@ -92,7 +92,7 @@ After:
 
 ```
 CONTEXT FOR AGENTS:
-  Irreversible. A running service cannot be deleted: stop it first, or pass --force.
+Irreversible. Running service must be stopped first (--force or `cloud service stop`).
 ```
 
 ## When help can't hold it
