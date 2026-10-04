@@ -95,21 +95,6 @@ CONTEXT FOR AGENTS:
 Irreversible. Running service must be stopped first (--force or `cloud service stop`).
 ```
 
-## When help can't hold it
-
-Content users still need but help mustn't carry goes in the root `README.md`, as a short example or a note of
-up to 3 lines.
-
-## Tests
-
-Test structure, not wording. Never pin help or README phrasing (`help.contains("some sentence")`, `include_str!`
-on `README.md`, whole-screen equality): those tests break on every rewording and protect nothing.
-
-Do test: `try_parse_from` outcomes, `ErrorKind`, defaults and value names clap renders, hidden flags staying
-hidden, every subcommand having an `about`, block size, and shared flags reading the same everywhere. The
-tree-wide checks are in `src/cli.rs` tests (`whole_command_tree_follows_help_structure` and its neighbours). A fact
-that must stay in help is guarded by review against this skill.
-
 ## Checklist
 
 1. Edit the clap definitions.
