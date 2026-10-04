@@ -3186,6 +3186,8 @@ pub enum ClickPipePostKafkaSourceTombstonemode {
     #[serde(rename = "delete")]
     #[default]
     Delete,
+    #[serde(rename = "soft_delete")]
+    Soft_delete,
     #[serde(untagged)]
     Unknown(String),
 }
@@ -3194,6 +3196,7 @@ impl std::fmt::Display for ClickPipePostKafkaSourceTombstonemode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Delete => write!(f, "delete"),
+            Self::Soft_delete => write!(f, "soft_delete"),
             Self::Unknown(value) => write!(f, "{value}"),
         }
     }
@@ -3205,6 +3208,8 @@ pub enum ClickPipeKafkaSourceTombstonemode {
     #[serde(rename = "delete")]
     #[default]
     Delete,
+    #[serde(rename = "soft_delete")]
+    Soft_delete,
     #[serde(untagged)]
     Unknown(String),
 }
@@ -3213,6 +3218,7 @@ impl std::fmt::Display for ClickPipeKafkaSourceTombstonemode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Delete => write!(f, "delete"),
+            Self::Soft_delete => write!(f, "soft_delete"),
             Self::Unknown(value) => write!(f, "{value}"),
         }
     }
