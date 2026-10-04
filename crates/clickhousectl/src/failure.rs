@@ -53,7 +53,11 @@ pub enum FailureStage {
     /// Sending a statement to the Query API (including waiting for a
     /// just-provisioned endpoint to accept it).
     QueryRequest,
-    /// Creating the auto-provisioned Query API key.
+    /// Identifying the caller's own API key (`whoami`) before binding it to
+    /// the query endpoint, including rejecting a caller that is not an API
+    /// key of the resolved organization (#1043).
+    Whoami,
+    /// Creating the replacement Query API key during `repair-query-key`.
     KeyCreate,
     /// Reading the management record of the stored Query API key, to tell a
     /// stale local credential from an intentional revocation (#528).
@@ -62,9 +66,9 @@ pub enum FailureStage {
     EndpointGet,
     /// Writing (upserting) the query-endpoint configuration.
     EndpointUpsert,
-    /// Deleting a superseded or no-longer-needed auto-provisioned Query API
+    /// Deleting a superseded or no-longer-needed stored per-service Query API
     /// key: the retired key after a repair, a pending retirement retried on a
-    /// later run, or the owned keys of a service being deleted (#527).
+    /// later run, or the stored keys of a service being deleted (#527).
     KeyDelete,
     /// Streaming a statement's response body to stdout.
     ResponseStream,
@@ -79,6 +83,7 @@ impl FailureStage {
             Self::OrgResolution => "org_resolution",
             Self::ServiceResolution => "service_resolution",
             Self::QueryRequest => "query_request",
+            Self::Whoami => "whoami",
             Self::KeyCreate => "key_create",
             Self::KeyGet => "key_get",
             Self::EndpointGet => "endpoint_get",
@@ -95,6 +100,7 @@ impl FailureStage {
         Self::OrgResolution,
         Self::ServiceResolution,
         Self::QueryRequest,
+        Self::Whoami,
         Self::KeyCreate,
         Self::KeyGet,
         Self::EndpointGet,
@@ -174,10 +180,12 @@ pub enum ProvisioningState {
     StoredKey,
     /// The authenticated management API key was used directly.
     ManagementKey,
-    /// Provisioning a key and endpoint was in flight.
+    /// Provisioning was in flight: the caller's own API key was being bound
+    /// to the query endpoint.
     Provisioning,
-    /// Provisioning completed during this run and the query used the new key.
-    Provisioned,
+    /// The caller's own API key was bound to the query endpoint during this
+    /// run, and the query used it; no key was created (#1043).
+    BoundCallerKey,
     /// Provisioning was required but `--no-auto-enable` forbade it.
     Refused,
 }
@@ -190,7 +198,7 @@ impl ProvisioningState {
             Self::StoredKey => "stored_key",
             Self::ManagementKey => "management_key",
             Self::Provisioning => "provisioning",
-            Self::Provisioned => "provisioned",
+            Self::BoundCallerKey => "bound_caller_key",
             Self::Refused => "refused",
         }
     }
@@ -201,7 +209,7 @@ impl ProvisioningState {
         Self::StoredKey,
         Self::ManagementKey,
         Self::Provisioning,
-        Self::Provisioned,
+        Self::BoundCallerKey,
         Self::Refused,
     ];
 }
@@ -456,6 +464,7 @@ mod tests {
                 "org_resolution",
                 "service_resolution",
                 "query_request",
+                "whoami",
                 "key_create",
                 "key_get",
                 "endpoint_get",
@@ -487,7 +496,7 @@ mod tests {
                 "stored_key",
                 "management_key",
                 "provisioning",
-                "provisioned",
+                "bound_caller_key",
                 "refused",
             ]
         );

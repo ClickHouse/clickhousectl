@@ -162,7 +162,8 @@ pub async fn run_with_client(
 
 impl CloudClient {
     /// Resolve the caller behind the active credentials; not organization-scoped.
-    async fn get_whoami(&self) -> CloudResult<Whoami> {
+    /// Also identifies the key `cloud service query` binds to an endpoint (#1043).
+    pub(crate) async fn get_whoami(&self) -> CloudResult<Whoami> {
         let response = self
             .api()
             .whoami_get()
