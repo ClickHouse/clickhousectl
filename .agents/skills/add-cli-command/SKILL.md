@@ -10,7 +10,7 @@ Paths are relative to `crates/clickhousectl/`.
 1. Follow the procedure for the kind of command:
    - Local (`local ...`, runs on this machine): [references/local.md](references/local.md)
    - Cloud (`cloud ...`, calls the Cloud API): [references/cloud.md](references/cloud.md)
-2. Write help text to "Writing help text" in the root `AGENTS.md`.
+2. Write help text with the `cli-help-text` skill (`.agents/skills/cli-help-text/SKILL.md`).
 3. Finish with the steps below.
 
 ## Finish
@@ -26,7 +26,7 @@ Copy this checklist and tick it off as you go:
 
 ```
 - [ ] Procedure steps (local.md or cloud.md)
-- [ ] Help text follows the root AGENTS.md rules
+- [ ] Help text follows the cli-help-text skill
 - [ ] try_parse_from tests for new flags
 - [ ] Both classifiers map new files
 - [ ] README example
