@@ -16,7 +16,7 @@ An API PR may touch CLI code only to keep it compiling after a breaking library 
 surface and an unchanged wire request (pin it with a test). A CLI PR never changes the library.
 
 Read `crates/clickhouse-cloud-api/AGENTS.md` (model policy, analyzer configuration) and the root `AGENTS.md`
-(adding a command, help text, tests, gates) before editing. This skill is the workflow; those files are the rules.
+(help text, tests, gates) before editing. This skill is the workflow; those files are the rules.
 
 ## 1. Reproduce and inventory
 
@@ -81,8 +81,4 @@ Read `crates/clickhouse-cloud-api/AGENTS.md` (model policy, analyzer configurati
 
 ## 4. CLI PR
 
-Follow "Adding a command" in the root `AGENTS.md` for each new command or flag: clap definition and read/write
-classification in the owning `src/cloud/<domain>.rs`, a `CloudClient` wrapper, a `build_*_request` helper with
-minimal + maximal tests, `--json` output, `try_parse_from` coverage, and wiremock tests in
-`tests/cli_request_shape_test.rs` for runtime behaviour. Write help to the "Writing help text" standard, add root
-README examples for user-visible behaviour, and map any new file in both classifiers. Run the CLI gates.
+Use the `add-cli-command` skill (`.agents/skills/add-cli-command/SKILL.md`) for each new command or flag.

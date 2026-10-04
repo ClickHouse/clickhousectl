@@ -69,60 +69,9 @@ work on a branch, with an associated issue and a PR.
 
 ## Adding a command
 
-Local clap definitions live in `src/local/cli.rs`. Cloud clap definitions, handlers, builders, wrapper methods,
-dispatch, and tests are co-located in the owning `src/cloud/<domain>.rs`; `src/cloud/cli.rs` owns the top-level
-cloud arguments, command enum, domain re-exports, delegation, and top-level tests.
-
-**Local:** 1. Add a variant to the relevant enum in `src/local/cli.rs` using clap derive macros. 2. Add the match
-arm in `run()` in `src/local/mod.rs`; `main.rs` delegates to that boundary. 3. Implement the handler in a dedicated
-module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new logic into `main.rs`.
-
-**Cloud:**
-
-1. Make sure `clickhouse-cloud-api` already supports the necessary endpoints and models.
-2. Add the clap variant and argument structs to the owning `src/cloud/<domain>.rs`. Create a new domain module and
-   privately re-export its command enum from `src/cloud/cli.rs` if the surface warrants its own grouping.
-3. Classify the variant in the domain enum's exhaustive `is_write()` match. OAuth (Bearer) auth is read-only; write
-   commands require API key auth and fail fast on OAuth + write. `CloudCommands::is_write_command()` in
-   `src/cloud/cli.rs` exhaustively delegates to each domain. Add read/write tests next to the clap definitions.
-4. Add the exhaustive command match to the domain's `run()` dispatcher. `dispatch()` in `src/cloud/mod.rs` (private;
-   entered from `cloud::run`) delegates only at the top-level `CloudCommands` boundary — add an arm there only when
-   introducing a new domain.
-5. Add a thin wrapper method in the domain module's `impl CloudClient` block: delegate to `self.api().<lib_method>()`,
-   map errors via `self.convert_error(e)` / `convert_error_for_organization(e, org_id)` /
-   `convert_error_for_lookup(e, lookup)`, and unwrap with `Self::unwrap_response`. Use the library's types here.
-6. If the command sends a body, extract `build_<name>_request(...)` in the same domain module returning the library's
-   request struct. Cover it with minimal + maximal unit tests asserting on library request-struct fields.
-7. Implement the handler in the same domain module. Body-sending handlers call the build helper, pass the result
-   through the `CloudClient` wrapper, and print with
-   `if json { println!("{}", serde_json::to_string_pretty(&data)?); } else { print_human(&data)?; }`.
-   Drive every detail/get view through `print_human` so it shares serde's behaviour — deprecated-field hiding, and
-   summarising a PEM-framed certificate or key instead of dumping its body; a `println!` or `tabled` cell bypasses
-   both. List views stay `tabled`; short action confirmations stay plain `println!`. Every field of a library
-   response type is `Option`, so never `unwrap()`/`expect()` one: render absence with
-   `crate::cloud::output::or_absent` (`-`) or `ABSENT`, and have `--filter` predicates treat absence as non-matching.
-8. Add `Cli::try_parse_from` coverage next to the domain command definition for the new command's body-related
-   flags, asserting parsed values.
-9. Declare the workflow in the owning domain's `PERMISSIONS` table using typed
-   `clickhouse_cloud_api::meta::operations` references. Include every call: read-before-write, polling,
-   cleanup/rollback, and selector lookups; put optional calls in labeled `Conditional` groups.
-   `Conditional::flag` also validates that the triggering flag exists on that command. For example:
-
-   ```rust
-   Permission::api("service delete", &[&op::INSTANCE_DELETE]).when(&[
-       Conditional::flag("force", &[&op::INSTANCE_GET, &op::INSTANCE_STATE_UPDATE]),
-       Conditional::new("Owned query-key cleanup", &[&op::OPENAPI_KEY_DELETE]),
-       Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
-   ])
-   ```
-
-   `Permission::api` includes conditional organization discovery; use `.unscoped()` only when the handler
-   never resolves organization scope. Non-OpenAPI commands need `Permission::non_api` with a nonempty reason;
-   mixed workflows can add `.authorization(...)` for SQL or other authorization. The shared `Cli` command
-   factory refuses missing, duplicate, stale, or invalid declarations for every executable Cloud command,
-   including a runnable parent such as `org prometheus`. Tests enforce the same decorated tree used to parse
-   and display help. Declaration coverage does not prove the Rust call graph: review changed handlers and
-   use subprocess/request tests for compound or conditional workflows.
+To add or change a local or Cloud command or flag, use the `add-cli-command` skill
+(`.agents/skills/add-cli-command/SKILL.md`). Local clap definitions live in `src/local/cli.rs`. Each Cloud
+domain keeps its definitions, handlers and tests together in `src/cloud/<domain>.rs`.
 
 ## Writing help text
 
