@@ -65,12 +65,10 @@ Include only what changes what the agent does next:
 
 - An auth requirement or precondition ("must be stopped first"). If meeting it takes a command or flag, name
   it: "stop first (`cloud service stop`)". The agent shouldn't have to guess or read more help to find it.
-- Credential precedence, without storage paths.
-- Where to get a required input: "Service ID: `cloud service list`".
 - Runtime behaviour the flags don't show: timeouts, stdin handling, irreversibility, long waits, retry safety.
 - An output note, only if it changes what the agent does with the output.
-- A `Typical flow:` line.
-- At most one docs URL.
+- A `Typical flow:` line describing likely follow-on commands.
+- Rarely, a docs URL: only when help can't cover something the agent needs. Never more than one.
 
 Leave out implementation details, crate or file names, HTTP and API mechanics, storage paths, history or
 compatibility notes, reassurance, and anything already in the `about` line, the flag list or `[default:]`.
