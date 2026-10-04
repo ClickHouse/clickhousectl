@@ -15,12 +15,14 @@
 !/.agents/skills/openapi-drift-remediation/
 !/.agents/skills/add-cli-command/
 !/.agents/skills/cli-help-text/
+!/.agents/skills/release/
 /.claude/*
 !/.claude/skills/
 /.claude/skills/*
 !/.claude/skills/openapi-drift-remediation
 !/.claude/skills/add-cli-command
 !/.claude/skills/cli-help-text
+!/.claude/skills/release
 /.codex/
 /.cursor/
 /.opencode/
