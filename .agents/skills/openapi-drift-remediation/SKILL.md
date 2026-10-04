@@ -16,7 +16,7 @@ An API PR may touch CLI code only to keep it compiling after a breaking library 
 surface and an unchanged wire request (pin it with a test). A CLI PR never changes the library.
 
 Read `crates/clickhouse-cloud-api/AGENTS.md` (model policy, analyzer configuration) and the root `AGENTS.md`
-(help text, tests, gates) before editing. This skill is the workflow; those files are the rules.
+(tests, gates) before editing. This skill is the workflow; those files are the rules.
 
 ## 1. Reproduce and inventory
 

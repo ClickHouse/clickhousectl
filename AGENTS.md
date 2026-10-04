@@ -75,41 +75,8 @@ domain keeps its definitions, handlers and tests together in `src/cloud/<domain>
 
 ## Writing help text
 
-- Help lives in `#[command(about/after_help)]` and arg doc comments in `src/cli.rs`, `src/local/cli.rs`,
-  `src/cloud/cli.rs`, and `src/cloud/<domain>.rs`; one block is `const INSTALL_AFTER_HELP` in `src/local/cli.rs`.
-  `src/cloud/permissions.rs` adds permission context from domain declarations and API-library metadata.
-- A help screen has only: one-line `about`, clap's `Usage:`, `Arguments:`/`Options:`, `Commands:`, and an optional
-  trailing `CONTEXT FOR AGENTS:` block via `after_help`. No `long_about`; no other `after_help` header.
-- `about`: imperative verb phrase, ≤ ~60 chars, no trailing period, no implementation detail; keep siblings parallel
-  ("List X", "Get X details", "Create X", "Delete X"). Flag help: one line, ≤ ~70 chars, include units/format
-  ("Interval in seconds"), and never repeat clap's `[default: …]` or `[possible values: …]` in prose.
-- Use `(Beta)` for beta markers; keep `(limited preview)` distinct.
-- State cross-flag constraints on the flag itself ("only with `--replication-mode cdc_only`"). Add a second
-  doc-comment paragraph (≤ ~3 lines) only for a constraint the flag's name and type cannot convey.
-- Shared flags (`--api-key`, `--api-secret`, `--url`, `--org-id`, `--org-name`, `--json`, `--debug`) read identically everywhere.
-- Help options: command-specific flags first (display ranks below 900), then the contiguous shared block
-  `--org-id`, `--org-name` (when available), `--api-key`, `--api-secret`, `--url`, `--json`, `--debug`, `--help`.
-  Use `src/cli.rs`'s `help_order` ranks 900–906; `--org-name` uses 901, and clap supplies help at 999.
-  Apply ranks at every declaration, including local JSON and auth flags; inheritance must preserve the block.
-  Both local clients order common arguments as name, host, port, version, query, queries-file. Names stay in
-  Arguments; compatibility flags stay hidden. Keep standard headings and release-only URL hiding.
-- `CONTEXT FOR AGENTS:` — hard cap 8 content lines, target 3-6, one fact per line. May hold: an auth requirement or
-  precondition; credential precedence without storage paths; where to get required inputs
-  ("Service ID: `cloud service list`"); non-obvious runtime behaviour
-  (timeouts, stdin handling, irreversibility, "must be stopped first"); an output note only when it changes what the
-  agent does; a `Typical flow:` line; at most one docs URL.
-  It must NOT hold implementation details, crates/files, HTTP or API mechanics, storage paths, history or
-  compatibility notes, reassurance, or anything already in the flag list, `[default:]`, or the `about` line.
-- Put shared context (auth model, how to find IDs, typical flow) on the parent (`cloud service`, `local server`).
-  The permission helper adds API-key requirements to every executable Cloud command; pure grouping commands
-  stay unchanged. Keep other leaf context specific to a gotcha. Permission lines count toward the 8-line cap;
-  move longer operational guidance to the README when necessary.
-- Do not write tests that pin help or README wording (`help.contains("some sentence")`, `include_str!` on
-  `README.md`, whole-screen equality). They protect phrasing, not facts, and turn every rewording into a test edit.
-  Test structure instead: `try_parse_from` outcomes, `ErrorKind`, defaults and value names clap renders, hidden
-  flags staying hidden, every subcommand having an `about`, block size, and a flag reading identically everywhere.
-  A fact that must not disappear from help is guarded by review against this section, not by a substring.
-- Content users still need but help must not carry goes to `README.md` as a short example or ≤ 3-line note.
+Use the `cli-help-text` skill (`.agents/skills/cli-help-text/SKILL.md`) whenever you add or change a command, a
+flag, or any help text. It holds the help standard and its test rule.
 
 ## Tests
 
@@ -128,7 +95,7 @@ Test coverage is non-negotiable.
   `telemetry_test.rs`. Add a new file rather than growing `cli_request_shape_test.rs`, which is Cloud-only.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output
   formatting, platform detection, and other module-local helpers.
-- **Help and README text** — structural assertions only (see Writing help text). No wording pins.
+- **Help and README text** — structural assertions only (see the `cli-help-text` skill). No wording pins.
 
 ## CI gates
 
