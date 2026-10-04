@@ -32,7 +32,7 @@ No `long_about`, `before_help`, `after_long_help`, or any other `after_help` hea
 - An imperative verb phrase, up to about 60 characters, no trailing period.
 - Say what the command does, not how it does it.
 - Keep siblings parallel: "List X", "Get X details", "Create X", "Delete X".
-- Mark beta commands with `(Beta)`. `(limited preview)` is a different status; keep it distinct.
+- Mark beta commands with `(Beta)`.
 
 ## Flags and arguments
 
