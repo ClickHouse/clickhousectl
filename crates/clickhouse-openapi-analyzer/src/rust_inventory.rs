@@ -1028,9 +1028,9 @@ fn serde_options(attributes: &[Attribute]) -> syn::Result<SerdeOptions> {
                 options.try_from = Some(meta.value()?.parse::<syn::LitStr>()?.value());
             } else if meta.path.is_ident("rename_all") {
                 return Err(meta.error(
-                    "rename_all is not allowed in models.rs: wire names must be explicit \
+                    "rename_all is not allowed on models: wire names must be explicit \
                      #[serde(rename = \"...\")] literals so the drift analyzer can read them \
-                     verbatim (see AGENTS.md, OpenAPI drift section)",
+                     verbatim (see crates/clickhouse-cloud-api/AGENTS.md, \"OpenAPI drift\")",
                 ));
             } else if meta.path.is_ident("untagged") {
                 options.untagged = true;
