@@ -63,7 +63,8 @@ count toward the 8.
 
 Include only what changes what the agent does next:
 
-- An auth requirement or precondition ("must be stopped first").
+- An auth requirement or precondition ("must be stopped first"). If meeting it takes a command or flag, name
+  it: "stop first (`cloud service stop`)". The agent shouldn't have to guess or read more help to find it.
 - Credential precedence, without storage paths.
 - Where to get a required input: "Service ID: `cloud service list`".
 - Runtime behaviour the flags don't show: timeouts, stdin handling, irreversibility, long waits, retry safety.
