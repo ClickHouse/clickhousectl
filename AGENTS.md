@@ -42,14 +42,10 @@ work on a branch, with an associated issue and a PR.
   call `client.api()` directly (`postgres.rs` also uses a local `unwrap_api` instead of `unwrap_response`).
 - Cloud handlers support `--json` unless there is good reason not to. JSON is emitted automatically when `--json`
   is passed or a coding agent is detected — `json_output()` in `main.rs` wraps `is_ai_agent::detect()`.
-- `CloudError` carries `kind: CloudErrorKind` (`Auth` for 401/403 and missing credentials,
-  `Usage` for input validation discovered during execution, else `Generic`) and an
-  optional `details: CloudErrorDetail`. `cloud_error_to_top_level` (entered from `cloud::run`) maps `Auth` →
-  `Error::AuthRequired`, `Usage` → `Error::Usage` (clap rendering and exit 2), `Generic` →
-  `Error::CloudDetailed`, retaining existing details or deriving a fallback
-  code from `FailureKind`. JSON mode renders every Cloud runtime failure via `cloud::output::print_error`,
-  including auth and cancellation; usage failures keep clap's text. Rendering never changes exit codes.
-  Human output keeps the same message.
+- `CloudError.kind` decides the top-level error: `Auth` (401/403, missing credentials) → exit 4; `Usage` (input
+  validation found at runtime) → clap-rendered, exit 2; else `Generic`. JSON mode prints every Cloud runtime failure,
+  including auth and cancellation, via `cloud::output::print_error`; usage failures keep clap's text. Output mode
+  never changes the exit code or the human message.
 - CLI-owned stdout uses `src/stdout.rs`: crate-scoped `print!`/`println!` and `stdout::stdout()` suppress only typed
   `BrokenPipe` errors. Keep new manual writers on that handle; never suppress command/API failures or child exits.
 - Exit codes: `0` success, else `Error::exit_code()` — `1` error, `3` cancelled, `4` auth required, and
@@ -57,14 +53,11 @@ work on a branch, with an associated issue and a PR.
 
 ### Telemetry failure classification (#450)
 
-- `CloudError` also carries `failure: Option<ApiFailure>` (`src/failure.rs`). `failure::classify_api_error` is the
-  single place a library error variant becomes a `FailureKind`; reach it through `CloudClient::convert_error`,
-  `convert_error_for_organization`, or `convert_error_for_lookup`, so classification is inherited by conversion.
-- A handler adds the *stage* with `error.at_stage(FailureStage::…)` in `map_err` at the boundary that owns it.
-  Recording is first-write-wins: a coarse outer fallback never overwrites a precise inner one.
-- Never derive a category from message text. Never widen a vocabulary to anything but a `&'static str` from an enum
-  or an allowlisted status — those types are what make SQL, identifiers, response bodies and credentials
-  structurally unable to reach telemetry.
+- `CloudError.failure` (`src/failure.rs`) is classified only by `failure::classify_api_error`, reached through the
+  `CloudClient::convert_error*` methods. Add the stage with `error.at_stage(FailureStage::…)` at the boundary that
+  owns it; first write wins, so an outer fallback never overwrites an inner stage.
+- Never derive a category from message text. Vocabularies are only `&'static str` from an enum or an allowlisted
+  status, which keeps SQL, identifiers, response bodies and credentials out of telemetry.
 - A boundary that rewrites a message must carry `failure` across (`..error` in a struct literal, or `with_failure`).
 
 ## Adding a command
@@ -89,10 +82,8 @@ Test coverage is non-negotiable.
 - **Cloud subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock
   server and assert on requests, auth, errors, and output; use it when handler runtime behavior is not covered by
   clap or request-builder tests.
-- **Local subprocess** — one binary per concern under `crates/clickhousectl/tests/`: 21 `local_*` binaries
-  (`local_server_*`, `local_postgres_*`, `local_docker_*`, `local_client_*`, `local_install_*`, `local_remove_*`,
-  `local_init_json_test.rs`, `local_structured_errors_test.rs`, `local_version_error_test.rs`) plus
-  `telemetry_test.rs`. Add a new file rather than growing `cli_request_shape_test.rs`, which is Cloud-only.
+- **Local subprocess** — one `local_*` binary per concern under `crates/clickhousectl/tests/`. Add a new file
+  rather than growing `cli_request_shape_test.rs`, which is Cloud-only.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output
   formatting, platform detection, and other module-local helpers.
 - **Help and README text** — structural assertions only (see the `cli-help-text` skill). No wording pins.
@@ -106,11 +97,8 @@ Test coverage is non-negotiable.
   `scripts/classify-install-integration.py` holds `INSTALL_EXACT_PATHS`/`INSTALL_PREFIXES` for the live local install
   matrix, verified by `test-cli.yml` and `test-install.yml` on PRs that touch the classifier or the CLI
   (`scripts/tests/test_classify_install_integration.py`).
-- Internal PRs classify the exact base-to-head diff on every push via a secret-free planner job; the
-  `Cloud integration decision` check goes green automatically when no suites are affected. Affected suites only run
-  after the `run-cloud-integration` label is applied (one-shot, bound to the labeled head SHA). Scheduled runs select
-  all suites; manual runs use the requested scope. Label, override, and fork rules: `.github/CLOUD_INTEGRATION.md`
-  (driven by `cloud-integration-decision.yml` + `scripts/cloud-integration-decision.py`).
+- Affected Cloud integration suites run only after the `run-cloud-integration` label is applied; the
+  `Cloud integration decision` check passes by itself when none are affected. Rules: `.github/CLOUD_INTEGRATION.md`.
 
 ## Dependencies
 
@@ -118,12 +106,7 @@ Use `cargo add` with the latest version and an explicit crate, e.g. `cargo add -
 
 ## Releases
 
-- Push a version tag (`git tag v0.2.3 && git push origin v0.2.3`) to run the release workflow.
-- Bump in lockstep: `crates/clickhousectl/Cargo.toml` (`version` and the `clickhouse-cloud-api` dep version),
-  `crates/clickhouse-cloud-api/Cargo.toml`, `npm/package.json`. `pypi/pyproject.toml` needs no manual bump — maturin
-  takes the version from `crates/clickhousectl/Cargo.toml` via `dynamic = ["version"]`.
-- `clickhouse-cloud-api` publishes to crates.io; `clickhousectl` to GitHub releases, crates.io, npm and PyPI from
-  the same workflow in separate jobs (crates.io uses a token, npm and PyPI use OIDC).
+Use the `release` skill (`.agents/skills/release/SKILL.md`); a release needs a manual step in another repo.
 
 ## Git workflow and documentation
 
