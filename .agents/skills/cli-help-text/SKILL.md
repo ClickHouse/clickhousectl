@@ -59,8 +59,7 @@ No `long_about`, `before_help`, `after_long_help`, or any other `after_help` hea
 ## `CONTEXT FOR AGENTS:`
 
 At most 8 content lines, ideally 3 to 6. Write densely: the block is for agents, not people, so pack related
-facts onto one line. Permission lines added by `permissions.rs` don't
-count toward the 8.
+facts onto one line. Permission lines added by `permissions.rs` don't count toward the 8.
 
 Include only what changes what the agent does next:
 
