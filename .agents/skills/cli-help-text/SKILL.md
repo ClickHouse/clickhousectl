@@ -65,7 +65,8 @@ Include only what changes what the agent does next:
 
 - An auth requirement or precondition ("must be stopped first"). If meeting it takes a command or flag, name
   it: "stop first (`cloud service stop`)". The agent shouldn't have to guess or read more help to find it.
-- Runtime behaviour the flags don't show: timeouts, stdin handling, irreversibility, long waits, retry safety.
+- Runtime behaviour the flags don't show, when it affects how the command is used: timeouts, stdin handling,
+  irreversibility, long waits, retry safety.
 - An output note, only if it changes what the agent does with the output.
 - A `Typical flow:` line describing likely follow-on commands.
 - Rarely, a docs URL: only when help can't cover something the agent needs. Never more than one.
