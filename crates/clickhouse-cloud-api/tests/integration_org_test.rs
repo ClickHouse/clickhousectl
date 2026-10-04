@@ -53,6 +53,33 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             .expect("blocking steps always return a value");
         assert_eq!(field_string(org.id), ctx.org_id);
 
+        // ── Whoami ──────────────────────────────────────────────────
+        //
+        // The suite authenticates with an organization API key, so the
+        // caller must resolve to the key identity owned by this org.
+
+        log_phase("Whoami");
+        let whoami = failures
+            .run(&ctx, StepKind::NonBlocking, "resolve caller identity", || {
+                let client = client.clone();
+                async move {
+                    let resp = client.whoami_get().await?;
+                    resp.result
+                        .ok_or_else(|| "whoami returned no result".into())
+                }
+            })
+            .await?;
+        if let Some(whoami) = whoami {
+            let Whoami::WhoamiApiKey(key) = &whoami else {
+                panic!("API key caller resolved to a non-key identity: {whoami}");
+            };
+            assert_eq!(field_string(key.organization_id), ctx.org_id);
+            assert!(
+                key.key_id.as_deref().is_some_and(|id| !id.is_empty()),
+                "whoami API key identity carried no keyId"
+            );
+        }
+
         // ── Members ─────────────────────────────────────────────────
         //
         // Cover `member_get_list`, `member_get`, and `member_update`

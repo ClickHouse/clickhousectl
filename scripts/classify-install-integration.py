@@ -52,6 +52,8 @@ NON_INSTALL_EXACT_PATHS = frozenset(
         "crates/clickhouse-cloud-api/src/convert/clickpipes.rs",
         "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
         "crates/clickhouse-cloud-api/src/models/saved_queries.rs",
+        "crates/clickhouse-cloud-api/src/client/whoami.rs",
+        "crates/clickhouse-cloud-api/src/models/whoami.rs",
         "crates/clickhousectl/src/cloud/clickstack.rs",
         "crates/clickhousectl/src/cloud/config.rs",
         "crates/clickhousectl/src/cloud/permissions.rs",

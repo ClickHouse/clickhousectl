@@ -1053,6 +1053,15 @@ pub const POSTGRES_ORG_PROMETHEUS_GET: OperationMetadata = OperationMetadata {
     required_permissions: &["control-plane:organization:view"],
 };
 
+/// `GET /v1/organizations/{organizationId}/postgres/{postgresId}/backups` (`postgresServiceBackupGetList`).
+pub const POSTGRES_SERVICE_BACKUP_GET_LIST: OperationMetadata = OperationMetadata {
+    operation_id: "postgresServiceBackupGetList",
+    rust_method: "postgres_service_backup_get_list",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/postgres/{postgresId}/backups",
+    required_permissions: &["control-plane:postgres-service:view"],
+};
+
 /// `GET /v1/organizations/{organizationId}/postgres/{postgresId}/caCertificates` (`postgresServiceCertsGet`).
 pub const POSTGRES_SERVICE_CERTS_GET: OperationMetadata = OperationMetadata {
     operation_id: "postgresServiceCertsGet",
@@ -1494,6 +1503,15 @@ pub const USAGE_COST_GET: OperationMetadata = OperationMetadata {
     required_permissions: &["control-plane:organization:view"],
 };
 
+/// `GET /v1/whoami` (`whoamiGet`).
+pub const WHOAMI_GET: OperationMetadata = OperationMetadata {
+    operation_id: "whoamiGet",
+    rust_method: "whoami_get",
+    method: "GET",
+    path: "/v1/whoami",
+    required_permissions: &[],
+};
+
 /// Every supported OpenAPI operation, sorted by exact operation ID.
 pub const ALL: &[OperationMetadata] = &[
     ACTIVE_BALANCES_GET,
@@ -1612,6 +1630,7 @@ pub const ALL: &[OperationMetadata] = &[
     POSTGRES_INSTANCE_RESTORE,
     POSTGRES_LOGS_GET_LIST,
     POSTGRES_ORG_PROMETHEUS_GET,
+    POSTGRES_SERVICE_BACKUP_GET_LIST,
     POSTGRES_SERVICE_CERTS_GET,
     POSTGRES_SERVICE_CREATE,
     POSTGRES_SERVICE_DELETE,
@@ -1661,6 +1680,7 @@ pub const ALL: &[OperationMetadata] = &[
     UPGRADE_WINDOW_GET,
     UPGRADE_WINDOW_UPDATE,
     USAGE_COST_GET,
+    WHOAMI_GET,
 ];
 
 /// Look up an exact OpenAPI operation ID. Unknown IDs return `None`.

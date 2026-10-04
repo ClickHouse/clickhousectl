@@ -275,7 +275,9 @@ fn discriminated_union_defaults_round_trip_to_the_same_variant() {
         BackupBucketPostRequest,
         BackupBucketProperties,
         ClickPipeBigQuerySource,
+        ClickPipeKafkaSchemaRegistry,
         ClickPipeMutateBigQuerySource,
+        ClickPipeMutateKafkaSchemaRegistry,
         ClickPipePostPubSubSource,
         ClickStackSavedFilterValue,
         ClickStackSavedFilterValueResponse,
@@ -7474,6 +7476,246 @@ fn kinesis_registry_conversion_reports_nested_missing_fields_and_preserves_unkno
 }
 
 #[test]
+fn kafka_schema_registry_response_dispatches_legacy_confluent_and_glue() {
+    // Payloads written before Glue support carry no `type`; they stay Confluent.
+    for wire in [
+        serde_json::json!({
+            "url": "https://registry.example", "authentication": "PLAIN",
+            "caCertificate": "CA"
+        }),
+        serde_json::json!({
+            "type": "confluent", "url": "https://registry.example",
+            "authentication": "PLAIN", "caCertificate": "CA"
+        }),
+    ] {
+        let registry: ClickPipeKafkaSchemaRegistry = serde_json::from_value(wire.clone()).unwrap();
+        let ClickPipeKafkaSchemaRegistry::ClickPipeKafkaConfluentSchemaRegistry(confluent) =
+            &registry
+        else {
+            panic!("expected Confluent, got {registry:?}");
+        };
+        assert_eq!(confluent.url.as_deref(), Some("https://registry.example"));
+        assert_eq!(
+            confluent.authentication,
+            Some(ClickPipeKafkaConfluentSchemaRegistryAuthentication::PLAIN)
+        );
+        assert_eq!(confluent.ca_certificate.as_deref(), Some("CA"));
+        assert_eq!(serde_json::to_value(&registry).unwrap(), wire);
+    }
+
+    let glue = serde_json::json!({
+        "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events",
+        "glueRoleArn": "arn:aws:iam::123:role/Glue"
+    });
+    let registry: ClickPipeKafkaSchemaRegistry = serde_json::from_value(glue.clone()).unwrap();
+    let ClickPipeKafkaSchemaRegistry::ClickPipeKafkaGlueSchemaRegistryResponse(response) =
+        &registry
+    else {
+        panic!("expected Glue, got {registry:?}");
+    };
+    assert_eq!(
+        response.r#type,
+        Some(ClickPipeKafkaGlueSchemaRegistryType::Glue)
+    );
+    assert_eq!(response.glue_region.as_deref(), Some("us-east-1"));
+    assert_eq!(response.glue_registry_name.as_deref(), Some("events"));
+    assert_eq!(serde_json::to_value(&registry).unwrap(), glue);
+
+    // A Glue payload that lost its discriminator, or a future registry type,
+    // is kept verbatim instead of being misread as Confluent.
+    for wire in [
+        serde_json::json!({"glueRegion": "us-east-1", "glueRegistryName": "events"}),
+        serde_json::json!({"type": "future", "url": "https://registry.example"}),
+    ] {
+        let registry: ClickPipeKafkaSchemaRegistry = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(registry, ClickPipeKafkaSchemaRegistry::Unknown(wire));
+    }
+
+    let default = serde_json::to_value(ClickPipeKafkaSchemaRegistry::default()).unwrap();
+    assert_eq!(default, serde_json::json!({}));
+    assert_eq!(
+        serde_json::from_value::<ClickPipeKafkaSchemaRegistry>(default).unwrap(),
+        ClickPipeKafkaSchemaRegistry::default()
+    );
+}
+
+#[test]
+fn kafka_schema_registry_variants_tolerate_missing_and_null_fields() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "type": null, "url": null, "authentication": null, "caCertificate": null
+        }),
+    ] {
+        let confluent: ClickPipeKafkaConfluentSchemaRegistry =
+            serde_json::from_value(wire).unwrap();
+        assert_eq!(confluent, ClickPipeKafkaConfluentSchemaRegistry::default());
+        assert_eq!(
+            serde_json::to_value(confluent).unwrap(),
+            serde_json::json!({})
+        );
+    }
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "type": null, "glueRegion": null, "glueRegistryName": null, "glueRoleArn": null
+        }),
+    ] {
+        let glue: ClickPipeKafkaGlueSchemaRegistryResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(glue, ClickPipeKafkaGlueSchemaRegistryResponse::default());
+        assert_eq!(serde_json::to_value(glue).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn kafka_source_response_schema_registry_may_be_missing_or_null() {
+    for wire in [
+        serde_json::json!({"brokers": "broker:9092"}),
+        serde_json::json!({"brokers": "broker:9092", "schemaRegistry": null}),
+    ] {
+        let source: ClickPipeKafkaSource = serde_json::from_value(wire).unwrap();
+        assert_eq!(source.schema_registry, None);
+        assert!(
+            serde_json::to_value(source)
+                .unwrap()
+                .get("schemaRegistry")
+                .is_none()
+        );
+    }
+    let source: ClickPipeKafkaSource = serde_json::from_value(serde_json::json!({
+        "schemaRegistry": {"type": "glue", "glueRegion": "eu-west-1", "glueRegistryName": "r"}
+    }))
+    .unwrap();
+    assert!(matches!(
+        source.schema_registry,
+        Some(ClickPipeKafkaSchemaRegistry::ClickPipeKafkaGlueSchemaRegistryResponse(_))
+    ));
+}
+
+#[test]
+fn kafka_schema_registry_requests_serialize_each_variant_wire_shape() {
+    let confluent: ClickPipeMutateKafkaSchemaRegistry =
+        ClickPipeMutateKafkaConfluentSchemaRegistry {
+            r#type: None,
+            url: "https://registry.example".into(),
+            authentication: ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication::PLAIN,
+            credentials: ClickPipeKafkaSchemaRegistryCredentials {
+                username: "user".into(),
+                password: "secret".into(),
+            },
+            ca_certificate: None,
+        }
+        .into();
+    assert_eq!(
+        serde_json::to_value(&confluent).unwrap(),
+        serde_json::json!({
+            "url": "https://registry.example", "authentication": "PLAIN",
+            "credentials": {"username": "user", "password": "secret"}
+        })
+    );
+    let ClickPipeMutateKafkaSchemaRegistry::ClickPipeMutateKafkaConfluentSchemaRegistry(
+        mut explicit,
+    ) = confluent
+    else {
+        unreachable!()
+    };
+    explicit.r#type = Some(ClickPipeMutateKafkaConfluentSchemaRegistryType::Confluent);
+    explicit.ca_certificate = Some("CA".into());
+    let explicit = ClickPipeMutateKafkaSchemaRegistry::from(explicit);
+    let wire = serde_json::json!({
+        "type": "confluent", "url": "https://registry.example", "authentication": "PLAIN",
+        "credentials": {"username": "user", "password": "secret"}, "caCertificate": "CA"
+    });
+    assert_eq!(serde_json::to_value(&explicit).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMutateKafkaSchemaRegistry>(wire).unwrap(),
+        explicit
+    );
+
+    let glue: ClickPipeMutateKafkaSchemaRegistry = ClickPipeKafkaGlueSchemaRegistry {
+        r#type: ClickPipeKafkaGlueSchemaRegistryType::Glue,
+        glue_region: "us-east-1".into(),
+        glue_registry_name: "events".into(),
+        glue_role_arn: None,
+    }
+    .into();
+    let wire = serde_json::json!({
+        "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events"
+    });
+    assert_eq!(serde_json::to_value(&glue).unwrap(), wire);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeMutateKafkaSchemaRegistry>(wire).unwrap(),
+        glue
+    );
+    let source = ClickPipePostKafkaSource {
+        schema_registry: Some(glue),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(source).unwrap()["schemaRegistry"]["type"],
+        "glue"
+    );
+}
+
+#[test]
+fn kafka_schema_registry_request_variants_are_strict() {
+    let confluent = serde_json::json!({
+        "url": "https://registry.example", "authentication": "PLAIN",
+        "credentials": {"username": "user", "password": "secret"}
+    });
+    serde_json::from_value::<ClickPipeMutateKafkaConfluentSchemaRegistry>(confluent.clone())
+        .unwrap();
+    for field in ["url", "authentication", "credentials"] {
+        let mut missing = confluent.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(
+            serde_json::from_value::<ClickPipeMutateKafkaConfluentSchemaRegistry>(missing).is_err()
+        );
+    }
+    let glue = serde_json::json!({
+        "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events"
+    });
+    for field in ["type", "glueRegion", "glueRegistryName"] {
+        let mut missing = glue.clone();
+        missing.as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<ClickPipeKafkaGlueSchemaRegistry>(missing).is_err());
+        let mut null = glue.clone();
+        null[field] = serde_json::Value::Null;
+        assert!(serde_json::from_value::<ClickPipeKafkaGlueSchemaRegistry>(null).is_err());
+    }
+}
+
+#[test]
+fn kafka_glue_registry_conversion_reports_missing_fields() {
+    let response: ClickPipeKafkaGlueSchemaRegistryResponse =
+        serde_json::from_value(serde_json::json!({
+            "glueRegion": "us-east-1", "glueRoleArn": "arn:aws:iam::123:role/Glue"
+        }))
+        .unwrap();
+    let error = ClickPipeKafkaGlueSchemaRegistry::try_from(response.clone()).unwrap_err();
+    assert_eq!(error.fields(), &["type", "glueRegistryName"]);
+    let mut complete = response;
+    complete.r#type = Some(ClickPipeKafkaGlueSchemaRegistryType::Glue);
+    complete.glue_registry_name = Some("events".into());
+    let request = ClickPipeKafkaGlueSchemaRegistry::try_from(complete).unwrap();
+    assert_eq!(
+        serde_json::to_value(request).unwrap(),
+        serde_json::json!({
+            "type": "glue", "glueRegion": "us-east-1", "glueRegistryName": "events",
+            "glueRoleArn": "arn:aws:iam::123:role/Glue"
+        })
+    );
+    assert_eq!(
+        ClickPipeKafkaGlueSchemaRegistryType::Glue.to_string(),
+        "glue"
+    );
+    assert_eq!(
+        ClickPipeKafkaConfluentSchemaRegistryType::Confluent.to_string(),
+        "confluent"
+    );
+}
+
+#[test]
 fn kafka_tombstone_mode_is_lossless_and_optional() {
     let request = ClickPipePostKafkaSource::default();
     assert!(
@@ -7876,4 +8118,183 @@ fn byoc_config_deprecated_account_name_is_hidden_by_default() {
             .get("accountName")
             .is_none()
     );
+}
+
+#[test]
+fn activity_type_postgres_action_round_trips() {
+    let parsed: ActivityType = serde_json::from_str("\"postgres_action\"").unwrap();
+    assert_eq!(parsed, ActivityType::Postgres_action);
+    assert_eq!(parsed.to_string(), "postgres_action");
+    assert_eq!(serde_json::to_value(&parsed).unwrap(), "postgres_action");
+}
+
+fn sample_backup_encryption_config() -> serde_json::Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "restore_key_pairs": [
+            {
+                "customer_managed_encryption_key": {
+                    "aws_kms_key_arn": "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+                },
+                "encrypted_dek": "d3JhcHBlZA==",
+                "future_field": null
+            }
+        ],
+        "provider_extension": {"nested": [1, 2.5, true, "x"]}
+    })
+}
+
+#[test]
+fn backup_encryption_config_round_trips_opaque_nested_contents() {
+    let file = sample_backup_encryption_config();
+    let config: BackupEncryptionConfig = serde_json::from_value(file.clone()).unwrap();
+    assert_eq!(config["schema_version"], 1);
+    assert_eq!(
+        config["restore_key_pairs"][0]["customer_managed_encryption_key"]["aws_kms_key_arn"],
+        "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
+    );
+    assert_eq!(serde_json::to_value(&config).unwrap(), file);
+
+    // The file is an object; a non-object is not a valid config.
+    assert!(serde_json::from_value::<BackupEncryptionConfig>(serde_json::json!([1])).is_err());
+}
+
+#[test]
+fn service_post_request_backup_encryption_config_serialization() {
+    let base = ServicePostRequest {
+        name: "restored".to_string(),
+        provider: ServicePostRequestProvider::Aws,
+        region: ServicePostRequestRegion::Us_east_1,
+        backup_id: Some(uuid::Uuid::nil()),
+        ..Default::default()
+    };
+    let json = serde_json::to_value(&base).unwrap();
+    assert!(json.get("backupEncryptionConfig").is_none());
+
+    let file = sample_backup_encryption_config();
+    let req = ServicePostRequest {
+        backup_encryption_config: Some(serde_json::from_value(file.clone()).unwrap()),
+        ..base
+    };
+    let json = serde_json::to_value(&req).unwrap();
+    assert_eq!(json["backupEncryptionConfig"], file);
+    assert_eq!(json["backupId"], uuid::Uuid::nil().to_string());
+
+    let parsed: ServicePostRequest = serde_json::from_value(json).unwrap();
+    assert_eq!(parsed, req);
+}
+
+#[test]
+fn postgres_backup_tolerates_missing_and_null_fields() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"key": null, "lastModified": null, "futureField": 1}),
+    ] {
+        let backup: PostgresBackup = serde_json::from_value(wire).unwrap();
+        assert_eq!(backup, PostgresBackup::default());
+        assert_eq!(serde_json::to_value(backup).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn postgres_backup_round_trips_every_field() {
+    let wire = serde_json::json!({
+        "key": "basebackups_005/000000010000000000000002_backup_stop_sentinel.json",
+        "lastModified": "2026-03-31T18:17:37Z"
+    });
+    let backup: PostgresBackup = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(
+        backup.key.as_deref(),
+        Some("basebackups_005/000000010000000000000002_backup_stop_sentinel.json")
+    );
+    assert!(backup.last_modified.is_some());
+    assert_eq!(serde_json::to_value(backup).unwrap(), wire);
+}
+
+#[test]
+fn whoami_variants_tolerate_missing_and_null_fields() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "actorType": null, "userId": null, "email": null, "name": null,
+            "organizations": null
+        }),
+    ] {
+        let user: WhoamiUser = serde_json::from_value(wire).unwrap();
+        assert_eq!(user, WhoamiUser::default());
+        assert_eq!(serde_json::to_value(user).unwrap(), serde_json::json!({}));
+    }
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "actorType": null, "keyId": null, "name": null, "organizationId": null
+        }),
+    ] {
+        let key: WhoamiApiKey = serde_json::from_value(wire).unwrap();
+        assert_eq!(key, WhoamiApiKey::default());
+        assert_eq!(serde_json::to_value(key).unwrap(), serde_json::json!({}));
+    }
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"organizationId": null, "organizationName": null}),
+    ] {
+        let org: WhoamiOrganization = serde_json::from_value(wire).unwrap();
+        assert_eq!(org, WhoamiOrganization::default());
+        assert_eq!(serde_json::to_value(org).unwrap(), serde_json::json!({}));
+    }
+}
+
+#[test]
+fn whoami_dispatches_on_actor_type_and_tolerates_sparse_variants() {
+    let user: Whoami = serde_json::from_value(serde_json::json!({"actorType": "user"})).unwrap();
+    assert_eq!(
+        user,
+        Whoami::WhoamiUser(WhoamiUser {
+            actor_type: Some(WhoamiUserActortype::User),
+            ..Default::default()
+        })
+    );
+    assert_eq!(user.to_string(), "WhoamiUser");
+
+    // `name` is shared by both variants; dispatch must follow `actorType`.
+    let key: Whoami = serde_json::from_value(serde_json::json!({
+        "actorType": "apiKey", "name": "ci key", "organizations": null
+    }))
+    .unwrap();
+    assert_eq!(
+        key,
+        Whoami::WhoamiApiKey(WhoamiApiKey {
+            actor_type: Some(WhoamiApiKeyActortype::ApiKey),
+            name: Some("ci key".into()),
+            ..Default::default()
+        })
+    );
+    assert_eq!(key.to_string(), "WhoamiApiKey");
+}
+
+#[test]
+fn whoami_keeps_unknown_absent_or_malformed_actor_types_verbatim() {
+    for wire in [
+        serde_json::json!({"actorType": "serviceAccount", "name": "sa"}),
+        serde_json::json!({"name": "no discriminator"}),
+        serde_json::json!({"actorType": null, "keyId": "key-1"}),
+        // Recognized discriminator whose payload no longer fits the variant.
+        serde_json::json!({"actorType": "user", "organizations": "not-a-list"}),
+    ] {
+        let whoami: Whoami = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(whoami, Whoami::Unknown(wire.clone()));
+        assert_eq!(serde_json::to_value(&whoami).unwrap(), wire);
+        assert_eq!(whoami.to_string(), wire.to_string());
+    }
+}
+
+#[test]
+fn whoami_actor_types_preserve_unknown_values() {
+    let user: WhoamiUserActortype = serde_json::from_str("\"futureUser\"").unwrap();
+    assert_eq!(user, WhoamiUserActortype::Unknown("futureUser".into()));
+    assert_eq!(user.to_string(), "futureUser");
+    assert_eq!(WhoamiUserActortype::User.to_string(), "user");
+    let key: WhoamiApiKeyActortype = serde_json::from_str("\"futureKey\"").unwrap();
+    assert_eq!(key, WhoamiApiKeyActortype::Unknown("futureKey".into()));
+    assert_eq!(WhoamiApiKeyActortype::ApiKey.to_string(), "apiKey");
 }

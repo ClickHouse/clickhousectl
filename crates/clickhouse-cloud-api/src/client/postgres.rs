@@ -598,4 +598,41 @@ impl Client {
         }
         Ok(serde_json::from_str(&body_text)?)
     }
+
+    /// List Postgres service backups (Beta).
+    ///
+    /// Returns the retained base backups, newest first. Pagination metadata is
+    /// on the envelope: pass the previous page's `ApiResponse::next_cursor` as
+    /// `cursor` to retrieve the next page. The API defaults to 100 records per
+    /// page and accepts limits from 1 to 100. A Postgres service is restored to
+    /// a point in time with `postgres_instance_restore`, not from a backup key.
+    pub async fn postgres_service_backup_get_list(
+        &self,
+        organization_id: &str,
+        postgres_id: &str,
+        cursor: Option<&str>,
+        limit: Option<i64>,
+    ) -> Result<ApiResponse<Vec<PostgresBackup>>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/postgres/{postgres_id}/backups");
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(cursor) = cursor {
+            req = req.query(&[("cursor", cursor)]);
+        }
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
 }
