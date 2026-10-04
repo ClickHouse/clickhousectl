@@ -84,8 +84,8 @@ Before (states mechanics, not consequences):
 
 ```
 CONTEXT FOR AGENTS:
-  Calls DELETE /v1/organizations/{id}/services/{id} via clickhouse-cloud-api.
-  IMPORTANT: you MUST stop the service first!!
+Calls DELETE /v1/organizations/{id}/services/{id} via clickhouse-cloud-api.
+IMPORTANT: you MUST stop the service first!!
 ```
 
 After:
