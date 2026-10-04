@@ -572,11 +572,69 @@ impl CloudClient {
         api_secret: Option<&str>,
         url_override: Option<&str>,
     ) -> Result<Self> {
-        let http = crate::http::client_builder()
+        let resolved = resolve_auth(api_key, api_secret, url_override)?;
+        Self::from_resolved(resolved, None)
+    }
+
+    /// Like [`CloudClient::new`], but every request gives up after `timeout`,
+    /// so a best-effort call cannot hang an otherwise local command.
+    pub(crate) fn new_with_timeout(
+        api_key: Option<&str>,
+        api_secret: Option<&str>,
+        url_override: Option<&str>,
+        timeout: std::time::Duration,
+    ) -> Result<Self> {
+        let resolved = resolve_auth(api_key, api_secret, url_override)?;
+        Self::from_resolved(resolved, Some(timeout))
+    }
+
+    /// A client for exactly this API key pair, bypassing the precedence
+    /// ladder: `auth login` verifies the pair before it is saved.
+    pub(crate) fn for_api_key(
+        key: &str,
+        secret: &str,
+        url_override: Option<&str>,
+        timeout: std::time::Duration,
+    ) -> Result<Self> {
+        let resolved = ResolvedAuth {
+            creds: ResolvedCreds::Basic {
+                key: key.to_owned(),
+                secret: secret.to_owned(),
+            },
+            source: AuthSource::CliFlags,
+            base_url: url_override
+                .map(crate::cloud::auth::normalize_api_url)
+                .unwrap_or_else(|| DEFAULT_BASE_URL.to_string()),
+        };
+        Self::from_resolved(resolved, Some(timeout))
+    }
+
+    /// A client for exactly these OAuth tokens, bypassing the precedence
+    /// ladder: `auth login` reports who just logged in even when a
+    /// higher-precedence API key would otherwise win.
+    pub(crate) fn for_oauth_tokens(
+        tokens: &crate::cloud::auth::TokenStore,
+        timeout: std::time::Duration,
+    ) -> Result<Self> {
+        let resolved = ResolvedAuth {
+            creds: ResolvedCreds::Bearer {
+                token: tokens.access_token.clone(),
+            },
+            source: AuthSource::OAuthTokens,
+            base_url: tokens.api_url.clone(),
+        };
+        Self::from_resolved(resolved, Some(timeout))
+    }
+
+    fn from_resolved(resolved: ResolvedAuth, timeout: Option<std::time::Duration>) -> Result<Self> {
+        let mut builder = crate::http::client_builder();
+        if let Some(timeout) = timeout {
+            builder = builder.timeout(timeout);
+        }
+        let http = builder
             .build()
             .map_err(|e| CloudError::new(format!("Failed to create HTTP client: {}", e)))?;
 
-        let resolved = resolve_auth(api_key, api_secret, url_override)?;
         let lib_url = lib_base_url(&resolved.base_url);
         let (lib_client, auth_mode) = match resolved.creds {
             ResolvedCreds::Basic { key, secret } => (

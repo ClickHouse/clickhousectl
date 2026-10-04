@@ -122,8 +122,9 @@ clickhousectl cloud auth signup
 clickhousectl cloud auth login
 # Or use API keys non-interactively (read/write)
 clickhousectl cloud auth login --api-key X --api-secret Y
-clickhousectl cloud org list
 ```
+
+`auth login` checks the credentials with the Cloud API and prints who you are logged in as: your user and organizations for OAuth, or the key name, key ID and owning organization for an API key. Run `clickhousectl cloud auth whoami` at any time to check again, or `clickhousectl cloud org list` to choose an organization.
 
 Creating or changing Cloud resources requires an API key with the appropriate role. [Create an API key](https://clickhouse.com/docs/cloud/manage/openapi?referrer=clickhousectl). You can also export `CLICKHOUSE_CLOUD_API_KEY` and `CLICKHOUSE_CLOUD_API_SECRET` or add them to your `.env` file.
 
@@ -651,7 +652,7 @@ This opens your browser for authentication via the OAuth device flow. Tokens are
 clickhousectl cloud auth login --interactive
 ```
 
-`auth login --interactive` saves credentials to `.clickhouse/credentials.json` (project-local). API keys are org-scoped, so they stay per-project; OAuth tokens represent your user identity and are stored globally in `~/.clickhouse/tokens.json`.
+`auth login` verifies an API key before saving it: a key the API rejects is not saved and the command exits 4. If the API can't be reached, the key is saved anyway with a warning, so you can set up offline. `auth login --interactive` saves credentials to `.clickhouse/credentials.json` (project-local). API keys are org-scoped, so they stay per-project; OAuth tokens represent your user identity and are stored globally in `~/.clickhouse/tokens.json`.
 
 For CI and other automation, inject credentials through your secret manager:
 
@@ -676,7 +677,7 @@ Learn how to [create API keys](https://clickhouse.com/docs/cloud/manage/openapi?
 ### Auth status and logout
 
 ```bash
-clickhousectl cloud auth status    # Show current auth state (including read-only/read-write labels)
+clickhousectl cloud auth status    # Show current auth state and the identity behind it
 clickhousectl cloud auth whoami    # (Beta) Ask the Cloud API who the active credentials belong to
 clickhousectl cloud auth logout    # Clear all saved credentials (credentials.json & tokens.json)
 clickhousectl cloud auth logout --oauth      # Clear only OAuth tokens, keep API keys
@@ -694,6 +695,9 @@ Credential resolution order:
 
 Supplying only `--api-key` or only `--api-secret` blocks fallback to other sources.
 `cloud auth status` still succeeds with no active authentication; `--debug` identifies the missing flag.
+It also checks the active credentials with `whoami` and shows the identity, or marks it `rejected` or `unavailable`.
+It still exits 0 when offline (the check times out after 5 seconds). `--json` returns
+`{"sources": [...], "identity": ..., "verification": ...}`.
 `cloud auth whoami` works with OAuth or API keys and needs no organization: a user shows its ID, email,
 name and organizations; an API key shows its key ID, name and owning organization ID.
 
