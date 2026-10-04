@@ -15,8 +15,9 @@ Drift is fixed in two kinds of pull request, never one:
 An API PR may touch CLI code only to keep it compiling after a breaking library type change, with no new
 surface and an unchanged wire request (pin it with a test). A CLI PR never changes the library.
 
-Read `crates/clickhouse-cloud-api/AGENTS.md` (model policy, analyzer configuration) and the root `AGENTS.md`
-(tests, gates) before editing. This skill is the workflow; those files are the rules.
+Read `crates/clickhouse-cloud-api/AGENTS.md` (model policy), [references/analyzer.md](references/analyzer.md)
+(exemptions, enum mapping, deprecated hiding) and the root `AGENTS.md` (tests, gates) before editing. This skill is
+the workflow; those files are the rules.
 
 ## 1. Reproduce and inventory
 
@@ -54,8 +55,7 @@ Read `crates/clickhouse-cloud-api/AGENTS.md` (model policy, analyzer configurati
      re-export from the `models.rs` facade. A new schema needs one Rust type per position it is used in (`{Name}`, `{Name}Response`,
      or both) with the same fields on each. An undefined `$ref` (`missing_schema_definition`) is an upstream-spec
      defect, not a model to invent locally.
-   - Optionality: request fields are `T` when the resolved spec requires them, else `Option<T>`; every response
-     field is `Option<T>`; all `Option` fields carry `skip_serializing_if`. Never add `#[serde(default)]`.
+   - Optionality: follow the crate `AGENTS.md` model policy and "Field optionality and the spec".
    - Enum values: update the variant, its wire name, its `Display`, and any `VALUES` const. Keep data-carrying
      catch-alls.
    - Beta/deprecation: rerun `python3 scripts/regenerate-beta-lists.py` and
@@ -64,8 +64,8 @@ Read `crates/clickhouse-cloud-api/AGENTS.md` (model policy, analyzer configurati
    - Operation permissions: regenerate `src/meta/operations.rs` with
      `cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json --generate-operations crates/clickhouse-cloud-api/src/meta/operations.rs`,
      then `cargo fmt --all`. Model unsupported security deliberately; never flatten it into an empty permission list.
-   - Stale exemptions: remove or narrow the entry in the analyzer `config.rs`. Add an exemption only for verified
-     runtime behaviour, with a comment saying why the spec cannot be followed — never to make CI green.
+   - Stale exemptions: remove or narrow the entry in the analyzer `config.rs`; the bar for adding one is in
+     `references/analyzer.md`.
    - Unsupported enum constraints: prefer changing the Rust field to a concrete value enum. Otherwise
      acknowledge the pointer in `acknowledged_unsupported_enum_pointers` with a tracking issue.
 3. Add library tests for what changed: missing-key → `None` and explicit-`null` → `None` for each new response type;
