@@ -1,17 +1,18 @@
 # Cloud integration decisions
 
 `Cloud Integration` remains on demand for pull requests. The required
-`Cloud integration decision` check is bound to one exact PR head SHA and passes
-only after one of these outcomes:
+`Cloud integration decision` check is bound to one exact PR head SHA. On every
+push to a same-repository PR, a secret-free planner run classifies the
+base-to-head diff. The check passes only after one of these outcomes:
 
-1. Apply the `run-cloud-integration` label and all suites selected by the
-   trusted planner pass.
-2. Apply the label and the trusted planner selects no live suites. The
-   environment-bearing job stays skipped.
+1. The trusted planner selects no live suites. The check passes with no
+   action needed, and the environment-bearing job stays skipped.
+2. The planner selects live suites, the check waits for authorization, you
+   apply the `run-cloud-integration` label, and every selected suite passes.
 3. A maintainer records a one-shot override for the current full head SHA.
 
-After a push, remove and reapply `run-cloud-integration` to start a run for the
-new SHA. Earlier live results and overrides do not carry forward. Fork PRs do
+After a push that selects live suites, remove and reapply
+`run-cloud-integration` to start a run for the new SHA. Earlier live results and overrides do not carry forward. Fork PRs do
 not receive Cloud secrets; use a same-repository mirror or the explicit
 maintainer override.
 
