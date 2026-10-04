@@ -71,7 +71,7 @@ Include only what changes what the agent does next:
 - A `Typical flow:` line describing likely follow-on commands.
 - Rarely, a docs URL: only when help can't cover something the agent needs. Never more than one.
 
-Leave out implementation details, crate or file names, HTTP and API mechanics, storage paths, history or
+NEVER include implementation details, crate or file names, HTTP and API mechanics, storage paths, history or
 compatibility notes, reassurance, and anything already in the `about` line, the flag list or `[default:]`.
 
 Put shared context (auth model, typical flow) on the parent command, such as `cloud service` or
