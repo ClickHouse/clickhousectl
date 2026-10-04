@@ -109,46 +109,8 @@ Spec: https://api.clickhouse.cloud/v1
 
 ### Remediating a drift issue
 
-Work from the issue's typed findings: `spec_pointer` is an RFC 6901 location in the target spec, `rust_item` the
-intended Rust location. The analyzer executable exits successfully after producing a valid report even when
-`findings` is non-empty — use `has_drift`/`actionable_count`, not its process status.
-
-1. Reproduce with `python3 scripts/check-openapi-drift.py --dry-run`. It does not update the snapshot.
-2. Replace `clickhouse_cloud_openapi.json` with the same live document being remediated; never hand-edit the
-   spec. Snapshot operation/schema findings mean this file is stale.
-3. Fix the API library before considering CLI exposure, following the finding's pointer and Rust item:
-   - Missing/extra operations: add or remove the `Client` method in the owning `src/client/<domain>.rs`. Only
-     intentional non-OpenAPI helpers belong in `non_openapi_client_methods`.
-   - Missing models/fields, extra fields: update structs/enums/aliases and serde names in the owning
-     `src/models/<domain>.rs`, then re-export from the `models.rs` facade. An undefined `$ref`
-     (`missing_schema_definition`) is an upstream-spec defect, not a model to invent locally. A new schema needs
-     one Rust type per position it is used in (`{Name}`, `{Name}Response`, or both) with the same field on each.
-   - The model tree uses explicit `#[serde(rename = "...")]` wire names exclusively; `rename_all` is rejected by the
-     analyzer parser, since wire vocabulary (Postgres GUCs, SCIM URNs, region IDs, duration literals) cannot be
-     derived from Rust identifiers by any casing rule.
-   - Optionality: request-position fields are `T` when the resolved spec requires them, else `Option<T>` plus
-     `skip_serializing_if`; every response-position field is `Option<T>` plus `skip_serializing_if` whatever the
-     spec says. Never add `#[serde(default)]`. A request field deliberately optional against the resolved spec
-     needs an `optionality_exemptions` entry keyed on the **request** variant's name.
-   - Missing/extra enum values: update the typed enum, its serde wire value, and its `Display`. Preserve
-     data-carrying catch-alls.
-   - Beta/deprecation: regenerate `BETA_OPERATIONS` with `python3 scripts/regenerate-beta-lists.py` and
-     `DEPRECATED_FIELDS` with `python3 scripts/regenerate-deprecated-fields.py`; deprecated fields also need the
-     matching `#[cfg(feature = "deprecated-fields")]` marker in their model domain file. The generators work from
-     the spec, which knows nothing about split variants, so a deprecated field on a split schema needs the
-     `{Name}Response` entry and its marker added by hand.
-   - Operation permissions: regenerate the literal catalog with
-     `cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json --generate-operations crates/clickhouse-cloud-api/src/meta/operations.rs`.
-     The generator shares security resolution with the analyzer; unsupported security must be modeled deliberately,
-     never flattened into an empty or conjunctive permission list. Run `cargo fmt --all` after generation.
-   - Stale exemption: remove or narrow the configuration entry. Never change comparison logic to preserve one.
-   - Unsupported enum constraint: prefer changing the Rust scalar to a concrete value enum. Acknowledgement is
-     the fallback policy below.
-4. Add focused library tests for changed models/methods: a new response type wants a missing-key → `None` and an
-   explicit-`null` → `None` case; a new split pair wants the request variant's strictness and the `TryFrom`
-   write-back asserted. If the unsupported inventory changes, update `acknowledged_unsupported_enum_pointers` — the
-   snapshot test derives its expected inventory from that configuration.
-5. Verify with the crate commands in the root `AGENTS.md`, then re-run the dry run against the live document.
+Follow the `openapi-drift-remediation` skill (`.agents/skills/openapi-drift-remediation/SKILL.md`): it owns the
+workflow, from reproducing the findings and splitting API and CLI pull requests to the fix for each finding kind.
 
 ### Field optionality and the spec
 

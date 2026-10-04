@@ -9,8 +9,14 @@
 .env
 /.env
 /.env.local
-/.agents/
-/.claude/
+/.agents/*
+!/.agents/skills/
+/.agents/skills/*
+!/.agents/skills/openapi-drift-remediation/
+/.claude/*
+!/.claude/skills/
+/.claude/skills/*
+!/.claude/skills/openapi-drift-remediation
 /.codex/
 /.cursor/
 /.opencode/

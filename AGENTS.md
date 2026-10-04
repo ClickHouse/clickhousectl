@@ -26,6 +26,8 @@ work on a branch, with an associated issue and a PR.
 - `crates/clickhouse-cloud-api/` — typed Cloud API client, published to crates.io.
 - `crates/clickhouse-openapi-analyzer/` — private OpenAPI/Rust drift tooling.
   Both library crates are governed by `crates/clickhouse-cloud-api/AGENTS.md`; read it before touching either.
+- To resolve OpenAPI drift for the ClickHouse Cloud API, use the `openapi-drift-remediation` skill
+  (`.agents/skills/openapi-drift-remediation/SKILL.md`).
 - Update the API library on its own; add CLI exposure separately. The CLI need not cover 100% of the library's
   endpoints — be intentional.
 - Project-local data lives in `.clickhouse/`; globally installed ClickHouse binaries in `~/.clickhouse/`. OAuth
