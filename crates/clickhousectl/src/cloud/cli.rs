@@ -17,6 +17,7 @@ pub(crate) use crate::cloud::clickpipes::{
 pub(crate) use crate::cloud::clickstack::ClickStackCommands;
 pub(crate) use crate::cloud::organizations::{InvitationCommands, MemberCommands, OrgCommands};
 pub(crate) use crate::cloud::query_api_endpoints::QueryApiEndpointArgs;
+pub(crate) use crate::cloud::saved_queries::SavedQueryArgs;
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::services::{
     PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, UpgradeWindowCommands,
@@ -159,6 +160,14 @@ CONTEXT FOR AGENTS:
   Typical flow: create -> get -> update -> delete.")]
     QueryApiEndpoint(QueryApiEndpointArgs),
 
+    /// Manage saved queries (Beta)
+    #[command(after_help = "CONTEXT FOR AGENTS:
+  Writes require API key authentication; list/get support OAuth.
+  Service IDs: `cloud service list`.
+  Saved query IDs: `cloud saved-query list <service-id>`; or select by exact --name.
+  Typical flow: create -> get -> update -> delete.")]
+    SavedQuery(SavedQueryArgs),
+
     /// Manage service backups and backup buckets
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -284,6 +293,7 @@ impl CloudCommands {
             CloudCommands::Key { command } => command.is_write(),
             CloudCommands::Udf(args) => args.is_write(),
             CloudCommands::QueryApiEndpoint(args) => args.is_write(),
+            CloudCommands::SavedQuery(args) => args.is_write(),
             CloudCommands::Activity { command } => command.is_write(),
             CloudCommands::Postgres { command } => command.is_write(),
             CloudCommands::ClickPipe { command } => command.is_write(),
@@ -414,6 +424,7 @@ pub(crate) mod tests {
             &["udf", "version", "list", "my_udf"],
             &["udf", "attachment", "get", "my_udf", "svc-1"],
             &["query-api-endpoint", "get", "svc-1", "endpoint-1"],
+            &["saved-query", "get", "svc-1", "query-1"],
             &["org", "get"],
             &["org", "update", "--new-name", "Renamed"],
             &[

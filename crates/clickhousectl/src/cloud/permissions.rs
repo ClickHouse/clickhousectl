@@ -112,6 +112,7 @@ fn declarations() -> impl Iterator<Item = &'static Declaration> {
         super::organizations::PERMISSIONS,
         super::postgres::PERMISSIONS,
         super::query_api_endpoints::PERMISSIONS,
+        super::saved_queries::PERMISSIONS,
         super::services::PERMISSIONS,
         super::udfs::PERMISSIONS,
     ]
