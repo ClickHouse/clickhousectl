@@ -7756,6 +7756,179 @@ async fn kafka_iam_role_serializes_iam_role_field() {
     );
 }
 
+fn kafka_glue_args() -> Vec<&'static str> {
+    vec![
+        "clickpipe",
+        "create",
+        "kafka",
+        "svc-id",
+        "--name",
+        "glue-pipe",
+        "--brokers",
+        "broker:9098",
+        "--topics",
+        "events",
+        "--format",
+        "Avro",
+        "--database",
+        "default",
+        "--table",
+        "events",
+        "--column",
+        "id:Int64",
+        "--kafka-type",
+        "msk",
+        "--org-id",
+        "org",
+        "--schema-registry-type",
+        "glue",
+        "--glue-region",
+        "us-east-1",
+        "--glue-registry-name",
+        "my-registry",
+    ]
+}
+
+#[tokio::test]
+async fn kafka_create_sends_the_exact_glue_schema_registry_body() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_glue_args();
+    args.extend([
+        "--username",
+        "u",
+        "--password",
+        "p",
+        "--glue-role-arn",
+        "arn:aws:iam::123456789012:role/Glue",
+    ]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+    assert_eq!(
+        body["source"]["kafka"]["schemaRegistry"],
+        serde_json::json!({
+            "type": "glue",
+            "glueRegion": "us-east-1",
+            "glueRegistryName": "my-registry",
+            "glueRoleArn": "arn:aws:iam::123456789012:role/Glue"
+        })
+    );
+    assert_eq!(body["source"]["kafka"]["authentication"], "PLAIN");
+
+    // With IAM role authentication the Glue role ARN may be omitted: the API
+    // falls back to the source's iamRole.
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_glue_args();
+    args.extend(["--iam-role", "arn:aws:iam::123456789012:role/Source"]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+    assert_eq!(
+        body["source"]["kafka"]["schemaRegistry"],
+        serde_json::json!({
+            "type": "glue",
+            "glueRegion": "us-east-1",
+            "glueRegistryName": "my-registry"
+        })
+    );
+    assert_eq!(
+        body["source"]["kafka"]["iamRole"],
+        "arn:aws:iam::123456789012:role/Source"
+    );
+}
+
+#[tokio::test]
+async fn kafka_create_sends_type_only_for_an_explicit_confluent_registry() {
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_args_minimal();
+    args.extend([
+        "--schema-registry-type",
+        "confluent",
+        "--schema-registry-url",
+        "https://registry.example",
+    ]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+    assert_eq!(
+        body["source"]["kafka"]["schemaRegistry"],
+        serde_json::json!({
+            "type": "confluent",
+            "url": "https://registry.example",
+            "authentication": "PLAIN",
+            "credentials": { "username": "", "password": "" }
+        })
+    );
+
+    let mock = start_mock_clickpipes_api().await;
+    let mut args = kafka_args_minimal();
+    args.extend(["--schema-registry-url", "https://registry.example"]);
+    let body = invoke_cli_capture_body(&mock, &args).await;
+    assert!(
+        body["source"]["kafka"]["schemaRegistry"]
+            .get("type")
+            .is_none(),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn kafka_glue_schema_registry_misuse_is_a_usage_error_before_any_request() {
+    let mock = MockServer::start().await;
+    let cases: [(&[&str], &[&str]); 7] = [
+        // Glue conflicts with every Confluent registry flag.
+        (
+            &kafka_glue_args(),
+            &[
+                "--iam-role",
+                "arn:role",
+                "--schema-registry-url",
+                "https://registry.example",
+            ],
+        ),
+        (
+            &kafka_glue_args(),
+            &["--iam-role", "arn:role", "--schema-registry-username", "u"],
+        ),
+        // Glue needs a role: from --glue-role-arn or the source's --iam-role.
+        (&kafka_glue_args(), &["--username", "u", "--password", "p"]),
+        // Glue requires both region and registry name.
+        (
+            &kafka_args_without_auth(),
+            &[
+                "--schema-registry-type",
+                "glue",
+                "--glue-region",
+                "us-east-1",
+            ],
+        ),
+        // Glue flags require the glue registry type.
+        (&kafka_args_without_auth(), &["--glue-region", "us-east-1"]),
+        (
+            &kafka_args_without_auth(),
+            &[
+                "--schema-registry-type",
+                "confluent",
+                "--schema-registry-url",
+                "https://registry.example",
+                "--glue-registry-name",
+                "my-registry",
+            ],
+        ),
+        // An explicit Confluent registry needs its URL.
+        (
+            &kafka_args_without_auth(),
+            &["--schema-registry-type", "confluent"],
+        ),
+    ];
+    for (base, extra) in cases {
+        let mut args = base.to_vec();
+        args.extend(extra);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{extra:?}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn kafka_iam_user_credentials_shape() {
     let mock = start_mock_clickpipes_api().await;
@@ -15461,6 +15634,46 @@ async fn mount_clickpipe_get(mock: &MockServer, source: Value) {
         .respond_with(ResponseTemplate::new(200).set_body_json(stub_pipe))
         .mount(mock)
         .await;
+}
+
+#[tokio::test]
+async fn clickpipe_get_renders_a_glue_schema_registry_and_keeps_json_verbatim() {
+    let source = serde_json::json!({
+        "kafka": {
+            "type": "msk",
+            "format": "Avro",
+            "brokers": "broker:9098",
+            "topics": "events",
+            "authentication": "IAM_ROLE",
+            "iamRole": "arn:aws:iam::123456789012:role/Source",
+            "schemaRegistry": {
+                "type": "glue",
+                "glueRegion": "us-east-1",
+                "glueRegistryName": "my-registry",
+                "glueRoleArn": "arn:aws:iam::123456789012:role/Glue"
+            }
+        }
+    });
+    let mock = MockServer::start().await;
+    mount_clickpipe_get(&mock, source.clone()).await;
+    let args = ["clickpipe", "get", "svc-id", "pipe-id", "--org-id", "org"];
+
+    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&output);
+    let json: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["source"], source);
+
+    let output = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in [
+        "type: glue",
+        "glueRegion: us-east-1",
+        "glueRegistryName: my-registry",
+        "glueRoleArn: arn:aws:iam::123456789012:role/Glue",
+    ] {
+        assert!(stdout.contains(line), "{line}\n{stdout}");
+    }
 }
 
 async fn mount_clickpipe_settings_put(mock: &MockServer, result: Value) {
@@ -24351,6 +24564,123 @@ async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
     assert_success(&output);
 }
 
+fn backup_encryption_config_document() -> Value {
+    serde_json::json!({
+        "schema_version": 1,
+        "restore_key_pairs": [{
+            "customer_managed_encryption_key": {
+                "aws_kms_key_arn": "arn:aws:kms:us-east-1:111122223333:key/1234abcd"
+            },
+            "encrypted_dek": "d3JhcHBlZA==",
+            "future_field": { "nested": [1, null, true] }
+        }]
+    })
+}
+
+async fn mount_service_create_with_backup_encryption_config(mock: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/services"))
+        .and(body_json(serde_json::json!({
+            "name": "restored",
+            "provider": "aws",
+            "region": "us-east-1",
+            "ipAccessList": [{
+                "source": "0.0.0.0/0",
+                "description": "Allow all (created by clickhousectl)"
+            }],
+            "backupId": "a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6",
+            "backupEncryptionConfig": backup_encryption_config_document()
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "service": {"id": "22222222-3333-4444-5555-666666666666", "name": "restored"},
+                "password": "generated-password"
+            },
+            "status": 200,
+            "requestId": "stub-restore-service-create"
+        })))
+        .expect(1)
+        .mount(mock)
+        .await;
+}
+
+const BACKUP_RESTORE_ARGS: [&str; 7] = [
+    "service",
+    "create",
+    "--name",
+    "restored",
+    "--backup-id",
+    "a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6",
+    "--backup-encryption-config",
+];
+
+#[tokio::test]
+async fn service_create_passes_backup_encryption_config_file_through_unchanged() {
+    let mock = MockServer::start().await;
+    mount_service_create_with_backup_encryption_config(&mock).await;
+    let directory = tempfile::tempdir().unwrap();
+    let config = directory.path().join("encryption_config.json");
+    std::fs::write(
+        &config,
+        serde_json::to_string_pretty(&backup_encryption_config_document()).unwrap(),
+    )
+    .unwrap();
+
+    let mut args = BACKUP_RESTORE_ARGS.to_vec();
+    args.extend([config.to_str().unwrap(), "--org-id", "org-1"]);
+    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn service_create_reads_backup_encryption_config_from_stdin() {
+    let mock = MockServer::start().await;
+    mount_service_create_with_backup_encryption_config(&mock).await;
+
+    let mut args = BACKUP_RESTORE_ARGS.to_vec();
+    args.extend(["-", "--org-id", "org-1"]);
+    let output = invoke_cli_with_cloud_credentials_and_stdin(
+        &mock,
+        &args,
+        &backup_encryption_config_document().to_string(),
+    );
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn service_create_rejects_bad_backup_encryption_config_before_any_request() {
+    let mock = MockServer::start().await;
+    let directory = tempfile::tempdir().unwrap();
+    let missing = directory.path().join("missing.json");
+    for stdin in ["[1, 2, 3]", "\"just a string\"", "{not json"] {
+        let mut args = BACKUP_RESTORE_ARGS.to_vec();
+        args.extend(["-", "--org-id", "org-1"]);
+        let output = invoke_cli_with_cloud_credentials_and_stdin(&mock, &args, stdin);
+        assert_eq!(output.status.code(), Some(2), "{stdin}");
+    }
+    let mut args = BACKUP_RESTORE_ARGS.to_vec();
+    args.extend([missing.to_str().unwrap(), "--org-id", "org-1"]);
+    let output = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_eq!(output.status.code(), Some(2));
+
+    // Clap requires --backup-id alongside the config.
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "create",
+            "--name",
+            "restored",
+            "--backup-encryption-config",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn service_create_rejects_dynamic_profile_memory_mismatch_before_post() {
     let mock = MockServer::start().await;
@@ -29862,4 +30192,295 @@ async fn saved_query_invalid_input_and_oauth_writes_fail_before_http() {
         );
     }
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+const POSTGRES_BACKUPS_PATH: &str = "/v1/organizations/org-1/postgres/pg-1/backups";
+const WHOAMI_USER_ID: &str = "44444444-5555-4666-8777-888888888888";
+const WHOAMI_ORG_ID: &str = "55555555-6666-4777-8888-999999999999";
+
+/// Run a cloud command with API-key flags, or with saved OAuth tokens only.
+fn invoke_cloud_as(
+    server: &MockServer,
+    project: &Path,
+    oauth: bool,
+    json: bool,
+    args: &[&str],
+) -> std::process::Output {
+    let home = project.join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    if oauth {
+        write_oauth_tokens(&cloud_dir, &server.uri());
+    }
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("HOME", home)
+        .env("DO_NOT_TRACK", "1")
+        .current_dir(project)
+        .args(["cloud", "--url", &server.uri()]);
+    if !oauth {
+        command.args(["--api-key", "drift-key", "--api-secret", "drift-secret"]);
+    }
+    if json {
+        command.arg("--json");
+    }
+    command.args(args).stdin(Stdio::null()).output().unwrap()
+}
+
+fn postgres_backup_page(result: Value, next_cursor: Option<&str>) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": 200,
+        "requestId": "postgres-backup-list",
+        "result": result,
+        "limit": 2,
+        "totalCount": 3,
+        "nextCursor": next_cursor
+    }))
+}
+
+#[tokio::test]
+async fn postgres_backup_list_sends_pagination_and_renders_json_and_table() {
+    let server = MockServer::start().await;
+    let backups = serde_json::json!([
+        {
+            "key": "basebackups_005/000000010000000000000002_backup_stop_sentinel.json",
+            "lastModified": "2026-03-31T18:17:37Z"
+        },
+        {}
+    ]);
+    Mock::given(method("GET"))
+        .and(path(POSTGRES_BACKUPS_PATH))
+        .and(wiremock::matchers::basic_auth("drift-key", "drift-secret"))
+        .and(query_param("cursor", "page /+?"))
+        .and(query_param("limit", "2"))
+        .respond_with(postgres_backup_page(backups.clone(), Some("next /+?")))
+        .with_priority(1)
+        .expect(2)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(POSTGRES_BACKUPS_PATH))
+        .respond_with(postgres_backup_page(serde_json::json!([]), None))
+        .with_priority(10)
+        .expect(1)
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let args = [
+        "postgres", "backup", "list", "pg-1", "--cursor", "page /+?", "--limit", "2", "--org-id",
+        "org-1",
+    ];
+
+    let json = invoke_cloud_as(&server, project.path(), false, true, &args);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!({
+            "result": backups,
+            "limit": 2,
+            "totalCount": 3,
+            "nextCursor": "next /+?"
+        })
+    );
+
+    let human = invoke_cloud_as(&server, project.path(), false, false, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    for expected in [
+        "Key",
+        "Last modified",
+        "basebackups_005/000000010000000000000002_backup_stop_sentinel.json",
+        "2026-03-31T18:17:37Z",
+        "Next cursor: next /+?",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected}: {stdout}");
+    }
+
+    // Without pagination flags nothing is added to the query string.
+    let empty = invoke_cloud_as(
+        &server,
+        project.path(),
+        false,
+        false,
+        &["postgres", "backup", "list", "pg-1", "--org-id", "org-1"],
+    );
+    assert_success(&empty);
+    assert!(!String::from_utf8_lossy(&empty.stdout).contains("Next cursor"));
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].url.query().is_none(), "{:?}", requests[2].url);
+}
+
+#[tokio::test]
+async fn postgres_backup_list_supports_oauth_and_reports_not_found() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(POSTGRES_BACKUPS_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(postgres_backup_page(serde_json::json!([]), None))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let args = ["postgres", "backup", "list", "pg-1", "--org-id", "org-1"];
+    let oauth = invoke_cloud_as(&server, project.path(), true, true, &args);
+    assert_success(&oauth);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&oauth.stdout).unwrap()["result"],
+        serde_json::json!([])
+    );
+
+    let missing = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(POSTGRES_BACKUPS_PATH))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "requestId": "postgres-backup-missing",
+            "error": "Postgres service pg-1 was not found"
+        })))
+        .expect(1)
+        .mount(&missing)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    let output = invoke_cloud_as(&missing, project.path(), false, false, &args);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Postgres service pg-1 was not found"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn whoami_envelope(result: Value) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": 200,
+        "requestId": "whoami",
+        "result": result
+    }))
+}
+
+#[tokio::test]
+async fn auth_whoami_renders_both_identities_without_an_organization() {
+    let user = serde_json::json!({
+        "actorType": "user",
+        "userId": WHOAMI_USER_ID,
+        "email": "ada@example.com",
+        "name": "Ada Lovelace",
+        "organizations": [
+            {"organizationId": WHOAMI_ORG_ID, "organizationName": "Analytical Engines"}
+        ]
+    });
+    let api_key = serde_json::json!({
+        "actorType": "apiKey",
+        "keyId": "key-123",
+        "name": "ci deploy",
+        "organizationId": WHOAMI_ORG_ID
+    });
+    let future = serde_json::json!({"actorType": "robot", "robotId": "r2"});
+
+    for (identity, oauth, human_expected) in [
+        (
+            user.clone(),
+            true,
+            vec![
+                "actorType: user",
+                WHOAMI_USER_ID,
+                "ada@example.com",
+                "Ada Lovelace",
+                WHOAMI_ORG_ID,
+                "Analytical Engines",
+            ],
+        ),
+        (
+            api_key.clone(),
+            false,
+            vec!["actorType: apiKey", "key-123", "ci deploy", WHOAMI_ORG_ID],
+        ),
+        (
+            future.clone(),
+            false,
+            vec!["actorType: robot", "robotId: r2"],
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let auth = if oauth {
+            header("authorization", "Bearer test-bearer-token")
+        } else {
+            header(
+                "authorization",
+                "Basic ZHJpZnQta2V5OmRyaWZ0LXNlY3JldA==", // drift-key:drift-secret
+            )
+        };
+        Mock::given(method("GET"))
+            .and(path("/v1/whoami"))
+            .and(auth)
+            .respond_with(whoami_envelope(identity.clone()))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let project = tempfile::tempdir().unwrap();
+
+        let json = invoke_cloud_as(&server, project.path(), oauth, true, &["auth", "whoami"]);
+        assert_success(&json);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+            identity
+        );
+
+        let human = invoke_cloud_as(&server, project.path(), oauth, false, &["auth", "whoami"]);
+        assert_success(&human);
+        let stdout = String::from_utf8_lossy(&human.stdout);
+        for expected in human_expected {
+            assert!(stdout.contains(expected), "missing {expected}: {stdout}");
+        }
+
+        // No organization lookup or other call: exactly the two whoami requests.
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        assert!(
+            requests
+                .iter()
+                .all(|request| request.url.path() == "/v1/whoami" && request.url.query().is_none())
+        );
+    }
+}
+
+#[tokio::test]
+async fn auth_whoami_auth_failures_exit_4() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(ResponseTemplate::new(401).set_body_json(serde_json::json!({
+            "status": 401,
+            "requestId": "whoami-401",
+            "error": "Invalid credentials"
+        })))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let project = tempfile::tempdir().unwrap();
+    for json in [false, true] {
+        let output = invoke_cloud_as(&server, project.path(), false, json, &["auth", "whoami"]);
+        assert_eq!(output.status.code(), Some(4), "json={json}");
+        assert!(output.stdout.is_empty(), "json={json}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Invalid credentials"), "{stderr}");
+        if json {
+            let error: Value = serde_json::from_str(&stderr).unwrap();
+            assert_eq!(error["error"]["code"], "auth_required");
+        }
+    }
+
+    // With no credentials at all, whoami fails as auth-required before any request.
+    let empty = MockServer::start().await;
+    let output = invoke_cli_without_cloud_credentials(&empty, &["auth".into(), "whoami".into()]);
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(empty.received_requests().await.unwrap().is_empty());
 }

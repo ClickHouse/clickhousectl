@@ -58,18 +58,21 @@ fn ignored_env_credentials_notice(
 }
 
 pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
-    // Auth subcommands don't need a client.
-    if let CloudCommands::Auth { command } = args.command {
-        return auth::run(
-            command,
-            args.api_key.as_deref(),
-            args.api_secret.as_deref(),
-            args.url.as_deref(),
-            args.debug,
-            json,
-        )
-        .await;
-    }
+    // Local auth subcommands don't need a client; `whoami` takes the normal path.
+    let command = match args.command {
+        CloudCommands::Auth { command } if !command.needs_client() => {
+            return auth::run(
+                command,
+                args.api_key.as_deref(),
+                args.api_secret.as_deref(),
+                args.url.as_deref(),
+                args.debug,
+                json,
+            )
+            .await;
+        }
+        command => command,
+    };
 
     // Refresh OAuth tokens if needed. Errors here are filesystem failures
     // (refresh-rpc failures are swallowed and tokens cleared), so this stays
@@ -104,7 +107,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
 
     // OAuth (Bearer) tokens are read-only. Block write commands early
     // to avoid fail loops where agents repeatedly hit 403 errors.
-    if client.is_bearer_auth() && args.command.is_write_command() {
+    if client.is_bearer_auth() && command.is_write_command() {
         return Err(Error::AuthRequired(
             "This command requires API key authentication. \
              OAuth (browser login) provides read-only access.\n\n\
@@ -119,7 +122,7 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         ));
     }
 
-    dispatch(&client, args.command, json)
+    dispatch(&client, command, json)
         .await
         .map_err(cloud_error_to_top_level)
 }
@@ -150,7 +153,7 @@ fn cloud_error_to_top_level(e: CloudError) -> Error {
 
 async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> client::Result<()> {
     match command {
-        CloudCommands::Auth { .. } => unreachable!("handled above"),
+        CloudCommands::Auth { command } => auth::run_with_client(client, command, json).await,
         CloudCommands::Org { command } => organizations::run_org(client, command, json).await,
         CloudCommands::Service { command } => services::run(client, command, json).await,
         CloudCommands::Member { command } => organizations::run_member(client, command, json).await,

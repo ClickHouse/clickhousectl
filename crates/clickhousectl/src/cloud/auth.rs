@@ -1,4 +1,5 @@
 use super::permissions::Declaration as Permission;
+use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
 pub(super) const PERMISSIONS: &[Permission] = &[
@@ -15,15 +16,18 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         "Reads local authentication state; no Cloud API call.",
     ),
     Permission::non_api("auth signup", "Opens account signup; no Cloud API call."),
+    Permission::api("auth whoami", &[&op::WHOAMI_GET]).unscoped(),
 ];
 
+use crate::cloud::client::{CloudClient, Result as CloudResult};
 use crate::cloud::credentials;
-use crate::cloud::output::eprint_line;
+use crate::cloud::output::{eprint_line, print_human};
 use crate::cloud::{
     AuthSource, dotenv_env_provenance, env_cred_presence, resolve_active_auth_source,
 };
 use crate::error::Error;
 use clap::Subcommand;
+use clickhouse_cloud_api::models::Whoami;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -68,6 +72,12 @@ CONTEXT FOR AGENTS:
     },
     /// Show current authentication status
     Status,
+    /// Show the identity behind the active credentials (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Works with OAuth or API key credentials and needs no --org-id.
+  `cloud auth status` shows which credential source is active.")]
+    Whoami,
     /// Create a ClickHouse Cloud account
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -108,7 +118,57 @@ impl AuthCommands {
             AuthCommands::Logout { .. } => false,
             AuthCommands::Status => false,
             AuthCommands::Signup => false,
+            AuthCommands::Whoami => false,
         }
+    }
+
+    /// Whether this command calls the Cloud API, and so needs a `CloudClient`
+    /// built from the resolved credentials. The others manage local state.
+    pub fn needs_client(&self) -> bool {
+        match self {
+            AuthCommands::Login { .. }
+            | AuthCommands::Logout { .. }
+            | AuthCommands::Status
+            | AuthCommands::Signup => false,
+            AuthCommands::Whoami => true,
+        }
+    }
+}
+
+/// Run an auth command that calls the Cloud API (see [`AuthCommands::needs_client`]).
+pub async fn run_with_client(
+    client: &CloudClient,
+    command: AuthCommands,
+    json: bool,
+) -> CloudResult<()> {
+    match command {
+        AuthCommands::Whoami => {
+            let identity = client.get_whoami().await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&identity)?);
+            } else {
+                print_human(&identity)?;
+            }
+            Ok(())
+        }
+        AuthCommands::Login { .. }
+        | AuthCommands::Logout { .. }
+        | AuthCommands::Status
+        | AuthCommands::Signup => {
+            unreachable!("local auth commands are handled before a client is built")
+        }
+    }
+}
+
+impl CloudClient {
+    /// Resolve the caller behind the active credentials; not organization-scoped.
+    async fn get_whoami(&self) -> CloudResult<Whoami> {
+        let response = self
+            .api()
+            .whoami_get()
+            .await
+            .map_err(|error| self.convert_error(error))?;
+        Self::unwrap_response(response)
     }
 }
 
@@ -158,6 +218,7 @@ pub async fn run(
                 Ok(())
             }
         }
+        AuthCommands::Whoami => unreachable!("whoami runs through run_with_client"),
         AuthCommands::Signup => {
             let api_url = api_url.unwrap_or("https://api.clickhouse.cloud");
             let parsed = url::Url::parse(api_url)
@@ -838,8 +899,60 @@ mod tests {
             AuthCli::try_parse_from(["clickhousectl", "signup"])
                 .unwrap()
                 .command,
+            AuthCli::try_parse_from(["clickhousectl", "whoami"])
+                .unwrap()
+                .command,
         ];
         assert!(commands.iter().all(|command| !command.is_write()));
+        // Only whoami calls the Cloud API; the rest manage local state.
+        let remote: Vec<_> = commands
+            .iter()
+            .map(|command| matches!(command, AuthCommands::Whoami))
+            .collect();
+        assert_eq!(
+            commands
+                .iter()
+                .map(AuthCommands::needs_client)
+                .collect::<Vec<_>>(),
+            remote
+        );
+        assert_eq!(remote.iter().filter(|remote| **remote).count(), 1);
+    }
+
+    #[test]
+    fn auth_whoami_takes_shared_credentials_and_rejects_arguments() {
+        let cli = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "auth",
+            "whoami",
+            "--api-key",
+            "key",
+            "--api-secret",
+            "secret",
+            "--json",
+        ])
+        .unwrap();
+        let Commands::Cloud(args) = cli.command else {
+            panic!("expected cloud command");
+        };
+        assert_eq!(args.api_key.as_deref(), Some("key"));
+        assert_eq!(args.api_secret.as_deref(), Some("secret"));
+        assert!(args.json);
+        assert!(!args.command.is_write_command());
+        assert!(matches!(
+            args.command,
+            crate::cloud::cli::CloudCommands::Auth {
+                command: AuthCommands::Whoami
+            }
+        ));
+        assert_eq!(
+            Cli::try_parse_from(["clickhousectl", "cloud", "auth", "whoami", "extra"])
+                .err()
+                .unwrap()
+                .kind(),
+            clap::error::ErrorKind::UnknownArgument
+        );
     }
 
     #[test]
