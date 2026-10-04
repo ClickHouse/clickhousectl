@@ -76,7 +76,7 @@ domain keeps its definitions, handlers and tests together in `src/cloud/<domain>
 ## Writing help text
 
 Use the `cli-help-text` skill (`.agents/skills/cli-help-text/SKILL.md`) whenever you add or change a command, a
-flag, or any help text. It holds the help standard.
+flag, or any help text. It holds the help standard and its test rule.
 
 ## Tests
 
@@ -95,7 +95,7 @@ Test coverage is non-negotiable.
   `telemetry_test.rs`. Add a new file rather than growing `cli_request_shape_test.rs`, which is Cloud-only.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output
   formatting, platform detection, and other module-local helpers.
-- **Help and README text** — structural assertions only. No wording pins.
+- **Help and README text** — structural assertions only (see the `cli-help-text` skill). No wording pins.
 
 ## CI gates
 

@@ -95,6 +95,11 @@ CONTEXT FOR AGENTS:
 Irreversible. Running service must be stopped first (--force or `cloud service stop`).
 ```
 
+## Tests
+
+NEVER add tests that pin help or README wording, such as `help.contains("some sentence")` or whole-screen
+equality.
+
 ## Checklist
 
 1. Edit the clap definitions.
