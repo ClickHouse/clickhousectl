@@ -49,8 +49,6 @@ Other installation options:
 | cargo-binstall | `cargo binstall clickhousectl` |
 | Cargo, from source | `cargo install clickhousectl` |
 
-The npm package downloads a prebuilt binary during installation; `--ignore-scripts` skips that download. Python packages include the binary. See [building from this checkout](CONTRIBUTING.md#build-and-test) for development.
-
 Check for or install a CLI update:
 
 ```bash
