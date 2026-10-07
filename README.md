@@ -47,7 +47,7 @@ Other installation options:
 | pipx | `pipx install clickhousectl` |
 | pip | `pip install clickhousectl` |
 | cargo-binstall | `cargo binstall clickhousectl` |
-| Cargo, from source | `cargo install clickhousectl` |
+| Cargo, from source (Rust 1.94+) | `cargo install clickhousectl` |
 
 Check for or install a CLI update:
 
