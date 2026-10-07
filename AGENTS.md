@@ -3,7 +3,8 @@
 `CLAUDE.md` is a symlink to this file. Edit `AGENTS.md`; never replace the symlink.
 
 clickhousectl (`chctl`) is the CLI for ClickHouse and Postgres, local and in ClickHouse Cloud. Use `--help` to
-learn the current command surface. Root `README.md` documents the CLI; the API library has its own README.
+learn the current command surface. Root `README.md` introduces the CLI; `docs/` holds user guides, references,
+and development docs. See `CONTRIBUTING.md` for documentation placement. The API library has its own README.
 Do not duplicate user-facing documentation here.
 
 ## Commands
@@ -17,7 +18,7 @@ Do not duplicate user-facing documentation here.
   If `deprecated-fields` changed, also `cargo check --workspace --all-features`.
 
 **Done** means: `cargo fmt --all`; both clippy configurations clean; tests pass for every crate touched;
-classifier mappings updated if a file was added or renamed; the relevant README updated for user-visible behaviour;
+classifier mappings updated if a file was added or renamed; the relevant guide/reference updated for user-visible behaviour;
 work on a branch, with an associated issue and a PR.
 
 ## Workspace
@@ -111,8 +112,11 @@ Use the `release` skill (`.agents/skills/release/SKILL.md`); a release needs a m
 ## Git workflow and documentation
 
 - Branch per feature/issue and use the PR workflow. PRs should have an associated issue.
-- Root `README.md` sections document `clickhousectl` CLI capabilities and behaviour. Update them only for
-  functionality exposed through the CLI. API-library-only changes (including OpenAPI drift remediation) belong
-  in `crates/clickhouse-cloud-api/README.md`; do not add Rust methods, models, migration notes, or analyzer
-  changes to the root README. A library-only PR does not require a root README change.
+- Keep root `README.md` to product capabilities, installation, and representative examples. Put user tasks in
+  `docs/guides/`, complex behavior and output contracts in `docs/reference/`, and development workflows in
+  `CONTRIBUTING.md`, `docs/development.md`, or the relevant repository skill. Update the existing document;
+  do not add every new flag or command to the README. Keep safety constraints at the point of use and link
+  new guides from `docs/README.md`. See `CONTRIBUTING.md` for documentation checks and writing conventions.
+- API-library-only changes, Rust caller migrations, and analyzer work belong in
+  `crates/clickhouse-cloud-api/README.md`; they do not require a root README or CLI user-guide change.
 - Keep `AGENTS.md` up to date when development practice changes materially.
