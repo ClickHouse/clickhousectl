@@ -15,6 +15,10 @@ NO_SUITES = frozenset()
 # Retain mappings when files are deleted or renamed so old diff paths stay classified.
 SOURCE_PATH_SUITES = {
     "crates/clickhousectl/src/stdout.rs": NO_SUITES,
+    "crates/clickhousectl/src/mcp/agent.rs": NO_SUITES,
+    "crates/clickhousectl/src/mcp/cli.rs": NO_SUITES,
+    "crates/clickhousectl/src/mcp/client_config.rs": NO_SUITES,
+    "crates/clickhousectl/src/mcp/mod.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/clickstack.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/config.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/query_api_endpoints.rs": NO_SUITES,
@@ -104,6 +108,7 @@ TEST_PATH_SUITES = {
     "crates/clickhouse-openapi-analyzer/tests/fixtures/operation_contracts/after.json": NO_SUITES,
     "crates/clickhousectl/tests/local_docker_status_test.rs": NO_SUITES,
     "crates/clickhousectl/tests/skills_usage_test.rs": NO_SUITES,
+    "crates/clickhousectl/tests/mcp_run_test.rs": NO_SUITES,
     "crates/clickhousectl/tests/local_client_output_contract_test.rs": NO_SUITES,
     "crates/clickhousectl/tests/local_postgres_client_input_test.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/tests/clickpipes/driver.rs": NO_SUITES,

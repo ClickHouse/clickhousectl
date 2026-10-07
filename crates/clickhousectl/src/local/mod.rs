@@ -193,10 +193,25 @@ async fn use_version(
     no_global: bool,
     json: bool,
 ) -> Result<()> {
+    let version = activate_version(&spec, no_global, json).await?;
+    let out = output::UseOutput { version };
+    output::print_output(&out, json);
+    Ok(())
+}
+
+/// The effect of `local use <spec>` without its output: install the build if
+/// needed, make it the default, and (unless `no_global`) link it as
+/// `~/.local/bin/clickhouse`. Progress goes to stderr only, so callers whose
+/// stdout is a protocol channel (`mcp run`) can reuse it.
+pub(crate) async fn activate_version(
+    spec: &version_manager::VersionSpec,
+    no_global: bool,
+    json: bool,
+) -> Result<String> {
     let platform = version_manager::platform::Platform::detect()?;
 
     let version =
-        version_manager::install::ensure_installed_local_first(&spec, &platform, json).await?;
+        version_manager::install::ensure_installed_local_first(spec, &platform, json).await?;
 
     version_manager::set_default_version(&version)?;
 
@@ -206,9 +221,7 @@ async fn use_version(
         let _ = symlink::ensure_global_symlink(&version);
     }
 
-    let out = output::UseOutput { version };
-    output::print_output(&out, json);
-    Ok(())
+    Ok(version)
 }
 
 fn remove(version: &str, force: bool, json: bool) -> Result<()> {
@@ -463,7 +476,7 @@ fn run_client(
 /// bit. A binary unlinked or chmod-ed between this check and `exec()`, or one
 /// with a bad executable format, is a race no pre-flight can close — the
 /// correct exit code and message still reach the shell.
-fn ensure_launchable(binary: &Path, version: &str) -> Result<()> {
+pub(crate) fn ensure_launchable(binary: &Path, version: &str) -> Result<()> {
     let problem = match std::fs::metadata(binary) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => BinaryLaunchProblem::Missing,
         Err(_) => BinaryLaunchProblem::Unreadable,

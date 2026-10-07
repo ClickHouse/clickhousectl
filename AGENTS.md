@@ -105,7 +105,7 @@ module under `src/local/` (e.g. `server.rs`, `postgres.rs`) — don't pile new l
 ## Writing help text
 
 - Help lives in `#[command(about/after_help)]` and arg doc comments in `src/cli.rs`, `src/local/cli.rs`,
-  `src/cloud/cli.rs`, and `src/cloud/<domain>.rs`; one block is `const INSTALL_AFTER_HELP` in `src/local/cli.rs`.
+  `src/mcp/cli.rs`, `src/cloud/cli.rs`, and `src/cloud/<domain>.rs`; one block is `const INSTALL_AFTER_HELP` in `src/local/cli.rs`.
 - A help screen has only: one-line `about`, clap's `Usage:`, `Arguments:`/`Options:`, `Commands:`, and an optional
   trailing `CONTEXT FOR AGENTS:` block via `after_help`. No `long_about`; no other `after_help` header.
 - `about`: imperative verb phrase, ≤ ~60 chars, no trailing period, no implementation detail; keep siblings parallel
@@ -148,10 +148,10 @@ Test coverage is non-negotiable.
 - **Cloud subprocess + wiremock** — `tests/cli_request_shape_test.rs`. Spawn the real binary against a local mock
   server and assert on requests, auth, errors, and output; use it when handler runtime behavior is not covered by
   clap or request-builder tests.
-- **Local subprocess** — one binary per concern under `crates/clickhousectl/tests/`: 21 `local_*` binaries
+- **Local subprocess** — one binary per concern under `crates/clickhousectl/tests/`: 25 `local_*` binaries
   (`local_server_*`, `local_postgres_*`, `local_docker_*`, `local_client_*`, `local_install_*`, `local_remove_*`,
   `local_init_json_test.rs`, `local_structured_errors_test.rs`, `local_version_error_test.rs`) plus
-  `telemetry_test.rs`. Add a new file rather than growing `cli_request_shape_test.rs`, which is Cloud-only.
+  `mcp_run_test.rs` and `telemetry_test.rs`. Add a new file rather than growing `cli_request_shape_test.rs`, which is Cloud-only.
 - **Pure logic** — inline `mod tests` blocks across `src/` for version resolution, auth precedence, output
   formatting, platform detection, and other module-local helpers.
 - **Help and README text** — structural assertions only (see Writing help text). No wording pins.
