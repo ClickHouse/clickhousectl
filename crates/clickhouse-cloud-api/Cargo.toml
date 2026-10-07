@@ -2,7 +2,7 @@
 name = "clickhouse-cloud-api"
 version = "0.5.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.94"
 description = "Typed Rust client for the ClickHouse Cloud API"
 license = "Apache-2.0"
 repository = "https://github.com/ClickHouse/clickhousectl"

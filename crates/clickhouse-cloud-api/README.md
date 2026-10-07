@@ -2,7 +2,7 @@
 
 Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/cloud/manage/openapi).
 
-Requires Rust 1.89 or later.
+Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 

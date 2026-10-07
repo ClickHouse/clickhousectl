@@ -2,7 +2,7 @@
 name = "clickhouse-openapi-analyzer"
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.89"
+rust-version = "1.94"
 publish = false
 
 [lib]
