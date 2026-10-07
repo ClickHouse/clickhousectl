@@ -39,7 +39,7 @@ aws-sdk-ec2 = { version = "1.225.0", default-features = false, features = ["defa
 aws-sdk-iam = { version = "1.108.1", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-kinesis = { version = "1.104.0", default-features = false, features = ["default-https-client", "rt-tokio"] }
 aws-sdk-s3 = { version = "1.132.0", default-features = false, features = ["default-https-client", "rt-tokio", "sigv4a", "http-1x"] }
-base64 = "0.22.1"
+base64 = "0.23"
 chrono = "0.4"
 rcgen = "0.14.8"
 rustls = { version = "0.23.40", default-features = false, features = ["ring", "std", "tls12"] }
