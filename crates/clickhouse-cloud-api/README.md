@@ -2,6 +2,8 @@
 
 Typed Rust client for the [ClickHouse Cloud API](https://clickhouse.com/docs/en/cloud/manage/openapi).
 
+Requires Rust 1.89 or later.
+
 ## Updated Cloud API surface
 
 `openapi_key_get_list(organization_id, limit, cursor)` returns one page of API keys.
