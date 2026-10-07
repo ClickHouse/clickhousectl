@@ -2,6 +2,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::cloud::cli::CloudArgs;
 pub use crate::local::cli::LocalArgs;
+pub use crate::mcp::cli::McpArgs;
 
 // Keep command options below this block; clap's generated --help uses rank 999.
 pub(crate) mod help_order {
@@ -68,6 +69,14 @@ CONTEXT FOR AGENTS:
   Scope: prompted on a TTY, else the current project directory; --global forces your home directory.
   The universal `.agents/skills` target is always installed, alongside any selected agent.")]
     Skills(SkillsArgs),
+
+    /// Register and run the ClickHouse MCP server for coding agents
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Typical flow: `mcp add --agent claude --local` (or `--client-config <PATH> --connection <NAME>`, or
+  `--cloud`), then restart the agent.
+  Agent entries call `clickhousectl mcp run`, which reads the connection at every launch.")]
+    Mcp(McpArgs),
 
     /// Update clickhousectl to the latest version
     Update(UpdateArgs),

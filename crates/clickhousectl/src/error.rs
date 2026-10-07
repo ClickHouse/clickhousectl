@@ -711,6 +711,10 @@ pub enum Error {
     #[error("{0}")]
     Skills(String),
 
+    /// Self-composed `mcp` command guidance.
+    #[error("{0}")]
+    Mcp(String),
+
     #[error("Invalid server name '{0}': must not contain path separators or '..'")]
     InvalidServerName(String),
 

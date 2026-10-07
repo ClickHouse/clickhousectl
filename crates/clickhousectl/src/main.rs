@@ -9,6 +9,7 @@ mod failure;
 mod http;
 mod init;
 mod local;
+mod mcp;
 mod paths;
 mod skills;
 #[cfg(feature = "telemetry")]
@@ -378,6 +379,7 @@ fn command_json_flag(cmd: &Commands) -> Option<bool> {
         Commands::Local(args) => Some(args.json),
         Commands::Cloud(args) => Some(args.json),
         Commands::Skills(args) => Some(args.json),
+        Commands::Mcp(args) => Some(args.json),
         #[cfg(feature = "telemetry")]
         Commands::Telemetry(args) => Some(args.json),
     }
@@ -405,6 +407,7 @@ async fn run(cmd: Commands) -> Result<()> {
     match cmd {
         Commands::Local(args) => local::run(args.command, json_output(args.json)).await,
         Commands::Skills(args) => run_skills(args).await,
+        Commands::Mcp(args) => mcp::run(args.command, json_output(args.json)).await,
         Commands::Cloud(args) => {
             let json = json_output(args.json);
             cloud::run(*args, json).await

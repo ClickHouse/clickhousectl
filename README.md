@@ -3119,6 +3119,27 @@ Supports global or project scope installation. Project scope installs Skills int
 - `--all` install Skills for all supported agents
 - `--detected-only` install Skills for supported agents that were detected on the system
 
+## MCP server (POC)
+
+Register [mcp-clickhouse](https://github.com/ClickHouse/mcp-clickhouse) in Claude Code without copying connection settings or passwords into its config.
+
+```bash
+# A chctl-managed local server in this project (default: `default`)
+clickhousectl mcp add --agent claude --local
+
+# A named connection from an existing clickhouse-client config
+clickhousectl mcp add --agent claude --client-config ~/.clickhouse-client/config.xml --connection prod
+
+# The hosted, read-only ClickHouse Cloud MCP server (OAuth)
+clickhousectl mcp add --agent claude --cloud
+```
+
+`mcp add` writes or merges `.mcp.json` in the current directory. Except for `--cloud`, the entry runs `clickhousectl mcp run`, which reads the connection each time the agent starts it and launches mcp-clickhouse with `uv tool run`, so `uv` must be on PATH. Port changes and password rotation take effect on the next agent session.
+
+Client configs are read with ClickHouse's own config processor (`clickhouse extract-from-config`), so includes, `config.d/` and `from_env` behave as in clickhouse-client. This uses the `local use` default build. If no ClickHouse version is installed at all, the first run does `local use latest`. After that it keeps using whatever the default is, and does not track latest. Without a path, `--client-config` searches the same locations as clickhouse-client.
+
+mcp-clickhouse uses HTTP. Native port 9000 maps to 8123, and secure 9440 maps to 8443. Pass `--http-port` for any other port. `from_env` values come from the environment of the agent that starts `mcp run`.
+
 ## Self-update
 
 `clickhousectl` can update itself to the latest release:
