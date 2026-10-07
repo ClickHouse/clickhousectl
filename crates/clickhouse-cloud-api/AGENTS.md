@@ -106,49 +106,12 @@ Spec: https://api.clickhouse.cloud/v1
   conservatively retains unknown custom cfgs.
 - `tests/spec_coverage_test.rs` analyzes the vendored snapshot; its `#[ignore]`d test analyzes the live spec.
   Both and the scheduled workflow call the same analyzer and must agree.
+- Model wire names are explicit `#[serde(rename = "...")]` literals; the analyzer rejects `rename_all`.
 
 ### Remediating a drift issue
 
-Work from the issue's typed findings: `spec_pointer` is an RFC 6901 location in the target spec, `rust_item` the
-intended Rust location. The analyzer executable exits successfully after producing a valid report even when
-`findings` is non-empty — use `has_drift`/`actionable_count`, not its process status.
-
-1. Reproduce with `python3 scripts/check-openapi-drift.py --dry-run`. It does not update the snapshot.
-2. Replace `clickhouse_cloud_openapi.json` with the same live document being remediated; never hand-edit the
-   spec. Snapshot operation/schema findings mean this file is stale.
-3. Fix the API library before considering CLI exposure, following the finding's pointer and Rust item:
-   - Missing/extra operations: add or remove the `Client` method in the owning `src/client/<domain>.rs`. Only
-     intentional non-OpenAPI helpers belong in `non_openapi_client_methods`.
-   - Missing models/fields, extra fields: update structs/enums/aliases and serde names in the owning
-     `src/models/<domain>.rs`, then re-export from the `models.rs` facade. An undefined `$ref`
-     (`missing_schema_definition`) is an upstream-spec defect, not a model to invent locally. A new schema needs
-     one Rust type per position it is used in (`{Name}`, `{Name}Response`, or both) with the same field on each.
-   - The model tree uses explicit `#[serde(rename = "...")]` wire names exclusively; `rename_all` is rejected by the
-     analyzer parser, since wire vocabulary (Postgres GUCs, SCIM URNs, region IDs, duration literals) cannot be
-     derived from Rust identifiers by any casing rule.
-   - Optionality: request-position fields are `T` when the resolved spec requires them, else `Option<T>` plus
-     `skip_serializing_if`; every response-position field is `Option<T>` plus `skip_serializing_if` whatever the
-     spec says. Never add `#[serde(default)]`. A request field deliberately optional against the resolved spec
-     needs an `optionality_exemptions` entry keyed on the **request** variant's name.
-   - Missing/extra enum values: update the typed enum, its serde wire value, and its `Display`. Preserve
-     data-carrying catch-alls.
-   - Beta/deprecation: regenerate `BETA_OPERATIONS` with `python3 scripts/regenerate-beta-lists.py` and
-     `DEPRECATED_FIELDS` with `python3 scripts/regenerate-deprecated-fields.py`; deprecated fields also need the
-     matching `#[cfg(feature = "deprecated-fields")]` marker in their model domain file. The generators work from
-     the spec, which knows nothing about split variants, so a deprecated field on a split schema needs the
-     `{Name}Response` entry and its marker added by hand.
-   - Operation permissions: regenerate the literal catalog with
-     `cargo run -p clickhouse-openapi-analyzer --bin openapi-drift-analyzer -- --spec crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json --generate-operations crates/clickhouse-cloud-api/src/meta/operations.rs`.
-     The generator shares security resolution with the analyzer; unsupported security must be modeled deliberately,
-     never flattened into an empty or conjunctive permission list. Run `cargo fmt --all` after generation.
-   - Stale exemption: remove or narrow the configuration entry. Never change comparison logic to preserve one.
-   - Unsupported enum constraint: prefer changing the Rust scalar to a concrete value enum. Acknowledgement is
-     the fallback policy below.
-4. Add focused library tests for changed models/methods: a new response type wants a missing-key → `None` and an
-   explicit-`null` → `None` case; a new split pair wants the request variant's strictness and the `TryFrom`
-   write-back asserted. If the unsupported inventory changes, update `acknowledged_unsupported_enum_pointers` — the
-   snapshot test derives its expected inventory from that configuration.
-5. Verify with the crate commands in the root `AGENTS.md`, then re-run the dry run against the live document.
+Follow the `openapi-drift-remediation` skill (`.agents/skills/openapi-drift-remediation/SKILL.md`): it owns the
+workflow, from reproducing the findings and splitting API and CLI pull requests to the fix for each finding kind.
 
 ### Field optionality and the spec
 
@@ -165,58 +128,17 @@ intended Rust location. The analyzer executable exits successfully after produci
   `partial_required_schemas`. (`scripts/resolve-field-requirements.py` is a code-generation aid only.)
 - `response_tree()` exposes response-tree membership for the policy enforcement tests.
 
-### Analyzer configuration and exemptions
+### Analyzer policy
 
-All policy lives in `crates/clickhouse-openapi-analyzer/src/config.rs`; edit `clickhouse_cloud_config()` or its
-backing constants. Introduce a named, documented constant when an empty policy list first gains entries. Keys use
-Rust type names but spec/wire field and enum values:
+Exemptions, acknowledgements, enum value mapping and analyzer extension rules live in the drift skill's
+`references/analyzer.md` (`.agents/skills/openapi-drift-remediation/references/analyzer.md`). Read it before editing
+`crates/clickhouse-openapi-analyzer/src/config.rs` or the analyzer. Two rules apply to every model change:
 
-- `non_openapi_client_methods` — intentional `Client` helpers with no operation, keyed by snake-case method name.
-  A removed helper or one that gains a matching operation is reported as stale.
-- `optionality_exemptions` — fields deliberately optional despite the resolved spec, keyed by
-  `(RustStructName, specFieldName)`. Request-position only, so a response-only entry can never hit and surfaces as stale.
-- `fractional_response_exemptions` — verified fractional runtime measurements declared as integers by the spec,
-  keyed by `(RustStructName, specFieldName)`. Only response-only `f64` fields qualify; request fields cannot be
-  exempted. Entries become stale when the field, response reachability, Rust type, or upstream integer type changes.
-- `extra_field_exemptions` — deliberate code-only fields, keyed by `(RustStructName, specFieldName)`.
-- `deprecated_field_exemptions` — spec-deprecated fields deliberately excluded from hiding, same key shape.
-- `extra_enum_value_exemptions` — intentional Rust-only wire values, keyed by `(RustEnumName, wireValue)`.
-- `partial_required_schemas` — upstream schemas whose `required[]` is non-exhaustive, keyed by spec schema name.
-  This changes requiredness resolution (request position only) and is not a shortcut for one optionality mismatch.
-  Entries are stale when the schema is gone, response-only, or the override no longer changes requiredness.
-- `acknowledged_unsupported_enum_pointers` — exact RFC 6901 pointers the analyzer inventories but cannot map to a
-  concrete Rust value enum. The acknowledgement covers the snapshot's value set; additions or removals in the
-  target spec are actionable, including numeric and mixed values. Reordering does not change the set.
-
-Add an exemption only for intentional, verified runtime behavior, with a nearby comment stating why the spec cannot
-be followed. Never exempt missing API surface or ordinary model drift. Pair a new unsupported-enum acknowledgement
-with a tracking issue; do not acknowledge it merely to make CI green. Exemptions and acknowledgements
-produce actionable stale findings when no longer needed — remove them during remediation.
-
-### Enum value coverage, `VALUES` consts, deprecated hiding
-
-- Enum mapping is structural: named schemas resolve to model types; properties, array items, compositions and
-  operation parameters resolve through their Rust field/argument type. Serde container/variant renames determine
-  wire values. Catch-alls are recognized through `untagged`/`other` attributes, never variant names — a genuine
-  unit variant named `Unknown` remains a value. Numeric, mixed and scalar-backed enum constraints are reported
-  explicitly as unsupported rather than silently skipped.
-- Enums the CLI validates against declare `pub const VALUES: &'static [&'static str]` — a hand-written literal
-  slice of the enum's non-catch-all wire values. The analyzer requires it to equal the variant wire values as a
-  set (`FindingKind::EnumValuesMismatch`); this is opt-in, so enums without a `VALUES` const are unchecked.
-  **When adding a value to a `VALUES`-bearing enum, update both the variant and the const or CI fails.**
-- Every spec-deprecated request or response field belongs in `meta.rs::DEPRECATED_FIELDS` and carries
-  `#[cfg(feature = "deprecated-fields")]` on the field in its model domain file, so it is absent from the public
-  model by default. Request fields that must be gated out but resolve as required are `Option<T>` with a
-  documented optionality exemption. Entries are keyed per Rust type, so a deprecated field on a split schema needs
-  one entry and one marker for `{Name}` and one for `{Name}Response`. Update CLI code that accesses or constructs
-  an affected model so **both** feature configurations compile.
-
-### Extending the analyzer
-
-Add a typed `FindingKind` and pure comparison in the analyzer, focused inventory/comparison fixtures,
-deterministic JSON/text coverage, and Python issue rendering. Keep `spec_coverage_test.rs` a thin consumer.
-New report fields or semantics require a report `schema_version` change; never make Python infer drift by
-reparsing Rust or OpenAPI.
+- An enum with a `pub const VALUES` slice must list exactly its non-catch-all wire values. When adding a value,
+  update both the variant and the const or CI fails.
+- A spec-deprecated field is listed in `meta.rs::DEPRECATED_FIELDS` and gated with
+  `#[cfg(feature = "deprecated-fields")]`, once per Rust type (`{Name}` and `{Name}Response`). Both feature
+  configurations of the CLI must compile.
 
 ## Tests
 
