@@ -92,6 +92,8 @@ Test coverage is non-negotiable.
 ## CI gates
 
 - Pin all GitHub Actions deps to SHA hashes, not tags. Never populate secrets in Actions triggered by external PRs.
+- `audit.yml` runs `cargo audit --deny warnings` on manifest/lockfile PRs and every weekday; fix or bump an advisory
+  rather than ignoring it. Dependabot (`.github/dependabot.yml`) opens weekly grouped Cargo and Actions updates.
 - Two path classifiers fail closed; **both** need an entry when a source or test file is added or renamed, or CI
   breaks. `scripts/classify-cloud-integration.py` maps API-library source/test paths to the `service`, `postgres`,
   `organization`, `clickpipes` suites (unknown paths select all suites);
