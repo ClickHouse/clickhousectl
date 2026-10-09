@@ -913,7 +913,7 @@ impl fmt::Display for InitOutput {
 #[derive(Debug, Clone, Serialize)]
 pub struct UdfInitOutput {
     pub name: String,
-    /// The UDF directory as given or defaulted, e.g. `clickhouse/udfs/my_fn`.
+    /// The UDF directory, e.g. `clickhouse/udfs/my_fn`.
     pub dir: String,
     /// File names this invocation created; empty when everything existed.
     pub created: Vec<String>,

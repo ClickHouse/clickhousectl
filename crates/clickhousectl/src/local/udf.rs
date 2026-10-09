@@ -1,6 +1,6 @@
 //! `local udf`: executable UDFs for project-local ClickHouse servers.
 //!
-//! A UDF lives in a directory (by default `clickhouse/udfs/<name>/`) holding
+//! A UDF lives in a directory (`clickhouse/udfs/<name>/`) holding
 //! `udf.json`, the same definition `cloud udf` accepts, next to its files.
 
 use crate::error::Result;
@@ -9,7 +9,7 @@ use crate::local::output::{self, UdfInitOutput};
 use crate::udf::{DEFINITION_FILE, NATIVE_ENTRYPOINT, PYTHON_ENTRYPOINT};
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Parent directory for scaffolded UDFs, relative to the project root. Matches
 /// the `udfs/` entry of the `local init` scaffold.
@@ -21,20 +21,12 @@ pub async fn run(cmd: UdfCommands, json: bool) -> Result<()> {
             name,
             runtime,
             kind,
-            dir,
-        } => init_udf(&name, runtime, kind, dir, json),
+        } => init_udf(&name, runtime, kind, json),
     }
 }
 
-fn init_udf(
-    name: &str,
-    runtime: UdfRuntimeArg,
-    kind: UdfTypeArg,
-    dir: Option<PathBuf>,
-    json: bool,
-) -> Result<()> {
-    let parent = dir.unwrap_or_else(|| PathBuf::from(DEFAULT_UDF_PARENT));
-    let target = parent.join(name);
+fn init_udf(name: &str, runtime: UdfRuntimeArg, kind: UdfTypeArg, json: bool) -> Result<()> {
+    let target = Path::new(DEFAULT_UDF_PARENT).join(name);
     std::fs::create_dir_all(&target)?;
 
     let mut created = Vec::new();

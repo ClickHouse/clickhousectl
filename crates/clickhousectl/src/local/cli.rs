@@ -760,7 +760,7 @@ pub enum UdfCommands {
     /// Scaffold a UDF source directory
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Writes udf.json and an entrypoint into clickhouse/udfs/<NAME> unless --dir is given.
+  Writes udf.json and an entrypoint into clickhouse/udfs/<NAME>.
   Idempotent: existing files are kept and only new files are reported.")]
     Init {
         /// Function name: a letter, then letters, digits or underscores
@@ -774,10 +774,6 @@ CONTEXT FOR AGENTS:
         /// Function type written to udf.json
         #[arg(long = "type", value_enum, default_value_t = UdfTypeArg::Executable)]
         kind: UdfTypeArg,
-
-        /// Parent directory for the new UDF (default: clickhouse/udfs)
-        #[arg(long, value_name = "PATH")]
-        dir: Option<std::path::PathBuf>,
     },
 }
 
@@ -846,7 +842,6 @@ mod tests {
                     name,
                     runtime,
                     kind,
-                    dir,
                 },
         } = local_command(&["udf", "init", "my_fn"])
         else {
@@ -855,12 +850,9 @@ mod tests {
         assert_eq!(name, "my_fn");
         assert_eq!(runtime, UdfRuntimeArg::Python311);
         assert_eq!(kind, UdfTypeArg::Executable);
-        assert!(dir.is_none());
 
         let LocalCommands::Udf {
-            command: UdfCommands::Init {
-                runtime, kind, dir, ..
-            },
+            command: UdfCommands::Init { runtime, kind, .. },
         } = local_command(&[
             "udf",
             "init",
@@ -869,15 +861,12 @@ mod tests {
             "native",
             "--type",
             "executable_pool",
-            "--dir",
-            "funcs",
         ])
         else {
             panic!("expected udf init");
         };
         assert_eq!(runtime, UdfRuntimeArg::Native);
         assert_eq!(kind, UdfTypeArg::ExecutablePool);
-        assert_eq!(dir.as_deref(), Some(std::path::Path::new("funcs")));
 
         let LocalCommands::Udf {
             command: UdfCommands::Init { kind, .. },
@@ -915,6 +904,14 @@ mod tests {
         assert_eq!(
             local_parse_error(&["udf", "init"]).kind(),
             ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn udf_init_has_no_dir_flag() {
+        assert_eq!(
+            local_parse_error(&["udf", "init", "my_fn", "--dir", "x"]).kind(),
+            clap::error::ErrorKind::UnknownArgument
         );
     }
 

@@ -100,7 +100,7 @@ fn udf_init_is_idempotent_and_keeps_edited_files() {
 }
 
 #[test]
-fn udf_init_native_pool_writes_a_shell_entrypoint_into_a_custom_dir() {
+fn udf_init_native_pool_writes_a_shell_entrypoint() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
 
@@ -116,16 +116,14 @@ fn udf_init_native_pool_writes_a_shell_entrypoint_into_a_custom_dir() {
             "native",
             "--type",
             "executable_pool",
-            "--dir",
-            "funcs",
             "--json",
         ],
     );
     let json = stdout_json(&output);
-    assert_eq!(json["dir"], "funcs/native_fn");
+    assert_eq!(json["dir"], "clickhouse/udfs/native_fn");
     assert_eq!(json["created"], serde_json::json!(["udf.json", "main"]));
 
-    let dir = project.path().join("funcs/native_fn");
+    let dir = project.path().join("clickhouse/udfs/native_fn");
     let definition: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("udf.json")).unwrap()).unwrap();
     assert_eq!(definition["type"], "executable_pool");
