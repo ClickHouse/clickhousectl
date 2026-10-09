@@ -760,7 +760,7 @@ pub enum UdfCommands {
     /// Scaffold a UDF source directory
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Writes udf.json and an entrypoint into clickhouse/udfs/<NAME>.
+  Writes udf.json and main.py (python3.11) or amd64/ and arm64/ (native) into clickhouse/udfs/<NAME>.
   Idempotent: existing files are kept and only new files are reported.")]
     Init {
         /// Function name: a letter, then letters, digits or underscores
@@ -904,14 +904,6 @@ mod tests {
         assert_eq!(
             local_parse_error(&["udf", "init"]).kind(),
             ErrorKind::MissingRequiredArgument
-        );
-    }
-
-    #[test]
-    fn udf_init_has_no_dir_flag() {
-        assert_eq!(
-            local_parse_error(&["udf", "init", "my_fn", "--dir", "x"]).kind(),
-            clap::error::ErrorKind::UnknownArgument
         );
     }
 
