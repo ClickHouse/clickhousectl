@@ -21,6 +21,8 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `cloud service settings list --json` | Object with `settings`; values retain string/number types |
 | `cloud clickpipe settings get --json` | Object with snake_case setting names |
 | `local server list --json` | Object with `servers`, `total_servers`, and `project_scope` |
+| `local udf deploy --json` | Object with `name`, `server`, `type`, `runtime`, `server_running`, `reloaded`, `loaded` (`null` when the server is stopped), `interpreter`, `ignored_fields`, `ignored_files`, `function_config`, and `scripts_dir` |
+| `local udf list --json` | Object with `server`, `server_running`, and a `udfs` array of `name`, `type`, `runtime`, and `loaded` (`null` when the server is stopped) |
 | `cloud postgres metrics --json` | API-shaped metrics; data-point timestamps are epoch seconds |
 | `cloud service query` | ClickHouse format; `--format` overrides agent auto-JSON and conflicts with explicit `--json` |
 | `cloud postgres query --json` | JSON array lines: names, types, rows; success may be empty |
@@ -92,7 +94,15 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 
 | Code | Meaning |
 | ---- | ------- |
-| `server_not_found` | The selected local server does not exist |
+| `server_not_found` | The selected local server does not exist, or `--server` names a local Postgres instance |
+| `udf_definition_invalid` | `udf.json` is not valid JSON (message redacted) or fails validation (message carries the reason) |
+| `udf_source_invalid` | The UDF directory is missing, is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link |
+| `udf_runtime_unsupported` | Runtime `native` needs a Linux amd64/arm64 host |
+| `udf_not_loaded` | The running server did not load the deployed function; see the log path in the message |
+| `udf_rejected` | The running server rejected the deployed function; fix it and redeploy, or remove it |
+| `udf_not_found` | No UDF of that name is deployed to the selected server |
+| `udf_interpreter_not_found` | No `python3.11` or `python3` on `PATH` and no usable `--python` |
+| `udf_query_failed` | The local server rejected a UDF statement; the server's text is redacted, human output shows it |
 | `managed_client_server_not_found` | Managed client lookup did not find the selected server in the current project |
 | `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
 | `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |
