@@ -9,6 +9,27 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         "udf create",
         &[&op::UDF_UPLOAD_SESSION_CREATE, &op::UDF_CREATE],
     ),
+    Permission::api(
+        "udf deploy",
+        &[
+            &op::UDF_GET,
+            &op::UDF_UPLOAD_SESSION_CREATE,
+            &op::UDF_ATTACH,
+            &op::UDF_ATTACHMENT_GET,
+        ],
+    )
+    .when(&[
+        Conditional::new("If the UDF does not exist", &[&op::UDF_CREATE]),
+        Conditional::new("If the UDF exists", &[&op::UDF_VERSION_CREATE]),
+        Conditional::new(
+            "If a newer version appears during the build",
+            &[&op::UDF_VERSION_LIST],
+        ),
+        Conditional::new(
+            "Without --no-wake",
+            &[&op::INSTANCE_STATE_UPDATE, &op::INSTANCE_GET],
+        ),
+    ]),
     Permission::api("udf delete", &[&op::UDF_DELETE]),
     Permission::api("udf attach", &[&op::UDF_ATTACH]).when(&[Conditional::flag(
         "wake",
