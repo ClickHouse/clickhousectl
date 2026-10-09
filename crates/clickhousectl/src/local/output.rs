@@ -915,8 +915,8 @@ pub struct UdfInitOutput {
     pub name: String,
     /// The UDF directory, e.g. `clickhouse/udfs/my_fn`.
     pub dir: String,
-    /// Paths relative to `dir` this invocation created; empty when everything
-    /// existed.
+    /// Files and directories (with a trailing `/`) relative to `dir` this
+    /// invocation created; empty when everything existed.
     pub created: Vec<String>,
     /// What the user must still do before the UDF can run, if anything.
     #[serde(skip_serializing_if = "Option::is_none")]

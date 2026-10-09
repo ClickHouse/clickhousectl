@@ -50,13 +50,19 @@ fn init_udf(name: &str, runtime: UdfRuntimeArg, kind: UdfTypeArg, json: bool) ->
         }
         UdfRuntimeArg::Native => {
             for arch in NATIVE_ARCH_DIRS {
-                std::fs::create_dir_all(target.join(arch))?;
+                let arch_dir = target.join(arch);
+                if !arch_dir.is_dir() {
+                    std::fs::create_dir_all(&arch_dir)?;
+                    created.push(format!("{arch}/"));
+                }
+                // `.gitkeep` only keeps the empty directory in version control;
+                // the directory is what gets reported.
                 write_if_absent(
                     &target,
                     &format!("{arch}/.gitkeep"),
                     "",
                     0o644,
-                    &mut created,
+                    &mut Vec::new(),
                 )?;
             }
             Some(native_next_step())

@@ -123,7 +123,7 @@ fn udf_init_native_pool_scaffolds_architecture_dirs() {
     assert_eq!(json["dir"], "clickhouse/udfs/native_fn");
     assert_eq!(
         json["created"],
-        serde_json::json!(["udf.json", "amd64/.gitkeep", "arm64/.gitkeep"])
+        serde_json::json!(["udf.json", "amd64/", "arm64/"])
     );
     assert!(
         json["next_step"]
@@ -142,6 +142,23 @@ fn udf_init_native_pool_scaffolds_architecture_dirs() {
     }
     assert!(!dir.join("main").exists());
     assert!(!dir.join("main.py").exists());
+
+    let rerun = run(
+        project.path(),
+        home.path(),
+        &[
+            "local",
+            "udf",
+            "init",
+            "native_fn",
+            "--runtime",
+            "native",
+            "--json",
+        ],
+    );
+    let json = stdout_json(&rerun);
+    assert_eq!(json["created"], serde_json::json!([]));
+    assert!(json["next_step"].is_string());
 }
 
 #[test]
