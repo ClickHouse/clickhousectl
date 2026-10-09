@@ -155,6 +155,17 @@ fn write_udf(env: &Env, name: &str) {
     std::fs::write(dir.join("main.py"), "import sys\n").unwrap();
 }
 
+fn write_udf_at(env: &Env, parent: &str, name: &str) {
+    write_udf(env, name);
+    let target = env.project.path().join(parent);
+    std::fs::create_dir_all(&target).unwrap();
+    std::fs::rename(
+        env.project.path().join("clickhouse/udfs").join(name),
+        target.join(name),
+    )
+    .unwrap();
+}
+
 fn deploy(env: &Env, name: &str) -> Value {
     success_json(&run(env, &["local", "udf", "deploy", name, "--json"]))
 }
@@ -434,4 +445,83 @@ fn list_marks_loaded_functions_and_remove_reloads_on_a_running_server() {
         String::from_utf8_lossy(&human.stdout),
         "Removed UDF my_fn from server 'default' and reloaded functions\n"
     );
+}
+
+#[test]
+fn deploy_commands_in_errors_name_a_non_default_dir() {
+    let env = setup();
+    let _server = start_server(&env);
+    write_udf_at(&env, "shared/udfs", "other_fn");
+
+    let output = run(
+        &env,
+        &[
+            "local",
+            "udf",
+            "deploy",
+            "other_fn",
+            "--dir",
+            "shared/udfs",
+            "--json",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "udf_not_loaded");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf deploy other_fn --dir shared/udfs --server default"
+    );
+}
+
+#[test]
+fn a_definition_the_server_rejects_on_reload_keeps_the_files_and_names_the_way_out() {
+    let env = setup();
+    let _server = start_server(&env);
+    write_udf_at(&env, "shared/udfs", "my_fn");
+    std::fs::write(&env.fail_reload_marker, "").unwrap();
+
+    let output = run(
+        &env,
+        &[
+            "local",
+            "udf",
+            "deploy",
+            "my_fn",
+            "--dir",
+            "shared/udfs",
+            "--json",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "udf_rejected");
+    assert_eq!(
+        error["error"]["message"],
+        "ClickHouse rejected UDF my_fn on server default. Its files stay deployed, and every \
+         function reload on this server fails until it is fixed. Fix shared/udfs/my_fn and rerun \
+         `clickhousectl local udf deploy my_fn --dir shared/udfs --server default`, restore the \
+         previous working copy and rerun it, or remove it with \
+         `clickhousectl local udf remove my_fn --server default`."
+    );
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove my_fn --server default"
+    );
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("DB::Exception"));
+    let data = env.project.path().join(".clickhouse/servers/default/data");
+    assert!(
+        data.join("user_defined_functions/my_fn_function.xml")
+            .is_file()
+    );
+    assert!(data.join("user_scripts/my_fn/main.py").is_file());
+
+    let human = run(
+        &env,
+        &["local", "udf", "deploy", "my_fn", "--dir", "shared/udfs"],
+    );
+    assert_eq!(human.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(stderr.contains("ClickHouse rejected UDF my_fn"), "{stderr}");
+    assert!(stderr.contains("Code: 36. DB::Exception"), "{stderr}");
 }

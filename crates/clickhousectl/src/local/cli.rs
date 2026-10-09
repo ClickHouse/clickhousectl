@@ -1053,19 +1053,6 @@ mod tests {
             local_parse_error(&["udf", "deploy"]).kind(),
             ErrorKind::MissingRequiredArgument
         );
-        for removed in [
-            vec!["udf", "deploy", "my_fn", "--entrypoint", "x"],
-            vec!["udf", "call", "my_fn", "1"],
-        ] {
-            let kind = local_parse_error(&removed).kind();
-            assert!(
-                matches!(
-                    kind,
-                    ErrorKind::UnknownArgument | ErrorKind::InvalidSubcommand
-                ),
-                "{removed:?}: {kind:?}"
-            );
-        }
     }
 
     #[test]

@@ -757,6 +757,11 @@ pub enum Error {
     #[error("Server '{0}' not found; create it with `clickhousectl local server start {0}`")]
     UdfServerNotFound(String),
 
+    /// `--server` names a local Postgres instance. `local udf` must never
+    /// write ClickHouse config into a Postgres data directory.
+    #[error("'{0}' is a local Postgres instance, not a ClickHouse server")]
+    UdfServerIsPostgres(String),
+
     /// Native UDFs are Linux amd64/arm64 binaries; this host cannot run them.
     #[error("{0}")]
     UdfRuntimeUnsupported(String),
@@ -771,6 +776,25 @@ pub enum Error {
         name: String,
         server: String,
         log_path: PathBuf,
+        /// The `local udf deploy` command that reruns this deployment.
+        deploy_command: String,
+    },
+
+    /// The running server rejected the deployed definition on reload. The
+    /// files stay deployed and ClickHouse reloads all function files
+    /// together, so every later reload on the server fails until the
+    /// function is fixed or removed. `details` is ClickHouse's response text,
+    /// so structured output redacts it.
+    #[error(
+        "{}\nClickHouse error: {details}",
+        udf_rejected_message(.name, .server, .source_dir, .deploy_command)
+    )]
+    UdfRejected {
+        name: String,
+        server: String,
+        source_dir: PathBuf,
+        deploy_command: String,
+        details: String,
     },
 
     #[error("Docker is not available: {0}")]
@@ -798,6 +822,23 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// The self-composed part of [`Error::UdfRejected`], shared by human and
+/// structured output.
+pub(crate) fn udf_rejected_message(
+    name: &str,
+    server: &str,
+    source_dir: &std::path::Path,
+    deploy_command: &str,
+) -> String {
+    format!(
+        "ClickHouse rejected UDF {name} on server {server}. Its files stay deployed, and every \
+         function reload on this server fails until it is fixed. Fix {} and rerun \
+         `{deploy_command}`, restore the previous working copy and rerun it, or remove it with \
+         `clickhousectl local udf remove {name} --server {server}`.",
+        source_dir.display()
+    )
+}
 
 impl Error {
     /// Process exit code: `0` success, `1` error, `3` cancelled,

@@ -752,3 +752,58 @@ fn unknown_servers_are_never_created_and_stopped_servers_reject_reload() {
     assert_eq!(error["error"]["code"], "server_not_running");
     assert_eq!(error["error"]["command"], "clickhousectl local server list");
 }
+
+#[test]
+fn server_naming_a_local_postgres_instance_is_rejected_before_anything_is_written() {
+    let env = setup();
+    write_python_udf(&env, "my_fn", false);
+    let servers = env.project.path().join(".clickhouse/servers");
+    // A stopped local Postgres: metadata with the Postgres engine and a data
+    // directory. `old-pg16` has only the data directory, as after a crash.
+    std::fs::create_dir_all(servers.join("dev-pg18/data")).unwrap();
+    std::fs::write(
+        servers.join("dev-pg18.json"),
+        serde_json::json!({
+            "name": "dev",
+            "pid": 0,
+            "version": "postgres:18",
+            "http_port": 0,
+            "tcp_port": 5432,
+            "started_at": "2026-10-09T00:00:00Z",
+            "cwd": env.project.path().display().to_string(),
+            "engine": "postgres"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(servers.join("old-pg16/data")).unwrap();
+
+    for server in ["dev-pg18", "old-pg16"] {
+        for args in [
+            vec![
+                "local", "udf", "deploy", "my_fn", "--server", server, "--json",
+            ],
+            vec!["local", "udf", "list", "--server", server, "--json"],
+            vec!["local", "udf", "reload", "--server", server, "--json"],
+            vec![
+                "local", "udf", "remove", "my_fn", "--server", server, "--json",
+            ],
+        ] {
+            let error = error_json(&run(&env, &args));
+            assert_eq!(error["error"]["code"], "server_not_found", "{args:?}");
+            assert_eq!(
+                error["error"]["message"],
+                format!("'{server}' is a local Postgres instance, not a ClickHouse server"),
+                "{args:?}"
+            );
+            assert_eq!(
+                error["error"]["command"], "clickhousectl local server list",
+                "{args:?}"
+            );
+        }
+        let entries: Vec<_> = std::fs::read_dir(servers.join(server).join("data"))
+            .unwrap()
+            .collect();
+        assert!(entries.is_empty(), "{server}: {entries:?}");
+    }
+}

@@ -13,7 +13,7 @@ use crate::local::output::{
     self, UdfDeployOutput, UdfInitOutput, UdfListEntry, UdfListOutput, UdfReloadOutput,
     UdfRemoveOutput,
 };
-use crate::local::server::{self, MetadataLock, ServerInfo};
+use crate::local::server::{self, Engine, MetadataLock, ServerInfo};
 use crate::udf::{
     self, DEFAULT_UDF_PARENT, DEFINITION_FILE, NATIVE_ARCH_DIRS, NATIVE_ENTRYPOINT,
     PYTHON_ENTRYPOINT, SourceEntry, UdfInputError, UdfRuntimeKind,
@@ -424,12 +424,28 @@ async fn deploy(
 
     let loaded = match &target.running {
         Some(info) => {
-            reload_functions(info, server_name).await?;
+            let deploy_command = deploy_command(name, parent, server_name);
+            // Every function file reloads together, so a rejected definition
+            // also blocks every later reload on this server until it is fixed.
+            match send_query(info, RELOAD_FUNCTIONS_SQL).await {
+                Ok(_) => {}
+                Err(QueryError::Rejected(details)) => {
+                    return Err(Error::UdfRejected {
+                        name: name.to_owned(),
+                        server: server_name.to_owned(),
+                        source_dir: dir.clone(),
+                        deploy_command,
+                        details,
+                    });
+                }
+                Err(error) => return Err(error.into_error(server_name)),
+            }
             if !wait_until_loaded(info, server_name, name).await? {
                 return Err(Error::UdfNotLoaded {
                     name: name.to_owned(),
                     server: server_name.to_owned(),
                     log_path: std::path::absolute(server::server_log_path(server_name))?,
+                    deploy_command,
                 });
             }
             Some(true)
@@ -457,6 +473,19 @@ async fn deploy(
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+/// The command that reruns this deployment, naming `--dir` only when the user
+/// gave a non-default one, spelled as they gave it.
+fn deploy_command(name: &str, parent: &Path, server: &str) -> String {
+    if parent == Path::new(udf::DEFAULT_UDF_PARENT) {
+        format!("clickhousectl local udf deploy {name} --server {server}")
+    } else {
+        format!(
+            "clickhousectl local udf deploy {name} --dir {} --server {server}",
+            parent.display()
+        )
+    }
 }
 
 /// Files copied with the sources that the local server does nothing with.
@@ -722,13 +751,20 @@ fn xml_escape(text: &str) -> String {
 
 /// Write the managed overlay that points the embedded server config at this
 /// server's UDF directories. Idempotent; called by `server start` as well.
+///
+/// An unchanged overlay is left untouched: a new mtime makes ClickHouse
+/// reload its main config, which on 26.1 and earlier drops the command-line
+/// port overrides and rebinds the server to the default ports (#1066).
 pub(crate) fn write_overlay(data_dir: &Path) -> Result<PathBuf> {
     std::fs::create_dir_all(data_dir)?;
     let data_dir_abs = data_dir.canonicalize()?;
     let config_d = data_dir.join("config.d");
     std::fs::create_dir_all(&config_d)?;
     let path = config_d.join(OVERLAY_FILE);
-    write_atomic(&path, &render_overlay_xml(&data_dir_abs))?;
+    let rendered = render_overlay_xml(&data_dir_abs);
+    if std::fs::read(&path).ok().as_deref() != Some(rendered.as_bytes()) {
+        write_atomic(&path, &rendered)?;
+    }
     Ok(path)
 }
 
@@ -850,7 +886,15 @@ struct ServerTarget {
 fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
     let lock = server::lock_metadata()?;
     server::recover_current_project_servers_locked(&lock)?;
-    let running = server::server_entry_locked(name, &lock)?
+    let entry = server::server_entry_locked(name, &lock)?;
+    let is_postgres = match entry.as_ref().and_then(|entry| entry.info.as_ref()) {
+        Some(info) => info.engine != Engine::Clickhouse,
+        None => server::is_pg_instance_key(name),
+    };
+    if is_postgres {
+        return Err(Error::UdfServerIsPostgres(name.to_owned()));
+    }
+    let running = entry
         .filter(|entry| entry.running)
         .and_then(|entry| entry.info);
     let data_dir = server::server_data_dir(name);
@@ -867,32 +911,53 @@ fn require_running<'a>(target: &'a ServerTarget, name: &str) -> Result<&'a Serve
         .ok_or_else(|| Error::ServerNotRunning(name.to_owned()))
 }
 
+/// Why a statement failed: the server could not be reached, or it answered
+/// with an error. Deploy tells a rejected definition apart from the rest.
+enum QueryError {
+    Client(reqwest::Error),
+    Unreachable(String),
+    Rejected(String),
+}
+
+impl QueryError {
+    fn into_error(self, server: &str) -> Error {
+        match self {
+            Self::Client(error) => error.into(),
+            Self::Unreachable(details) | Self::Rejected(details) => Error::UdfQueryFailed {
+                server: server.to_owned(),
+                details,
+            },
+        }
+    }
+}
+
 /// Run one statement over the server's HTTP interface as the default user.
-async fn http_query(info: &ServerInfo, server: &str, sql: &str) -> Result<String> {
+async fn send_query(info: &ServerInfo, sql: &str) -> std::result::Result<String, QueryError> {
     let client = reqwest::Client::builder()
         .no_proxy()
         .connect_timeout(HTTP_CONNECT_TIMEOUT)
         .timeout(HTTP_REQUEST_TIMEOUT)
-        .build()?;
-    let failed = |details: String| Error::UdfQueryFailed {
-        server: server.to_owned(),
-        details,
-    };
+        .build()
+        .map_err(QueryError::Client)?;
+    let unreachable = |error: reqwest::Error| QueryError::Unreachable(error.to_string());
     let response = client
         .post(format!("http://localhost:{}/", info.http_port))
         .body(sql.to_owned())
         .send()
         .await
-        .map_err(|error| failed(error.to_string()))?;
+        .map_err(unreachable)?;
     let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| failed(error.to_string()))?;
+    let body = response.text().await.map_err(unreachable)?;
     if !status.is_success() {
-        return Err(failed(body.trim().to_owned()));
+        return Err(QueryError::Rejected(body.trim().to_owned()));
     }
     Ok(body)
+}
+
+async fn http_query(info: &ServerInfo, server: &str, sql: &str) -> Result<String> {
+    send_query(info, sql)
+        .await
+        .map_err(|error| error.into_error(server))
 }
 
 async fn reload_functions(info: &ServerInfo, server: &str) -> Result<()> {
@@ -1306,6 +1371,34 @@ mod tests {
                 .count()
                 == 1,
             "no temporary file left behind"
+        );
+    }
+
+    #[test]
+    fn overlay_is_rewritten_only_when_its_content_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("data");
+        let path = write_overlay(&data_dir).unwrap();
+        let past = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+
+        write_overlay(&data_dir).unwrap();
+        assert_eq!(
+            modified_at(&path),
+            Some(past),
+            "identical overlay rewritten"
+        );
+
+        std::fs::write(&path, "<clickhouse/>\n").unwrap();
+        write_overlay(&data_dir).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            render_overlay_xml(&data_dir.canonicalize().unwrap())
         );
     }
 

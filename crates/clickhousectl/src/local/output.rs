@@ -50,6 +50,9 @@ enum LocalErrorCode {
     /// A running server accepted a deployment but never loaded the function;
     /// the message names the server log.
     UdfNotLoaded,
+    /// The running server rejected a deployed definition on reload; the
+    /// files stay deployed and block every reload until fixed or removed.
+    UdfRejected,
     InvalidVersion,
     /// The version is not installed locally. Distinct from
     /// [`Self::VersionUnavailable`], which means it could not be resolved or
@@ -375,15 +378,28 @@ impl LocalErrorOutput {
             // because `local udf` never creates one.
             Error::UdfServerNotFound(name) => Mapping::parity(LocalErrorCode::ServerNotFound)
                 .command(format!("clickhousectl local server start {name}")),
+            Error::UdfServerIsPostgres(_) => Mapping::parity(LocalErrorCode::ServerNotFound)
+                .command("clickhousectl local server list"),
             Error::UdfRuntimeUnsupported(_) => {
                 Mapping::parity(LocalErrorCode::UdfRuntimeUnsupported)
                     .command("clickhousectl local udf deploy --help")
             }
-            Error::UdfNotLoaded { name, server, .. } => {
-                Mapping::parity(LocalErrorCode::UdfNotLoaded).command(format!(
-                    "clickhousectl local udf deploy {name} --server {server}"
-                ))
+            Error::UdfNotLoaded { deploy_command, .. } => {
+                Mapping::parity(LocalErrorCode::UdfNotLoaded).command(deploy_command.clone())
             }
+            Error::UdfRejected {
+                name,
+                server,
+                source_dir,
+                deploy_command,
+                ..
+            } => Mapping::redacted(
+                LocalErrorCode::UdfRejected,
+                crate::error::udf_rejected_message(name, server, source_dir, deploy_command),
+            )
+            .command(format!(
+                "clickhousectl local udf remove {name} --server {server}"
+            )),
 
             // ── versions ────────────────────────────────────────────────────
             Error::InvalidVersion(_) => Mapping::parity(LocalErrorCode::InvalidVersion)
@@ -1914,8 +1930,23 @@ mod tests {
                     name: "my_fn".into(),
                     server: "dev".into(),
                     log_path: "/work/.clickhouse/servers/dev/server.log".into(),
+                    deploy_command: "clickhousectl local udf deploy my_fn --server dev".into(),
                 },
                 "udf_not_loaded",
+            ),
+            (
+                Error::UdfRejected {
+                    name: "my_fn".into(),
+                    server: "dev".into(),
+                    source_dir: "clickhouse/udfs/my_fn".into(),
+                    deploy_command: "clickhousectl local udf deploy my_fn --server dev".into(),
+                    details: "Code: 50. DB::Exception: Unknown data type".into(),
+                },
+                "udf_rejected",
+            ),
+            (
+                Error::UdfServerIsPostgres("dev-pg18".into()),
+                "server_not_found",
             ),
         ];
 
@@ -1976,6 +2007,7 @@ mod tests {
             name: "my_fn".into(),
             server: "dev".into(),
             log_path: "/work/.clickhouse/servers/dev/server.log".into(),
+            deploy_command: "clickhousectl local udf deploy my_fn --server dev".into(),
         });
         assert_eq!(
             not_loaded["error"]["message"],
@@ -1984,6 +2016,37 @@ mod tests {
         assert_eq!(
             not_loaded["error"]["command"],
             "clickhousectl local udf deploy my_fn --server dev"
+        );
+
+        let rejected_error = Error::UdfRejected {
+            name: "my_fn".into(),
+            server: "dev".into(),
+            source_dir: "clickhouse/udfs/my_fn".into(),
+            deploy_command: "clickhousectl local udf deploy my_fn --server dev".into(),
+            details: "Code: 50. DB::Exception: secret-ish server text".into(),
+        };
+        assert!(
+            rejected_error
+                .to_string()
+                .contains("secret-ish server text")
+        );
+        let rejected = error_json(&rejected_error);
+        let message = rejected["error"]["message"].as_str().unwrap();
+        assert!(!message.contains("secret-ish"));
+        assert!(rejected_error.to_string().starts_with(message));
+        assert_eq!(
+            rejected["error"]["command"],
+            "clickhousectl local udf remove my_fn --server dev"
+        );
+
+        let postgres = error_json(&Error::UdfServerIsPostgres("dev-pg18".into()));
+        assert_eq!(
+            postgres["error"]["message"],
+            "'dev-pg18' is a local Postgres instance, not a ClickHouse server"
+        );
+        assert_eq!(
+            postgres["error"]["command"],
+            "clickhousectl local server list"
         );
 
         let source = error_json(&Error::UdfSourceInvalid {
