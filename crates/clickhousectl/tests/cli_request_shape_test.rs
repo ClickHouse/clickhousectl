@@ -30571,30 +30571,21 @@ async fn udf_create_name_packages_the_directory_and_reads_its_udf_json() {
 }
 
 #[tokio::test]
-async fn udf_create_dir_reads_another_parent_and_file_overrides_the_definition() {
+async fn udf_create_dir_reads_another_parent() {
     let server = MockServer::start().await;
     let storage = MockServer::start().await;
     let project = tempfile::tempdir().unwrap();
     let shared = tempfile::tempdir().unwrap();
     udf_dir(&shared.path().join("udfs"), "shared_udf", "python3.11");
-    std::fs::write(
-        project.path().join("override.json"),
-        serde_json::json!({
-            "functionName": "renamed", "type": "executable_pool", "runtime": "python3.11",
-            "arguments": [{"name": "y", "type": "String"}], "returnType": "String", "poolSize": 2
-        })
-        .to_string(),
-    )
-    .unwrap();
     mount_udf_upload_session(&server, &storage).await;
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/udfs"))
         .and(body_json(serde_json::json!({
-            "functionName": "renamed", "type": "executable_pool", "runtime": "python3.11",
-            "arguments": [{"name": "y", "type": "String"}], "returnType": "String", "poolSize": 2,
+            "functionName": "shared_udf", "type": "executable", "runtime": "python3.11",
+            "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64",
             "uploadId": "fresh-upload"
         })))
-        .respond_with(udf_result("renamed", 1, "building"))
+        .respond_with(udf_result("shared_udf", 1, "building"))
         .expect(1)
         .mount(&server)
         .await;
@@ -30608,8 +30599,6 @@ async fn udf_create_dir_reads_another_parent_and_file_overrides_the_definition()
             "shared_udf",
             "--dir",
             shared.path().join("udfs").to_str().unwrap(),
-            "--file",
-            "override.json",
         ],
     )
     .output()
@@ -30828,6 +30817,87 @@ async fn udf_attach_reports_idle_services_and_wakes_them_with_wake() {
         [
             "PUT /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
             "PATCH /v1/organizations/org-1/services/svc-1/state",
+            "GET /v1/organizations/org-1/services/svc-1",
+            "PUT /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ]
+    );
+}
+
+// A failed wake PATCH is not fatal while the service is on its way up
+// (here `provisioning`): the CLI waits for `running` and retries the attach.
+#[tokio::test]
+async fn udf_attach_wake_waits_out_a_failed_wake_while_the_service_comes_up() {
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(ResponseTemplate::new(424).set_body_json(serde_json::json!({
+            "error": "service is idle", "code": "SERVICE_IDLE", "serviceState": "idle",
+            "canWake": true, "status": 424
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1/state"))
+        .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+            "status": 409, "error": "service state is changing"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"state": "provisioning"}})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"state": "running"}})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+            "functionName": "my_udf", "serviceId": "svc-1", "version": 1, "status": "provisioning"
+        }})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["attach", "my_udf", "svc-1", "--wake"],
+    )
+    .output()
+    .unwrap();
+    assert_success(&output);
+    let calls: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| format!("{} {}", request.method, request.url.path()))
+        .collect();
+    assert_eq!(
+        calls,
+        [
+            "PUT /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+            "PATCH /v1/organizations/org-1/services/svc-1/state",
+            "GET /v1/organizations/org-1/services/svc-1",
             "GET /v1/organizations/org-1/services/svc-1",
             "PUT /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
         ]

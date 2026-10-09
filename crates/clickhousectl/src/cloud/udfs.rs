@@ -162,7 +162,7 @@ pub struct UdfPageArgs {
     limit: Option<i64>,
 }
 
-/// `create NAME [--dir PATH] [--file PATH]` archives a directory;
+/// `create NAME [--dir PATH]` archives a directory holding `udf.json`;
 /// `create --file PATH --artifact PATH` uploads a ZIP as is.
 #[derive(Args)]
 pub struct UdfCreateArgs {
@@ -171,12 +171,13 @@ pub struct UdfCreateArgs {
     name: Option<String>,
     #[command(flatten)]
     dir: UdfDirArg,
-    /// Complete JSON definition without uploadId (file path or - for stdin)
+    /// JSON definition without uploadId, used with --artifact (file path or - for stdin)
     #[arg(
         long = "file",
         value_name = "PATH",
         aliases = ["config-file", "config"],
-        required_unless_present = "name"
+        required_unless_present = "name",
+        conflicts_with_all = ["name", "dir"]
     )]
     config: Option<String>,
     /// Source archive path in ZIP format
@@ -189,14 +190,19 @@ pub struct UdfCreateArgs {
     artifact: Option<PathBuf>,
 }
 
-/// `version create NAME [--dir PATH] [--file PATH]` archives the directory;
-/// `--artifact PATH` with `--file PATH` uploads a ZIP as is.
+/// `version create NAME [--dir PATH]` archives the directory holding `udf.json`;
+/// `--file PATH --artifact PATH` uploads a ZIP as is.
 #[derive(Args)]
 pub struct UdfVersionInputArgs {
     #[command(flatten)]
     dir: UdfDirArg,
-    /// Complete JSON definition without uploadId (file path or - for stdin)
-    #[arg(long = "file", value_name = "PATH", aliases = ["config-file", "config"])]
+    /// JSON definition without uploadId, used with --artifact (file path or - for stdin)
+    #[arg(
+        long = "file",
+        value_name = "PATH",
+        aliases = ["config-file", "config"],
+        requires = "artifact"
+    )]
     config: Option<String>,
     /// Source archive path in ZIP format; requires --file
     #[arg(long, value_name = "PATH", requires = "config", conflicts_with = "dir")]
@@ -236,7 +242,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                 None => None,
             };
             let definition = definition_source(input.config.as_deref(), source.as_deref())?;
-            if let (Some(name), None) = (&input.name, &input.config) {
+            if let Some(name) = &input.name {
                 check_definition_name(&definition, source.as_deref(), name)?;
             }
             let mut request = build_udf_create_request(definition, "pending")?;
@@ -265,7 +271,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                 None => Some(resolve_source(&input.dir, &name.function_name)?),
             };
             let mut definition = definition_source(input.config.as_deref(), source.as_deref())?;
-            if input.config.is_none() {
+            if source.is_some() {
                 check_definition_name(&definition, source.as_deref(), &name.function_name)?;
                 udf::strip_function_name(&mut definition);
             }
@@ -503,7 +509,7 @@ fn resolve_source(dir: &UdfDirArg, name: &str) -> CloudResult<PathBuf> {
     udf::resolve_source_dir(&dir.dir, name).map_err(|error| CloudError::usage(error.to_string()))
 }
 
-/// The definition JSON: `--file` when given, else `DIR/udf.json`.
+/// The definition JSON: `--file` (only with `--artifact`), else `DIR/udf.json`.
 fn definition_source(config: Option<&str>, source: Option<&Path>) -> CloudResult<Value> {
     match (config, source) {
         (Some(config), _) => read_config_value(config),
@@ -965,12 +971,9 @@ async fn attach_with_wake(
             .await
         {
             // Another caller may have woken it first; only give up when the
-            // service is not on its way up.
+            // service is in a state the wait would fail on anyway.
             let state = client.get_service(org, service).await?.state;
-            if !matches!(
-                state,
-                Some(ServiceState::Awaking | ServiceState::Starting | ServiceState::Running)
-            ) {
+            if let Outcome::Failed(_) = classify_wake_state(state.as_ref())? {
                 return Err(wake_error);
             }
         }
@@ -1218,49 +1221,60 @@ mod tests {
 
     #[test]
     fn udf_builders_cover_minimal_and_maximal_variants() {
-        let minimal = build_udf_create_request(definition("executable", true), "fresh").unwrap();
-        let UdfCreateRequest::UdfCreateRequestV1(body) = minimal else {
-            panic!("executable");
-        };
-        assert_eq!(body.upload_id, "fresh");
-        assert_eq!(body.function_name, "my_udf");
-        assert_eq!(body.runtime, UdfRuntime::Native);
-        assert_eq!(body.pool_size, None);
-        assert_eq!(body.memory_limit_mib, None);
-        assert_eq!(body.deterministic, None);
-
-        let mut maximal = definition("executable_pool", false);
-        maximal.as_object_mut().unwrap().extend(
-            json!({
-                "returnName": "result", "format": "JSONEachRow", "commandReadTimeout": 5000,
-                "commandWriteTimeout": 6000, "maxCommandExecutionTime": 20, "memoryLimitMib": 256,
-                "sendChunkHeader": true, "deterministic": true, "sandboxType": "netenable",
-                "sandboxVersion": "v3", "poolSize": 4
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
-        );
-        let maximal = build_udf_version_create_request(maximal, "fresh").unwrap();
-        let UdfVersionCreateRequest::UdfVersionCreateRequestV2(body) = maximal else {
-            panic!("executable_pool");
-        };
-        assert_eq!(body.upload_id, "fresh");
-        assert_eq!(body.return_name.as_deref(), Some("result"));
-        assert_eq!(body.format.as_deref(), Some("JSONEachRow"));
-        assert_eq!(body.command_read_timeout, Some(5000));
-        assert_eq!(body.command_write_timeout, Some(6000));
-        assert_eq!(body.max_command_execution_time, Some(20));
-        assert_eq!(body.memory_limit_mib, Some(256));
-        assert_eq!(body.send_chunk_header, Some(true));
-        assert_eq!(body.deterministic, Some(true));
-        assert_eq!(body.sandbox_type, Some(UdfSandboxType::Netenable));
-        assert_eq!(body.sandbox_version, Some(UdfSandboxVersion::V3));
-        assert_eq!(body.pool_size, Some(4));
-        assert_eq!(
-            serde_json::to_value(&body).unwrap()["deterministic"],
-            json!(true)
-        );
+        for create in [true, false] {
+            for kind in ["executable", "executable_pool"] {
+                for full in [false, true] {
+                    let mut input = definition(kind, create);
+                    if full {
+                        input.as_object_mut().unwrap().extend(json!({
+                            "commandReadTimeout": 5000, "commandWriteTimeout": 6000,
+                            "memoryLimitMib": 128, "deterministic": false,
+                            "sendChunkHeader": false, "format": "JSONEachRow", "returnName": "result",
+                            "sandboxType": "netenable", "sandboxVersion": "v3",
+                            "maxCommandExecutionTime": 20,
+                            "poolSize": if kind == "executable_pool" { json!(4) } else { Value::Null }
+                        }).as_object().unwrap().clone());
+                    }
+                    let output = if create {
+                        let request = build_udf_create_request(input.clone(), "upload-1").unwrap();
+                        match &request {
+                            UdfCreateRequest::UdfCreateRequestV1(body) => {
+                                assert_eq!(body.upload_id, "upload-1");
+                                assert_eq!(body.deterministic, full.then_some(false));
+                                assert_eq!(body.memory_limit_mib, full.then_some(128));
+                            }
+                            UdfCreateRequest::UdfCreateRequestV2(body) => {
+                                assert_eq!(body.pool_size, full.then_some(4));
+                                assert_eq!(body.memory_limit_mib, full.then_some(128));
+                            }
+                            _ => panic!("unexpected union variant"),
+                        }
+                        serde_json::to_value(request).unwrap()
+                    } else {
+                        let request =
+                            build_udf_version_create_request(input.clone(), "upload-1").unwrap();
+                        match &request {
+                            UdfVersionCreateRequest::UdfVersionCreateRequestV1(body) => {
+                                assert_eq!(body.upload_id, "upload-1");
+                                assert_eq!(body.deterministic, full.then_some(false));
+                                assert_eq!(body.memory_limit_mib, full.then_some(128));
+                            }
+                            UdfVersionCreateRequest::UdfVersionCreateRequestV2(body) => {
+                                assert_eq!(body.pool_size, full.then_some(4));
+                                assert_eq!(body.memory_limit_mib, full.then_some(128));
+                            }
+                            _ => panic!("unexpected union variant"),
+                        }
+                        serde_json::to_value(request).unwrap()
+                    };
+                    input["uploadId"] = json!("upload-1");
+                    if kind == "executable" {
+                        input.as_object_mut().unwrap().remove("poolSize");
+                    }
+                    assert_eq!(output, input);
+                }
+            }
+        }
     }
 
     #[test]
@@ -1658,20 +1672,13 @@ mod tests {
         assert!(input.config.is_none());
         assert!(input.artifact.is_none());
 
-        let UdfCommands::Create(input) = parse_udf(&[
-            "create",
-            "my_udf",
-            "--dir",
-            "../shared/udfs",
-            "--file",
-            "def.json",
-        ])
-        .command
+        let UdfCommands::Create(input) =
+            parse_udf(&["create", "my_udf", "--dir", "../shared/udfs"]).command
         else {
             panic!("create");
         };
         assert_eq!(input.dir.dir, PathBuf::from("../shared/udfs"));
-        assert_eq!(input.config.as_deref(), Some("def.json"));
+        assert!(input.config.is_none());
 
         let UdfCommands::Create(input) =
             parse_udf(&["create", "--file", "def.json", "--artifact", "code.zip"]).command
@@ -1742,28 +1749,12 @@ mod tests {
                 ErrorKind::ArgumentConflict,
             ),
             (
-                vec!["create", "my_udf", "--wait"],
-                ErrorKind::UnknownArgument,
+                vec!["create", "my_udf", "--file", "f.json"],
+                ErrorKind::ArgumentConflict,
             ),
             (
-                vec!["create", "my_udf", "--timeout", "5"],
-                ErrorKind::UnknownArgument,
-            ),
-            (
-                vec!["create", "my_udf", "--source-dir", "d"],
-                ErrorKind::UnknownArgument,
-            ),
-            (
-                vec!["version", "create", "my_udf", "--wait"],
-                ErrorKind::UnknownArgument,
-            ),
-            (
-                vec!["attach", "my_udf", "svc-1", "--wait"],
-                ErrorKind::UnknownArgument,
-            ),
-            (
-                vec!["attach", "my_udf", "svc-1", "--timeout", "5"],
-                ErrorKind::UnknownArgument,
+                vec!["version", "create", "my_udf", "--file", "f.json"],
+                ErrorKind::MissingRequiredArgument,
             ),
         ] {
             let mut all = vec!["chctl", "cloud", "udf"];
