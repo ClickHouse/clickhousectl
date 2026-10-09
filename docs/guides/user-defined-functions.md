@@ -18,6 +18,17 @@ Save the definition below as `udf.json` and prepare a [source ZIP archive](https
 }
 ```
 
+## Scaffold a function
+
+`local udf init` creates `clickhouse/udfs/<name>/` with a `udf.json` in the shape `--file` accepts, plus the function's sources:
+
+```bash
+clickhousectl local udf init my_udf                    # udf.json and an executable main.py
+clickhousectl local udf init my_udf --runtime native   # udf.json, amd64/ and arm64/
+```
+
+For runtime `native`, build a Linux `main` binary into each architecture directory. Pass `--type executable_pool` for a pooled function. Re-running keeps existing files and reports only the ones it created.
+
 ## Create and attach
 
 ```bash
