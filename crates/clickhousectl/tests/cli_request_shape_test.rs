@@ -21745,6 +21745,7 @@ async fn udf_every_write_rejects_oauth_before_api() {
     let server = MockServer::start().await;
     for args in [
         vec!["delete", "my_udf"],
+        vec!["deploy", "my_udf", "--service", "svc-1"],
         vec!["detach", "my_udf", "svc-1"],
         vec!["attach", "my_udf", "svc-1"],
         vec!["version", "delete", "my_udf", "2"],
@@ -31106,5 +31107,285 @@ async fn udf_attach_wake_waits_out_a_failed_wake_while_the_service_comes_up() {
             "GET /v1/organizations/org-1/services/svc-1",
             "PUT /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
         ]
+    );
+}
+
+#[tokio::test]
+async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
+    for existing in [false, true] {
+        let server = MockServer::start().await;
+        let storage = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        project_udf(project.path(), "my_udf", "python3.11");
+        mount_udf_upload_session(&server, &storage).await;
+        let new_version = if existing { 2 } else { 1 };
+        let udf_body = |version: i64, status: &str| {
+            serde_json::json!({"result": {
+                "functionName": "my_udf", "version": version, "status": status, "runtime": "python3.11"
+            }})
+        };
+
+        // The first GET decides between create and version create; later
+        // GETs follow the build of the new version.
+        let first_get = if existing {
+            ResponseTemplate::new(200).set_body_json(udf_body(1, "ready"))
+        } else {
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": "NOT_FOUND"}))
+        };
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/udfs/my_udf"))
+            .respond_with(first_get)
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/udfs/my_udf"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(udf_body(new_version, "ready")))
+            .mount(&server)
+            .await;
+        let definition = serde_json::json!({
+            "type": "executable", "runtime": "python3.11",
+            "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64",
+            "uploadId": "fresh-upload"
+        });
+        if existing {
+            Mock::given(method("POST"))
+                .and(path("/v1/organizations/org-1/udfs/my_udf/versions"))
+                .and(body_json(definition))
+                .respond_with(ResponseTemplate::new(201).set_body_json(udf_body(2, "building")))
+                .expect(1)
+                .mount(&server)
+                .await;
+        } else {
+            let mut create = definition;
+            create["functionName"] = serde_json::json!("my_udf");
+            Mock::given(method("POST"))
+                .and(path("/v1/organizations/org-1/udfs"))
+                .and(body_json(create))
+                .respond_with(ResponseTemplate::new(201).set_body_json(udf_body(1, "building")))
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("PUT"))
+            .and(path("/v1/organizations/org-1/udfs/my_udf/attachments/svc-1"))
+            .and(body_json(serde_json::json!({"version": new_version})))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+                "functionName": "my_udf", "serviceId": "svc-1", "version": new_version, "status": "provisioning"
+            }})))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/udfs/my_udf/attachments/svc-1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+                "functionName": "my_udf", "serviceId": "svc-1", "version": new_version, "status": "deployed"
+            }})))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let json = !existing;
+        let output = udf_test_command(
+            &server,
+            project.path(),
+            false,
+            json,
+            &["deploy", "my_udf", "--service", "svc-1", "--timeout", "30"],
+        )
+        .output()
+        .unwrap();
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if json {
+            let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+            assert_eq!(result["action"], "created");
+            assert_eq!(result["udf"]["version"], 1);
+            assert_eq!(result["udf"]["status"], "ready");
+            assert_eq!(result["attachment"]["status"], "deployed");
+            assert_eq!(result["attachment"]["version"], 1);
+        } else {
+            assert_eq!(
+                stdout,
+                "UDF my_udf version 2 added as a new version and deployed to service svc-1\n"
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr.contains("Waiting for the build of UDF my_udf version 2"),
+                "{stderr}"
+            );
+            assert!(
+                stderr.contains("Waiting for the deployment of UDF my_udf to service svc-1"),
+                "{stderr}"
+            );
+        }
+        let calls: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|request| format!("{} {}", request.method, request.url.path()))
+            .collect();
+        let publish = if existing {
+            "POST /v1/organizations/org-1/udfs/my_udf/versions"
+        } else {
+            "POST /v1/organizations/org-1/udfs"
+        };
+        assert_eq!(
+            calls,
+            [
+                "GET /v1/organizations/org-1/udfs/my_udf",
+                "POST /v1/organizations/org-1/udfUploads/url",
+                publish,
+                "GET /v1/organizations/org-1/udfs/my_udf",
+                "PUT /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+                "GET /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+            ],
+            "existing={existing}"
+        );
+        assert_eq!(
+            zip_entry_names(
+                &storage
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .pop()
+                    .unwrap()
+                    .body
+            ),
+            ["lib/", "lib/helper.py", "main.py"]
+        );
+    }
+}
+
+#[tokio::test]
+async fn udf_deploy_native_archives_only_the_architecture_directories() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    project_udf(project.path(), "native_udf", "native");
+    mount_udf_upload_session(&server, &storage).await;
+    let ready = serde_json::json!({"result": {"functionName": "native_udf", "version": 1, "status": "ready"}});
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/native_udf"))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": "NOT_FOUND"})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/native_udf"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ready.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(ready))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/v1/organizations/org-1/udfs/native_udf/attachments/svc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+            "functionName": "native_udf", "serviceId": "svc-1", "version": 1, "status": "deployed"
+        }})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/native_udf/attachments/svc-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+            "functionName": "native_udf", "serviceId": "svc-1", "version": 1, "status": "deployed"
+        }})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["deploy", "native_udf", "--service", "svc-1"],
+    )
+    .output()
+    .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        zip_entry_names(
+            &storage
+                .received_requests()
+                .await
+                .unwrap()
+                .pop()
+                .unwrap()
+                .body
+        ),
+        [
+            "amd64/",
+            "amd64/main",
+            "amd64/model.bin",
+            "arm64/",
+            "arm64/main"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn udf_deploy_failures_after_publish_name_the_built_version() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    project_udf(project.path(), "my_udf", "python3.11");
+    mount_udf_upload_session(&server, &storage).await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf"))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": "NOT_FOUND"})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    let ready =
+        serde_json::json!({"result": {"functionName": "my_udf", "version": 1, "status": "ready"}});
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ready.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(ready))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(ResponseTemplate::new(424).set_body_json(serde_json::json!({
+            "error": "service is stopped", "code": "SERVICE_STOPPED", "serviceState": "stopped",
+            "canWake": false, "status": 424
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["deploy", "my_udf", "--service", "svc-1"],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("SERVICE_STOPPED"), "{message}");
+    assert!(message.contains("cloud service start svc-1"), "{message}");
+    assert!(
+        message.contains("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 1`"),
+        "{message}"
     );
 }
