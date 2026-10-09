@@ -8,6 +8,22 @@ pub(super) async fn resolve_org_id(client: &CloudClient) -> CloudResult<String> 
     client.resolve_organization_id().await
 }
 
+/// Collapses repeated states while a command polls, so a long wait prints
+/// one line per transition (or every probe when `verbose`). The lines go to
+/// stderr through [`crate::cloud::output::eprint_line`].
+#[derive(Default)]
+pub(super) struct PollProgress {
+    previous_state: Option<String>,
+}
+
+impl PollProgress {
+    pub(super) fn render(&mut self, state: &str, verbose: bool) -> Option<String> {
+        let changed = self.previous_state.as_deref() != Some(state);
+        self.previous_state = Some(state.to_string());
+        (verbose || changed).then(|| format!("  state: {state}"))
+    }
+}
+
 /// An existing resource is selected by its opaque positional ID or exact name.
 #[derive(clap::Args, Debug, Clone)]
 #[group(skip)]
@@ -906,5 +922,35 @@ mod selector_usage_tests {
                 "{usage}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod poll_progress_tests {
+    use super::PollProgress;
+
+    #[test]
+    fn poll_progress_collapses_repeats_but_keeps_transitions() {
+        let mut progress = PollProgress::default();
+        assert_eq!(
+            progress.render("stopping", false).as_deref(),
+            Some("  state: stopping")
+        );
+        assert_eq!(progress.render("stopping", false), None);
+        assert_eq!(
+            progress.render("running", false).as_deref(),
+            Some("  state: running")
+        );
+        assert_eq!(
+            progress.render("stopped", false).as_deref(),
+            Some("  state: stopped")
+        );
+    }
+
+    #[test]
+    fn poll_progress_keeps_repeats_in_verbose_mode() {
+        let mut progress = PollProgress::default();
+        assert!(progress.render("stopping", true).is_some());
+        assert!(progress.render("stopping", true).is_some());
     }
 }
