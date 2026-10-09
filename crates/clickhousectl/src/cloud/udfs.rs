@@ -1,4 +1,4 @@
-use super::permissions::Declaration as Permission;
+use super::permissions::{Conditional, Declaration as Permission};
 use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
@@ -10,7 +10,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         &[&op::UDF_UPLOAD_SESSION_CREATE, &op::UDF_CREATE],
     ),
     Permission::api("udf delete", &[&op::UDF_DELETE]),
-    Permission::api("udf attach", &[&op::UDF_ATTACH]),
+    Permission::api("udf attach", &[&op::UDF_ATTACH]).when(&[Conditional::flag(
+        "wake",
+        &[&op::INSTANCE_STATE_UPDATE, &op::INSTANCE_GET],
+    )]),
     Permission::api("udf detach", &[&op::UDF_DETACH]),
     Permission::api("udf attachment list", &[&op::UDF_ATTACHMENT_LIST]),
     Permission::api("udf attachment get", &[&op::UDF_ATTACHMENT_GET]),
