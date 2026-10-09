@@ -31,30 +31,68 @@ fn init_udf(name: &str, runtime: UdfRuntimeArg, kind: UdfTypeArg, json: bool) ->
 
     let mut created = Vec::new();
     write_if_absent(
-        &target.join(DEFINITION_FILE),
+        &target,
+        DEFINITION_FILE,
         &definition_template(name, runtime, kind),
         0o644,
         &mut created,
     )?;
-    let (entrypoint, body) = match runtime {
-        UdfRuntimeArg::Python311 => (PYTHON_ENTRYPOINT, python_template(name)),
-        UdfRuntimeArg::Native => (NATIVE_ENTRYPOINT, native_template(name)),
+    let next_step = match runtime {
+        UdfRuntimeArg::Python311 => {
+            write_if_absent(
+                &target,
+                PYTHON_ENTRYPOINT,
+                &python_template(name),
+                0o755,
+                &mut created,
+            )?;
+            None
+        }
+        UdfRuntimeArg::Native => {
+            for arch in NATIVE_ARCH_DIRS {
+                std::fs::create_dir_all(target.join(arch))?;
+                write_if_absent(
+                    &target,
+                    &format!("{arch}/.gitkeep"),
+                    "",
+                    0o644,
+                    &mut created,
+                )?;
+            }
+            Some(native_next_step())
+        }
     };
-    write_if_absent(&target.join(entrypoint), &body, 0o755, &mut created)?;
 
     let out = UdfInitOutput {
         name: name.to_owned(),
         dir: target.display().to_string(),
         created,
+        next_step,
     };
     output::print_output(&out, json);
     Ok(())
 }
 
-/// Create `path` with `contents` unless it already exists. Existing files are
-/// kept untouched so re-running `init` never discards edits.
+/// Architecture directories a `native` UDF ships, each holding a `main`
+/// binary the user builds. Matches the Cloud upload layout.
+const NATIVE_ARCH_DIRS: [&str; 2] = ["amd64", "arm64"];
+
+/// What a `native` scaffold still needs before it can run.
+fn native_next_step() -> String {
+    format!(
+        "Build linux/amd64 and linux/arm64 binaries into amd64/{NATIVE_ENTRYPOINT} and \
+         arm64/{NATIVE_ENTRYPOINT} (see {NATIVE_DOCS_URL})."
+    )
+}
+
+const NATIVE_DOCS_URL: &str = "https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions";
+
+/// Create `dir/relative` with `contents` unless it already exists, recording
+/// `relative` in `created`. Existing files are kept untouched so re-running
+/// `init` never discards edits.
 fn write_if_absent(
-    path: &Path,
+    dir: &Path,
+    relative: &str,
     contents: &str,
     mode: u32,
     created: &mut Vec<String>,
@@ -62,16 +100,12 @@ fn write_if_absent(
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)
+        .open(dir.join(relative))
     {
         Ok(mut file) => {
             file.write_all(contents.as_bytes())?;
             file.set_permissions(std::fs::Permissions::from_mode(mode))?;
-            created.push(
-                path.file_name()
-                    .map(|name| name.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
-            );
+            created.push(relative.to_owned());
             Ok(())
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
@@ -122,17 +156,6 @@ fn python_template(name: &str) -> String {
     )
 }
 
-fn native_template(name: &str) -> String {
-    format!(
-        "#!/bin/sh\n\
-         # {name}: executable UDF entrypoint. ClickHouse writes one TabSeparated row per\n\
-         # line to stdin and reads one result line per row from stdout.\n\
-         while IFS= read -r value; do\n\
-         \x20   printf '%s\\n' \"$value\"\n\
-         done\n"
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,11 +188,6 @@ mod tests {
         assert!(python.contains("\"\"\"my_fn: executable UDF entrypoint."));
         assert!(python.contains("sys.stdout.flush()"));
         assert!(python.contains("    return value\n"));
-
-        let native = native_template("my_fn");
-        assert!(native.starts_with("#!/bin/sh\n"));
-        assert!(native.contains("# my_fn: executable UDF entrypoint."));
-        assert!(native.contains("    printf '%s\\n' \"$value\"\n"));
     }
 
     #[test]
@@ -178,14 +196,14 @@ mod tests {
         let path = tmp.path().join("main.py");
         let mut created = Vec::new();
 
-        write_if_absent(&path, "first\n", 0o755, &mut created).unwrap();
+        write_if_absent(tmp.path(), "main.py", "first\n", 0o755, &mut created).unwrap();
         assert_eq!(created, vec!["main.py"]);
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o755
         );
 
-        write_if_absent(&path, "second\n", 0o755, &mut created).unwrap();
+        write_if_absent(tmp.path(), "main.py", "second\n", 0o755, &mut created).unwrap();
         assert_eq!(created, vec!["main.py"]);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first\n");
     }

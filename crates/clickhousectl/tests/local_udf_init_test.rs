@@ -100,7 +100,7 @@ fn udf_init_is_idempotent_and_keeps_edited_files() {
 }
 
 #[test]
-fn udf_init_native_pool_writes_a_shell_entrypoint() {
+fn udf_init_native_pool_scaffolds_architecture_dirs() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
 
@@ -121,19 +121,26 @@ fn udf_init_native_pool_writes_a_shell_entrypoint() {
     );
     let json = stdout_json(&output);
     assert_eq!(json["dir"], "clickhouse/udfs/native_fn");
-    assert_eq!(json["created"], serde_json::json!(["udf.json", "main"]));
+    assert_eq!(
+        json["created"],
+        serde_json::json!(["udf.json", "amd64/.gitkeep", "arm64/.gitkeep"])
+    );
+    assert!(
+        json["next_step"]
+            .as_str()
+            .is_some_and(|step| !step.is_empty())
+    );
 
     let dir = project.path().join("clickhouse/udfs/native_fn");
     let definition: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(dir.join("udf.json")).unwrap()).unwrap();
     assert_eq!(definition["type"], "executable_pool");
     assert_eq!(definition["runtime"], "native");
-    assert!(
-        std::fs::read_to_string(dir.join("main"))
-            .unwrap()
-            .starts_with("#!/bin/sh\n")
-    );
-    assert!(is_executable(&dir.join("main")));
+    for arch in ["amd64", "arm64"] {
+        assert!(dir.join(arch).join(".gitkeep").is_file());
+        assert!(!dir.join(arch).join("main").exists());
+    }
+    assert!(!dir.join("main").exists());
     assert!(!dir.join("main.py").exists());
 }
 

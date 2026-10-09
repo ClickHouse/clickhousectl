@@ -12,7 +12,8 @@ use serde_json::Value;
 pub const DEFINITION_FILE: &str = "udf.json";
 /// Entrypoint the `python3.11` runtime requires at the root of the sources.
 pub const PYTHON_ENTRYPOINT: &str = "main.py";
-/// Default entrypoint used for the `native` runtime on local servers.
+/// Entrypoint of the `native` runtime: `main` inside each architecture
+/// directory (`amd64/`, `arm64/`), both locally and on Cloud.
 pub const NATIVE_ENTRYPOINT: &str = "main";
 
 /// Function, return and argument names: a letter, then letters, digits or
