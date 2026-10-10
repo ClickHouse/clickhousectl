@@ -2,7 +2,7 @@
 
 [All documentation](../README.md)
 
-`cloud udf` manages organization-scoped executable UDFs, versions, and service attachments. All UDF operations are beta. Reads support OAuth; writes require API key authentication.
+`cloud udf` manages organization-scoped executable UDFs, versions, and service attachments. Cloud UDF operations are beta. Reads support OAuth; writes require API key authentication.
 
 Save the definition below as `udf.json` and prepare a [source ZIP archive](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions#manage-udfs-with-the-cloud-api). `--file` accepts a file or `-` for stdin. The definition uses the API's field names and excludes `uploadId`, which the CLI obtains from a fresh upload session:
 
@@ -17,6 +17,17 @@ Save the definition below as `udf.json` and prepare a [source ZIP archive](https
   "deterministic": false
 }
 ```
+
+## Scaffold a function
+
+`local udf init` creates `clickhouse/udfs/<name>/` with a `udf.json` in the shape `--file` accepts, plus the function's sources:
+
+```bash
+clickhousectl local udf init my_udf                    # udf.json and an executable main.py
+clickhousectl local udf init my_udf --runtime native   # udf.json, amd64/ and arm64/
+```
+
+For runtime `native`, build a Linux `main` binary into each architecture directory. Pass `--type executable_pool` for a pooled function. Re-running keeps existing files and reports only the ones it created.
 
 ## Create and attach
 
