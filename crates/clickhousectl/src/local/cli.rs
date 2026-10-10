@@ -783,9 +783,10 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   The server must already exist; if it is running, functions reload at once.
   Redeploying the same function name replaces its files and definition.
-  python3.11 runs through --python, else python3.11 or python3 found on PATH now; no shebang is needed.
+  Runtime native deploys only from Linux amd64/arm64 hosts; elsewhere use `cloud udf create`.
   Cloud-only fields (memoryLimitMib, sandboxType, sandboxVersion) are accepted and ignored.
-  If a running server does not load the function, deploy exits 1 with the server log path.")]
+  If a running server does not load the function, deploy exits 1 with the server log path.
+  One rejected definition blocks every later reload on that server until it is fixed or removed.")]
     Deploy {
         /// Function name; its sources are NAME/ under --dir
         #[arg(value_name = "NAME", value_parser = parse_udf_name_arg)]
@@ -819,6 +820,10 @@ CONTEXT FOR AGENTS:
     },
 
     /// Reload executable functions on a running local server
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Not needed after deploy or remove, which reload, or after `local server start`, which loads them.
+  Run it after editing deployed files by hand to apply them now and see any rejection.")]
     Reload {
         #[command(flatten)]
         server: UdfServerArg,

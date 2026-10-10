@@ -393,14 +393,28 @@ impl LocalErrorOutput {
                 LocalErrorCode::UdfDefinitionInvalid,
                 crate::error::udf_definition_parse_message(path, source),
             )
-            .details(source.to_string())
-            .command("clickhousectl local udf init --help"),
+            // No help screen documents the `udf.json` schema, and `init` keeps
+            // an existing `udf.json`, so neither is a runnable remedy: the
+            // message and `details` say what to fix.
+            .details(source.to_string()),
             Error::UdfDefinitionInvalid { .. } => {
                 Mapping::parity(LocalErrorCode::UdfDefinitionInvalid)
-                    .command("clickhousectl local udf init --help")
             }
-            Error::UdfSourceInvalid { .. } => Mapping::parity(LocalErrorCode::UdfSourceInvalid)
-                .command("clickhousectl local udf deploy --help"),
+            // Missing entrypoints, binaries, and symbolic links are fixed in
+            // the source directory itself; the message names what is wrong.
+            Error::UdfSourceInvalid { .. } => Mapping::parity(LocalErrorCode::UdfSourceInvalid),
+            Error::UdfSourceMissing {
+                name,
+                scaffold_here,
+                ..
+            } => {
+                let mapping = Mapping::parity(LocalErrorCode::UdfSourceInvalid);
+                if *scaffold_here {
+                    mapping.command(format!("clickhousectl local udf init {name}"))
+                } else {
+                    mapping
+                }
+            }
             Error::UdfPathUnquotable { role, .. } => match role {
                 crate::error::UdfCommandPath::Interpreter => {
                     Mapping::parity(LocalErrorCode::UdfInterpreterNotFound)
@@ -412,16 +426,18 @@ impl LocalErrorOutput {
             },
             Error::UdfNotFound { server, .. } => Mapping::parity(LocalErrorCode::UdfNotFound)
                 .command(format!("clickhousectl local udf list --server {server}")),
+            // `deploy --help` documents `--python`, the remedy.
             Error::UdfInterpreterNotFound(_) => {
                 Mapping::parity(LocalErrorCode::UdfInterpreterNotFound)
                     .command("clickhousectl local udf deploy --help")
             }
+            // The server is up and answering; ClickHouse's text in `details`
+            // is the only lead, and no command would add to it.
             Error::UdfQueryFailed { server, details } => Mapping::redacted(
                 LocalErrorCode::UdfQueryFailed,
                 format!("ClickHouse server '{server}' rejected the query"),
             )
-            .details(details.clone())
-            .command("clickhousectl local server list"),
+            .details(details.clone()),
             Error::UdfServerUnreachable {
                 server,
                 port,
@@ -433,11 +449,23 @@ impl LocalErrorOutput {
             .details(details.clone())
             .command("clickhousectl local server list"),
             // Same code as a missing server elsewhere; the remedy differs
-            // because `local udf` never creates one.
-            Error::UdfServerNotFound(name) => Mapping::parity(LocalErrorCode::ServerNotFound)
+            // because `local udf` never creates one. Outside a project root,
+            // `server start` would begin a nested project, so the global list
+            // (which finds running servers in other projects) is the lead.
+            Error::UdfServerNotFound {
+                name,
+                project_has_state,
+                ..
+            } => Mapping::parity(LocalErrorCode::ServerNotFound).command(if *project_has_state {
+                format!("clickhousectl local server start {name}")
+            } else {
+                "clickhousectl local server list --global".to_owned()
+            }),
+            Error::UdfServerNotRunning(name) => Mapping::parity(LocalErrorCode::ServerNotRunning)
                 .command(format!("clickhousectl local server start {name}")),
             Error::UdfServerIsPostgres(_) => Mapping::parity(LocalErrorCode::ServerNotFound)
                 .command("clickhousectl local server list"),
+            // `deploy --help` states the Linux amd64/arm64 limit.
             Error::UdfRuntimeUnsupported(_) => {
                 Mapping::parity(LocalErrorCode::UdfRuntimeUnsupported)
                     .command("clickhousectl local udf deploy --help")
@@ -1084,8 +1112,8 @@ pub struct UdfDeployOutput {
     pub server: String,
     pub r#type: String,
     pub runtime: String,
-    pub server_running: bool,
-    /// Whether `SYSTEM RELOAD FUNCTIONS` was issued (only on a running server).
+    /// Whether the server was running, so deploy reloaded its functions; a
+    /// stopped server loads them on its next start.
     pub reloaded: bool,
     /// `Some(true)` once a running server reports the function; `None` when
     /// the server is not running. A running server that does not load it is
@@ -1113,15 +1141,19 @@ impl fmt::Display for UdfDeployOutput {
             "Deployed UDF {} to server '{}' ({}, {})",
             self.name, self.server, self.runtime, self.r#type
         )?;
-        writeln!(f, "  definition: {}", self.function_config)?;
-        writeln!(f, "  scripts:    {}", self.scripts_dir)?;
+        let mut detail = |label: &str, value: &str| {
+            // Width of the longest label, "ignored fields:", plus one space.
+            writeln!(f, "  {:<16}{value}", format!("{label}:"))
+        };
+        detail("definition", &self.function_config)?;
+        detail("scripts", &self.scripts_dir)?;
         if let Some(interpreter) = &self.interpreter {
-            writeln!(f, "  interpreter: {interpreter}")?;
+            detail("interpreter", interpreter)?;
         }
         if !self.ignored_fields.is_empty() {
-            writeln!(f, "  ignored fields: {}", self.ignored_fields.join(", "))?;
+            detail("ignored fields", &self.ignored_fields.join(", "))?;
         }
-        if self.server_running {
+        if self.reloaded {
             write!(f, "Reloaded functions; {} is loaded.", self.name)
         } else {
             write!(
@@ -1999,7 +2031,26 @@ mod tests {
                 },
                 "udf_query_failed",
             ),
-            (Error::UdfServerNotFound("dev".into()), "server_not_found"),
+            (
+                Error::UdfServerNotFound {
+                    name: "dev".into(),
+                    project_dir: "/work".into(),
+                    project_has_state: true,
+                },
+                "server_not_found",
+            ),
+            (
+                Error::UdfServerNotRunning("dev".into()),
+                "server_not_running",
+            ),
+            (
+                Error::UdfSourceMissing {
+                    path: "clickhouse/udfs/my_fn".into(),
+                    name: "my_fn".into(),
+                    scaffold_here: true,
+                },
+                "udf_source_invalid",
+            ),
             (
                 Error::UdfRuntimeUnsupported("native UDFs are Linux binaries".into()),
                 "udf_runtime_unsupported",
@@ -2086,6 +2137,111 @@ mod tests {
     }
 
     #[test]
+    fn udf_deploy_human_detail_values_share_one_column() {
+        let out = UdfDeployOutput {
+            name: "my_fn".into(),
+            server: "default".into(),
+            r#type: "executable".into(),
+            runtime: "python3.11".into(),
+            reloaded: true,
+            loaded: Some(true),
+            interpreter: Some("/usr/bin/python3".into()),
+            ignored_fields: vec!["poolSize".into(), "memoryLimitMib".into()],
+            ignored_files: vec![],
+            warnings: vec![],
+            function_config: "fn.xml".into(),
+            scripts_dir: "scripts/my_fn".into(),
+        };
+        let text = out.to_string();
+        let details: Vec<&str> = text.lines().filter(|line| line.starts_with("  ")).collect();
+        assert_eq!(details.len(), 4, "{text}");
+        let columns: Vec<usize> = details
+            .iter()
+            .map(|line| {
+                let label_end = line.find(':').unwrap() + 1;
+                label_end + line[label_end..].len() - line[label_end..].trim_start().len()
+            })
+            .collect();
+        assert!(columns.windows(2).all(|pair| pair[0] == pair[1]), "{text}");
+    }
+
+    /// Each local UDF failure's recovery command is one that helps: none
+    /// where no command adds to the message.
+    #[test]
+    fn udf_error_hints_name_a_command_that_helps() {
+        let command = |error: Error| error_json(&error)["error"]["command"].clone();
+        let none = serde_json::Value::Null;
+        assert_eq!(
+            command(Error::UdfDefinitionParse {
+                path: "clickhouse/udfs/my_fn/udf.json".into(),
+                source: serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+            }),
+            none
+        );
+        assert_eq!(
+            command(Error::UdfDefinitionInvalid {
+                path: "clickhouse/udfs/my_fn/udf.json".into(),
+                reason: "functionName 'other' does not match".into(),
+            }),
+            none
+        );
+        assert_eq!(
+            command(Error::UdfSourceInvalid {
+                path: "clickhouse/udfs/my_fn".into(),
+                reason: "is missing main.py".into(),
+            }),
+            none
+        );
+        let missing = |scaffold_here| Error::UdfSourceMissing {
+            path: "clickhouse/udfs/my_fn".into(),
+            name: "my_fn".into(),
+            scaffold_here,
+        };
+        assert_eq!(command(missing(true)), "clickhousectl local udf init my_fn");
+        assert_eq!(command(missing(false)), none);
+        assert_eq!(
+            command(Error::UdfInterpreterNotFound("not found".into())),
+            "clickhousectl local udf deploy --help"
+        );
+        assert_eq!(
+            command(Error::UdfRuntimeUnsupported("Linux only".into())),
+            "clickhousectl local udf deploy --help"
+        );
+        assert_eq!(
+            command(Error::UdfQueryFailed {
+                server: "dev".into(),
+                details: "Code: 46.".into(),
+            }),
+            none
+        );
+        let not_running = error_json(&Error::UdfServerNotRunning("dev".into()));
+        assert_eq!(not_running["error"]["code"], "server_not_running");
+        assert_eq!(
+            not_running["error"]["command"],
+            "clickhousectl local server start dev"
+        );
+        let not_found = |project_has_state| {
+            error_json(&Error::UdfServerNotFound {
+                name: "dev".into(),
+                project_dir: "/work/app".into(),
+                project_has_state,
+            })["error"]
+                .clone()
+        };
+        let root = not_found(true);
+        assert_eq!(root["command"], "clickhousectl local server start dev");
+        assert!(root["message"].as_str().unwrap().contains("'/work/app'"));
+        let subdir = not_found(false);
+        assert_eq!(
+            subdir["command"],
+            "clickhousectl local server list --global"
+        );
+        let message = subdir["message"].as_str().unwrap();
+        assert!(message.contains("'/work/app'"), "{message}");
+        assert!(!message.contains("server start"), "{message}");
+    }
+
+    #[test]
     fn udf_errors_carry_foreign_text_in_details_and_keep_self_composed_messages() {
         let parse = error_json(&Error::UdfDefinitionParse {
             path: "clickhouse/udfs/my_fn/udf.json".into(),
@@ -2108,10 +2264,6 @@ mod tests {
             "UDF definition 'clickhouse/udfs/my_fn/udf.json' is not valid JSON"
         );
         assert_eq!(positionless["error"]["details"], "read failed");
-        assert_eq!(
-            parse["error"]["command"],
-            "clickhousectl local udf init --help"
-        );
 
         let query = error_json(&Error::UdfQueryFailed {
             server: "dev".into(),
@@ -2125,7 +2277,6 @@ mod tests {
             query["error"]["details"],
             "Code: 46. DB::Exception: secret-ish server text"
         );
-        assert_eq!(query["error"]["command"], "clickhousectl local server list");
 
         let missing = error_json(&Error::UdfNotFound {
             name: "my_fn".into(),
@@ -2138,16 +2289,6 @@ mod tests {
         assert_eq!(
             missing["error"]["command"],
             "clickhousectl local udf list --server dev"
-        );
-
-        let missing_server = error_json(&Error::UdfServerNotFound("dev".into()));
-        assert_eq!(
-            missing_server["error"]["message"],
-            "Server 'dev' not found; create it with `clickhousectl local server start dev`"
-        );
-        assert_eq!(
-            missing_server["error"]["command"],
-            "clickhousectl local server start dev"
         );
 
         let not_loaded = error_json(&Error::UdfNotLoaded {

@@ -39,7 +39,7 @@ clickhousectl local udf list
 clickhousectl local udf remove my_udf
 ```
 
-Every command except `init` takes `--server NAME` (default `default`). The server must already exist; `deploy`, `list` and `remove` work whether or not it is running, and `reload` needs it running. `deploy NAME` reads `clickhouse/udfs/NAME/` (`--dir PATH` selects another parent directory), and `functionName` must equal `NAME`. Local names are at most 235 characters, so every file named after the function fits the file-name limit. Redeploying replaces the function's files and definition.
+Every command except `init` takes `--server NAME` (default `default`). The server must already exist; `deploy`, `list` and `remove` work whether or not it is running, and `reload` needs it running. Like every local command, `local udf` looks for servers only in the current directory's project and never in parent directories, so run it from the project root. `deploy NAME` reads `clickhouse/udfs/NAME/` (`--dir PATH` selects another parent directory), and `functionName` must equal `NAME`. Local names are at most 235 characters, so every file named after the function fits the file-name limit. Redeploying replaces the function's files and definition.
 
 `deploy` validates `udf.json` exactly as `cloud udf create --file` does and rejects symbolic links, as Cloud does. Runtime `python3.11` needs `main.py` at the root; runtime `native` runs only on Linux amd64/arm64 hosts and needs only the host's binary (`amd64/main` or `arm64/main`); the other architecture's directory is reported in `ignored_files` and not copied. `--python` with a native UDF is a usage error. Files are written under `.clickhouse/servers/<name>/data/`:
 

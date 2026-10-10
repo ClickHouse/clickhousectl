@@ -432,9 +432,10 @@ async fn deploy(
     // server is even looked up and long before anything is written.
     let dir = udf::resolve_source_dir(parent, name).map_err(|error| match error {
         UdfInputError::Invalid { path, reason } if reason == udf::SOURCE_DIR_MISSING => {
-            Error::UdfSourceInvalid {
+            Error::UdfSourceMissing {
                 path,
-                reason: missing_source_reason(name, parent),
+                name: name.to_owned(),
+                scaffold_here: parent == Path::new(DEFAULT_UDF_PARENT),
             }
         }
         other => input_error(other),
@@ -563,7 +564,6 @@ async fn deploy(
         server: server_name.to_owned(),
         r#type: definition.kind.as_str().to_owned(),
         runtime: runtime.as_str().to_owned(),
-        server_running: target.running.is_some(),
         reloaded: target.running.is_some(),
         loaded,
         interpreter: interpreter.map(|path| path.display().to_string()),
@@ -575,22 +575,6 @@ async fn deploy(
     };
     output::print_output(&out, json);
     Ok(())
-}
-
-/// Why `deploy` found no `<parent>/<name>/`. `init` scaffolds only into the
-/// default parent, so it is suggested only there.
-fn missing_source_reason(name: &str, parent: &Path) -> String {
-    if parent == Path::new(DEFAULT_UDF_PARENT) {
-        format!(
-            "{}; create it with `clickhousectl local udf init {name}`",
-            udf::SOURCE_DIR_MISSING
-        )
-    } else {
-        format!(
-            "{}; `clickhousectl local udf init {name}` scaffolds one in {DEFAULT_UDF_PARENT}",
-            udf::SOURCE_DIR_MISSING
-        )
-    }
 }
 
 /// The command that reruns this deployment, naming `--dir` only when the user
@@ -913,7 +897,7 @@ fn render_overlay_xml(data_dir_abs: &Path) -> String {
     let scripts = format!("{}/", data_dir_abs.join(SCRIPTS_DIR).display());
     format!(
         "<clickhouse>\n    \
-         <!-- Managed by clickhousectl: rewritten on every server start and udf deploy/remove. -->\n    \
+         <!-- Managed by clickhousectl: rewritten by server start and udf deploy/remove when its content changes. -->\n    \
          <user_defined_executable_functions_config>{}</user_defined_executable_functions_config>\n    \
          <user_scripts_path>{}</user_scripts_path>\n\
          </clickhouse>\n",
@@ -1128,16 +1112,39 @@ fn server_target(name: &str) -> Result<(ServerTarget, MetadataLock)> {
         .and_then(|entry| entry.info);
     let data_dir = server::server_data_dir(name);
     if running.is_none() && !data_dir.is_dir() {
-        return Err(Error::UdfServerNotFound(name.to_owned()));
+        let project_dir = crate::init::canonical_project_dir()?;
+        return Err(Error::UdfServerNotFound {
+            name: name.to_owned(),
+            project_has_state: looks_like_project_root(&project_dir),
+            project_dir,
+        });
     }
     Ok((ServerTarget { data_dir, running }, lock))
+}
+
+/// Whether `dir` is plausibly where servers are started: it has the
+/// `clickhouse/` scaffold or some server's state. Local commands never search
+/// parent directories, so a subdirectory of a project has neither.
+fn looks_like_project_root(dir: &Path) -> bool {
+    if dir.join("clickhouse").is_dir() {
+        return true;
+    }
+    // The metadata lock file is created by any `local udf` call, even in a
+    // subdirectory, so it does not count as server state.
+    std::fs::read_dir(dir.join(".clickhouse").join("servers"))
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|entry| !entry.file_name().to_string_lossy().starts_with('.'))
+        })
+        .unwrap_or(false)
 }
 
 fn require_running<'a>(target: &'a ServerTarget, name: &str) -> Result<&'a ServerInfo> {
     target
         .running
         .as_ref()
-        .ok_or_else(|| Error::ServerNotRunning(name.to_owned()))
+        .ok_or_else(|| Error::UdfServerNotRunning(name.to_owned()))
 }
 
 /// Why a statement failed: the server could not be reached, or it answered

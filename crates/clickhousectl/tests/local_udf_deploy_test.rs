@@ -213,7 +213,6 @@ fn deploy_to_a_stopped_server_stages_files_and_overlay() {
             "server": "default",
             "type": "executable",
             "runtime": "python3.11",
-            "server_running": false,
             "reloaded": false,
             "loaded": null,
             "interpreter": env.bin.join("python3.11").display().to_string(),
@@ -710,10 +709,8 @@ fn definition_and_source_problems_are_structured_errors_before_anything_is_stage
         error["error"]["details"],
         "key must be a string at line 1 column 3"
     );
-    assert_eq!(
-        error["error"]["command"],
-        "clickhousectl local udf init --help"
-    );
+    // No help documents the schema and `init` keeps an existing udf.json.
+    assert_eq!(error["error"].get("command"), None);
 
     std::fs::write(
         dir.join("udf.json"),
@@ -759,10 +756,7 @@ fn definition_and_source_problems_are_structured_errors_before_anything_is_stage
         error["error"]["message"],
         "UDF source directory 'clickhouse/udfs/my_fn' has no udf.json"
     );
-    assert_eq!(
-        error["error"]["command"],
-        "clickhousectl local udf deploy --help"
-    );
+    assert_eq!(error["error"].get("command"), None);
 
     write_python_udf(&env, "my_fn", false);
     std::fs::remove_file(dir.join("main.py")).unwrap();
@@ -796,6 +790,10 @@ fn definition_and_source_problems_are_structured_errors_before_anything_is_stage
         missing_dir["error"]["message"],
         "UDF source directory 'clickhouse/udfs/nope' does not exist; create it with `clickhousectl local udf init nope`"
     );
+    assert_eq!(
+        missing_dir["error"]["command"],
+        "clickhousectl local udf init nope"
+    );
 
     // Another parent: init cannot scaffold there, so it is named with its target.
     let other_parent = error_json(&run(
@@ -814,6 +812,7 @@ fn definition_and_source_problems_are_structured_errors_before_anything_is_stage
         other_parent["error"]["message"],
         "UDF source directory 'elsewhere/nope' does not exist; `clickhousectl local udf init nope` scaffolds one in clickhouse/udfs"
     );
+    assert_eq!(other_parent["error"].get("command"), None);
 
     // A path that exists but is a file keeps its own wording.
     std::fs::write(env.project.path().join("clickhouse/udfs/plain"), "").unwrap();
@@ -895,9 +894,14 @@ fn unknown_servers_are_never_created_and_stopped_servers_reject_reload() {
 
     let error = error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
     assert_eq!(error["error"]["code"], "server_not_found");
+    let project_root = env.project.path().canonicalize().unwrap();
     assert_eq!(
         error["error"]["message"],
-        "Server 'default' not found; create it with `clickhousectl local server start default`"
+        format!(
+            "Server 'default' not found in project '{}'; start it with \
+             `clickhousectl local server start default`",
+            project_root.display()
+        )
     );
     assert_eq!(
         error["error"]["command"],
@@ -939,7 +943,47 @@ fn unknown_servers_are_never_created_and_stopped_servers_reject_reload() {
     success_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
     let error = error_json(&run(&env, &["local", "udf", "reload", "--json"]));
     assert_eq!(error["error"]["code"], "server_not_running");
-    assert_eq!(error["error"]["command"], "clickhousectl local server list");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local server start default"
+    );
+}
+
+/// Local commands never search parent directories, so from a subdirectory
+/// the error names the directory searched and does not suggest starting a
+/// server there, which would begin a nested project.
+#[test]
+fn a_server_missing_from_a_subdirectory_is_not_started_there() {
+    let env = setup();
+    write_python_udf(&env, "my_fn", false);
+    create_stopped_server(&env, "default");
+    let sub = env.project.path().join("src/app");
+    std::fs::create_dir_all(&sub).unwrap();
+
+    for args in [
+        vec!["local", "udf", "list", "--json"],
+        vec!["local", "udf", "reload", "--json"],
+        vec!["local", "udf", "remove", "my_fn", "--json"],
+    ] {
+        let output = command(&env)
+            .current_dir(&sub)
+            .args(&args)
+            .output()
+            .unwrap();
+        let error = error_json(&output);
+        assert_eq!(error["error"]["code"], "server_not_found", "{args:?}");
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("'{}'", sub.canonicalize().unwrap().display())),
+            "{message}"
+        );
+        assert!(!message.contains("server start"), "{message}");
+        assert_eq!(
+            error["error"]["command"], "clickhousectl local server list --global",
+            "{args:?}"
+        );
+    }
+    assert!(!sub.join(".clickhouse/servers/default").exists());
 }
 
 #[test]

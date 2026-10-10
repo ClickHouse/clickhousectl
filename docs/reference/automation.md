@@ -21,7 +21,7 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `cloud service settings list --json` | Object with `settings`; values retain string/number types |
 | `cloud clickpipe settings get --json` | Object with snake_case setting names |
 | `local server list --json` | Object with `servers`, `total_servers`, and `project_scope` |
-| `local udf deploy --json` | Object with `name`, `server`, `type`, `runtime`, `server_running`, `reloaded`, `loaded` (`null` when the server is stopped), `interpreter`, `ignored_fields`, `ignored_files`, `warnings` (such as an interpreter that is not Python 3.11), `function_config`, and `scripts_dir` |
+| `local udf deploy --json` | Object with `name`, `server`, `type`, `runtime`, `reloaded` (the server was running, so functions were reloaded), `loaded` (`null` when the server is stopped), `interpreter`, `ignored_fields`, `ignored_files`, `warnings` (such as an interpreter that is not Python 3.11), `function_config`, and `scripts_dir` |
 | `local udf list --json` | Object with `server`, `server_running`, and a `udfs` array of `name`, `type`, `runtime`, `loaded` (`null` when the server is stopped), and `last_deploy_rejected` (the running server rejected the last deploy of these files; a loaded function runs an earlier definition) |
 | `cloud postgres metrics --json` | API-shaped metrics; data-point timestamps are epoch seconds |
 | `cloud service query` | ClickHouse format; `--format` overrides agent auto-JSON and conflicts with explicit `--json` |
@@ -96,7 +96,7 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 | ---- | ------- |
 | `server_not_found` | The selected local server does not exist, or `--server` names a local Postgres instance |
 | `udf_definition_invalid` | `udf.json` is not valid JSON (message names the file, line and column; `details` has the parser's text) or fails validation (message carries the reason) |
-| `udf_source_invalid` | The UDF directory does not exist (the message suggests `udf init`), is not a directory or is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link; or the staged script path contains a single quote |
+| `udf_source_invalid` | The UDF directory does not exist (the message and `command` suggest `udf init`), is not a directory or is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link; or the staged script path contains a single quote |
 | `udf_runtime_unsupported` | Runtime `native` needs a Linux amd64/arm64 host |
 | `udf_not_loaded` | The running server did not load the deployed function; see the log path in the message |
 | `udf_rejected` | The running server rejected the function reload after a deploy; the message and `command` name the broken function when ClickHouse identifies it, which may not be the one deployed; `details` has ClickHouse's error |

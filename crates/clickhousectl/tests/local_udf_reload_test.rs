@@ -378,7 +378,6 @@ fn deploy_to_a_running_server_reloads_and_reports_loaded() {
     write_udf(&env, "my_fn");
 
     let json = deploy(&env, "my_fn");
-    assert_eq!(json["server_running"], true);
     assert_eq!(json["reloaded"], true);
     assert_eq!(json["loaded"], true);
 

@@ -774,10 +774,34 @@ pub enum Error {
         details: String,
     },
 
-    /// The named server has neither metadata nor a data directory. `local udf`
-    /// never creates servers, so the remedy is to start one.
-    #[error("Server '{0}' not found; create it with `clickhousectl local server start {0}`")]
-    UdfServerNotFound(String),
+    /// `deploy` found no `<parent>/<name>/`. `scaffold_here` is true when
+    /// `parent` is where `local udf init` scaffolds, so init creates it.
+    #[error("UDF source directory '{}' {}", path.display(), udf_source_missing_reason(name, *scaffold_here))]
+    UdfSourceMissing {
+        path: PathBuf,
+        name: String,
+        scaffold_here: bool,
+    },
+
+    /// The named server has neither metadata nor a data directory in the
+    /// current directory's project. `local udf` never creates servers, and
+    /// like every local command it never searches parent directories.
+    /// `project_has_state` is true when `project_dir` looks like a project
+    /// root (it has `clickhouse/` or other servers), so starting the server
+    /// there is the remedy; otherwise the command likely ran from a
+    /// subdirectory, where `server start` would begin a nested project.
+    #[error("{}", udf_server_not_found_message(name, project_dir, *project_has_state))]
+    UdfServerNotFound {
+        name: String,
+        project_dir: PathBuf,
+        project_has_state: bool,
+    },
+
+    /// `local udf reload` needs a running server. Unlike
+    /// [`Error::ServerNotRunning`], the name is always a ClickHouse server, so
+    /// the remedy names `local server start`.
+    #[error("Server '{0}' is not running; start it with `clickhousectl local server start {0}`")]
+    UdfServerNotRunning(String),
 
     /// `--server` names a local Postgres instance. `local udf` must never
     /// write ClickHouse config into a Postgres data directory.
@@ -854,6 +878,38 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+fn udf_source_missing_reason(name: &str, scaffold_here: bool) -> String {
+    if scaffold_here {
+        format!(
+            "{}; create it with `clickhousectl local udf init {name}`",
+            crate::udf::SOURCE_DIR_MISSING
+        )
+    } else {
+        format!(
+            "{}; `clickhousectl local udf init {name}` scaffolds one in {}",
+            crate::udf::SOURCE_DIR_MISSING,
+            crate::udf::DEFAULT_UDF_PARENT
+        )
+    }
+}
+
+fn udf_server_not_found_message(name: &str, project_dir: &Path, project_has_state: bool) -> String {
+    if project_has_state {
+        format!(
+            "Server '{name}' not found in project '{}'; start it with \
+             `clickhousectl local server start {name}`",
+            project_dir.display()
+        )
+    } else {
+        format!(
+            "No server '{name}' found in project '{}', which has no clickhouse/ directory or \
+             servers; parent directories are not searched, so run this from the project root \
+             where the server was started",
+            project_dir.display()
+        )
+    }
+}
 
 /// The self-composed JSON message of [`Error::UdfDefinitionParse`]: the file
 /// and, when serde knows it, the position. Serde's own text goes to `details`.
