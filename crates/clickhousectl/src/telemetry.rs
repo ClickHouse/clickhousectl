@@ -69,6 +69,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
+use crate::local::output::LocalErrorCode;
 use crate::paths;
 
 /// Public documentation for what is collected and how to opt out.
@@ -271,7 +272,11 @@ struct Payload {
     /// Which stage of the run failed (`"query_request"`, `"key_create"`, …).
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_stage: Option<&'static str>,
-    /// What kind of failure it was (`"sql_error"`, `"rate_limited"`, …).
+    /// What kind of failure it was. Cloud failures use the
+    /// [`crate::failure::FailureKind`] vocabulary (`"sql_error"`,
+    /// `"rate_limited"`, …); local failures carry the code of their `--json`
+    /// error object (`"server_not_found"`, `"udf_rejected"`, …), with no
+    /// stage. Split the two by `command`.
     #[serde(skip_serializing_if = "Option::is_none")]
     failure_kind: Option<&'static str>,
     /// The exact HTTP status, when it is one of the allowlisted statuses.
@@ -335,6 +340,9 @@ fn build_payload(
     let detected = is_ai_agent::detect();
     let outcome = dispatched_outcome(invocation.outcome, exit_code);
     let failure = failure.filter(|_| admits_failure_detail(outcome));
+    let local_failure = invocation
+        .local_failure
+        .filter(|_| admits_failure_detail(outcome));
     Payload {
         command: invocation.command.clone(),
         flags,
@@ -349,7 +357,9 @@ fn build_payload(
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
         failure_stage: failure.map(|f| f.failure_stage),
-        failure_kind: failure.map(|f| f.failure_kind),
+        failure_kind: failure
+            .map(|f| f.failure_kind)
+            .or(local_failure.map(LocalErrorCode::as_str)),
         http_status: failure.and_then(|f| f.http_status),
         retry_bucket: failure.map(|f| f.retry_bucket),
         provisioning_state: failure.and_then(|f| f.provisioning_state),
@@ -379,6 +389,10 @@ pub struct Invocation {
     /// [`capture_lossy`] it is a clone of a definition-owned string, never
     /// of clap's error context.
     suggestion: Option<String>,
+    /// See [`Payload::failure_kind`]: the code of a dispatched local failure,
+    /// set by [`Invocation::mark_local_failure`]. Always `None` from
+    /// [`capture`] and [`capture_lossy`].
+    local_failure: Option<LocalErrorCode>,
 }
 
 impl Invocation {
@@ -386,6 +400,13 @@ impl Invocation {
     /// changing its telemetry classification.
     pub fn mark_child_exit(&mut self) {
         self.outcome = "error";
+    }
+
+    /// Record the code of a local runtime failure — the one its `--json` error
+    /// object carries (#1063). Typed as the closed [`LocalErrorCode`] so only
+    /// a definition-owned literal can reach the payload.
+    pub fn mark_local_failure(&mut self, code: LocalErrorCode) {
+        self.local_failure = Some(code);
     }
 }
 
@@ -646,6 +667,7 @@ pub fn capture(root: &clap::Command, matches: &clap::ArgMatches) -> Invocation {
         positionals: positionals.into_iter().collect(),
         outcome: "ok",
         suggestion: None,
+        local_failure: None,
     }
 }
 
@@ -790,6 +812,7 @@ pub fn capture_lossy(
         positionals: positionals.into_iter().collect(),
         outcome: outcome_for_error(error.kind()),
         suggestion: suggestion_for_error(root, error),
+        local_failure: None,
     }
 }
 
@@ -1194,6 +1217,7 @@ mod tests {
             positionals: vec![],
             outcome: "ok",
             suggestion: None,
+            local_failure: None,
         }
     }
 
@@ -1343,6 +1367,7 @@ mod tests {
             positionals: vec![],
             outcome: "unknown_argument",
             suggestion: None,
+            local_failure: None,
         };
         assert_eq!(decided_outcome(&inv, 2), "unknown_argument");
     }
@@ -1451,6 +1476,62 @@ mod tests {
         assert_eq!(value["duration_bucket"], "lt_30s");
     }
 
+    fn local_failure(code: LocalErrorCode) -> Invocation {
+        let mut inv = invocation();
+        inv.mark_local_failure(code);
+        inv
+    }
+
+    #[test]
+    fn local_failure_code_is_the_failure_kind_without_cloud_detail() {
+        let inv = local_failure(LocalErrorCode::UdfRejected);
+        let value = serde_json::to_value(build_payload(&inv, 1, &env_of(&[]), None)).unwrap();
+        let object = value.as_object().unwrap();
+        assert_eq!(object["outcome"], "error");
+        assert_eq!(object["failure_kind"], "udf_rejected");
+        for key in [
+            "failure_stage",
+            "http_status",
+            "retry_bucket",
+            "provisioning_state",
+            "duration_bucket",
+        ] {
+            assert!(
+                !object.contains_key(key),
+                "{key} on a local failure: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn local_failure_code_is_dropped_where_failure_detail_is() {
+        for (inv, exit_code) in [
+            (local_failure(LocalErrorCode::IoError), 0),
+            (
+                exec_attempt_invocation(&local_failure(LocalErrorCode::IoError)),
+                0,
+            ),
+        ] {
+            let value =
+                serde_json::to_value(build_payload(&inv, exit_code, &env_of(&[]), None)).unwrap();
+            assert!(value.get("failure_kind").is_none(), "{value}");
+        }
+    }
+
+    #[test]
+    fn a_recorded_cloud_classification_wins_over_a_local_code() {
+        let inv = local_failure(LocalErrorCode::LocalError);
+        let value = serde_json::to_value(build_payload(
+            &inv,
+            1,
+            &env_of(&[]),
+            Some(failure_snapshot()),
+        ))
+        .unwrap();
+        assert_eq!(value["failure_kind"], "rate_limited");
+        assert_eq!(value["failure_stage"], "key_create");
+    }
+
     #[test]
     fn absent_classification_details_are_omitted_not_nulled() {
         // A failure with no HTTP status, no provisioning state and no timing
@@ -1541,6 +1622,7 @@ mod tests {
             positionals: vec![],
             outcome: "ok",
             suggestion: None,
+            local_failure: None,
         };
         let json = serde_json::to_string(&build_payload(
             &inv,
@@ -1574,6 +1656,7 @@ mod tests {
             positionals: (0..100).map(|i| format!("pos-{i}")).collect(),
             outcome: "ok",
             suggestion: None,
+            local_failure: None,
         };
         let payload = build_payload(&inv, 0, &env_of(&[]), None);
         assert_eq!(payload.flags.len(), MAX_FLAGS);
@@ -1600,6 +1683,7 @@ mod tests {
             positionals: vec!["name".into()],
             outcome: "ok",
             suggestion: None,
+            local_failure: None,
         };
         let inv = exec_attempt_invocation(&stashed);
         assert_eq!(inv.outcome, "exec_attempt");
@@ -1620,6 +1704,7 @@ mod tests {
             positionals: vec![],
             outcome: "ok",
             suggestion: None,
+            local_failure: None,
         });
         // The hook always passes 0: the handoff is censored, so neither the
         // launch nor the handed-over program's exit status is observable and
