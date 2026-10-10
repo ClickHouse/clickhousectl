@@ -99,10 +99,12 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 | `udf_source_invalid` | The UDF directory is missing, is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link |
 | `udf_runtime_unsupported` | Runtime `native` needs a Linux amd64/arm64 host |
 | `udf_not_loaded` | The running server did not load the deployed function; see the log path in the message |
-| `udf_rejected` | The running server rejected the deployed function; fix it and redeploy, or remove it |
+| `udf_rejected` | The running server rejected the function reload after a deploy; the message and `command` name the broken function when ClickHouse identifies it, which may not be the one deployed |
+| `udf_reload_blocked` | `udf remove` deleted the files, but another broken function still blocks every reload; `command` removes it when identified |
 | `udf_not_found` | No UDF of that name is deployed to the selected server |
 | `udf_interpreter_not_found` | No `python3.11` or `python3` on `PATH` and no usable `--python` |
 | `udf_query_failed` | The local server rejected a UDF statement; the server's text is redacted, human output shows it |
+| `udf_server_unreachable` | The local server's HTTP port did not answer; the client's text is redacted, human output shows it |
 | `managed_client_server_not_found` | Managed client lookup did not find the selected server in the current project |
 | `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
 | `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |

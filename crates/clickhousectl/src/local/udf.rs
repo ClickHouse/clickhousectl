@@ -7,7 +7,7 @@
 //! server at both through a managed `config.d` overlay. The server picks new
 //! files up on its own; when it is running we also ask it to reload at once.
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, UdfRejection};
 use crate::local::cli::{UdfCommands, UdfRuntimeArg, UdfTypeArg};
 use crate::local::output::{
     self, UdfDeployOutput, UdfInitOutput, UdfListEntry, UdfListOutput, UdfReloadOutput,
@@ -49,6 +49,10 @@ const LOAD_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const RELOAD_FUNCTIONS_SQL: &str = "SYSTEM RELOAD FUNCTIONS";
 const LOADED_FUNCTIONS_SQL: &str = "SELECT name FROM system.functions \
      WHERE origin = 'ExecutableUserDefined' ORDER BY name FORMAT TabSeparated";
+/// Per-function load status, ClickHouse 26.2 and later. Older servers fail
+/// this query, and culprits come from the reload's error text instead.
+const FAILED_FUNCTIONS_SQL: &str = "SELECT name FROM system.user_defined_functions \
+     WHERE load_status = 'Failed' ORDER BY name FORMAT TabSeparated";
 
 pub async fn run(cmd: UdfCommands, json: bool) -> Result<()> {
     match cmd {
@@ -427,26 +431,33 @@ async fn deploy(
             let deploy_command = deploy_command(name, parent, server_name);
             // Every function file reloads together, so a rejected definition
             // also blocks every later reload on this server until it is fixed.
-            match send_query(info, RELOAD_FUNCTIONS_SQL).await {
-                Ok(_) => {}
-                Err(QueryError::Rejected(details)) => {
-                    return Err(Error::UdfRejected {
+            // A function that has never loaded can pass the first reload and
+            // only be rejected by a retry, so both are handled alike.
+            let outcome = match send_query(info, RELOAD_FUNCTIONS_SQL).await {
+                Ok(_) => wait_until_loaded(info, server_name, name).await?,
+                Err(QueryError::Rejected(details)) => LoadOutcome::Rejected(details),
+                Err(error) => return Err(error.into_error(info, server_name)),
+            };
+            match outcome {
+                LoadOutcome::Loaded => {}
+                LoadOutcome::NotLoaded => {
+                    return Err(Error::UdfNotLoaded {
+                        name: name.to_owned(),
+                        server: server_name.to_owned(),
+                        log_path: std::path::absolute(server::server_log_path(server_name))?,
+                        deploy_command,
+                    });
+                }
+                LoadOutcome::Rejected(details) => {
+                    return Err(Error::UdfRejected(Box::new(UdfRejection {
                         name: name.to_owned(),
                         server: server_name.to_owned(),
                         source_dir: dir.clone(),
                         deploy_command,
+                        blocking: blocking_functions(info, &target.data_dir, &details).await,
                         details,
-                    });
+                    })));
                 }
-                Err(error) => return Err(error.into_error(server_name)),
-            }
-            if !wait_until_loaded(info, server_name, name).await? {
-                return Err(Error::UdfNotLoaded {
-                    name: name.to_owned(),
-                    server: server_name.to_owned(),
-                    log_path: std::path::absolute(server::server_log_path(server_name))?,
-                    deploy_command,
-                });
             }
             Some(true)
         }
@@ -920,10 +931,15 @@ enum QueryError {
 }
 
 impl QueryError {
-    fn into_error(self, server: &str) -> Error {
+    fn into_error(self, info: &ServerInfo, server: &str) -> Error {
         match self {
             Self::Client(error) => error.into(),
-            Self::Unreachable(details) | Self::Rejected(details) => Error::UdfQueryFailed {
+            Self::Unreachable(details) => Error::UdfServerUnreachable {
+                server: server.to_owned(),
+                port: info.http_port,
+                details,
+            },
+            Self::Rejected(details) => Error::UdfQueryFailed {
                 server: server.to_owned(),
                 details,
             },
@@ -957,7 +973,7 @@ async fn send_query(info: &ServerInfo, sql: &str) -> std::result::Result<String,
 async fn http_query(info: &ServerInfo, server: &str, sql: &str) -> Result<String> {
     send_query(info, sql)
         .await
-        .map_err(|error| error.into_error(server))
+        .map_err(|error| error.into_error(info, server))
 }
 
 async fn reload_functions(info: &ServerInfo, server: &str) -> Result<()> {
@@ -975,10 +991,17 @@ async fn loaded_function_names(info: &ServerInfo, server: &str) -> Result<Vec<St
         .collect())
 }
 
+enum LoadOutcome {
+    Loaded,
+    NotLoaded,
+    /// A reload was rejected, with ClickHouse's response text.
+    Rejected(String),
+}
+
 /// After a reload, give the server time to notice a freshly written overlay
 /// (its config reloader runs periodically) before concluding the function
 /// did not load.
-async fn wait_until_loaded(info: &ServerInfo, server: &str, name: &str) -> Result<bool> {
+async fn wait_until_loaded(info: &ServerInfo, server: &str, name: &str) -> Result<LoadOutcome> {
     let deadline = Instant::now() + LOAD_POLL_TIMEOUT;
     loop {
         if loaded_function_names(info, server)
@@ -986,14 +1009,62 @@ async fn wait_until_loaded(info: &ServerInfo, server: &str, name: &str) -> Resul
             .iter()
             .any(|loaded| loaded == name)
         {
-            return Ok(true);
+            return Ok(LoadOutcome::Loaded);
         }
         if Instant::now() >= deadline {
-            return Ok(false);
+            return Ok(LoadOutcome::NotLoaded);
         }
         tokio::time::sleep(LOAD_POLL_INTERVAL).await;
-        reload_functions(info, server).await?;
+        match send_query(info, RELOAD_FUNCTIONS_SQL).await {
+            Ok(_) => {}
+            Err(QueryError::Rejected(details)) => return Ok(LoadOutcome::Rejected(details)),
+            Err(error) => return Err(error.into_error(info, server)),
+        }
     }
+}
+
+/// The deployed functions that make a rejected reload fail. ClickHouse 26.2
+/// and later report each function's load status; older servers only name a
+/// function in some error texts. Either way, only functions staged on this
+/// server count, so every name maps back to files `remove` can delete. Empty
+/// when the culprit cannot be identified.
+async fn blocking_functions(info: &ServerInfo, data_dir: &Path, details: &str) -> Vec<String> {
+    let mut reported: Vec<String> = match send_query(info, FAILED_FUNCTIONS_SQL).await {
+        Ok(body) => body
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+    if reported.is_empty() {
+        reported = culprits_in_error_text(details);
+    }
+    let staged = staged_udfs(data_dir).unwrap_or_default();
+    staged
+        .into_iter()
+        .map(|staged| staged.name)
+        .filter(|name| reported.contains(name))
+        .collect()
+}
+
+/// Function names a rejected reload's error text identifies. Only a name
+/// clash names its function (`The function 'lower' already exists`); other
+/// rejections, such as an unknown type, name neither function nor file.
+fn culprits_in_error_text(details: &str) -> Vec<String> {
+    const PREFIX: &str = "The function '";
+    const SUFFIX: &str = "' already exists";
+    let mut names = Vec::new();
+    let mut rest = details;
+    while let Some(start) = rest.find(PREFIX) {
+        rest = &rest[start + PREFIX.len()..];
+        let Some(end) = rest.find('\'') else { break };
+        if rest[end..].starts_with(SUFFIX) {
+            names.push(rest[..end].to_owned());
+        }
+        rest = &rest[end..];
+    }
+    names
 }
 
 // ── list / remove / reload ──────────────────────────────────────────────────
@@ -1050,7 +1121,18 @@ async fn remove(name: &str, server_name: &str, json: bool) -> Result<()> {
     drop(lock);
     let reloaded = match &target.running {
         Some(info) => {
-            reload_functions(info, server_name).await?;
+            match send_query(info, RELOAD_FUNCTIONS_SQL).await {
+                Ok(_) => {}
+                Err(QueryError::Rejected(details)) => {
+                    return Err(Error::UdfReloadBlocked {
+                        name: name.to_owned(),
+                        server: server_name.to_owned(),
+                        blocking: blocking_functions(info, &target.data_dir, &details).await,
+                        details,
+                    });
+                }
+                Err(error) => return Err(error.into_error(info, server_name)),
+            }
             true
         }
         None => false,
@@ -1591,6 +1673,22 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn culprits_in_error_text_finds_only_a_clashing_function_name() {
+        // Texts returned by `SYSTEM RELOAD FUNCTIONS` on ClickHouse 25.12 and 26.9.
+        let clash = "Code: 609. DB::Exception: The function 'lower' already exists. \
+                     (FUNCTION_ALREADY_EXISTS) (version 25.12.10.7 (official build))";
+        assert_eq!(culprits_in_error_text(clash), vec!["lower".to_owned()]);
+        let bad_type = "Code: 50. DB::Exception: Unknown data type family: NotAType. \
+                        (UNKNOWN_TYPE) (version 26.9.1.1312 (official build))";
+        assert!(culprits_in_error_text(bad_type).is_empty());
+        let missing_field = "Poco::Exception. Code: 1000, e.code() = 0, Not found: \
+                             function.return_type (version 26.9.1.1312 (official build))";
+        assert!(culprits_in_error_text(missing_field).is_empty());
+        assert!(culprits_in_error_text("The function 'unterminated").is_empty());
+        assert!(culprits_in_error_text("The function 'f' is odd").is_empty());
     }
 
     #[test]

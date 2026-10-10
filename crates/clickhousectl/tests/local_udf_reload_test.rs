@@ -1,6 +1,8 @@
 //! Subprocess coverage for `local udf` against a running server: deploy
 //! reloads and verifies, `reload` and `list` talk HTTP, a function the
-//! server never loads is an error, and server errors are redacted in JSON.
+//! server never loads is an error, a rejected reload names the broken
+//! function, an unreachable server is not a rejection, and server errors are
+//! redacted in JSON.
 //! The server is this test binary re-executed as a fake ClickHouse that
 //! answers the readiness probes and logs every statement.
 
@@ -46,8 +48,17 @@ struct Env {
     home: tempfile::TempDir,
     bin: PathBuf,
     query_log: PathBuf,
-    /// While this file exists the fake rejects `SYSTEM RELOAD FUNCTIONS`.
+    /// While this file exists the fake rejects `SYSTEM RELOAD FUNCTIONS`,
+    /// answering with the file's text (a generic exception when empty).
     fail_reload_marker: PathBuf,
+    /// While this file exists the fake accepts the first reload and rejects
+    /// every later one, like a function ClickHouse has never loaded.
+    fail_retry_marker: PathBuf,
+    /// The names `system.user_defined_functions` reports as failed, one per
+    /// line. Without it the fake rejects that query, like ClickHouse < 26.2.
+    failed_functions: PathBuf,
+    /// While this file exists the fake drops HTTP connections unanswered.
+    drop_http_marker: PathBuf,
     http_port: u16,
     tcp_port: u16,
 }
@@ -72,6 +83,9 @@ fn setup() -> Env {
     Env {
         query_log: home.path().join("queries.log"),
         fail_reload_marker: home.path().join("fail-reload"),
+        fail_retry_marker: home.path().join("fail-retry"),
+        failed_functions: home.path().join("failed-functions"),
+        drop_http_marker: home.path().join("drop-http"),
         project,
         home,
         bin,
@@ -91,6 +105,9 @@ fn command(env: &Env) -> Command {
         .env("FAKE_CLICKHOUSE_PORT", env.tcp_port.to_string())
         .env("FAKE_CLICKHOUSE_QUERY_LOG", &env.query_log)
         .env("FAKE_CLICKHOUSE_FAIL_RELOAD", &env.fail_reload_marker)
+        .env("FAKE_CLICKHOUSE_FAIL_RETRY", &env.fail_retry_marker)
+        .env("FAKE_CLICKHOUSE_FAILED_FUNCTIONS", &env.failed_functions)
+        .env("FAKE_CLICKHOUSE_DROP_HTTP", &env.drop_http_marker)
         .current_dir(env.project.path());
     command
 }
@@ -181,8 +198,9 @@ fn logged_queries(env: &Env) -> Vec<String> {
 
 /// Re-executed by the fake ClickHouse script. Answers the TCP and HTTP
 /// readiness probes, then serves HTTP statements until killed: `my_fn` is the
-/// only loaded executable UDF, `SYSTEM RELOAD FUNCTIONS` fails while the
-/// marker file exists, and anything else succeeds.
+/// only loaded executable UDF, `SYSTEM RELOAD FUNCTIONS` and
+/// `system.user_defined_functions` follow the marker files in [`Env`], and
+/// anything else succeeds.
 #[test]
 fn fake_clickhouse_process() {
     let (Ok(http_port), Ok(tcp_port), Ok(log), Ok(fail_reload)) = (
@@ -193,6 +211,10 @@ fn fake_clickhouse_process() {
     ) else {
         return;
     };
+    let fail_retry = std::env::var("FAKE_CLICKHOUSE_FAIL_RETRY").unwrap();
+    let failed_functions = std::env::var("FAKE_CLICKHOUSE_FAILED_FUNCTIONS").unwrap();
+    let drop_http = std::env::var("FAKE_CLICKHOUSE_DROP_HTTP").unwrap();
+    let mut reloads_since_retry_marker = 0;
     let tcp = std::net::TcpListener::bind(("127.0.0.1", tcp_port.parse::<u16>().unwrap()))
         .expect("bind fake TCP port");
     std::thread::spawn(move || {
@@ -205,6 +227,10 @@ fn fake_clickhouse_process() {
     for stream in http.incoming() {
         let Ok(mut stream) = stream else { continue };
         let (request_line, body) = read_http_request(&mut stream);
+        if Path::new(&drop_http).exists() {
+            continue;
+        }
+        let rejection = |text: String| ("500 Internal Server Error", text);
         let (status, response) = if request_line.starts_with("GET /ping") {
             ("200 OK", "Ok.\n".to_string())
         } else {
@@ -214,12 +240,34 @@ fn fake_clickhouse_process() {
                 .open(&log)
                 .unwrap();
             write!(file, "{body}\n---\n").unwrap();
-            if body.starts_with("SYSTEM RELOAD FUNCTIONS") && Path::new(&fail_reload).exists() {
-                (
-                    "500 Internal Server Error",
+            let is_reload = body.starts_with("SYSTEM RELOAD FUNCTIONS");
+            if is_reload && Path::new(&fail_retry).exists() {
+                reloads_since_retry_marker += 1;
+            } else if is_reload {
+                reloads_since_retry_marker = 0;
+            }
+            if is_reload && Path::new(&fail_reload).exists() {
+                let text = std::fs::read_to_string(&fail_reload).unwrap_or_default();
+                rejection(if text.is_empty() {
                     "Code: 36. DB::Exception: Function configuration is invalid. (BAD_ARGUMENTS)\n"
+                        .to_string()
+                } else {
+                    text
+                })
+            } else if is_reload && reloads_since_retry_marker > 1 {
+                rejection(
+                    "Code: 50. DB::Exception: Unknown data type family: NotAType. (UNKNOWN_TYPE)\n"
                         .to_string(),
                 )
+            } else if body.contains("system.user_defined_functions") {
+                match std::fs::read_to_string(&failed_functions) {
+                    Ok(names) => ("200 OK", names),
+                    Err(_) => rejection(
+                        "Code: 60. DB::Exception: Unknown table expression identifier \
+                         'system.user_defined_functions'. (UNKNOWN_TABLE)\n"
+                            .to_string(),
+                    ),
+                }
             } else if body.contains("system.functions") {
                 ("200 OK", "my_fn\n".to_string())
             } else {
@@ -480,6 +528,7 @@ fn a_definition_the_server_rejects_on_reload_keeps_the_files_and_names_the_way_o
     let _server = start_server(&env);
     write_udf_at(&env, "shared/udfs", "my_fn");
     std::fs::write(&env.fail_reload_marker, "").unwrap();
+    std::fs::write(&env.failed_functions, "my_fn\n").unwrap();
 
     let output = run(
         &env,
@@ -524,4 +573,191 @@ fn a_definition_the_server_rejects_on_reload_keeps_the_files_and_names_the_way_o
     let stderr = String::from_utf8_lossy(&human.stderr);
     assert!(stderr.contains("ClickHouse rejected UDF my_fn"), "{stderr}");
     assert!(stderr.contains("Code: 36. DB::Exception"), "{stderr}");
+}
+
+fn error_json(output: &Output) -> Value {
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stderr).expect("stderr is a single JSON object")
+}
+
+#[test]
+fn a_function_rejected_only_by_the_retry_reload_is_reported_as_rejected() {
+    let env = setup();
+    let _server = start_server(&env);
+    write_udf(&env, "other_fn");
+    // The first reload succeeds; the fake never lists `other_fn`, so deploy
+    // reloads again, and that reload is rejected.
+    std::fs::write(&env.fail_retry_marker, "").unwrap();
+    std::fs::write(&env.failed_functions, "other_fn\n").unwrap();
+
+    let error = error_json(&run(
+        &env,
+        &["local", "udf", "deploy", "other_fn", "--json"],
+    ));
+    assert_eq!(error["error"]["code"], "udf_rejected");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove other_fn --server default"
+    );
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("ClickHouse rejected UDF other_fn on server default."),
+        "{error}"
+    );
+    let reloads = logged_queries(&env)
+        .iter()
+        .filter(|query| *query == "SYSTEM RELOAD FUNCTIONS")
+        .count();
+    assert!(reloads >= 2, "{reloads}");
+}
+
+#[test]
+fn a_rejected_reload_names_the_broken_function_not_the_one_deployed() {
+    let env = setup();
+    let _server = start_server(&env);
+    write_udf(&env, "bad");
+    write_udf(&env, "my_fn");
+    std::fs::write(&env.fail_reload_marker, "").unwrap();
+    std::fs::write(&env.failed_functions, "bad\n").unwrap();
+    let error = error_json(&run(&env, &["local", "udf", "deploy", "bad", "--json"]));
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove bad --server default"
+    );
+
+    // ClickHouse >= 26.2 reports the failed function's load status.
+    let error = error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
+    assert_eq!(error["error"]["code"], "udf_rejected");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove bad --server default"
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("UDF bad is broken"), "{message}");
+    assert!(!message.contains("remove my_fn"), "{message}");
+
+    // Older servers: only a name clash names the function, in the error text.
+    std::fs::remove_file(&env.failed_functions).unwrap();
+    std::fs::write(
+        &env.fail_reload_marker,
+        "Code: 609. DB::Exception: The function 'bad' already exists. \
+         (FUNCTION_ALREADY_EXISTS) (version 25.12.10.7 (official build))",
+    )
+    .unwrap();
+    let error = error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove bad --server default"
+    );
+
+    // No culprit identified, or one that is not deployed here: blame no one.
+    std::fs::write(
+        &env.fail_reload_marker,
+        "Code: 50. DB::Exception: Unknown data type family: NotAType. (UNKNOWN_TYPE)",
+    )
+    .unwrap();
+    for failed in [None, Some("handmade\n")] {
+        if let Some(failed) = failed {
+            std::fs::write(&env.failed_functions, failed).unwrap();
+        }
+        let error = error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
+        assert_eq!(error["error"]["code"], "udf_rejected");
+        assert_eq!(
+            error["error"]["command"],
+            "clickhousectl local udf list --server default"
+        );
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(!message.contains("udf remove"), "{message}");
+        assert!(!message.contains("handmade"), "{message}");
+    }
+}
+
+#[test]
+fn remove_during_a_blocked_reload_says_what_was_removed_and_what_blocks() {
+    let env = setup();
+    let _server = start_server(&env);
+    write_udf(&env, "my_fn");
+    deploy(&env, "my_fn");
+    write_udf(&env, "bad");
+    std::fs::write(&env.fail_reload_marker, "").unwrap();
+    std::fs::write(&env.failed_functions, "bad\n").unwrap();
+    error_json(&run(&env, &["local", "udf", "deploy", "bad", "--json"]));
+
+    let error = error_json(&run(&env, &["local", "udf", "remove", "my_fn", "--json"]));
+    assert_eq!(error["error"]["code"], "udf_reload_blocked");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove bad --server default"
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("Removed UDF my_fn from server default"),
+        "{message}"
+    );
+    assert!(message.contains("UDF bad is broken"), "{message}");
+    assert!(!error.to_string().contains("DB::Exception"));
+    let data = env.project.path().join(".clickhouse/servers/default/data");
+    assert!(
+        !data
+            .join("user_defined_functions/my_fn_function.xml")
+            .exists()
+    );
+    assert!(!data.join("user_scripts/my_fn").exists());
+
+    std::fs::remove_file(&env.failed_functions).unwrap();
+    write_udf(&env, "other_fn");
+    std::fs::remove_file(&env.fail_reload_marker).unwrap();
+    std::fs::write(&env.fail_retry_marker, "").unwrap();
+    error_json(&run(
+        &env,
+        &["local", "udf", "deploy", "other_fn", "--json"],
+    ));
+    std::fs::remove_file(&env.fail_retry_marker).unwrap();
+    std::fs::write(&env.fail_reload_marker, "").unwrap();
+    let human = run(&env, &["local", "udf", "remove", "other_fn"]);
+    assert_eq!(human.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.contains("Removed UDF other_fn from server default"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("another deployed UDF is broken"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Code: 36. DB::Exception"), "{stderr}");
+}
+
+#[test]
+fn an_unreachable_server_is_not_reported_as_a_rejection() {
+    let env = setup();
+    let _server = start_server(&env);
+    std::fs::write(&env.drop_http_marker, "").unwrap();
+
+    let error = error_json(&run(&env, &["local", "udf", "reload", "--json"]));
+    assert_eq!(error["error"]["code"], "udf_server_unreachable");
+    assert_eq!(
+        error["error"]["message"],
+        format!("Could not reach server 'default' on port {}", env.http_port)
+    );
+    assert_eq!(error["error"]["command"], "clickhousectl local server list");
+
+    let human = run(&env, &["local", "udf", "reload"]);
+    assert_eq!(human.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "Could not reach server 'default' on port {}: ",
+            env.http_port
+        )),
+        "{stderr}"
+    );
+    assert!(!stderr.contains("rejected"), "{stderr}");
 }

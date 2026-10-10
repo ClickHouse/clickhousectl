@@ -752,6 +752,15 @@ pub enum Error {
     #[error("ClickHouse server '{server}' rejected the query: {details}")]
     UdfQueryFailed { server: String, details: String },
 
+    /// The local server's HTTP port did not answer a UDF statement. The
+    /// details are the HTTP client's text, so structured output redacts them.
+    #[error("Could not reach server '{server}' on port {port}: {details}")]
+    UdfServerUnreachable {
+        server: String,
+        port: u16,
+        details: String,
+    },
+
     /// The named server has neither metadata nor a data directory. `local udf`
     /// never creates servers, so the remedy is to start one.
     #[error("Server '{0}' not found; create it with `clickhousectl local server start {0}`")]
@@ -780,20 +789,28 @@ pub enum Error {
         deploy_command: String,
     },
 
-    /// The running server rejected the deployed definition on reload. The
+    /// The running server rejected a function reload after a deployment. The
     /// files stay deployed and ClickHouse reloads all function files
-    /// together, so every later reload on the server fails until the
-    /// function is fixed or removed. `details` is ClickHouse's response text,
-    /// so structured output redacts it.
+    /// together, so every later reload on the server fails until the broken
+    /// function is fixed or removed. `blocking` names the deployed functions
+    /// ClickHouse reported as broken, which need not include `name`; empty
+    /// when it could not tell. `details` is ClickHouse's response text, so
+    /// structured output redacts it.
+    #[error("{}\nClickHouse error: {}", udf_rejected_message(.0), .0.details)]
+    UdfRejected(Box<UdfRejection>),
+
+    /// `remove` deleted the function's files, but the reload that followed
+    /// was rejected because another deployed function is still broken.
+    /// `blocking` names it when ClickHouse identified it. `details` is
+    /// ClickHouse's response text, so structured output redacts it.
     #[error(
         "{}\nClickHouse error: {details}",
-        udf_rejected_message(.name, .server, .source_dir, .deploy_command)
+        udf_reload_blocked_message(.name, .server, .blocking)
     )]
-    UdfRejected {
+    UdfReloadBlocked {
         name: String,
         server: String,
-        source_dir: PathBuf,
-        deploy_command: String,
+        blocking: Vec<String>,
         details: String,
     },
 
@@ -823,21 +840,98 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// The payload of [`Error::UdfRejected`], boxed to keep [`Error`] small.
+#[derive(Debug)]
+pub struct UdfRejection {
+    pub name: String,
+    pub server: String,
+    pub source_dir: PathBuf,
+    /// The `local udf deploy` command that reruns this deployment.
+    pub deploy_command: String,
+    /// Deployed functions ClickHouse reported as broken; empty when unknown.
+    pub blocking: Vec<String>,
+    /// ClickHouse's response text.
+    pub details: String,
+}
+
 /// The self-composed part of [`Error::UdfRejected`], shared by human and
+/// structured output. Blames `name` only when ClickHouse reported it broken.
+pub(crate) fn udf_rejected_message(rejection: &UdfRejection) -> String {
+    let UdfRejection {
+        name,
+        server,
+        source_dir,
+        deploy_command,
+        blocking,
+        ..
+    } = rejection;
+    if blocking.iter().any(|culprit| culprit == name) {
+        let others: Vec<String> = blocking
+            .iter()
+            .filter(|culprit| *culprit != name)
+            .cloned()
+            .collect();
+        let also = if others.is_empty() {
+            String::new()
+        } else {
+            format!(" {} also broken.", udf_names_verb(&others))
+        };
+        return format!(
+            "ClickHouse rejected UDF {name} on server {server}. Its files stay deployed, and every \
+             function reload on this server fails until it is fixed. Fix {} and rerun \
+             `{deploy_command}`, restore the previous working copy and rerun it, or remove it with \
+             `clickhousectl local udf remove {name} --server {server}`.{also}",
+            source_dir.display()
+        );
+    }
+    match blocking.first() {
+        Some(culprit) => format!(
+            "ClickHouse rejected the function reload on server {server} because {} broken. \
+             UDF {name} is deployed but does not load until that is fixed and redeployed, or \
+             removed with `clickhousectl local udf remove {culprit} --server {server}`.",
+            udf_names_verb(blocking)
+        ),
+        None => format!(
+            "ClickHouse rejected the function reload on server {server} after UDF {name} was \
+             deployed. Its files stay deployed. A broken definition, this one or another deployed \
+             UDF, blocks every function reload on this server until it is fixed or removed; \
+             `clickhousectl local udf list --server {server}` shows which UDFs are not loaded."
+        ),
+    }
+}
+
+/// The self-composed part of [`Error::UdfReloadBlocked`], shared by human and
 /// structured output.
-pub(crate) fn udf_rejected_message(
-    name: &str,
-    server: &str,
-    source_dir: &std::path::Path,
-    deploy_command: &str,
-) -> String {
-    format!(
-        "ClickHouse rejected UDF {name} on server {server}. Its files stay deployed, and every \
-         function reload on this server fails until it is fixed. Fix {} and rerun \
-         `{deploy_command}`, restore the previous working copy and rerun it, or remove it with \
-         `clickhousectl local udf remove {name} --server {server}`.",
-        source_dir.display()
-    )
+pub(crate) fn udf_reload_blocked_message(name: &str, server: &str, blocking: &[String]) -> String {
+    match blocking.first() {
+        Some(culprit) => format!(
+            "Removed UDF {name} from server {server}, but the function reload still fails because \
+             {} broken. Fix and redeploy it, or remove it with \
+             `clickhousectl local udf remove {culprit} --server {server}`.",
+            udf_names_verb(blocking)
+        ),
+        None => format!(
+            "Removed UDF {name} from server {server}, but the function reload still fails because \
+             another deployed UDF is broken. `clickhousectl local udf list --server {server}` shows \
+             which UDFs are not loaded; fix and redeploy it, or remove it."
+        ),
+    }
+}
+
+/// "UDF a" or "UDFs a, b".
+fn udf_names(names: &[String]) -> String {
+    match names {
+        [one] => format!("UDF {one}"),
+        many => format!("UDFs {}", many.join(", ")),
+    }
+}
+
+/// "UDF a is" or "UDFs a, b are".
+fn udf_names_verb(names: &[String]) -> String {
+    match names {
+        [_] => format!("{} is", udf_names(names)),
+        _ => format!("{} are", udf_names(names)),
+    }
 }
 
 impl Error {

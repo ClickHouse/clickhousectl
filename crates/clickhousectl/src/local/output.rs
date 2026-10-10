@@ -53,6 +53,12 @@ enum LocalErrorCode {
     /// The running server rejected a deployed definition on reload; the
     /// files stay deployed and block every reload until fixed or removed.
     UdfRejected,
+    /// The local server's HTTP port did not answer a UDF statement. The HTTP
+    /// client's text is redacted.
+    UdfServerUnreachable,
+    /// `remove` deleted the files, but another broken function still blocks
+    /// every reload on the server.
+    UdfReloadBlocked,
     InvalidVersion,
     /// The version is not installed locally. Distinct from
     /// [`Self::VersionUnavailable`], which means it could not be resolved or
@@ -105,6 +111,15 @@ struct LocalErrorDetail {
 /// Built with either [`Mapping::parity`] — the JSON message is the error's own
 /// human text, verbatim — or [`Mapping::redacted`], which substitutes a curated
 /// summary for errors that interpolate foreign text.
+/// Removing the broken function unblocks a server's reloads; with no culprit
+/// identified, `list` shows which deployed functions are not loaded.
+fn udf_culprit_command(culprit: Option<&String>, server: &str) -> String {
+    match culprit {
+        Some(culprit) => format!("clickhousectl local udf remove {culprit} --server {server}"),
+        None => format!("clickhousectl local udf list --server {server}"),
+    }
+}
+
 struct Mapping {
     code: LocalErrorCode,
     command: Option<String>,
@@ -374,6 +389,11 @@ impl LocalErrorOutput {
                 format!("ClickHouse server '{server}' rejected the query"),
             )
             .command("clickhousectl local server list"),
+            Error::UdfServerUnreachable { server, port, .. } => Mapping::redacted(
+                LocalErrorCode::UdfServerUnreachable,
+                format!("Could not reach server '{server}' on port {port}"),
+            )
+            .command("clickhousectl local server list"),
             // Same code as a missing server elsewhere; the remedy differs
             // because `local udf` never creates one.
             Error::UdfServerNotFound(name) => Mapping::parity(LocalErrorCode::ServerNotFound)
@@ -387,19 +407,28 @@ impl LocalErrorOutput {
             Error::UdfNotLoaded { deploy_command, .. } => {
                 Mapping::parity(LocalErrorCode::UdfNotLoaded).command(deploy_command.clone())
             }
-            Error::UdfRejected {
+            Error::UdfRejected(rejection) => Mapping::redacted(
+                LocalErrorCode::UdfRejected,
+                crate::error::udf_rejected_message(rejection),
+            )
+            .command(udf_culprit_command(
+                rejection
+                    .blocking
+                    .iter()
+                    .find(|culprit| **culprit == rejection.name)
+                    .or(rejection.blocking.first()),
+                &rejection.server,
+            )),
+            Error::UdfReloadBlocked {
                 name,
                 server,
-                source_dir,
-                deploy_command,
+                blocking,
                 ..
             } => Mapping::redacted(
-                LocalErrorCode::UdfRejected,
-                crate::error::udf_rejected_message(name, server, source_dir, deploy_command),
+                LocalErrorCode::UdfReloadBlocked,
+                crate::error::udf_reload_blocked_message(name, server, blocking),
             )
-            .command(format!(
-                "clickhousectl local udf remove {name} --server {server}"
-            )),
+            .command(udf_culprit_command(blocking.first(), server)),
 
             // ── versions ────────────────────────────────────────────────────
             Error::InvalidVersion(_) => Mapping::parity(LocalErrorCode::InvalidVersion)
@@ -1935,14 +1964,32 @@ mod tests {
                 "udf_not_loaded",
             ),
             (
-                Error::UdfRejected {
+                Error::UdfRejected(Box::new(crate::error::UdfRejection {
                     name: "my_fn".into(),
                     server: "dev".into(),
                     source_dir: "clickhouse/udfs/my_fn".into(),
                     deploy_command: "clickhousectl local udf deploy my_fn --server dev".into(),
+                    blocking: vec!["my_fn".into()],
+                    details: "Code: 50. DB::Exception: Unknown data type".into(),
+                })),
+                "udf_rejected",
+            ),
+            (
+                Error::UdfServerUnreachable {
+                    server: "dev".into(),
+                    port: 8123,
+                    details: "error sending request".into(),
+                },
+                "udf_server_unreachable",
+            ),
+            (
+                Error::UdfReloadBlocked {
+                    name: "my_fn".into(),
+                    server: "dev".into(),
+                    blocking: vec!["bad".into()],
                     details: "Code: 50. DB::Exception: Unknown data type".into(),
                 },
-                "udf_rejected",
+                "udf_reload_blocked",
             ),
             (
                 Error::UdfServerIsPostgres("dev-pg18".into()),
@@ -1953,6 +2000,39 @@ mod tests {
         for (error, expected) in cases {
             assert_eq!(error_json(&error)["error"]["code"], expected);
         }
+    }
+
+    #[test]
+    fn udf_rejected_recovery_names_the_broken_function() {
+        let rejected = |blocking: &[&str]| {
+            error_json(&Error::UdfRejected(Box::new(crate::error::UdfRejection {
+                name: "rev".into(),
+                server: "dev".into(),
+                source_dir: "clickhouse/udfs/rev".into(),
+                deploy_command: "clickhousectl local udf deploy rev --server dev".into(),
+                blocking: blocking.iter().map(|name| name.to_string()).collect(),
+                details: "Code: 50. DB::Exception: Unknown data type".into(),
+            })))["error"]
+                .clone()
+        };
+        let own = rejected(&["bad", "rev"]);
+        assert_eq!(
+            own["command"],
+            "clickhousectl local udf remove rev --server dev"
+        );
+        assert!(own["message"].as_str().unwrap().contains("UDF bad"));
+        let other = rejected(&["bad"]);
+        assert_eq!(
+            other["command"],
+            "clickhousectl local udf remove bad --server dev"
+        );
+        assert!(!other["message"].as_str().unwrap().contains("remove rev"));
+        let unknown = rejected(&[]);
+        assert_eq!(
+            unknown["command"],
+            "clickhousectl local udf list --server dev"
+        );
+        assert!(!unknown["message"].as_str().unwrap().contains("udf remove"));
     }
 
     #[test]
@@ -2018,13 +2098,14 @@ mod tests {
             "clickhousectl local udf deploy my_fn --server dev"
         );
 
-        let rejected_error = Error::UdfRejected {
+        let rejected_error = Error::UdfRejected(Box::new(crate::error::UdfRejection {
             name: "my_fn".into(),
             server: "dev".into(),
             source_dir: "clickhouse/udfs/my_fn".into(),
             deploy_command: "clickhousectl local udf deploy my_fn --server dev".into(),
+            blocking: vec!["my_fn".into()],
             details: "Code: 50. DB::Exception: secret-ish server text".into(),
-        };
+        }));
         assert!(
             rejected_error
                 .to_string()
@@ -2037,6 +2118,41 @@ mod tests {
         assert_eq!(
             rejected["error"]["command"],
             "clickhousectl local udf remove my_fn --server dev"
+        );
+
+        let unreachable_error = Error::UdfServerUnreachable {
+            server: "dev".into(),
+            port: 8123,
+            details: "secret-ish client text".into(),
+        };
+        assert!(
+            unreachable_error
+                .to_string()
+                .contains("secret-ish client text")
+        );
+        let unreachable = error_json(&unreachable_error);
+        assert_eq!(
+            unreachable["error"]["message"],
+            "Could not reach server 'dev' on port 8123"
+        );
+        assert_eq!(
+            unreachable["error"]["command"],
+            "clickhousectl local server list"
+        );
+
+        let blocked_error = Error::UdfReloadBlocked {
+            name: "my_fn".into(),
+            server: "dev".into(),
+            blocking: Vec::new(),
+            details: "Code: 50. DB::Exception: secret-ish server text".into(),
+        };
+        let blocked = error_json(&blocked_error);
+        let message = blocked["error"]["message"].as_str().unwrap();
+        assert!(!message.contains("secret-ish"));
+        assert!(blocked_error.to_string().starts_with(message));
+        assert_eq!(
+            blocked["error"]["command"],
+            "clickhousectl local udf list --server dev"
         );
 
         let postgres = error_json(&Error::UdfServerIsPostgres("dev-pg18".into()));
