@@ -111,6 +111,13 @@ pub enum CloudErrorCode {
     /// rejected an identifier that is, structurally, a well-formed UUID
     /// (#666). `command` lists what does exist in the same scope.
     ResourceNotFound,
+    /// A UDF definition is not valid JSON or fails validation; the same code
+    /// `local udf deploy` reports.
+    UdfDefinitionInvalid,
+    /// A UDF source directory cannot be packaged: it has no `udf.json` or
+    /// entrypoint, or contains a symbolic link; the same code
+    /// `local udf deploy` reports.
+    UdfSourceInvalid,
 }
 
 impl CloudErrorCode {
@@ -153,6 +160,8 @@ impl CloudErrorCode {
         Self::QueryKeyRepairUnverified,
         Self::QueryKeyBoundRejected,
         Self::ResourceNotFound,
+        Self::UdfDefinitionInvalid,
+        Self::UdfSourceInvalid,
     ];
 }
 
@@ -722,6 +731,8 @@ mod tests {
                 "query_key_repair_unverified",
                 "query_key_bound_rejected",
                 "resource_not_found",
+                "udf_definition_invalid",
+                "udf_source_invalid",
             ]
         );
     }

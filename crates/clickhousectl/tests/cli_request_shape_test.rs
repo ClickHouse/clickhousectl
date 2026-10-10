@@ -30779,6 +30779,52 @@ async fn udf_directory_problems_fail_before_any_request() {
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
+// The UDF directory failures that render JSON carry the codes `local udf
+// deploy` reports for the same problems, before any request is made.
+#[tokio::test]
+async fn udf_directory_problems_report_local_udf_codes() {
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let symlinked = project_udf(project.path(), "symlinked", "python3.11");
+    std::os::unix::fs::symlink(symlinked.join("lib/helper.py"), symlinked.join("link.py")).unwrap();
+    let no_main = project_udf(project.path(), "no_main", "python3.11");
+    std::fs::remove_file(no_main.join("main.py")).unwrap();
+    let not_json = project_udf(project.path(), "not_json", "python3.11");
+    std::fs::write(not_json.join("udf.json"), "{ not json").unwrap();
+    let invalid = project_udf(project.path(), "invalid", "python3.11");
+    std::fs::write(
+        invalid.join("udf.json"),
+        serde_json::json!({"functionName": "invalid", "type": "executable", "runtime": "python3.11"})
+            .to_string(),
+    )
+    .unwrap();
+    let no_definition = project_udf(project.path(), "no_definition", "python3.11");
+    std::fs::remove_file(no_definition.join("udf.json")).unwrap();
+    let no_binary = project_udf(project.path(), "no_binary", "native");
+    std::fs::remove_file(no_binary.join("amd64/main")).unwrap();
+
+    for (name, code) in [
+        ("symlinked", "udf_source_invalid"),
+        ("no_main", "udf_source_invalid"),
+        ("not_json", "udf_definition_invalid"),
+        ("invalid", "udf_definition_invalid"),
+        ("no_definition", "udf_source_invalid"),
+        ("no_binary", "udf_source_invalid"),
+    ] {
+        for args in [vec!["create", name], vec!["version", "create", name]] {
+            let output = udf_test_command(&server, project.path(), false, true, &args)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{args:?}");
+            let error: Value = serde_json::from_slice(&output.stderr).unwrap_or_else(|_| {
+                panic!("{args:?}: {}", String::from_utf8_lossy(&output.stderr))
+            });
+            assert_eq!(error["error"]["code"], code, "{args:?}: {error}");
+        }
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn udf_attach_reports_idle_services_and_wakes_them_with_wake() {
     let idle_424 = ResponseTemplate::new(424).set_body_json(serde_json::json!({

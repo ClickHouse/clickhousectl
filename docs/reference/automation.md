@@ -95,8 +95,8 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 | Code | Meaning |
 | ---- | ------- |
 | `server_not_found` | The selected local server does not exist, or `--server` names a local Postgres instance |
-| `udf_definition_invalid` | `udf.json` is not valid JSON (message names the file, line and column; `details` has the parser's text) or fails validation (message carries the reason) |
-| `udf_source_invalid` | The UDF directory does not exist (the message and `command` suggest `udf init`), is not a directory or is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link; or the staged script path contains a single quote |
+| `udf_definition_invalid` | `udf.json` is not valid JSON (message names the file, line and column; `details` has the parser's text) or fails validation (message carries the reason). Cloud `udf create` and `udf version create` report it too, without `details` |
+| `udf_source_invalid` | The UDF directory does not exist (the message and `command` suggest `udf init`), is not a directory or is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link; or the staged script path contains a single quote. Cloud `udf create` and `udf version create` report it for a missing `udf.json` or entrypoint or a symbolic link inside the directory; a missing or symlinked directory there is a usage error |
 | `udf_runtime_unsupported` | Runtime `native` needs a Linux amd64/arm64 host |
 | `udf_not_loaded` | The running server did not load the deployed function; see the log path in the message |
 | `udf_rejected` | The running server rejected the function reload after a deploy, and the deployed function is broken or (before ClickHouse 26.2) could not be confirmed to run its new definition; the message and `command` name the broken function when identified, which may not be the one deployed; `details` has ClickHouse's error. Other functions still load, but every function reload fails until the broken one is fixed or removed |

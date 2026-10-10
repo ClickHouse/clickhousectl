@@ -25,17 +25,20 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("udf version delete", &[&op::UDF_VERSION_DELETE]),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, CloudErrorKind, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
-use crate::cloud::output::{eprint_line, or_absent, print_human, print_line};
+use crate::cloud::output::{
+    CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
+};
 use crate::cloud::shared::{PollProgress, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use crate::failure::{ApiFailure, FailureKind};
-use crate::udf::{self, DEFINITION_FILE, SourceEntry, UdfDirArg, UdfRuntimeKind};
+use crate::udf::{self, DEFINITION_FILE, SourceEntry, UdfDirArg, UdfInputError, UdfRuntimeKind};
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::*;
 use serde::Serialize;
 use serde_json::Value;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tabled::{Table, Tabled, settings::Style};
@@ -253,7 +256,8 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                     name,
                 )?;
             }
-            let mut request = build_udf_create_request(definition, "pending")?;
+            let mut request =
+                build_udf_create_request(definition, "pending").map_err(definition_invalid)?;
             let artifact = resolve_artifact(
                 input.artifact.as_deref(),
                 source.as_deref(),
@@ -286,7 +290,8 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                 &name.function_name,
             )?;
             udf::strip_function_name(&mut definition);
-            let mut request = build_udf_version_create_request(definition, "pending")?;
+            let mut request = build_udf_version_create_request(definition, "pending")
+                .map_err(definition_invalid)?;
             let artifact = resolve_artifact(
                 input.artifact.as_deref(),
                 source.as_deref(),
@@ -524,11 +529,45 @@ fn resolve_source(dir: &UdfDirArg, name: &str) -> CloudResult<PathBuf> {
 fn definition_source(config: Option<&str>, source: Option<&Path>) -> CloudResult<Value> {
     match (config, source) {
         (Some(config), _) => read_config_value(config),
-        (None, Some(dir)) => {
-            udf::load_definition_from_dir(dir).map_err(|error| CloudError::new(error.to_string()))
-        }
+        (None, Some(dir)) => udf::load_definition_from_dir(dir).map_err(input_error),
         (None, None) => Err(CloudError::usage("Pass NAME or --file <PATH>")),
     }
+}
+
+/// A UDF directory failure, with the code `local udf deploy` gives it: a
+/// missing `udf.json`, entrypoint or directory, or a symbolic link, is
+/// `udf_source_invalid`; a `udf.json` that is not JSON is
+/// `udf_definition_invalid`; any other read failure is local I/O.
+fn input_error(error: UdfInputError) -> CloudError {
+    let code = match &error {
+        UdfInputError::Read { path, source }
+            if source.kind() == std::io::ErrorKind::NotFound
+                && path.file_name() == Some(OsStr::new(DEFINITION_FILE)) =>
+        {
+            CloudErrorCode::UdfSourceInvalid
+        }
+        UdfInputError::Read { .. } => {
+            return CloudError::new(error.to_string())
+                .with_failure(ApiFailure::new(FailureKind::Io));
+        }
+        UdfInputError::Parse { .. } => CloudErrorCode::UdfDefinitionInvalid,
+        UdfInputError::Invalid { .. } | UdfInputError::Missing { .. } => {
+            CloudErrorCode::UdfSourceInvalid
+        }
+    };
+    let message = error.to_string();
+    CloudError::new(message.clone()).with_details(CloudErrorDetail::new(code, message))
+}
+
+/// A definition that fails the shape check or the typed request schema is
+/// `udf_definition_invalid`, as in `local udf deploy`. Usage errors keep
+/// clap's rendering, and an already structured error keeps its code.
+fn definition_invalid(error: CloudError) -> CloudError {
+    if error.kind != CloudErrorKind::Generic || error.details.is_some() {
+        return error;
+    }
+    let detail = CloudErrorDetail::new(CloudErrorCode::UdfDefinitionInvalid, error.message.clone());
+    error.with_details(detail)
 }
 
 /// A definition (`--file`, else `udf.json` read from `NAME/`) that carries
@@ -687,8 +726,7 @@ fn resolve_artifact(
 /// `arm64/`), timestamps are constant, and Unix permission bits are kept so
 /// a native entrypoint stays executable.
 fn package_source_dir(dir: &Path, runtime: UdfRuntimeKind) -> CloudResult<tempfile::NamedTempFile> {
-    let entries = udf::collect_source_entries(dir, runtime)
-        .map_err(|error| CloudError::new(error.to_string()))?;
+    let entries = udf::collect_source_entries(dir, runtime).map_err(input_error)?;
     let mut archive = tempfile::Builder::new()
         .prefix("chctl-udf-")
         .suffix(".zip")
@@ -1481,15 +1519,60 @@ mod tests {
         std::fs::remove_file(dir.join("main.py")).unwrap();
         let error = package_source_dir(&dir, UdfRuntimeKind::Python311).unwrap_err();
         assert!(error.to_string().contains("is missing main.py"), "{error}");
+        assert_eq!(
+            error.details.unwrap().code,
+            CloudErrorCode::UdfSourceInvalid
+        );
 
         std::fs::write(dir.join("main.py"), "").unwrap();
         std::os::unix::fs::symlink(dir.join("lib/helper.py"), dir.join("link.py")).unwrap();
         let error = package_source_dir(&dir, UdfRuntimeKind::Python311).unwrap_err();
         assert!(error.to_string().contains("symbolic link"), "{error}");
+        assert_eq!(
+            error.details.unwrap().code,
+            CloudErrorCode::UdfSourceInvalid
+        );
 
         let error =
             package_source_dir(&tmp.path().join("missing"), UdfRuntimeKind::Native).unwrap_err();
         assert!(error.to_string().contains("is not a directory"), "{error}");
+    }
+
+    #[test]
+    fn udf_json_failures_carry_the_local_udf_codes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("my_udf");
+        write_python_dir(&dir);
+        let code = |error: CloudError| error.details.map(|detail| detail.code);
+
+        std::fs::write(dir.join("udf.json"), "{ not json").unwrap();
+        let parse = definition_source(None, Some(&dir)).unwrap_err();
+        assert_eq!(code(parse), Some(CloudErrorCode::UdfDefinitionInvalid));
+
+        std::fs::remove_file(dir.join("udf.json")).unwrap();
+        let missing = definition_source(None, Some(&dir)).unwrap_err();
+        assert_eq!(missing.kind, CloudErrorKind::Generic);
+        assert_eq!(code(missing), Some(CloudErrorCode::UdfSourceInvalid));
+
+        let invalid = build_udf_create_request(serde_json::json!({}), "pending")
+            .map_err(definition_invalid)
+            .unwrap_err();
+        assert_eq!(code(invalid), Some(CloudErrorCode::UdfDefinitionInvalid));
+
+        // Unreadable for a reason other than absence: local I/O, not a UDF code.
+        let read = input_error(UdfInputError::Read {
+            path: dir.join("udf.json"),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        });
+        assert!(read.details.is_none());
+        assert_eq!(read.failure.unwrap().kind, FailureKind::Io);
+
+        // Usage errors and already-structured errors keep what they had.
+        let usage = definition_invalid(CloudError::usage("bad"));
+        assert!(usage.details.is_none());
+        let structured =
+            definition_invalid(input_error(UdfInputError::Missing { path: dir.clone() }));
+        assert_eq!(code(structured), Some(CloudErrorCode::UdfSourceInvalid));
     }
 
     #[test]
