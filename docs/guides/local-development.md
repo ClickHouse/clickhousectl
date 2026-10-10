@@ -112,6 +112,10 @@ The file must be directly inside the configs directory, not an arbitrary path. U
 
 Edit the source file and restart with `--config` again to apply changes. The selection is not remembered: starting without the flag removes the previously copied overlay. Managed data paths and ports override config values, including after ClickHouse reloads its config. Referenced files must be accessible from the server's working directory, `.clickhouse/servers/<name>/data/`. Inspect the merged `preprocessed_configs/config.xml` there, but edit the source overlay rather than that generated file.
 
+## Test executable UDFs
+
+`local udf` deploys executable UDFs from `clickhouse/udfs/` to a local server, from the same directory `cloud udf` uploads. See [User-defined functions](user-defined-functions.md#test-on-a-local-server).
+
 ## Add Postgres
 
 Docker must be running. Postgres 17 and 18, including image sub-tags, are supported; new instances default to 18. A random password is generated unless supplied.

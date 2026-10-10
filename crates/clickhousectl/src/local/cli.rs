@@ -9,7 +9,7 @@ fn parse_server_name_arg(name: &str) -> Result<String, String> {
 }
 
 fn parse_udf_name_arg(name: &str) -> Result<String, String> {
-    crate::udf::validate_function_name(name).map(|()| name.to_string())
+    crate::local::udf::validate_local_function_name(name).map(|()| name.to_string())
 }
 
 /// UDF runtime as spelled in `udf.json` and by the Cloud API.
@@ -353,8 +353,10 @@ CONTEXT FOR AGENTS:
     /// Manage executable UDFs for local servers
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  A UDF is a directory with udf.json (the definition `cloud udf create --file` accepts) and its entrypoint.
-  Typical flow: `local udf init my_fn` -> edit clickhouse/udfs/my_fn/main.py")]
+  A UDF is clickhouse/udfs/<NAME>/ holding udf.json (what `cloud udf create --file` accepts) and its entrypoint.
+  deploy needs an existing server, running or stopped; --server picks it and defaults to \"default\".
+  reload needs the server running.
+  Typical flow: `local udf init my_fn` -> edit -> `local udf deploy my_fn` -> `local client --query \"SELECT my_fn('x')\"`")]
     Udf {
         #[command(subcommand)]
         command: UdfCommands,
@@ -775,6 +777,70 @@ CONTEXT FOR AGENTS:
         #[arg(long = "type", value_enum, default_value_t = UdfTypeArg::Executable)]
         kind: UdfTypeArg,
     },
+
+    /// Deploy a UDF source directory to a local server
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  The server must already exist; if it is running, functions reload at once.
+  Redeploying the same function name replaces its files and definition.
+  Runtime native deploys only from Linux amd64/arm64 hosts; elsewhere use `cloud udf create`.
+  Fields with no local effect are accepted and reported in ignored_fields.
+  If a running server does not load the function, deploy exits 1 with the server log path.
+  A broken UDF fails every function reload on its server until fixed or removed; others still load.")]
+    Deploy {
+        /// Function name; its sources are NAME/ under --dir
+        #[arg(value_name = "NAME", value_parser = parse_udf_name_arg)]
+        name: String,
+
+        #[command(flatten)]
+        dir: crate::udf::UdfDirArg,
+
+        #[command(flatten)]
+        server: UdfServerArg,
+
+        /// Python interpreter for runtime python3.11 (default: found on PATH)
+        #[arg(long, value_name = "PATH")]
+        python: Option<std::path::PathBuf>,
+    },
+
+    /// List UDFs deployed to a local server
+    List {
+        #[command(flatten)]
+        server: UdfServerArg,
+    },
+
+    /// Remove a UDF from a local server
+    Remove {
+        /// Function name
+        #[arg(value_name = "NAME", value_parser = parse_udf_name_arg)]
+        name: String,
+
+        #[command(flatten)]
+        server: UdfServerArg,
+    },
+
+    /// Reload executable functions on a running local server
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Not needed after deploy or remove, which reload, or after `local server start`, which loads them.
+  Run it after editing deployed files by hand to apply them now and see any rejection.")]
+    Reload {
+        #[command(flatten)]
+        server: UdfServerArg,
+    },
+}
+
+/// Selects the local server a `udf` command targets.
+#[derive(Args, Debug)]
+pub struct UdfServerArg {
+    /// Local server name
+    #[arg(
+        long,
+        value_name = "NAME",
+        default_value = "default",
+        value_parser = parse_server_name_arg
+    )]
+    pub server: String,
 }
 
 #[cfg(test)]
@@ -903,6 +969,93 @@ mod tests {
         );
         assert_eq!(
             local_parse_error(&["udf", "init"]).kind(),
+            ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    fn udf_server(command: &UdfCommands) -> &str {
+        match command {
+            UdfCommands::Deploy { server, .. }
+            | UdfCommands::List { server }
+            | UdfCommands::Remove { server, .. }
+            | UdfCommands::Reload { server } => &server.server,
+            UdfCommands::Init { .. } => panic!("init has no server selector"),
+        }
+    }
+
+    #[test]
+    fn udf_leaves_take_server_flag_with_default_and_validation() {
+        use clap::error::ErrorKind;
+        let leaves: [&[&str]; 4] = [
+            &["udf", "deploy", "my_fn"],
+            &["udf", "list"],
+            &["udf", "remove", "my_fn"],
+            &["udf", "reload"],
+        ];
+        for leaf in leaves {
+            let LocalCommands::Udf { command } = local_command(leaf) else {
+                panic!("expected udf command for {leaf:?}");
+            };
+            assert_eq!(udf_server(&command), "default", "{leaf:?}");
+
+            let mut with_server = leaf.to_vec();
+            with_server.extend(["--server", "dev"]);
+            let LocalCommands::Udf { command } = local_command(&with_server) else {
+                panic!("expected udf command for {with_server:?}");
+            };
+            assert_eq!(udf_server(&command), "dev", "{leaf:?}");
+
+            let mut bad = leaf.to_vec();
+            bad.extend(["--server", "../x"]);
+            assert_eq!(
+                local_parse_error(&bad).kind(),
+                ErrorKind::ValueValidation,
+                "{leaf:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn udf_deploy_parses_name_dir_and_python() {
+        use clap::error::ErrorKind;
+        let LocalCommands::Udf {
+            command: UdfCommands::Deploy {
+                name, dir, python, ..
+            },
+        } = local_command(&["udf", "deploy", "my_fn"])
+        else {
+            panic!("expected udf deploy");
+        };
+        assert_eq!(name, "my_fn");
+        assert_eq!(dir.dir, std::path::PathBuf::from("clickhouse/udfs"));
+        assert!(python.is_none());
+
+        let LocalCommands::Udf {
+            command: UdfCommands::Deploy { dir, python, .. },
+        } = local_command(&[
+            "udf",
+            "deploy",
+            "my_fn",
+            "--dir",
+            "../shared/udfs",
+            "--python",
+            "/opt/python3.11",
+        ])
+        else {
+            panic!("expected udf deploy");
+        };
+        assert_eq!(dir.dir, std::path::PathBuf::from("../shared/udfs"));
+        assert_eq!(python, Some(std::path::PathBuf::from("/opt/python3.11")));
+
+        for name in ["../x", "a/b", "1abc"] {
+            assert_eq!(
+                local_parse_error(&["udf", "deploy", name]).kind(),
+                ErrorKind::ValueValidation,
+                "{name}"
+            );
+        }
+        assert_eq!(
+            local_parse_error(&["udf", "deploy"]).kind(),
             ErrorKind::MissingRequiredArgument
         );
     }
