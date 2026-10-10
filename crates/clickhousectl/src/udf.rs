@@ -72,6 +72,11 @@ pub enum UdfInputError {
         path: PathBuf,
         reason: String,
     },
+    /// [`resolve_source_dir`] found nothing at the path, so a caller can add
+    /// how to create it.
+    Missing {
+        path: PathBuf,
+    },
 }
 
 impl fmt::Display for UdfInputError {
@@ -82,6 +87,7 @@ impl fmt::Display for UdfInputError {
                 write!(f, "{} is not valid JSON: {source}", path.display())
             }
             Self::Invalid { path, reason } => write!(f, "{} {reason}", path.display()),
+            Self::Missing { path } => write!(f, "{} {SOURCE_DIR_MISSING}", path.display()),
         }
     }
 }
@@ -91,7 +97,7 @@ impl std::error::Error for UdfInputError {
         match self {
             Self::Read { source, .. } => Some(source),
             Self::Parse { source, .. } => Some(source),
-            Self::Invalid { .. } => None,
+            Self::Invalid { .. } | Self::Missing { .. } => None,
         }
     }
 }
@@ -115,8 +121,7 @@ pub fn validate_function_name(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Reason [`resolve_source_dir`] gives for a `<parent>/<name>` that does not
-/// exist, so a caller can add how to create it.
+/// How [`UdfInputError::Missing`] describes its path.
 pub const SOURCE_DIR_MISSING: &str = "does not exist";
 
 /// `<parent>/<name>/`, which must be a real directory: a missing path, a
@@ -130,7 +135,7 @@ pub fn resolve_source_dir(parent: &Path, name: &str) -> Result<PathBuf, UdfInput
         Ok(metadata) if metadata.is_dir() => Ok(dir),
         Ok(_) => Err(invalid(&dir, "is not a directory")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Err(invalid(&dir, SOURCE_DIR_MISSING))
+            Err(UdfInputError::Missing { path: dir })
         }
         Err(source) => Err(UdfInputError::Read { path: dir, source }),
     }
@@ -494,8 +499,11 @@ mod tests {
             resolve_source_dir(&parent, "real").unwrap(),
             parent.join("real")
         );
+        assert!(matches!(
+            resolve_source_dir(&parent, "missing").unwrap_err(),
+            UdfInputError::Missing { path } if path == parent.join("missing")
+        ));
         for (name, reason) in [
-            ("missing", "does not exist"),
             ("file", "is not a directory"),
             ("linked", "is a symbolic link"),
         ] {

@@ -63,10 +63,13 @@ const LOAD_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const RELOAD_FUNCTIONS_SQL: &str = "SYSTEM RELOAD FUNCTIONS";
 const LOADED_FUNCTIONS_SQL: &str = "SELECT name FROM system.functions \
      WHERE origin = 'ExecutableUserDefined' ORDER BY name FORMAT TabSeparated";
-/// Per-function load status, ClickHouse 26.2 and later. Older servers fail
-/// this query, and culprits come from the reload's error text instead.
+/// Per-function load status, ClickHouse 26.2 and later. A function that
+/// loaded before keeps `load_status = 'Success'` (it still runs that earlier
+/// definition) when its changed file is rejected, but the rejection is in
+/// `loading_error_message`. Older servers fail this query.
 const FAILED_FUNCTIONS_SQL: &str = "SELECT name FROM system.user_defined_functions \
-     WHERE load_status = 'Failed' ORDER BY name FORMAT TabSeparated";
+     WHERE load_status = 'Failed' OR loading_error_message != '' ORDER BY name \
+     FORMAT TabSeparated";
 
 /// A `local udf` NAME: the shared function-name rule, and short enough for
 /// every file the CLI names after it. Names are ASCII, so bytes are chars.
@@ -237,6 +240,10 @@ fn input_error(error: UdfInputError) -> Error {
         UdfInputError::Read { source, .. } => Error::Io(source),
         UdfInputError::Parse { path, source } => Error::UdfDefinitionParse { path, source },
         UdfInputError::Invalid { path, reason } => Error::UdfSourceInvalid { path, reason },
+        UdfInputError::Missing { path } => Error::UdfSourceInvalid {
+            path,
+            reason: udf::SOURCE_DIR_MISSING.to_owned(),
+        },
     }
 }
 
@@ -431,13 +438,11 @@ async fn deploy(
     // Everything that can be wrong with the input fails here, before the
     // server is even looked up and long before anything is written.
     let dir = udf::resolve_source_dir(parent, name).map_err(|error| match error {
-        UdfInputError::Invalid { path, reason } if reason == udf::SOURCE_DIR_MISSING => {
-            Error::UdfSourceMissing {
-                path,
-                name: name.to_owned(),
-                scaffold_here: parent == Path::new(DEFAULT_UDF_PARENT),
-            }
-        }
+        UdfInputError::Missing { path } => Error::UdfSourceMissing {
+            path,
+            name: name.to_owned(),
+            scaffold_here: parent == Path::new(DEFAULT_UDF_PARENT),
+        },
         other => input_error(other),
     })?;
     let (definition, ignored_fields) = load_local_definition(&dir, name)?;
@@ -479,12 +484,13 @@ async fn deploy(
         let version = python_version(interpreter).await;
         warnings.extend(python_version_warning(interpreter, version.as_deref()));
     }
-    // A name ClickHouse already knows blocks every later reload (or is never
-    // callable), so it is refused before anything is written. Only a running
-    // server can say; the lock is not held across the round trip.
+    // A name ClickHouse already knows makes every later reload fail (or is
+    // never callable), so it is refused before anything is written. Only a
+    // running server can say; the lock is not held across the round trip.
+    let mut was_loaded = false;
     if let Some(info) = &target.running {
         drop(lock);
-        check_name_is_free(info, server_name, name).await?;
+        was_loaded = check_name_is_free(info, server_name, name).await?;
         lock = server::lock_metadata()?;
     }
 
@@ -507,23 +513,31 @@ async fn deploy(
     write_atomic(&sidecar_path(&target.data_dir, name), &sidecar)?;
     // These files have not been rejected yet; a rejection below marks them.
     remove_if_present(&rejected_marker_path(&target.data_dir, name))?;
+    // A rewritten overlay takes effect only once the server rereads its
+    // config, so until then the server may not see any function file.
+    let overlay_fresh = !overlay_is_current(&target.data_dir)?;
     write_overlay(&target.data_dir)?;
     drop(lock);
 
     let loaded = match &target.running {
         Some(info) => {
             let deploy_command = deploy_command(name, parent, server_name);
-            // Every function file reloads together, so a rejected definition
-            // also blocks every later reload on this server until it is fixed.
-            // A function that has never loaded can pass the first reload and
-            // only be rejected by a retry, so both are handled alike.
-            let outcome = match send_query(info, RELOAD_FUNCTIONS_SQL).await {
-                Ok(_) => wait_until_loaded(info, server_name, name).await?,
-                Err(QueryError::Rejected(details)) => LoadOutcome::Rejected(details),
-                Err(error) => return Err(error.into_error(info, server_name)),
+            let probe = LoadProbe {
+                name,
+                data_dir: &target.data_dir,
+                was_loaded,
+                overlay_fresh,
             };
-            match outcome {
+            match reload_until_loaded(info, server_name, &probe).await? {
                 LoadOutcome::Loaded(loaded) => clear_rejected_markers(&target.data_dir, &loaded)?,
+                LoadOutcome::LoadedDespite {
+                    current,
+                    broken,
+                    details,
+                } => {
+                    clear_rejected_markers(&target.data_dir, &current)?;
+                    warnings.push(reload_still_fails_warning(server_name, &broken, &details));
+                }
                 LoadOutcome::NotLoaded => {
                     return Err(Error::UdfNotLoaded {
                         name: name.to_owned(),
@@ -532,7 +546,7 @@ async fn deploy(
                         deploy_command,
                     });
                 }
-                LoadOutcome::Rejected(details) => {
+                LoadOutcome::Rejected { details, blocking } => {
                     // Best effort: failing to mark must not hide the rejection.
                     let _ = std::fs::write(rejected_marker_path(&target.data_dir, name), "");
                     return Err(Error::UdfRejected(Box::new(UdfRejection {
@@ -540,7 +554,7 @@ async fn deploy(
                         server: server_name.to_owned(),
                         source_dir: dir.clone(),
                         deploy_command,
-                        blocking: blocking_functions(info, &target.data_dir, &details).await,
+                        blocking,
                         details,
                     })));
                 }
@@ -940,6 +954,13 @@ pub(crate) fn write_overlay(data_dir: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
+/// Whether the overlay [`write_overlay`] would write is already in place.
+fn overlay_is_current(data_dir: &Path) -> Result<bool> {
+    let path = data_dir.join("config.d").join(OVERLAY_FILE);
+    let rendered = render_overlay_xml(&data_dir.canonicalize()?);
+    Ok(std::fs::read(path).ok().as_deref() == Some(rendered.as_bytes()))
+}
+
 fn function_xml_path(data_dir: &Path, name: &str) -> PathBuf {
     data_dir
         .join(FUNCTIONS_DIR)
@@ -1180,7 +1201,7 @@ async fn send_query(info: &ServerInfo, sql: &str) -> std::result::Result<String,
         .timeout(HTTP_REQUEST_TIMEOUT)
         .build()
         .map_err(QueryError::Client)?;
-    let unreachable = |error: reqwest::Error| QueryError::Unreachable(error.to_string());
+    let unreachable = |error: reqwest::Error| QueryError::Unreachable(error_chain(&error));
     let response = client
         .post(format!("http://localhost:{}/", info.http_port))
         .body(sql.to_owned())
@@ -1193,6 +1214,24 @@ async fn send_query(info: &ServerInfo, sql: &str) -> std::result::Result<String,
         return Err(QueryError::Rejected(body.trim().to_owned()));
     }
     Ok(body)
+}
+
+/// An error's text followed by each of its sources', so a timeout and a
+/// refused connection read differently: reqwest's own text only names the
+/// URL.
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        // Some layers repeat their source's text; keep each part once.
+        if !text.ends_with(&cause_text) {
+            text.push_str(": ");
+            text.push_str(&cause_text);
+        }
+        source = cause.source();
+    }
+    text
 }
 
 async fn http_query(info: &ServerInfo, server: &str, sql: &str) -> Result<String> {
@@ -1213,30 +1252,153 @@ async fn loaded_function_names(info: &ServerInfo, server: &str) -> Result<Vec<St
 enum LoadOutcome {
     /// The function is loaded; carries every loaded function's name.
     Loaded(Vec<String>),
+    /// The function loaded its new definition, but the reload was rejected
+    /// because other deployed functions are broken. ClickHouse loads each
+    /// function file on its own, so only those stay unloaded (or keep an
+    /// earlier definition), and every later reload on the server fails until
+    /// they are fixed or removed.
+    LoadedDespite {
+        /// Loaded functions known to run their current files.
+        current: Vec<String>,
+        /// The broken staged functions; empty when the server cannot tell.
+        broken: Vec<String>,
+        /// ClickHouse's response text.
+        details: String,
+    },
     NotLoaded,
-    /// A reload was rejected, with ClickHouse's response text.
-    Rejected(String),
+    /// A reload was rejected and the function's new definition is broken,
+    /// or could not be confirmed to have loaded.
+    Rejected {
+        /// ClickHouse's response text.
+        details: String,
+        /// The broken staged functions; empty when the server cannot tell.
+        blocking: Vec<String>,
+    },
 }
 
-/// After a reload, give the server time to notice a freshly written overlay
+/// What `deploy` knows about the function it is waiting for.
+struct LoadProbe<'a> {
+    name: &'a str,
+    data_dir: &'a Path,
+    /// The server listed the function before this deploy, so seeing it
+    /// loaded alone does not show the new definition loaded.
+    was_loaded: bool,
+    /// The overlay was rewritten by this deploy, so the server may not see
+    /// any function file until it rereads its config.
+    overlay_fresh: bool,
+}
+
+/// Reload, then give the server time to notice a freshly written overlay
 /// (its config reloader runs periodically) before concluding the function
-/// did not load.
-async fn wait_until_loaded(info: &ServerInfo, server: &str, name: &str) -> Result<LoadOutcome> {
+/// did not load. A function that has never loaded can pass the first reload
+/// and only be rejected by a retry, so every attempt is handled alike.
+async fn reload_until_loaded(
+    info: &ServerInfo,
+    server: &str,
+    probe: &LoadProbe<'_>,
+) -> Result<LoadOutcome> {
     let deadline = Instant::now() + LOAD_POLL_TIMEOUT;
+    let mut pending_rejection = None;
     loop {
+        let rejection = match send_query(info, RELOAD_FUNCTIONS_SQL).await {
+            Ok(_) => None,
+            Err(QueryError::Rejected(details)) => Some(details),
+            Err(error) => return Err(error.into_error(info, server)),
+        };
         let loaded = loaded_function_names(info, server).await?;
-        if loaded.iter().any(|loaded| loaded == name) {
-            return Ok(LoadOutcome::Loaded(loaded));
+        let is_loaded = loaded.iter().any(|loaded| loaded == probe.name);
+        match rejection {
+            None if is_loaded => return Ok(LoadOutcome::Loaded(loaded)),
+            None => {}
+            Some(details) => {
+                let report = inspect_rejection(info, probe.data_dir, &details, &loaded).await;
+                if let Some(outcome) = rejected_outcome(probe, &report, &loaded, details.clone()) {
+                    return Ok(outcome);
+                }
+                pending_rejection = Some((details, report));
+            }
         }
         if Instant::now() >= deadline {
-            return Ok(LoadOutcome::NotLoaded);
+            return Ok(match pending_rejection {
+                // Without per-function status, a function still missing
+                // after every reload was rejected is most likely broken.
+                Some((details, report)) if !report.per_function_status => LoadOutcome::Rejected {
+                    details,
+                    blocking: report.failed_assuming_active,
+                },
+                _ => LoadOutcome::NotLoaded,
+            });
         }
         tokio::time::sleep(LOAD_POLL_INTERVAL).await;
-        match send_query(info, RELOAD_FUNCTIONS_SQL).await {
-            Ok(_) => {}
-            Err(QueryError::Rejected(details)) => return Ok(LoadOutcome::Rejected(details)),
-            Err(error) => return Err(error.into_error(info, server)),
+    }
+}
+
+/// What a rejected reload means for the function being deployed, or `None`
+/// while the server may simply not see its file yet.
+fn rejected_outcome(
+    probe: &LoadProbe<'_>,
+    report: &RejectionReport,
+    loaded: &[String],
+    details: String,
+) -> Option<LoadOutcome> {
+    let name = probe.name;
+    let rejected = |blocking: Vec<String>| LoadOutcome::Rejected {
+        details: details.clone(),
+        blocking,
+    };
+    if report.failed.iter().any(|failed| failed == name) {
+        return Some(rejected(report.failed.clone()));
+    }
+    if loaded.iter().any(|loaded| loaded == name) {
+        // Without per-function status, a function that was loaded before
+        // may still run its earlier definition: say so rather than guess.
+        if !report.per_function_status && probe.was_loaded {
+            return Some(rejected(report.failed.clone()));
         }
+        let current = if report.per_function_status {
+            loaded
+                .iter()
+                .filter(|loaded| !report.failed.contains(loaded))
+                .cloned()
+                .collect()
+        } else {
+            vec![name.to_owned()]
+        };
+        return Some(LoadOutcome::LoadedDespite {
+            current,
+            broken: report.failed.clone(),
+            details,
+        });
+    }
+    // Neither loaded nor reported broken: the server has not read the file,
+    // unless it evidently reads the overlay's directory, in which case an
+    // older server simply cannot name the function as broken.
+    if !report.per_function_status && (!probe.overlay_fresh || report.directory_active) {
+        return Some(rejected(report.failed_assuming_active.clone()));
+    }
+    None
+}
+
+/// The warning a deploy carries when its function loaded but the reload
+/// was rejected because of other functions.
+fn reload_still_fails_warning(server: &str, broken: &[String], details: &str) -> String {
+    match broken {
+        [] => format!(
+            "function reloads on server {server} still fail because another deployed UDF is \
+             broken; fix and redeploy it, or remove it with `clickhousectl local udf remove`. \
+             ClickHouse error: {details}"
+        ),
+        [one] => format!(
+            "function reloads on server {server} still fail because UDF {one} is broken; fix and \
+             redeploy it, or remove it with `clickhousectl local udf remove {one} --server \
+             {server}`"
+        ),
+        many => format!(
+            "function reloads on server {server} still fail because UDFs {} are broken; fix and \
+             redeploy them, or remove each with `clickhousectl local udf remove NAME --server \
+             {server}`",
+            many.join(", ")
+        ),
     }
 }
 
@@ -1326,8 +1488,8 @@ fn name_clash_message(name: &str, server: &str, clash: &KnownFunction) -> String
 }
 
 /// Refuse a UDF name the running server already uses for something other
-/// than an executable UDF.
-async fn check_name_is_free(info: &ServerInfo, server: &str, name: &str) -> Result<()> {
+/// than an executable UDF. Returns whether `name` is a loaded executable UDF.
+async fn check_name_is_free(info: &ServerInfo, server: &str, name: &str) -> Result<bool> {
     let functions =
         parse_known_functions(&http_query(info, server, &functions_named_sql(name)).await?);
     match name_clash(name, &functions) {
@@ -1335,33 +1497,111 @@ async fn check_name_is_free(info: &ServerInfo, server: &str, name: &str) -> Resu
             clap::error::ErrorKind::ValueValidation,
             name_clash_message(name, server, clash),
         )))),
-        None => Ok(()),
+        None => Ok(functions
+            .iter()
+            .any(|function| function.name == name && function.origin == "ExecutableUserDefined")),
     }
 }
 
-/// The deployed functions that make a rejected reload fail. ClickHouse 26.2
-/// and later report each function's load status; older servers only name a
-/// function in some error texts. Either way, only functions staged on this
-/// server count, so every name maps back to files `remove` can delete. Empty
-/// when the culprit cannot be identified.
-async fn blocking_functions(info: &ServerInfo, data_dir: &Path, details: &str) -> Vec<String> {
-    let mut reported: Vec<String> = match send_query(info, FAILED_FUNCTIONS_SQL).await {
-        Ok(body) => body
-            .lines()
-            .filter(|line| !line.is_empty())
-            .map(str::to_owned)
-            .collect(),
-        Err(_) => Vec::new(),
-    };
-    if reported.is_empty() {
-        reported = culprits_in_error_text(details);
-    }
-    let staged = staged_udfs(data_dir).unwrap_or_default();
-    staged
+/// What a rejected reload says about the functions staged on this server.
+/// Only staged functions count, so every name maps back to files `remove`
+/// can delete.
+#[derive(Debug, Default)]
+struct RejectionReport {
+    /// Staged functions known to be broken; empty when none is identified.
+    failed: Vec<String>,
+    /// `failed`, plus every staged function the server does not list even
+    /// where it may not see the function directory yet.
+    failed_assuming_active: Vec<String>,
+    /// The server reports per-function load status (ClickHouse 26.2+).
+    per_function_status: bool,
+    /// Some staged function is loaded, so the server reads the directory.
+    directory_active: bool,
+}
+
+/// Identify the broken functions behind a rejected reload. ClickHouse loads
+/// each function file on its own, so the rest still load. 26.2 and later
+/// report each function's load status. Older servers name a function only in
+/// some error texts, so a staged function the server does not list is taken
+/// as broken once the server evidently reads the function directory.
+async fn inspect_rejection(
+    info: &ServerInfo,
+    data_dir: &Path,
+    details: &str,
+    loaded: &[String],
+) -> RejectionReport {
+    let staged: Vec<String> = staged_udfs(data_dir)
+        .unwrap_or_default()
         .into_iter()
         .map(|staged| staged.name)
-        .filter(|name| reported.contains(name))
-        .collect()
+        .collect();
+    let status = send_query(info, FAILED_FUNCTIONS_SQL).await.ok();
+    rejection_report(&staged, status.as_deref(), details, loaded)
+}
+
+/// [`inspect_rejection`]'s logic, given the staged names, the per-function
+/// status query's answer (`None` when the server lacks the table), the
+/// reload's error text and the loaded names.
+fn rejection_report(
+    staged: &[String],
+    status: Option<&str>,
+    details: &str,
+    loaded: &[String],
+) -> RejectionReport {
+    let mut reported = culprits_in_error_text(details);
+    if let Some(body) = status {
+        reported.extend(
+            body.lines()
+                .filter(|line| !line.is_empty())
+                .map(str::to_owned),
+        );
+    }
+    let directory_active = staged.iter().any(|name| loaded.contains(name));
+    let unlisted = |name: &String| status.is_none() && !loaded.contains(name);
+    let pick = |assume_active: bool| -> Vec<String> {
+        staged
+            .iter()
+            .filter(|name| {
+                reported.contains(name) || ((assume_active || directory_active) && unlisted(name))
+            })
+            .cloned()
+            .collect()
+    };
+    RejectionReport {
+        failed: pick(false),
+        failed_assuming_active: pick(true),
+        per_function_status: status.is_some(),
+        directory_active,
+    }
+}
+
+/// The broken functions behind a rejected `reload` or `remove` reload. The
+/// server already had the chance to read the function directory, so on an
+/// older server every staged function it does not list counts.
+async fn blocking_functions(info: &ServerInfo, data_dir: &Path, details: &str) -> Vec<String> {
+    let loaded: Option<Vec<String>> =
+        send_query(info, LOADED_FUNCTIONS_SQL)
+            .await
+            .ok()
+            .map(|body| {
+                body.lines()
+                    .filter(|line| !line.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            });
+    let report = inspect_rejection(
+        info,
+        data_dir,
+        details,
+        loaded.as_deref().unwrap_or_default(),
+    )
+    .await;
+    // Without the loaded list, no function can be told apart as unlisted.
+    if loaded.is_some() {
+        report.failed_assuming_active
+    } else {
+        report.failed
+    }
 }
 
 /// Function names a rejected reload's error text identifies. Only a name
@@ -2402,5 +2642,228 @@ mod tests {
             }),
             Error::UdfSourceInvalid { .. }
         ));
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    const UNKNOWN_TYPE: &str = "Code: 50. DB::Exception: Unknown data type family: Nope.";
+
+    #[test]
+    fn rejection_report_prefers_per_function_status_and_falls_back_to_unlisted_staged_names() {
+        let staged = names(&["bad", "old", "rev"]);
+        let loaded = names(&["old", "rev", "unmanaged"]);
+        // 26.2+: the status query names the broken ones, staged ones only.
+        let report = rejection_report(&staged, Some("bad\nhandmade\n"), UNKNOWN_TYPE, &loaded);
+        assert!(report.per_function_status);
+        assert_eq!(report.failed, names(&["bad"]));
+        assert_eq!(report.failed_assuming_active, names(&["bad"]));
+
+        // Older servers: staged but not listed means broken, once some
+        // staged function shows the directory is read.
+        let report = rejection_report(&staged, None, UNKNOWN_TYPE, &loaded);
+        assert!(!report.per_function_status);
+        assert!(report.directory_active);
+        assert_eq!(report.failed, names(&["bad"]));
+
+        // Nothing staged is listed: the directory may not be read yet.
+        let report = rejection_report(&staged, None, UNKNOWN_TYPE, &names(&["unmanaged"]));
+        assert!(!report.directory_active);
+        assert!(report.failed.is_empty());
+        assert_eq!(report.failed_assuming_active, staged);
+
+        // A name clash in the error text names a function on any version.
+        let clash = "Code: 609. DB::Exception: The function 'old' already exists.";
+        let report = rejection_report(&staged, None, clash, &names(&["unmanaged"]));
+        assert_eq!(report.failed, names(&["old"]));
+    }
+
+    fn probe(was_loaded: bool, overlay_fresh: bool) -> LoadProbe<'static> {
+        LoadProbe {
+            name: "rev",
+            data_dir: Path::new("/nonexistent"),
+            was_loaded,
+            overlay_fresh,
+        }
+    }
+
+    fn report(failed: &[&str], per_function_status: bool, active: bool) -> RejectionReport {
+        RejectionReport {
+            failed: names(failed),
+            failed_assuming_active: names(failed),
+            per_function_status,
+            directory_active: active,
+        }
+    }
+
+    #[test]
+    fn a_function_that_loaded_despite_another_broken_one_is_deployed() {
+        let loaded = names(&["bad_old", "rev"]);
+        // 26.2+: loaded and not failed means the new definition loaded,
+        // whether or not it was loaded before.
+        for was_loaded in [false, true] {
+            let outcome = rejected_outcome(
+                &probe(was_loaded, false),
+                &report(&["bad_old"], true, true),
+                &loaded,
+                UNKNOWN_TYPE.into(),
+            );
+            assert!(
+                matches!(&outcome, Some(LoadOutcome::LoadedDespite { current, broken, details })
+                    if current == &names(&["rev"]) && broken == &names(&["bad_old"])
+                        && details == UNKNOWN_TYPE),
+                "{was_loaded}"
+            );
+        }
+        // Older servers: a function that was not loaded before must run
+        // the new definition.
+        let outcome = rejected_outcome(
+            &probe(false, false),
+            &report(&["bad"], false, true),
+            &loaded,
+            UNKNOWN_TYPE.into(),
+        );
+        assert!(
+            matches!(&outcome, Some(LoadOutcome::LoadedDespite { current, .. })
+            if current == &names(&["rev"]))
+        );
+    }
+
+    #[test]
+    fn a_broken_or_unconfirmed_function_is_rejected() {
+        let loaded = names(&["rev"]);
+        // Reported broken: blamed, even while an earlier definition is loaded.
+        for per_function_status in [false, true] {
+            let outcome = rejected_outcome(
+                &probe(true, false),
+                &report(&["bad", "rev"], per_function_status, true),
+                &loaded,
+                UNKNOWN_TYPE.into(),
+            );
+            assert!(
+                matches!(&outcome, Some(LoadOutcome::Rejected { blocking, .. })
+                if blocking == &names(&["bad", "rev"]))
+            );
+        }
+        // Older servers cannot confirm a redeploy of a loaded function.
+        let outcome = rejected_outcome(
+            &probe(true, false),
+            &report(&["bad"], false, true),
+            &loaded,
+            UNKNOWN_TYPE.into(),
+        );
+        assert!(
+            matches!(&outcome, Some(LoadOutcome::Rejected { blocking, .. })
+            if blocking == &names(&["bad"]))
+        );
+        // Not listed on an older server that reads the directory: broken.
+        let unlisted = RejectionReport {
+            failed: names(&["bad"]),
+            failed_assuming_active: names(&["bad", "rev"]),
+            per_function_status: false,
+            directory_active: false,
+        };
+        let outcome = rejected_outcome(&probe(false, false), &unlisted, &[], UNKNOWN_TYPE.into());
+        assert!(
+            matches!(&outcome, Some(LoadOutcome::Rejected { blocking, .. })
+            if blocking == &names(&["bad", "rev"]))
+        );
+    }
+
+    #[test]
+    fn an_unseen_function_is_pending_while_the_server_may_not_read_its_file() {
+        // A freshly written overlay on an older server with no evidence yet.
+        let unseen = report(&[], false, false);
+        assert!(rejected_outcome(&probe(false, true), &unseen, &[], UNKNOWN_TYPE.into()).is_none());
+        // 26.2+ lists every function file it read, so absence is pending.
+        let unseen = report(&["bad"], true, true);
+        assert!(
+            rejected_outcome(&probe(false, false), &unseen, &[], UNKNOWN_TYPE.into()).is_none()
+        );
+    }
+
+    #[test]
+    fn reload_still_fails_warning_names_the_broken_udfs_and_the_way_out() {
+        let one = reload_still_fails_warning("dev", &names(&["bad"]), UNKNOWN_TYPE);
+        assert!(one.contains("UDF bad is broken"), "{one}");
+        assert!(
+            one.contains("`clickhousectl local udf remove bad --server dev`"),
+            "{one}"
+        );
+        assert!(!one.contains("DB::Exception"), "{one}");
+        let many = reload_still_fails_warning("dev", &names(&["a", "b"]), UNKNOWN_TYPE);
+        assert!(many.contains("UDFs a, b are broken"), "{many}");
+        let unknown = reload_still_fails_warning("dev", &[], UNKNOWN_TYPE);
+        assert!(unknown.ends_with(UNKNOWN_TYPE), "{unknown}");
+    }
+
+    #[test]
+    fn error_chain_appends_each_distinct_source() {
+        #[derive(Debug)]
+        struct Layer(&'static str, Option<Box<Layer>>);
+        impl std::fmt::Display for Layer {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for Layer {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_deref().map(|layer| layer as _)
+            }
+        }
+        let error = Layer(
+            "error sending request for url (http://localhost:1/)",
+            Some(Box::new(Layer(
+                "client error (Connect)",
+                Some(Box::new(Layer(
+                    "Connection refused (os error 61)",
+                    Some(Box::new(Layer("Connection refused (os error 61)", None))),
+                ))),
+            ))),
+        );
+        assert_eq!(
+            error_chain(&error),
+            "error sending request for url (http://localhost:1/): client error (Connect): \
+             Connection refused (os error 61)"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_server_reports_why_in_details() {
+        let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let info: ServerInfo = serde_json::from_value(json!({
+            "name": "dev",
+            "pid": 1,
+            "http_port": port,
+            "tcp_port": port,
+            "version": "26.9",
+            "started_at": "0",
+            "cwd": "/",
+        }))
+        .unwrap();
+        match send_query(&info, "SELECT 1").await {
+            Err(QueryError::Unreachable(details)) => {
+                assert!(details.contains("error sending request"), "{details}");
+                assert!(
+                    details.to_ascii_lowercase().contains("connection refused"),
+                    "{details}"
+                );
+            }
+            _ => panic!("expected an unreachable server"),
+        }
+    }
+
+    #[test]
+    fn deploy_maps_a_missing_source_directory_by_variant() {
+        let missing = input_error(UdfInputError::Missing {
+            path: "clickhouse/udfs/my_fn".into(),
+        });
+        assert!(matches!(&missing, Error::UdfSourceInvalid { reason, .. }
+            if reason == crate::udf::SOURCE_DIR_MISSING));
     }
 }

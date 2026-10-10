@@ -784,9 +784,9 @@ CONTEXT FOR AGENTS:
   The server must already exist; if it is running, functions reload at once.
   Redeploying the same function name replaces its files and definition.
   Runtime native deploys only from Linux amd64/arm64 hosts; elsewhere use `cloud udf create`.
-  Cloud-only fields (memoryLimitMib, sandboxType, sandboxVersion) are accepted and ignored.
+  Fields with no local effect are accepted and reported in ignored_fields.
   If a running server does not load the function, deploy exits 1 with the server log path.
-  One rejected definition blocks every later reload on that server until it is fixed or removed.")]
+  A broken UDF fails every function reload on its server until fixed or removed; others still load.")]
     Deploy {
         /// Function name; its sources are NAME/ under --dir
         #[arg(value_name = "NAME", value_parser = parse_udf_name_arg)]

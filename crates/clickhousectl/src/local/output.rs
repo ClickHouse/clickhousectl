@@ -1153,6 +1153,9 @@ impl fmt::Display for UdfDeployOutput {
         if !self.ignored_fields.is_empty() {
             detail("ignored fields", &self.ignored_fields.join(", "))?;
         }
+        if !self.ignored_files.is_empty() {
+            detail("ignored files", &self.ignored_files.join(", "))?;
+        }
         if self.reloaded {
             write!(f, "Reloaded functions; {} is loaded.", self.name)
         } else {
@@ -2147,14 +2150,18 @@ mod tests {
             loaded: Some(true),
             interpreter: Some("/usr/bin/python3".into()),
             ignored_fields: vec!["poolSize".into(), "memoryLimitMib".into()],
-            ignored_files: vec![],
+            ignored_files: vec!["amd64/".into()],
             warnings: vec![],
             function_config: "fn.xml".into(),
             scripts_dir: "scripts/my_fn".into(),
         };
         let text = out.to_string();
         let details: Vec<&str> = text.lines().filter(|line| line.starts_with("  ")).collect();
-        assert_eq!(details.len(), 4, "{text}");
+        assert_eq!(details.len(), 5, "{text}");
+        assert!(
+            details.iter().any(|line| line.ends_with(" amd64/")),
+            "{text}"
+        );
         let columns: Vec<usize> = details
             .iter()
             .map(|line| {

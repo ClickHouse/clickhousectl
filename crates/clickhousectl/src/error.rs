@@ -826,12 +826,13 @@ pub enum Error {
         deploy_command: String,
     },
 
-    /// The running server rejected a function reload after a deployment. The
-    /// files stay deployed and ClickHouse reloads all function files
-    /// together, so every later reload on the server fails until the broken
-    /// function is fixed or removed. `blocking` names the deployed functions
-    /// ClickHouse reported as broken, which need not include `name`; empty
-    /// when it could not tell. `details` is ClickHouse's response text, which
+    /// The running server rejected a function reload after a deployment, and
+    /// `name` is broken or could not be confirmed to run its new definition.
+    /// The files stay deployed. ClickHouse loads each function file on its
+    /// own, so other functions still load, but every later reload on the
+    /// server fails until the broken function is fixed or removed. `blocking`
+    /// names the deployed functions found broken, which need not include
+    /// `name`; empty when it could not tell. `details` is ClickHouse's response text, which
     /// structured output carries in `details` rather than `message`.
     #[error("{}\nClickHouse error: {}", udf_rejected_message(.0), .0.details)]
     UdfRejected(Box<UdfRejection>),
@@ -987,25 +988,32 @@ pub(crate) fn udf_rejected_message(rejection: &UdfRejection) -> String {
             format!(" {} also broken.", udf_names_verb(&others))
         };
         return format!(
-            "ClickHouse rejected UDF {name} on server {server}. Its files stay deployed, and every \
-             function reload on this server fails until it is fixed. Fix {} and rerun \
+            "ClickHouse rejected UDF {name} on server {server}. Its files stay deployed, and \
+             function reloads on this server fail until it is fixed or removed, though other UDFs \
+             still load. Fix {} and rerun \
              `{deploy_command}`, restore the previous working copy and rerun it, or remove it with \
              `clickhousectl local udf remove {name} --server {server}`.{also}",
             source_dir.display()
         );
     }
     match blocking.first() {
+        // Only a server without per-function load status leaves `name`
+        // loaded but unconfirmed.
         Some(culprit) => format!(
             "ClickHouse rejected the function reload on server {server} because {} broken. \
-             UDF {name} is deployed but does not load until that is fixed and redeployed, or \
-             removed with `clickhousectl local udf remove {culprit} --server {server}`.",
+             UDF {name} is deployed and loaded, but this server (ClickHouse before 26.2) does \
+             not report whether it runs the new definition or the previous one. Fix and \
+             redeploy the broken UDF, or remove it with \
+             `clickhousectl local udf remove {culprit} --server {server}`, then rerun \
+             `{deploy_command}`.",
             udf_names_verb(blocking)
         ),
         None => format!(
             "ClickHouse rejected the function reload on server {server} after UDF {name} was \
              deployed. Its files stay deployed. A broken definition, this one or another deployed \
-             UDF, blocks every function reload on this server until it is fixed or removed; \
-             `clickhousectl local udf list --server {server}` shows which UDFs are not loaded."
+             UDF, makes function reloads on this server fail until it is fixed or removed, though \
+             other UDFs still load; `clickhousectl local udf list --server {server}` shows which \
+             UDFs are not loaded."
         ),
     }
 }
@@ -1035,9 +1043,9 @@ pub(crate) fn udf_reload_blocked_message(
              fix and redeploy it, or remove it."
         ),
         (None, None) => format!(
-            "{lead}. A broken definition blocks every function reload on this server until it \
-             is fixed or removed; `clickhousectl local udf list --server {server}` shows which \
-             UDFs are not loaded."
+            "{lead}. A broken definition makes function reloads on this server fail until it is \
+             fixed or removed, though other UDFs still load; \
+             `clickhousectl local udf list --server {server}` shows which UDFs are not loaded."
         ),
     }
 }

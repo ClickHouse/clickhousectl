@@ -68,8 +68,10 @@ struct Env {
     /// While this file exists the fake accepts the first reload and rejects
     /// every later one, like a function ClickHouse has never loaded.
     fail_retry_marker: PathBuf,
-    /// The names `system.user_defined_functions` reports as failed, one per
-    /// line. Without it the fake rejects that query, like ClickHouse < 26.2.
+    /// `system.user_defined_functions` rows, one per line: a bare name has
+    /// `load_status = 'Failed'`; `name\tSuccess\tERROR` loaded before and
+    /// has its rejected redeploy only in `loading_error_message`. Without it
+    /// the fake rejects that query, like ClickHouse < 26.2.
     failed_functions: PathBuf,
     /// While this file exists the fake drops HTTP connections unanswered.
     drop_http_marker: PathBuf,
@@ -284,7 +286,7 @@ fn fake_clickhouse_process() {
                 )
             } else if body.contains("system.user_defined_functions") {
                 match std::fs::read_to_string(&failed_functions) {
-                    Ok(names) => ("200 OK", names),
+                    Ok(rows) => ("200 OK", failed_function_names(&rows, &body)),
                     Err(_) => rejection(
                         "Code: 60. DB::Exception: Unknown table expression identifier \
                          'system.user_defined_functions'. (UNKNOWN_TABLE)\n"
@@ -306,6 +308,22 @@ fn fake_clickhouse_process() {
         );
         let _ = stream.flush();
     }
+}
+
+/// The names a `system.user_defined_functions` query selects from the
+/// fake's rows (see [`Env::failed_functions`]): `Failed` rows, plus rows
+/// with a loading error when the query asks for them.
+fn failed_function_names(rows: &str, sql: &str) -> String {
+    let with_errors = sql.contains("loading_error_message != ''");
+    rows.lines()
+        .filter_map(|row| {
+            let mut columns = row.split('\t');
+            let name = columns.next().filter(|name| !name.is_empty())?;
+            let status = columns.next().unwrap_or("Failed");
+            let error = columns.next().unwrap_or_default();
+            (status == "Failed" || (with_errors && !error.is_empty())).then(|| format!("{name}\n"))
+        })
+        .collect()
 }
 
 /// The fake's `system.functions` rows for the name-clash query: the rows
@@ -627,8 +645,9 @@ fn a_definition_the_server_rejects_on_reload_keeps_the_files_and_names_the_way_o
     assert_eq!(error["error"]["code"], "udf_rejected");
     assert_eq!(
         error["error"]["message"],
-        "ClickHouse rejected UDF my_fn on server default. Its files stay deployed, and every \
-         function reload on this server fails until it is fixed. Fix shared/udfs/my_fn and rerun \
+        "ClickHouse rejected UDF my_fn on server default. Its files stay deployed, and function \
+         reloads on this server fail until it is fixed or removed, though other UDFs still load. \
+         Fix shared/udfs/my_fn and rerun \
          `clickhousectl local udf deploy my_fn --dir shared/udfs --server default`, restore the \
          previous working copy and rerun it, or remove it with \
          `clickhousectl local udf remove my_fn --server default`."
@@ -702,7 +721,7 @@ fn a_function_rejected_only_by_the_retry_reload_is_reported_as_rejected() {
 }
 
 #[test]
-fn a_rejected_reload_names_the_broken_function_not_the_one_deployed() {
+fn a_function_that_loads_while_another_is_broken_deploys_with_a_warning() {
     let env = setup();
     let _server = start_server(&env);
     write_udf(&env, "bad");
@@ -715,7 +734,90 @@ fn a_rejected_reload_names_the_broken_function_not_the_one_deployed() {
         "clickhousectl local udf remove bad --server default"
     );
 
-    // ClickHouse >= 26.2 reports the failed function's load status.
+    // ClickHouse >= 26.2 reports per-function status: my_fn loaded its new
+    // definition, so only the reload failed, because of bad.
+    let json = deploy(&env, "my_fn");
+    assert_eq!(json["loaded"], true);
+    let warnings = json["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{json}");
+    let warning = warnings[0].as_str().unwrap();
+    assert!(warning.contains("UDF bad is broken"), "{warning}");
+    assert!(
+        warning.contains("`clickhousectl local udf remove bad --server default`"),
+        "{warning}"
+    );
+    let data = env.project.path().join(".clickhouse/servers/default/data");
+    assert!(!data.join("user_defined_functions/my_fn.rejected").exists());
+    assert_eq!(list_entry(&env, "my_fn")["last_deploy_rejected"], false);
+
+    let human = run(&env, &["local", "udf", "deploy", "my_fn"]);
+    assert!(human.status.success());
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(stderr.starts_with("Warning: "), "{stderr}");
+    assert!(stderr.contains("UDF bad is broken"), "{stderr}");
+}
+
+#[test]
+fn a_rejected_redeploy_of_a_loaded_function_is_blamed_on_it() {
+    let env = setup();
+    let _server = start_server(&env);
+    write_udf(&env, "my_fn");
+    deploy(&env, "my_fn");
+    // 26.2+: the earlier definition stays loaded with `Success`, and the
+    // rejection is only in `loading_error_message`.
+    std::fs::write(&env.fail_reload_marker, "").unwrap();
+    std::fs::write(
+        &env.failed_functions,
+        "my_fn\tSuccess\tCode: 50. DB::Exception: Unknown data type family: Nope.\n",
+    )
+    .unwrap();
+    let error = error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
+    assert_eq!(error["error"]["code"], "udf_rejected");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove my_fn --server default"
+    );
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("ClickHouse rejected UDF my_fn on server default."),
+        "{error}"
+    );
+    assert_eq!(list_entry(&env, "my_fn")["last_deploy_rejected"], true);
+}
+
+#[test]
+fn older_servers_blame_unlisted_staged_functions_and_never_guess_about_loaded_ones() {
+    let env = setup();
+    let _server = start_server(&env);
+    write_udf(&env, "my_fn");
+    deploy(&env, "my_fn");
+    write_udf(&env, "bad");
+    std::fs::write(
+        &env.fail_reload_marker,
+        "Code: 50. DB::Exception: Unknown data type family: NotAType. (UNKNOWN_TYPE)",
+    )
+    .unwrap();
+
+    // No per-function status: a staged function the server does not list
+    // is the broken one.
+    let error = error_json(&run(&env, &["local", "udf", "deploy", "bad", "--json"]));
+    assert_eq!(error["error"]["code"], "udf_rejected");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove bad --server default"
+    );
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("ClickHouse rejected UDF bad on server default."),
+        "{error}"
+    );
+
+    // my_fn was loaded before, so an older server cannot show whether its
+    // new definition loaded: it is reported, naming the broken one.
     let error = error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
     assert_eq!(error["error"]["code"], "udf_rejected");
     assert_eq!(
@@ -724,10 +826,21 @@ fn a_rejected_reload_names_the_broken_function_not_the_one_deployed() {
     );
     let message = error["error"]["message"].as_str().unwrap();
     assert!(message.contains("UDF bad is broken"), "{message}");
-    assert!(!message.contains("remove my_fn"), "{message}");
+    assert!(message.contains("before 26.2"), "{message}");
+    assert!(
+        message.contains("`clickhousectl local udf deploy my_fn --server default`"),
+        "{message}"
+    );
+    assert!(!message.contains("DB::Exception"), "{message}");
 
-    // Older servers: only a name clash names the function, in the error text.
-    std::fs::remove_file(&env.failed_functions).unwrap();
+    // `reload` uses the same fallback.
+    let error = error_json(&run(&env, &["local", "udf", "reload", "--json"]));
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove bad --server default"
+    );
+
+    // A name clash in the error text names its function too.
     std::fs::write(
         &env.fail_reload_marker,
         "Code: 609. DB::Exception: The function 'bad' already exists. \
@@ -741,30 +854,36 @@ fn a_rejected_reload_names_the_broken_function_not_the_one_deployed() {
     );
 
     // No culprit identified, or one that is not deployed here: blame no one.
+    error_json(&run(&env, &["local", "udf", "remove", "bad", "--json"]));
     std::fs::write(
         &env.fail_reload_marker,
         "Code: 50. DB::Exception: Unknown data type family: NotAType. (UNKNOWN_TYPE)",
     )
     .unwrap();
-    for failed in [None, Some("handmade\n")] {
-        if let Some(failed) = failed {
-            std::fs::write(&env.failed_functions, failed).unwrap();
-        }
-        let error = error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
-        assert_eq!(error["error"]["code"], "udf_rejected");
-        assert_eq!(
-            error["error"]["command"],
-            "clickhousectl local udf list --server default"
-        );
-        let message = error["error"]["message"].as_str().unwrap();
-        assert!(!message.contains("udf remove"), "{message}");
-        assert!(!message.contains("handmade"), "{message}");
-        assert!(!message.contains("DB::Exception"), "{message}");
-        assert_eq!(
-            error["error"]["details"],
-            "Code: 50. DB::Exception: Unknown data type family: NotAType. (UNKNOWN_TYPE)"
-        );
-    }
+    let error = error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
+    assert_eq!(error["error"]["code"], "udf_rejected");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf list --server default"
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(!message.contains("udf remove"), "{message}");
+    assert!(!message.contains("DB::Exception"), "{message}");
+    assert_eq!(
+        error["error"]["details"],
+        "Code: 50. DB::Exception: Unknown data type family: NotAType. (UNKNOWN_TYPE)"
+    );
+
+    // 26.2+ naming only a function not deployed here: my_fn loaded, and
+    // the warning carries ClickHouse's text since no culprit is known.
+    std::fs::write(&env.failed_functions, "handmade\n").unwrap();
+    let json = deploy(&env, "my_fn");
+    let warning = json["warnings"][0].as_str().unwrap();
+    assert!(!warning.contains("handmade"), "{warning}");
+    assert!(
+        warning.ends_with("Unknown data type family: NotAType. (UNKNOWN_TYPE)"),
+        "{warning}"
+    );
 }
 
 #[test]
@@ -820,10 +939,8 @@ fn remove_during_a_blocked_reload_says_what_was_removed_and_what_blocks() {
         stderr.contains("Removed UDF other_fn from server default"),
         "{stderr}"
     );
-    assert!(
-        stderr.contains("another deployed UDF is broken"),
-        "{stderr}"
-    );
+    // Older servers: the staged function the server does not list is named.
+    assert!(stderr.contains("UDF bad is broken"), "{stderr}");
     assert!(stderr.contains("Code: 36. DB::Exception"), "{stderr}");
 }
 
