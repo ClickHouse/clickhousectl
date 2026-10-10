@@ -23,9 +23,11 @@ fn or_absent<T: fmt::Display>(value: Option<T>) -> String {
 
 /// Stable codes for local runtime failures. New codes may be added, but
 /// existing spellings and meanings are part of the machine-output contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum LocalErrorCode {
+///
+/// [`Self::as_str`] is the only spelling: the JSON envelope serializes through
+/// it and telemetry records it as `failure_kind`, so the two cannot drift.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LocalErrorCode {
     ManagedClientServerNotFound,
     ManagedClientServerNotRunning,
     ManagedClientBinaryNotFound,
@@ -97,6 +99,68 @@ enum LocalErrorCode {
     ServerMetadataInvalid,
     IoError,
     LocalError,
+}
+
+impl LocalErrorCode {
+    /// The wire value. Literal strings only, so neither the JSON envelope nor
+    /// telemetry can carry user data through this field.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ManagedClientServerNotFound => "managed_client_server_not_found",
+            Self::ManagedClientServerNotRunning => "managed_client_server_not_running",
+            Self::ManagedClientBinaryNotFound => "managed_client_binary_not_found",
+            Self::ManagedClientProjectStateUnavailable => {
+                "managed_client_project_state_unavailable"
+            }
+            Self::ServerNotFound => "server_not_found",
+            Self::ServerSelectionRequired => "server_selection_required",
+            Self::ServerNotRunning => "server_not_running",
+            Self::ServerRunning => "server_running",
+            Self::InvalidServerName => "invalid_server_name",
+            Self::UnsupportedArgument => "unsupported_argument",
+            Self::ConfigNotFound => "config_not_found",
+            Self::InvalidConfigName => "invalid_config_name",
+            Self::UdfDefinitionInvalid => "udf_definition_invalid",
+            Self::UdfSourceInvalid => "udf_source_invalid",
+            Self::UdfNotFound => "udf_not_found",
+            Self::UdfInterpreterNotFound => "udf_interpreter_not_found",
+            Self::UdfQueryFailed => "udf_query_failed",
+            Self::UdfRuntimeUnsupported => "udf_runtime_unsupported",
+            Self::UdfNotLoaded => "udf_not_loaded",
+            Self::UdfRejected => "udf_rejected",
+            Self::UdfServerUnreachable => "udf_server_unreachable",
+            Self::UdfReloadBlocked => "udf_reload_blocked",
+            Self::InvalidVersion => "invalid_version",
+            Self::VersionNotInstalled => "version_not_installed",
+            Self::BinaryNotLaunchable => "binary_not_launchable",
+            Self::VersionSelectionRequired => "version_selection_required",
+            Self::VersionAlreadyInstalled => "version_already_installed",
+            Self::VersionUnavailable => "version_unavailable",
+            Self::VersionIsDefault => "version_is_default",
+            Self::UnsupportedClientVersion => "unsupported_client_version",
+            Self::UnsupportedPlatform => "unsupported_platform",
+            Self::PortInUse => "port_in_use",
+            Self::StartupExit => "startup_exit",
+            Self::StartupTimeout => "startup_timeout",
+            Self::DownloadFailed => "download_failed",
+            Self::NetworkError => "network_error",
+            Self::DockerUnavailable => "docker_unavailable",
+            Self::DockerError => "docker_error",
+            Self::ContainerNameConflict => "container_name_conflict",
+            Self::PostgresError => "postgres_error",
+            Self::SqlInputOpenFailed => "sql_input_open_failed",
+            Self::SqlInputReadFailed => "sql_input_read_failed",
+            Self::ServerMetadataInvalid => "server_metadata_invalid",
+            Self::IoError => "io_error",
+            Self::LocalError => "local_error",
+        }
+    }
+}
+
+impl Serialize for LocalErrorCode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
@@ -290,6 +354,18 @@ enum LocalErrorBody {
 #[derive(Debug, PartialEq, Eq, Serialize)]
 struct LocalErrorOutput {
     error: LocalErrorBody,
+}
+
+impl LocalErrorBody {
+    fn code(&self) -> LocalErrorCode {
+        match self {
+            Self::General(detail) => detail.code,
+            Self::ManagedClient(detail) => detail.code,
+            Self::ProjectServer(detail) => detail.code,
+            Self::ProjectServerStateMissing(detail) => detail.code,
+            Self::ServerMetadataParse(detail) => detail.code,
+        }
+    }
 }
 
 impl LocalErrorOutput {
@@ -852,6 +928,13 @@ fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
             command: Some("clickhousectl local server start <name>"),
         },
     }
+}
+
+/// The code [`print_error`] would emit for this failure, which telemetry
+/// records as `failure_kind` (#1063). Derived from the same classification, so
+/// an event and the command's `--json` error always agree.
+pub(crate) fn error_code(error: &Error) -> LocalErrorCode {
+    LocalErrorOutput::from_error(error).error.code()
 }
 
 /// Write exactly one local runtime error object to stderr. The serialized DTO
@@ -2103,6 +2186,8 @@ mod tests {
 
         for (error, expected) in cases {
             assert_eq!(error_json(&error)["error"]["code"], expected);
+            // Telemetry's `failure_kind` reads the same classification.
+            assert_eq!(error_code(&error).as_str(), expected);
         }
     }
 
