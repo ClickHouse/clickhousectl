@@ -68,7 +68,7 @@ pub enum UdfCommands {
     /// Create a UDF
     #[command(
         override_usage = CREATE_USAGE,
-        after_help = "CONTEXT FOR AGENTS:\n  NAME archives clickhouse/udfs/NAME/ (or --dir PATH); its udf.json is the definition unless --file is given.\n  Without NAME, pass --file and --artifact (a ZIP you built). Symbolic links are rejected before any upload.\n  python3.11 archives need main.py at the root; native ones ship only amd64/main and arm64/main.\n  Returns while the build runs: poll `cloud udf get <name>` until status is `ready` or `error`."
+        after_help = "CONTEXT FOR AGENTS:\n  NAME/ must hold udf.json, the definition; symbolic links are rejected before any upload.\n  python3.11 archives need main.py at the root; native ones ship only amd64/main and arm64/main.\n  Returns while the build runs: poll `cloud udf get <name>` until status is `ready` or `error`."
     )]
     Create(UdfCreateArgs),
     /// Delete a UDF
@@ -78,7 +78,7 @@ pub enum UdfCommands {
     Delete(UdfNameArgs),
     /// Attach a UDF to a service
     #[command(
-        after_help = "CONTEXT FOR AGENTS:\n  Replaces the service's attached version; omission selects the latest ready version.\n  An idle service fails with HTTP 424 unless --wake wakes it first; a stopped service must be started.\n  Returns while it provisions: poll `cloud udf attachment get <name> <service-id>` until status is `deployed`."
+        after_help = "CONTEXT FOR AGENTS:\n  Replaces the service's attached version; omission selects the latest ready version.\n  Fails on an idle service unless --wake; a stopped service must be started first.\n  Returns while it provisions: poll `cloud udf attachment get <name> <service-id>` until status is `deployed`."
     )]
     Attach {
         #[command(flatten)]
@@ -128,7 +128,7 @@ pub enum UdfVersionCommands {
     },
     /// Create a UDF version
     #[command(
-        after_help = "CONTEXT FOR AGENTS:\n  Supply the complete definition; omitted options use defaults, not previous values.\n  Archives clickhouse/udfs/NAME/ (or --dir PATH), whose udf.json must name NAME; --artifact needs --file.\n  Returns while the build runs: poll `cloud udf get <name>` until status is `ready` or `error`.\n  Each retry uploads a fresh archive and consumes a new upload session."
+        after_help = "CONTEXT FOR AGENTS:\n  Supply the complete definition; omitted options use defaults, not previous values.\n  Without --artifact, archives NAME/ under --dir; its udf.json must name NAME.\n  Returns while the build runs: poll `cloud udf get <name>` until status is `ready` or `error`."
     )]
     Create {
         #[command(flatten)]
