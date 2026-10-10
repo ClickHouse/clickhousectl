@@ -12,6 +12,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api(
         "udf deploy",
         &[
+            &op::INSTANCE_GET,
             &op::UDF_GET,
             &op::UDF_UPLOAD_SESSION_CREATE,
             &op::UDF_ATTACH,
@@ -25,10 +26,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
             "If a newer version appears during the build",
             &[&op::UDF_VERSION_LIST],
         ),
-        Conditional::new(
-            "Without --no-wake",
-            &[&op::INSTANCE_STATE_UPDATE, &op::INSTANCE_GET],
-        ),
+        Conditional::new("Without --no-wake", &[&op::INSTANCE_STATE_UPDATE]),
     ]),
     Permission::api("udf delete", &[&op::UDF_DELETE]),
     Permission::api("udf attach", &[&op::UDF_ATTACH]).when(&[Conditional::flag(
@@ -94,7 +92,7 @@ pub enum UdfCommands {
     Create(UdfCreateArgs),
     /// Deploy a UDF directory and attach it to a service
     #[command(
-        after_help = "CONTEXT FOR AGENTS:\n  Creates the UDF, or a new version when the name exists, from clickhouse/udfs/NAME/ (or --dir PATH).\n  Waits for the build, attaches that exact version, then waits until it is deployed.\n  An idle service is woken unless --no-wake; a stopped service is an error.\n  Typical flow: `local udf deploy NAME` to test locally, then `cloud udf deploy NAME --service <id>`."
+        after_help = "CONTEXT FOR AGENTS:\n  Creates the UDF, or a new version when the name exists, from clickhouse/udfs/NAME/ (or --dir PATH).\n  Waits for the build, attaches that exact version, then waits until it is deployed.\n  The service is checked first: an unknown or stopped one, or an idle one with --no-wake, fails before any upload.\n  Otherwise an idle service is woken when attaching.\n  Typical flow: `local udf deploy NAME` to test locally, then `cloud udf deploy NAME --service <id>`."
     )]
     Deploy(UdfDeployArgs),
     /// Delete a UDF
@@ -1162,6 +1160,7 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     let timeout = Duration::from_secs(args.timeout);
 
     let org = resolve_org_id(client).await?;
+    check_deploy_target(client, &org, service, !args.no_wake).await?;
     let existing = client.get_udf_if_exists(&org, name).await?;
     let file = open_artifact(artifact.path()).await?;
     let upload_id = upload_artifact(client, &org, file).await?;
@@ -1239,6 +1238,53 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
         ));
         Ok(())
     }
+}
+
+/// Fail before anything is uploaded when the attach could never succeed: an
+/// unknown service, one in a state a wake cannot fix, or an idle one under
+/// `--no-wake`. An idle service is not woken here; the build takes minutes
+/// and it could idle again, so the attach wakes it.
+async fn check_deploy_target(
+    client: &CloudClient,
+    org: &str,
+    service: &str,
+    wake: bool,
+) -> CloudResult<()> {
+    let Some(state) = client.get_service(org, service).await?.state else {
+        // Without a state there is nothing to judge; the attach reports.
+        return Ok(());
+    };
+    if !wake && state == ServiceState::Idle {
+        let command = format!("clickhousectl cloud service wake {service}");
+        return Err(deploy_target_error(
+            format!(
+                "Service {service} is idle; rerun without --no-wake, or run `{command}` and retry once it is running."
+            ),
+            CloudErrorCode::ServiceIdle,
+            command,
+        ));
+    }
+    let Outcome::Failed(_, code) = classify_wake_state(Some(&state))? else {
+        return Ok(());
+    };
+    if code == CloudErrorCode::ServiceStopped {
+        let command = format!("clickhousectl cloud service start {service}");
+        return Err(deploy_target_error(
+            format!("Service {service} is {state}; start it with `{command}` and retry."),
+            code,
+            command,
+        ));
+    }
+    let message =
+        format!("Service {service} is {state}; UDFs can only be deployed to a running service.");
+    Err(CloudError::new(message.clone()).with_details(CloudErrorDetail::new(code, message)))
+}
+
+fn deploy_target_error(message: String, code: CloudErrorCode, command: String) -> CloudError {
+    CloudError::new(message.clone()).with_details(CloudErrorDetail {
+        command: Some(command),
+        ..CloudErrorDetail::new(code, message)
+    })
 }
 
 /// Append the resume hint to the message and to any JSON detail, which

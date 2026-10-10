@@ -31110,6 +31110,18 @@ async fn udf_attach_wake_waits_out_a_failed_wake_while_the_service_comes_up() {
     );
 }
 
+/// The service `udf deploy` checks before it uploads anything.
+async fn mount_deploy_service(server: &MockServer, service: &str, state: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/organizations/org-1/services/{service}")))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"state": state}})),
+        )
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
     for existing in [false, true] {
@@ -31118,6 +31130,7 @@ async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
         let project = tempfile::tempdir().unwrap();
         project_udf(project.path(), "my_udf", "python3.11");
         mount_udf_upload_session(&server, &storage).await;
+        mount_deploy_service(&server, "svc-1", "running").await;
         let new_version = if existing { 2 } else { 1 };
         let udf_body = |version: i64, status: &str| {
             serde_json::json!({"result": {
@@ -31234,6 +31247,7 @@ async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
         assert_eq!(
             calls,
             [
+                "GET /v1/organizations/org-1/services/svc-1",
                 "GET /v1/organizations/org-1/udfs/my_udf",
                 "POST /v1/organizations/org-1/udfUploads/url",
                 publish,
@@ -31265,6 +31279,7 @@ async fn udf_deploy_native_archives_only_the_architecture_directories() {
     let project = tempfile::tempdir().unwrap();
     project_udf(project.path(), "native_udf", "native");
     mount_udf_upload_session(&server, &storage).await;
+    mount_deploy_service(&server, "svc-1", "running").await;
     let ready = serde_json::json!({"result": {"functionName": "native_udf", "version": 1, "status": "ready"}});
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/udfs/native_udf"))
@@ -31338,6 +31353,7 @@ async fn udf_deploy_failures_after_publish_name_the_built_version() {
     let project = tempfile::tempdir().unwrap();
     project_udf(project.path(), "my_udf", "python3.11");
     mount_udf_upload_session(&server, &storage).await;
+    mount_deploy_service(&server, "svc-1", "running").await;
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/udfs/my_udf"))
         .respond_with(
@@ -31387,5 +31403,186 @@ async fn udf_deploy_failures_after_publish_name_the_built_version() {
     assert!(
         message.contains("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 1`"),
         "{message}"
+    );
+}
+
+/// Paths `udf deploy` requested, in order.
+async fn deploy_calls(server: &MockServer) -> Vec<String> {
+    server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|request| format!("{} {}", request.method, request.url.path()))
+        .collect()
+}
+
+// The service is checked before anything is uploaded: a bad ID must not
+// leave an orphan UDF version behind.
+#[tokio::test]
+async fn udf_deploy_rejects_an_unknown_service_before_publishing() {
+    let org = "00000000-0000-4000-8000-000000000001";
+    let service = "11111111-2222-3333-4444-555555555555";
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    project_udf(project.path(), "my_udf", "python3.11");
+    Mock::given(method("GET"))
+        .and(path(format!("/v1/organizations/{org}/services/{service}")))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400, "error": "not a valid UUID"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let home = project.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let mut cmd = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut cmd);
+    let output = cmd
+        .env("HOME", home)
+        .env("DO_NOT_TRACK", "1")
+        .current_dir(project.path())
+        .args(["cloud", "--url", &server.uri()])
+        .args([
+            "--api-key",
+            "udf-key",
+            "--api-secret",
+            "udf-secret",
+            "--json",
+        ])
+        .args([
+            "udf",
+            "--org-id",
+            org,
+            "deploy",
+            "my_udf",
+            "--service",
+            service,
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "resource_not_found", "{error}");
+    assert_eq!(
+        deploy_calls(&server).await,
+        [format!("GET /v1/organizations/{org}/services/{service}")]
+    );
+}
+
+// `--no-wake` on an idle service, or a service in a state a wake cannot
+// fix, fails before the upload with the command that unblocks it.
+#[tokio::test]
+async fn udf_deploy_rejects_an_unusable_service_before_publishing() {
+    for (state, no_wake, code, command) in [
+        (
+            "idle",
+            true,
+            "service_idle",
+            Some("clickhousectl cloud service wake svc-1"),
+        ),
+        (
+            "stopped",
+            false,
+            "service_stopped",
+            Some("clickhousectl cloud service start svc-1"),
+        ),
+        (
+            "stopped",
+            true,
+            "service_stopped",
+            Some("clickhousectl cloud service start svc-1"),
+        ),
+        ("terminated", false, "service_not_running", None),
+    ] {
+        let server = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        project_udf(project.path(), "my_udf", "python3.11");
+        mount_deploy_service(&server, "svc-1", state).await;
+        let mut args = vec!["deploy", "my_udf", "--service", "svc-1"];
+        if no_wake {
+            args.push("--no-wake");
+        }
+        let output = udf_test_command(&server, project.path(), false, true, &args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{state}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], code, "{error}");
+        assert_eq!(error["error"]["command"].as_str(), command, "{error}");
+        assert_eq!(
+            deploy_calls(&server).await,
+            ["GET /v1/organizations/org-1/services/svc-1"],
+            "{state}"
+        );
+    }
+}
+
+// Without --no-wake an idle service is not woken up front: the build takes
+// minutes and the service could idle again, so the attach wakes it.
+#[tokio::test]
+async fn udf_deploy_proceeds_on_an_idle_service_without_waking_it_early() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    project_udf(project.path(), "my_udf", "python3.11");
+    mount_udf_upload_session(&server, &storage).await;
+    mount_deploy_service(&server, "svc-1", "idle").await;
+    let ready =
+        serde_json::json!({"result": {"functionName": "my_udf", "version": 1, "status": "ready"}});
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf"))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": "NOT_FOUND"})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(ready.clone()))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(ready))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let attached = serde_json::json!({"result": {
+        "functionName": "my_udf", "serviceId": "svc-1", "version": 1, "status": "deployed"
+    }});
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(attached.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(ResponseTemplate::new(200).set_body_json(attached))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["deploy", "my_udf", "--service", "svc-1"],
+    )
+    .output()
+    .unwrap();
+    assert_success(&output);
+    let calls = deploy_calls(&server).await;
+    assert_eq!(calls[0], "GET /v1/organizations/org-1/services/svc-1");
+    assert!(
+        !calls.iter().any(|call| call.starts_with("PATCH ")),
+        "{calls:?}"
     );
 }
