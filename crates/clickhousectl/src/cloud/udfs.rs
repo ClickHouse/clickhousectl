@@ -54,6 +54,11 @@ pub struct UdfArgs {
     command: UdfCommands,
 }
 
+/// Both `cloud udf create` forms; clap would otherwise derive one line that
+/// puts NAME after the `--file`/`--artifact` flags it conflicts with.
+const CREATE_USAGE: &str = "clickhousectl cloud udf create [OPTIONS] <NAME>
+       clickhousectl cloud udf create [OPTIONS] --file <PATH> --artifact <PATH>";
+
 #[derive(Subcommand)]
 pub enum UdfCommands {
     /// List UDFs
@@ -62,6 +67,7 @@ pub enum UdfCommands {
     Get(UdfNameArgs),
     /// Create a UDF
     #[command(
+        override_usage = CREATE_USAGE,
         after_help = "CONTEXT FOR AGENTS:\n  NAME archives clickhouse/udfs/NAME/ (or --dir PATH); its udf.json is the definition unless --file is given.\n  Without NAME, pass --file and --artifact (a ZIP you built). Symbolic links are rejected before any upload.\n  python3.11 archives need main.py at the root; native ones ship only amd64/main and arm64/main.\n  Returns while the build runs: poll `cloud udf get <name>` until status is `ready` or `error`."
     )]
     Create(UdfCreateArgs),
@@ -173,7 +179,12 @@ pub struct UdfPageArgs {
 #[derive(Args)]
 pub struct UdfCreateArgs {
     /// Function name; archives NAME/ under --dir instead of --artifact
-    #[arg(value_name = "NAME", value_parser = parse_udf_name, conflicts_with = "artifact")]
+    #[arg(
+        value_name = "NAME",
+        value_parser = parse_udf_name,
+        required_unless_present_any = ["config", "artifact"],
+        conflicts_with = "artifact"
+    )]
     name: Option<String>,
     #[command(flatten)]
     dir: UdfDirArg,
@@ -182,15 +193,15 @@ pub struct UdfCreateArgs {
         long = "file",
         value_name = "PATH",
         aliases = ["config-file", "config"],
-        required_unless_present = "name",
+        requires = "artifact",
         conflicts_with_all = ["name", "dir"]
     )]
     config: Option<String>,
-    /// Source archive path in ZIP format
+    /// Source archive path in ZIP format; requires --file
     #[arg(
         long,
         value_name = "PATH",
-        required_unless_present = "name",
+        requires = "config",
         conflicts_with_all = ["name", "dir"]
     )]
     artifact: Option<PathBuf>,
@@ -530,7 +541,7 @@ fn definition_source(config: Option<&str>, source: Option<&Path>) -> CloudResult
     match (config, source) {
         (Some(config), _) => read_config_value(config),
         (None, Some(dir)) => udf::load_definition_from_dir(dir).map_err(input_error),
-        (None, None) => Err(CloudError::usage("Pass NAME or --file <PATH>")),
+        (None, None) => Err(CloudError::usage("Pass NAME, or --file with --artifact")),
     }
 }
 
@@ -717,7 +728,7 @@ fn resolve_artifact(
     match (artifact, source) {
         (Some(path), _) => Ok(Artifact::File(path.to_path_buf())),
         (None, Some(dir)) => package_source_dir(dir, runtime).map(Artifact::Packaged),
-        (None, None) => Err(CloudError::usage("Pass NAME or --artifact <PATH>")),
+        (None, None) => Err(CloudError::usage("Pass NAME, or --file with --artifact")),
     }
 }
 
@@ -1878,6 +1889,40 @@ mod tests {
                 "{args:?}"
             );
         }
+    }
+
+    #[test]
+    fn udf_create_usage_and_missing_input_lead_with_name() {
+        use clap::CommandFactory;
+        use clap::error::{ContextKind, ContextValue};
+        let mut cli = Cli::command();
+        let create = cli
+            .find_subcommand_mut("cloud")
+            .and_then(|c| c.find_subcommand_mut("udf"))
+            .and_then(|c| c.find_subcommand_mut("create"))
+            .expect("cloud udf create");
+        let usage = create.render_usage().to_string();
+        let forms: Vec<&str> = usage.lines().collect();
+        assert_eq!(forms.len(), 2, "{usage}");
+        assert!(forms[0].ends_with("create [OPTIONS] <NAME>"), "{usage}");
+        assert!(!forms[1].contains("NAME"), "{usage}");
+        assert!(
+            forms[1].contains("--file <PATH>") && forms[1].contains("--artifact <PATH>"),
+            "{usage}"
+        );
+
+        let error = Cli::try_parse_from(["chctl", "cloud", "udf", "create"])
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(error.exit_code(), 2);
+        let Some(ContextValue::Strings(missing)) = error.get(ContextKind::InvalidArg) else {
+            panic!("missing arguments");
+        };
+        assert_eq!(missing, &["<NAME>".to_string()]);
     }
 
     #[test]
