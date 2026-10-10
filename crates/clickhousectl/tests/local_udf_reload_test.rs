@@ -1,8 +1,8 @@
 //! Subprocess coverage for `local udf` against a running server: deploy
 //! reloads and verifies, `reload` and `list` talk HTTP, a function the
 //! server never loads is an error, a rejected reload names the broken
-//! function, an unreachable server is not a rejection, and server errors are
-//! redacted in JSON.
+//! function, an unreachable server is not a rejection, and JSON keeps
+//! ClickHouse's error text out of `message` but in `details`.
 //! The server is this test binary re-executed as a fake ClickHouse that
 //! answers the readiness probes and logs every statement.
 
@@ -423,7 +423,7 @@ fn reload_sends_system_reload_functions_and_lists_loaded_names() {
 }
 
 #[test]
-fn server_errors_are_redacted_in_json_and_verbose_in_human_mode() {
+fn server_errors_are_in_json_details_and_inline_in_human_mode() {
     let env = setup();
     let _server = start_server(&env);
     std::fs::write(&env.fail_reload_marker, "").unwrap();
@@ -437,7 +437,10 @@ fn server_errors_are_redacted_in_json_and_verbose_in_human_mode() {
         "ClickHouse server 'default' rejected the query"
     );
     assert_eq!(error["error"]["command"], "clickhousectl local server list");
-    assert!(!String::from_utf8_lossy(&json_mode.stderr).contains("DB::Exception"));
+    assert_eq!(
+        error["error"]["details"],
+        "Code: 36. DB::Exception: Function configuration is invalid. (BAD_ARGUMENTS)"
+    );
 
     let human = run(&env, &["local", "udf", "reload"]);
     assert_eq!(human.status.code(), Some(1));
@@ -557,7 +560,10 @@ fn a_definition_the_server_rejects_on_reload_keeps_the_files_and_names_the_way_o
         error["error"]["command"],
         "clickhousectl local udf remove my_fn --server default"
     );
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("DB::Exception"));
+    assert_eq!(
+        error["error"]["details"],
+        "Code: 36. DB::Exception: Function configuration is invalid. (BAD_ARGUMENTS)"
+    );
     let data = env.project.path().join(".clickhouse/servers/default/data");
     assert!(
         data.join("user_defined_functions/my_fn_function.xml")
@@ -676,6 +682,11 @@ fn a_rejected_reload_names_the_broken_function_not_the_one_deployed() {
         let message = error["error"]["message"].as_str().unwrap();
         assert!(!message.contains("udf remove"), "{message}");
         assert!(!message.contains("handmade"), "{message}");
+        assert!(!message.contains("DB::Exception"), "{message}");
+        assert_eq!(
+            error["error"]["details"],
+            "Code: 50. DB::Exception: Unknown data type family: NotAType. (UNKNOWN_TYPE)"
+        );
     }
 }
 
@@ -702,7 +713,11 @@ fn remove_during_a_blocked_reload_says_what_was_removed_and_what_blocks() {
         "{message}"
     );
     assert!(message.contains("UDF bad is broken"), "{message}");
-    assert!(!error.to_string().contains("DB::Exception"));
+    assert!(!message.contains("DB::Exception"), "{message}");
+    assert_eq!(
+        error["error"]["details"],
+        "Code: 36. DB::Exception: Function configuration is invalid. (BAD_ARGUMENTS)"
+    );
     let data = env.project.path().join(".clickhouse/servers/default/data");
     assert!(
         !data
@@ -748,6 +763,8 @@ fn an_unreachable_server_is_not_reported_as_a_rejection() {
         format!("Could not reach server 'default' on port {}", env.http_port)
     );
     assert_eq!(error["error"]["command"], "clickhousectl local server list");
+    let details = error["error"]["details"].as_str().unwrap();
+    assert!(!details.is_empty());
 
     let human = run(&env, &["local", "udf", "reload"]);
     assert_eq!(human.status.code(), Some(1));

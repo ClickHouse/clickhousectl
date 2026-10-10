@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{fmt, str::FromStr};
 use thiserror::Error;
 
@@ -722,8 +722,8 @@ pub enum Error {
     )]
     InvalidConfigName(String),
 
-    /// `udf.json` is not JSON at all. The serde text is foreign output, so
-    /// structured output replaces it with a fixed summary.
+    /// `udf.json` is not JSON at all. Structured output keeps the path and
+    /// position in its own message and carries serde's text in `details`.
     #[error("UDF definition '{}' is not valid JSON: {source}", path.display())]
     UdfDefinitionParse {
         path: PathBuf,
@@ -748,12 +748,14 @@ pub enum Error {
     UdfInterpreterNotFound(String),
 
     /// The local server answered a UDF query with an error. The details are
-    /// ClickHouse's response text, so structured output redacts them.
+    /// ClickHouse's response text, which structured output keeps out of
+    /// `message` and carries in `details`.
     #[error("ClickHouse server '{server}' rejected the query: {details}")]
     UdfQueryFailed { server: String, details: String },
 
     /// The local server's HTTP port did not answer a UDF statement. The
-    /// details are the HTTP client's text, so structured output redacts them.
+    /// details are the HTTP client's text, which structured output carries in
+    /// `details` rather than `message`.
     #[error("Could not reach server '{server}' on port {port}: {details}")]
     UdfServerUnreachable {
         server: String,
@@ -794,15 +796,16 @@ pub enum Error {
     /// together, so every later reload on the server fails until the broken
     /// function is fixed or removed. `blocking` names the deployed functions
     /// ClickHouse reported as broken, which need not include `name`; empty
-    /// when it could not tell. `details` is ClickHouse's response text, so
-    /// structured output redacts it.
+    /// when it could not tell. `details` is ClickHouse's response text, which
+    /// structured output carries in `details` rather than `message`.
     #[error("{}\nClickHouse error: {}", udf_rejected_message(.0), .0.details)]
     UdfRejected(Box<UdfRejection>),
 
     /// `remove` deleted the function's files, but the reload that followed
     /// was rejected because another deployed function is still broken.
     /// `blocking` names it when ClickHouse identified it. `details` is
-    /// ClickHouse's response text, so structured output redacts it.
+    /// ClickHouse's response text, which structured output carries in
+    /// `details` rather than `message`.
     #[error(
         "{}\nClickHouse error: {details}",
         udf_reload_blocked_message(.name, .server, .blocking)
@@ -839,6 +842,19 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// The self-composed JSON message of [`Error::UdfDefinitionParse`]: the file
+/// and, when serde knows it, the position. Serde's own text goes to `details`.
+pub(crate) fn udf_definition_parse_message(path: &Path, source: &serde_json::Error) -> String {
+    let path = path.display();
+    match source.line() {
+        0 => format!("UDF definition '{path}' is not valid JSON"),
+        line => format!(
+            "UDF definition '{path}' is not valid JSON at line {line} column {}",
+            source.column()
+        ),
+    }
+}
 
 /// The payload of [`Error::UdfRejected`], boxed to keep [`Error`] small.
 #[derive(Debug)]

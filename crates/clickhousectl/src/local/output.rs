@@ -42,8 +42,8 @@ enum LocalErrorCode {
     UdfSourceInvalid,
     UdfNotFound,
     UdfInterpreterNotFound,
-    /// The local server answered a UDF statement with an error. The server's
-    /// text is foreign output, so the structured message is a fixed summary.
+    /// The local server answered a UDF statement with an error. The message
+    /// is a fixed summary; the server's text is in `details`.
     UdfQueryFailed,
     /// Native UDFs are Linux amd64/arm64 binaries; this host cannot run them.
     UdfRuntimeUnsupported,
@@ -54,7 +54,7 @@ enum LocalErrorCode {
     /// files stay deployed and block every reload until fixed or removed.
     UdfRejected,
     /// The local server's HTTP port did not answer a UDF statement. The HTTP
-    /// client's text is redacted.
+    /// client's text is in `details`.
     UdfServerUnreachable,
     /// `remove` deleted the files, but another broken function still blocks
     /// every reload on the server.
@@ -104,6 +104,11 @@ struct LocalErrorDetail {
     message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<String>,
+    /// The foreign text (ClickHouse's response, the HTTP client's or serde's
+    /// error) behind a failure whose `message` is this crate's own summary.
+    /// Only the variants that opt in via [`Mapping::details`] carry it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<String>,
 }
 
 /// How one [`Error`] variant renders into a [`LocalErrorDetail`].
@@ -125,6 +130,7 @@ struct Mapping {
     command: Option<String>,
     /// Curated replacement for the human text; `None` renders `Display`.
     redacted: Option<String>,
+    details: Option<String>,
 }
 
 impl Mapping {
@@ -135,6 +141,7 @@ impl Mapping {
             code,
             command: None,
             redacted: None,
+            details: None,
         }
     }
 
@@ -145,6 +152,7 @@ impl Mapping {
             code,
             command: None,
             redacted: Some(message.into()),
+            details: None,
         }
     }
 
@@ -154,11 +162,20 @@ impl Mapping {
         self
     }
 
+    /// Carry the foreign text the summary left out in a separate `details`
+    /// field, for failures where it is the actionable part (what ClickHouse
+    /// or serde objected to). Never reaches telemetry: only this DTO holds it.
+    fn details(mut self, details: impl Into<String>) -> Self {
+        self.details = Some(details.into());
+        self
+    }
+
     fn into_detail(self, error: &Error) -> LocalErrorDetail {
         LocalErrorDetail {
             code: self.code,
             message: self.redacted.unwrap_or_else(|| error.to_string()),
             command: self.command,
+            details: self.details,
         }
     }
 }
@@ -288,6 +305,10 @@ impl LocalErrorOutput {
     ///   text that interpolates foreign output (subprocess stderr, Docker
     ///   daemon or OS/serde source strings, download bodies), which can carry
     ///   paths, SQL or credentials and tells a machine consumer nothing.
+    ///   A few UDF failures, where the foreign text is what the consumer acts
+    ///   on (ClickHouse's or serde's objection), also opt into
+    ///   [`Mapping::details`], which keeps it out of `message` but in the
+    ///   envelope's `details` field.
     ///
     /// The match is exhaustive on purpose: a new [`Error`] variant must be
     /// classified here rather than silently collapsing to
@@ -367,10 +388,11 @@ impl LocalErrorOutput {
                 .command("clickhousectl local server configs"),
 
             // ── local UDFs ──────────────────────────────────────────────────
-            Error::UdfDefinitionParse { .. } => Mapping::redacted(
+            Error::UdfDefinitionParse { path, source } => Mapping::redacted(
                 LocalErrorCode::UdfDefinitionInvalid,
-                "UDF definition is not valid JSON",
+                crate::error::udf_definition_parse_message(path, source),
             )
+            .details(source.to_string())
             .command("clickhousectl local udf init --help"),
             Error::UdfDefinitionInvalid { .. } => {
                 Mapping::parity(LocalErrorCode::UdfDefinitionInvalid)
@@ -384,15 +406,21 @@ impl LocalErrorOutput {
                 Mapping::parity(LocalErrorCode::UdfInterpreterNotFound)
                     .command("clickhousectl local udf deploy --help")
             }
-            Error::UdfQueryFailed { server, .. } => Mapping::redacted(
+            Error::UdfQueryFailed { server, details } => Mapping::redacted(
                 LocalErrorCode::UdfQueryFailed,
                 format!("ClickHouse server '{server}' rejected the query"),
             )
+            .details(details.clone())
             .command("clickhousectl local server list"),
-            Error::UdfServerUnreachable { server, port, .. } => Mapping::redacted(
+            Error::UdfServerUnreachable {
+                server,
+                port,
+                details,
+            } => Mapping::redacted(
                 LocalErrorCode::UdfServerUnreachable,
                 format!("Could not reach server '{server}' on port {port}"),
             )
+            .details(details.clone())
             .command("clickhousectl local server list"),
             // Same code as a missing server elsewhere; the remedy differs
             // because `local udf` never creates one.
@@ -411,6 +439,7 @@ impl LocalErrorOutput {
                 LocalErrorCode::UdfRejected,
                 crate::error::udf_rejected_message(rejection),
             )
+            .details(rejection.details.clone())
             .command(udf_culprit_command(
                 rejection
                     .blocking
@@ -423,11 +452,12 @@ impl LocalErrorOutput {
                 name,
                 server,
                 blocking,
-                ..
+                details,
             } => Mapping::redacted(
                 LocalErrorCode::UdfReloadBlocked,
                 crate::error::udf_reload_blocked_message(name, server, blocking),
             )
+            .details(details.clone())
             .command(udf_culprit_command(blocking.first(), server)),
 
             // ── versions ────────────────────────────────────────────────────
@@ -787,7 +817,8 @@ fn start_guidance(selection: ManagedClientSelection) -> LocalGuidance {
 }
 
 /// Write exactly one local runtime error object to stderr. The serialized DTO
-/// is allowlisted above and never includes an error source or arbitrary detail.
+/// is allowlisted above; foreign text appears only in `details`, for the
+/// variants that opt in.
 pub fn print_error(error: &Error) {
     let output = LocalErrorOutput::from_error(error);
     let stderr = std::io::stderr();
@@ -2036,15 +2067,28 @@ mod tests {
     }
 
     #[test]
-    fn udf_errors_redact_foreign_text_and_keep_self_composed_detail() {
+    fn udf_errors_carry_foreign_text_in_details_and_keep_self_composed_messages() {
         let parse = error_json(&Error::UdfDefinitionParse {
             path: "clickhouse/udfs/my_fn/udf.json".into(),
-            source: serde_json::from_str::<serde_json::Value>("{ nope").unwrap_err(),
+            source: serde_json::from_str::<serde_json::Value>("{\n  nope").unwrap_err(),
         });
         assert_eq!(
             parse["error"]["message"],
-            "UDF definition is not valid JSON"
+            "UDF definition 'clickhouse/udfs/my_fn/udf.json' is not valid JSON at line 2 column 3"
         );
+        assert_eq!(
+            parse["error"]["details"],
+            "key must be a string at line 2 column 3"
+        );
+        let positionless = error_json(&Error::UdfDefinitionParse {
+            path: "clickhouse/udfs/my_fn/udf.json".into(),
+            source: serde_json::Error::io(std::io::Error::other("read failed")),
+        });
+        assert_eq!(
+            positionless["error"]["message"],
+            "UDF definition 'clickhouse/udfs/my_fn/udf.json' is not valid JSON"
+        );
+        assert_eq!(positionless["error"]["details"], "read failed");
         assert_eq!(
             parse["error"]["command"],
             "clickhousectl local udf init --help"
@@ -2057,6 +2101,10 @@ mod tests {
         assert_eq!(
             query["error"]["message"],
             "ClickHouse server 'dev' rejected the query"
+        );
+        assert_eq!(
+            query["error"]["details"],
+            "Code: 46. DB::Exception: secret-ish server text"
         );
         assert_eq!(query["error"]["command"], "clickhousectl local server list");
 
@@ -2116,6 +2164,10 @@ mod tests {
         assert!(!message.contains("secret-ish"));
         assert!(rejected_error.to_string().starts_with(message));
         assert_eq!(
+            rejected["error"]["details"],
+            "Code: 50. DB::Exception: secret-ish server text"
+        );
+        assert_eq!(
             rejected["error"]["command"],
             "clickhousectl local udf remove my_fn --server dev"
         );
@@ -2135,6 +2187,7 @@ mod tests {
             unreachable["error"]["message"],
             "Could not reach server 'dev' on port 8123"
         );
+        assert_eq!(unreachable["error"]["details"], "secret-ish client text");
         assert_eq!(
             unreachable["error"]["command"],
             "clickhousectl local server list"
@@ -2150,6 +2203,10 @@ mod tests {
         let message = blocked["error"]["message"].as_str().unwrap();
         assert!(!message.contains("secret-ish"));
         assert!(blocked_error.to_string().starts_with(message));
+        assert_eq!(
+            blocked["error"]["details"],
+            "Code: 50. DB::Exception: secret-ish server text"
+        );
         assert_eq!(
             blocked["error"]["command"],
             "clickhousectl local udf list --server dev"
@@ -2173,6 +2230,7 @@ mod tests {
             source["error"]["message"],
             "UDF source directory 'clickhouse/udfs/my_fn' is missing main.py, the entrypoint required by runtime python3.11"
         );
+        assert!(source["error"].get("details").is_none());
     }
 
     /// An installed-but-unlaunchable build is a different failure from a
@@ -2498,6 +2556,10 @@ mod tests {
                 error_json(&error)["error"]["message"],
                 expected,
                 "unexpected summary for {error:?}"
+            );
+            assert!(
+                error_json(&error)["error"].get("details").is_none(),
+                "still-redacted {error:?} must not carry details"
             );
             assert!(
                 !serialized.contains("hunter2") && !serialized.contains("secret-project"),

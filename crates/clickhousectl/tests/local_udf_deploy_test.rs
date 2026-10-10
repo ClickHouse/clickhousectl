@@ -546,7 +546,11 @@ fn definition_and_source_problems_are_structured_errors_before_anything_is_stage
     assert_eq!(error["error"]["code"], "udf_definition_invalid");
     assert_eq!(
         error["error"]["message"],
-        "UDF definition is not valid JSON"
+        "UDF definition 'clickhouse/udfs/my_fn/udf.json' is not valid JSON at line 1 column 3"
+    );
+    assert_eq!(
+        error["error"]["details"],
+        "key must be a string at line 1 column 3"
     );
     assert_eq!(
         error["error"]["command"],
