@@ -174,7 +174,7 @@ pub struct UdfCreateArgs {
     name: Option<String>,
     #[command(flatten)]
     dir: UdfDirArg,
-    /// JSON definition without uploadId, used with --artifact (file path or - for stdin)
+    /// JSON definition with functionName, no uploadId (path or - for stdin)
     #[arg(
         long = "file",
         value_name = "PATH",
@@ -199,7 +199,7 @@ pub struct UdfCreateArgs {
 pub struct UdfVersionInputArgs {
     #[command(flatten)]
     dir: UdfDirArg,
-    /// JSON definition without uploadId, used with --artifact (file path or - for stdin)
+    /// JSON definition; functionName only if it is NAME (path or - for stdin)
     #[arg(
         long = "file",
         value_name = "PATH",
@@ -246,7 +246,12 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
             };
             let definition = definition_source(input.config.as_deref(), source.as_deref())?;
             if let Some(name) = &input.name {
-                check_definition_name(&definition, source.as_deref(), name)?;
+                check_definition_name(
+                    &definition,
+                    input.config.as_deref(),
+                    source.as_deref(),
+                    name,
+                )?;
             }
             let mut request = build_udf_create_request(definition, "pending")?;
             let artifact = resolve_artifact(
@@ -274,10 +279,13 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                 None => Some(resolve_source(&input.dir, &name.function_name)?),
             };
             let mut definition = definition_source(input.config.as_deref(), source.as_deref())?;
-            if source.is_some() {
-                check_definition_name(&definition, source.as_deref(), &name.function_name)?;
-                udf::strip_function_name(&mut definition);
-            }
+            check_definition_name(
+                &definition,
+                input.config.as_deref(),
+                source.as_deref(),
+                &name.function_name,
+            )?;
+            udf::strip_function_name(&mut definition);
             let mut request = build_udf_version_create_request(definition, "pending")?;
             let artifact = resolve_artifact(
                 input.artifact.as_deref(),
@@ -523,13 +531,22 @@ fn definition_source(config: Option<&str>, source: Option<&Path>) -> CloudResult
     }
 }
 
-/// A `udf.json` read from `NAME/` must name `NAME`.
-fn check_definition_name(definition: &Value, source: Option<&Path>, name: &str) -> CloudResult<()> {
+/// A definition (`--file`, else `udf.json` read from `NAME/`) that carries
+/// `functionName` must name `NAME`; the error names the file it came from.
+fn check_definition_name(
+    definition: &Value,
+    config: Option<&str>,
+    source: Option<&Path>,
+    name: &str,
+) -> CloudResult<()> {
     udf::check_function_name(definition, name).map_err(|reason| {
-        let path = source
-            .map(|dir| dir.join(DEFINITION_FILE))
-            .unwrap_or_else(|| PathBuf::from(DEFINITION_FILE));
-        CloudError::usage(format!("{}: {reason}", path.display()))
+        let origin = match (config, source) {
+            (Some("-"), _) => "<stdin>".to_owned(),
+            (Some(config), _) => config.to_owned(),
+            (None, Some(dir)) => dir.join(DEFINITION_FILE).display().to_string(),
+            (None, None) => DEFINITION_FILE.to_owned(),
+        };
+        CloudError::usage(format!("{origin}: {reason}"))
     })
 }
 
@@ -1512,8 +1529,8 @@ mod tests {
             CloudErrorKind::Usage
         );
 
-        assert!(check_definition_name(&from_dir, Some(&dir), "my_udf").is_ok());
-        let mismatch = check_definition_name(&from_dir, Some(&dir), "other").unwrap_err();
+        assert!(check_definition_name(&from_dir, None, Some(&dir), "my_udf").is_ok());
+        let mismatch = check_definition_name(&from_dir, None, Some(&dir), "other").unwrap_err();
         assert_eq!(mismatch.kind, CloudErrorKind::Usage);
         assert_eq!(
             mismatch.to_string(),
@@ -1522,6 +1539,19 @@ mod tests {
                 dir.join("udf.json").display()
             )
         );
+        let from_file = check_definition_name(&from_dir, Some("def.json"), None, "other");
+        let from_file = from_file.unwrap_err();
+        assert_eq!(from_file.kind, CloudErrorKind::Usage);
+        assert!(
+            from_file.to_string().starts_with("def.json: "),
+            "{from_file}"
+        );
+        let from_stdin = check_definition_name(&from_dir, Some("-"), None, "other").unwrap_err();
+        assert!(
+            from_stdin.to_string().starts_with("<stdin>: "),
+            "{from_stdin}"
+        );
+        assert!(check_definition_name(&from_dir, Some("def.json"), None, "my_udf").is_ok());
     }
 
     #[test]

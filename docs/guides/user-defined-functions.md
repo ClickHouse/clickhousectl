@@ -100,7 +100,7 @@ clickhousectl cloud udf version create my_udf
 
 ## Create a new version
 
-`version.json` contains the complete desired definition without `functionName` or `uploadId`:
+`version.json` contains the complete desired definition without `uploadId`. It may keep a `functionName` equal to the command's name, so a `udf.json` can be reused; the CLI drops it from the request:
 
 ```bash
 clickhousectl cloud udf version create my_udf --file version.json --artifact source-v2.zip

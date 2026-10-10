@@ -21676,6 +21676,70 @@ async fn udf_invalid_definition_and_artifact_fail_before_api() {
     assert!(server.received_requests().await.unwrap().is_empty());
 }
 
+// A `udf.json` reused with `version create --file` may keep a functionName
+// that matches NAME (stripped from the body); a different one is a usage error.
+#[tokio::test]
+async fn udf_version_create_file_strips_a_matching_function_name() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    std::fs::write(project.path().join("code.zip"), b"PK\x03\x04archive").unwrap();
+    std::fs::write(
+        project.path().join("udf.json"),
+        udf_definition("executable", true).to_string(),
+    )
+    .unwrap();
+    let args = [
+        "version",
+        "create",
+        "my_udf",
+        "--file",
+        "udf.json",
+        "--artifact",
+        "code.zip",
+    ];
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfUploads/url"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{
+            "uploadId":"fresh-upload", "uploadUrl":format!("{}/artifact?signature=s", storage.uri())
+        }})))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/artifact"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&storage)
+        .await;
+    let mut expected = udf_definition("executable", false);
+    expected["uploadId"] = serde_json::json!("fresh-upload");
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf/versions"))
+        .and(body_json(expected))
+        .respond_with(ResponseTemplate::new(201).set_body_json(
+            serde_json::json!({"result":{"functionName":"my_udf","version":2,"status":"building"}}),
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(&server, project.path(), false, true, &args)
+        .output()
+        .unwrap();
+    assert_success(&output);
+
+    let mismatch = MockServer::start().await;
+    let mut renamed = args;
+    renamed[2] = "other_udf";
+    let output = udf_test_command(&mismatch, project.path(), false, true, &renamed)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("udf.json"), "{stderr}");
+    assert!(mismatch.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn udf_every_write_rejects_oauth_before_api() {
     let server = MockServer::start().await;
