@@ -1022,6 +1022,7 @@ fn classify_build_status(udf: &Udf) -> CloudResult<Outcome> {
                 .clone()
                 .filter(|error| !error.trim().is_empty())
                 .unwrap_or_else(|| "the build reported an error without a message".into()),
+            CloudErrorCode::Other,
         )),
         Some(status @ (UdfStatus::Building | UdfStatus::Unknown(_))) => {
             Ok(Outcome::Pending(status.to_string()))
@@ -1037,9 +1038,11 @@ fn classify_attachment_status(attachment: &UdfAttachment) -> CloudResult<Outcome
         Some(UdfAttachmentStatus::Deployed | UdfAttachmentStatus::Standby) => Ok(Outcome::Done),
         Some(UdfAttachmentStatus::Error) => Ok(Outcome::Failed(
             "the attachment entered the error state".into(),
+            CloudErrorCode::Other,
         )),
         Some(UdfAttachmentStatus::Deprovisioning) => Ok(Outcome::Failed(
             "the attachment is being deprovisioned".into(),
+            CloudErrorCode::Other,
         )),
         Some(status @ (UdfAttachmentStatus::Provisioning | UdfAttachmentStatus::Unknown(_))) => {
             Ok(Outcome::Pending(status.to_string()))
@@ -1152,7 +1155,7 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     let service = args.service.as_str();
     let source = resolve_source(&args.dir, name)?;
     let definition = definition_source(None, Some(&source))?;
-    check_definition_name(&definition, Some(&source), name)?;
+    check_definition_name(&definition, None, Some(&source), name)?;
     let create_request = build_udf_create_request(definition.clone(), "pending")?;
     let runtime = create_request_runtime(&create_request)?;
     let artifact = Artifact::Packaged(package_source_dir(&source, runtime)?);
@@ -1238,9 +1241,19 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     }
 }
 
+/// Append the resume hint to the message and to any JSON detail, which
+/// carries its own copy of the message.
 fn with_resume(error: CloudError, resume: &str) -> CloudError {
+    let message = format!("{}\n{resume}", error.message);
+    let details = error.details.map(|details| {
+        Box::new(CloudErrorDetail {
+            message: message.clone(),
+            ..*details
+        })
+    });
     CloudError {
-        message: format!("{}\n{resume}", error.message),
+        message,
+        details,
         ..error
     }
 }
