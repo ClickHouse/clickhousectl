@@ -354,7 +354,7 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   A UDF is a directory with udf.json (the definition `cloud udf create --file` accepts) and its entrypoint.
-  Typical flow: `udf init my_fn` -> edit clickhouse/udfs/my_fn/main.py")]
+  Typical flow: `local udf init my_fn` -> edit clickhouse/udfs/my_fn/main.py")]
     Udf {
         #[command(subcommand)]
         command: UdfCommands,

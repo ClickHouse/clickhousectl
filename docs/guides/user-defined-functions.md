@@ -2,7 +2,7 @@
 
 [All documentation](../README.md)
 
-`cloud udf` manages organization-scoped executable UDFs, versions, and service attachments. All UDF operations are beta. Reads support OAuth; writes require API key authentication.
+`cloud udf` manages organization-scoped executable UDFs, versions, and service attachments. Cloud UDF operations are beta. Reads support OAuth; writes require API key authentication.
 
 Save the definition below as `udf.json` and prepare a [source ZIP archive](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions#manage-udfs-with-the-cloud-api). `--file` accepts a file or `-` for stdin. The definition uses the API's field names and excludes `uploadId`, which the CLI obtains from a fresh upload session:
 

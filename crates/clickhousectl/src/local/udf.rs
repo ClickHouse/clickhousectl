@@ -3,7 +3,7 @@
 //! A UDF lives in a directory (`clickhouse/udfs/<name>/`) holding
 //! `udf.json`, the same definition `cloud udf` accepts, next to its files.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::local::cli::{UdfCommands, UdfRuntimeArg, UdfTypeArg};
 use crate::local::output::{self, UdfInitOutput};
 use crate::udf::{DEFINITION_FILE, NATIVE_ENTRYPOINT, PYTHON_ENTRYPOINT};
@@ -26,7 +26,17 @@ pub async fn run(cmd: UdfCommands, json: bool) -> Result<()> {
 }
 
 fn init_udf(name: &str, runtime: UdfRuntimeArg, kind: UdfTypeArg, json: bool) -> Result<()> {
-    let target = Path::new(DEFAULT_UDF_PARENT).join(name);
+    let parent = Path::new(DEFAULT_UDF_PARENT);
+    if let Some(existing) = case_only_clash(parent, name)? {
+        return Err(Error::Usage(Box::new(clap::Error::raw(
+            clap::error::ErrorKind::ValueValidation,
+            format!(
+                "UDF {existing} already exists in {DEFAULT_UDF_PARENT} and differs from {name} \
+                 only by case; use {existing} or choose another name\n"
+            ),
+        ))));
+    }
+    let target = parent.join(name);
     std::fs::create_dir_all(&target)?;
 
     let mut created = Vec::new();
@@ -77,6 +87,24 @@ fn init_udf(name: &str, runtime: UdfRuntimeArg, kind: UdfTypeArg, json: bool) ->
     };
     output::print_output(&out, json);
     Ok(())
+}
+
+/// An existing UDF directory under `parent` whose name equals `name` except
+/// for case. Case-insensitive filesystems (the macOS default) would resolve
+/// `name` to that directory, whose `functionName` then no longer matches.
+fn case_only_clash(parent: &Path, name: &str) -> Result<Option<String>> {
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    };
+    for entry in entries {
+        let existing = entry?.file_name().to_string_lossy().into_owned();
+        if existing != name && existing.eq_ignore_ascii_case(name) {
+            return Ok(Some(existing));
+        }
+    }
+    Ok(None)
 }
 
 /// Architecture directories a `native` UDF ships, each holding a `main`
@@ -152,6 +180,7 @@ fn python_template(name: &str) -> String {
          \n\
          \n\
          def main() -> None:\n\
+         \x20   # Values arrive escaped (\\t, \\n, \\\\): unescape before transforming, then escape the result.\n\
          \x20   for line in sys.stdin:\n\
          \x20       print(transform(line.rstrip(\"\\n\")))\n\
          \x20       sys.stdout.flush()\n\
@@ -193,7 +222,24 @@ mod tests {
         assert!(python.starts_with("#!/usr/bin/env python3\n"));
         assert!(python.contains("\"\"\"my_fn: executable UDF entrypoint."));
         assert!(python.contains("sys.stdout.flush()"));
+        assert!(python.contains(r"(\t, \n, \\)"));
         assert!(python.contains("    return value\n"));
+    }
+
+    #[test]
+    fn case_only_clash_finds_a_differently_cased_sibling() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(
+            case_only_clash(&tmp.path().join("missing"), "rev").unwrap(),
+            None
+        );
+        std::fs::create_dir(tmp.path().join("rev")).unwrap();
+        assert_eq!(case_only_clash(tmp.path(), "rev").unwrap(), None);
+        assert_eq!(case_only_clash(tmp.path(), "other").unwrap(), None);
+        assert_eq!(
+            case_only_clash(tmp.path(), "Rev").unwrap().as_deref(),
+            Some("rev")
+        );
     }
 
     #[test]

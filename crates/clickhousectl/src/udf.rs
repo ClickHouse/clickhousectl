@@ -38,7 +38,7 @@ pub fn validate_definition(value: &Value, require_name: bool) -> Result<String, 
         .as_object()
         .ok_or_else(|| "UDF definition must be a JSON object".to_string())?;
     if object.contains_key("uploadId") {
-        return Err("Omit uploadId; --artifact creates a fresh upload session".into());
+        return Err("Omit uploadId; the CLI creates a fresh upload session".into());
     }
     for name in [
         "commandReadTimeout",
@@ -197,7 +197,7 @@ mod tests {
             (
                 "uploadId",
                 json!("old"),
-                "Omit uploadId; --artifact creates a fresh upload session",
+                "Omit uploadId; the CLI creates a fresh upload session",
             ),
             ("functionName", json!("../oops"), "Invalid UDF functionName"),
             ("returnName", json!("1x"), "Invalid UDF returnName"),

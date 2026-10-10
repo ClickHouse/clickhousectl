@@ -207,3 +207,31 @@ fn local_init_scaffold_includes_the_udfs_directory() {
     );
     assert!(project.path().join("clickhouse/udfs/.gitkeep").is_file());
 }
+
+#[test]
+fn udf_init_rejects_a_case_only_clash_with_an_existing_udf() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    assert!(
+        run(
+            project.path(),
+            home.path(),
+            &["local", "udf", "init", "rev"]
+        )
+        .status
+        .success()
+    );
+
+    let output = run(
+        project.path(),
+        home.path(),
+        &["local", "udf", "init", "Rev"],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("rev"));
+    let entries: Vec<_> = std::fs::read_dir(project.path().join("clickhouse/udfs"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(entries, vec!["rev"]);
+}
