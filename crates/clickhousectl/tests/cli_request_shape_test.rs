@@ -30812,7 +30812,11 @@ async fn udf_directory_problems_report_local_udf_codes() {
         ("no_definition", "udf_source_invalid"),
         ("no_binary", "udf_source_invalid"),
     ] {
-        for args in [vec!["create", name], vec!["version", "create", name]] {
+        for args in [
+            vec!["create", name],
+            vec!["version", "create", name],
+            vec!["deploy", name, "--service", "svc-1"],
+        ] {
             let output = udf_test_command(&server, project.path(), false, true, &args)
                 .output()
                 .unwrap();

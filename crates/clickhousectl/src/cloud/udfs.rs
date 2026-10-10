@@ -1155,7 +1155,12 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     let source = resolve_source(&args.dir, name)?;
     let definition = definition_source(None, Some(&source))?;
     check_definition_name(&definition, None, Some(&source), name)?;
-    let create_request = build_udf_create_request(definition.clone(), "pending")?;
+    let create_request =
+        build_udf_create_request(definition.clone(), "pending").map_err(definition_invalid)?;
+    let mut version_definition = definition;
+    udf::strip_function_name(&mut version_definition);
+    let version_request = build_udf_version_create_request(version_definition, "pending")
+        .map_err(definition_invalid)?;
     let runtime = create_request_runtime(&create_request)?;
     let artifact = Artifact::Packaged(package_source_dir(&source, runtime)?);
     let timeout = Duration::from_secs(args.timeout);
@@ -1176,9 +1181,7 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
             ("created", client.create_udf(&org, &request).await?)
         }
         Some(_) => {
-            let mut value = definition;
-            udf::strip_function_name(&mut value);
-            let mut request = build_udf_version_create_request(value, "pending")?;
+            let mut request = version_request;
             match &mut request {
                 UdfVersionCreateRequest::UdfVersionCreateRequestV1(body) => {
                     body.upload_id = upload_id
