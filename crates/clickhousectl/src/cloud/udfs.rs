@@ -1487,10 +1487,7 @@ mod tests {
         assert_eq!(resolve_source(&dir_arg, "my_udf").unwrap(), dir);
         let missing = resolve_source(&dir_arg, "nope").unwrap_err();
         assert_eq!(missing.kind, CloudErrorKind::Usage);
-        assert!(
-            missing.to_string().ends_with("is not a directory"),
-            "{missing}"
-        );
+        assert!(missing.to_string().ends_with("does not exist"), "{missing}");
         std::os::unix::fs::symlink(&dir, parent.join("linked")).unwrap();
         let linked = resolve_source(&dir_arg, "linked").unwrap_err();
         assert_eq!(linked.kind, CloudErrorKind::Usage);

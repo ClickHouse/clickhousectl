@@ -30682,7 +30682,7 @@ async fn udf_directory_problems_fail_before_any_request() {
 
     for (args, code, expected) in [
         (vec!["create", "linked"], 2, "is a symbolic link"),
-        (vec!["create", "nope"], 2, "is not a directory"),
+        (vec!["create", "nope"], 2, "does not exist"),
         (
             vec!["create", "other_udf"],
             2,
