@@ -111,6 +111,20 @@ pub enum CloudErrorCode {
     /// rejected an identifier that is, structurally, a well-formed UUID
     /// (#666). `command` lists what does exist in the same scope.
     ResourceNotFound,
+    /// A UDF definition is not valid JSON or fails validation; the same code
+    /// `local udf deploy` reports.
+    UdfDefinitionInvalid,
+    /// A UDF source directory cannot be packaged: it has no `udf.json` or
+    /// entrypoint, or contains a symbolic link; the same code
+    /// `local udf deploy` reports.
+    UdfSourceInvalid,
+    /// `cloud udf attach` found the service idle (the API's typed
+    /// `SERVICE_IDLE`); rerun with `--wake` or wake the service first.
+    ServiceIdle,
+    /// `cloud udf attach` found the service neither running, idle nor
+    /// stopped (the API's typed `SERVICE_NOT_RUNNING`, e.g. starting): wait
+    /// for it to reach `running`, or start it.
+    ServiceNotRunning,
 }
 
 impl CloudErrorCode {
@@ -153,6 +167,10 @@ impl CloudErrorCode {
         Self::QueryKeyRepairUnverified,
         Self::QueryKeyBoundRejected,
         Self::ResourceNotFound,
+        Self::UdfDefinitionInvalid,
+        Self::UdfSourceInvalid,
+        Self::ServiceIdle,
+        Self::ServiceNotRunning,
     ];
 }
 
@@ -722,6 +740,10 @@ mod tests {
                 "query_key_repair_unverified",
                 "query_key_bound_rejected",
                 "resource_not_found",
+                "udf_definition_invalid",
+                "udf_source_invalid",
+                "service_idle",
+                "service_not_running",
             ]
         );
     }
