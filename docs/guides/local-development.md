@@ -110,7 +110,7 @@ clickhousectl local server start dev --config analytics
 
 The file must be directly inside the configs directory, not an arbitrary path. Use a `<clickhouse>` root in XML; user profiles and query settings can be included there. The server does not automatically load `/etc/clickhouse-server/config.xml` or a separate `users.xml`.
 
-Edit the source file and restart with `--config` again to apply changes. The selection is not remembered: starting without the flag removes the previously copied overlay. Managed data paths and ports override config values. Referenced files must be accessible from the server's working directory, `.clickhouse/servers/<name>/data/`. Inspect the merged `preprocessed_configs/config.xml` there, but edit the source overlay rather than that generated file.
+Edit the source file and restart with `--config` again to apply changes. The selection is not remembered: starting without the flag removes the previously copied overlay. Managed data paths and ports override config values, including after ClickHouse reloads its config. Referenced files must be accessible from the server's working directory, `.clickhouse/servers/<name>/data/`. Inspect the merged `preprocessed_configs/config.xml` there, but edit the source overlay rather than that generated file.
 
 ## Add Postgres
 
