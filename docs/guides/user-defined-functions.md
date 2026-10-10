@@ -68,6 +68,17 @@ The definition maps to ClickHouse's `<function>` XML with the same units as Clou
 | `runtime: native` | `execute_direct` `1`; `command` is `<name>/<arch>/main` for the host CPU |
 | `memoryLimitMib`, `sandboxType`, `sandboxVersion` | No local equivalent; accepted and reported as ignored |
 
+## Deploy to Cloud in one step
+
+`cloud udf deploy` uploads the same directory `local udf deploy` tested and waits until the function is usable:
+
+```bash
+clickhousectl cloud udf deploy my_udf --service <service-id>
+clickhousectl cloud service query <service-id> -q "SELECT my_udf(1)"
+```
+
+It creates the UDF, or adds a version when the name already exists, waits for that build, attaches exactly that version, and waits until the attachment is `deployed`. Omitted fields follow the create defaults, never the previous version's values. The service is checked before anything is uploaded: an unknown or stopped service, or an idle one with `--no-wake`, fails without creating a version. Otherwise an idle service is woken when attaching. `--timeout` bounds each wait, and a timeout exits 1 with the `timeout` error code and the command to keep polling. If the build wait times out, or attaching fails after the build, the error names the version so you can resume with `cloud udf attach <name> <service-id> --version <n>`, adding `--wake` when the service is idle or not running. JSON output is one object with `action` (`created` or `version_created`), `udf`, and `attachment`. It is the only `cloud udf` command that waits for the build and the deployment; the steps below run each part separately.
+
 ## Create and attach in Cloud
 
 ```bash
@@ -96,7 +107,7 @@ clickhousectl cloud udf create my_udf
 clickhousectl cloud udf version create my_udf
 ```
 
-`--dir PATH` selects another parent directory. `--file` and `--artifact` go together and combine with neither `--dir` nor, for `create`, a name. The directory must not be a symbolic link and its `udf.json` must name the function; `version create` drops `functionName` from the request. The archive is deterministic and excludes `udf.json`, hidden entries and `__pycache__`; symbolic links inside are rejected. Runtime `python3.11` needs `main.py` at the root. Runtime `native` uploads only `amd64/main` and `arm64/main`, Linux binaries you build (see the [Cloud UDF docs](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions)).
+`--dir PATH` selects another parent directory, as for `deploy`. `--file` and `--artifact` go together and combine with neither `--dir` nor, for `create`, a name. The directory must not be a symbolic link and its `udf.json` must name the function; `version create` drops `functionName` from the request. The archive is deterministic and excludes `udf.json`, hidden entries and `__pycache__`; symbolic links inside are rejected. Runtime `python3.11` needs `main.py` at the root. Runtime `native` uploads only `amd64/main` and `arm64/main`, Linux binaries you build (see the [Cloud UDF docs](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions)).
 
 ## Create a new version
 

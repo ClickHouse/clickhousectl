@@ -309,7 +309,7 @@ fn deploy_native_is_unsupported_off_linux_and_writes_nothing() {
     assert_eq!(error["error"]["code"], "udf_runtime_unsupported");
     assert_eq!(
         error["error"]["message"],
-        "native UDFs run only on local servers on Linux amd64 or arm64; deploy from a Linux host, or to Cloud with `cloud udf create`"
+        "native UDFs run only on local servers on Linux amd64 or arm64; deploy from a Linux host, or to Cloud with `cloud udf deploy`"
     );
     assert_eq!(
         error["error"]["command"],

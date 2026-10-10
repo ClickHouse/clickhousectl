@@ -53,7 +53,7 @@ const REQUIREMENTS_FILE: &str = "requirements.txt";
 const REQUIREMENTS_NOTICE: &str = "requirements.txt is not installed locally; install its packages \
      into the interpreter you deploy with (e.g. a virtualenv passed with --python).";
 const NATIVE_UNSUPPORTED: &str = "native UDFs run only on local servers on Linux amd64 or \
-     arm64; deploy from a Linux host, or to Cloud with `cloud udf create`";
+     arm64; deploy from a Linux host, or to Cloud with `cloud udf deploy`";
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `deploy` keeps asking a running server to reload before giving
@@ -644,7 +644,7 @@ fn native_arch_for(os: &str, arch: &str) -> Result<&'static str> {
         other => Err(Error::UdfRuntimeUnsupported(format!(
             "native UDFs run only on local servers on Linux amd64 or arm64, but this host's \
              CPU is {other}; deploy from an amd64 or arm64 host, or to Cloud with \
-             `cloud udf create`"
+             `cloud udf deploy`"
         ))),
     }
 }
