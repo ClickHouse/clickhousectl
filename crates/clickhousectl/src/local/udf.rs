@@ -7,7 +7,7 @@
 //! server at both through a managed `config.d` overlay. The server picks new
 //! files up on its own; when it is running we also ask it to reload at once.
 
-use crate::error::{Error, Result, UdfRejection};
+use crate::error::{Error, Result, UdfCommandPath, UdfRejection};
 use crate::local::cli::{UdfCommands, UdfRuntimeArg, UdfTypeArg};
 use crate::local::output::{
     self, UdfDeployOutput, UdfInitOutput, UdfListEntry, UdfListOutput, UdfReloadOutput,
@@ -32,6 +32,13 @@ const FUNCTIONS_DIR: &str = "user_defined_functions";
 /// Copied sources; ClickHouse resolves direct commands inside this directory.
 const SCRIPTS_DIR: &str = "user_scripts";
 const FUNCTION_FILE_SUFFIX: &str = "_function.xml";
+/// The longest file name a local UDF name is embedded in is `stage_scripts`'s
+/// `.<name>.staging-<pid>` (a `u32` pid has at most 10 digits).
+const LONGEST_NAME_OVERHEAD: usize = ".".len() + ".staging-".len() + 10;
+/// Neither ClickHouse nor the Cloud API documents a function name limit, but
+/// every local file named after the function must fit in a 255-byte file
+/// name (`NAME_MAX` on Linux and macOS).
+pub(crate) const MAX_LOCAL_NAME_LEN: usize = 255 - LONGEST_NAME_OVERHEAD;
 /// Present next to a function's files while the running server rejected
 /// their last deploy, so whatever is loaded is an earlier definition.
 const REJECTED_MARKER_SUFFIX: &str = ".rejected";
@@ -60,6 +67,19 @@ const LOADED_FUNCTIONS_SQL: &str = "SELECT name FROM system.functions \
 /// this query, and culprits come from the reload's error text instead.
 const FAILED_FUNCTIONS_SQL: &str = "SELECT name FROM system.user_defined_functions \
      WHERE load_status = 'Failed' ORDER BY name FORMAT TabSeparated";
+
+/// A `local udf` NAME: the shared function-name rule, and short enough for
+/// every file the CLI names after it. Names are ASCII, so bytes are chars.
+pub(crate) fn validate_local_function_name(name: &str) -> std::result::Result<(), String> {
+    udf::validate_function_name(name)?;
+    if name.len() > MAX_LOCAL_NAME_LEN {
+        return Err(format!(
+            "Use at most {MAX_LOCAL_NAME_LEN} characters; this name has {}",
+            name.len()
+        ));
+    }
+    Ok(())
+}
 
 pub async fn run(cmd: UdfCommands, json: bool) -> Result<()> {
     match cmd {
@@ -121,9 +141,17 @@ pub(crate) struct LocalUdfDefinition {
 }
 
 impl LocalUdfDefinition {
-    /// Cloud-only fields present in the definition, in the API's spelling.
+    /// Fields present in the definition that the local XML leaves out, in
+    /// the API's spelling: the Cloud-only ones, and the pool settings on a
+    /// plain `executable`, which ClickHouse reads only for `executable_pool`.
     fn ignored_fields(&self) -> Vec<String> {
+        let executable = self.kind == LocalUdfType::Executable;
         [
+            ("poolSize", executable && self.pool_size.is_some()),
+            (
+                "maxCommandExecutionTime",
+                executable && self.max_command_execution_time.is_some(),
+            ),
             ("memoryLimitMib", self.memory_limit_mib.is_some()),
             ("sandboxType", self.sandbox_type.is_some()),
             ("sandboxVersion", self.sandbox_version.is_some()),
@@ -179,7 +207,7 @@ pub(crate) struct LocalUdfArgument {
 
 /// Load and validate `dir/udf.json` the same way `cloud udf create` does,
 /// check that it names `name`, then type it. Returns the definition and the
-/// Cloud-only fields it carries.
+/// fields the local XML leaves out.
 fn load_local_definition(dir: &Path, name: &str) -> Result<(LocalUdfDefinition, Vec<String>)> {
     let value = udf::load_definition_from_dir(dir).map_err(input_error)?;
     let path = dir.join(DEFINITION_FILE);
@@ -402,7 +430,15 @@ async fn deploy(
 ) -> Result<()> {
     // Everything that can be wrong with the input fails here, before the
     // server is even looked up and long before anything is written.
-    let dir = udf::resolve_source_dir(parent, name).map_err(input_error)?;
+    let dir = udf::resolve_source_dir(parent, name).map_err(|error| match error {
+        UdfInputError::Invalid { path, reason } if reason == udf::SOURCE_DIR_MISSING => {
+            Error::UdfSourceInvalid {
+                path,
+                reason: missing_source_reason(name, parent),
+            }
+        }
+        other => input_error(other),
+    })?;
     let (definition, ignored_fields) = load_local_definition(&dir, name)?;
     let runtime = definition.runtime.kind();
     if runtime == UdfRuntimeKind::Native && python.is_some() {
@@ -541,6 +577,22 @@ async fn deploy(
     Ok(())
 }
 
+/// Why `deploy` found no `<parent>/<name>/`. `init` scaffolds only into the
+/// default parent, so it is suggested only there.
+fn missing_source_reason(name: &str, parent: &Path) -> String {
+    if parent == Path::new(DEFAULT_UDF_PARENT) {
+        format!(
+            "{}; create it with `clickhousectl local udf init {name}`",
+            udf::SOURCE_DIR_MISSING
+        )
+    } else {
+        format!(
+            "{}; `clickhousectl local udf init {name}` scaffolds one in {DEFAULT_UDF_PARENT}",
+            udf::SOURCE_DIR_MISSING
+        )
+    }
+}
+
 /// The command that reruns this deployment, naming `--dir` only when the user
 /// gave a non-default one, spelled as they gave it.
 fn deploy_command(name: &str, parent: &Path, server: &str) -> String {
@@ -624,8 +676,8 @@ fn python_command(
     // `exec` replaces the shell, so each pooled worker is one python process.
     let command = format!(
         "exec {} {}",
-        shell_quote(&interpreter)?,
-        shell_quote(&script)?
+        shell_quote(&interpreter, UdfCommandPath::Interpreter)?,
+        shell_quote(&script, UdfCommandPath::StagedScript)?
     );
     Ok((
         ResolvedCommand {
@@ -738,15 +790,13 @@ fn python_version_warning(interpreter: &Path, version: Option<&str>) -> Option<S
 
 /// Single-quote a path for `sh -c`, which ClickHouse uses when
 /// `execute_direct` is off. Single quotes inside the path cannot be carried.
-fn shell_quote(path: &Path) -> Result<String> {
+fn shell_quote(path: &Path, role: UdfCommandPath) -> Result<String> {
     let text = path
         .to_str()
         .filter(|text| !text.contains('\''))
-        .ok_or_else(|| Error::UdfSourceInvalid {
+        .ok_or_else(|| Error::UdfPathUnquotable {
+            role,
             path: path.to_path_buf(),
-            reason: "contains a single quote or invalid UTF-8, which the server's shell \
-                     command cannot carry; move the project or interpreter"
-                .into(),
         })?;
     Ok(format!("'{text}'"))
 }
@@ -1144,12 +1194,6 @@ async fn http_query(info: &ServerInfo, server: &str, sql: &str) -> Result<String
         .map_err(|error| error.into_error(info, server))
 }
 
-async fn reload_functions(info: &ServerInfo, server: &str) -> Result<()> {
-    http_query(info, server, RELOAD_FUNCTIONS_SQL)
-        .await
-        .map(drop)
-}
-
 async fn loaded_function_names(info: &ServerInfo, server: &str) -> Result<Vec<String>> {
     let body = http_query(info, server, LOADED_FUNCTIONS_SQL).await?;
     Ok(body
@@ -1402,7 +1446,7 @@ async fn remove(name: &str, server_name: &str, json: bool) -> Result<()> {
                 Ok(_) => {}
                 Err(QueryError::Rejected(details)) => {
                     return Err(Error::UdfReloadBlocked {
-                        name: name.to_owned(),
+                        removed: Some(name.to_owned()),
                         server: server_name.to_owned(),
                         blocking: blocking_functions(info, &target.data_dir, &details).await,
                         details,
@@ -1429,7 +1473,18 @@ async fn reload(server_name: &str, json: bool) -> Result<()> {
     let (target, lock) = server_target(server_name)?;
     drop(lock);
     let info = require_running(&target, server_name)?;
-    reload_functions(info, server_name).await?;
+    match send_query(info, RELOAD_FUNCTIONS_SQL).await {
+        Ok(_) => {}
+        Err(QueryError::Rejected(details)) => {
+            return Err(Error::UdfReloadBlocked {
+                removed: None,
+                server: server_name.to_owned(),
+                blocking: blocking_functions(info, &target.data_dir, &details).await,
+                details,
+            });
+        }
+        Err(error) => return Err(error.into_error(info, server_name)),
+    }
     let loaded = loaded_function_names(info, server_name).await?;
     clear_rejected_markers(&target.data_dir, &loaded)?;
     let out = UdfReloadOutput {
@@ -1609,6 +1664,65 @@ mod tests {
         let request: UdfCreateRequestV2 =
             crate::cloud::config::deserialize_strict_config(round_trip, "UDF definition").unwrap();
         assert_eq!(request, maximal);
+    }
+
+    #[test]
+    fn ignored_fields_lists_pool_settings_only_on_a_plain_executable() {
+        let mut def = definition(LocalUdfType::Executable, LocalUdfRuntime::Python311);
+        def.pool_size = Some(4);
+        assert_eq!(def.ignored_fields(), vec!["poolSize"]);
+        def.max_command_execution_time = Some(7);
+        def.memory_limit_mib = Some(256);
+        assert_eq!(
+            def.ignored_fields(),
+            vec!["poolSize", "maxCommandExecutionTime", "memoryLimitMib"]
+        );
+        def.kind = LocalUdfType::ExecutablePool;
+        assert_eq!(def.ignored_fields(), vec!["memoryLimitMib"]);
+    }
+
+    #[test]
+    fn local_function_names_fit_every_derived_file_name() {
+        let longest = "a".repeat(MAX_LOCAL_NAME_LEN);
+        assert!(validate_local_function_name(&longest).is_ok());
+        let too_long = "a".repeat(MAX_LOCAL_NAME_LEN + 1);
+        assert_eq!(
+            validate_local_function_name(&too_long).unwrap_err(),
+            format!(
+                "Use at most {MAX_LOCAL_NAME_LEN} characters; this name has {}",
+                MAX_LOCAL_NAME_LEN + 1
+            )
+        );
+        // The shared pattern still applies first.
+        assert!(validate_local_function_name("1abc").is_err());
+
+        // Every file the CLI names after a maximal function can be created.
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path();
+        std::fs::create_dir_all(data_dir.join(FUNCTIONS_DIR)).unwrap();
+        for path in [
+            function_xml_path(data_dir, &longest),
+            sidecar_path(data_dir, &longest),
+            rejected_marker_path(data_dir, &longest),
+        ] {
+            std::fs::write(&path, "").unwrap();
+        }
+        let source = tmp.path().join("main.py");
+        std::fs::write(&source, "").unwrap();
+        let entries = [SourceEntry {
+            relative: PathBuf::from(PYTHON_ENTRYPOINT),
+            absolute: source,
+            is_dir: false,
+            mode: 0o644,
+        }];
+        // Stages through `.<name>.staging-<pid>`; the worst case is a 10-digit pid.
+        let scripts = data_dir.join(SCRIPTS_DIR).join(&longest);
+        stage_scripts(&entries, &scripts, &[]).unwrap();
+        assert!(scripts.join(PYTHON_ENTRYPOINT).is_file());
+        let worst = data_dir
+            .join(SCRIPTS_DIR)
+            .join(format!(".{longest}.staging-{}", u32::MAX));
+        std::fs::create_dir(&worst).unwrap();
     }
 
     #[test]
@@ -1951,13 +2065,60 @@ mod tests {
     #[test]
     fn shell_quote_single_quotes_paths_and_rejects_embedded_quotes() {
         assert_eq!(
-            shell_quote(Path::new("/opt/my python/bin/python3")).unwrap(),
+            shell_quote(
+                Path::new("/opt/my python/bin/python3"),
+                UdfCommandPath::Interpreter
+            )
+            .unwrap(),
             "'/opt/my python/bin/python3'"
         );
         assert!(matches!(
-            shell_quote(Path::new("/opt/it's/python3")).unwrap_err(),
-            Error::UdfSourceInvalid { .. }
+            shell_quote(Path::new("/opt/it's/python3"), UdfCommandPath::Interpreter).unwrap_err(),
+            Error::UdfPathUnquotable {
+                role: UdfCommandPath::Interpreter,
+                ..
+            }
         ));
+    }
+
+    #[test]
+    fn python_command_names_the_path_that_holds_the_quote() {
+        let tmp = tempfile::tempdir().unwrap();
+        let clean = tmp.path().join("bin/python3");
+        let quoted = tmp.path().join("it's/python3");
+        for path in [&clean, &quoted] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let data_dir = tmp.path().join("o'brien/.clickhouse/servers/default/data");
+        let Err(error) = python_command("my_fn", &data_dir, Some(&clean)) else {
+            panic!("a quoted staged script path must be rejected");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Staged script path '{}' contains a single quote or invalid UTF-8, which the \
+                 server's shell command cannot carry; move the project to a directory whose \
+                 path has none",
+                data_dir.join("user_scripts/my_fn/main.py").display()
+            )
+        );
+
+        let clean_data = tmp.path().join("data");
+        let Err(error) = python_command("my_fn", &clean_data, Some(&quoted)) else {
+            panic!("a quoted interpreter path must be rejected");
+        };
+        assert_eq!(
+            error.to_string(),
+            format!(
+                "Python interpreter path '{}' contains a single quote or invalid UTF-8, which \
+                 the server's shell command cannot carry; pass --python with a path that has \
+                 none",
+                quoted.display()
+            )
+        );
     }
 
     #[test]

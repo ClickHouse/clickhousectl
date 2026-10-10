@@ -9,7 +9,7 @@ fn parse_server_name_arg(name: &str) -> Result<String, String> {
 }
 
 fn parse_udf_name_arg(name: &str) -> Result<String, String> {
-    crate::udf::validate_function_name(name).map(|()| name.to_string())
+    crate::local::udf::validate_local_function_name(name).map(|()| name.to_string())
 }
 
 /// UDF runtime as spelled in `udf.json` and by the Cloud API.

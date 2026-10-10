@@ -741,6 +741,17 @@ pub enum Error {
     #[error("UDF source directory '{}' {reason}", path.display())]
     UdfSourceInvalid { path: PathBuf, reason: String },
 
+    /// A path the server's `sh -c` command must carry contains a single
+    /// quote or is not UTF-8. `role` names which path it is.
+    #[error(
+        "{} '{}' contains a single quote or invalid UTF-8, which the server's shell command \
+         cannot carry; {}",
+        role.label(),
+        path.display(),
+        role.remedy()
+    )]
+    UdfPathUnquotable { role: UdfCommandPath, path: PathBuf },
+
     #[error("UDF '{name}' is not deployed to server '{server}'")]
     UdfNotFound { name: String, server: String },
 
@@ -801,17 +812,18 @@ pub enum Error {
     #[error("{}\nClickHouse error: {}", udf_rejected_message(.0), .0.details)]
     UdfRejected(Box<UdfRejection>),
 
-    /// `remove` deleted the function's files, but the reload that followed
-    /// was rejected because another deployed function is still broken.
-    /// `blocking` names it when ClickHouse identified it. `details` is
-    /// ClickHouse's response text, which structured output carries in
-    /// `details` rather than `message`.
+    /// A function reload was rejected because a deployed function is broken:
+    /// the one after `remove` deleted `removed`'s files, or a `reload` with no
+    /// target (`removed` is `None`). `blocking` names the broken functions
+    /// when ClickHouse identified them. `details` is ClickHouse's response
+    /// text, which structured output carries in `details` rather than
+    /// `message`.
     #[error(
         "{}\nClickHouse error: {details}",
-        udf_reload_blocked_message(.name, .server, .blocking)
+        udf_reload_blocked_message(.removed.as_deref(), .server, .blocking)
     )]
     UdfReloadBlocked {
-        name: String,
+        removed: Option<String>,
         server: String,
         blocking: Vec<String>,
         details: String,
@@ -853,6 +865,32 @@ pub(crate) fn udf_definition_parse_message(path: &Path, source: &serde_json::Err
             "UDF definition '{path}' is not valid JSON at line {line} column {}",
             source.column()
         ),
+    }
+}
+
+/// Which path of a `python3.11` UDF's shell command [`Error::UdfPathUnquotable`]
+/// is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UdfCommandPath {
+    /// The Python interpreter, from `--python` or `PATH`.
+    Interpreter,
+    /// `main.py` as copied under the server's `.clickhouse/` data directory.
+    StagedScript,
+}
+
+impl UdfCommandPath {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Interpreter => "Python interpreter path",
+            Self::StagedScript => "Staged script path",
+        }
+    }
+
+    fn remedy(self) -> &'static str {
+        match self {
+            Self::Interpreter => "pass --python with a path that has none",
+            Self::StagedScript => "move the project to a directory whose path has none",
+        }
     }
 }
 
@@ -917,19 +955,33 @@ pub(crate) fn udf_rejected_message(rejection: &UdfRejection) -> String {
 }
 
 /// The self-composed part of [`Error::UdfReloadBlocked`], shared by human and
-/// structured output.
-pub(crate) fn udf_reload_blocked_message(name: &str, server: &str, blocking: &[String]) -> String {
-    match blocking.first() {
-        Some(culprit) => format!(
-            "Removed UDF {name} from server {server}, but the function reload still fails because \
-             {} broken. Fix and redeploy it, or remove it with \
+/// structured output. Never blames a function ClickHouse did not report.
+pub(crate) fn udf_reload_blocked_message(
+    removed: Option<&str>,
+    server: &str,
+    blocking: &[String],
+) -> String {
+    let lead = match removed {
+        Some(name) => {
+            format!("Removed UDF {name} from server {server}, but the function reload still fails")
+        }
+        None => format!("ClickHouse rejected the function reload on server {server}"),
+    };
+    match (removed, blocking.first()) {
+        (_, Some(culprit)) => format!(
+            "{lead} because {} broken. Fix and redeploy it, or remove it with \
              `clickhousectl local udf remove {culprit} --server {server}`.",
             udf_names_verb(blocking)
         ),
-        None => format!(
-            "Removed UDF {name} from server {server}, but the function reload still fails because \
-             another deployed UDF is broken. `clickhousectl local udf list --server {server}` shows \
-             which UDFs are not loaded; fix and redeploy it, or remove it."
+        (Some(_), None) => format!(
+            "{lead} because another deployed UDF is broken. \
+             `clickhousectl local udf list --server {server}` shows which UDFs are not loaded; \
+             fix and redeploy it, or remove it."
+        ),
+        (None, None) => format!(
+            "{lead}. A broken definition blocks every function reload on this server until it \
+             is fixed or removed; `clickhousectl local udf list --server {server}` shows which \
+             UDFs are not loaded."
         ),
     }
 }

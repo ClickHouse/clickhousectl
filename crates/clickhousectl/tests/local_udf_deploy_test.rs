@@ -552,7 +552,7 @@ fn redeploy_replaces_previous_scripts_and_human_output_explains_next_start() {
         "{stdout}"
     );
     assert!(
-        stdout.contains("  ignored Cloud-only fields: memoryLimitMib\n"),
+        stdout.contains("  ignored fields: memoryLimitMib\n"),
         "{stdout}"
     );
     assert!(
@@ -794,7 +794,34 @@ fn definition_and_source_problems_are_structured_errors_before_anything_is_stage
     assert_eq!(missing_dir["error"]["code"], "udf_source_invalid");
     assert_eq!(
         missing_dir["error"]["message"],
-        "UDF source directory 'clickhouse/udfs/nope' is not a directory"
+        "UDF source directory 'clickhouse/udfs/nope' does not exist; create it with `clickhousectl local udf init nope`"
+    );
+
+    // Another parent: init cannot scaffold there, so it is named with its target.
+    let other_parent = error_json(&run(
+        &env,
+        &[
+            "local",
+            "udf",
+            "deploy",
+            "nope",
+            "--dir",
+            "elsewhere",
+            "--json",
+        ],
+    ));
+    assert_eq!(
+        other_parent["error"]["message"],
+        "UDF source directory 'elsewhere/nope' does not exist; `clickhousectl local udf init nope` scaffolds one in clickhouse/udfs"
+    );
+
+    // A path that exists but is a file keeps its own wording.
+    std::fs::write(env.project.path().join("clickhouse/udfs/plain"), "").unwrap();
+    let file = error_json(&run(&env, &["local", "udf", "deploy", "plain", "--json"]));
+    assert_eq!(file["error"]["code"], "udf_source_invalid");
+    assert_eq!(
+        file["error"]["message"],
+        "UDF source directory 'clickhouse/udfs/plain' is not a directory"
     );
 
     assert_nothing_staged(&env, "default");

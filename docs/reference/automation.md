@@ -96,13 +96,13 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 | ---- | ------- |
 | `server_not_found` | The selected local server does not exist, or `--server` names a local Postgres instance |
 | `udf_definition_invalid` | `udf.json` is not valid JSON (message names the file, line and column; `details` has the parser's text) or fails validation (message carries the reason) |
-| `udf_source_invalid` | The UDF directory is missing, is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link |
+| `udf_source_invalid` | The UDF directory does not exist (the message suggests `udf init`), is not a directory or is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link; or the staged script path contains a single quote |
 | `udf_runtime_unsupported` | Runtime `native` needs a Linux amd64/arm64 host |
 | `udf_not_loaded` | The running server did not load the deployed function; see the log path in the message |
 | `udf_rejected` | The running server rejected the function reload after a deploy; the message and `command` name the broken function when ClickHouse identifies it, which may not be the one deployed; `details` has ClickHouse's error |
-| `udf_reload_blocked` | `udf remove` deleted the files, but another broken function still blocks every reload; `command` removes it when identified; `details` has ClickHouse's error |
+| `udf_reload_blocked` | `udf reload` was rejected, or `udf remove` deleted the files but the reload still fails, because a deployed function is broken; `command` removes it when identified; `details` has ClickHouse's error |
 | `udf_not_found` | No UDF of that name is deployed to the selected server |
-| `udf_interpreter_not_found` | No `python3.11` or `python3` on `PATH` and no usable `--python` |
+| `udf_interpreter_not_found` | No `python3.11` or `python3` on `PATH` and no usable `--python`, or the interpreter path contains a single quote |
 | `udf_query_failed` | The local server rejected a UDF statement; the server's text is in `details` |
 | `udf_server_unreachable` | The local server's HTTP port did not answer; the client's text is in `details` |
 | `managed_client_server_not_found` | Managed client lookup did not find the selected server in the current project |

@@ -473,20 +473,27 @@ fn reload_sends_system_reload_functions_and_lists_loaded_names() {
 }
 
 #[test]
-fn server_errors_are_in_json_details_and_inline_in_human_mode() {
+fn a_rejected_reload_names_what_blocks_it_with_server_text_in_details() {
     let env = setup();
     let _server = start_server(&env);
     std::fs::write(&env.fail_reload_marker, "").unwrap();
 
+    // No culprit identified: blame no one and point at `list`.
     let json_mode = run(&env, &["local", "udf", "reload", "--json"]);
     assert_eq!(json_mode.status.code(), Some(1));
     let error: Value = serde_json::from_slice(&json_mode.stderr).unwrap();
-    assert_eq!(error["error"]["code"], "udf_query_failed");
-    assert_eq!(
-        error["error"]["message"],
-        "ClickHouse server 'default' rejected the query"
+    assert_eq!(error["error"]["code"], "udf_reload_blocked");
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.starts_with("ClickHouse rejected the function reload on server default."),
+        "{message}"
     );
-    assert_eq!(error["error"]["command"], "clickhousectl local server list");
+    assert!(!message.contains("udf remove"), "{message}");
+    assert!(!message.contains("DB::Exception"), "{message}");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf list --server default"
+    );
     assert_eq!(
         error["error"]["details"],
         "Code: 36. DB::Exception: Function configuration is invalid. (BAD_ARGUMENTS)"
@@ -496,9 +503,30 @@ fn server_errors_are_in_json_details_and_inline_in_human_mode() {
     assert_eq!(human.status.code(), Some(1));
     let stderr = String::from_utf8_lossy(&human.stderr);
     assert!(
-        stderr.contains("ClickHouse server 'default' rejected the query: Code: 36. DB::Exception"),
+        stderr.contains("ClickHouse error: Code: 36. DB::Exception"),
         "{stderr}"
     );
+
+    // A deployed function ClickHouse reports as failed is named, and only it.
+    write_udf(&env, "bad");
+    std::fs::write(&env.failed_functions, "bad\n").unwrap();
+    error_json(&run(&env, &["local", "udf", "deploy", "bad", "--json"]));
+    let error = error_json(&run(&env, &["local", "udf", "reload", "--json"]));
+    assert_eq!(error["error"]["code"], "udf_reload_blocked");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl local udf remove bad --server default"
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("UDF bad is broken"), "{message}");
+    assert!(!message.contains("my_fn"), "{message}");
+
+    // Once the reload succeeds, the rejection marker is cleared.
+    let data = env.project.path().join(".clickhouse/servers/default/data");
+    std::fs::write(data.join("user_defined_functions/my_fn.rejected"), "").unwrap();
+    std::fs::remove_file(&env.fail_reload_marker).unwrap();
+    success_json(&run(&env, &["local", "udf", "reload", "--json"]));
+    assert!(!data.join("user_defined_functions/my_fn.rejected").exists());
 }
 
 #[test]

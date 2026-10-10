@@ -56,8 +56,9 @@ enum LocalErrorCode {
     /// The local server's HTTP port did not answer a UDF statement. The HTTP
     /// client's text is in `details`.
     UdfServerUnreachable,
-    /// `remove` deleted the files, but another broken function still blocks
-    /// every reload on the server.
+    /// A function reload by `remove` (after deleting the files) or `reload`
+    /// was rejected because a deployed function is broken; it blocks every
+    /// reload on the server until fixed or removed.
     UdfReloadBlocked,
     InvalidVersion,
     /// The version is not installed locally. Distinct from
@@ -400,6 +401,15 @@ impl LocalErrorOutput {
             }
             Error::UdfSourceInvalid { .. } => Mapping::parity(LocalErrorCode::UdfSourceInvalid)
                 .command("clickhousectl local udf deploy --help"),
+            Error::UdfPathUnquotable { role, .. } => match role {
+                crate::error::UdfCommandPath::Interpreter => {
+                    Mapping::parity(LocalErrorCode::UdfInterpreterNotFound)
+                        .command("clickhousectl local udf deploy --help")
+                }
+                crate::error::UdfCommandPath::StagedScript => {
+                    Mapping::parity(LocalErrorCode::UdfSourceInvalid)
+                }
+            },
             Error::UdfNotFound { server, .. } => Mapping::parity(LocalErrorCode::UdfNotFound)
                 .command(format!("clickhousectl local udf list --server {server}")),
             Error::UdfInterpreterNotFound(_) => {
@@ -449,13 +459,13 @@ impl LocalErrorOutput {
                 &rejection.server,
             )),
             Error::UdfReloadBlocked {
-                name,
+                removed,
                 server,
                 blocking,
                 details,
             } => Mapping::redacted(
                 LocalErrorCode::UdfReloadBlocked,
-                crate::error::udf_reload_blocked_message(name, server, blocking),
+                crate::error::udf_reload_blocked_message(removed.as_deref(), server, blocking),
             )
             .details(details.clone())
             .command(udf_culprit_command(blocking.first(), server)),
@@ -1109,11 +1119,7 @@ impl fmt::Display for UdfDeployOutput {
             writeln!(f, "  interpreter: {interpreter}")?;
         }
         if !self.ignored_fields.is_empty() {
-            writeln!(
-                f,
-                "  ignored Cloud-only fields: {}",
-                self.ignored_fields.join(", ")
-            )?;
+            writeln!(f, "  ignored fields: {}", self.ignored_fields.join(", "))?;
         }
         if self.server_running {
             write!(f, "Reloaded functions; {} is loaded.", self.name)
@@ -2028,7 +2034,7 @@ mod tests {
             ),
             (
                 Error::UdfReloadBlocked {
-                    name: "my_fn".into(),
+                    removed: Some("my_fn".into()),
                     server: "dev".into(),
                     blocking: vec!["bad".into()],
                     details: "Code: 50. DB::Exception: Unknown data type".into(),
@@ -2207,7 +2213,7 @@ mod tests {
         );
 
         let blocked_error = Error::UdfReloadBlocked {
-            name: "my_fn".into(),
+            removed: Some("my_fn".into()),
             server: "dev".into(),
             blocking: Vec::new(),
             details: "Code: 50. DB::Exception: secret-ish server text".into(),
@@ -2224,6 +2230,70 @@ mod tests {
             blocked["error"]["command"],
             "clickhousectl local udf list --server dev"
         );
+
+        // `reload` has no target: nothing was removed and no one is blamed.
+        let reload_blocked = error_json(&Error::UdfReloadBlocked {
+            removed: None,
+            server: "dev".into(),
+            blocking: Vec::new(),
+            details: "Code: 36. DB::Exception: secret-ish server text".into(),
+        });
+        let message = reload_blocked["error"]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with("ClickHouse rejected the function reload on server dev."),
+            "{message}"
+        );
+        assert!(!message.contains("Removed"), "{message}");
+        assert!(!message.contains("secret-ish"), "{message}");
+        assert_eq!(
+            reload_blocked["error"]["details"],
+            "Code: 36. DB::Exception: secret-ish server text"
+        );
+        assert_eq!(
+            reload_blocked["error"]["command"],
+            "clickhousectl local udf list --server dev"
+        );
+        let reload_culprit = error_json(&Error::UdfReloadBlocked {
+            removed: None,
+            server: "dev".into(),
+            blocking: vec!["bad".into()],
+            details: String::new(),
+        });
+        let message = reload_culprit["error"]["message"].as_str().unwrap();
+        assert!(
+            message.starts_with(
+                "ClickHouse rejected the function reload on server dev because UDF bad is broken."
+            ),
+            "{message}"
+        );
+        assert_eq!(
+            reload_culprit["error"]["command"],
+            "clickhousectl local udf remove bad --server dev"
+        );
+
+        // An unquotable path is reported under the code of what it belongs to.
+        for (role, code, command) in [
+            (
+                crate::error::UdfCommandPath::Interpreter,
+                "udf_interpreter_not_found",
+                Some("clickhousectl local udf deploy --help"),
+            ),
+            (
+                crate::error::UdfCommandPath::StagedScript,
+                "udf_source_invalid",
+                None,
+            ),
+        ] {
+            let error = error_json(&Error::UdfPathUnquotable {
+                role,
+                path: "/work/it's/main.py".into(),
+            });
+            assert_eq!(error["error"]["code"], code);
+            assert_eq!(error["error"]["command"].as_str(), command);
+            let message = error["error"]["message"].as_str().unwrap();
+            assert!(message.contains("'/work/it's/main.py'"), "{message}");
+            assert!(!message.contains("UDF source directory"), "{message}");
+        }
 
         let postgres = error_json(&Error::UdfServerIsPostgres("dev-pg18".into()));
         assert_eq!(

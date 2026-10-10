@@ -225,6 +225,27 @@ fn udf_init_rejects_an_invalid_name_as_a_usage_error() {
 }
 
 #[test]
+fn udf_init_and_deploy_reject_an_overlong_name_before_writing() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let name = "a".repeat(300);
+
+    for args in [
+        vec!["local", "udf", "init", name.as_str()],
+        vec!["local", "udf", "deploy", name.as_str()],
+        vec!["local", "udf", "remove", name.as_str()],
+    ] {
+        let output = run(project.path(), home.path(), &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("Use at most"), "{stderr}");
+        assert!(!stderr.contains("File name too long"), "{stderr}");
+    }
+    assert!(!project.path().join("clickhouse").exists());
+    assert!(!project.path().join(".clickhouse").exists());
+}
+
+#[test]
 fn local_init_scaffold_includes_the_udfs_directory() {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();

@@ -115,6 +115,10 @@ pub fn validate_function_name(value: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Reason [`resolve_source_dir`] gives for a `<parent>/<name>` that does not
+/// exist, so a caller can add how to create it.
+pub const SOURCE_DIR_MISSING: &str = "does not exist";
+
 /// `<parent>/<name>/`, which must be a real directory: a missing path, a
 /// file, or a symbolic link (checked without following it) is rejected.
 pub fn resolve_source_dir(parent: &Path, name: &str) -> Result<PathBuf, UdfInputError> {
@@ -126,7 +130,7 @@ pub fn resolve_source_dir(parent: &Path, name: &str) -> Result<PathBuf, UdfInput
         Ok(metadata) if metadata.is_dir() => Ok(dir),
         Ok(_) => Err(invalid(&dir, "is not a directory")),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            Err(invalid(&dir, "is not a directory"))
+            Err(invalid(&dir, SOURCE_DIR_MISSING))
         }
         Err(source) => Err(UdfInputError::Read { path: dir, source }),
     }
@@ -491,7 +495,7 @@ mod tests {
             parent.join("real")
         );
         for (name, reason) in [
-            ("missing", "is not a directory"),
+            ("missing", "does not exist"),
             ("file", "is not a directory"),
             ("linked", "is a symbolic link"),
         ] {
