@@ -30857,10 +30857,15 @@ async fn udf_attach_reports_idle_services_and_wakes_them_with_wake() {
     let error: Value = serde_json::from_slice(&output.stderr).unwrap();
     let message = error["error"]["message"].as_str().unwrap();
     assert!(
-        message.contains("service is idle (SERVICE_IDLE, service state idle)"),
+        message.contains("service is idle (SERVICE_IDLE)"),
         "{message}"
     );
     assert!(message.contains("--wake"), "{message}");
+    assert_eq!(error["error"]["code"], "service_idle", "{error}");
+    assert_eq!(
+        error["error"]["command"],
+        "clickhousectl cloud service wake svc-1"
+    );
     assert_eq!(server.received_requests().await.unwrap().len(), 1);
 
     // With --wake: 424 → PATCH awake → service running → attach accepted.
@@ -30931,6 +30936,96 @@ async fn udf_attach_reports_idle_services_and_wakes_them_with_wake() {
             "PUT /v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
         ]
     );
+}
+
+// A stopped or starting service gets its own JSON code, derived from the
+// typed 424 payload, and exit 1; so does a --wake that finds the service
+// stopped while waiting for it.
+#[tokio::test]
+async fn udf_attach_reports_stopped_and_not_running_services_with_their_codes() {
+    for (body, code) in [
+        (
+            serde_json::json!({
+                "error": "service is stopped", "code": "SERVICE_STOPPED",
+                "serviceState": "stopped", "canWake": false, "status": 424
+            }),
+            "service_stopped",
+        ),
+        (
+            serde_json::json!({
+                "error": "service is not running", "code": "SERVICE_NOT_RUNNING",
+                "serviceState": "starting", "canWake": false, "status": 424
+            }),
+            "service_not_running",
+        ),
+    ] {
+        let server = MockServer::start().await;
+        let project = tempfile::tempdir().unwrap();
+        Mock::given(method("PUT"))
+            .and(path(
+                "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+            ))
+            .respond_with(ResponseTemplate::new(424).set_body_json(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let output = udf_test_command(
+            &server,
+            project.path(),
+            false,
+            true,
+            &["attach", "my_udf", "svc-1"],
+        )
+        .output()
+        .unwrap();
+        assert_eq!(output.status.code(), Some(1), "{code}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert_eq!(error["error"]["code"], code, "{error}");
+    }
+
+    let server = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(ResponseTemplate::new(424).set_body_json(serde_json::json!({
+            "error": "service is idle", "code": "SERVICE_IDLE", "serviceState": "idle",
+            "canWake": true, "status": 424
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/services/svc-1/state"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"state": "awaking"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services/svc-1"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"state": "stopped"}})),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["attach", "my_udf", "svc-1", "--wake"],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "service_stopped", "{error}");
 }
 
 // A failed wake PATCH is not fatal while the service is on its way up

@@ -58,6 +58,8 @@ Error rendering adds nothing to stdout, but a streaming query or a command that 
 
 Cloud generic codes are `auth_required`, `cancelled`, `http_4xx`, `http_5xx`, `rate_limited`, `transport`, `timeout`, `sql_error`, `service_stopped`, `io`, and `other`, with specific recovery codes taking precedence. `resource_not_found` applies to supported service/Postgres/organization lookups, not every resource: check the organization scope and use the relevant list command. A malformed identifier or a missing ClickPipe/key can carry the API's own diagnostic instead.
 
+`cloud udf attach` reports the service's state when it cannot attach: `service_idle` (rerun with `--wake`, or wake it; `command` is the wake command), `service_stopped` (start it first; `command` is the start command), or `service_not_running` (starting, or another non-running state: wait for `running`, or start it). A `--wake` that finds the service stopped or failed while waiting reports `service_stopped` or `service_not_running`.
+
 Local errors redact external logs, subprocess output, and OS details where needed. The UDF codes `udf_definition_invalid` (invalid JSON), `udf_rejected`, `udf_reload_blocked`, `udf_query_failed`, and `udf_server_unreachable` keep ClickHouse's, the HTTP client's, or the JSON parser's text out of `message` and return it in `details`. Managed-client failures include `project_scope.path`, `server.selection`/`name`, and ordered `guidance`; project-local stop/remove errors can also carry scope and guidance instead of a top-level recovery command. These identify the exact directory inspected, without searching parent projects. New optional fields and codes may be added compatibly.
 
 ## Wait for completion and retry deliberately

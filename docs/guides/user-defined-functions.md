@@ -82,7 +82,7 @@ clickhousectl cloud udf attach my_udf <service-id> --wake
 clickhousectl cloud udf attachment get my_udf <service-id>
 ```
 
-Poll `attachment get` until it is `deployed`. The target service must be running. `--wake` wakes an idle service, waits up to ten minutes for it to reach `running`, then attaches once; without it, attaching to an idle service fails with the service state and the `cloud service wake` command. A stopped service must be started first.
+Poll `attachment get` until it is `deployed`. The target service must be running. `--wake` wakes an idle service, waits up to ten minutes for it to reach `running`, then attaches once; without it, attaching to an idle service fails with the service state and the `cloud service wake` command. A stopped service must be started first. With `--json`, the error code is `service_idle`, `service_stopped` or `service_not_running`.
 
 Attachment replaces the version already attached to that service. Without `--version`, it selects the latest ready version. Any other dependency error (HTTP 424) requires inspecting the UDF and service before retrying.
 

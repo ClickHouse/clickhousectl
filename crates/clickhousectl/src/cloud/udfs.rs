@@ -853,7 +853,8 @@ async fn upload_artifact(
 enum Outcome {
     Done,
     Pending(String),
-    Failed(String),
+    /// The wait cannot succeed; the code is the JSON code it reports.
+    Failed(String, CloudErrorCode),
 }
 
 /// Poll `fetch` every [`UDF_POLL_INTERVAL`] until `classify` says the wait
@@ -882,8 +883,10 @@ where
         let value = fetch().await?;
         match classify(&value)? {
             Outcome::Done => return Ok(value),
-            Outcome::Failed(reason) => {
-                return Err(CloudError::new(format!("{what} failed: {reason}")));
+            Outcome::Failed(reason, code) => {
+                let message = format!("{what} failed: {reason}");
+                return Err(CloudError::new(message.clone())
+                    .with_details(CloudErrorDetail::new(code, message)));
             }
             Outcome::Pending(state) => {
                 if verbose && let Some(line) = progress.render(&state, false) {
@@ -918,9 +921,18 @@ fn classify_wake_state(state: Option<&ServiceState>) -> CloudResult<Outcome> {
             | ServiceState::Softdeleting
             | ServiceState::Softdeleted
             | ServiceState::Failed),
-        ) => Ok(Outcome::Failed(format!(
-            "the service is {state}; start it with `cloud service start <id>` before attaching"
-        ))),
+        ) => {
+            let code = match state {
+                ServiceState::Stopped | ServiceState::Stopping => CloudErrorCode::ServiceStopped,
+                _ => CloudErrorCode::ServiceNotRunning,
+            };
+            Ok(Outcome::Failed(
+                format!(
+                    "the service is {state}; start it with `cloud service start <id>` before attaching"
+                ),
+                code,
+            ))
+        }
         Some(state) => Ok(Outcome::Pending(state.to_string())),
         None => Err(CloudError::new("service response omitted state")),
     }
@@ -969,6 +981,18 @@ fn wake_action(response: &UdfAttachResponse424) -> WakeAction {
     }
 }
 
+/// The JSON code for a typed HTTP 424 payload, so an agent can branch on
+/// the service's state without parsing prose. `None` for an absent or
+/// unrecognised code, which keeps the code derived from the failure.
+fn attach_unavailable_code(response: &UdfAttachResponse424) -> Option<CloudErrorCode> {
+    match response.code.as_ref()? {
+        UdfAttachErrorCode::ServiceIdle => Some(CloudErrorCode::ServiceIdle),
+        UdfAttachErrorCode::ServiceStopped => Some(CloudErrorCode::ServiceStopped),
+        UdfAttachErrorCode::ServiceNotRunning => Some(CloudErrorCode::ServiceNotRunning),
+        UdfAttachErrorCode::Unknown(_) => None,
+    }
+}
+
 /// Keep the API's message and classification, add the typed reason, and
 /// name the way out.
 fn attach_unavailable_error(
@@ -981,29 +1005,62 @@ fn attach_unavailable_error(
     if let Some(code) = &response.code {
         context.push(code.to_string());
     }
-    if let Some(state) = &response.service_state {
+    // The state only adds information when the code does not already say it.
+    let state_is_redundant = matches!(
+        (&response.code, &response.service_state),
+        (
+            Some(UdfAttachErrorCode::ServiceIdle),
+            Some(ServiceState::Idle)
+        ) | (
+            Some(UdfAttachErrorCode::ServiceStopped),
+            Some(ServiceState::Stopped)
+        )
+    );
+    if let Some(state) = &response.service_state
+        && !state_is_redundant
+    {
         context.push(format!("service state {state}"));
     }
     if !context.is_empty() {
         message.push_str(&format!(" ({})", context.join(", ")));
     }
-    let hint = match wake_action(response) {
-        WakeAction::Wake => Some(format!(
-            "Rerun with --wake, or run `clickhousectl cloud service wake {service}` and retry once it is running."
-        )),
-        WakeAction::WaitOnly => Some(
-            "The service is starting; retry shortly, or rerun with --wake to wait for it.".into(),
+    let wake_command = format!("clickhousectl cloud service wake {service}");
+    let start_command = format!("clickhousectl cloud service start {service}");
+    let (hint, command) = match wake_action(response) {
+        WakeAction::Wake => (
+            Some(format!(
+                "Rerun with --wake, or run `{wake_command}` and retry once it is running."
+            )),
+            Some(wake_command),
         ),
-        WakeAction::GiveUp => matches!(response.code, Some(UdfAttachErrorCode::ServiceStopped))
-            .then(|| {
-                format!("Start it with `clickhousectl cloud service start {service}` and retry.")
-            }),
+        WakeAction::WaitOnly => (
+            Some(
+                "The service is starting; retry shortly, or rerun with --wake to wait for it."
+                    .into(),
+            ),
+            None,
+        ),
+        WakeAction::GiveUp if matches!(response.code, Some(UdfAttachErrorCode::ServiceStopped)) => {
+            (
+                Some(format!("Start it with `{start_command}` and retry.")),
+                Some(start_command),
+            )
+        }
+        WakeAction::GiveUp => (None, None),
     };
     if let Some(hint) = hint {
         message.push('\n');
         message.push_str(&hint);
     }
-    CloudError { message, ..error }
+    let details = attach_unavailable_code(response).map(|code| CloudErrorDetail {
+        command,
+        ..CloudErrorDetail::new(code, message.clone())
+    });
+    let error = CloudError { message, ..error };
+    match details {
+        Some(details) => error.with_details(details),
+        None => error,
+    }
 }
 
 /// Attach once; with `wake`, an idle service is woken (or an awaking one
@@ -1042,7 +1099,7 @@ async fn attach_with_wake(
             // Another caller may have woken it first; only give up when the
             // service is in a state the wait would fail on anyway.
             let state = client.get_service(org, service).await?.state;
-            if let Outcome::Failed(_) = classify_wake_state(state.as_ref())? {
+            if let Outcome::Failed(..) = classify_wake_state(state.as_ref())? {
                 return Err(wake_error);
             }
         }
@@ -1677,7 +1734,7 @@ mod tests {
         match result {
             Ok(Outcome::Done) => "done".into(),
             Ok(Outcome::Pending(state)) => format!("pending:{state}"),
-            Ok(Outcome::Failed(reason)) => format!("failed:{reason}"),
+            Ok(Outcome::Failed(reason, _)) => format!("failed:{reason}"),
             Err(error) => format!("error:{error}"),
         }
     }
@@ -1722,6 +1779,12 @@ mod tests {
 
     #[test]
     fn wake_actions_and_messages_follow_the_typed_424_payload() {
+        let detail = |error: &CloudError| {
+            error
+                .details
+                .as_deref()
+                .map(|detail| (detail.code, detail.command.clone()))
+        };
         let idle = UdfAttachResponse424 {
             code: Some(UdfAttachErrorCode::ServiceIdle),
             service_state: Some(ServiceState::Idle),
@@ -1729,11 +1792,28 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(wake_action(&idle), WakeAction::Wake);
-        let message = attach_unavailable_error(CloudError::new("service is idle"), &idle, "svc-1")
-            .to_string();
+        let error = attach_unavailable_error(
+            CloudError::new("service is idle")
+                .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 424)),
+            &idle,
+            "svc-1",
+        );
         assert_eq!(
-            message,
-            "service is idle (SERVICE_IDLE, service state idle)\nRerun with --wake, or run `clickhousectl cloud service wake svc-1` and retry once it is running."
+            error.to_string(),
+            "service is idle (SERVICE_IDLE)\nRerun with --wake, or run `clickhousectl cloud service wake svc-1` and retry once it is running."
+        );
+        assert_eq!(
+            detail(&error),
+            Some((
+                CloudErrorCode::ServiceIdle,
+                Some("clickhousectl cloud service wake svc-1".into())
+            ))
+        );
+        assert_eq!(error.details.as_deref().unwrap().message, error.message);
+        // The JSON code is added; the failure classification is kept.
+        assert_eq!(
+            error.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 424))
         );
 
         let awaking = UdfAttachResponse424 {
@@ -1743,10 +1823,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(wake_action(&awaking), WakeAction::WaitOnly);
-        assert!(
-            attach_unavailable_error(CloudError::new("not running"), &awaking, "svc-1")
-                .to_string()
-                .contains("retry shortly")
+        let error = attach_unavailable_error(CloudError::new("not running"), &awaking, "svc-1");
+        assert_eq!(
+            error.to_string(),
+            "not running (SERVICE_NOT_RUNNING, service state awaking)\nThe service is starting; retry shortly, or rerun with --wake to wait for it."
+        );
+        assert_eq!(
+            detail(&error),
+            Some((CloudErrorCode::ServiceNotRunning, None))
         );
 
         let stopped = UdfAttachResponse424 {
@@ -1756,10 +1840,37 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(wake_action(&stopped), WakeAction::GiveUp);
-        assert!(
-            attach_unavailable_error(CloudError::new("stopped"), &stopped, "svc-1")
-                .to_string()
-                .contains("cloud service start svc-1")
+        let error = attach_unavailable_error(CloudError::new("stopped"), &stopped, "svc-1");
+        assert_eq!(
+            error.to_string(),
+            "stopped (SERVICE_STOPPED)\nStart it with `clickhousectl cloud service start svc-1` and retry."
+        );
+        assert_eq!(
+            detail(&error),
+            Some((
+                CloudErrorCode::ServiceStopped,
+                Some("clickhousectl cloud service start svc-1".into())
+            ))
+        );
+
+        // A stopped service reported as SERVICE_NOT_RUNNING keeps its state.
+        let not_running_stopped = UdfAttachResponse424 {
+            code: Some(UdfAttachErrorCode::ServiceNotRunning),
+            service_state: Some(ServiceState::Stopped),
+            ..Default::default()
+        };
+        let error = attach_unavailable_error(
+            CloudError::new("not running"),
+            &not_running_stopped,
+            "svc-1",
+        );
+        assert_eq!(
+            error.to_string(),
+            "not running (SERVICE_NOT_RUNNING, service state stopped)"
+        );
+        assert_eq!(
+            detail(&error),
+            Some((CloudErrorCode::ServiceNotRunning, None))
         );
 
         let untyped = UdfAttachResponse424::default();
@@ -1769,6 +1880,33 @@ mod tests {
         let error = attach_unavailable_error(plain, &untyped, "svc-1");
         assert_eq!(error.to_string(), "dependency unavailable");
         assert_eq!(error.failure.unwrap().kind, FailureKind::Http4xx);
+        assert!(error.details.is_none());
+
+        let unknown = UdfAttachResponse424 {
+            code: Some(UdfAttachErrorCode::Unknown("SERVICE_FUTURE".into())),
+            ..Default::default()
+        };
+        assert_eq!(attach_unavailable_code(&unknown), None);
+    }
+
+    #[test]
+    fn wake_wait_failures_carry_a_service_state_code() {
+        let code = |state: ServiceState| match classify_wake_state(Some(&state)) {
+            Ok(Outcome::Failed(_, code)) => code,
+            _ => panic!("{state} should fail the wait"),
+        };
+        for state in [ServiceState::Stopped, ServiceState::Stopping] {
+            assert_eq!(code(state), CloudErrorCode::ServiceStopped);
+        }
+        for state in [
+            ServiceState::Terminating,
+            ServiceState::Terminated,
+            ServiceState::Softdeleting,
+            ServiceState::Softdeleted,
+            ServiceState::Failed,
+        ] {
+            assert_eq!(code(state), CloudErrorCode::ServiceNotRunning);
+        }
     }
 
     fn parse_udf(args: &[&str]) -> UdfArgs {
