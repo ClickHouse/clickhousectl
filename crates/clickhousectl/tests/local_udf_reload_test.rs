@@ -81,7 +81,7 @@ fn setup() -> Env {
     let project = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let bin = home.path().join("bin");
-    write_executable(&bin.join("python3.11"), "#!/bin/sh\nexit 0\n");
+    write_executable(&bin.join("python3.11"), "#!/bin/sh\necho 3.11\n");
     let test_binary = std::env::current_exe().unwrap();
     write_executable(
         &home

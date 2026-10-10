@@ -17,7 +17,7 @@ fn clickhousectl_binary() -> PathBuf {
 struct Env {
     project: tempfile::TempDir,
     home: tempfile::TempDir,
-    /// Holds a fake `python3.11`; prepended to `PATH`.
+    /// Holds a fake `python3.11` that reports version 3.11; prepended to `PATH`.
     bin: PathBuf,
 }
 
@@ -26,7 +26,7 @@ fn setup() -> Env {
     let home = tempfile::tempdir().expect("create home");
     let bin = home.path().join("bin");
     std::fs::create_dir_all(&bin).unwrap();
-    write_executable(&bin.join("python3.11"), "#!/bin/sh\nexit 0\n");
+    write_executable(&bin.join("python3.11"), "#!/bin/sh\necho 3.11\n");
     write_executable(
         &home
             .path()
@@ -219,6 +219,7 @@ fn deploy_to_a_stopped_server_stages_files_and_overlay() {
             "interpreter": env.bin.join("python3.11").display().to_string(),
             "ignored_fields": ["memoryLimitMib"],
             "ignored_files": ["requirements.txt"],
+            "warnings": [],
             "function_config": ".clickhouse/servers/default/data/user_defined_functions/my_fn_function.xml",
             "scripts_dir": ".clickhouse/servers/default/data/user_scripts/my_fn"
         })
@@ -250,7 +251,7 @@ fn deploy_to_a_stopped_server_stages_files_and_overlay() {
     assert!(xml.contains("<execute_direct>0</execute_direct>"), "{xml}");
     assert!(
         xml.contains(&format!(
-            "<command>'{}' '{}/user_scripts/my_fn/main.py'</command>",
+            "<command>exec '{}' '{}/user_scripts/my_fn/main.py'</command>",
             env.bin.join("python3.11").display(),
             data_abs.display()
         )),
@@ -309,7 +310,7 @@ fn deploy_native_is_unsupported_off_linux_and_writes_nothing() {
     assert_eq!(error["error"]["code"], "udf_runtime_unsupported");
     assert_eq!(
         error["error"]["message"],
-        "native UDFs are Linux binaries and cannot run on this host's local server; deploy them on Linux or use runtime python3.11"
+        "native UDFs run only on local servers on Linux amd64 or arm64; deploy from a Linux host, or to Cloud with `cloud udf create`"
     );
     assert_eq!(
         error["error"]["command"],
@@ -319,11 +320,21 @@ fn deploy_native_is_unsupported_off_linux_and_writes_nothing() {
 }
 
 #[cfg(target_os = "linux")]
+fn host_and_other_arch() -> (&'static str, &'static str) {
+    match std::env::consts::ARCH {
+        "x86_64" => ("amd64", "arm64"),
+        "aarch64" => ("arm64", "amd64"),
+        other => panic!("unexpected test host CPU {other}"),
+    }
+}
+
+#[cfg(target_os = "linux")]
 #[test]
-fn deploy_native_picks_the_host_architecture_and_marks_both_binaries_executable() {
+fn deploy_native_stages_only_the_host_architecture_and_marks_it_executable() {
     let env = setup();
     create_stopped_server(&env, "dev");
     write_native_udf(&env, "native_fn");
+    let (arch, other) = host_and_other_arch();
 
     let json = success_json(&run(
         &env,
@@ -341,13 +352,12 @@ fn deploy_native_picks_the_host_architecture_and_marks_both_binaries_executable(
     assert_eq!(json["type"], "executable_pool");
     assert_eq!(json["runtime"], "native");
     assert_eq!(json["interpreter"], Value::Null);
-    assert_eq!(json["ignored_files"], serde_json::json!([]));
+    assert_eq!(
+        json["ignored_files"],
+        serde_json::json!([format!("{other}/")])
+    );
+    assert_eq!(json["warnings"], serde_json::json!([]));
 
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        other => panic!("unexpected test host CPU {other}"),
-    };
     let data = data_dir(&env, "dev");
     let xml = std::fs::read_to_string(data.join("user_defined_functions/native_fn_function.xml"))
         .unwrap();
@@ -358,14 +368,162 @@ fn deploy_native_picks_the_host_architecture_and_marks_both_binaries_executable(
     );
     assert!(xml.contains("<pool_size>2</pool_size>"), "{xml}");
     let scripts = data.join("user_scripts/native_fn");
-    for arch in ["amd64", "arm64"] {
-        assert!(is_executable(&scripts.join(arch).join("main")), "{arch}");
-    }
+    assert!(is_executable(&scripts.join(arch).join("main")), "{arch}");
+    assert!(
+        !scripts.join(other).exists(),
+        "the other architecture is not copied"
+    );
     assert!(
         !scripts.join("src").exists(),
         "sources outside amd64/arm64 are not copied"
     );
     assert!(!scripts.join("Cargo.toml").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn deploy_native_needs_only_the_host_architecture_binary() {
+    let env = setup();
+    create_stopped_server(&env, "default");
+    let dir = write_native_udf(&env, "native_fn");
+    let (arch, other) = host_and_other_arch();
+
+    std::fs::remove_dir_all(dir.join(other)).unwrap();
+    let json = success_json(&run(
+        &env,
+        &["local", "udf", "deploy", "native_fn", "--json"],
+    ));
+    assert_eq!(json["ignored_files"], serde_json::json!([]));
+
+    std::fs::remove_dir_all(dir.join(arch)).unwrap();
+    std::fs::create_dir_all(dir.join(other)).unwrap();
+    std::fs::write(dir.join(other).join("main"), "#!/bin/sh\ncat\n").unwrap();
+    let error = error_json(&run(
+        &env,
+        &["local", "udf", "deploy", "native_fn", "--json"],
+    ));
+    assert_eq!(error["error"]["code"], "udf_source_invalid");
+    assert_eq!(
+        error["error"]["message"],
+        format!(
+            "UDF source directory 'clickhouse/udfs/native_fn' is missing {arch}/main, the binary runtime native runs on this host"
+        )
+    );
+}
+
+#[test]
+fn deploy_rejects_python_for_a_native_udf_as_a_usage_error() {
+    let env = setup();
+    create_stopped_server(&env, "default");
+    write_native_udf(&env, "native_fn");
+    let python = env.bin.join("python3.11");
+
+    let output = run(
+        &env,
+        &[
+            "local",
+            "udf",
+            "deploy",
+            "native_fn",
+            "--python",
+            python.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("--python"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_nothing_staged(&env, "default");
+}
+
+#[test]
+fn deploy_warns_when_the_interpreter_is_not_python_3_11() {
+    let env = setup();
+    create_stopped_server(&env, "default");
+    write_python_udf(&env, "my_fn", false);
+    let only_python3 = env.home.path().join("only-python3");
+    let python3 = only_python3.join("python3");
+    write_executable(&python3, "#!/bin/sh\necho 3.12\n");
+    let path = format!("{}:/usr/bin:/bin", only_python3.display());
+
+    let output = command(&env)
+        .env("PATH", &path)
+        .args(["local", "udf", "deploy", "my_fn", "--json"])
+        .output()
+        .unwrap();
+    let json = success_json(&output);
+    assert_eq!(json["interpreter"], python3.display().to_string());
+    let warnings = json["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{warnings:?}");
+    let warning = warnings[0].as_str().unwrap();
+    assert!(
+        warning.contains(&python3.display().to_string()) && warning.contains("3.12"),
+        "{warning}"
+    );
+    assert!(output.stderr.is_empty(), "JSON mode prints no warning");
+
+    let output = command(&env)
+        .env("PATH", &path)
+        .args(["local", "udf", "deploy", "my_fn"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stderr),
+        format!("Warning: {warning}\n")
+    );
+
+    // An interpreter that cannot report its version is warned about too.
+    write_executable(&python3, "#!/bin/sh\nexit 1\n");
+    let output = command(&env)
+        .env("PATH", &path)
+        .args(["local", "udf", "deploy", "my_fn", "--json"])
+        .output()
+        .unwrap();
+    let json = success_json(&output);
+    assert_eq!(json["warnings"].as_array().unwrap().len(), 1, "{json}");
+}
+
+#[test]
+fn deploy_stores_a_relative_python_path_absolute_and_normalised() {
+    let env = setup();
+    create_stopped_server(&env, "default");
+    write_python_udf(&env, "my_fn", false);
+    let tools = env.project.path().join("tools");
+    std::fs::create_dir_all(tools.join("sub")).unwrap();
+    write_executable(&tools.join("py3"), "#!/bin/sh\necho 3.11\n");
+
+    let json = success_json(&run(
+        &env,
+        &[
+            "local",
+            "udf",
+            "deploy",
+            "my_fn",
+            "--python",
+            "tools/sub/../py3",
+            "--json",
+        ],
+    ));
+    let expected = env.project.path().canonicalize().unwrap().join("tools/py3");
+    assert_eq!(json["interpreter"], expected.display().to_string());
+    let xml = std::fs::read_to_string(
+        data_dir(&env, "default").join("user_defined_functions/my_fn_function.xml"),
+    )
+    .unwrap();
+    assert!(
+        xml.contains(&format!("<command>exec '{}' ", expected.display())),
+        "{xml}"
+    );
 }
 
 #[test]

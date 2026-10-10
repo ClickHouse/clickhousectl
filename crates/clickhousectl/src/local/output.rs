@@ -1046,6 +1046,9 @@ pub struct UdfInitOutput {
     /// What the user must still do before the UDF can run, if anything.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_step: Option<String>,
+    /// Limits of the scaffolded UDF on this host, e.g. a `native` UDF that
+    /// only a Linux host can deploy locally. Human mode prints them to stderr.
+    pub warnings: Vec<String>,
 }
 
 impl fmt::Display for UdfInitOutput {
@@ -1082,9 +1085,13 @@ pub struct UdfDeployOutput {
     pub interpreter: Option<String>,
     /// Cloud-only definition fields that have no local equivalent.
     pub ignored_fields: Vec<String>,
-    /// Files copied with the sources that the local server does nothing
-    /// with, such as `requirements.txt`.
+    /// Source files the local server does nothing with: `requirements.txt`
+    /// (copied, not installed) or, for `native`, the other architecture's
+    /// directory, such as `arm64/` (not copied).
     pub ignored_files: Vec<String>,
+    /// Differences from Cloud worth knowing, e.g. an interpreter that is not
+    /// Python 3.11. Human mode prints them to stderr.
+    pub warnings: Vec<String>,
     pub function_config: String,
     pub scripts_dir: String,
 }

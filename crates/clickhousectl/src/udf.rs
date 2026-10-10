@@ -274,6 +274,18 @@ pub fn collect_source_entries(
     dir: &Path,
     runtime: UdfRuntimeKind,
 ) -> Result<Vec<SourceEntry>, UdfInputError> {
+    collect_source_entries_for(dir, runtime, &NATIVE_ARCH_DIRS)
+}
+
+/// [`collect_source_entries`], but a `native` UDF needs (and yields) only the
+/// architecture directories in `native_arches`, a subset of
+/// [`NATIVE_ARCH_DIRS`]. A local server runs only its host's binary, while
+/// Cloud needs both.
+pub fn collect_source_entries_for(
+    dir: &Path,
+    runtime: UdfRuntimeKind,
+    native_arches: &[&str],
+) -> Result<Vec<SourceEntry>, UdfInputError> {
     if !dir.is_dir() {
         return Err(invalid(dir, "is not a directory"));
     }
@@ -294,7 +306,10 @@ pub fn collect_source_entries(
             }
         }
         UdfRuntimeKind::Native => {
-            for arch in NATIVE_ARCH_DIRS {
+            for arch in NATIVE_ARCH_DIRS
+                .into_iter()
+                .filter(|arch| native_arches.contains(arch))
+            {
                 let arch_dir = dir.join(arch);
                 let metadata = match std::fs::symlink_metadata(&arch_dir) {
                     Ok(metadata) => metadata,
@@ -320,17 +335,25 @@ pub fn collect_source_entries(
                 });
                 walk(dir, &arch_dir, Path::new(arch), false, &mut entries)?;
             }
-            if !NATIVE_ARCH_DIRS
-                .iter()
-                .all(|arch| has_file(&entries, &Path::new(arch).join(NATIVE_ENTRYPOINT)))
-            {
-                return Err(invalid(
-                    dir,
+            let missing: Vec<String> = NATIVE_ARCH_DIRS
+                .into_iter()
+                .filter(|arch| native_arches.contains(arch))
+                .map(|arch| format!("{arch}/{NATIVE_ENTRYPOINT}"))
+                .filter(|binary| !has_file(&entries, Path::new(binary)))
+                .collect();
+            if !missing.is_empty() {
+                let reason = if native_arches.len() == NATIVE_ARCH_DIRS.len() {
                     format!(
                         "is missing {}/{NATIVE_ENTRYPOINT} or {}/{NATIVE_ENTRYPOINT}, the binaries runtime native requires",
                         NATIVE_ARCH_DIRS[0], NATIVE_ARCH_DIRS[1]
-                    ),
-                ));
+                    )
+                } else {
+                    format!(
+                        "is missing {}, the binary runtime native runs on this host",
+                        missing.join(" and ")
+                    )
+                };
+                return Err(invalid(dir, reason));
             }
         }
     }
@@ -745,5 +768,33 @@ mod tests {
                 .ends_with("contains a symbolic link at arm64"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn native_entries_for_one_architecture_need_and_yield_only_that_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("native_fn");
+        write(&dir.join("arm64/main"), "binary\n");
+
+        let error =
+            collect_source_entries_for(&dir, UdfRuntimeKind::Native, &["amd64"]).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .ends_with("is missing amd64/main, the binary runtime native runs on this host"),
+            "{error}"
+        );
+
+        write(&dir.join("amd64/main"), "binary\n");
+        let entries = collect_source_entries_for(&dir, UdfRuntimeKind::Native, &["amd64"]).unwrap();
+        assert_eq!(
+            listed(&entries),
+            vec![
+                ("amd64".to_string(), true),
+                ("amd64/main".to_string(), false)
+            ]
+        );
+        std::fs::remove_file(dir.join("amd64/main")).unwrap();
+        assert!(collect_source_entries_for(&dir, UdfRuntimeKind::Native, &["arm64"]).is_ok());
     }
 }

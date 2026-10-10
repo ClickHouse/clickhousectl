@@ -37,12 +37,16 @@ const FUNCTION_FILE_SUFFIX: &str = "_function.xml";
 const REJECTED_MARKER_SUFFIX: &str = ".rejected";
 const DEFAULT_FORMAT: &str = "TabSeparated";
 const PYTHON_CANDIDATES: [&str; 2] = ["python3.11", "python3"];
+/// The Python version Cloud runs `python3.11` UDFs with.
+const CLOUD_PYTHON_VERSION: &str = "3.11";
+/// How long the interpreter may take to report its version.
+const PYTHON_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Copied but not installed: a local server runs the interpreter as is.
 const REQUIREMENTS_FILE: &str = "requirements.txt";
 const REQUIREMENTS_NOTICE: &str = "requirements.txt is not installed locally; install its packages \
      into the interpreter you deploy with (e.g. a virtualenv passed with --python).";
-const NATIVE_UNSUPPORTED: &str = "native UDFs are Linux binaries and cannot run on this host's \
-     local server; deploy them on Linux or use runtime python3.11";
+const NATIVE_UNSUPPORTED: &str = "native UDFs run only on local servers on Linux amd64 or \
+     arm64; deploy from a Linux host, or to Cloud with `cloud udf create`";
 const HTTP_CONNECT_TIMEOUT: Duration = Duration::from_secs(1);
 const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long `deploy` keeps asking a running server to reload before giving
@@ -263,12 +267,27 @@ fn init_udf(name: &str, runtime: UdfRuntimeArg, kind: UdfTypeArg, json: bool) ->
             Some(native_next_step())
         }
     };
+    let warnings: Vec<String> = match runtime {
+        UdfRuntimeArg::Native => native_host_arch()
+            .err()
+            .map(|error| error.to_string())
+            .into_iter()
+            .collect(),
+        UdfRuntimeArg::Python311 => Vec::new(),
+    };
+    if !json {
+        for warning in &warnings {
+            // Not `eprintln!`, which panics on a closed stderr.
+            let _ = writeln!(std::io::stderr(), "Warning: {warning}");
+        }
+    }
 
     let out = UdfInitOutput {
         name: name.to_owned(),
         dir: target.display().to_string(),
         created,
         next_step,
+        warnings,
     };
     output::print_output(&out, json);
     Ok(())
@@ -386,12 +405,25 @@ async fn deploy(
     let dir = udf::resolve_source_dir(parent, name).map_err(input_error)?;
     let (definition, ignored_fields) = load_local_definition(&dir, name)?;
     let runtime = definition.runtime.kind();
+    if runtime == UdfRuntimeKind::Native && python.is_some() {
+        return Err(Error::Usage(Box::new(clap::Error::raw(
+            clap::error::ErrorKind::ArgumentConflict,
+            format!(
+                "--python applies only to runtime python3.11, but UDF {name} uses runtime native\n"
+            ),
+        ))));
+    }
     let native_arch = match runtime {
         UdfRuntimeKind::Native => Some(native_host_arch()?),
         UdfRuntimeKind::Python311 => None,
     };
-    let entries = udf::collect_source_entries(&dir, runtime).map_err(input_error)?;
-    let ignored_files = ignored_files(&entries, runtime);
+    // A local server runs only its host's binary, so only that one is needed.
+    let entries = match native_arch {
+        Some(arch) => udf::collect_source_entries_for(&dir, runtime, &[arch]),
+        None => udf::collect_source_entries(&dir, runtime),
+    }
+    .map_err(input_error)?;
+    let ignored_files = ignored_files(&dir, &entries, runtime, native_arch);
 
     let (target, mut lock) = server_target(server_name)?;
     let data_dir_abs = target.data_dir.canonicalize()?;
@@ -405,6 +437,11 @@ async fn deploy(
         ),
         None => python_command(name, &data_dir_abs, python)?,
     };
+    let mut warnings = Vec::new();
+    if let Some(interpreter) = &interpreter {
+        let version = python_version(interpreter).await;
+        warnings.extend(python_version_warning(interpreter, version.as_deref()));
+    }
     // A name ClickHouse already knows blocks every later reload (or is never
     // callable), so it is refused before anything is written. Only a running
     // server can say; the lock is not held across the round trip.
@@ -415,13 +452,10 @@ async fn deploy(
     }
 
     let scripts_dir = target.data_dir.join(SCRIPTS_DIR).join(name);
-    let executables: Vec<PathBuf> = match native_arch {
-        Some(_) => NATIVE_ARCH_DIRS
-            .iter()
-            .map(|arch| Path::new(arch).join(NATIVE_ENTRYPOINT))
-            .collect(),
-        None => Vec::new(),
-    };
+    let executables: Vec<PathBuf> = native_arch
+        .map(|arch| Path::new(arch).join(NATIVE_ENTRYPOINT))
+        .into_iter()
+        .collect();
     stage_scripts(&entries, &scripts_dir, &executables)?;
     std::fs::create_dir_all(target.data_dir.join(FUNCTIONS_DIR))?;
     let function_config = function_xml_path(&target.data_dir, name);
@@ -479,9 +513,14 @@ async fn deploy(
         None => None,
     };
 
-    if !json && !ignored_files.is_empty() {
+    if !json {
         // Not `eprintln!`, which panics on a closed stderr.
-        let _ = writeln!(std::io::stderr(), "{REQUIREMENTS_NOTICE}");
+        for warning in &warnings {
+            let _ = writeln!(std::io::stderr(), "Warning: {warning}");
+        }
+        if ignored_files.iter().any(|file| file == REQUIREMENTS_FILE) {
+            let _ = writeln!(std::io::stderr(), "{REQUIREMENTS_NOTICE}");
+        }
     }
     let out = UdfDeployOutput {
         name: name.to_owned(),
@@ -494,6 +533,7 @@ async fn deploy(
         interpreter: interpreter.map(|path| path.display().to_string()),
         ignored_fields,
         ignored_files,
+        warnings,
         function_config: display_path(&function_config),
         scripts_dir: display_path(&scripts_dir),
     };
@@ -514,16 +554,27 @@ fn deploy_command(name: &str, parent: &Path, server: &str) -> String {
     }
 }
 
-/// Files copied with the sources that the local server does nothing with.
-fn ignored_files(entries: &[SourceEntry], runtime: UdfRuntimeKind) -> Vec<String> {
-    let requirements = runtime == UdfRuntimeKind::Python311
-        && entries
+/// Source files the local server does nothing with: `requirements.txt`
+/// (copied, not installed) and, for `native`, the other architecture's
+/// directory (not copied; Cloud uses it). Directories end in `/`.
+fn ignored_files(
+    dir: &Path,
+    entries: &[SourceEntry],
+    runtime: UdfRuntimeKind,
+    native_arch: Option<&str>,
+) -> Vec<String> {
+    match (runtime, native_arch) {
+        (UdfRuntimeKind::Python311, _) => entries
             .iter()
-            .any(|entry| !entry.is_dir && entry.relative == Path::new(REQUIREMENTS_FILE));
-    if requirements {
-        vec![REQUIREMENTS_FILE.to_owned()]
-    } else {
-        Vec::new()
+            .any(|entry| !entry.is_dir && entry.relative == Path::new(REQUIREMENTS_FILE))
+            .then(|| REQUIREMENTS_FILE.to_owned())
+            .into_iter()
+            .collect(),
+        (UdfRuntimeKind::Native, host) => NATIVE_ARCH_DIRS
+            .into_iter()
+            .filter(|arch| Some(*arch) != host && dir.join(arch).is_dir())
+            .map(|arch| format!("{arch}/"))
+            .collect(),
     }
 }
 
@@ -541,8 +592,9 @@ fn native_arch_for(os: &str, arch: &str) -> Result<&'static str> {
         "x86_64" => Ok("amd64"),
         "aarch64" => Ok("arm64"),
         other => Err(Error::UdfRuntimeUnsupported(format!(
-            "native UDFs ship amd64 and arm64 binaries, but this host's CPU is {other}; \
-             use runtime python3.11"
+            "native UDFs run only on local servers on Linux amd64 or arm64, but this host's \
+             CPU is {other}; deploy from an amd64 or arm64 host, or to Cloud with \
+             `cloud udf create`"
         ))),
     }
 }
@@ -569,7 +621,12 @@ fn python_command(
         .join(SCRIPTS_DIR)
         .join(name)
         .join(PYTHON_ENTRYPOINT);
-    let command = format!("{} {}", shell_quote(&interpreter)?, shell_quote(&script)?);
+    // `exec` replaces the shell, so each pooled worker is one python process.
+    let command = format!(
+        "exec {} {}",
+        shell_quote(&interpreter)?,
+        shell_quote(&script)?
+    );
     Ok((
         ResolvedCommand {
             command,
@@ -620,8 +677,63 @@ fn is_executable_file(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Absolute and lexically normalised (`.` and `..` folded away), so the
+/// command carries `/home/me/py3`, never `proj/../py3`. Symbolic links are
+/// kept: a virtualenv's `bin/python` must stay the link it is.
 fn absolute(path: PathBuf) -> Result<PathBuf> {
-    Ok(std::path::absolute(path)?)
+    let mut normalised = PathBuf::new();
+    for component in std::path::absolute(path)?.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalised.pop();
+            }
+            other => normalised.push(other),
+        }
+    }
+    Ok(normalised)
+}
+
+/// The `major.minor` version an interpreter reports, or `None` when it
+/// cannot be run, fails, prints something else or takes too long.
+async fn python_version(interpreter: &Path) -> Option<String> {
+    let mut command = tokio::process::Command::new(interpreter);
+    command
+        .args(["-c", "import sys; print('%d.%d' % sys.version_info[:2])"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(PYTHON_VERSION_TIMEOUT, command.output())
+        .await
+        .ok()?
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let version = text.trim();
+    let (major, minor) = version.split_once('.')?;
+    let numeric = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
+    (numeric(major) && numeric(minor)).then(|| version.to_owned())
+}
+
+/// Cloud runs python3.11; say so when the local interpreter differs or its
+/// version could not be determined.
+fn python_version_warning(interpreter: &Path, version: Option<&str>) -> Option<String> {
+    match version {
+        Some(CLOUD_PYTHON_VERSION) => None,
+        Some(version) => Some(format!(
+            "interpreter {} is Python {version}, but Cloud runs Python {CLOUD_PYTHON_VERSION}; \
+             pass --python with a 3.11 interpreter to match",
+            interpreter.display()
+        )),
+        None => Some(format!(
+            "could not determine the Python version of interpreter {}; Cloud runs Python \
+             {CLOUD_PYTHON_VERSION}",
+            interpreter.display()
+        )),
+    }
 }
 
 /// Single-quote a path for `sh -c`, which ClickHouse uses when
@@ -1681,13 +1793,118 @@ mod tests {
             is_dir: false,
             mode: 0o644,
         };
+        let tmp = tempfile::tempdir().unwrap();
         let entries = vec![entry("main.py"), entry("requirements.txt")];
         assert_eq!(
-            ignored_files(&entries, UdfRuntimeKind::Python311),
+            ignored_files(tmp.path(), &entries, UdfRuntimeKind::Python311, None),
             vec!["requirements.txt"]
         );
-        assert!(ignored_files(&entries[..1], UdfRuntimeKind::Python311).is_empty());
-        assert!(ignored_files(&entries, UdfRuntimeKind::Native).is_empty());
+        assert!(
+            ignored_files(tmp.path(), &entries[..1], UdfRuntimeKind::Python311, None).is_empty()
+        );
+        assert!(
+            ignored_files(tmp.path(), &entries, UdfRuntimeKind::Native, Some("amd64")).is_empty()
+        );
+    }
+
+    #[test]
+    fn native_reports_the_other_architecture_directory_as_ignored() {
+        let tmp = tempfile::tempdir().unwrap();
+        for arch in NATIVE_ARCH_DIRS {
+            std::fs::create_dir_all(tmp.path().join(arch)).unwrap();
+        }
+        assert_eq!(
+            ignored_files(tmp.path(), &[], UdfRuntimeKind::Native, Some("amd64")),
+            vec!["arm64/"]
+        );
+        assert_eq!(
+            ignored_files(tmp.path(), &[], UdfRuntimeKind::Native, Some("arm64")),
+            vec!["amd64/"]
+        );
+        std::fs::remove_dir(tmp.path().join("arm64")).unwrap();
+        assert!(ignored_files(tmp.path(), &[], UdfRuntimeKind::Native, Some("amd64")).is_empty());
+    }
+
+    #[test]
+    fn python_command_execs_the_interpreter_so_no_shell_stays_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let python = tmp.path().join("python3");
+        std::fs::write(&python, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let (command, interpreter) =
+            python_command("my_fn", Path::new("/data"), Some(&python)).unwrap();
+        assert_eq!(
+            command.command,
+            format!(
+                "exec '{}' '/data/user_scripts/my_fn/main.py'",
+                python.display()
+            )
+        );
+        assert!(!command.execute_direct);
+        assert_eq!(interpreter, Some(python));
+    }
+
+    #[test]
+    fn explicit_relative_python_is_made_absolute_and_normalised() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let python = tmp.path().join("py3");
+        std::fs::write(&python, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&python, std::fs::Permissions::from_mode(0o755)).unwrap();
+        std::fs::create_dir_all(tmp.path().join("proj")).unwrap();
+        // A path relative to the cwd that walks through `proj/..`.
+        let relative = up_to_root(&cwd).join(tmp.path().strip_prefix("/").unwrap());
+        let explicit = relative.join("proj/../py3");
+        let resolved = resolve_python(Some(&explicit), OsStr::new("")).unwrap();
+        assert_eq!(resolved, python);
+        assert!(resolved.is_absolute());
+
+        assert_eq!(
+            absolute(PathBuf::from("/a/./b/../c")).unwrap(),
+            PathBuf::from("/a/c")
+        );
+    }
+
+    /// `../..` up from `dir` to the filesystem root.
+    fn up_to_root(dir: &Path) -> PathBuf {
+        dir.components()
+            .skip(1)
+            .map(|_| std::path::Component::ParentDir)
+            .collect()
+    }
+
+    #[test]
+    fn python_version_warning_flags_anything_but_3_11() {
+        let path = Path::new("/usr/bin/python3");
+        assert_eq!(python_version_warning(path, Some("3.11")), None);
+        let warning = python_version_warning(path, Some("3.12")).unwrap();
+        assert!(
+            warning.contains("/usr/bin/python3") && warning.contains("3.12"),
+            "{warning}"
+        );
+        let warning = python_version_warning(path, None).unwrap();
+        assert!(warning.contains("/usr/bin/python3"), "{warning}");
+    }
+
+    #[tokio::test]
+    async fn python_version_reads_major_minor_and_rejects_anything_else() {
+        let tmp = tempfile::tempdir().unwrap();
+        let make = |name: &str, body: &str| {
+            let path = tmp.path().join(name);
+            std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            path
+        };
+        assert_eq!(
+            python_version(&make("ok", "echo 3.12")).await.as_deref(),
+            Some("3.12")
+        );
+        assert_eq!(
+            python_version(&make("failing", "echo 3.11; exit 1")).await,
+            None
+        );
+        assert_eq!(python_version(&make("garbage", "echo hello")).await, None);
+        assert_eq!(python_version(&tmp.path().join("missing")).await, None);
     }
 
     #[test]

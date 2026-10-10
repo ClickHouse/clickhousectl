@@ -49,7 +49,8 @@ fn udf_init_scaffolds_a_python_definition_and_entrypoint() {
         serde_json::json!({
             "name": "my_fn",
             "dir": "clickhouse/udfs/my_fn",
-            "created": ["udf.json", "main.py"]
+            "created": ["udf.json", "main.py"],
+            "warnings": []
         })
     );
 
@@ -159,6 +160,35 @@ fn udf_init_native_pool_scaffolds_architecture_dirs() {
     let json = stdout_json(&rerun);
     assert_eq!(json["created"], serde_json::json!([]));
     assert!(json["next_step"].is_string());
+}
+
+#[test]
+fn udf_init_native_warns_off_linux_that_only_cloud_can_run_it() {
+    let project = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let args = ["local", "udf", "init", "native_fn", "--runtime", "native"];
+    let supported =
+        cfg!(target_os = "linux") && matches!(std::env::consts::ARCH, "x86_64" | "aarch64");
+
+    let mut json_args = args.to_vec();
+    json_args.push("--json");
+    let output = run(project.path(), home.path(), &json_args);
+    let json = stdout_json(&output);
+    assert!(output.stderr.is_empty(), "JSON mode prints no warning");
+    let warnings = json["warnings"].as_array().unwrap();
+
+    let human = run(project.path(), home.path(), &args);
+    assert!(human.status.success());
+    let stderr = String::from_utf8_lossy(&human.stderr);
+    if supported {
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(stderr.is_empty(), "{stderr}");
+    } else {
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        let warning = warnings[0].as_str().unwrap();
+        assert!(warning.contains("cloud udf create"), "{warning}");
+        assert_eq!(stderr, format!("Warning: {warning}\n"));
+    }
 }
 
 #[test]
