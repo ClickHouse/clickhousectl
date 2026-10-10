@@ -1127,6 +1127,9 @@ pub struct UdfListEntry {
     pub runtime: Option<String>,
     /// `None` when the server is not running.
     pub loaded: Option<bool>,
+    /// The running server rejected the last deploy of these files, so a
+    /// loaded function still runs an earlier definition.
+    pub last_deploy_rejected: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1160,10 +1163,13 @@ impl fmt::Display for UdfListOutput {
                 name: udf.name.clone(),
                 kind: udf.r#type.clone().unwrap_or_else(|| "-".into()),
                 runtime: udf.runtime.clone().unwrap_or_else(|| "-".into()),
-                loaded: match udf.loaded {
-                    Some(true) => "yes".into(),
-                    Some(false) => "no".into(),
-                    None => "-".into(),
+                loaded: match (udf.loaded, udf.last_deploy_rejected) {
+                    (Some(true), false) => "yes".into(),
+                    (Some(true), true) => "yes (stale: last deploy rejected)".into(),
+                    (Some(false), false) => "no".into(),
+                    (Some(false), true) => "no (last deploy rejected)".into(),
+                    (None, false) => "-".into(),
+                    (None, true) => "- (last deploy rejected)".into(),
                 },
             })
             .collect();

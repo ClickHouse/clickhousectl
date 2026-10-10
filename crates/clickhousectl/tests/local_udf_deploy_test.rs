@@ -481,8 +481,8 @@ fn list_and_remove_work_without_a_running_server() {
     assert_eq!(
         list["udfs"],
         serde_json::json!([
-            {"name": "my_fn", "type": "executable", "runtime": "python3.11", "loaded": null},
-            {"name": "other_fn", "type": "executable", "runtime": "python3.11", "loaded": null}
+            {"name": "my_fn", "type": "executable", "runtime": "python3.11", "loaded": null, "last_deploy_rejected": false},
+            {"name": "other_fn", "type": "executable", "runtime": "python3.11", "loaded": null, "last_deploy_rejected": false}
         ])
     );
     let human = run(&env, &["local", "udf", "list"]);

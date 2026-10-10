@@ -25,12 +25,26 @@ fn write_executable(path: &Path, contents: &str) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
 }
 
+/// Held for writing while a test probes ports and for reading while one
+/// spawns a process. macOS marks a new socket close-on-exec only after
+/// creating it, so a process spawned in between would inherit the probe
+/// socket and keep its port bound for as long as it runs.
+static SPAWN_LOCK: std::sync::RwLock<()> = std::sync::RwLock::new(());
+
+/// A free port no other test in this process was handed, below the OS's
+/// ephemeral range (from 32768 on Linux, 49152 on macOS), so no HTTP
+/// request's source port can take it before the server starts.
 fn unused_port() -> u16 {
-    std::net::TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port()
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let _probing = SPAWN_LOCK.write().unwrap();
+    let seed = (std::process::id() % 500) * 40;
+    loop {
+        let offset = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let port = (10_000 + (seed + offset) % 22_000) as u16;
+        if std::net::TcpListener::bind(("127.0.0.1", port)).is_ok() {
+            return port;
+        }
+    }
 }
 
 struct ProcessGuard(u32);
@@ -113,7 +127,16 @@ fn command(env: &Env) -> Command {
 }
 
 fn run(env: &Env, args: &[&str]) -> Output {
-    command(env).args(args).output().expect("run clickhousectl")
+    let child = {
+        let _spawning = SPAWN_LOCK.read().unwrap();
+        command(env)
+            .args(args)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("run clickhousectl")
+    };
+    child.wait_with_output().expect("run clickhousectl")
 }
 
 fn success_json(output: &Output) -> Value {
@@ -268,6 +291,8 @@ fn fake_clickhouse_process() {
                             .to_string(),
                     ),
                 }
+            } else if body.contains("case_insensitive") {
+                ("200 OK", functions_named(&body))
             } else if body.contains("system.functions") {
                 ("200 OK", "my_fn\n".to_string())
             } else {
@@ -281,6 +306,31 @@ fn fake_clickhouse_process() {
         );
         let _ = stream.flush();
     }
+}
+
+/// The fake's `system.functions` rows for the name-clash query: the rows
+/// whose name equals the queried `lower('NAME')` but for case.
+fn functions_named(sql: &str) -> String {
+    const FUNCTIONS: [(&str, &str, &str, &str); 6] = [
+        ("lower", "System", "", "1"),
+        ("lcase", "System", "lower", "1"),
+        ("sum", "System", "", "1"),
+        ("toString", "System", "", "0"),
+        ("sql_fn", "SQLUserDefined", "", "0"),
+        ("my_fn", "ExecutableUserDefined", "", "0"),
+    ];
+    let name = sql
+        .split_once("lower('")
+        .and_then(|(_, rest)| rest.split_once('\''))
+        .map(|(name, _)| name)
+        .unwrap_or_default();
+    FUNCTIONS
+        .iter()
+        .filter(|(function, ..)| function.eq_ignore_ascii_case(name))
+        .map(|(function, origin, alias, insensitive)| {
+            format!("{function}\t{origin}\t{alias}\t{insensitive}\n")
+        })
+        .collect()
 }
 
 fn read_http_request(stream: &mut std::net::TcpStream) -> (String, String) {
@@ -471,8 +521,8 @@ fn list_marks_loaded_functions_and_remove_reloads_on_a_running_server() {
     assert_eq!(
         list["udfs"],
         serde_json::json!([
-            {"name": "my_fn", "type": "executable", "runtime": "python3.11", "loaded": true},
-            {"name": "other_fn", "type": "executable", "runtime": "python3.11", "loaded": false}
+            {"name": "my_fn", "type": "executable", "runtime": "python3.11", "loaded": true, "last_deploy_rejected": false},
+            {"name": "other_fn", "type": "executable", "runtime": "python3.11", "loaded": false, "last_deploy_rejected": false}
         ])
     );
     let human = run(&env, &["local", "udf", "list"]);
@@ -777,4 +827,127 @@ fn an_unreachable_server_is_not_reported_as_a_rejection() {
         "{stderr}"
     );
     assert!(!stderr.contains("rejected"), "{stderr}");
+}
+
+#[test]
+fn deploy_refuses_a_name_the_running_server_already_uses_before_writing() {
+    let env = setup();
+    let data = env.project.path().join(".clickhouse/servers/default/data");
+    // A stopped server cannot be asked, so the files are only staged.
+    let first = start_server(&env);
+    stop_server(&env);
+    drop(first);
+    write_udf(&env, "lower");
+    assert_eq!(deploy(&env, "lower")["loaded"], Value::Null);
+    run(&env, &["local", "udf", "remove", "lower"]);
+
+    let _server = start_server(&env);
+    for (name, expected) in [
+        (
+            "lower",
+            "clashes with the built-in function lower on server default",
+        ),
+        (
+            "lcase",
+            "the built-in function lcase (an alias of lower) on",
+        ),
+        (
+            "SUM",
+            "the case-insensitive built-in function sum on server default",
+        ),
+        (
+            "sql_fn",
+            "by the SQL function sql_fn, created with CREATE FUNCTION",
+        ),
+    ] {
+        write_udf(&env, name);
+        let output = run(&env, &["local", "udf", "deploy", name, "--json"]);
+        assert_eq!(output.status.code(), Some(2), "{name}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{name}: {stderr}");
+        assert!(
+            !data
+                .join(format!("user_defined_functions/{name}_function.xml"))
+                .exists(),
+            "{name}"
+        );
+        assert!(!data.join("user_scripts").join(name).exists(), "{name}");
+        std::fs::remove_dir_all(env.project.path().join("clickhouse/udfs").join(name)).unwrap();
+    }
+    assert!(
+        logged_queries(&env)
+            .iter()
+            .any(|query| query.contains("system.functions") && query.contains("lower('sql_fn')")),
+    );
+
+    // Our own executable UDF is free to be redeployed.
+    write_udf(&env, "my_fn");
+    assert_eq!(deploy(&env, "my_fn")["loaded"], true);
+}
+
+fn list_entry(env: &Env, name: &str) -> Value {
+    let list = success_json(&run(env, &["local", "udf", "list", "--json"]));
+    list["udfs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == name)
+        .cloned()
+        .unwrap_or_else(|| panic!("{name} not listed: {list}"))
+}
+
+#[test]
+fn list_flags_a_rejected_redeploy_until_a_reload_or_deploy_succeeds() {
+    let env = setup();
+    let _server = start_server(&env);
+    write_udf(&env, "my_fn");
+    deploy(&env, "my_fn");
+    assert_eq!(list_entry(&env, "my_fn")["last_deploy_rejected"], false);
+
+    // The earlier definition stays loaded, but the deployed files differ.
+    let reject = || {
+        std::fs::write(&env.fail_reload_marker, "").unwrap();
+        error_json(&run(&env, &["local", "udf", "deploy", "my_fn", "--json"]));
+        std::fs::remove_file(&env.fail_reload_marker).unwrap();
+    };
+    reject();
+    let entry = list_entry(&env, "my_fn");
+    assert_eq!(entry["loaded"], true);
+    assert_eq!(entry["last_deploy_rejected"], true);
+    let human = run(&env, &["local", "udf", "list"]);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        stdout.contains("yes (stale: last deploy rejected)"),
+        "{stdout}"
+    );
+
+    success_json(&run(&env, &["local", "udf", "reload", "--json"]));
+    assert_eq!(list_entry(&env, "my_fn")["last_deploy_rejected"], false);
+
+    reject();
+    deploy(&env, "my_fn");
+    assert_eq!(list_entry(&env, "my_fn")["last_deploy_rejected"], false);
+
+    // A blocked reload elsewhere leaves this function stale too, until the
+    // reload that `remove` sends succeeds.
+    reject();
+    write_udf(&env, "other_fn");
+    std::fs::write(&env.fail_reload_marker, "").unwrap();
+    error_json(&run(
+        &env,
+        &["local", "udf", "deploy", "other_fn", "--json"],
+    ));
+    std::fs::remove_file(&env.fail_reload_marker).unwrap();
+    assert_eq!(list_entry(&env, "other_fn")["last_deploy_rejected"], true);
+    success_json(&run(
+        &env,
+        &["local", "udf", "remove", "other_fn", "--json"],
+    ));
+    assert_eq!(list_entry(&env, "my_fn")["last_deploy_rejected"], false);
+    let data = env.project.path().join(".clickhouse/servers/default/data");
+    assert!(
+        !data
+            .join("user_defined_functions/other_fn.rejected")
+            .exists()
+    );
 }

@@ -22,7 +22,7 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `cloud clickpipe settings get --json` | Object with snake_case setting names |
 | `local server list --json` | Object with `servers`, `total_servers`, and `project_scope` |
 | `local udf deploy --json` | Object with `name`, `server`, `type`, `runtime`, `server_running`, `reloaded`, `loaded` (`null` when the server is stopped), `interpreter`, `ignored_fields`, `ignored_files`, `function_config`, and `scripts_dir` |
-| `local udf list --json` | Object with `server`, `server_running`, and a `udfs` array of `name`, `type`, `runtime`, and `loaded` (`null` when the server is stopped) |
+| `local udf list --json` | Object with `server`, `server_running`, and a `udfs` array of `name`, `type`, `runtime`, `loaded` (`null` when the server is stopped), and `last_deploy_rejected` (the running server rejected the last deploy of these files; a loaded function runs an earlier definition) |
 | `cloud postgres metrics --json` | API-shaped metrics; data-point timestamps are epoch seconds |
 | `cloud service query` | ClickHouse format; `--format` overrides agent auto-JSON and conflicts with explicit `--json` |
 | `cloud postgres query --json` | JSON array lines: names, types, rows; success may be empty |

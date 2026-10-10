@@ -32,6 +32,9 @@ const FUNCTIONS_DIR: &str = "user_defined_functions";
 /// Copied sources; ClickHouse resolves direct commands inside this directory.
 const SCRIPTS_DIR: &str = "user_scripts";
 const FUNCTION_FILE_SUFFIX: &str = "_function.xml";
+/// Present next to a function's files while the running server rejected
+/// their last deploy, so whatever is loaded is an earlier definition.
+const REJECTED_MARKER_SUFFIX: &str = ".rejected";
 const DEFAULT_FORMAT: &str = "TabSeparated";
 const PYTHON_CANDIDATES: [&str; 2] = ["python3.11", "python3"];
 /// Copied but not installed: a local server runs the interpreter as is.
@@ -390,7 +393,7 @@ async fn deploy(
     let entries = udf::collect_source_entries(&dir, runtime).map_err(input_error)?;
     let ignored_files = ignored_files(&entries, runtime);
 
-    let (target, lock) = server_target(server_name)?;
+    let (target, mut lock) = server_target(server_name)?;
     let data_dir_abs = target.data_dir.canonicalize()?;
     let (command, interpreter) = match native_arch {
         Some(arch) => (
@@ -402,6 +405,14 @@ async fn deploy(
         ),
         None => python_command(name, &data_dir_abs, python)?,
     };
+    // A name ClickHouse already knows blocks every later reload (or is never
+    // callable), so it is refused before anything is written. Only a running
+    // server can say; the lock is not held across the round trip.
+    if let Some(info) = &target.running {
+        drop(lock);
+        check_name_is_free(info, server_name, name).await?;
+        lock = server::lock_metadata()?;
+    }
 
     let scripts_dir = target.data_dir.join(SCRIPTS_DIR).join(name);
     let executables: Vec<PathBuf> = match native_arch {
@@ -423,6 +434,8 @@ async fn deploy(
     let mut sidecar = serde_json::to_string_pretty(&definition)?;
     sidecar.push('\n');
     write_atomic(&sidecar_path(&target.data_dir, name), &sidecar)?;
+    // These files have not been rejected yet; a rejection below marks them.
+    remove_if_present(&rejected_marker_path(&target.data_dir, name))?;
     write_overlay(&target.data_dir)?;
     drop(lock);
 
@@ -439,7 +452,7 @@ async fn deploy(
                 Err(error) => return Err(error.into_error(info, server_name)),
             };
             match outcome {
-                LoadOutcome::Loaded => {}
+                LoadOutcome::Loaded(loaded) => clear_rejected_markers(&target.data_dir, &loaded)?,
                 LoadOutcome::NotLoaded => {
                     return Err(Error::UdfNotLoaded {
                         name: name.to_owned(),
@@ -449,6 +462,8 @@ async fn deploy(
                     });
                 }
                 LoadOutcome::Rejected(details) => {
+                    // Best effort: failing to mark must not hide the rejection.
+                    let _ = std::fs::write(rejected_marker_path(&target.data_dir, name), "");
                     return Err(Error::UdfRejected(Box::new(UdfRejection {
                         name: name.to_owned(),
                         server: server_name.to_owned(),
@@ -789,6 +804,47 @@ fn sidecar_path(data_dir: &Path, name: &str) -> PathBuf {
     data_dir.join(FUNCTIONS_DIR).join(format!("{name}.json"))
 }
 
+fn rejected_marker_path(data_dir: &Path, name: &str) -> PathBuf {
+    data_dir
+        .join(FUNCTIONS_DIR)
+        .join(format!("{name}{REJECTED_MARKER_SUFFIX}"))
+}
+
+fn remove_if_present(path: &Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
+        _ => Ok(()),
+    }
+}
+
+/// After a reload succeeded, every loaded function runs its current files:
+/// ClickHouse fails the whole reload when a changed file is rejected.
+fn clear_rejected_markers(data_dir: &Path, loaded: &[String]) -> Result<()> {
+    for name in loaded {
+        remove_if_present(&rejected_marker_path(data_dir, name))?;
+    }
+    Ok(())
+}
+
+/// Whether the running server rejected the last deploy of `name`'s files.
+/// A server started after that deploy loaded the current files, so a
+/// function it has loaded is no longer stale.
+fn last_deploy_rejected(
+    data_dir: &Path,
+    name: &str,
+    running: Option<&ServerInfo>,
+    loaded: Option<bool>,
+) -> bool {
+    let Some(marked) = modified_at(&rejected_marker_path(data_dir, name)) else {
+        return false;
+    };
+    let started_after = running
+        .and_then(|info| info.started_at.parse::<u64>().ok())
+        .zip(marked.duration_since(SystemTime::UNIX_EPOCH).ok())
+        .is_some_and(|(started, marked)| started > marked.as_secs());
+    !(loaded == Some(true) && started_after)
+}
+
 fn modified_at(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).ok()?.modified().ok()
 }
@@ -992,7 +1048,8 @@ async fn loaded_function_names(info: &ServerInfo, server: &str) -> Result<Vec<St
 }
 
 enum LoadOutcome {
-    Loaded,
+    /// The function is loaded; carries every loaded function's name.
+    Loaded(Vec<String>),
     NotLoaded,
     /// A reload was rejected, with ClickHouse's response text.
     Rejected(String),
@@ -1004,12 +1061,9 @@ enum LoadOutcome {
 async fn wait_until_loaded(info: &ServerInfo, server: &str, name: &str) -> Result<LoadOutcome> {
     let deadline = Instant::now() + LOAD_POLL_TIMEOUT;
     loop {
-        if loaded_function_names(info, server)
-            .await?
-            .iter()
-            .any(|loaded| loaded == name)
-        {
-            return Ok(LoadOutcome::Loaded);
+        let loaded = loaded_function_names(info, server).await?;
+        if loaded.iter().any(|loaded| loaded == name) {
+            return Ok(LoadOutcome::Loaded(loaded));
         }
         if Instant::now() >= deadline {
             return Ok(LoadOutcome::NotLoaded);
@@ -1020,6 +1074,105 @@ async fn wait_until_loaded(info: &ServerInfo, server: &str, name: &str) -> Resul
             Err(QueryError::Rejected(details)) => return Ok(LoadOutcome::Rejected(details)),
             Err(error) => return Err(error.into_error(info, server)),
         }
+    }
+}
+
+/// One `system.functions` row whose name equals a UDF name but for case.
+#[derive(Debug, Clone, PartialEq)]
+struct KnownFunction {
+    name: String,
+    origin: String,
+    alias_to: String,
+    case_insensitive: bool,
+}
+
+/// The `system.functions` rows whose name equals `name` but for case, as
+/// `name`, `origin`, `alias_to` and `case_insensitive` columns.
+fn functions_named_sql(name: &str) -> String {
+    // `name` passed `validate_function_name`, so it is `[A-Za-z0-9_]+` and
+    // safe inside a string literal.
+    format!(
+        "SELECT name, origin, alias_to, case_insensitive FROM system.functions \
+         WHERE lower(name) = lower('{name}') FORMAT TabSeparated"
+    )
+}
+
+fn parse_known_functions(body: &str) -> Vec<KnownFunction> {
+    body.lines()
+        .filter_map(|line| {
+            let mut columns = line.split('\t');
+            Some(KnownFunction {
+                name: columns.next().filter(|name| !name.is_empty())?.to_owned(),
+                origin: columns.next()?.to_owned(),
+                alias_to: columns.next()?.to_owned(),
+                case_insensitive: columns.next()? == "1",
+            })
+        })
+        .collect()
+}
+
+/// The function a UDF named `name` would clash with. ClickHouse refuses an
+/// executable UDF whose exact name is taken by a built-in (an alias such as
+/// `lcase` has its own row), and a SQL function of the same name shadows it.
+/// A differently cased name of a case-insensitive built-in (`LOWER`) loads,
+/// but then takes over every query spelling that function in that case, so
+/// it counts too. Executable UDFs are ours to replace.
+fn name_clash<'a>(name: &str, functions: &'a [KnownFunction]) -> Option<&'a KnownFunction> {
+    let clashes = |function: &&KnownFunction| {
+        function.origin != "ExecutableUserDefined"
+            && (function.name == name
+                || (function.case_insensitive && function.name.eq_ignore_ascii_case(name)))
+    };
+    functions
+        .iter()
+        .filter(clashes)
+        .find(|function| function.name == name)
+        .or_else(|| functions.iter().find(clashes))
+}
+
+fn name_clash_message(name: &str, server: &str, clash: &KnownFunction) -> String {
+    let existing = &clash.name;
+    let kind = match clash.origin.as_str() {
+        "SQLUserDefined" => {
+            return format!(
+                "UDF name {name} is taken on server {server} by the SQL function {existing}, \
+                 created with CREATE FUNCTION, which would shadow the UDF in every query; run \
+                 DROP FUNCTION {existing} or choose another name\n"
+            );
+        }
+        "System" => "built-in function",
+        _ => "function",
+    };
+    if existing != name {
+        return format!(
+            "UDF name {name} clashes with the case-insensitive {kind} {existing} on server \
+             {server}: the UDF would replace it in every query that spells it {name}; choose \
+             another name\n"
+        );
+    }
+    let alias = if clash.alias_to.is_empty() {
+        String::new()
+    } else {
+        format!(" (an alias of {})", clash.alias_to)
+    };
+    format!(
+        "UDF name {name} clashes with the {kind} {existing}{alias} on server {server}: \
+         ClickHouse would reject the UDF and then fail every function reload; choose another \
+         name\n"
+    )
+}
+
+/// Refuse a UDF name the running server already uses for something other
+/// than an executable UDF.
+async fn check_name_is_free(info: &ServerInfo, server: &str, name: &str) -> Result<()> {
+    let functions =
+        parse_known_functions(&http_query(info, server, &functions_named_sql(name)).await?);
+    match name_clash(name, &functions) {
+        Some(clash) => Err(Error::Usage(Box::new(clap::Error::raw(
+            clap::error::ErrorKind::ValueValidation,
+            name_clash_message(name, server, clash),
+        )))),
+        None => Ok(()),
     }
 }
 
@@ -1052,17 +1205,19 @@ async fn blocking_functions(info: &ServerInfo, data_dir: &Path, details: &str) -
 /// clash names its function (`The function 'lower' already exists`); other
 /// rejections, such as an unknown type, name neither function nor file.
 fn culprits_in_error_text(details: &str) -> Vec<String> {
-    const PREFIX: &str = "The function '";
+    const PREFIXES: [&str; 2] = ["The function '", "The aggregate function '"];
     const SUFFIX: &str = "' already exists";
     let mut names = Vec::new();
-    let mut rest = details;
-    while let Some(start) = rest.find(PREFIX) {
-        rest = &rest[start + PREFIX.len()..];
-        let Some(end) = rest.find('\'') else { break };
-        if rest[end..].starts_with(SUFFIX) {
-            names.push(rest[..end].to_owned());
+    for prefix in PREFIXES {
+        let mut rest = details;
+        while let Some(start) = rest.find(prefix) {
+            rest = &rest[start + prefix.len()..];
+            let Some(end) = rest.find('\'') else { break };
+            if rest[end..].starts_with(SUFFIX) {
+                names.push(rest[..end].to_owned());
+            }
+            rest = &rest[end..];
         }
-        rest = &rest[end..];
     }
     names
 }
@@ -1078,11 +1233,20 @@ async fn list(server_name: &str, json: bool) -> Result<()> {
     };
     let udfs = staged_udfs(&target.data_dir)?
         .into_iter()
-        .map(|staged| UdfListEntry {
-            loaded: loaded.as_ref().map(|loaded| loaded.contains(&staged.name)),
-            name: staged.name,
-            r#type: staged.kind,
-            runtime: staged.runtime,
+        .map(|staged| {
+            let is_loaded = loaded.as_ref().map(|loaded| loaded.contains(&staged.name));
+            UdfListEntry {
+                last_deploy_rejected: last_deploy_rejected(
+                    &target.data_dir,
+                    &staged.name,
+                    target.running.as_ref(),
+                    is_loaded,
+                ),
+                loaded: is_loaded,
+                name: staged.name,
+                r#type: staged.kind,
+                runtime: staged.runtime,
+            }
         })
         .collect();
     let out = UdfListOutput {
@@ -1111,6 +1275,7 @@ async fn remove(name: &str, server_name: &str, json: bool) -> Result<()> {
         std::fs::remove_dir_all(scripts_dir)?;
         removed = true;
     }
+    remove_if_present(&rejected_marker_path(&target.data_dir, name))?;
     if !removed {
         return Err(Error::UdfNotFound {
             name: name.to_owned(),
@@ -1133,6 +1298,8 @@ async fn remove(name: &str, server_name: &str, json: bool) -> Result<()> {
                 }
                 Err(error) => return Err(error.into_error(info, server_name)),
             }
+            let loaded = loaded_function_names(info, server_name).await?;
+            clear_rejected_markers(&target.data_dir, &loaded)?;
             true
         }
         None => false,
@@ -1152,6 +1319,7 @@ async fn reload(server_name: &str, json: bool) -> Result<()> {
     let info = require_running(&target, server_name)?;
     reload_functions(info, server_name).await?;
     let loaded = loaded_function_names(info, server_name).await?;
+    clear_rejected_markers(&target.data_dir, &loaded)?;
     let out = UdfReloadOutput {
         server: server_name.to_owned(),
         loaded,
@@ -1689,6 +1857,133 @@ mod tests {
         assert!(culprits_in_error_text(missing_field).is_empty());
         assert!(culprits_in_error_text("The function 'unterminated").is_empty());
         assert!(culprits_in_error_text("The function 'f' is odd").is_empty());
+        let aggregate = "Code: 609. DB::Exception: The aggregate function 'sum' already exists. \
+                         (FUNCTION_ALREADY_EXISTS) (version 26.9.1.1312 (official build))";
+        assert_eq!(culprits_in_error_text(aggregate), vec!["sum".to_owned()]);
+    }
+
+    fn known(name: &str, origin: &str, alias_to: &str, case_insensitive: bool) -> KnownFunction {
+        KnownFunction {
+            name: name.into(),
+            origin: origin.into(),
+            alias_to: alias_to.into(),
+            case_insensitive,
+        }
+    }
+
+    #[test]
+    fn known_functions_parse_from_tab_separated_rows() {
+        assert!(functions_named_sql("my_fn").contains("lower(name) = lower('my_fn')"));
+        assert_eq!(
+            parse_known_functions(
+                "lcase\tSystem\tlower\t1\nmy_fn\tExecutableUserDefined\t\t0\n\nbad\n"
+            ),
+            vec![
+                known("lcase", "System", "lower", true),
+                known("my_fn", "ExecutableUserDefined", "", false),
+            ]
+        );
+    }
+
+    #[test]
+    fn name_clash_covers_builtins_aliases_case_and_sql_functions_only() {
+        let functions = [
+            known("lower", "System", "", true),
+            known("lcase", "System", "lower", true),
+            known("toString", "System", "", false),
+            known("sql_fn", "SQLUserDefined", "", false),
+            known("my_fn", "ExecutableUserDefined", "", false),
+        ];
+        let clash = |name| name_clash(name, &functions).map(|function| function.name.as_str());
+        assert_eq!(clash("lower"), Some("lower"));
+        assert_eq!(clash("LOWER"), Some("lower"));
+        assert_eq!(clash("lcase"), Some("lcase"));
+        assert_eq!(clash("sql_fn"), Some("sql_fn"));
+        assert_eq!(clash("toString"), Some("toString"));
+        assert_eq!(clash("TOSTRING"), None);
+        assert_eq!(clash("SQL_FN"), None);
+        assert_eq!(clash("my_fn"), None);
+        assert_eq!(clash("rev"), None);
+        // An exact match wins over a case-insensitive one.
+        let both = [
+            known("Abc", "System", "", true),
+            known("abc", "System", "", false),
+        ];
+        assert_eq!(name_clash("abc", &both).unwrap().name, "abc");
+
+        let message = |name, function| name_clash_message(name, "default", function);
+        assert!(
+            message("lcase", &functions[1]).contains("lcase (an alias of lower) on server default")
+        );
+        assert!(
+            message("LOWER", &functions[0])
+                .contains("case-insensitive built-in function lower on server default")
+        );
+        assert!(message("sql_fn", &functions[3]).contains("DROP FUNCTION sql_fn"));
+        assert!(message("lower", &functions[0]).ends_with('\n'));
+    }
+
+    #[test]
+    fn rejected_marker_marks_stale_until_a_later_server_start_loads_the_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(FUNCTIONS_DIR)).unwrap();
+        let info = |started_at: &str| ServerInfo {
+            name: "default".into(),
+            pid: 1,
+            version: "26.9.1.1312".into(),
+            http_port: 8123,
+            tcp_port: 9000,
+            started_at: started_at.into(),
+            cwd: String::new(),
+            engine: Engine::Clickhouse,
+            container_id: None,
+        };
+        let early = info("1000");
+        assert!(!last_deploy_rejected(
+            tmp.path(),
+            "my_fn",
+            Some(&early),
+            Some(true)
+        ));
+
+        std::fs::write(rejected_marker_path(tmp.path(), "my_fn"), "").unwrap();
+        for loaded in [Some(true), Some(false), None] {
+            assert!(last_deploy_rejected(
+                tmp.path(),
+                "my_fn",
+                Some(&early),
+                loaded
+            ));
+        }
+        assert!(last_deploy_rejected(tmp.path(), "my_fn", None, None));
+        assert!(last_deploy_rejected(
+            tmp.path(),
+            "my_fn",
+            Some(&info("recovered")),
+            Some(true)
+        ));
+        let later = info(&(u64::MAX / 2).to_string());
+        assert!(!last_deploy_rejected(
+            tmp.path(),
+            "my_fn",
+            Some(&later),
+            Some(true)
+        ));
+        assert!(last_deploy_rejected(
+            tmp.path(),
+            "my_fn",
+            Some(&later),
+            Some(false)
+        ));
+
+        clear_rejected_markers(tmp.path(), &["other".into(), "my_fn".into()]).unwrap();
+        assert!(!rejected_marker_path(tmp.path(), "my_fn").exists());
+        assert!(!last_deploy_rejected(
+            tmp.path(),
+            "my_fn",
+            Some(&early),
+            Some(true)
+        ));
     }
 
     #[test]
