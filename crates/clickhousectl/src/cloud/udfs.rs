@@ -260,12 +260,12 @@ pub struct UdfDeployArgs {
     service: String,
     #[command(flatten)]
     dir: UdfDirArg,
-    /// Seconds to wait for each of the build, the wake and the deployment
+    /// Seconds (1-86400) to wait for each of the build, wake and deployment
     #[arg(
         long,
         value_name = "SECONDS",
         default_value_t = 1800,
-        value_parser = clap::value_parser!(u64).range(1..)
+        value_parser = clap::value_parser!(u64).range(1..=86400)
     )]
     timeout: u64,
     /// Fail on an idle service instead of waking it
@@ -2640,6 +2640,20 @@ mod tests {
         assert_eq!(args.timeout, 30);
         assert!(args.no_wake);
 
+        let UdfCommands::Deploy(args) = parse_udf(&[
+            "deploy",
+            "my_udf",
+            "--service",
+            "svc-1",
+            "--timeout",
+            "86400",
+        ])
+        .command
+        else {
+            panic!("deploy");
+        };
+        assert_eq!(args.timeout, 86400);
+
         for (args, kind) in [
             (vec!["deploy", "my_udf"], ErrorKind::MissingRequiredArgument),
             (
@@ -2652,6 +2666,17 @@ mod tests {
             ),
             (
                 vec!["deploy", "my_udf", "--service", "svc-1", "--timeout", "0"],
+                ErrorKind::ValueValidation,
+            ),
+            (
+                vec![
+                    "deploy",
+                    "my_udf",
+                    "--service",
+                    "svc-1",
+                    "--timeout",
+                    "86401",
+                ],
                 ErrorKind::ValueValidation,
             ),
         ] {
