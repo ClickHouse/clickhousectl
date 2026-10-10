@@ -416,6 +416,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                         WakePolicy {
                             wake,
                             timeout: SERVICE_WAKE_TIMEOUT,
+                            caller: AttachCaller::Attach,
                         },
                         !json,
                     )
@@ -1198,10 +1199,14 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     drop(artifact);
 
     let (name, version) = build_identity(&created)?;
-    let built = wait_for_udf_version(client, &org, &name, version, timeout, verbose).await?;
-    let resume = format!(
-        "UDF {name} version {version} is built; resume with `clickhousectl cloud udf attach {name} {service} --version {version}`"
-    );
+    let resume = DeployResume {
+        name: &name,
+        service,
+        version,
+    };
+    let built = wait_for_udf_version(client, &org, &name, version, timeout, verbose)
+        .await
+        .map_err(|error| resume.after_build_wait(error))?;
     attach_with_wake(
         client,
         &org,
@@ -1211,14 +1216,15 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
         WakePolicy {
             wake: !args.no_wake,
             timeout,
+            caller: AttachCaller::Deploy,
         },
         verbose,
     )
     .await
-    .map_err(|error| with_resume(error, &resume))?;
+    .map_err(|error| resume.after_build(error))?;
     let attachment = wait_for_attachment(client, &org, &name, service, timeout, verbose)
         .await
-        .map_err(|error| with_resume(error, &resume))?;
+        .map_err(|error| resume.after_build(error))?;
 
     let result = UdfDeployResult {
         action,
@@ -1228,14 +1234,7 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     if json {
         output(&result, true)
     } else {
-        let what = if action == "created" {
-            "created"
-        } else {
-            "added as a new version"
-        };
-        print_line(format!(
-            "UDF {name} version {version} {what} and deployed to service {service}"
-        ));
+        print_line(deploy_summary(action, &name, version, service));
         Ok(())
     }
 }
@@ -1285,6 +1284,81 @@ fn deploy_target_error(message: String, code: CloudErrorCode, command: String) -
         command: Some(command),
         ..CloudErrorDetail::new(code, message)
     })
+}
+
+/// The human confirmation for a finished deploy.
+fn deploy_summary(action: &str, name: &str, version: i64, service: &str) -> String {
+    if action == "created" {
+        format!("Created UDF {name} version {version} and deployed it to service {service}")
+    } else {
+        format!("Added version {version} of UDF {name} and deployed it to service {service}")
+    }
+}
+
+/// The version a deploy published, so a failure after the publish can name
+/// the attach that finishes the job instead of a rerun that builds again.
+struct DeployResume<'a> {
+    name: &'a str,
+    service: &'a str,
+    version: i64,
+}
+
+impl DeployResume<'_> {
+    fn attach_command(&self, wake: bool) -> String {
+        let DeployResume {
+            name,
+            service,
+            version,
+        } = self;
+        let wake = if wake { " --wake" } else { "" };
+        format!("clickhousectl cloud udf attach {name} {service} --version {version}{wake}")
+    }
+
+    /// A build wait that gave up while the build may still finish (timeout
+    /// or a transient fetch failure) points at the attach for once it is
+    /// ready; a build that reported an error has nothing to resume.
+    fn after_build_wait(&self, error: CloudError) -> CloudError {
+        let may_finish = matches!(
+            error.failure.map(|failure| failure.kind),
+            Some(
+                FailureKind::Timeout
+                    | FailureKind::Transport
+                    | FailureKind::Http5xx
+                    | FailureKind::RateLimited
+            )
+        );
+        if !may_finish {
+            return error;
+        }
+        let DeployResume { name, version, .. } = self;
+        let command = self.attach_command(false);
+        with_resume(
+            error,
+            &format!(
+                "UDF {name} version {version} is still building; once it is ready, resume with `{command}`"
+            ),
+        )
+    }
+
+    /// Attach and deployment failures name the attach that resumes the
+    /// deploy. An idle or not-running service needs `--wake`, which deploy
+    /// implies but attach does not; the JSON command is then that attach.
+    fn after_build(&self, error: CloudError) -> CloudError {
+        let wake = matches!(
+            error.details.as_deref().map(|details| details.code),
+            Some(CloudErrorCode::ServiceIdle | CloudErrorCode::ServiceNotRunning)
+        );
+        let DeployResume { name, version, .. } = self;
+        let command = self.attach_command(wake);
+        let mut error = with_resume(
+            error,
+            &format!("UDF {name} version {version} is built; resume with `{command}`"),
+        );
+        if wake && let Some(details) = error.details.as_deref_mut() {
+            details.command = Some(command);
+        }
+        error
+    }
 }
 
 /// Append the resume hint to the message and to any JSON detail, which
@@ -1341,12 +1415,24 @@ fn attach_unavailable_code(response: &UdfAttachResponse424) -> Option<CloudError
     }
 }
 
+/// Which command an attach failure is reported through, and so which flags
+/// its hint may name.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AttachCaller {
+    /// `udf attach`: the hint may suggest rerunning with `--wake`.
+    Attach,
+    /// `udf deploy`, which has no `--wake` and must not be rerun to resume:
+    /// its own resume hint replaces any rerun suggestion.
+    Deploy,
+}
+
 /// Keep the API's message and classification, add the typed reason, and
 /// name the way out.
 fn attach_unavailable_error(
     error: CloudError,
     response: &UdfAttachResponse424,
     service: &str,
+    caller: AttachCaller,
 ) -> CloudError {
     let mut message = error.message.clone();
     let mut context = Vec::new();
@@ -1375,6 +1461,8 @@ fn attach_unavailable_error(
     let wake_command = format!("clickhousectl cloud service wake {service}");
     let start_command = format!("clickhousectl cloud service start {service}");
     let (hint, command) = match wake_action(response) {
+        // Deploy appends the attach that resumes it, `--wake` included.
+        WakeAction::Wake | WakeAction::WaitOnly if caller == AttachCaller::Deploy => (None, None),
         WakeAction::Wake => (
             Some(format!(
                 "Rerun with --wake, or run `{wake_command}` and retry once it is running."
@@ -1389,10 +1477,11 @@ fn attach_unavailable_error(
             None,
         ),
         WakeAction::GiveUp if matches!(response.code, Some(UdfAttachErrorCode::ServiceStopped)) => {
-            (
-                Some(format!("Start it with `{start_command}` and retry.")),
-                Some(start_command),
-            )
+            let hint = match caller {
+                AttachCaller::Attach => format!("Start it with `{start_command}` and retry."),
+                AttachCaller::Deploy => format!("Start it with `{start_command}`."),
+            };
+            (Some(hint), Some(start_command))
         }
         WakeAction::GiveUp => (None, None),
     };
@@ -1418,6 +1507,8 @@ struct WakePolicy {
     wake: bool,
     /// Longest to wait for the service to reach `running`.
     timeout: Duration,
+    /// Which command reports a failure, and so which flags it may name.
+    caller: AttachCaller,
 }
 
 /// Attach once; with `policy.wake`, an idle service is woken (or an awaking
@@ -1441,7 +1532,12 @@ async fn attach_with_wake(
     };
     let action = wake_action(&response);
     if !policy.wake || action == WakeAction::GiveUp {
-        return Err(attach_unavailable_error(error, &response, service));
+        return Err(attach_unavailable_error(
+            error,
+            &response,
+            service,
+            policy.caller,
+        ));
     }
     if action == WakeAction::Wake {
         if verbose {
@@ -1471,9 +1567,12 @@ async fn attach_with_wake(
         .await?
     {
         UdfAttachOutcome::Attached(attachment) => Ok(attachment),
-        UdfAttachOutcome::Unavailable { response, error } => {
-            Err(attach_unavailable_error(error, &response, service))
-        }
+        UdfAttachOutcome::Unavailable { response, error } => Err(attach_unavailable_error(
+            error,
+            &response,
+            service,
+            policy.caller,
+        )),
     }
 }
 
@@ -2163,6 +2262,7 @@ mod tests {
                 .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 424)),
             &idle,
             "svc-1",
+            AttachCaller::Attach,
         );
         assert_eq!(
             error.to_string(),
@@ -2189,7 +2289,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(wake_action(&awaking), WakeAction::WaitOnly);
-        let error = attach_unavailable_error(CloudError::new("not running"), &awaking, "svc-1");
+        let error = attach_unavailable_error(
+            CloudError::new("not running"),
+            &awaking,
+            "svc-1",
+            AttachCaller::Attach,
+        );
         assert_eq!(
             error.to_string(),
             "not running (SERVICE_NOT_RUNNING, service state awaking)\nThe service is starting; retry shortly, or rerun with --wake to wait for it."
@@ -2206,7 +2311,12 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(wake_action(&stopped), WakeAction::GiveUp);
-        let error = attach_unavailable_error(CloudError::new("stopped"), &stopped, "svc-1");
+        let error = attach_unavailable_error(
+            CloudError::new("stopped"),
+            &stopped,
+            "svc-1",
+            AttachCaller::Attach,
+        );
         assert_eq!(
             error.to_string(),
             "stopped (SERVICE_STOPPED)\nStart it with `clickhousectl cloud service start svc-1` and retry."
@@ -2229,6 +2339,7 @@ mod tests {
             CloudError::new("not running"),
             &not_running_stopped,
             "svc-1",
+            AttachCaller::Attach,
         );
         assert_eq!(
             error.to_string(),
@@ -2243,7 +2354,7 @@ mod tests {
         assert_eq!(wake_action(&untyped), WakeAction::GiveUp);
         let plain = CloudError::new("dependency unavailable")
             .with_failure(ApiFailure::new(FailureKind::Http4xx));
-        let error = attach_unavailable_error(plain, &untyped, "svc-1");
+        let error = attach_unavailable_error(plain, &untyped, "svc-1", AttachCaller::Attach);
         assert_eq!(error.to_string(), "dependency unavailable");
         assert_eq!(error.failure.unwrap().kind, FailureKind::Http4xx);
         assert!(error.details.is_none());
@@ -2253,6 +2364,143 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(attach_unavailable_code(&unknown), None);
+    }
+
+    #[test]
+    fn deploy_attach_failures_resume_with_the_built_version() {
+        let resume = DeployResume {
+            name: "my_udf",
+            service: "svc-1",
+            version: 5,
+        };
+        let detail = |error: &CloudError| {
+            let detail = error.details.as_deref().unwrap();
+            assert_eq!(detail.message, error.message);
+            (detail.code, detail.command.clone())
+        };
+        let deploy_error = |response: &UdfAttachResponse424| {
+            resume.after_build(attach_unavailable_error(
+                CloudError::new("unavailable"),
+                response,
+                "svc-1",
+                AttachCaller::Deploy,
+            ))
+        };
+
+        // Idle or starting: no rerun flag, and the resume attach wakes it.
+        for response in [
+            UdfAttachResponse424 {
+                code: Some(UdfAttachErrorCode::ServiceIdle),
+                service_state: Some(ServiceState::Idle),
+                can_wake: Some(true),
+                ..Default::default()
+            },
+            UdfAttachResponse424 {
+                code: Some(UdfAttachErrorCode::ServiceNotRunning),
+                service_state: Some(ServiceState::Awaking),
+                ..Default::default()
+            },
+        ] {
+            let error = deploy_error(&response);
+            assert!(!error.message.contains("--wake,"));
+            assert!(!error.message.contains("rerun"));
+            let (_, command) = detail(&error);
+            assert_eq!(
+                command.as_deref(),
+                Some("clickhousectl cloud udf attach my_udf svc-1 --version 5 --wake")
+            );
+            assert!(error.message.ends_with(
+                "resume with `clickhousectl cloud udf attach my_udf svc-1 --version 5 --wake`"
+            ));
+        }
+
+        // Stopped: start it first, then resume without --wake.
+        let stopped = UdfAttachResponse424 {
+            code: Some(UdfAttachErrorCode::ServiceStopped),
+            service_state: Some(ServiceState::Stopped),
+            ..Default::default()
+        };
+        let error = deploy_error(&stopped);
+        assert_eq!(
+            detail(&error),
+            (
+                CloudErrorCode::ServiceStopped,
+                Some("clickhousectl cloud service start svc-1".into())
+            )
+        );
+        assert!(
+            error
+                .message
+                .contains("`clickhousectl cloud service start svc-1`")
+        );
+        assert!(
+            error
+                .message
+                .ends_with("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 5`")
+        );
+
+        // Any other failure after the build resumes without --wake and
+        // gains no command.
+        let error = resume.after_build(CloudError::new("boom"));
+        assert!(error.details.is_none());
+        assert!(
+            error
+                .message
+                .ends_with("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 5`")
+        );
+    }
+
+    #[test]
+    fn deploy_build_waits_resume_only_while_the_build_may_finish() {
+        let resume = DeployResume {
+            name: "my_udf",
+            service: "svc-1",
+            version: 5,
+        };
+        let timeout = resume.after_build_wait(wait_timeout_error(
+            "the build of UDF my_udf version 5",
+            Duration::from_secs(1),
+            "clickhousectl cloud udf get my_udf",
+        ));
+        assert!(timeout.message.contains("still building"));
+        assert!(
+            timeout
+                .message
+                .ends_with("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 5`")
+        );
+        assert_eq!(timeout.failure.unwrap().kind, FailureKind::Timeout);
+
+        let transient = resume.after_build_wait(
+            CloudError::new("bad gateway")
+                .with_failure(ApiFailure::with_status(FailureKind::Http5xx, 502)),
+        );
+        assert!(transient.message.contains("--version 5"));
+
+        // A build that reported an error, or a definite 4xx, has nothing to
+        // resume.
+        let failed = CloudError::new("the build failed: boom").with_details(CloudErrorDetail::new(
+            CloudErrorCode::Other,
+            "the build failed: boom",
+        ));
+        assert_eq!(
+            resume.after_build_wait(failed).message,
+            "the build failed: boom"
+        );
+        let missing = CloudError::new("not found")
+            .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 404));
+        assert_eq!(resume.after_build_wait(missing).message, "not found");
+    }
+
+    #[test]
+    fn deploy_summaries_read_in_parallel() {
+        assert_eq!(
+            deploy_summary("created", "my_udf", 1, "svc-1"),
+            "Created UDF my_udf version 1 and deployed it to service svc-1"
+        );
+        assert_eq!(
+            deploy_summary("version_created", "my_udf", 5, "svc-1"),
+            "Added version 5 of UDF my_udf and deployed it to service svc-1"
+        );
     }
 
     #[test]

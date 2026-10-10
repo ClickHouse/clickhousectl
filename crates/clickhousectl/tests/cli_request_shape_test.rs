@@ -31220,7 +31220,7 @@ async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
         } else {
             assert_eq!(
                 stdout,
-                "UDF my_udf version 2 added as a new version and deployed to service svc-1\n"
+                "Added version 2 of UDF my_udf and deployed it to service svc-1\n"
             );
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
@@ -31404,6 +31404,149 @@ async fn udf_deploy_failures_after_publish_name_the_built_version() {
         message.contains("resume with `clickhousectl cloud udf attach my_udf svc-1 --version 1`"),
         "{message}"
     );
+}
+
+/// A fresh `my_udf` that `udf deploy` creates as version 1, its build
+/// reporting `status` on every poll.
+async fn mount_deploy_new_udf(server: &MockServer, status: &str) {
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf"))
+        .respond_with(
+            ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": "NOT_FOUND"})),
+        )
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+    let built = serde_json::json!({"result": {
+        "functionName": "my_udf", "version": 1, "status": status
+    }});
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/udfs/my_udf"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(built.clone()))
+        .mount(server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/udfs"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(built))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+// The service idled during the build and --no-wake kept the attach from
+// waking it: deploy has no --wake to rerun with, and rerunning would build
+// again, so the way out is the attach of the built version, with --wake.
+#[tokio::test]
+async fn udf_deploy_idle_at_attach_resumes_with_a_waking_attach() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    project_udf(project.path(), "my_udf", "python3.11");
+    mount_udf_upload_session(&server, &storage).await;
+    mount_deploy_service(&server, "svc-1", "running").await;
+    mount_deploy_new_udf(&server, "ready").await;
+    Mock::given(method("PUT"))
+        .and(path(
+            "/v1/organizations/org-1/udfs/my_udf/attachments/svc-1",
+        ))
+        .respond_with(ResponseTemplate::new(424).set_body_json(serde_json::json!({
+            "error": "service is idle", "code": "SERVICE_IDLE", "serviceState": "idle",
+            "canWake": true, "status": 424
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["deploy", "my_udf", "--service", "svc-1", "--no-wake"],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "service_idle", "{error}");
+    assert_eq!(
+        error["error"]["command"], "clickhousectl cloud udf attach my_udf svc-1 --version 1 --wake",
+        "{error}"
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(!message.contains("Rerun with --wake"), "{message}");
+    assert!(
+        message.contains("`clickhousectl cloud udf attach my_udf svc-1 --version 1 --wake`"),
+        "{message}"
+    );
+    assert!(
+        !deploy_calls(&server)
+            .await
+            .iter()
+            .any(|call| call.starts_with("PATCH ")),
+        "--no-wake must not wake the service"
+    );
+}
+
+// A build still running when the wait gives up can finish later; the error
+// names the attach that resumes the deploy once it does.
+#[tokio::test]
+async fn udf_deploy_build_timeout_names_the_resume_attach() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    project_udf(project.path(), "my_udf", "python3.11");
+    mount_udf_upload_session(&server, &storage).await;
+    mount_deploy_service(&server, "svc-1", "running").await;
+    mount_deploy_new_udf(&server, "building").await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        false,
+        &["deploy", "my_udf", "--service", "svc-1", "--timeout", "1"],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("did not finish within 1s"), "{stderr}");
+    assert!(
+        stderr.contains("`clickhousectl cloud udf attach my_udf svc-1 --version 1`"),
+        "{stderr}"
+    );
+    assert!(
+        !deploy_calls(&server)
+            .await
+            .iter()
+            .any(|call| call.starts_with("PUT ")),
+        "nothing is attached before the build is ready"
+    );
+}
+
+// A build that reported an error has nothing to resume.
+#[tokio::test]
+async fn udf_deploy_failed_build_offers_no_resume() {
+    let server = MockServer::start().await;
+    let storage = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    project_udf(project.path(), "my_udf", "python3.11");
+    mount_udf_upload_session(&server, &storage).await;
+    mount_deploy_service(&server, "svc-1", "running").await;
+    mount_deploy_new_udf(&server, "error").await;
+    let output = udf_test_command(
+        &server,
+        project.path(),
+        false,
+        true,
+        &["deploy", "my_udf", "--service", "svc-1"],
+    )
+    .output()
+    .unwrap();
+    assert_eq!(output.status.code(), Some(1));
+    let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(message.contains("failed"), "{message}");
+    assert!(!message.contains("cloud udf attach"), "{message}");
 }
 
 /// Paths `udf deploy` requested, in order.
