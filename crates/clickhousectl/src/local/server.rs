@@ -994,14 +994,6 @@ pub fn resolve_ports(http_port: Option<u16>, tcp_port: Option<u16>) -> Result<(u
     Ok((http, tcp, auto_assigned))
 }
 
-/// Build ClickHouse server port flags.
-pub fn port_flags(http_port: u16, tcp_port: u16) -> Vec<String> {
-    vec![
-        format!("--http_port={}", http_port),
-        format!("--tcp_port={}", tcp_port),
-    ]
-}
-
 /// Format a timestamp for now.
 pub fn now_timestamp() -> String {
     let duration = std::time::SystemTime::now()
