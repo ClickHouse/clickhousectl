@@ -510,8 +510,10 @@ async fn poll_until_approved(
             // polling until the deadline. Auth failures surface on the claim.
             continue;
         }
-        let status: AccessRequestStatus = match response.json().await {
-            Ok(status) => status,
+        // Responses are enveloped as `{ "result": <payload>, "requestId": ... }`; unwrap `result`
+        // (the direct `response.json::<AccessRequestStatus>()` read never matched the envelope).
+        let status: AccessRequestStatus = match response.json::<Envelope<AccessRequestStatus>>().await {
+            Ok(envelope) => envelope.result,
             Err(_) => continue,
         };
         if status.status.as_deref() == Some("approved")
