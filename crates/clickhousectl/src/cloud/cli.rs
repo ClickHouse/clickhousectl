@@ -1,3 +1,4 @@
+pub(crate) use crate::cloud::access::AccessCommands;
 pub(crate) use crate::cloud::activity::ActivityCommands;
 pub(crate) use crate::cloud::api_keys::KeyCommands;
 pub(crate) use crate::cloud::auth::AuthCommands;
@@ -125,6 +126,17 @@ pub enum CloudCommands {
     Auth {
         #[command(subcommand)]
         command: AuthCommands,
+    },
+
+    /// Request a scoped API key via browser approval
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Authenticates as the current user (OAuth login or API key) to file an access request.
+  A human approves it in a browser; on approval the issued key is saved to the credentials file.
+  Control-plane base URL defaults to http://localhost:2023; override with --url.")]
+    Access {
+        #[command(subcommand)]
+        command: AccessCommands,
     },
 
     /// Manage organizations
@@ -285,6 +297,7 @@ impl CloudCommands {
     pub fn is_write_command(&self) -> bool {
         match self {
             CloudCommands::Auth { command } => command.is_write(),
+            CloudCommands::Access { command } => command.is_write(),
             CloudCommands::Org { command } => command.is_write(),
             CloudCommands::Service { command } => command.is_write(),
             CloudCommands::Backup { command } => command.is_write(),
