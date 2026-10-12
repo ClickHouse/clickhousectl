@@ -117,7 +117,17 @@ pub type Result<T> = std::result::Result<T, CloudError>;
 
 enum AuthMode {
     Basic { key: String, secret: String },
-    Bearer,
+    Bearer { token: String },
+}
+
+/// The authentication a bespoke control-plane request (one made with a plain
+/// `reqwest` client, outside the typed Cloud API client) should carry. Mirrors
+/// [`AuthMode`] but owns its values so callers can build request headers after
+/// the borrow on the client ends. Used by the access-request PKCE flow
+/// (`cloud access request`), which talks to endpoints the library does not model.
+pub(crate) enum RequestAuth {
+    Basic { key: String, secret: String },
+    Bearer { token: String },
 }
 
 /// The resolved credential source that won precedence for a `CloudClient`.
@@ -652,8 +662,8 @@ impl CloudClient {
                 AuthMode::Basic { key, secret },
             ),
             ResolvedCreds::Bearer { token } => (
-                clickhouse_cloud_api::Client::with_http_client_bearer(http, lib_url, token),
-                AuthMode::Bearer,
+                clickhouse_cloud_api::Client::with_http_client_bearer(http, lib_url, token.clone()),
+                AuthMode::Bearer { token },
             ),
         };
 
@@ -699,7 +709,7 @@ impl CloudClient {
     /// Returns true if the client is using OAuth Bearer token authentication.
     /// Bearer auth is read-only and cannot perform write operations.
     pub fn is_bearer_auth(&self) -> bool {
-        matches!(&self.auth_mode, AuthMode::Bearer)
+        matches!(&self.auth_mode, AuthMode::Bearer { .. })
     }
 
     /// The active API key pair, for authenticating directly to a Query API
@@ -707,7 +717,22 @@ impl CloudClient {
     pub(crate) fn basic_auth_credentials(&self) -> Option<(&str, &str)> {
         match &self.auth_mode {
             AuthMode::Basic { key, secret } => Some((key, secret)),
-            AuthMode::Bearer => None,
+            AuthMode::Bearer { .. } => None,
+        }
+    }
+
+    /// The resolved credentials in a form a bespoke `reqwest` request can carry,
+    /// for control-plane endpoints the typed library client does not model (the
+    /// access-request PKCE flow). Clones so the value outlives the client borrow.
+    pub(crate) fn request_auth(&self) -> RequestAuth {
+        match &self.auth_mode {
+            AuthMode::Basic { key, secret } => RequestAuth::Basic {
+                key: key.clone(),
+                secret: secret.clone(),
+            },
+            AuthMode::Bearer { token } => RequestAuth::Bearer {
+                token: token.clone(),
+            },
         }
     }
 
@@ -967,7 +992,9 @@ mod tests {
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
-            auth_mode: AuthMode::Bearer,
+            auth_mode: AuthMode::Bearer {
+                token: "test_token".into(),
+            },
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
         };
@@ -1123,7 +1150,9 @@ mod tests {
             organization_id: None,
             organization_name: None,
             resolved_organization_id: tokio::sync::OnceCell::new(),
-            auth_mode: AuthMode::Bearer,
+            auth_mode: AuthMode::Bearer {
+                token: "test_token".into(),
+            },
             auth_source: AuthSource::OAuthTokens,
             base_url: DEFAULT_BASE_URL.to_string(),
         };

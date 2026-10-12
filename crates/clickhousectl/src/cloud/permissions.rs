@@ -102,6 +102,7 @@ impl Declaration {
 
 fn declarations() -> impl Iterator<Item = &'static Declaration> {
     [
+        super::access::PERMISSIONS,
         super::activity::PERMISSIONS,
         super::api_keys::PERMISSIONS,
         super::auth::PERMISSIONS,
