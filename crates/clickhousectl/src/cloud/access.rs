@@ -512,10 +512,11 @@ async fn poll_until_approved(
         }
         // Responses are enveloped as `{ "result": <payload>, "requestId": ... }`; unwrap `result`
         // (the direct `response.json::<AccessRequestStatus>()` read never matched the envelope).
-        let status: AccessRequestStatus = match response.json::<Envelope<AccessRequestStatus>>().await {
-            Ok(envelope) => envelope.result,
-            Err(_) => continue,
-        };
+        let status: AccessRequestStatus =
+            match response.json::<Envelope<AccessRequestStatus>>().await {
+                Ok(envelope) => envelope.result,
+                Err(_) => continue,
+            };
         if status.status.as_deref() == Some("approved")
             && let Some(code) = status.claim_code
         {
