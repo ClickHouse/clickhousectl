@@ -130,6 +130,14 @@ struct CreateAccessRequestBody<'a> {
     redirect_uri: &'a str,
 }
 
+/// Every `/v1` response from the openapi app wraps its payload as
+/// `{ "result": <payload>, "requestId": <string> }`; the handshake reads
+/// `result` and ignores the correlation id.
+#[derive(serde::Deserialize)]
+struct Envelope<T> {
+    result: T,
+}
+
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateAccessRequestResponse {
@@ -137,8 +145,9 @@ struct CreateAccessRequestResponse {
     #[allow(dead_code)]
     status: Option<String>,
     approval_url: String,
+    /// Epoch milliseconds.
     #[allow(dead_code)]
-    expires_at: Option<String>,
+    expires_at: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
@@ -393,8 +402,9 @@ async fn parse_response<T: DeserializeOwned>(
             CloudError::new(message)
         });
     }
-    serde_json::from_slice(&bytes)
-        .map_err(|error| CloudError::new(format!("{action}: invalid response: {error}")))
+    let envelope: Envelope<T> = serde_json::from_slice(&bytes)
+        .map_err(|error| CloudError::new(format!("{action}: invalid response: {error}")))?;
+    Ok(envelope.result)
 }
 
 // ── loopback redirect server ────────────────────────────────────────────────
@@ -654,5 +664,76 @@ mod tests {
             !AccessCommands::Request(parse(["chctl", "cloud", "access", "request"].as_slice()))
                 .is_write()
         );
+    }
+
+    fn unwrap_result<T: DeserializeOwned>(body: &str) -> T {
+        serde_json::from_str::<Envelope<T>>(body)
+            .expect("deserialize envelope")
+            .result
+    }
+
+    #[test]
+    fn file_response_reads_payload_from_result_envelope() {
+        // `/v1` responses wrap the payload: { "result": <payload>, "requestId": ... }.
+        let created: CreateAccessRequestResponse = unwrap_result(
+            r#"{
+                "result": {
+                    "requestId": "req-1",
+                    "status": "pending",
+                    "approvalUrl": "https://console.example.com/approve/req-1",
+                    "expiresAt": 1739000000000
+                },
+                "requestId": "corr-1"
+            }"#,
+        );
+        assert_eq!(created.request_id, "req-1");
+        assert_eq!(created.status.as_deref(), Some("pending"));
+        assert_eq!(
+            created.approval_url,
+            "https://console.example.com/approve/req-1"
+        );
+        // expiresAt is epoch millis (a number), not a string.
+        assert_eq!(created.expires_at, Some(1_739_000_000_000));
+    }
+
+    #[test]
+    fn poll_response_reads_claim_code_from_result_envelope() {
+        let approved: AccessRequestStatus = unwrap_result(
+            r#"{
+                "result": {
+                    "requestId": "req-1",
+                    "status": "approved",
+                    "grantedRoleIds": ["role-a", "role-b"],
+                    "issuedKeyId": "key-1",
+                    "claimCode": "claim-xyz",
+                    "expiresAt": 1739000000000
+                },
+                "requestId": "corr-2"
+            }"#,
+        );
+        assert_eq!(approved.status.as_deref(), Some("approved"));
+        assert_eq!(approved.claim_code.as_deref(), Some("claim-xyz"));
+    }
+
+    #[test]
+    fn pending_poll_response_has_no_claim_code() {
+        let pending: AccessRequestStatus = unwrap_result(
+            r#"{"result":{"requestId":"req-1","status":"pending","expiresAt":1739000000000},"requestId":"corr-3"}"#,
+        );
+        assert_eq!(pending.status.as_deref(), Some("pending"));
+        assert!(pending.claim_code.is_none());
+    }
+
+    #[test]
+    fn claim_response_reads_key_and_secret_from_result_envelope() {
+        let claimed: ClaimResponse = unwrap_result(
+            r#"{
+                "result": { "keyId": "mgmt-1", "key": "PUBLICKEY", "secret": "SH_secret" },
+                "requestId": "corr-4"
+            }"#,
+        );
+        assert_eq!(claimed.key_id, "mgmt-1");
+        assert_eq!(claimed.key, "PUBLICKEY");
+        assert_eq!(claimed.secret, "SH_secret");
     }
 }
