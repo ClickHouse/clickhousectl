@@ -122,7 +122,31 @@ Creation returns before provisioning finishes. Queries use OAuth for read-only S
 The Query API may time out while SQL continues running. Check the outcome before retrying a write. Use a native client for long queries and bulk loads. Named endpoint lists return one page; pass `pagination.nextCursor` from JSON output to `query-api-endpoint list --cursor` to continue. See [create and operate a Cloud service](docs/guides/cloud-service.md) and [SQL and Query API behavior](docs/reference/query-api.md).
 
 ### Create ClickHouse Managed Postgres
+When environment credentials are configured but a credentials file or explicit
+CLI flags take precedence, clickhousectl prints a one-line note to stderr.
+`cloud auth status` also marks the environment credentials as configured but
+inactive and identifies the source that outranked them.
 
+### Request a scoped API key (access request)
+
+`cloud access request` obtains a scoped API key through the control plane's PKCE approval handshake, so an agent can get a narrowly-scoped key that a human approves in a browser rather than reusing a long-lived one.
+
+```bash
+clickhousectl cloud access request
+clickhousectl cloud access request --key-name agent-key --purpose "CI deploy" --tool claude
+```
+
+The command authenticates as your current identity (OAuth login or an API key) to file the request, generates a PKCE verifier/challenge and a CSRF `state`, starts a loopback redirect server on `127.0.0.1`, and opens the approval URL (printed as a fallback). After you approve it, the CLI claims the issued key with the PKCE verifier and stores the key id and secret in `.clickhouse/credentials.json`. The secret is never printed or placed in a URL. If the browser cannot reach the loopback server, the CLI falls back to polling the request's status until it is approved. Approval times out after 15 minutes.
+
+The control-plane base URL defaults to `http://localhost:2023` for local development; override it with `--url`. Optional `--purpose`, `--tool`, `--version`, and `--session-id` flags record agent context with the request.
+
+### Debugging which credential source was used
+
+Pass `--debug` to a Cloud resource command to print the resolved credential source (and the API URL) to stderr before the command runs. This works with and without `--json`.
+
+Cloud notices on stderr are best-effort: if their reader goes away, the operation still runs and reports its outcome through the exit status.
+
+`--url` is an advanced debugging override for targeting a non-production Cloud control plane. Release builds accept the option but omit it from `--help`; development builds show it. For `cloud service query`, set `CLICKHOUSE_CLOUD_QUERY_HOST` separately to override the Query API host.
 ```bash
 clickhousectl cloud postgres create --name app-db \
   --provider aws --region us-east-1 --size c6gd.xlarge --pg-version 18
