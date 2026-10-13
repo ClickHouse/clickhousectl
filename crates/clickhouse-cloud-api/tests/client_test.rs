@@ -654,6 +654,7 @@ async fn update_byoc_infrastructure() {
 
     let body = ByocInfrastructurePatchRequest {
         display_name: Some("Renamed BYOC".to_string()),
+        ..Default::default()
     };
     let resp = c
         .organization_byoc_infrastructure_update("org-1", "byoc-1", &body)
@@ -661,6 +662,129 @@ async fn update_byoc_infrastructure() {
         .unwrap();
     let config = resp.result.unwrap();
     assert_eq!(config.display_name.as_deref(), Some("Renamed BYOC"));
+}
+
+#[tokio::test]
+async fn update_byoc_infrastructure_sends_connectivity_and_tags() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-1"))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({
+            "enablePrivateLink": true,
+            "enablePrivateLoadBalancer": false,
+            "enablePublicLoadBalancer": true,
+            "gcpPscSubnetId": "psc-subnet",
+            "tags": {"team": "data"}
+        })))
+        .respond_with(ok_json(serde_json::json!({"id": "byoc-1"})))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ByocInfrastructurePatchRequest {
+        display_name: None,
+        enable_private_link: Some(true),
+        enable_private_load_balancer: Some(false),
+        enable_public_load_balancer: Some(true),
+        gcp_psc_subnet_id: Some("psc-subnet".to_string()),
+        tags: Some(ByocInfrastructureTags::from([(
+            "team".to_string(),
+            "data".to_string(),
+        )])),
+    };
+    let resp = c
+        .organization_byoc_infrastructure_update("org-1", "byoc-1", &body)
+        .await
+        .unwrap();
+    assert_eq!(resp.result.unwrap().id.as_deref(), Some("byoc-1"));
+}
+
+#[tokio::test]
+async fn get_byoc_infrastructure_private_endpoint_config() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-1/privateEndpointConfig",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "endpointName": "com.amazonaws.vpce.us-east-1.vpce-svc-123",
+            "privateDnsHostname": "byoc-1.private.clickhouse.cloud"
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .organization_byoc_infrastructure_private_endpoint_config_get("org-1", "byoc-1")
+        .await
+        .unwrap();
+    let config = resp.result.unwrap();
+    assert_eq!(
+        config.endpoint_name.as_deref(),
+        Some("com.amazonaws.vpce.us-east-1.vpce-svc-123")
+    );
+    assert_eq!(
+        config.private_dns_hostname.as_deref(),
+        Some("byoc-1.private.clickhouse.cloud")
+    );
+}
+
+#[tokio::test]
+async fn get_byoc_infrastructure_tags() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-1/tags",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "tags": {"team": "data", "env": "prod"}
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .organization_byoc_infrastructure_tags_get("org-1", "byoc-1")
+        .await
+        .unwrap();
+    let tags = resp.result.unwrap().tags.unwrap();
+    assert_eq!(tags.len(), 2);
+    assert_eq!(tags.get("team").map(String::as_str), Some("data"));
+    assert_eq!(tags.get("env").map(String::as_str), Some("prod"));
+}
+
+#[tokio::test]
+async fn byoc_infrastructure_tags_get_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/missing/tags",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "BYOC infrastructure not found"
+        })))
+        .mount(&s)
+        .await;
+
+    let err = c
+        .organization_byoc_infrastructure_tags_get("org-1", "missing")
+        .await
+        .unwrap_err();
+    match err {
+        clickhouse_cloud_api::Error::Api { status, message } => {
+            assert_eq!(status, 404);
+            assert_eq!(message, "BYOC infrastructure not found");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }
 
 #[tokio::test]

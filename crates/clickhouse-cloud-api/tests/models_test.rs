@@ -1675,9 +1675,74 @@ fn byoc_availability_zone_suffix_preserves_unknown_values() {
 fn serialize_byoc_infrastructure_patch_request() {
     let req = ByocInfrastructurePatchRequest {
         display_name: Some("Renamed".to_string()),
+        ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["displayName"], "Renamed");
+    assert_eq!(json, serde_json::json!({"displayName": "Renamed"}));
+}
+
+#[test]
+fn serialize_byoc_infrastructure_patch_request_full() {
+    let req = ByocInfrastructurePatchRequest {
+        display_name: Some("Renamed".to_string()),
+        enable_private_link: Some(true),
+        enable_private_load_balancer: Some(true),
+        enable_public_load_balancer: Some(false),
+        gcp_psc_subnet_id: Some("psc-subnet".to_string()),
+        tags: Some(ByocInfrastructureTags::from([(
+            "team".to_string(),
+            "data".to_string(),
+        )])),
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        serde_json::json!({
+            "displayName": "Renamed",
+            "enablePrivateLink": true,
+            "enablePrivateLoadBalancer": true,
+            "enablePublicLoadBalancer": false,
+            "gcpPscSubnetId": "psc-subnet",
+            "tags": {"team": "data"}
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ByocInfrastructurePatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn byoc_infrastructure_private_endpoint_config_missing_and_null_fields_are_none() {
+    let missing: ByocInfrastructurePrivateEndpointConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocInfrastructurePrivateEndpointConfig::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocInfrastructurePrivateEndpointConfig = serde_json::from_value(serde_json::json!({
+        "endpointName": null, "privateDnsHostname": null
+    }))
+    .unwrap();
+    assert_eq!(null, ByocInfrastructurePrivateEndpointConfig::default());
+}
+
+#[test]
+fn byoc_infrastructure_tags_response_missing_and_null_fields_are_none() {
+    let missing: ByocInfrastructureTagsResponse = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocInfrastructureTagsResponse::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocInfrastructureTagsResponse =
+        serde_json::from_value(serde_json::json!({"tags": null})).unwrap();
+    assert_eq!(null, ByocInfrastructureTagsResponse::default());
+
+    let empty: ByocInfrastructureTagsResponse =
+        serde_json::from_value(serde_json::json!({"tags": {}})).unwrap();
+    assert_eq!(empty.tags, Some(ByocInfrastructureTags::new()));
 }
 
 #[test]

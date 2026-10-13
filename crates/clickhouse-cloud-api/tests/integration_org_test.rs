@@ -52,6 +52,12 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             .await?
             .expect("blocking steps always return a value");
         assert_eq!(field_string(org.id), ctx.org_id);
+        // BYOC infrastructure is a pre-existing org fixture, never provisioned
+        // here; the BYOC read steps below skip when the org has none.
+        let byoc_infrastructure_id = org
+            .byoc_config
+            .as_deref()
+            .and_then(|configs| configs.iter().find_map(|config| config.id.clone()));
 
         // ── Whoami ──────────────────────────────────────────────────
         //
@@ -602,6 +608,71 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 },
             )
             .await?;
+
+        // ── BYOC Infrastructure ─────────────────────────────────────
+        //
+        // Read-only checks against the org's first BYOC infrastructure.
+        // Skipped when the org has no BYOC infrastructure, which is the
+        // usual case for the CI org.
+
+        log_phase("BYOC Infrastructure");
+        match byoc_infrastructure_id {
+            None => eprintln!(
+                "  SKIP BYOC private endpoint config and tags: org has no BYOC infrastructure"
+            ),
+            Some(byoc_id) => {
+                failures
+                    .run(
+                        &ctx,
+                        StepKind::NonBlocking,
+                        "byoc infrastructure private endpoint config",
+                        || {
+                            let client = client.clone();
+                            let org_id = ctx.org_id.clone();
+                            let byoc_id = byoc_id.clone();
+                            async move {
+                                let result = client
+                                    .organization_byoc_infrastructure_private_endpoint_config_get(
+                                        &org_id, &byoc_id,
+                                    )
+                                    .await;
+                                match result {
+                                    Ok(resp) => {
+                                        resp.result.ok_or("private endpoint config returned no result")?;
+                                        Ok(())
+                                    }
+                                    // Infrastructure without private link has no
+                                    // endpoint service; a 400 still proves routing,
+                                    // auth and error decoding.
+                                    Err(clickhouse_cloud_api::Error::Api { status: 400, message }) => {
+                                        eprintln!(
+                                            "  expected 400 (private link not enabled?): {message}"
+                                        );
+                                        Ok(())
+                                    }
+                                    Err(e) => Err(e.into()),
+                                }
+                            }
+                        },
+                    )
+                    .await?;
+
+                failures
+                    .run(&ctx, StepKind::NonBlocking, "byoc infrastructure tags", || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let byoc_id = byoc_id.clone();
+                        async move {
+                            let resp = client
+                                .organization_byoc_infrastructure_tags_get(&org_id, &byoc_id)
+                                .await?;
+                            resp.result.ok_or("byoc tags returned no result")?;
+                            Ok(())
+                        }
+                    })
+                    .await?;
+            }
+        }
 
         // ── Custom Roles CRUD ───────────────────────────────────────
         //

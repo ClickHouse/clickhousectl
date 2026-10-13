@@ -148,6 +148,14 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::ByocAvailabilityZoneSuffix::default(),
     );
     assert_same_type(
+        api::ByocInfrastructurePrivateEndpointConfig::default(),
+        api::models::ByocInfrastructurePrivateEndpointConfig::default(),
+    );
+    assert_same_type(
+        api::ByocInfrastructureTagsResponse::default(),
+        api::models::ByocInfrastructureTagsResponse::default(),
+    );
+    assert_same_type(
         api::ClickStackChartColor::default(),
         api::models::ClickStackChartColor::default(),
     );

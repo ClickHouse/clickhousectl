@@ -172,12 +172,12 @@ pub use byoc::{
     ByocConfigState, ByocInfrastructureDetails, ByocInfrastructureDetailsCloudprovider,
     ByocInfrastructureDetailsRegionid, ByocInfrastructureDetailsState,
     ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
-    ByocInfrastructurePostRequestRegionid, ByocInfrastructureProgress,
-    ByocInfrastructureProgressStage, ByocInfrastructureProgressStageStatus,
-    ByocInfrastructureProgressStatus, ByocInfrastructureTags,
-    ByocInfrastructureValidatePostRequest, ByocInfrastructureValidatePostRequestRegionid,
-    ByocInfrastructureValidation, ByocInfrastructureValidationCheck,
-    ByocInfrastructureValidationCloudprovider,
+    ByocInfrastructurePostRequestRegionid, ByocInfrastructurePrivateEndpointConfig,
+    ByocInfrastructureProgress, ByocInfrastructureProgressStage,
+    ByocInfrastructureProgressStageStatus, ByocInfrastructureProgressStatus,
+    ByocInfrastructureTags, ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
+    ByocInfrastructureValidatePostRequestRegionid, ByocInfrastructureValidation,
+    ByocInfrastructureValidationCheck, ByocInfrastructureValidationCloudprovider,
 };
 pub use clickpipes::*;
 pub use clickstack::*;

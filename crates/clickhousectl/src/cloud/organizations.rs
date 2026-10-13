@@ -1007,6 +1007,11 @@ fn build_byoc_validate_request(
 fn build_byoc_update_request(display_name: &str) -> ByocInfrastructurePatchRequest {
     ByocInfrastructurePatchRequest {
         display_name: Some(display_name.to_string()),
+        enable_private_link: None,
+        enable_private_load_balancer: None,
+        enable_public_load_balancer: None,
+        gcp_psc_subnet_id: None,
+        tags: None,
     }
 }
 

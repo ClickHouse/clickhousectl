@@ -278,6 +278,61 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// Get BYOC infrastructure private endpoint configuration
+    ///
+    /// For BYOC organizations this replaces the deprecated organization-level
+    /// `organization_private_endpoint_config_get_list`.
+    pub async fn organization_byoc_infrastructure_private_endpoint_config_get(
+        &self,
+        organization_id: &str,
+        byoc_infrastructure_id: &str,
+    ) -> Result<ApiResponse<ByocInfrastructurePrivateEndpointConfig>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/privateEndpointConfig"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Get BYOC infrastructure tags
+    ///
+    /// Tags are replaced as a whole through `organization_byoc_infrastructure_update`.
+    pub async fn organization_byoc_infrastructure_tags_get(
+        &self,
+        organization_id: &str,
+        byoc_infrastructure_id: &str,
+    ) -> Result<ApiResponse<ByocInfrastructureTagsResponse>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/tags"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Remove a BYOC infrastructure
     pub async fn organization_byoc_infrastructure_delete(
         &self,
