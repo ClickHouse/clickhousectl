@@ -86,6 +86,36 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             );
         }
 
+        // ── Notification Types ──────────────────────────────────────
+
+        log_phase("Notification Types");
+        failures
+            .run(&ctx, StepKind::NonBlocking, "list notification types", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                async move {
+                    let resp = client.notification_types_get_list(&org_id).await?;
+                    let types = resp
+                        .result
+                        .ok_or("notification types returned no result")?;
+                    for notification_type in &types {
+                        if notification_type
+                            .name
+                            .as_deref()
+                            .is_none_or(|name| name.is_empty())
+                        {
+                            return Err(
+                                format!("notification type without a name: {notification_type:?}")
+                                    .into(),
+                            );
+                        }
+                    }
+                    eprintln!("  {} notification types", types.len());
+                    Ok(())
+                }
+            })
+            .await?;
+
         // ── Members ─────────────────────────────────────────────────
         //
         // Cover `member_get_list`, `member_get`, and `member_update`

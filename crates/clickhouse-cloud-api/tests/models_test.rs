@@ -8509,3 +8509,86 @@ fn whoami_actor_types_preserve_unknown_values() {
     assert_eq!(key, WhoamiApiKeyActortype::Unknown("futureKey".into()));
     assert_eq!(WhoamiApiKeyActortype::ApiKey.to_string(), "apiKey");
 }
+
+#[test]
+fn notification_type_missing_and_null_fields_are_none() {
+    let missing: NotificationType = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, NotificationType::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: NotificationType = serde_json::from_value(serde_json::json!({
+        "name": null, "title": null, "description": null, "category": null,
+        "severity": null, "resourceType": null, "isConfigurable": null,
+        "isAvailable": null, "futureField": 1
+    }))
+    .unwrap();
+    assert_eq!(null, NotificationType::default());
+}
+
+#[test]
+fn notification_type_severity_round_trips_and_preserves_unknown() {
+    for (wire, value) in [
+        ("info", NotificationTypeSeverity::Info),
+        ("warning", NotificationTypeSeverity::Warning),
+        ("critical", NotificationTypeSeverity::Critical),
+    ] {
+        let parsed: NotificationTypeSeverity =
+            serde_json::from_value(serde_json::json!(wire)).unwrap();
+        assert_eq!(parsed, value);
+        assert_eq!(value.to_string(), wire);
+        assert_eq!(
+            serde_json::to_value(&value).unwrap(),
+            serde_json::json!(wire)
+        );
+    }
+    let unknown: NotificationTypeSeverity =
+        serde_json::from_value(serde_json::json!("emergency")).unwrap();
+    assert_eq!(
+        unknown,
+        NotificationTypeSeverity::Unknown("emergency".to_string())
+    );
+    assert_eq!(unknown.to_string(), "emergency");
+}
+
+#[test]
+fn replica_aware_routing_missing_and_null_fields_are_none() {
+    let missing: ReplicaAwareRouting = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ReplicaAwareRouting::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ReplicaAwareRouting = serde_json::from_value(serde_json::json!({
+        "httpEnabled": null, "nativeEnabled": null
+    }))
+    .unwrap();
+    assert_eq!(null, ReplicaAwareRouting::default());
+}
+
+#[test]
+fn serialize_replica_aware_routing_patch_request() {
+    assert_eq!(
+        serde_json::to_value(ReplicaAwareRoutingPatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        serde_json::to_value(ReplicaAwareRoutingPatchRequest {
+            http_enabled: Some(false),
+            native_enabled: None,
+        })
+        .unwrap(),
+        serde_json::json!({"httpEnabled": false})
+    );
+    assert_eq!(
+        serde_json::to_value(ReplicaAwareRoutingPatchRequest {
+            http_enabled: Some(true),
+            native_enabled: Some(false),
+        })
+        .unwrap(),
+        serde_json::json!({"httpEnabled": true, "nativeEnabled": false})
+    );
+}

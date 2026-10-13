@@ -148,6 +148,22 @@ fn extracted_models_keep_root_and_models_paths() {
         api::models::ByocAvailabilityZoneSuffix::default(),
     );
     assert_same_type(
+        api::NotificationType::default(),
+        api::models::NotificationType::default(),
+    );
+    assert_same_type(
+        api::NotificationTypeSeverity::default(),
+        api::models::NotificationTypeSeverity::default(),
+    );
+    assert_same_type(
+        api::ReplicaAwareRouting::default(),
+        api::models::ReplicaAwareRouting::default(),
+    );
+    assert_same_type(
+        api::ReplicaAwareRoutingPatchRequest::default(),
+        api::models::ReplicaAwareRoutingPatchRequest::default(),
+    );
+    assert_same_type(
         api::ByocInfrastructurePrivateEndpointConfig::default(),
         api::models::ByocInfrastructurePrivateEndpointConfig::default(),
     );

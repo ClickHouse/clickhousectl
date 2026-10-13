@@ -278,6 +278,31 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// List notification types
+    ///
+    /// Returns every notification type the organization is entitled to; types
+    /// the caller lacks permission to use carry `is_available: Some(false)`.
+    pub async fn notification_types_get_list(
+        &self,
+        organization_id: &str,
+    ) -> Result<ApiResponse<Vec<NotificationType>>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/notificationTypes");
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Get BYOC infrastructure private endpoint configuration
     ///
     /// For BYOC organizations this replaces the deprecated organization-level

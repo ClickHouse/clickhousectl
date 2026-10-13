@@ -6573,3 +6573,179 @@ async fn whoami_get_propagates_api_errors() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Notification types
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_notification_types() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!([
+            {
+                "name": "service_backup_failed",
+                "title": "Backup failed",
+                "description": "A scheduled backup did not complete.",
+                "category": "service",
+                "severity": "warning",
+                "resourceType": "service",
+                "isConfigurable": true,
+                "isAvailable": true
+            },
+            {
+                "name": "billing_new_tier",
+                "title": "New tier",
+                "category": "billing",
+                "severity": "page_someone",
+                "resourceType": "organization",
+                "isConfigurable": false,
+                "isAvailable": false
+            }
+        ])))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c.notification_types_get_list("org-1").await.unwrap();
+    let types = resp.result.unwrap();
+    assert_eq!(types.len(), 2);
+    assert_eq!(types[0].name.as_deref(), Some("service_backup_failed"));
+    assert_eq!(types[0].title.as_deref(), Some("Backup failed"));
+    assert_eq!(
+        types[0].description.as_deref(),
+        Some("A scheduled backup did not complete.")
+    );
+    assert_eq!(types[0].category.as_deref(), Some("service"));
+    assert_eq!(types[0].severity, Some(NotificationTypeSeverity::Warning));
+    assert_eq!(types[0].resource_type.as_deref(), Some("service"));
+    assert_eq!(types[0].is_configurable, Some(true));
+    assert_eq!(types[0].is_available, Some(true));
+    assert_eq!(types[1].description, None);
+    assert_eq!(
+        types[1].severity,
+        Some(NotificationTypeSeverity::Unknown(
+            "page_someone".to_string()
+        ))
+    );
+    assert_eq!(types[1].is_available, Some(false));
+}
+
+#[tokio::test]
+async fn notification_types_get_list_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "Invalid organization"
+        })))
+        .mount(&s)
+        .await;
+
+    let err = c.notification_types_get_list("org-1").await.unwrap_err();
+    match err {
+        clickhouse_cloud_api::Error::Api { status, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(message, "Invalid organization");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Replica aware routing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_replica_aware_routing() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/replicaAwareRouting",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "httpEnabled": false,
+            "nativeEnabled": true
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c.replica_aware_routing_get("org-1", "svc-1").await.unwrap();
+    let routing = resp.result.unwrap();
+    assert_eq!(routing.http_enabled, Some(false));
+    assert_eq!(routing.native_enabled, Some(true));
+}
+
+#[tokio::test]
+async fn update_replica_aware_routing_sends_only_set_fields() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/replicaAwareRouting",
+        ))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({"httpEnabled": true})))
+        .respond_with(ok_json(serde_json::json!({
+            "httpEnabled": true,
+            "nativeEnabled": false
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ReplicaAwareRoutingPatchRequest {
+        http_enabled: Some(true),
+        native_enabled: None,
+    };
+    let resp = c
+        .replica_aware_routing_update("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let routing = resp.result.unwrap();
+    assert_eq!(routing.http_enabled, Some(true));
+    assert_eq!(routing.native_enabled, Some(false));
+}
+
+#[tokio::test]
+async fn replica_aware_routing_update_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/replicaAwareRouting",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "Replica aware routing is not enabled for this organization"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ReplicaAwareRoutingPatchRequest {
+        http_enabled: None,
+        native_enabled: Some(true),
+    };
+    let err = c
+        .replica_aware_routing_update("org-1", "svc-1", &body)
+        .await
+        .unwrap_err();
+    match err {
+        clickhouse_cloud_api::Error::Api { status, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(
+                message,
+                "Replica aware routing is not enabled for this organization"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}

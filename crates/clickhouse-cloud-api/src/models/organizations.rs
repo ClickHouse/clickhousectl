@@ -126,6 +126,58 @@ impl std::fmt::Display for CreditBalanceType {
     }
 }
 
+/// Values of `NotificationType.severity` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum NotificationTypeSeverity {
+    #[serde(rename = "info")]
+    #[default]
+    Info,
+    #[serde(rename = "warning")]
+    Warning,
+    #[serde(rename = "critical")]
+    Critical,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+impl std::fmt::Display for NotificationTypeSeverity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Info => write!(f, "info"),
+            Self::Warning => write!(f, "warning"),
+            Self::Critical => write!(f, "critical"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `NotificationType` from the ClickHouse Cloud API.
+///
+/// A notification type the organization is entitled to. `category` and
+/// `resource_type` are open sets on the wire, so they stay strings.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct NotificationType {
+    /// Stable identifier of the notification type.
+    #[serde(rename = "name", skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(rename = "title", skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(rename = "description", skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(rename = "category", skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(rename = "severity", skip_serializing_if = "Option::is_none")]
+    pub severity: Option<NotificationTypeSeverity>,
+    #[serde(rename = "resourceType", skip_serializing_if = "Option::is_none")]
+    pub resource_type: Option<String>,
+    /// Whether the per-role delivery default can be changed.
+    #[serde(rename = "isConfigurable", skip_serializing_if = "Option::is_none")]
+    pub is_configurable: Option<bool>,
+    /// `false` when the caller lacks the permission this type requires.
+    #[serde(rename = "isAvailable", skip_serializing_if = "Option::is_none")]
+    pub is_available: Option<bool>,
+}
+
 /// `CreditBalance` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CreditBalance {
