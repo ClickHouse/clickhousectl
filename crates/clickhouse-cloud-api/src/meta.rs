@@ -90,8 +90,11 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "click_stack_update_webhook",
     "click_stack_validate_dashboard",
     "credit_balances_get",
+    "notification_types_get_list",
     "organization_byoc_infrastructure_get",
+    "organization_byoc_infrastructure_private_endpoint_config_get",
     "organization_byoc_infrastructure_progress_get",
+    "organization_byoc_infrastructure_tags_get",
     "organization_byoc_infrastructure_validate",
     "organization_quota_get",
     "organization_quotas_get_list",
@@ -113,19 +116,13 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "postgres_service_patch",
     "postgres_service_patch_state",
     "postgres_service_set_password",
-    "query_api_endpoint_create",
-    "query_api_endpoint_delete",
-    "query_api_endpoint_get",
-    "query_api_endpoint_list",
-    "query_api_endpoint_update",
+    "replica_aware_routing_get",
+    "replica_aware_routing_update",
     "saved_query_create",
     "saved_query_delete",
     "saved_query_get",
     "saved_query_list",
     "saved_query_update",
-    "scaling_schedule_delete",
-    "scaling_schedule_get",
-    "scaling_schedule_upsert",
     "service_clickhouse_setting_delete",
     "service_clickhouse_setting_get",
     "service_clickhouse_settings_list_get",
@@ -137,18 +134,6 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "snapshot_configuration_update",
     "snapshot_get",
     "snapshot_get_list",
-    "udf_attach",
-    "udf_attachment_get",
-    "udf_attachment_list",
-    "udf_create",
-    "udf_delete",
-    "udf_detach",
-    "udf_get",
-    "udf_list",
-    "udf_upload_session_create",
-    "udf_version_create",
-    "udf_version_delete",
-    "udf_version_list",
     "whoami_get",
 ];
 
@@ -285,7 +270,8 @@ mod tests {
 
     #[test]
     fn is_beta_operation_matches_constant() {
-        assert!(is_beta_operation("scaling_schedule_get"));
+        assert!(is_beta_operation("replica_aware_routing_get"));
+        assert!(!is_beta_operation("scaling_schedule_get"));
         assert!(is_beta_operation("postgres_service_get_list"));
         assert!(!is_beta_operation("services_list"));
         assert!(!is_beta_operation("organization_prometheus_discovery_get"));

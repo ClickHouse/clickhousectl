@@ -212,6 +212,12 @@ pub enum ActivityType {
     Organization_update_hipaa_status,
     #[serde(rename = "organization_update_pci_compliance")]
     Organization_update_pci_compliance,
+    #[serde(rename = "organization_security_contact_add")]
+    Organization_security_contact_add,
+    #[serde(rename = "organization_security_contact_remove")]
+    Organization_security_contact_remove,
+    #[serde(rename = "organization_security_contact_replace")]
+    Organization_security_contact_replace,
     #[serde(rename = "organization_update_private_endpoints")]
     Organization_update_private_endpoints,
     #[serde(rename = "organization_update_spend_alert")]
@@ -440,6 +446,15 @@ impl std::fmt::Display for ActivityType {
             }
             Self::Organization_update_pci_compliance => {
                 write!(f, "organization_update_pci_compliance")
+            }
+            Self::Organization_security_contact_add => {
+                write!(f, "organization_security_contact_add")
+            }
+            Self::Organization_security_contact_remove => {
+                write!(f, "organization_security_contact_remove")
+            }
+            Self::Organization_security_contact_replace => {
+                write!(f, "organization_security_contact_replace")
             }
             Self::Organization_update_private_endpoints => {
                 write!(f, "organization_update_private_endpoints")

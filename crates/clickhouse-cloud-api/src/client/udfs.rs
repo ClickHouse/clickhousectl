@@ -3,7 +3,7 @@ use crate::error::Error;
 use crate::models::*;
 
 impl Client {
-    /// Delete UDF (Beta).
+    /// Delete UDF.
     pub async fn udf_delete(
         &self,
         organization_id: &str,
@@ -25,7 +25,7 @@ impl Client {
         }
         Ok(serde_json::from_str(&body_text)?)
     }
-    /// Detach UDF from service (Beta).
+    /// Detach UDF from service.
     pub async fn udf_detach(
         &self,
         organization_id: &str,
@@ -50,7 +50,7 @@ impl Client {
         }
         Ok(serde_json::from_str(&body_text)?)
     }
-    /// Delete UDF version (Beta).
+    /// Delete UDF version.
     pub async fn udf_version_delete(
         &self,
         organization_id: &str,
@@ -75,7 +75,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// List UDFs (Beta).
+    /// List UDFs.
     pub async fn udf_list(
         &self,
         organization_id: &str,
@@ -105,7 +105,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Get UDF (Beta).
+    /// Get UDF.
     pub async fn udf_get(
         &self,
         organization_id: &str,
@@ -128,7 +128,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// List UDF attachments (Beta).
+    /// List UDF attachments.
     pub async fn udf_attachment_list(
         &self,
         organization_id: &str,
@@ -159,7 +159,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Get UDF attachment (Beta).
+    /// Get UDF attachment.
     pub async fn udf_attachment_get(
         &self,
         organization_id: &str,
@@ -185,7 +185,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// List UDF versions (Beta).
+    /// List UDF versions.
     pub async fn udf_version_list(
         &self,
         organization_id: &str,
@@ -216,7 +216,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Create a UDF upload session (Beta).
+    /// Create a UDF upload session.
     pub async fn udf_upload_session_create(
         &self,
         organization_id: &str,
@@ -238,7 +238,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Create UDF (Beta).
+    /// Create UDF.
     pub async fn udf_create(
         &self,
         organization_id: &str,
@@ -262,7 +262,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Create UDF version (Beta).
+    /// Create UDF version.
     pub async fn udf_version_create(
         &self,
         organization_id: &str,
@@ -287,7 +287,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Attach UDF to service (Beta).
+    /// Attach UDF to service.
     pub async fn udf_attach(
         &self,
         organization_id: &str,

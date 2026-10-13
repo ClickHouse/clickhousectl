@@ -84,35 +84,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // Kinesis likewise requires protobufSchema only for Protobuf and forbids it
     // for other formats; the legacy requiredness heuristic misses that condition.
     ("ClickPipePostKinesisSource", "protobufSchema"),
-    // The legacy service-create schema marks almost every property required,
-    // but the API requires only name/provider/region and rejects many defaults.
-    ("ServicePostRequest", "autoscalingMode"),
-    ("ServicePostRequest", "byocId"),
-    ("ServicePostRequest", "complianceType"),
-    ("ServicePostRequest", "dataWarehouseId"),
-    ("ServicePostRequest", "enableCoreDumps"),
-    ("ServicePostRequest", "endpoints"),
-    ("ServicePostRequest", "hasTransparentDataEncryption"),
-    ("ServicePostRequest", "idleScaling"),
-    ("ServicePostRequest", "idleTimeoutMinutes"),
-    ("ServicePostRequest", "isReadonly"),
-    ("ServicePostRequest", "maxReplicaMemoryGb"),
-    ("ServicePostRequest", "maxTotalMemoryGb"),
-    ("ServicePostRequest", "minReplicaMemoryGb"),
-    ("ServicePostRequest", "minTotalMemoryGb"),
-    ("ServicePostRequest", "numReplicas"),
-    ("ServicePostRequest", "maxReplicas"),
-    ("ServicePostRequest", "minReplicas"),
-    ("ServicePostRequest", "privateEndpointIds"),
-    ("ServicePostRequest", "privatePreviewTermsChecked"),
-    ("ServicePostRequest", "profile"),
-    ("ServicePostRequest", "releaseChannel"),
-    ("ServicePostRequest", "tags"),
-    ("ServicePostRequest", "tier"),
-    // backupEncryptionConfig is a bare $ref, so the description heuristic marks
-    // it required. backupId's description makes it conditional: required only
-    // for a backup in the organization's own bucket and forbidden otherwise.
-    ("ServicePostRequest", "backupEncryptionConfig"),
     // Non-Postgres pipe requests must be able to omit the Postgres union arm.
     ("ClickPipePostSource", "postgres"),
     ("ClickPipePatchSource", "postgres"),
@@ -129,9 +100,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ClickPipePatchPostgresSource", "settings"),
     ("ClickPipePatchPostgresSource", "tableMappingsToAdd"),
     ("ClickPipePatchPostgresSource", "tableMappingsToRemove"),
-    // Empty/default scaling and settings objects fail server-side validation.
-    ("ClickPipePostRequest", "scaling"),
-    ("ClickPipePostRequest", "settings"),
     // The control plane accepted an object-storage create with validateSamples
     // absent on 2026-09-05. Omission must stay distinct from explicit false.
     ("ClickPipePostSource", "validateSamples"),
@@ -149,10 +117,6 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
         "ClickPipePostgresPipeSettings",
         "snapshotNumberOfParallelTables",
     ),
-    // Database pipes do not have table-shaped destinations.
-    ("ClickPipeMutateDestination", "table"),
-    ("ClickPipeMutateDestination", "managedTable"),
-    ("ClickPipeMutateDestination", "tableDefinition"),
     // A Kafka broker that requires no authentication has no representation in
     // the spec enum (PLAIN..MUTUAL_TLS only) and the schema carries no
     // `required[]`, so requiredness resolves from the description heuristic.
@@ -190,11 +154,7 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // `T` would force every IAM_ROLE request to send an empty username and
     // password pair.
     ("ClickPipeMutatePostgresSource", "credentials"),
-    // Deprecated roles and opt-in pre-hashed keys must stay off the wire when unused.
-    ("ApiKeyPostRequest", "roles"),
-    ("ApiKeyPostRequest", "hashData"),
     // Deprecated request fields are feature-gated out in favour of replacements.
-    ("InvitationPostRequest", "role"),
     ("OrganizationPrivateEndpointsPatch", "add"),
     // Despite its non-Patch name and descriptions that omit the "Optional"
     // prefix, RoleUpdateRequest is used only by PATCH and the operation states

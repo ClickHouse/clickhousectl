@@ -750,6 +750,15 @@ pub const MEMBER_UPDATE: OperationMetadata = OperationMetadata {
     required_permissions: &["control-plane:organization:manage"],
 };
 
+/// `GET /v1/organizations/{organizationId}/notificationTypes` (`notificationTypesGetList`).
+pub const NOTIFICATION_TYPES_GET_LIST: OperationMetadata = OperationMetadata {
+    operation_id: "notificationTypesGetList",
+    rust_method: "notification_types_get_list",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/notificationTypes",
+    required_permissions: &["control-plane:organization:view"],
+};
+
 /// `POST /v1/organizations/{organizationId}/keys` (`openapiKeyCreate`).
 pub const OPENAPI_KEY_CREATE: OperationMetadata = OperationMetadata {
     operation_id: "openapiKeyCreate",
@@ -822,12 +831,31 @@ pub const ORGANIZATION_BYOC_INFRASTRUCTURE_GET: OperationMetadata = OperationMet
     required_permissions: &["control-plane:organization:view"],
 };
 
+/// `GET /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/privateEndpointConfig` (`organizationByocInfrastructurePrivateEndpointConfigGet`).
+pub const ORGANIZATION_BYOC_INFRASTRUCTURE_PRIVATE_ENDPOINT_CONFIG_GET: OperationMetadata =
+    OperationMetadata {
+        operation_id: "organizationByocInfrastructurePrivateEndpointConfigGet",
+        rust_method: "organization_byoc_infrastructure_private_endpoint_config_get",
+        method: "GET",
+        path: "/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/privateEndpointConfig",
+        required_permissions: &["control-plane:organization:view"],
+    };
+
 /// `GET /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/progress` (`organizationByocInfrastructureProgressGet`).
 pub const ORGANIZATION_BYOC_INFRASTRUCTURE_PROGRESS_GET: OperationMetadata = OperationMetadata {
     operation_id: "organizationByocInfrastructureProgressGet",
     rust_method: "organization_byoc_infrastructure_progress_get",
     method: "GET",
     path: "/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/progress",
+    required_permissions: &["control-plane:organization:view"],
+};
+
+/// `GET /v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/tags` (`organizationByocInfrastructureTagsGet`).
+pub const ORGANIZATION_BYOC_INFRASTRUCTURE_TAGS_GET: OperationMetadata = OperationMetadata {
+    operation_id: "organizationByocInfrastructureTagsGet",
+    rust_method: "organization_byoc_infrastructure_tags_get",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/byocInfrastructure/{byocInfrastructureId}/tags",
     required_permissions: &["control-plane:organization:view"],
 };
 
@@ -1177,6 +1205,24 @@ pub const QUERY_API_ENDPOINT_UPDATE: OperationMetadata = OperationMetadata {
     method: "PUT",
     path: "/v1/organizations/{organizationId}/services/{serviceId}/query-api-endpoints/{endpointId}",
     required_permissions: &["control-plane:service:manage-query-api-endpoints"],
+};
+
+/// `GET /v1/organizations/{organizationId}/services/{serviceId}/replicaAwareRouting` (`replicaAwareRoutingGet`).
+pub const REPLICA_AWARE_ROUTING_GET: OperationMetadata = OperationMetadata {
+    operation_id: "replicaAwareRoutingGet",
+    rust_method: "replica_aware_routing_get",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/replicaAwareRouting",
+    required_permissions: &["control-plane:service:view"],
+};
+
+/// `PATCH /v1/organizations/{organizationId}/services/{serviceId}/replicaAwareRouting` (`replicaAwareRoutingUpdate`).
+pub const REPLICA_AWARE_ROUTING_UPDATE: OperationMetadata = OperationMetadata {
+    operation_id: "replicaAwareRoutingUpdate",
+    rust_method: "replica_aware_routing_update",
+    method: "PATCH",
+    path: "/v1/organizations/{organizationId}/services/{serviceId}/replicaAwareRouting",
+    required_permissions: &["control-plane:service:manage"],
 };
 
 /// `POST /v1/organizations/{organizationId}/services/{serviceId}/saved-queries` (`savedQueryCreate`).
@@ -1597,6 +1643,7 @@ pub const ALL: &[OperationMetadata] = &[
     MEMBER_GET,
     MEMBER_GET_LIST,
     MEMBER_UPDATE,
+    NOTIFICATION_TYPES_GET_LIST,
     OPENAPI_KEY_CREATE,
     OPENAPI_KEY_DELETE,
     OPENAPI_KEY_GET,
@@ -1605,7 +1652,9 @@ pub const ALL: &[OperationMetadata] = &[
     ORGANIZATION_BYOC_INFRASTRUCTURE_CREATE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_DELETE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_GET,
+    ORGANIZATION_BYOC_INFRASTRUCTURE_PRIVATE_ENDPOINT_CONFIG_GET,
     ORGANIZATION_BYOC_INFRASTRUCTURE_PROGRESS_GET,
+    ORGANIZATION_BYOC_INFRASTRUCTURE_TAGS_GET,
     ORGANIZATION_BYOC_INFRASTRUCTURE_UPDATE,
     ORGANIZATION_BYOC_INFRASTRUCTURE_VALIDATE,
     ORGANIZATION_GET,
@@ -1644,6 +1693,8 @@ pub const ALL: &[OperationMetadata] = &[
     QUERY_API_ENDPOINT_GET,
     QUERY_API_ENDPOINT_LIST,
     QUERY_API_ENDPOINT_UPDATE,
+    REPLICA_AWARE_ROUTING_GET,
+    REPLICA_AWARE_ROUTING_UPDATE,
     SAVED_QUERY_CREATE,
     SAVED_QUERY_DELETE,
     SAVED_QUERY_GET,
