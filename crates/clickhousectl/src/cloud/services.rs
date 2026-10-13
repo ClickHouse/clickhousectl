@@ -94,6 +94,16 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         &[&op::UPGRADE_WINDOW_DELETE],
     )
     .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service replica-aware-routing get",
+        &[&op::REPLICA_AWARE_ROUTING_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service replica-aware-routing update",
+        &[&op::REPLICA_AWARE_ROUTING_UPDATE],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("service prometheus", &[&op::INSTANCE_PROMETHEUS_GET])
         .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
     Permission::api("service create", &[&op::INSTANCE_CREATE]).when(&[Conditional::new(
@@ -170,9 +180,10 @@ use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
     AutoscalingMode, BackupEncryptionConfig, InstancePrivateEndpointsPatch,
     InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch, IpAccessListEntry,
-    IpAccessListPatch, QueryEndpointRole, ScalingSchedule, ScalingScheduleEntryRequest,
-    ScalingSchedulePostRequest, ServicPrivateEndpointePostRequest, Service,
-    ServiceClickhouseSetting, ServiceClickhouseSettingsList, ServiceClickhouseSettingsPatchRequest,
+    IpAccessListPatch, QueryEndpointRole, ReplicaAwareRouting, ReplicaAwareRoutingPatchRequest,
+    ScalingSchedule, ScalingScheduleEntryRequest, ScalingSchedulePostRequest,
+    ServicPrivateEndpointePostRequest, Service, ServiceClickhouseSetting,
+    ServiceClickhouseSettingsList, ServiceClickhouseSettingsPatchRequest,
     ServiceClickhouseSettingsPatchResponse, ServiceClickhouseSettingsSchema, ServiceEndpoint,
     ServiceEndpointChange, ServiceEndpointChangeProtocol, ServiceEndpointProtocol,
     ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
@@ -640,6 +651,19 @@ CONTEXT FOR AGENTS:
         command: UpgradeWindowCommands,
     },
 
+    /// Manage replica aware routing (Beta)
+    #[command(
+        name = "replica-aware-routing",
+        after_help = "\
+CONTEXT FOR AGENTS:
+  With HTTP routing enabled, every HTTP client must send the X-ClickHouse-Replica-Tag header.
+  Update needs the organization feature enabled; an omitted flag leaves that protocol unchanged."
+    )]
+    ReplicaAwareRouting {
+        #[command(subcommand)]
+        command: ReplicaAwareRoutingCommands,
+    },
+
     /// Get Prometheus metrics
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -968,6 +992,46 @@ pub enum UpgradeWindowCommands {
     },
 }
 
+#[derive(Subcommand)]
+pub enum ReplicaAwareRoutingCommands {
+    /// Get replica aware routing settings (Beta)
+    Get {
+        /// Service ID
+        #[command(flatten)]
+        service_id: NameSelector,
+    },
+
+    /// Update replica aware routing settings (Beta)
+    #[command(group(
+        ArgGroup::new("routing_change")
+            .required(true)
+            .multiple(true)
+            .args(["http_enabled", "native_enabled"])
+    ))]
+    Update {
+        /// Service ID
+        #[command(flatten)]
+        service_id: NameSelector,
+
+        /// Turn routing on or off for HTTP connections
+        #[arg(long, value_name = "BOOL")]
+        http_enabled: Option<bool>,
+
+        /// Turn routing on or off for native protocol connections
+        #[arg(long, value_name = "BOOL")]
+        native_enabled: Option<bool>,
+    },
+}
+
+impl ReplicaAwareRoutingCommands {
+    fn is_write(&self) -> bool {
+        match self {
+            ReplicaAwareRoutingCommands::Get { .. } => false,
+            ReplicaAwareRoutingCommands::Update { .. } => true,
+        }
+    }
+}
+
 impl UpgradeWindowCommands {
     fn is_write(&self) -> bool {
         match self {
@@ -1036,6 +1100,7 @@ impl ServiceCommands {
             ServiceCommands::BackupConfig { command } => command.is_write(),
             ServiceCommands::Snapshot { command } => command.is_write(),
             ServiceCommands::UpgradeWindow { command } => command.is_write(),
+            ServiceCommands::ReplicaAwareRouting { command } => command.is_write(),
         }
     }
 }
@@ -1416,6 +1481,29 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 .await
             }
         },
+        ServiceCommands::ReplicaAwareRouting { command } => match command {
+            ReplicaAwareRoutingCommands::Get { service_id } => {
+                replica_aware_routing_get(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    json,
+                )
+                .await
+            }
+            ReplicaAwareRoutingCommands::Update {
+                service_id,
+                http_enabled,
+                native_enabled,
+            } => {
+                replica_aware_routing_update(
+                    client,
+                    &service_id.resolve(client, NamedResource::Service).await?,
+                    build_replica_aware_routing_request(http_enabled, native_enabled),
+                    json,
+                )
+                .await
+            }
+        },
         ServiceCommands::Prometheus {
             service_id,
             filtered_metrics,
@@ -1685,6 +1773,16 @@ fn build_upgrade_window_request(
     })
 }
 
+fn build_replica_aware_routing_request(
+    http_enabled: Option<bool>,
+    native_enabled: Option<bool>,
+) -> ReplicaAwareRoutingPatchRequest {
+    ReplicaAwareRoutingPatchRequest {
+        http_enabled,
+        native_enabled,
+    }
+}
+
 #[derive(serde::Serialize)]
 struct UpgradeWindowHumanView {
     duration: String,
@@ -1808,6 +1906,40 @@ async fn upgrade_window_set(
         println!("{}", serde_json::to_string_pretty(&window)?);
     } else {
         print_human(&upgrade_window_human_view(&window))?;
+    }
+    Ok(())
+}
+
+async fn replica_aware_routing_get(
+    client: &CloudClient,
+    service_id: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let routing = client
+        .get_replica_aware_routing(&org_id, service_id)
+        .await?;
+    print_replica_aware_routing(&routing, json)
+}
+
+async fn replica_aware_routing_update(
+    client: &CloudClient,
+    service_id: &str,
+    request: ReplicaAwareRoutingPatchRequest,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let routing = client
+        .update_replica_aware_routing(&org_id, service_id, &request)
+        .await?;
+    print_replica_aware_routing(&routing, json)
+}
+
+fn print_replica_aware_routing(routing: &ReplicaAwareRouting, json: bool) -> CloudResult<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(routing)?);
+    } else {
+        print_human(routing)?;
     }
     Ok(())
 }
@@ -4685,6 +4817,33 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    pub async fn get_replica_aware_routing(
+        &self,
+        org_id: &str,
+        service_id: &str,
+    ) -> crate::cloud::client::Result<ReplicaAwareRouting> {
+        let response = self
+            .api()
+            .replica_aware_routing_get(org_id, service_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn update_replica_aware_routing(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &ReplicaAwareRoutingPatchRequest,
+    ) -> crate::cloud::client::Result<ReplicaAwareRouting> {
+        let response = self
+            .api()
+            .replica_aware_routing_update(org_id, service_id, request)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     pub async fn delete_upgrade_window(
         &self,
         org_id: &str,
@@ -5477,6 +5636,110 @@ mod tests {
             ],
             true,
         );
+    }
+
+    #[test]
+    fn parses_replica_aware_routing_commands_and_classifies_writes() {
+        let base = ["clickhousectl", "cloud", "service", "replica-aware-routing"];
+        let parse_update = |flags: &[&str]| {
+            let mut args = base.to_vec();
+            args.extend(["update", "svc-1"]);
+            args.extend(flags);
+            match parse_service(&args) {
+                ServiceCommands::ReplicaAwareRouting {
+                    command:
+                        ReplicaAwareRoutingCommands::Update {
+                            service_id,
+                            http_enabled,
+                            native_enabled,
+                        },
+                } => {
+                    assert_eq!(service_id.id.as_deref(), Some("svc-1"));
+                    (http_enabled, native_enabled)
+                }
+                _ => panic!("expected replica-aware-routing update"),
+            }
+        };
+        assert_eq!(
+            parse_update(&["--http-enabled", "true"]),
+            (Some(true), None)
+        );
+        assert_eq!(
+            parse_update(&["--native-enabled", "false"]),
+            (None, Some(false))
+        );
+        assert_eq!(
+            parse_update(&["--http-enabled", "false", "--native-enabled", "true"]),
+            (Some(false), Some(true))
+        );
+
+        let ServiceCommands::ReplicaAwareRouting {
+            command: ReplicaAwareRoutingCommands::Get { service_id },
+        } = parse_service(&[
+            "clickhousectl",
+            "cloud",
+            "service",
+            "replica-aware-routing",
+            "get",
+            "--name",
+            "analytics",
+        ])
+        else {
+            panic!("expected replica-aware-routing get");
+        };
+        assert_eq!(service_id.name.as_deref(), Some("analytics"));
+
+        let mut get = base.to_vec();
+        get.extend(["get", "svc-1"]);
+        assert_write(&get, false);
+        let mut update = base.to_vec();
+        update.extend(["update", "svc-1", "--native-enabled", "true"]);
+        assert_write(&update, true);
+    }
+
+    #[test]
+    fn replica_aware_routing_update_requires_a_change_and_boolean_values() {
+        let base = [
+            "clickhousectl",
+            "cloud",
+            "service",
+            "replica-aware-routing",
+            "update",
+            "svc-1",
+        ];
+        let error = Cli::try_parse_from(base)
+            .err()
+            .expect("no change should fail");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        for flag in ["--http-enabled", "--native-enabled"] {
+            let mut args = base.to_vec();
+            args.extend([flag, "yes"]);
+            let error = Cli::try_parse_from(args)
+                .err()
+                .expect("non-bool should fail");
+            assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+            let mut args = base.to_vec();
+            args.push(flag);
+            assert!(Cli::try_parse_from(args).is_err(), "{flag} needs a value");
+        }
+    }
+
+    #[test]
+    fn build_replica_aware_routing_request_supports_minimal_and_maximal_values() {
+        let minimal = build_replica_aware_routing_request(None, Some(false));
+        assert_eq!(minimal.http_enabled, None);
+        assert_eq!(minimal.native_enabled, Some(false));
+        assert_eq!(
+            serde_json::to_value(&minimal).unwrap(),
+            serde_json::json!({"nativeEnabled": false})
+        );
+
+        let maximal = build_replica_aware_routing_request(Some(true), Some(true));
+        assert_eq!(maximal.http_enabled, Some(true));
+        assert_eq!(maximal.native_enabled, Some(true));
     }
 
     #[test]

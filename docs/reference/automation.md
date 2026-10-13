@@ -33,7 +33,7 @@ Cloud structured output follows each command's API-shaped contract, usually came
 
 Human detail views summarize PEM blocks; JSON returns their original contents. `postgres certs get` deliberately emits PEM. Treat JSON results and files as potentially sensitive.
 
-Paginated commands require command-specific handling. For keys, an absent `nextCursor` ends pagination; an empty token is still valid. Other endpoints may return `pagination.nextCursor`. Use the specific guide/help and preserve opaque cursors unchanged.
+Paginated commands require command-specific handling. `cloud org list` and `cloud service snapshot list` read every page themselves, as do organization-name and auto-detected organization lookups. For keys, an absent `nextCursor` ends pagination; an empty token is still valid. Other endpoints may return `pagination.nextCursor`. Use the specific guide/help and preserve opaque cursors unchanged.
 
 ## Check status and stderr
 

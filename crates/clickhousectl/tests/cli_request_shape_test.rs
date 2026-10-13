@@ -28923,7 +28923,7 @@ async fn key_pagination_invalid_flags_fail_before_network_or_credentials() {
     let project = tempfile::tempdir().unwrap();
     for flags in [
         vec!["--limit", "0"],
-        vec!["--limit", "251"],
+        vec!["--limit", "-1"],
         vec!["--all", "--cursor="],
     ] {
         let output = Command::new(clickhousectl_binary())
@@ -31754,5 +31754,387 @@ async fn udf_deploy_proceeds_on_an_idle_service_without_waking_it_early() {
     assert!(
         !calls.iter().any(|call| call.starts_with("PATCH ")),
         "{calls:?}"
+    );
+}
+
+const REPLICA_AWARE_ROUTING_PATH: &str =
+    "/v1/organizations/org-1/services/svc-1/replicaAwareRouting";
+
+#[tokio::test]
+async fn replica_aware_routing_get_supports_oauth_and_human_output() {
+    let mock = MockServer::start().await;
+    let routing = serde_json::json!({"httpEnabled": true, "nativeEnabled": false});
+    Mock::given(method("GET"))
+        .and(path(REPLICA_AWARE_ROUTING_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": routing})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(REPLICA_AWARE_ROUTING_PATH))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"nativeEnabled": true}})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "service",
+            "replica-aware-routing",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        routing
+    );
+
+    // A sparse response renders without inventing the missing protocol.
+    let human = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "service",
+            "replica-aware-routing",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&human);
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    assert!(stdout.contains("nativeEnabled: true"), "{stdout}");
+    assert!(!stdout.contains("httpEnabled: true"), "{stdout}");
+}
+
+#[tokio::test]
+async fn replica_aware_routing_update_sends_only_supplied_fields_with_basic_auth() {
+    for (flags, body) in [
+        (
+            vec!["--http-enabled", "true"],
+            serde_json::json!({"httpEnabled": true}),
+        ),
+        (
+            vec!["--native-enabled", "false"],
+            serde_json::json!({"nativeEnabled": false}),
+        ),
+        (
+            vec!["--http-enabled", "false", "--native-enabled", "true"],
+            serde_json::json!({"httpEnabled": false, "nativeEnabled": true}),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        let result = serde_json::json!({"httpEnabled": false, "nativeEnabled": true});
+        Mock::given(method("PATCH"))
+            .and(path(REPLICA_AWARE_ROUTING_PATH))
+            .and(wiremock::matchers::basic_auth(
+                "fake-key-for-tests",
+                "fake-secret-for-tests",
+            ))
+            .and(body_json(&body))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut args = vec![
+            "service",
+            "replica-aware-routing",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_success(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            result
+        );
+    }
+}
+
+#[tokio::test]
+async fn replica_aware_routing_update_rejects_oauth_and_missing_changes_before_http() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let oauth = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "service",
+            "replica-aware-routing",
+            "update",
+            "svc-1",
+            "--http-enabled",
+            "true",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(oauth.status.code(), Some(4), "{oauth:?}");
+
+    let no_change = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "replica-aware-routing",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(no_change.status.code(), Some(2), "{no_change:?}");
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn replica_aware_routing_errors_preserve_the_api_message() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(REPLICA_AWARE_ROUTING_PATH))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403,
+            "error": "replica aware routing is not enabled for this organization"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "replica-aware-routing",
+            "update",
+            "svc-1",
+            "--native-enabled",
+            "true",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_ne!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    let message = cloud_runtime_error(&output)["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.contains("replica aware routing is not enabled"),
+        "{message}"
+    );
+}
+
+const PAGED_ORG_FIRST: &str = "00000000-0000-0000-0000-0000000000a1";
+const PAGED_ORG_SECOND: &str = "00000000-0000-0000-0000-0000000000a2";
+
+async fn mount_cursor_page(
+    mock: &MockServer,
+    route: &str,
+    cursor: Option<&str>,
+    body: Value,
+    expected: u64,
+) {
+    let matcher = Mock::given(method("GET")).and(path(route));
+    let matcher = match cursor {
+        Some(cursor) => matcher.and(query_param("cursor", cursor)),
+        None => matcher.and(wiremock::matchers::query_param_is_missing("cursor")),
+    };
+    matcher
+        .and(wiremock::matchers::query_param_is_missing("limit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .expect(expected)
+        .mount(mock)
+        .await;
+}
+
+async fn mount_two_org_pages(mock: &MockServer, expected: u64) {
+    mount_cursor_page(
+        mock,
+        "/v1/organizations",
+        None,
+        serde_json::json!({
+            "result": [{"id": PAGED_ORG_FIRST, "name": "first-org"}],
+            "nextCursor": "org-page-2"
+        }),
+        expected,
+    )
+    .await;
+    mount_cursor_page(
+        mock,
+        "/v1/organizations",
+        Some("org-page-2"),
+        serde_json::json!({
+            "result": [{"id": PAGED_ORG_SECOND, "name": "second-org"}],
+            "nextCursor": null
+        }),
+        expected,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn org_list_reads_every_page_in_json_and_human_output() {
+    let mock = MockServer::start().await;
+    mount_two_org_pages(&mock, 2).await;
+    let json = invoke_cli_with_cloud_credentials(&mock, &["org", "list"]);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!([
+            {"id": PAGED_ORG_FIRST, "name": "first-org"},
+            {"id": PAGED_ORG_SECOND, "name": "second-org"}
+        ])
+    );
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &["org", "list"]);
+    assert_success(&human);
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    assert!(stdout.contains("first-org"), "{stdout}");
+    assert!(stdout.contains("second-org"), "{stdout}");
+}
+
+#[tokio::test]
+async fn org_name_resolution_and_auto_detection_read_every_page() {
+    let mock = MockServer::start().await;
+    mount_two_org_pages(&mock, 2).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/{PAGED_ORG_SECOND}/services"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    // A name found only on the second page resolves to that organization.
+    let named =
+        invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-name", "second-org"]);
+    assert_success(&named);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&named.stdout).unwrap(),
+        serde_json::json!([])
+    );
+
+    // One organization per page is still two organizations, not an auto-detected one.
+    let detected = invoke_cli_with_cloud_credentials(&mock, &["service", "list"]);
+    assert_eq!(detected.status.code(), Some(1), "{detected:?}");
+    let message = cloud_runtime_error(&detected)["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(message.contains("Multiple organizations"), "{message}");
+}
+
+#[tokio::test]
+async fn org_list_repeated_cursor_fails_before_another_request() {
+    let mock = MockServer::start().await;
+    mount_cursor_page(
+        &mock,
+        "/v1/organizations",
+        None,
+        serde_json::json!({"result": [], "nextCursor": "loop"}),
+        1,
+    )
+    .await;
+    mount_cursor_page(
+        &mock,
+        "/v1/organizations",
+        Some("loop"),
+        serde_json::json!({"result": [], "nextCursor": "loop"}),
+        1,
+    )
+    .await;
+    let output = invoke_cli_with_cloud_credentials(&mock, &["org", "list"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let message = cloud_runtime_error(&output)["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(message.contains("repeated cursor"), "{message}");
+    assert_eq!(mock.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn snapshot_list_reads_every_page_in_json_and_human_output() {
+    const SNAPSHOTS_PATH: &str = "/v1/organizations/org-1/services/svc-1/snapshots";
+    let mock = MockServer::start().await;
+    let first = serde_json::json!({"id": "00000000-0000-0000-0000-0000000000b1", "status": "done"});
+    let second =
+        serde_json::json!({"id": "00000000-0000-0000-0000-0000000000b2", "status": "done"});
+    mount_cursor_page(
+        &mock,
+        SNAPSHOTS_PATH,
+        None,
+        serde_json::json!({"result": [first], "nextCursor": "snap-page-2", "limit": 1}),
+        2,
+    )
+    .await;
+    mount_cursor_page(
+        &mock,
+        SNAPSHOTS_PATH,
+        Some("snap-page-2"),
+        serde_json::json!({"result": [second]}),
+        2,
+    )
+    .await;
+    let args = ["service", "snapshot", "list", "svc-1", "--org-id", "org-1"];
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!([first, second])
+    );
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    assert!(
+        stdout.contains("00000000-0000-0000-0000-0000000000b1"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("00000000-0000-0000-0000-0000000000b2"),
+        "{stdout}"
     );
 }

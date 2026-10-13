@@ -728,6 +728,37 @@ impl CloudClient {
             .ok_or_else(|| CloudError::new("Empty response from API"))
     }
 
+    /// Read every page of a list whose response carries a top-level `nextCursor`.
+    ///
+    /// `fetch` returns one page's response for the given cursor (`None` first). Pages are
+    /// read until `nextCursor` is absent; an empty page or empty cursor is not a terminator,
+    /// since cursors are opaque. A repeated cursor fails instead of looping; `noun` names the
+    /// list in that error.
+    pub async fn collect_cursor_pages<T, F, Fut>(noun: &str, mut fetch: F) -> Result<Vec<T>>
+    where
+        F: FnMut(Option<String>) -> Fut,
+        Fut:
+            std::future::Future<Output = Result<clickhouse_cloud_api::models::ApiResponse<Vec<T>>>>,
+    {
+        let mut items = Vec::new();
+        let mut cursor = None;
+        let mut seen_cursors = std::collections::HashSet::new();
+        loop {
+            let mut response = fetch(cursor.take()).await?;
+            let next = response.next_cursor.take();
+            items.extend(Self::unwrap_response(response)?);
+            match next {
+                None => return Ok(items),
+                Some(next) if !seen_cursors.insert(next.clone()) => {
+                    return Err(CloudError::new(format!(
+                        "{noun} list returned a repeated cursor"
+                    )));
+                }
+                Some(next) => cursor = Some(next),
+            }
+        }
+    }
+
     /// Convert a library error into a `CloudError`, appending OAuth hints when relevant.
     pub fn convert_error(&self, err: clickhouse_cloud_api::Error) -> CloudError {
         self.convert_error_with_organization(err, None)
@@ -995,6 +1026,69 @@ mod tests {
         };
         let result = CloudClient::unwrap_response(response).unwrap();
         assert_eq!(result, vec!["hello".to_string()]);
+    }
+
+    fn cursor_page(
+        result: Vec<u8>,
+        next: Option<&str>,
+    ) -> Result<clickhouse_cloud_api::models::ApiResponse<Vec<u8>>> {
+        Ok(clickhouse_cloud_api::models::ApiResponse {
+            result: Some(result),
+            next_cursor: next.map(str::to_owned),
+            ..Default::default()
+        })
+    }
+
+    #[tokio::test]
+    async fn collect_cursor_pages_follows_opaque_cursors_until_absent() {
+        let mut requested = Vec::new();
+        let items = CloudClient::collect_cursor_pages("thing", |cursor| {
+            requested.push(cursor.clone());
+            let page = match cursor.as_deref() {
+                None => cursor_page(vec![1], Some("")),
+                Some("") => cursor_page(vec![], Some("last")),
+                Some("last") => cursor_page(vec![2, 3], None),
+                Some(other) => panic!("unexpected cursor {other}"),
+            };
+            async move { page }
+        })
+        .await
+        .unwrap();
+        assert_eq!(items, vec![1, 2, 3]);
+        assert_eq!(
+            requested,
+            vec![None, Some(String::new()), Some("last".to_owned())]
+        );
+    }
+
+    #[tokio::test]
+    async fn collect_cursor_pages_rejects_repeats_and_propagates_errors() {
+        let mut calls = 0;
+        let error = CloudClient::collect_cursor_pages("thing", |_| {
+            calls += 1;
+            async { cursor_page(vec![], Some("same")) }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "thing list returned a repeated cursor");
+        assert_eq!(calls, 2);
+
+        let error = CloudClient::collect_cursor_pages::<u8, _, _>("thing", |cursor| async move {
+            match cursor {
+                None => cursor_page(vec![1], Some("next")),
+                Some(_) => Err(CloudError::new("page two failed")),
+            }
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "page two failed");
+
+        let error = CloudClient::collect_cursor_pages::<u8, _, _>("thing", |_| async {
+            Ok(clickhouse_cloud_api::models::ApiResponse::default())
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.message, "Empty response from API");
     }
 
     #[test]

@@ -85,7 +85,7 @@ clickhousectl cloud key get <key-id>
 clickhousectl cloud key update <key-id> --state disabled
 ```
 
-Without `--all`, list returns one page. `--limit` is 1–250 and `--cursor` takes the opaque `nextCursor` unchanged. One-page JSON has a `result` array and optional metadata; only an absent `nextCursor` marks the last page (an empty string is still a token). `--all --json` combines pages into one array and emits no partial array on failure; it conflicts with `--cursor`. Name selectors search every page and reject ambiguity.
+Without `--all`, list returns one page. `--limit` is at least 1 and `--cursor` takes the opaque `nextCursor` unchanged. One-page JSON has a `result` array and optional metadata; only an absent `nextCursor` marks the last page (an empty string is still a token). `--all --json` combines pages into one array and emits no partial array on failure; it conflicts with `--cursor`. Name selectors search every page and reject ambiguity.
 
 Omitting expiry, role, or IP flags on update preserves that setting. `--clear-expiry`, `--clear-roles`, and `--clear-ip-allow` deliberately remove it and conflict with the corresponding set flag. Clearing the IP list denies all network access. After disabling/deleting a key, inspect dependent automation and Query API bindings; do not rotate keys automatically to bypass an administrator's restriction.
 

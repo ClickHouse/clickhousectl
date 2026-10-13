@@ -1725,15 +1725,17 @@ async fn invitation_delete(
 }
 
 impl CloudClient {
+    /// Every organization available to the caller, read across all pages.
     pub async fn list_organizations(
         &self,
     ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::Organization>> {
-        let response = self
-            .api()
-            .organization_get_list(None, None)
-            .await
-            .map_err(|error| self.convert_error(error))?;
-        Self::unwrap_response(response)
+        Self::collect_cursor_pages("organization", |cursor| async move {
+            self.api()
+                .organization_get_list(None, cursor.as_deref())
+                .await
+                .map_err(|error| self.convert_error(error))
+        })
+        .await
     }
 
     pub async fn get_organization(

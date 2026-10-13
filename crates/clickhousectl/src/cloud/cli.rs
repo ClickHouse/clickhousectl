@@ -20,7 +20,8 @@ pub(crate) use crate::cloud::query_api_endpoints::QueryApiEndpointArgs;
 pub(crate) use crate::cloud::saved_queries::SavedQueryArgs;
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::services::{
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, UpgradeWindowCommands,
+    PrivateEndpointCommands, QueryEndpointCommands, ReplicaAwareRoutingCommands, ServiceCommands,
+    UpgradeWindowCommands,
 };
 use crate::cloud::udfs::UdfArgs;
 use clap::{Args, Subcommand};
