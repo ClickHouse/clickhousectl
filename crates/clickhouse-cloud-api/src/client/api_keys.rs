@@ -5,7 +5,7 @@ use crate::models::*;
 impl Client {
     /// Get one page of keys.
     ///
-    /// `limit` accepts 1–250; omission uses the server default of 250. Pass the
+    /// `limit` must be at least 1; omission uses the server default of 250. Pass the
     /// response's `next_cursor` to fetch another page, until it is `None`.
     pub async fn openapi_key_get_list(
         &self,
