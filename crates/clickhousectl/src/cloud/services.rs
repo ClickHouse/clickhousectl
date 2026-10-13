@@ -2660,15 +2660,12 @@ fn build_query_endpoint_create_request(
     let mut seen = HashSet::new();
     open_api_keys.retain(|key| seen.insert(key.clone()));
 
+    // `allowedOrigins` is optional on both sides of the round trip, so an
+    // existing endpoint that reports none is written back without one rather
+    // than refused or given a default.
     let allowed_origins = match (&options.allowed_origins, existing) {
-        (Some(origins), _) => origins.clone(),
-        (None, Some(endpoint)) => endpoint.allowed_origins.clone().ok_or_else(|| {
-            CloudError::new(
-                "the query endpoint response is missing field 'allowedOrigins'; \
-                 pass --allowed-origins to explicitly replace it",
-            )
-            .at_stage(FailureStage::EndpointGet)
-        })?,
+        (Some(origins), _) => Some(origins.clone()),
+        (None, Some(endpoint)) => endpoint.allowed_origins.clone(),
         (None, None) => {
             return Err(CloudError::new(
                 "--allowed-origins is required when creating a new query endpoint; \
@@ -2683,7 +2680,7 @@ fn build_query_endpoint_create_request(
             .map(|role| parse_serde_enum(role, "role", QueryEndpointRole::VALUES))
             .collect::<Result<_, _>>()?,
         open_api_keys,
-        allowed_origins: Some(allowed_origins),
+        allowed_origins,
     })
 }
 
@@ -9267,7 +9264,7 @@ mod tests {
     }
 
     #[test]
-    fn build_query_endpoint_create_request_rejects_unknown_fields_unless_replaced() {
+    fn build_query_endpoint_create_request_rejects_unknown_keys_and_passes_absent_origins() {
         let existing = ServiceQueryAPIEndpoint::default();
         let mut options = QueryEndpointCreateOptions {
             roles: vec!["sql_console_read_only".into()],
@@ -9276,7 +9273,16 @@ mod tests {
         };
         assert!(build_query_endpoint_create_request(&options, Some(&existing)).is_err());
         options.replace_open_api_keys = true;
-        assert!(build_query_endpoint_create_request(&options, Some(&existing)).is_err());
+        // An existing endpoint that reports no `allowedOrigins` is written back
+        // without the field.
+        let request = build_query_endpoint_create_request(&options, Some(&existing)).unwrap();
+        assert_eq!(request.allowed_origins, None);
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("allowedOrigins")
+                .is_none()
+        );
         options.allowed_origins = Some("https://example.com".into());
         let request = build_query_endpoint_create_request(&options, Some(&existing)).unwrap();
         assert_eq!(request.open_api_keys, ["key-1"]);

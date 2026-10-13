@@ -2,7 +2,7 @@
 
 [All documentation](../README.md)
 
-`local udf` deploys [executable UDFs](https://clickhouse.com/docs/sql-reference/functions/udf#executable-user-defined-functions) to a local server, and `cloud udf` manages organization-scoped executable UDFs, versions, and service attachments in Cloud. Both read the same source directory: a `udf.json` definition in the Cloud API's field names next to the function's files. Cloud UDF operations are beta. Cloud reads support OAuth; Cloud writes require API key authentication.
+`local udf` deploys [executable UDFs](https://clickhouse.com/docs/sql-reference/functions/udf#executable-user-defined-functions) to a local server, and `cloud udf` manages organization-scoped executable UDFs, versions, and service attachments in Cloud. Both read the same source directory: a `udf.json` definition in the Cloud API's field names next to the function's files. Cloud reads support OAuth; Cloud writes require API key authentication.
 
 The examples below upload a definition file and a ZIP you built. To upload a scaffolded directory instead, see [Deploy a source directory](#deploy-a-source-directory).
 

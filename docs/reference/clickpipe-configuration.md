@@ -110,3 +110,11 @@ clickhousectl cloud clickpipe reverse-private-endpoint get <service-id> <endpoin
 AWS `PendingAcceptance` means the source account must accept the connection. Only use the endpoint after it is `Ready`. Kafka takes repeatable `--reverse-private-endpoint-id`; Postgres/MySQL use an endpoint DNS name as `--host`.
 
 Other types are `VPC_RESOURCE`, `MSK_MULTI_VPC`, and private-preview `GCP_PSC_SERVICE_ATTACHMENT`; help lists their required fields. Custom private DNS mappings use exact or leading-wildcard names. They are unsupported for MSK and require support enablement for AWS PrivateLink. Update replaces the entire custom DNS list, so repeat every mapping to retain, or deliberately use `--clear-custom-private-dns-mappings`.
+
+For `VPC_RESOURCE`, `--custom-private-dns-mapping NAME=TARGET_ID` routes a name to one resource configuration; `get` lists the valid IDs under `dnsTargets`, with provider DNS names under `privateDnsMappings`. A plain `NAME` uses the default target, and a target not yet listed is not served until it appears:
+
+```bash
+clickhousectl cloud clickpipe reverse-private-endpoint update <service-id> <endpoint-id> \
+  --custom-private-dns-mapping 'db.example.com=rcfg-097648d8068504966' \
+  --custom-private-dns-mapping '*.example.com'
+```
