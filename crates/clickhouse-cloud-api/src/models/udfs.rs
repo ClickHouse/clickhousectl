@@ -384,8 +384,6 @@ pub struct UdfCreateRequestV1 {
     pub runtime: UdfRuntime,
     #[serde(rename = "sandboxType", skip_serializing_if = "Option::is_none")]
     pub sandbox_type: Option<UdfSandboxType>,
-    #[serde(rename = "sandboxVersion", skip_serializing_if = "Option::is_none")]
-    pub sandbox_version: Option<UdfSandboxVersion>,
     #[serde(rename = "sendChunkHeader", skip_serializing_if = "Option::is_none")]
     pub send_chunk_header: Option<bool>,
     #[serde(rename = "type")]
@@ -447,8 +445,6 @@ pub struct UdfCreateRequestV2 {
     pub runtime: UdfRuntime,
     #[serde(rename = "sandboxType", skip_serializing_if = "Option::is_none")]
     pub sandbox_type: Option<UdfSandboxType>,
-    #[serde(rename = "sandboxVersion", skip_serializing_if = "Option::is_none")]
-    pub sandbox_version: Option<UdfSandboxVersion>,
     #[serde(rename = "sendChunkHeader", skip_serializing_if = "Option::is_none")]
     pub send_chunk_header: Option<bool>,
     #[serde(rename = "type")]
@@ -564,8 +560,6 @@ pub struct UdfVersionCreateRequestV1 {
     pub runtime: UdfRuntime,
     #[serde(rename = "sandboxType", skip_serializing_if = "Option::is_none")]
     pub sandbox_type: Option<UdfSandboxType>,
-    #[serde(rename = "sandboxVersion", skip_serializing_if = "Option::is_none")]
-    pub sandbox_version: Option<UdfSandboxVersion>,
     #[serde(rename = "sendChunkHeader", skip_serializing_if = "Option::is_none")]
     pub send_chunk_header: Option<bool>,
     #[serde(rename = "type")]
@@ -625,8 +619,6 @@ pub struct UdfVersionCreateRequestV2 {
     pub runtime: UdfRuntime,
     #[serde(rename = "sandboxType", skip_serializing_if = "Option::is_none")]
     pub sandbox_type: Option<UdfSandboxType>,
-    #[serde(rename = "sandboxVersion", skip_serializing_if = "Option::is_none")]
-    pub sandbox_version: Option<UdfSandboxVersion>,
     #[serde(rename = "sendChunkHeader", skip_serializing_if = "Option::is_none")]
     pub send_chunk_header: Option<bool>,
     #[serde(rename = "type")]
