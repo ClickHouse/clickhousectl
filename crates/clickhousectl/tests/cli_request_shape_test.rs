@@ -28743,7 +28743,10 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
         let mut command = cloud_runtime_error_command(dir.path(), &mock.uri(), mode);
         let token_dir = dir.path().join("home/.clickhouse");
         std::fs::create_dir_all(&token_dir).unwrap();
-        // An unknown auth host fails refresh locally, then clears stale tokens.
+        // An unknown auth host whose CLICKHOUSECTL_AUTH_URL/CLIENT_ID are unset
+        // fails refresh locally. With no API keys to fall back on, the
+        // actionable fail-fast error is surfaced (generic, exit 1) and the
+        // stale tokens are preserved rather than silently wiped.
         std::fs::write(
             token_dir.join("tokens.json"),
             serde_json::to_vec(&serde_json::json!({
@@ -28759,11 +28762,62 @@ async fn cloud_runtime_errors_keep_credential_notices_out_of_json() {
             .args(["service", "list", "--org-id", "org-1"])
             .output()
             .unwrap();
-        assert_eq!(output.status.code(), Some(4));
+        assert_eq!(output.status.code(), Some(1));
         assert!(output.stdout.is_empty());
-        assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
-        assert!(!token_dir.join("tokens.json").exists());
+        let error = cloud_runtime_error(&output);
+        assert_eq!(error["code"], "other");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap()
+                .contains("CLICKHOUSECTL_AUTH_URL")
+        );
+        assert!(token_dir.join("tokens.json").exists());
     }
+}
+
+// Credential precedence outranks a stale OAuth refresh failure: expired
+// custom-host tokens that cannot be refreshed must not block a command when
+// higher-precedence API keys are available (regression for #1082).
+#[tokio::test]
+async fn expired_custom_host_tokens_do_not_block_api_key_auth() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/services"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "result": [] })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let dir = tempfile::tempdir().unwrap();
+    // API keys supplied via env (EnvVars source) outrank OAuth tokens.
+    let mut command = cloud_runtime_error_command(dir.path(), &mock.uri(), "explicit");
+    let token_dir = dir.path().join("home/.clickhouse");
+    std::fs::create_dir_all(&token_dir).unwrap();
+    std::fs::write(
+        token_dir.join("tokens.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "access_token": "expired", "refresh_token": "refresh", "expires_at": 1,
+            "api_url": mock.uri()
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = command
+        .args(["service", "list", "--org-id", "org-1"])
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    // The command reached the API using the API keys instead of failing fast.
+    assert_eq!(mock.received_requests().await.unwrap().len(), 1);
+    // The unrefreshable OAuth tokens were left untouched.
+    assert!(token_dir.join("tokens.json").exists());
 }
 
 // A pipe with no reader before spawn makes failure deterministic, even if the

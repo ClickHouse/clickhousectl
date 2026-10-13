@@ -633,43 +633,63 @@ fn prompt_api_credentials() -> std::result::Result<(String, String), Box<dyn std
     Ok((api_key, api_secret))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct AuthConfig {
-    auth_url: &'static str,
-    client_id: &'static str,
+    auth_url: String,
+    client_id: String,
 }
 
-/// Known API host → auth configuration mappings.
-const KNOWN_CONFIGS: &[(&str, AuthConfig)] = &[
+/// Known API host → (auth URL, client id) mappings.
+///
+/// Any host not listed here requires `CLICKHOUSECTL_AUTH_URL` and
+/// `CLICKHOUSECTL_CLIENT_ID` to be set; there is no built-in fallback.
+const KNOWN_CONFIGS: &[(&str, &str, &str)] = &[
     (
         "api.clickhouse.cloud",
-        AuthConfig {
-            auth_url: "https://auth.clickhouse.cloud",
-            client_id: "9q6XAueAs47R4X5d1d6FbjbJqjsrA2ZJ",
-        },
+        "https://auth.clickhouse.cloud",
+        "9q6XAueAs47R4X5d1d6FbjbJqjsrA2ZJ",
     ),
     (
         "api.control-plane.clickhouse-staging.com",
-        AuthConfig {
-            auth_url: "https://auth.control-plane.clickhouse-staging.com",
-            client_id: "ZC8AupPshQt2UNO2hEDutnKitx4PhizY",
-        },
+        "https://auth.control-plane.clickhouse-staging.com",
+        "ZC8AupPshQt2UNO2hEDutnKitx4PhizY",
     ),
     (
         "api.control-plane.clickhouse-dev.com",
-        AuthConfig {
-            auth_url: "https://auth.control-plane.clickhouse-dev.com",
-            client_id: "bVVcrqNw1t5dya9WFzfnM7PSsAgmfzwY",
-        },
+        "https://auth.control-plane.clickhouse-dev.com",
+        "bVVcrqNw1t5dya9WFzfnM7PSsAgmfzwY",
     ),
 ];
 
-fn auth_config_for_url(api_url: &str) -> Option<&'static AuthConfig> {
+fn auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
     let parsed = url::Url::parse(api_url).ok()?;
     let host = parsed.host_str()?;
-    KNOWN_CONFIGS
+
+    if let Some(config) = KNOWN_CONFIGS
         .iter()
-        .find(|(known_host, _)| host == *known_host)
-        .map(|(_, config)| config)
+        .find(|(known_host, _, _)| host == *known_host)
+        .map(|(_, auth_url, client_id)| AuthConfig {
+            auth_url: (*auth_url).to_string(),
+            client_id: (*client_id).to_string(),
+        })
+    {
+        return Some(config);
+    }
+
+    // Unknown host: require both env vars, with no built-in fallback.
+    let env = |key: &str| std::env::var(key).ok().filter(|v| !v.is_empty());
+    match (
+        env("CLICKHOUSECTL_AUTH_URL"),
+        env("CLICKHOUSECTL_CLIENT_ID"),
+    ) {
+        (Some(auth_url), Some(client_id)) => Some(AuthConfig {
+            // Trim trailing slashes so joining `/oauth/...` can't produce a
+            // rejected double slash (common when copying an issuer URL).
+            auth_url: auth_url.trim_end_matches('/').to_string(),
+            client_id,
+        }),
+        _ => None,
+    }
 }
 
 /// Normalize a user-provided URL into the API base URL we store and use.
@@ -817,11 +837,12 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
     let api_url = normalize_api_url(api_url);
     let config = auth_config_for_url(&api_url).ok_or_else(|| {
         format!(
-            "Unknown API host in URL '{}'. Known hosts: {}",
+            "Unknown API host in URL '{}'. Known hosts: {}. \
+             For any other host, set CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID.",
             api_url,
             KNOWN_CONFIGS
                 .iter()
-                .map(|(h, _)| *h)
+                .map(|(h, _, _)| *h)
                 .collect::<Vec<_>>()
                 .join(", ")
         )
@@ -832,7 +853,7 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
     // Step 1: Request device code
     let form_body = format!(
         "client_id={}&scope={}&audience={}",
-        urlencoding::encode(config.client_id),
+        urlencoding::encode(&config.client_id),
         urlencoding::encode(SCOPE),
         urlencoding::encode(AUDIENCE),
     );
@@ -891,7 +912,7 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
             "grant_type={}&device_code={}&client_id={}",
             urlencoding::encode("urn:ietf:params:oauth:grant-type:device_code"),
             urlencoding::encode(&device_resp.device_code),
-            urlencoding::encode(config.client_id),
+            urlencoding::encode(&config.client_id),
         );
         let resp = client
             .post(format!("{}/oauth/token", config.auth_url))
@@ -940,15 +961,20 @@ pub async fn device_auth_login(api_url: &str) -> Result<TokenStore, Box<dyn std:
 pub async fn refresh_access_token(
     tokens: &TokenStore,
 ) -> Result<TokenStore, Box<dyn std::error::Error>> {
-    let config = auth_config_for_url(&tokens.api_url)
-        .ok_or_else(|| format!("Cannot refresh: unknown API host in '{}'", tokens.api_url))?;
+    let config = auth_config_for_url(&tokens.api_url).ok_or_else(|| {
+        format!(
+            "Cannot refresh: unknown API host in '{}'. \
+                 For a non-standard host, set CLICKHOUSECTL_AUTH_URL and CLICKHOUSECTL_CLIENT_ID.",
+            tokens.api_url
+        )
+    })?;
 
     let client = crate::http::client_builder().build()?;
 
     let form_body = format!(
         "grant_type={}&client_id={}&refresh_token={}",
         urlencoding::encode("refresh_token"),
-        urlencoding::encode(config.client_id),
+        urlencoding::encode(&config.client_id),
         urlencoding::encode(&tokens.refresh_token),
     );
     let resp = client
@@ -1002,8 +1028,17 @@ pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::E
         Ok(new_tokens) => {
             save_tokens(&new_tokens)?;
         }
-        Err(_) => {
-            // Refresh failed — clear stale tokens so we fall back to API keys
+        Err(err) => {
+            // If the auth config for this host can't even be resolved (e.g. a
+            // custom host whose CLICKHOUSECTL_AUTH_URL / CLICKHOUSECTL_CLIENT_ID
+            // are unset), the refresh token is still valid: don't destroy it and
+            // don't silently fall back to another host. Surface the actionable,
+            // fail-fast error instead.
+            if auth_config_for_url(&tokens.api_url).is_none() {
+                return Err(err);
+            }
+            // Genuine refresh rejection (revoked/expired): clear stale tokens so
+            // we fall back to API keys.
             clear_tokens();
             if !json {
                 eprint_line("Warning: OAuth token refresh failed. Tokens cleared.");
@@ -1383,7 +1418,8 @@ mod tests {
         assert_ne!(prod.client_id, dev.client_id);
         assert_ne!(staging.client_id, dev.client_id);
 
-        // Must not match on substring — these are hostile URLs that embed a known host
+        // Must not match on substring — these are hostile URLs that embed a known
+        // host. With no env vars set they fall through to the unknown-host branch.
         assert!(auth_config_for_url("https://api.clickhouse.cloud.evil.com/v1").is_none());
         assert!(auth_config_for_url("https://evil-api.clickhouse.cloud.attacker.com/v1").is_none());
         assert!(auth_config_for_url("https://not-api.clickhouse-staging.com.bad.com/v1").is_none());
