@@ -15,11 +15,25 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("org usage", &[&op::USAGE_COST_GET]),
     Permission::api("org quota list", &[&op::ORGANIZATION_QUOTAS_GET_LIST]),
     Permission::api("org quota get", &[&op::ORGANIZATION_QUOTA_GET]),
+    Permission::api(
+        "org notification-types",
+        &[&op::NOTIFICATION_TYPES_GET_LIST],
+    ),
     Permission::api("org byoc get", &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_GET])
         .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
     Permission::api(
         "org byoc progress",
         &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_PROGRESS_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc private-endpoint-config",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_PRIVATE_ENDPOINT_CONFIG_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
+    Permission::api(
+        "org byoc tags",
+        &[&op::ORGANIZATION_BYOC_INFRASTRUCTURE_TAGS_GET],
     )
     .when(&[Conditional::flag("name", &[&op::ORGANIZATION_GET])]),
     Permission::api(
@@ -78,9 +92,10 @@ use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::{
     ByocAvailabilityZoneSuffix, ByocInfrastructureDetails, ByocInfrastructurePatchRequest,
     ByocInfrastructurePostRequest, ByocInfrastructurePostRequestRegionid,
-    ByocInfrastructureProgress, ByocInfrastructureTags, ByocInfrastructureValidatePostRequest,
+    ByocInfrastructurePrivateEndpointConfig, ByocInfrastructureProgress, ByocInfrastructureTags,
+    ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
     ByocInfrastructureValidatePostRequestRegionid, ByocInfrastructureValidation,
-    InvitationPostRequest, MemberPatchRequest, OrganizationPatchPrivateEndpoint,
+    InvitationPostRequest, MemberPatchRequest, NotificationType, OrganizationPatchPrivateEndpoint,
     OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
     OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, RBACPolicyCreateRequest,
     RBACPolicyCreateRequestAllowdeny, RBACPolicyTagsRolev2, RoleCreateRequest, RoleUpdateRequest,
@@ -103,6 +118,9 @@ pub enum OrgCommands {
 
     /// View active credit balances (Beta)
     Balance,
+
+    /// List notification types (Beta)
+    NotificationTypes,
 
     /// Manage BYOC infrastructure
     Byoc {
@@ -186,6 +204,7 @@ impl OrgCommands {
             OrgCommands::Get => false,
             OrgCommands::Quota { .. } => false,
             OrgCommands::Balance => false,
+            OrgCommands::NotificationTypes => false,
             OrgCommands::Byoc { command } => command.is_write(),
             OrgCommands::Role { command } => command.is_write(),
             OrgCommands::Prometheus { .. } => false,
@@ -271,6 +290,20 @@ pub enum ByocCommands {
         byoc_id: NameSelector,
     },
 
+    /// Get BYOC private endpoint configuration (Beta)
+    PrivateEndpointConfig {
+        /// BYOC infrastructure ID
+        #[command(flatten)]
+        byoc_id: NameSelector,
+    },
+
+    /// Get BYOC infrastructure tags (Beta)
+    Tags {
+        /// BYOC infrastructure ID
+        #[command(flatten)]
+        byoc_id: NameSelector,
+    },
+
     /// Validate cloud account readiness for BYOC (Beta)
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -301,14 +334,18 @@ CONTEXT FOR AGENTS:
     },
 
     /// Update BYOC infrastructure
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Only the flags you pass change; `--tag` replaces the whole tag set (see `cloud org byoc tags`).
+  `--enable-private-link false` is rejected while any service has active private endpoints.
+  The update is validated as a whole; rerunning a partly applied update is safe and converges.")]
     Update {
         /// BYOC infrastructure ID
         #[command(flatten)]
         byoc_id: NameSelector,
 
-        /// New human-readable infrastructure name
-        #[arg(long = "new-name", alias = "display-name")]
-        display_name: String,
+        #[command(flatten)]
+        changes: ByocUpdateArgs,
     },
 
     /// Delete BYOC infrastructure
@@ -317,6 +354,35 @@ CONTEXT FOR AGENTS:
         #[command(flatten)]
         byoc_id: NameSelector,
     },
+}
+
+/// The changes `cloud org byoc update` can send; at least one is required.
+#[derive(Args, Debug, Clone, PartialEq, Eq)]
+#[group(id = "byoc_change", required = true, multiple = true)]
+pub struct ByocUpdateArgs {
+    /// New human-readable infrastructure name
+    #[arg(long = "new-name", alias = "display-name")]
+    display_name: Option<String>,
+
+    /// Turn private link connectivity on or off
+    #[arg(long, value_name = "BOOL")]
+    enable_private_link: Option<bool>,
+
+    /// Turn the private (internal) load balancer on or off
+    #[arg(long, value_name = "BOOL")]
+    enable_private_load_balancer: Option<bool>,
+
+    /// Turn the public (internet-facing) load balancer on or off
+    #[arg(long, value_name = "BOOL")]
+    enable_public_load_balancer: Option<bool>,
+
+    /// GCP BYO-VPC only: PSC NAT subnet name; only with `--enable-private-link true`
+    #[arg(long, value_name = "NAME", requires = "enable_private_link")]
+    gcp_psc_subnet_id: Option<String>,
+
+    /// Replacement tag for the infrastructure's cloud resources (repeatable)
+    #[arg(long = "tag", value_name = "KEY=VALUE")]
+    tags: Vec<String>,
 }
 
 /// Infrastructure flags shared by `cloud org byoc create` and `validate`.
@@ -383,6 +449,8 @@ impl ByocCommands {
         match self {
             ByocCommands::Get { .. } => false,
             ByocCommands::Progress { .. } => false,
+            ByocCommands::PrivateEndpointConfig { .. } => false,
+            ByocCommands::Tags { .. } => false,
             // A preflight that creates nothing, but the endpoint requires the
             // organization manage scope, which OAuth (read-only) never has.
             ByocCommands::Validate { .. } => true,
@@ -508,6 +576,7 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         }
         OrgCommands::Quota { command } => run_quota(client, command, json).await,
         OrgCommands::Balance => org_balance(client, json).await,
+        OrgCommands::NotificationTypes => org_notification_types(client, json).await,
         OrgCommands::Byoc { command } => run_byoc(client, command, json).await,
         OrgCommands::Role { command } => run_role(client, command, json).await,
         OrgCommands::Update {
@@ -596,6 +665,22 @@ async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> Cl
             )
             .await
         }
+        ByocCommands::PrivateEndpointConfig { byoc_id } => {
+            byoc_private_endpoint_config(
+                client,
+                &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                json,
+            )
+            .await
+        }
+        ByocCommands::Tags { byoc_id } => {
+            byoc_tags(
+                client,
+                &byoc_id.resolve(client, NamedResource::Byoc).await?,
+                json,
+            )
+            .await
+        }
         ByocCommands::Validate { infrastructure } => {
             let request = build_byoc_validate_request(&infrastructure)?;
             byoc_validate(client, request, json).await
@@ -607,11 +692,8 @@ async fn run_byoc(client: &CloudClient, command: ByocCommands, json: bool) -> Cl
             let request = build_byoc_create_request(&infrastructure, display_name.as_deref())?;
             byoc_create(client, request, json).await
         }
-        ByocCommands::Update {
-            byoc_id,
-            display_name,
-        } => {
-            let request = build_byoc_update_request(&display_name);
+        ByocCommands::Update { byoc_id, changes } => {
+            let request = build_byoc_update_request(&changes)?;
             byoc_update(
                 client,
                 &byoc_id.resolve(client, NamedResource::Byoc).await?,
@@ -1004,15 +1086,17 @@ fn build_byoc_validate_request(
     })
 }
 
-fn build_byoc_update_request(display_name: &str) -> ByocInfrastructurePatchRequest {
-    ByocInfrastructurePatchRequest {
-        display_name: Some(display_name.to_string()),
-        enable_private_link: None,
-        enable_private_load_balancer: None,
-        enable_public_load_balancer: None,
-        gcp_psc_subnet_id: None,
-        tags: None,
-    }
+fn build_byoc_update_request(
+    changes: &ByocUpdateArgs,
+) -> CloudResult<ByocInfrastructurePatchRequest> {
+    Ok(ByocInfrastructurePatchRequest {
+        display_name: changes.display_name.clone(),
+        enable_private_link: changes.enable_private_link,
+        enable_private_load_balancer: changes.enable_private_load_balancer,
+        enable_public_load_balancer: changes.enable_public_load_balancer,
+        gcp_psc_subnet_id: changes.gcp_psc_subnet_id.clone(),
+        tags: parse_byoc_tags(&changes.tags)?,
+    })
 }
 
 fn invalid_role_request(source: &str, message: impl std::fmt::Display) -> CloudError {
@@ -1183,6 +1267,55 @@ async fn quota_get(client: &CloudClient, quota_code: &str, json: bool) -> CloudR
     Ok(())
 }
 
+async fn org_notification_types(client: &CloudClient, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let types = client.list_notification_types(&org_id).await?;
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&types)?);
+    } else {
+        if types.is_empty() {
+            println!("No notification types found");
+            return Ok(());
+        }
+        println!("{}", notification_types_table(types));
+    }
+    Ok(())
+}
+
+fn notification_types_table(types: Vec<NotificationType>) -> String {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Name")]
+        name: String,
+        #[tabled(rename = "Title")]
+        title: String,
+        #[tabled(rename = "Category")]
+        category: String,
+        #[tabled(rename = "Severity")]
+        severity: String,
+        #[tabled(rename = "Resource Type")]
+        resource_type: String,
+        #[tabled(rename = "Configurable")]
+        configurable: String,
+        #[tabled(rename = "Available")]
+        available: String,
+    }
+    let rows: Vec<Row> = types
+        .into_iter()
+        .map(|kind| Row {
+            name: or_absent(kind.name.as_deref()),
+            title: or_absent(kind.title.as_deref()),
+            category: or_absent(kind.category.as_deref()),
+            severity: or_absent(kind.severity.as_ref()),
+            resource_type: or_absent(kind.resource_type.as_deref()),
+            configurable: or_absent(kind.is_configurable),
+            available: or_absent(kind.is_available),
+        })
+        .collect();
+    Table::new(rows).with(Style::markdown()).to_string()
+}
+
 async fn org_balance(client: &CloudClient, json: bool) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
     let credit_balances = client.get_credit_balances(&org_id).await?;
@@ -1262,6 +1395,36 @@ async fn byoc_get(client: &CloudClient, byoc_id: &str, json: bool) -> CloudResul
         println!("{}", serde_json::to_string_pretty(&infrastructure)?);
     } else {
         print_human(&infrastructure)?;
+    }
+    Ok(())
+}
+
+async fn byoc_private_endpoint_config(
+    client: &CloudClient,
+    byoc_id: &str,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let config = client
+        .get_byoc_private_endpoint_config(&org_id, byoc_id)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&config)?);
+    } else {
+        print_human(&config)?;
+    }
+    Ok(())
+}
+
+async fn byoc_tags(client: &CloudClient, byoc_id: &str, json: bool) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let tags = client
+        .get_byoc_infrastructure_tags(&org_id, byoc_id)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&tags)?);
+    } else {
+        print_human(&tags)?;
     }
     Ok(())
 }
@@ -1762,6 +1925,18 @@ impl CloudClient {
         Self::unwrap_response(response)
     }
 
+    pub async fn list_notification_types(
+        &self,
+        org_id: &str,
+    ) -> crate::cloud::client::Result<Vec<NotificationType>> {
+        let response = self
+            .api()
+            .notification_types_get_list(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
     pub async fn get_credit_balances(
         &self,
         org_id: &str,
@@ -1821,6 +1996,32 @@ impl CloudClient {
         let response = self
             .api()
             .organization_byoc_infrastructure_progress_get(org_id, byoc_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_byoc_private_endpoint_config(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+    ) -> crate::cloud::client::Result<ByocInfrastructurePrivateEndpointConfig> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_private_endpoint_config_get(org_id, byoc_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        Self::unwrap_response(response)
+    }
+
+    pub async fn get_byoc_infrastructure_tags(
+        &self,
+        org_id: &str,
+        byoc_id: &str,
+    ) -> crate::cloud::client::Result<ByocInfrastructureTagsResponse> {
+        let response = self
+            .api()
+            .organization_byoc_infrastructure_tags_get(org_id, byoc_id)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
@@ -2607,6 +2808,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_org_notification_types_command() {
+        let CloudCommands::Org { command } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "notification-types",
+            "--org-id",
+            "org-1",
+        ]) else {
+            panic!("expected org command");
+        };
+        let OrgCommands::NotificationTypes = command else {
+            panic!("expected org notification-types command");
+        };
+    }
+
+    #[test]
     fn parses_org_balance_command() {
         let CloudCommands::Org { command } = parse_cloud_command(&[
             "clickhousectl",
@@ -2681,6 +2899,10 @@ mod tests {
             false,
         );
         assert_write(&["clickhousectl", "cloud", "org", "balance"], false);
+        assert_write(
+            &["clickhousectl", "cloud", "org", "notification-types"],
+            false,
+        );
         assert_write(&["clickhousectl", "cloud", "org", "prometheus"], false);
         assert_write(
             &["clickhousectl", "cloud", "org", "prometheus", "discovery"],
@@ -3030,10 +3252,7 @@ mod tests {
         );
         assert_eq!(display_name.as_deref(), Some("production"));
 
-        let ByocCommands::Update {
-            byoc_id,
-            display_name,
-        } = parse_byoc_command(&[
+        let ByocCommands::Update { byoc_id, changes } = parse_byoc_command(&[
             "clickhousectl",
             "cloud",
             "org",
@@ -3042,12 +3261,13 @@ mod tests {
             "byoc-1",
             "--display-name",
             "renamed",
-        ])
-        else {
+        ]) else {
             panic!("expected BYOC update");
         };
         assert_eq!(byoc_id.id.as_deref(), Some("byoc-1"));
-        assert_eq!(display_name, "renamed");
+        assert_eq!(changes.display_name.as_deref(), Some("renamed"));
+        assert_eq!(changes.enable_private_link, None);
+        assert!(changes.tags.is_empty());
 
         assert_write(
             &[
@@ -3066,7 +3286,7 @@ mod tests {
 
     #[test]
     fn byoc_get_and_progress_are_reads_selected_by_id_or_name() {
-        for subcommand in ["get", "progress"] {
+        for subcommand in ["get", "progress", "private-endpoint-config", "tags"] {
             let command = parse_byoc_command(&[
                 "clickhousectl",
                 "cloud",
@@ -3076,7 +3296,10 @@ mod tests {
                 "byoc-1",
             ]);
             let byoc_id = match command {
-                ByocCommands::Get { byoc_id } | ByocCommands::Progress { byoc_id } => byoc_id,
+                ByocCommands::Get { byoc_id }
+                | ByocCommands::Progress { byoc_id }
+                | ByocCommands::PrivateEndpointConfig { byoc_id }
+                | ByocCommands::Tags { byoc_id } => byoc_id,
                 _ => panic!("expected BYOC {subcommand}"),
             };
             assert_eq!(byoc_id.id.as_deref(), Some("byoc-1"));
@@ -3101,7 +3324,10 @@ mod tests {
                 "--name",
                 "production",
             ]);
-            let (ByocCommands::Get { byoc_id } | ByocCommands::Progress { byoc_id }) = command
+            let (ByocCommands::Get { byoc_id }
+            | ByocCommands::Progress { byoc_id }
+            | ByocCommands::PrivateEndpointConfig { byoc_id }
+            | ByocCommands::Tags { byoc_id }) = command
             else {
                 panic!("expected BYOC {subcommand}");
             };
@@ -3494,11 +3720,195 @@ mod tests {
         assert!(build_byoc_create_request(&unknown_zone, None).is_err());
         assert!(build_byoc_validate_request(&unknown_zone).is_err());
 
-        let update = build_byoc_update_request("renamed");
+        let update = build_byoc_update_request(&ByocUpdateArgs {
+            display_name: Some("renamed".into()),
+            ..minimal_update_args()
+        })
+        .unwrap();
         assert_eq!(update.display_name.as_deref(), Some("renamed"));
         assert_eq!(
             serde_json::to_value(update).unwrap(),
             serde_json::json!({"displayName": "renamed"})
+        );
+    }
+
+    fn minimal_update_args() -> ByocUpdateArgs {
+        ByocUpdateArgs {
+            display_name: None,
+            enable_private_link: None,
+            enable_private_load_balancer: None,
+            enable_public_load_balancer: None,
+            gcp_psc_subnet_id: None,
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn build_byoc_update_request_minimal_sends_only_the_given_field() {
+        let request = build_byoc_update_request(&ByocUpdateArgs {
+            enable_public_load_balancer: Some(false),
+            ..minimal_update_args()
+        })
+        .unwrap();
+        assert_eq!(request.enable_public_load_balancer, Some(false));
+        assert_eq!(request.display_name, None);
+        assert_eq!(request.enable_private_link, None);
+        assert_eq!(request.enable_private_load_balancer, None);
+        assert_eq!(request.gcp_psc_subnet_id, None);
+        assert_eq!(request.tags, None);
+    }
+
+    #[test]
+    fn build_byoc_update_request_maximal_maps_every_flag() {
+        let request = build_byoc_update_request(&ByocUpdateArgs {
+            display_name: Some("renamed".into()),
+            enable_private_link: Some(true),
+            enable_private_load_balancer: Some(true),
+            enable_public_load_balancer: Some(false),
+            gcp_psc_subnet_id: Some("psc-nat".into()),
+            tags: vec!["team=data".into(), "note=a=b".into(), "empty=".into()],
+        })
+        .unwrap();
+        assert_eq!(request.display_name.as_deref(), Some("renamed"));
+        assert_eq!(request.enable_private_link, Some(true));
+        assert_eq!(request.enable_private_load_balancer, Some(true));
+        assert_eq!(request.enable_public_load_balancer, Some(false));
+        assert_eq!(request.gcp_psc_subnet_id.as_deref(), Some("psc-nat"));
+        assert_eq!(request.tags, Some(expected_tags()));
+    }
+
+    #[test]
+    fn build_byoc_update_request_rejects_bad_tags_as_usage_errors() {
+        let error = build_byoc_update_request(&ByocUpdateArgs {
+            tags: vec!["team=a".into(), "team=b".into()],
+            ..minimal_update_args()
+        })
+        .unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+    }
+
+    #[test]
+    fn parses_byoc_update_change_flags() {
+        let ByocCommands::Update { byoc_id, changes } = parse_byoc_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "update",
+            "--name",
+            "production",
+            "--enable-private-link",
+            "true",
+            "--gcp-psc-subnet-id",
+            "psc-nat",
+            "--enable-private-load-balancer",
+            "false",
+            "--enable-public-load-balancer",
+            "true",
+            "--tag",
+            "team=data",
+            "--tag",
+            "env=prod",
+        ]) else {
+            panic!("expected BYOC update");
+        };
+        assert_eq!(byoc_id.name.as_deref(), Some("production"));
+        assert_eq!(
+            changes,
+            ByocUpdateArgs {
+                display_name: None,
+                enable_private_link: Some(true),
+                enable_private_load_balancer: Some(false),
+                enable_public_load_balancer: Some(true),
+                gcp_psc_subnet_id: Some("psc-nat".into()),
+                tags: vec!["team=data".into(), "env=prod".into()],
+            }
+        );
+        assert_write(
+            &[
+                "clickhousectl",
+                "cloud",
+                "org",
+                "byoc",
+                "update",
+                "byoc-1",
+                "--enable-private-link",
+                "false",
+            ],
+            true,
+        );
+    }
+
+    #[test]
+    fn byoc_update_requires_a_change_and_psc_subnet_requires_private_link() {
+        let error =
+            Cli::try_parse_from(["clickhousectl", "cloud", "org", "byoc", "update", "byoc-1"])
+                .err()
+                .expect("a change is required");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "update",
+            "byoc-1",
+            "--gcp-psc-subnet-id",
+            "psc-nat",
+        ])
+        .err()
+        .expect("--gcp-psc-subnet-id requires --enable-private-link");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "org",
+            "byoc",
+            "update",
+            "byoc-1",
+            "--enable-private-link",
+            "yes",
+        ])
+        .err()
+        .expect("booleans are true or false");
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidValue);
+    }
+
+    #[test]
+    fn notification_types_table_renders_absent_fields() {
+        let table = notification_types_table(vec![
+            serde_json::from_value(serde_json::json!({
+                "name": "billing.credit_low",
+                "title": "Credits running low",
+                "category": "billing",
+                "severity": "warning",
+                "resourceType": "organization",
+                "isConfigurable": true,
+                "isAvailable": false
+            }))
+            .unwrap(),
+            NotificationType::default(),
+        ]);
+        let lines: Vec<&str> = table.lines().collect();
+        assert_eq!(lines.len(), 4, "{table}");
+        for value in ["billing.credit_low", "warning", "organization", "false"] {
+            assert!(lines[2].contains(value), "{value}: {table}");
+        }
+        assert_eq!(
+            lines[3]
+                .split('|')
+                .map(str::trim)
+                .filter(|cell| !cell.is_empty())
+                .collect::<Vec<_>>(),
+            vec![ABSENT; 7]
         );
     }
 

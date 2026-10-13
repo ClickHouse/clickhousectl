@@ -24288,6 +24288,264 @@ async fn byoc_create_rejects_duplicate_tags_before_any_request() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+fn invoke_org_with_oauth(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url, "--json", "org"];
+    args.extend(cli_args);
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn byoc_private_endpoint_config_and_tags_are_oauth_reads_with_exact_paths() {
+    let mock = MockServer::start().await;
+    let item = "/v1/organizations/org-1/byocInfrastructure/byoc-1";
+    let config = serde_json::json!({
+        "endpointName": "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+        "privateDnsHostname": "byoc-1.private.example.com"
+    });
+    let tags = serde_json::json!({"tags": {"team": "data", "env": "prod"}});
+    Mock::given(method("GET"))
+        .and(path(format!("{item}/privateEndpointConfig")))
+        .respond_with(byoc_envelope(config.clone(), "stub-byoc-pe-config"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{item}/tags")))
+        .respond_with(byoc_envelope(tags.clone(), "stub-byoc-tags"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    for (subcommand, expected) in [("private-endpoint-config", &config), ("tags", &tags)] {
+        let output =
+            invoke_org_with_oauth(&mock, &["byoc", subcommand, "byoc-1", "--org-id", "org-1"]);
+        assert_success(&output);
+        assert_eq!(
+            &serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            expected
+        );
+    }
+
+    let config_human = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "private-endpoint-config",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&config_human);
+    let stdout = String::from_utf8_lossy(&config_human.stdout);
+    assert!(stdout.contains("byoc-1.private.example.com"), "{stdout}");
+
+    let tags_human = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "byoc", "tags", "byoc-1", "--org-id", "org-1"],
+    );
+    assert_success(&tags_human);
+    let stdout = String::from_utf8_lossy(&tags_human.stdout);
+    for value in ["team", "data", "env", "prod"] {
+        assert!(stdout.contains(value), "{value}: {stdout}");
+    }
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in requests {
+        assert_eq!(request.method.as_str(), "GET");
+        assert!(request.body.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn byoc_private_endpoint_config_and_tags_tolerate_sparse_results() {
+    let mock = MockServer::start().await;
+    let item = "/v1/organizations/org-1/byocInfrastructure/byoc-1";
+    for suffix in ["privateEndpointConfig", "tags"] {
+        Mock::given(method("GET"))
+            .and(path(format!("{item}/{suffix}")))
+            .respond_with(byoc_envelope(serde_json::json!({}), "stub-sparse"))
+            .expect(1)
+            .mount(&mock)
+            .await;
+    }
+    for subcommand in ["private-endpoint-config", "tags"] {
+        let output = invoke_cli_with_cloud_credentials_human(
+            &mock,
+            &["org", "byoc", subcommand, "byoc-1", "--org-id", "org-1"],
+        );
+        assert_success(&output);
+    }
+}
+
+#[tokio::test]
+async fn byoc_update_sends_connectivity_and_tag_flags() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-1"))
+        .and(body_json(serde_json::json!({
+            "enablePrivateLink": true,
+            "gcpPscSubnetId": "psc-nat",
+            "enablePrivateLoadBalancer": false,
+            "enablePublicLoadBalancer": true,
+            "tags": {"team": "data", "note": "a=b"}
+        })))
+        .respond_with(byoc_envelope(
+            serde_json::json!({"id": "byoc-1", "state": "infra-ready"}),
+            "stub-byoc-update-connectivity",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "update",
+            "byoc-1",
+            "--enable-private-link",
+            "true",
+            "--gcp-psc-subnet-id",
+            "psc-nat",
+            "--enable-private-load-balancer",
+            "false",
+            "--enable-public-load-balancer",
+            "true",
+            "--tag",
+            "team=data",
+            "--tag",
+            "note=a=b",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({"id": "byoc-1", "state": "infra-ready"})
+    );
+}
+
+#[tokio::test]
+async fn byoc_update_rejects_missing_changes_and_bad_tags_before_any_request() {
+    let mock = MockServer::start().await;
+    for args in [
+        vec!["org", "byoc", "update", "byoc-1", "--org-id", "org-1"],
+        vec![
+            "org", "byoc", "update", "byoc-1", "--tag", "env=prod", "--tag", "env=dev", "--org-id",
+            "org-1",
+        ],
+    ] {
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn org_notification_types_is_an_oauth_read_preserving_json() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([
+        {
+            "name": "billing.credit_low",
+            "title": "Credits running low",
+            "description": "Remaining credits fell below the threshold.",
+            "category": "billing",
+            "severity": "warning",
+            "resourceType": "organization",
+            "isConfigurable": true,
+            "isAvailable": false
+        },
+        {"name": "future.type", "severity": "emergency"}
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(byoc_envelope(result.clone(), "stub-notification-types"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_org_with_oauth(&mock, &["notification-types", "--org-id", "org-1"]);
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+}
+
+#[tokio::test]
+async fn org_notification_types_human_output_lists_rows_and_handles_empty() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .respond_with(byoc_envelope(
+            serde_json::json!([
+                {
+                    "name": "billing.credit_low",
+                    "title": "Credits running low",
+                    "category": "billing",
+                    "severity": "critical",
+                    "resourceType": "organization",
+                    "isConfigurable": false,
+                    "isAvailable": true
+                },
+                {}
+            ]),
+            "stub-notification-types",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "notification-types", "--org-id", "org-1"],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for value in [
+        "billing.credit_low",
+        "Credits running low",
+        "critical",
+        "organization",
+    ] {
+        assert!(stdout.contains(value), "{value}: {stdout}");
+    }
+
+    let empty = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .respond_with(byoc_envelope(serde_json::json!([]), "stub-empty"))
+        .expect(1)
+        .mount(&empty)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &empty,
+        &["org", "notification-types", "--org-id", "org-1"],
+    );
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "No notification types found\n"
+    );
+}
+
 #[tokio::test]
 async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
     let mock = MockServer::start().await;
