@@ -2642,10 +2642,9 @@ pub struct ClickPipeMutateDestination {
     // The spec describes `columns`, `managedTable`, `table`, and
     // `tableDefinition` as "Required field for all pipe types except database
     // pipes (Postgres, MySQL, BigQuery)" — all four must be omitted entirely
-    // for database pipes. Modeled with skip-when-empty / Option so callers can
-    // build a single destination type and database pipes serialize cleanly.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub columns: Vec<ClickPipeDestinationColumn>,
+    // for database pipes, so none of them is in the schema's `required[]`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub columns: Option<Vec<ClickPipeDestinationColumn>>,
     pub database: String,
     #[serde(rename = "managedTable", skip_serializing_if = "Option::is_none")]
     pub managed_table: Option<bool>,
@@ -3547,10 +3546,8 @@ impl std::fmt::Display for ClickPipePostPubSubSource {
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ClickPipePostRequest {
     pub destination: ClickPipeMutateDestination,
-    // Empty arrays rejected by some API paths and never useful on create —
-    // skip when empty. Non-Option to match the spec description heuristic.
-    #[serde(rename = "fieldMappings", skip_serializing_if = "Vec::is_empty")]
-    pub field_mappings: Vec<ClickPipeFieldMapping>,
+    #[serde(rename = "fieldMappings", skip_serializing_if = "Option::is_none")]
+    pub field_mappings: Option<Vec<ClickPipeFieldMapping>>,
     pub name: String,
     // scaling block default-serializes as {replicas: 0, ...} which the API
     // rejects ("replicas: Not between 1 and 40"). Modeled as Option so the
@@ -3562,10 +3559,8 @@ pub struct ClickPipePostRequest {
     pub settings: Option<ClickPipeSettings>,
     pub source: ClickPipePostSource,
     /// Create stopped and start ingestion later; unsupported for database ClickPipes.
-    // The description heuristic requires bool. Omit false to preserve existing
-    // create requests, including database sources that do not support this flag.
-    #[serde(rename = "startPaused", skip_serializing_if = "std::ops::Not::not")]
-    pub start_paused: bool,
+    #[serde(rename = "startPaused", skip_serializing_if = "Option::is_none")]
+    pub start_paused: Option<bool>,
 }
 
 /// `ClickPipePostSource` from the ClickHouse Cloud API.

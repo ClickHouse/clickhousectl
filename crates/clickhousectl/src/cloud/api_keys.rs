@@ -334,12 +334,14 @@ fn build_api_key_create_request(options: &KeyCreateOptions) -> CloudResult<ApiKe
             .as_deref()
             .map(parse_expire_at)
             .transpose()?,
-        state: match options.state.as_deref() {
+        // The spec makes `state`, `assignedRoleIds` and `ipAccessList` optional;
+        // keep sending all three so the create request is unchanged.
+        state: Some(match options.state.as_deref() {
             Some(value) => parse_api_key_state_post(value)?,
             None => ApiKeyPostRequestState::default(),
-        },
-        assigned_role_ids: parse_uuid_list(&options.role_ids, "role_id")?,
-        ip_access_list: parse_ip_access_entries(&options.ip_allow)?.unwrap_or_default(),
+        }),
+        assigned_role_ids: Some(parse_uuid_list(&options.role_ids, "role_id")?),
+        ip_access_list: Some(parse_ip_access_entries(&options.ip_allow)?.unwrap_or_default()),
         hash_data: parse_api_key_hash_data(
             options.hash_key_id.as_deref(),
             options.hash_key_id_suffix.as_deref(),
@@ -535,7 +537,10 @@ async fn key_create(
 ) -> CloudResult<()> {
     // Validate before organization resolution so malformed inputs make no network call.
     let request = build_api_key_create_request(&options)?;
-    let deny_all = request.ip_access_list.is_empty();
+    let deny_all = request
+        .ip_access_list
+        .as_deref()
+        .is_none_or(<[_]>::is_empty);
     let org_id = resolve_org_id(client).await?;
     let response = client.create_api_key(&org_id, &request).await?;
 
@@ -1404,11 +1409,16 @@ mod tests {
         })
         .unwrap();
         assert_eq!(create.name, "ci-key");
-        assert!(create.assigned_role_ids.is_empty());
+        assert_eq!(create.assigned_role_ids, Some(vec![]));
         assert!(create.expire_at.is_none());
         assert!(create.hash_data.is_none());
-        assert!(create.ip_access_list.is_empty());
-        assert_eq!(create.state, ApiKeyPostRequestState::Enabled);
+        assert_eq!(create.ip_access_list, Some(vec![]));
+        assert_eq!(create.state, Some(ApiKeyPostRequestState::Enabled));
+        // The spec no longer requires these three; the wire request still carries them.
+        let wire = serde_json::to_value(&create).unwrap();
+        assert_eq!(wire["assignedRoleIds"], serde_json::json!([]));
+        assert_eq!(wire["ipAccessList"], serde_json::json!([]));
+        assert_eq!(wire["state"], "enabled");
         #[cfg(feature = "deprecated-fields")]
         assert!(create.roles.is_none());
 
@@ -1442,13 +1452,14 @@ mod tests {
                 .unwrap()
                 .with_timezone(&chrono::Utc);
         assert_eq!(create.name, "ci-key");
-        assert_eq!(create.assigned_role_ids, vec![expected_role_id]);
+        assert_eq!(create.assigned_role_ids, Some(vec![expected_role_id]));
         assert_eq!(create.expire_at, Some(expected_create_expiration));
-        assert_eq!(create.state, ApiKeyPostRequestState::Disabled);
-        assert_eq!(create.ip_access_list.len(), 1);
-        assert_eq!(create.ip_access_list[0].source, "10.0.0.0/8");
+        assert_eq!(create.state, Some(ApiKeyPostRequestState::Disabled));
+        let create_ip_access_list = create.ip_access_list.as_deref().expect("ip access list");
+        assert_eq!(create_ip_access_list.len(), 1);
+        assert_eq!(create_ip_access_list[0].source, "10.0.0.0/8");
         assert_eq!(
-            create.ip_access_list[0].description.as_deref(),
+            create_ip_access_list[0].description.as_deref(),
             Some("office")
         );
         let hash_data = create.hash_data.as_ref().expect("maximal hash data");

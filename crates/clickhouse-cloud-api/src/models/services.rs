@@ -1396,8 +1396,8 @@ pub struct InstancePrivateEndpointsPatch {
 /// `InstanceServiceQueryApiEndpointsPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstanceServiceQueryApiEndpointsPostRequest {
-    #[serde(rename = "allowedOrigins")]
-    pub allowed_origins: String,
+    #[serde(rename = "allowedOrigins", skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<String>,
     #[serde(rename = "openApiKeys")]
     pub open_api_keys: Vec<String>,
     pub roles: Vec<QueryEndpointRole>,
@@ -1516,7 +1516,8 @@ pub struct ScalingSchedulePostRequest {
 /// `ServicPrivateEndpointePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicPrivateEndpointePostRequest {
-    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub id: String,
 }
 

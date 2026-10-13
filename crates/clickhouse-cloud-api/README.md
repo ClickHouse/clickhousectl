@@ -34,9 +34,9 @@ The API rejects null and validates supported enabled cadence pairs: gap/time-fra
 values of `(30, 1440)` or `(60, 2880)`. Response fields tolerate absence and null.
 
 ClickPipes requests now include destination-table `ttl`, MongoDB
-`initial_load_parallelism`, and `start_paused`. Empty TTL and false `start_paused`
-values are omitted to preserve existing create behavior; set a nonempty TTL SQL
-expression or `start_paused: true` to send them. Starting paused is unsupported
+`initial_load_parallelism`, and `start_paused`. An empty TTL is omitted to preserve
+existing create behavior; set a nonempty TTL SQL expression or
+`start_paused: Some(true)` to send them. Starting paused is unsupported
 for database ClickPipes. `UdfArgumentOutput` matches the newly named UDF response
 schema; `UdfArgumentResponse` remains a compatible alias.
 
@@ -73,6 +73,10 @@ The beta `whoami_get` method resolves the authenticated caller without an organi
 Kafka schema registries are now typed unions selected by `type`, because the API also accepts the AWS Glue Schema Registry. This is a breaking change for Rust callers. `ClickPipePostKafkaSource.schema_registry` takes `ClickPipeMutateKafkaSchemaRegistry`: build the former struct's fields as `ClickPipeMutateKafkaConfluentSchemaRegistry` (adding `r#type: None` to keep the API's Confluent default) and call `.into()`, or build `ClickPipeKafkaGlueSchemaRegistry` (`type`, `glue_region`, `glue_registry_name`, optional `glue_role_arn`) and call `.into()`. `ClickPipeKafkaSource.schema_registry` returns `ClickPipeKafkaSchemaRegistry`; match `ClickPipeKafkaConfluentSchemaRegistry` (including payloads without `type`) or `ClickPipeKafkaGlueSchemaRegistryResponse`, which converts to its request type with `TryFrom`. The authentication enums are renamed `ClickPipeKafkaConfluentSchemaRegistryAuthentication` and `ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication`.
 
 `ServicePostRequestTier` now accepts only `Development` and `Production`, matching the spec: the nine `Dedicated_*` variants are removed from the service-create request enum (response enums `ServiceTier` and `ServiceScalingPatchResponseTier` keep them). The field is deprecated; prefer `min_replica_memory_gb`, `max_replica_memory_gb`, and `num_replicas`. A caller that still needs a dedicated value can send it as `ServicePostRequestTier::Unknown("dedicated_...".into())`. `ActivityType` adds `Organization_security_contact_add`, `Organization_security_contact_remove`, and `Organization_security_contact_replace`. The Query API endpoint (`query_api_endpoint_*`), scaling schedule (`scaling_schedule_*`), and UDF (`udf_*`) methods have graduated from beta and are no longer listed in `BETA_OPERATIONS`.
+
+`organization_get_list(limit, cursor)` and the beta `snapshot_get_list(organization_id, service_id, limit, cursor)` now return one page, like `openapi_key_get_list`: pass `None, None` to keep the previous request, and continue with the response's `next_cursor` until it is `None` to read every page. `limit` must be at least 1 and defaults to 250 on the server.
+
+Request fields the spec no longer requires are now `Option<T>` and omitted when `None`: `ApiKeyPostRequest.assigned_role_ids`, `ip_access_list` and `state`; `ClickPipeMutateDestination.columns`; `ClickPipePostRequest.field_mappings` and `start_paused`; `InstanceServiceQueryApiEndpointsPostRequest.allowed_origins`; `InvitationPostRequest.assigned_role_ids`; and `ServicPrivateEndpointePostRequest.description`. Wrap existing values in `Some(...)` to send the same request. `columns` and `field_mappings` previously skipped empty lists, and `start_paused` skipped `false`; `Some(vec![])` and `Some(false)` are now sent as written, so map those to `None` to keep omitting them. `ScimGroupPostRequest`, `ScimUserPostRequest`, and `ScimPatchOp` gain optional `id` and `meta`, which the IdP echoes back and the server ignores on write; `ScimPatchOp.meta` is `ScimPatchOpMeta`, selected by `resourceType` (`User` or `Group`) with a lossless `Unknown` fallback. Struct-literal callers supply them as `None` or use `..Default::default()`. The ClickPipe source wrappers (`ClickPipePostSource`, `ClickPipePatchSource`, `ClickPipeSchemaDiscoverySource`) and `ClickPipeSettingsPutRequest` keep every field `Option`: their arms are mutually exclusive or source-specific, so the analyzer exempts them from the description-based requiredness fallback.
 
 ### ClickHouse settings models
 

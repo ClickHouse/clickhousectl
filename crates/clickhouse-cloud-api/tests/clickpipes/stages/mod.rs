@@ -77,7 +77,7 @@ pub fn managed_destination_users(table: &str) -> ClickPipeMutateDestination {
         database: "default".to_string(),
         table: Some(table.to_string()),
         managed_table: Some(true),
-        columns: vec![
+        columns: Some(vec![
             ClickPipeDestinationColumn {
                 name: "id".to_string(),
                 r#type: "Int64".to_string(),
@@ -90,7 +90,7 @@ pub fn managed_destination_users(table: &str) -> ClickPipeMutateDestination {
                 name: "email".to_string(),
                 r#type: "String".to_string(),
             },
-        ],
+        ]),
         table_definition: Some(ClickPipeDestinationTableDefinition {
             engine: ClickPipeDestinationTableEngine {
                 r#type: ClickPipeDestinationTableEngineType::MergeTree,

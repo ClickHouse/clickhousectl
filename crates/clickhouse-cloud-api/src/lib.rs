@@ -10,7 +10,7 @@
 //! #[tokio::main]
 //! async fn main() -> Result<(), clickhouse_cloud_api::Error> {
 //!     let client = Client::new("your-key-id", "your-key-secret");
-//!     let orgs = client.organization_get_list().await?;
+//!     let orgs = client.organization_get_list(None, None).await?;
 //!     println!("{:?}", orgs);
 //!     Ok(())
 //! }

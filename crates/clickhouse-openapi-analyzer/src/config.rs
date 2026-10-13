@@ -138,6 +138,75 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     // way a non-Kafka settings update can express "does not apply"; keeping this
     // `T` would put the key on every request and break all non-Kafka pipes.
     ("ClickPipeSettingsPutRequest", "kafka_read_committed"),
+    // The source wrappers below carry one property per source kind and are
+    // mutually exclusive: a request sends exactly one arm (plus
+    // `validateSamples`). The schemas have no `required[]` and, since the spec
+    // dropped the `| null` unions, the description fallback marks every arm
+    // required — following it would make every valid request invalid.
+    ("ClickPipePostSource", "bigquery"),
+    ("ClickPipePostSource", "kafka"),
+    ("ClickPipePostSource", "kinesis"),
+    ("ClickPipePostSource", "mongodb"),
+    ("ClickPipePostSource", "mysql"),
+    ("ClickPipePostSource", "objectStorage"),
+    ("ClickPipePostSource", "pubsub"),
+    ("ClickPipePatchSource", "kafka"),
+    ("ClickPipePatchSource", "kinesis"),
+    ("ClickPipePatchSource", "mongodb"),
+    ("ClickPipePatchSource", "mysql"),
+    ("ClickPipePatchSource", "objectStorage"),
+    ("ClickPipePatchSource", "pubsub"),
+    ("ClickPipeSchemaDiscoverySource", "kafka"),
+    ("ClickPipeSchemaDiscoverySource", "kinesis"),
+    ("ClickPipeSchemaDiscoverySource", "objectStorage"),
+    ("ClickPipeSchemaDiscoverySource", "pubsub"),
+    // The settings PUT is partial and its keys are source-specific
+    // (`streaming_*` for streaming pipes, `object_storage_*` for object
+    // storage), as with `kafka_read_committed` above. The schema has no
+    // `required[]`, so the description fallback marks every key required;
+    // requiring all of them would make every valid settings update invalid.
+    (
+        "ClickPipeSettingsPutRequest",
+        "clickhouse_max_download_threads",
+    ),
+    (
+        "ClickPipeSettingsPutRequest",
+        "clickhouse_max_insert_threads",
+    ),
+    ("ClickPipeSettingsPutRequest", "clickhouse_max_threads"),
+    (
+        "ClickPipeSettingsPutRequest",
+        "clickhouse_min_insert_block_size_bytes",
+    ),
+    (
+        "ClickPipeSettingsPutRequest",
+        "clickhouse_parallel_distributed_insert_select",
+    ),
+    (
+        "ClickPipeSettingsPutRequest",
+        "clickhouse_parallel_view_processing",
+    ),
+    ("ClickPipeSettingsPutRequest", "object_storage_concurrency"),
+    (
+        "ClickPipeSettingsPutRequest",
+        "object_storage_max_file_count",
+    ),
+    (
+        "ClickPipeSettingsPutRequest",
+        "object_storage_max_insert_bytes",
+    ),
+    (
+        "ClickPipeSettingsPutRequest",
+        "object_storage_polling_interval_ms",
+    ),
+    (
+        "ClickPipeSettingsPutRequest",
+        "object_storage_use_cluster_function",
+    ),
+    (
+        "ClickPipeSettingsPutRequest",
+        "streaming_max_insert_wait_ms",
+    ),
     // The same source-conditional contract applies to settings nested in a
     // create request: on 2026-09-05 an object-storage create with the key set
     // to false was rejected, while omitting it succeeded.

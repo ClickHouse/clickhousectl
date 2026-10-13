@@ -413,7 +413,7 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                     email: invitation_email.clone(),
                     #[cfg(feature = "deprecated-fields")]
                     role: Some(InvitationPostRequestRole::Developer),
-                    assigned_role_ids: vec![],
+                    assigned_role_ids: Some(vec![]),
                 };
                 async move {
                     let resp = client.invitation_create(&org_id, &body).await?;
@@ -1152,18 +1152,18 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
                 async move {
                     let body = ApiKeyPostRequest {
                         name: key_name.clone(),
-                        assigned_role_ids: vec![],
+                        assigned_role_ids: Some(vec![]),
                         expire_at: None,
                         hash_data: None,
-                        ip_access_list: vec![IpAccessListEntry {
+                        ip_access_list: Some(vec![IpAccessListEntry {
                             source: "0.0.0.0/0".to_string(),
                             description: Some(
                                 "clickhousectl org integration test key".to_string(),
                             ),
-                        }],
+                        }]),
                         #[cfg(feature = "deprecated-fields")]
                         roles: Some(vec!["admin".to_string()]),
-                        state: ApiKeyPostRequestState::Enabled,
+                        state: Some(ApiKeyPostRequestState::Enabled),
                     };
                     let resp = client.openapi_key_create(&org_id, &body).await?;
                     let created = resp

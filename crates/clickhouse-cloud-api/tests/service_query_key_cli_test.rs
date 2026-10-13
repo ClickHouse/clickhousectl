@@ -1742,16 +1742,16 @@ async fn create_owned_key(
                 async move {
                     let body = ApiKeyPostRequest {
                         name,
-                        assigned_role_ids: vec![],
+                        assigned_role_ids: Some(vec![]),
                         expire_at: None,
                         hash_data: None,
-                        ip_access_list: vec![IpAccessListEntry {
+                        ip_access_list: Some(vec![IpAccessListEntry {
                             source: "0.0.0.0/0".to_string(),
                             description: Some("clickhousectl integration test".to_string()),
-                        }],
+                        }]),
                         #[cfg(feature = "deprecated-fields")]
                         roles: None,
-                        state: ApiKeyPostRequestState::Enabled,
+                        state: Some(ApiKeyPostRequestState::Enabled),
                     };
                     let resp = client.openapi_key_create(&org_id, &body).await?;
                     let created = resp.result.ok_or("key create returned no result")?;
@@ -1843,7 +1843,7 @@ async fn upsert_binding(
     let request = InstanceServiceQueryApiEndpointsPostRequest {
         roles: vec![QueryEndpointRole::SqlConsoleAdmin],
         open_api_keys,
-        allowed_origins: "*".to_string(),
+        allowed_origins: Some("*".to_string()),
     };
     let response = retry_api_call(
         "query endpoint upsert",
@@ -1982,9 +1982,11 @@ async fn unbind_key(
             &InstanceServiceQueryApiEndpointsPostRequest {
                 roles: endpoint.roles.ok_or("query endpoint reports no roles")?,
                 open_api_keys,
-                allowed_origins: endpoint
-                    .allowed_origins
-                    .ok_or("query endpoint reports no allowedOrigins")?,
+                allowed_origins: Some(
+                    endpoint
+                        .allowed_origins
+                        .ok_or("query endpoint reports no allowedOrigins")?,
+                ),
             },
         )
         .await?;

@@ -722,7 +722,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 || {
                     let client = client.clone();
                     async move {
-                        let resp = client.organization_get_list().await?;
+                        let resp = client.organization_get_list(None, None).await?;
                         resp.result.ok_or_else(|| "org list returned no result".into())
                     }
                 },
@@ -917,7 +917,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 let service_id = service_id.clone();
                 async move {
                     let snapshots = client
-                        .snapshot_get_list(&org_id, &service_id)
+                        .snapshot_get_list(&org_id, &service_id, None, None)
                         .await?
                         .result
                         .ok_or("snapshot list returned no result")?;
@@ -964,18 +964,18 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                 async move {
                     let body = ApiKeyPostRequest {
                         name: key_name,
-                        assigned_role_ids: vec![],
+                        assigned_role_ids: Some(vec![]),
                         expire_at: None,
                         hash_data: None,
-                        ip_access_list: vec![IpAccessListEntry {
+                        ip_access_list: Some(vec![IpAccessListEntry {
                             source: "0.0.0.0/0".to_string(),
                             description: Some(
                                 "clickhousectl integration test query key".to_string(),
                             ),
-                        }],
+                        }]),
                         #[cfg(feature = "deprecated-fields")]
                         roles: None,
-                        state: ApiKeyPostRequestState::Enabled,
+                        state: Some(ApiKeyPostRequestState::Enabled),
                     };
                     let resp = client.openapi_key_create(&org_id, &body).await?;
                     resp.result
@@ -1065,7 +1065,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         let body = InstanceServiceQueryApiEndpointsPostRequest {
                             roles: vec![QueryEndpointRole::SqlConsoleAdmin],
                             open_api_keys: vec![api_key_uuid],
-                            allowed_origins: "*".to_string(),
+                            allowed_origins: Some("*".to_string()),
                         };
                         let resp = client
                             .instance_query_endpoint_upsert(&org_id, &service_id, &body)
@@ -1325,7 +1325,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
                         let body = InstanceServiceQueryApiEndpointsPostRequest {
                             roles: vec![QueryEndpointRole::SqlConsoleAdmin],
                             open_api_keys: vec![api_key_uuid.clone()],
-                            allowed_origins: "*".to_string(),
+                            allowed_origins: Some("*".to_string()),
                         };
                         let resp = client
                             .instance_query_endpoint_upsert(&org_id, &service_id, &body)
@@ -2169,7 +2169,7 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
         let synthetic_endpoint_id = synthetic_private_endpoint_id(&ctx);
         let create_body = ServicPrivateEndpointePostRequest {
             id: synthetic_endpoint_id.clone(),
-            description: format!("clickhousectl-it private endpoint {}", ctx.run_id),
+            description: Some(format!("clickhousectl-it private endpoint {}", ctx.run_id)),
         };
 
         // The endpoint we just attempted to attach (only set if create

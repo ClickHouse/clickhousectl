@@ -67,8 +67,8 @@ pub struct Invitation {
 /// `InvitationPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InvitationPostRequest {
-    #[serde(rename = "assignedRoleIds")]
-    pub assigned_role_ids: Vec<String>,
+    #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none")]
+    pub assigned_role_ids: Option<Vec<String>>,
     pub email: String,
     #[cfg(feature = "deprecated-fields")]
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -4398,11 +4398,13 @@ fn apply_create_request_args(
     request: &mut clickhouse_cloud_api::models::ClickPipePostRequest,
     args: BuiltCreateRequestArgs,
 ) {
-    request.start_paused = args.start_paused;
+    // `startPaused` and `fieldMappings` are optional in the spec; omit `false`
+    // and an empty list so existing create requests stay unchanged.
+    request.start_paused = args.start_paused.then_some(true);
     request.source.validate_samples = args.validate_samples;
     request.scaling = args.scaling;
     request.settings = args.settings;
-    request.field_mappings = args.field_mappings;
+    request.field_mappings = non_empty(args.field_mappings);
 }
 
 /// Classify the source of a fetched pipe.
@@ -4673,11 +4675,17 @@ fn build_streaming_destination(
     Ok(clickhouse_cloud_api::models::ClickPipeMutateDestination {
         database: database.to_string(),
         table: Some(table.to_string()),
-        columns,
+        columns: non_empty(columns),
         managed_table: Some(options.managed_table),
         roles,
         table_definition: Some(table_definition),
     })
+}
+
+/// `None` for an empty list, so an optional array field is omitted from the
+/// request rather than sent as `[]`.
+fn non_empty<T>(items: Vec<T>) -> Option<Vec<T>> {
+    (!items.is_empty()).then_some(items)
 }
 
 /// Build a managed-table destination with the default MergeTree engine.
@@ -4703,7 +4711,7 @@ fn build_destination(
     clickhouse_cloud_api::models::ClickPipeMutateDestination {
         database: database.to_string(),
         table: Some(table.to_string()),
-        columns,
+        columns: non_empty(columns),
         managed_table: Some(true),
         roles,
         table_definition: Some(
@@ -7271,7 +7279,7 @@ mod tests {
                 let built = build_create_request_args(&args, kind).unwrap();
                 let mut request = clickhouse_cloud_api::models::ClickPipePostRequest::default();
                 apply_create_request_args(&mut request, built);
-                assert_eq!(request.start_paused, paused);
+                assert_eq!(request.start_paused, paused.then_some(true));
                 let json = serde_json::to_value(&request).unwrap();
                 assert_eq!(
                     json.get("startPaused"),
@@ -11606,11 +11614,11 @@ mod tests {
         let request = build_postgres_request(&postgres_builder_args()).unwrap();
 
         assert_eq!(request.name, "pipe-1");
-        assert!(request.field_mappings.is_empty());
+        assert_eq!(request.field_mappings, None);
         assert_eq!(request.scaling, None);
         assert_eq!(request.settings, None);
         assert_eq!(request.destination.database, "default");
-        assert!(request.destination.columns.is_empty());
+        assert_eq!(request.destination.columns, None);
         assert_eq!(request.destination.table, None);
         assert_eq!(request.destination.managed_table, None);
         assert_eq!(request.destination.roles, None);
@@ -13277,7 +13285,7 @@ mod tests {
         let destination = build_destination("default", "", vec![], None);
         assert_eq!(destination.database, "default");
         assert_eq!(destination.table, None);
-        assert!(destination.columns.is_empty());
+        assert_eq!(destination.columns, None);
         assert_eq!(destination.managed_table, None);
         assert_eq!(destination.roles, None);
         assert_eq!(destination.table_definition, None);

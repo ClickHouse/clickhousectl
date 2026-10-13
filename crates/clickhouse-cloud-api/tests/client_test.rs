@@ -63,7 +63,7 @@ async fn list_organizations() {
         .await;
 
     let client = Client::with_base_url(mock_server.uri(), "test-key", "test-secret");
-    let resp = client.organization_get_list().await.unwrap();
+    let resp = client.organization_get_list(None, None).await.unwrap();
     assert_eq!(resp.status, Some(200));
     let orgs = resp.result.unwrap();
     assert_eq!(orgs.len(), 1);
@@ -858,6 +858,107 @@ async fn list_api_keys_pagination_encodes_parameters_and_preserves_envelope() {
 }
 
 #[tokio::test]
+async fn list_organizations_pagination_encodes_parameters_and_preserves_envelope() {
+    let (server, client) = setup().await;
+    let cursor = "opaque +/=&?雪";
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200.0, "requestId": "req-page", "result": [],
+            "limit": 25, "nextCursor": cursor
+        })))
+        .expect(4)
+        .mount(&server)
+        .await;
+    for (limit, cursor_arg) in [
+        (None, None),
+        (Some(25), None),
+        (None, Some(cursor)),
+        (Some(25), Some(cursor)),
+    ] {
+        let response = client
+            .organization_get_list(limit, cursor_arg)
+            .await
+            .unwrap();
+        assert_eq!(response.status, Some(200));
+        assert_eq!(response.request_id.as_deref(), Some("req-page"));
+        assert_eq!(response.result, Some(vec![]));
+        assert_eq!(response.error, None);
+        assert_eq!(response.limit, Some(25));
+        assert_eq!(response.next_cursor.as_deref(), Some(cursor));
+    }
+    let requests = server.received_requests().await.unwrap();
+    let queries: Vec<Vec<(String, String)>> = requests
+        .iter()
+        .map(|request| request.url.query_pairs().into_owned().collect())
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            vec![],
+            vec![("limit".into(), "25".into())],
+            vec![("cursor".into(), cursor.into())],
+            vec![
+                ("limit".into(), "25".into()),
+                ("cursor".into(), cursor.into())
+            ],
+        ]
+    );
+}
+
+#[tokio::test]
+async fn list_snapshots_pagination_encodes_parameters_and_preserves_envelope() {
+    let (server, client) = setup().await;
+    let cursor = "opaque +/=&?雪";
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/services/svc/snapshots"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200.0, "requestId": "req-page", "result": [],
+            "limit": 25, "totalCount": 100, "nextCursor": cursor
+        })))
+        .expect(4)
+        .mount(&server)
+        .await;
+    for (limit, cursor_arg) in [
+        (None, None),
+        (Some(25), None),
+        (None, Some(cursor)),
+        (Some(25), Some(cursor)),
+    ] {
+        let response = client
+            .snapshot_get_list("org", "svc", limit, cursor_arg)
+            .await
+            .unwrap();
+        assert_eq!(response.status, Some(200));
+        assert_eq!(response.request_id.as_deref(), Some("req-page"));
+        assert_eq!(response.result, Some(vec![]));
+        assert_eq!(response.error, None);
+        assert_eq!(response.limit, Some(25));
+        assert_eq!(response.total_count, Some(100));
+        assert_eq!(response.next_cursor.as_deref(), Some(cursor));
+    }
+    let requests = server.received_requests().await.unwrap();
+    let queries: Vec<Vec<(String, String)>> = requests
+        .iter()
+        .map(|request| request.url.query_pairs().into_owned().collect())
+        .collect();
+    assert_eq!(
+        queries,
+        vec![
+            vec![],
+            vec![("limit".into(), "25".into())],
+            vec![("cursor".into(), cursor.into())],
+            vec![
+                ("limit".into(), "25".into()),
+                ("cursor".into(), cursor.into())
+            ],
+        ]
+    );
+}
+
+#[tokio::test]
 async fn list_api_keys_preserves_api_errors() {
     let (server, client) = setup().await;
     Mock::given(method("GET"))
@@ -1373,7 +1474,7 @@ async fn create_private_endpoint() {
 
     let body = ServicPrivateEndpointePostRequest {
         id: "vpce-abc".to_string(),
-        description: "My PE".to_string(),
+        description: Some("My PE".to_string()),
     };
     let resp = c
         .instance_private_endpoint_create("org-1", "svc-1", &body)
@@ -1494,7 +1595,7 @@ async fn upsert_query_endpoint() {
         .await;
 
     let body = InstanceServiceQueryApiEndpointsPostRequest {
-        allowed_origins: "https://example.com".to_string(),
+        allowed_origins: Some("https://example.com".to_string()),
         roles: vec![QueryEndpointRole::SqlConsoleReadOnly],
         ..Default::default()
     };
@@ -1762,7 +1863,7 @@ async fn list_snapshots() {
         .await;
 
     let snapshots = client
-        .snapshot_get_list("org-1", "svc-1")
+        .snapshot_get_list("org-1", "svc-1", None, None)
         .await
         .unwrap()
         .result
@@ -1830,7 +1931,7 @@ async fn snapshot_methods_preserve_api_errors() {
         .await;
 
     let list_error = client
-        .snapshot_get_list("org-1", "svc-1")
+        .snapshot_get_list("org-1", "svc-1", None, None)
         .await
         .unwrap_err();
     assert!(
@@ -1854,7 +1955,7 @@ async fn snapshot_methods_reject_malformed_success_payloads() {
         .mount(&server)
         .await;
     assert!(matches!(
-        client.snapshot_get_list("org-1", "svc-1").await,
+        client.snapshot_get_list("org-1", "svc-1", None, None).await,
         Err(clickhouse_cloud_api::Error::Json(_))
     ));
     assert!(matches!(
@@ -2272,7 +2373,7 @@ async fn create_click_pipe_sends_start_paused_and_table_ttl() {
         .mount(&server)
         .await;
     let request = ClickPipePostRequest {
-        start_paused: true,
+        start_paused: Some(true),
         destination: ClickPipeMutateDestination {
             table_definition: Some(ClickPipeDestinationTableDefinition {
                 ttl: "event_time + INTERVAL 30 DAY".to_string(),
@@ -4623,7 +4724,7 @@ async fn bearer_auth_sends_token() {
         .await;
 
     let client = Client::with_bearer_token(mock_server.uri(), "my-oauth-token");
-    let resp = client.organization_get_list().await.unwrap();
+    let resp = client.organization_get_list(None, None).await.unwrap();
     let orgs = resp.result.unwrap();
     assert_eq!(orgs.len(), 1);
     assert_eq!(orgs[0].name.as_deref(), Some("Bearer Org"));
@@ -4645,7 +4746,7 @@ async fn set_bearer_token_updates_token() {
 
     let mut client = Client::with_bearer_token(mock_server.uri(), "old-token");
     client.set_bearer_token("refreshed-token").unwrap();
-    let resp = client.organization_get_list().await.unwrap();
+    let resp = client.organization_get_list(None, None).await.unwrap();
     assert_eq!(resp.result.unwrap().len(), 0);
 }
 
@@ -4662,7 +4763,7 @@ async fn with_http_client_basic_auth() {
 
     let http = reqwest::Client::new();
     let client = Client::with_http_client(http, mock_server.uri(), "custom-key", "custom-secret");
-    let resp = client.organization_get_list().await.unwrap();
+    let resp = client.organization_get_list(None, None).await.unwrap();
     assert_eq!(resp.result.unwrap().len(), 0);
 }
 
@@ -4679,7 +4780,7 @@ async fn with_http_client_bearer_auth() {
 
     let http = reqwest::Client::new();
     let client = Client::with_http_client_bearer(http, mock_server.uri(), "custom-bearer");
-    let resp = client.organization_get_list().await.unwrap();
+    let resp = client.organization_get_list(None, None).await.unwrap();
     assert_eq!(resp.result.unwrap().len(), 0);
 }
 
@@ -4712,7 +4813,7 @@ async fn api_error_response() {
         .await;
 
     let client = Client::with_base_url(mock_server.uri(), "bad-key", "bad-secret");
-    let err = client.organization_get_list().await.unwrap_err();
+    let err = client.organization_get_list(None, None).await.unwrap_err();
     match err {
         clickhouse_cloud_api::Error::Api { status, message } => {
             assert_eq!(status, 401);
@@ -4785,7 +4886,7 @@ async fn api_error_500_server_error() {
         .mount(&s)
         .await;
 
-    let err = c.organization_get_list().await.unwrap_err();
+    let err = c.organization_get_list(None, None).await.unwrap_err();
     match err {
         clickhouse_cloud_api::Error::Api { status, message } => {
             assert_eq!(status, 500);
@@ -4805,7 +4906,7 @@ async fn api_error_non_json_body() {
         .mount(&s)
         .await;
 
-    let err = c.organization_get_list().await.unwrap_err();
+    let err = c.organization_get_list(None, None).await.unwrap_err();
     match err {
         clickhouse_cloud_api::Error::Api { status, message } => {
             assert_eq!(status, 502);
@@ -4881,7 +4982,7 @@ async fn malformed_json_success_response() {
         .mount(&s)
         .await;
 
-    let err = c.organization_get_list().await.unwrap_err();
+    let err = c.organization_get_list(None, None).await.unwrap_err();
     match err {
         clickhouse_cloud_api::Error::Json(_) => {} // expected
         other => panic!("Expected Json error, got: {:?}", other),
@@ -4898,7 +4999,7 @@ async fn truncated_json_success_response() {
         .mount(&s)
         .await;
 
-    let err = c.organization_get_list().await.unwrap_err();
+    let err = c.organization_get_list(None, None).await.unwrap_err();
     match err {
         clickhouse_cloud_api::Error::Json(_) => {} // expected
         other => panic!("Expected Json error, got: {:?}", other),
@@ -4922,7 +5023,7 @@ async fn api_error_429_rate_limited() {
         .mount(&s)
         .await;
 
-    let err = c.organization_get_list().await.unwrap_err();
+    let err = c.organization_get_list(None, None).await.unwrap_err();
     match err {
         clickhouse_cloud_api::Error::Api { status, message } => {
             assert_eq!(status, 429);
@@ -4985,7 +5086,7 @@ async fn list_organizations_returns_empty_vec() {
         .mount(&s)
         .await;
 
-    let resp = c.organization_get_list().await.unwrap();
+    let resp = c.organization_get_list(None, None).await.unwrap();
     let orgs = resp.result.unwrap();
     assert!(orgs.is_empty());
 }
@@ -5256,7 +5357,7 @@ async fn base_url_trailing_slash_stripped() {
 
     let url_with_slash = format!("{}/", mock_server.uri());
     let client = Client::with_base_url(url_with_slash, "key", "secret");
-    let resp = client.organization_get_list().await.unwrap();
+    let resp = client.organization_get_list(None, None).await.unwrap();
     assert_eq!(resp.result.unwrap().len(), 0);
 }
 
