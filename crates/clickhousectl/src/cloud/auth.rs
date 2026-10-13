@@ -424,7 +424,9 @@ fn auth_config_for_url(api_url: &str) -> Option<AuthConfig> {
         env("CLICKHOUSECTL_CLIENT_ID"),
     ) {
         (Some(auth_url), Some(client_id)) => Some(AuthConfig {
-            auth_url,
+            // Trim trailing slashes so joining `/oauth/...` can't produce a
+            // rejected double slash (common when copying an issuer URL).
+            auth_url: auth_url.trim_end_matches('/').to_string(),
             client_id,
         }),
         _ => None,
@@ -767,8 +769,17 @@ pub async fn ensure_fresh_tokens(json: bool) -> Result<(), Box<dyn std::error::E
         Ok(new_tokens) => {
             save_tokens(&new_tokens)?;
         }
-        Err(_) => {
-            // Refresh failed — clear stale tokens so we fall back to API keys
+        Err(err) => {
+            // If the auth config for this host can't even be resolved (e.g. a
+            // custom host whose CLICKHOUSECTL_AUTH_URL / CLICKHOUSECTL_CLIENT_ID
+            // are unset), the refresh token is still valid: don't destroy it and
+            // don't silently fall back to another host. Surface the actionable,
+            // fail-fast error instead.
+            if auth_config_for_url(&tokens.api_url).is_none() {
+                return Err(err);
+            }
+            // Genuine refresh rejection (revoked/expired): clear stale tokens so
+            // we fall back to API keys.
             clear_tokens();
             if !json {
                 eprint_line("Warning: OAuth token refresh failed. Tokens cleared.");
