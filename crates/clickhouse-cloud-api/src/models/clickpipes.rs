@@ -1906,6 +1906,25 @@ impl std::fmt::Display for ReversePrivateEndpointType {
     }
 }
 
+/// Inline enum for `ReversePrivateEndpointDnsTarget.kind`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ReversePrivateEndpointDnsTargetKind {
+    #[default]
+    RESOURCE_CONFIGURATION,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ReversePrivateEndpointDnsTargetKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RESOURCE_CONFIGURATION => write!(f, "RESOURCE_CONFIGURATION"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
 /// `AzureEventHub` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AzureEventHub {
@@ -4047,6 +4066,8 @@ pub struct CreateReversePrivateEndpoint {
 pub struct CustomPrivateDnsMapping {
     #[serde(rename = "privateDnsName", skip_serializing_if = "Option::is_none")]
     pub private_dns_name: Option<String>,
+    #[serde(rename = "targetId", skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
 }
 
 /// `CustomPrivateDnsMapping` from the ClickHouse Cloud API, in response
@@ -4059,6 +4080,8 @@ pub struct CustomPrivateDnsMapping {
 pub struct CustomPrivateDnsMappingResponse {
     #[serde(rename = "privateDnsName", skip_serializing_if = "Option::is_none")]
     pub private_dns_name: Option<String>,
+    #[serde(rename = "targetId", skip_serializing_if = "Option::is_none")]
+    pub target_id: Option<String>,
 }
 
 /// `MskIamUser` from the ClickHouse Cloud API.
@@ -4097,6 +4120,8 @@ pub struct ReversePrivateEndpoint {
     pub description: Option<String>,
     #[serde(rename = "dnsNames", skip_serializing_if = "Option::is_none")]
     pub dns_names: Option<Vec<String>>,
+    #[serde(rename = "dnsTargets", skip_serializing_if = "Option::is_none")]
+    pub dns_targets: Option<Vec<ReversePrivateEndpointDnsTarget>>,
     #[serde(rename = "endpointId", skip_serializing_if = "Option::is_none")]
     pub endpoint_id: Option<String>,
     #[serde(
@@ -4110,6 +4135,8 @@ pub struct ReversePrivateEndpoint {
     pub msk_authentication: Option<ReversePrivateEndpointMskauthentication>,
     #[serde(rename = "mskClusterArn", skip_serializing_if = "Option::is_none")]
     pub msk_cluster_arn: Option<String>,
+    #[serde(rename = "privateDnsMappings", skip_serializing_if = "Option::is_none")]
+    pub private_dns_mappings: Option<Vec<ReversePrivateEndpointPrivateDnsMapping>>,
     #[serde(rename = "privateDnsNames", skip_serializing_if = "Option::is_none")]
     pub private_dns_names: Option<Vec<String>>,
     #[serde(rename = "serviceId", skip_serializing_if = "Option::is_none")]
@@ -4133,6 +4160,26 @@ pub struct ReversePrivateEndpoint {
         skip_serializing_if = "Option::is_none"
     )]
     pub vpc_resource_share_arn: Option<String>,
+}
+
+/// `ReversePrivateEndpointDnsTarget` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReversePrivateEndpointDnsTarget {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "internalDnsName", skip_serializing_if = "Option::is_none")]
+    pub internal_dns_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<ReversePrivateEndpointDnsTargetKind>,
+}
+
+/// `ReversePrivateEndpointPrivateDnsMapping` from the ClickHouse Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReversePrivateEndpointPrivateDnsMapping {
+    #[serde(rename = "internalDnsName", skip_serializing_if = "Option::is_none")]
+    pub internal_dns_name: Option<String>,
+    #[serde(rename = "privateDnsName", skip_serializing_if = "Option::is_none")]
+    pub private_dns_name: Option<String>,
 }
 
 /// `ServiceAccount` from the ClickHouse Cloud API.

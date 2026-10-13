@@ -160,6 +160,18 @@ fn extracted_models_keep_root_and_models_paths() {
         api::ReversePrivateEndpoint::default(),
         api::models::ReversePrivateEndpoint::default(),
     );
+    assert_same_type(
+        api::ReversePrivateEndpointDnsTarget::default(),
+        api::models::ReversePrivateEndpointDnsTarget::default(),
+    );
+    assert_same_type(
+        api::ReversePrivateEndpointDnsTargetKind::default(),
+        api::models::ReversePrivateEndpointDnsTargetKind::default(),
+    );
+    assert_same_type(
+        api::ReversePrivateEndpointPrivateDnsMapping::default(),
+        api::models::ReversePrivateEndpointPrivateDnsMapping::default(),
+    );
     assert_same_type(api::PLAIN::default(), api::models::PLAIN::default());
     assert_same_type(
         api::Invitation::default(),

@@ -448,6 +448,7 @@ fn build_custom_private_dns_mappings(names: &[String]) -> Option<Vec<CustomPriva
             .iter()
             .map(|name| CustomPrivateDnsMapping {
                 private_dns_name: Some(name.clone()),
+                target_id: None,
             })
             .collect(),
     )
@@ -1044,9 +1045,11 @@ mod tests {
             Some(vec![
                 CustomPrivateDnsMapping {
                     private_dns_name: Some("db.example.com".into()),
+                    target_id: None,
                 },
                 CustomPrivateDnsMapping {
                     private_dns_name: Some("*.example.com".into()),
+                    target_id: None,
                 },
             ])
         );
@@ -1102,9 +1105,11 @@ mod tests {
             Some(vec![
                 CustomPrivateDnsMapping {
                     private_dns_name: Some("db.example.com".into()),
+                    target_id: None,
                 },
                 CustomPrivateDnsMapping {
                     private_dns_name: Some("*.example.com".into()),
+                    target_id: None,
                 },
             ])
         );

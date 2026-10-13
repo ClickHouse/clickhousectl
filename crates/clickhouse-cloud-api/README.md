@@ -80,6 +80,8 @@ Request fields the spec no longer requires are now `Option<T>` and omitted when 
 
 The spec no longer accepts `sandboxVersion` when creating a UDF or a UDF version, so `sandbox_version` is removed from `UdfCreateRequestV1`, `UdfCreateRequestV2`, `UdfVersionCreateRequestV1`, and `UdfVersionCreateRequestV2`; drop it from struct literals. `Udf.sandbox_version` and the `UdfSandboxVersion` enum remain for responses.
 
+`ReversePrivateEndpoint` adds read-only `dns_targets` (`ReversePrivateEndpointDnsTarget`: `id`, `kind`, `internal_dns_name`) and `private_dns_mappings` (`ReversePrivateEndpointPrivateDnsMapping`: `private_dns_name`, `internal_dns_name`). `CustomPrivateDnsMapping` and `CustomPrivateDnsMappingResponse` gain optional `target_id`, which routes a VPC_RESOURCE custom DNS name to one of the endpoint's `dns_targets`; leave it `None` to keep the default target. Struct-literal callers supply the new fields as `None` or use `..Default::default()`.
+
 ### ClickHouse settings models
 
 `ServiceClickhouseSettingsPatchRequest` uses a map of setting names to JSON values, and `ServiceClickhouseSettingsPatchResponse.settings` returns the applied map. The published OpenAPI now describes both fields as nonempty objects with string or integer values. Use `ServiceClickhouseSettingsPatchRequest<ServiceClickhouseSettingsMap>` and `ServiceClickhouseSettingValue` for typed requests; the default JSON-value map remains source-compatible with existing callers. Explicit `ServiceClickhouseSettingsPatchRequest<String>` callers remain supported: encoded objects are validated and serialized as objects before sending.
