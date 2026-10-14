@@ -227,9 +227,9 @@ pub use saved_queries::{PublicSavedQuery, PublicSavedQueryListItem, PublicSavedQ
 pub use scim::{
     ScimAuthenticationScheme, ScimBooleanFeature, ScimEnterpriseManager, ScimEnterpriseUser,
     ScimGroup, ScimGroupListResponse, ScimGroupMember, ScimGroupMeta, ScimGroupPostRequest,
-    ScimGroupPutRequest, ScimListResponse, ScimPatchOp, ScimPatchOperation, ScimPatchOperationOp,
-    ScimResourceType, ScimResourceTypeListResponse, ScimResourceTypeMeta, ScimSchema,
-    ScimSchemaAttribute, ScimSchemaExtension, ScimSchemaListResponse, ScimSchemaMeta,
+    ScimGroupPutRequest, ScimListResponse, ScimPatchOp, ScimPatchOpMeta, ScimPatchOperation,
+    ScimPatchOperationOp, ScimResourceType, ScimResourceTypeListResponse, ScimResourceTypeMeta,
+    ScimSchema, ScimSchemaAttribute, ScimSchemaExtension, ScimSchemaListResponse, ScimSchemaMeta,
     ScimServiceProviderConfig, ScimServiceProviderConfigBulk, ScimServiceProviderConfigFilter,
     ScimServiceProviderConfigMeta, ScimServiceProviderConfigPatch, ScimUser, ScimUserAddress,
     ScimUserEmail, ScimUserEntitlement, ScimUserGroup, ScimUserIm, ScimUserMeta, ScimUserName,

@@ -21482,6 +21482,8 @@ async fn udf_create_and_version_upload_full_definitions_without_auth_leakage_wit
                 .await;
             let mut expected = definition;
             expected["uploadId"] = serde_json::json!("fresh-upload");
+            // Cloud no longer accepts sandboxVersion: it is dropped, with a warning.
+            expected.as_object_mut().unwrap().remove("sandboxVersion");
             if kind == "executable" {
                 expected.as_object_mut().unwrap().remove("poolSize");
             }
@@ -21510,6 +21512,13 @@ async fn udf_create_and_version_upload_full_definitions_without_auth_leakage_wit
             assert_eq!(
                 serde_json::from_slice::<Value>(&output.stdout).unwrap()["deterministic"],
                 false
+            );
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                stderr
+                    .lines()
+                    .any(|line| line.starts_with("Warning:") && line.contains("sandboxVersion")),
+                "{stderr}"
             );
             let upload = storage.received_requests().await.unwrap().pop().unwrap();
             assert_eq!(upload.body, archive);
@@ -31132,7 +31141,16 @@ async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
         let server = MockServer::start().await;
         let storage = MockServer::start().await;
         let project = tempfile::tempdir().unwrap();
-        project_udf(project.path(), "my_udf", "python3.11");
+        let source = project_udf(project.path(), "my_udf", "python3.11");
+        if existing {
+            // Cloud no longer accepts sandboxVersion: deploy warns once and
+            // omits it (the publish mocks below match the body exactly).
+            let file = source.join("udf.json");
+            let mut definition: Value =
+                serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+            definition["sandboxVersion"] = serde_json::json!("v3");
+            std::fs::write(&file, definition.to_string()).unwrap();
+        }
         mount_udf_upload_session(&server, &storage).await;
         mount_deploy_service(&server, "svc-1", "running").await;
         let new_version = if existing { 2 } else { 1 };
@@ -31213,6 +31231,11 @@ async fn udf_deploy_creates_or_versions_then_attaches_the_built_version() {
         .output()
         .unwrap();
         assert_success(&output);
+        let warnings = String::from_utf8_lossy(&output.stderr)
+            .lines()
+            .filter(|line| line.starts_with("Warning:") && line.contains("sandboxVersion"))
+            .count();
+        assert_eq!(warnings, usize::from(existing));
         let stdout = String::from_utf8_lossy(&output.stdout);
         if json {
             let result: Value = serde_json::from_slice(&output.stdout).unwrap();

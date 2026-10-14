@@ -777,7 +777,7 @@ impl CloudClient {
     ) -> CloudResult<Vec<clickhouse_cloud_api::models::Snapshot>> {
         let response = self
             .api()
-            .snapshot_get_list(org_id, service_id)
+            .snapshot_get_list(org_id, service_id, None, None)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)

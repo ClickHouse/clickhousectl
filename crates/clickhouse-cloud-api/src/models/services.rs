@@ -944,24 +944,6 @@ pub enum ServicePostRequestTier {
     Development,
     #[serde(rename = "production")]
     Production,
-    #[serde(rename = "dedicated_high_mem")]
-    Dedicated_high_mem,
-    #[serde(rename = "dedicated_high_cpu")]
-    Dedicated_high_cpu,
-    #[serde(rename = "dedicated_standard")]
-    Dedicated_standard,
-    #[serde(rename = "dedicated_standard_n2d_standard_4")]
-    Dedicated_standard_n2d_standard_4,
-    #[serde(rename = "dedicated_standard_n2d_standard_8")]
-    Dedicated_standard_n2d_standard_8,
-    #[serde(rename = "dedicated_standard_n2d_standard_32")]
-    Dedicated_standard_n2d_standard_32,
-    #[serde(rename = "dedicated_standard_n2d_standard_128")]
-    Dedicated_standard_n2d_standard_128,
-    #[serde(rename = "dedicated_standard_n2d_standard_32_16SSD")]
-    Dedicated_standard_n2d_standard_32_16SSD,
-    #[serde(rename = "dedicated_standard_n2d_standard_64_24SSD")]
-    Dedicated_standard_n2d_standard_64_24SSD,
     /// Catch-all for unknown or newly-added values.
     #[serde(untagged)]
     Unknown(String),
@@ -972,27 +954,6 @@ impl std::fmt::Display for ServicePostRequestTier {
         match self {
             Self::Development => write!(f, "development"),
             Self::Production => write!(f, "production"),
-            Self::Dedicated_high_mem => write!(f, "dedicated_high_mem"),
-            Self::Dedicated_high_cpu => write!(f, "dedicated_high_cpu"),
-            Self::Dedicated_standard => write!(f, "dedicated_standard"),
-            Self::Dedicated_standard_n2d_standard_4 => {
-                write!(f, "dedicated_standard_n2d_standard_4")
-            }
-            Self::Dedicated_standard_n2d_standard_8 => {
-                write!(f, "dedicated_standard_n2d_standard_8")
-            }
-            Self::Dedicated_standard_n2d_standard_32 => {
-                write!(f, "dedicated_standard_n2d_standard_32")
-            }
-            Self::Dedicated_standard_n2d_standard_128 => {
-                write!(f, "dedicated_standard_n2d_standard_128")
-            }
-            Self::Dedicated_standard_n2d_standard_32_16SSD => {
-                write!(f, "dedicated_standard_n2d_standard_32_16SSD")
-            }
-            Self::Dedicated_standard_n2d_standard_64_24SSD => {
-                write!(f, "dedicated_standard_n2d_standard_64_24SSD")
-            }
             Self::Unknown(s) => write!(f, "{s}"),
         }
     }
@@ -1435,8 +1396,8 @@ pub struct InstancePrivateEndpointsPatch {
 /// `InstanceServiceQueryApiEndpointsPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct InstanceServiceQueryApiEndpointsPostRequest {
-    #[serde(rename = "allowedOrigins")]
-    pub allowed_origins: String,
+    #[serde(rename = "allowedOrigins", skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<String>,
     #[serde(rename = "openApiKeys")]
     pub open_api_keys: Vec<String>,
     pub roles: Vec<QueryEndpointRole>,
@@ -1555,7 +1516,8 @@ pub struct ScalingSchedulePostRequest {
 /// `ServicPrivateEndpointePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicPrivateEndpointePostRequest {
-    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub id: String,
 }
 

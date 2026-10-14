@@ -67,18 +67,18 @@ fn build_service_query_key(
 fn build_query_api_key_request(service_name: &str) -> ApiKeyPostRequest {
     ApiKeyPostRequest {
         name: format!("clickhousectl-query-{service_name}"),
-        assigned_role_ids: vec![],
+        assigned_role_ids: Some(vec![]),
         expire_at: None,
         hash_data: None,
-        ip_access_list: vec![IpAccessListEntry {
+        ip_access_list: Some(vec![IpAccessListEntry {
             source: "0.0.0.0/0".to_string(),
             description: Some(format!(
                 "clickhousectl auto-provisioned key for service {service_name}"
             )),
-        }],
+        }]),
         #[cfg(feature = "deprecated-fields")]
         roles: None,
-        state: ApiKeyPostRequestState::Enabled,
+        state: Some(ApiKeyPostRequestState::Enabled),
     }
 }
 
@@ -292,7 +292,10 @@ fn inspect_repair_endpoint(
     let original_request = InstanceServiceQueryApiEndpointsPostRequest {
         roles: require_field(endpoint.roles, "query endpoint roles")?,
         open_api_keys: require_field(endpoint.open_api_keys, "query endpoint openApiKeys")?,
-        allowed_origins: require_field(endpoint.allowed_origins, "query endpoint allowedOrigins")?,
+        allowed_origins: Some(require_field(
+            endpoint.allowed_origins,
+            "query endpoint allowedOrigins",
+        )?),
     };
     Ok(RepairEndpointState::Existing {
         endpoint_id,
@@ -329,7 +332,7 @@ fn build_repair_endpoint_request(
         RepairEndpointState::Missing => InstanceServiceQueryApiEndpointsPostRequest {
             roles: vec![QueryEndpointRole::SqlConsoleAdmin],
             open_api_keys: vec![new_api_key_id.to_string()],
-            allowed_origins: ALLOWED_ORIGINS.to_string(),
+            allowed_origins: Some(ALLOWED_ORIGINS.to_string()),
         },
     }
 }
@@ -1214,7 +1217,7 @@ async fn read_bind_endpoint(
     Ok(Some(InstanceServiceQueryApiEndpointsPostRequest {
         roles,
         open_api_keys,
-        allowed_origins,
+        allowed_origins: Some(allowed_origins),
     }))
 }
 
@@ -1267,7 +1270,7 @@ fn build_bind_endpoint_request(
             // role to the key.
             roles: vec![QueryEndpointRole::SqlConsoleAdmin],
             open_api_keys,
-            allowed_origins: ALLOWED_ORIGINS.to_string(),
+            allowed_origins: Some(ALLOWED_ORIGINS.to_string()),
         },
     }
 }
@@ -1781,14 +1784,15 @@ mod tests {
     fn query_api_key_request_has_service_scoped_provisioning_shape() {
         let request = build_query_api_key_request("analytics");
         assert_eq!(request.name, "clickhousectl-query-analytics");
-        assert!(request.assigned_role_ids.is_empty());
+        assert_eq!(request.assigned_role_ids, Some(vec![]));
         assert!(request.expire_at.is_none());
         assert!(request.hash_data.is_none());
-        assert_eq!(request.state, ApiKeyPostRequestState::Enabled);
-        assert_eq!(request.ip_access_list.len(), 1);
-        assert_eq!(request.ip_access_list[0].source, "0.0.0.0/0");
+        assert_eq!(request.state, Some(ApiKeyPostRequestState::Enabled));
+        let ip_access_list = request.ip_access_list.as_deref().expect("ip access list");
+        assert_eq!(ip_access_list.len(), 1);
+        assert_eq!(ip_access_list[0].source, "0.0.0.0/0");
         assert_eq!(
-            request.ip_access_list[0].description.as_deref(),
+            ip_access_list[0].description.as_deref(),
             Some("clickhousectl auto-provisioned key for service analytics")
         );
         #[cfg(feature = "deprecated-fields")]
@@ -1899,7 +1903,7 @@ mod tests {
             build_bind_endpoint_request(None, merged_open_api_keys(vec![], "caller", &[]));
         assert_eq!(request.open_api_keys, ["caller"]);
         assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleAdmin]);
-        assert_eq!(request.allowed_origins, ALLOWED_ORIGINS);
+        assert_eq!(request.allowed_origins.as_deref(), Some(ALLOWED_ORIGINS));
     }
 
     #[test]
@@ -1907,7 +1911,7 @@ mod tests {
         let existing = InstanceServiceQueryApiEndpointsPostRequest {
             roles: vec![QueryEndpointRole::SqlConsoleReadOnly],
             open_api_keys: vec!["other-1".into(), "deleted".into(), "other-2".into()],
-            allowed_origins: "https://app.example.com".into(),
+            allowed_origins: Some("https://app.example.com".into()),
         };
         let request = build_bind_endpoint_request(
             Some(&existing),
@@ -1919,7 +1923,10 @@ mod tests {
         );
         assert_eq!(request.open_api_keys, ["other-1", "other-2", "caller"]);
         assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleReadOnly]);
-        assert_eq!(request.allowed_origins, "https://app.example.com");
+        assert_eq!(
+            request.allowed_origins.as_deref(),
+            Some("https://app.example.com")
+        );
     }
 
     #[test]
@@ -1990,7 +1997,10 @@ mod tests {
         let request = build_repair_endpoint_request(&state, &["old-key".to_string()], "new-key");
         assert_eq!(request.roles, vec![QueryEndpointRole::SqlConsoleReadOnly]);
         assert_eq!(request.open_api_keys, vec!["other-key", "new-key"]);
-        assert_eq!(request.allowed_origins, "https://example.com");
+        assert_eq!(
+            request.allowed_origins.as_deref(),
+            Some("https://example.com")
+        );
 
         let RepairEndpointState::Existing {
             original_request, ..
@@ -2011,7 +2021,7 @@ mod tests {
         let request = build_repair_endpoint_request(&state, &["old-key".to_string()], "new-key");
         assert_eq!(request.roles, vec![QueryEndpointRole::SqlConsoleAdmin]);
         assert_eq!(request.open_api_keys, vec!["new-key"]);
-        assert_eq!(request.allowed_origins, "*");
+        assert_eq!(request.allowed_origins.as_deref(), Some("*"));
     }
 
     #[test]

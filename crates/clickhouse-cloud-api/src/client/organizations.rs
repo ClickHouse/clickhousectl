@@ -56,10 +56,23 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Get list of available organizations
-    pub async fn organization_get_list(&self) -> Result<ApiResponse<Vec<Organization>>, Error> {
+    /// Get one page of the organizations available to the caller, oldest first.
+    ///
+    /// `limit` must be at least 1; omission uses the server default of 250. Pass
+    /// the response's `next_cursor` to fetch another page, until it is `None`.
+    pub async fn organization_get_list(
+        &self,
+        limit: Option<i64>,
+        cursor: Option<&str>,
+    ) -> Result<ApiResponse<Vec<Organization>>, Error> {
         let path = "/v1/organizations".to_string();
-        let req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(cursor) = cursor {
+            req = req.query(&[("cursor", cursor)]);
+        }
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

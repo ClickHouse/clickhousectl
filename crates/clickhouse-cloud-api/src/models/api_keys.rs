@@ -160,19 +160,20 @@ impl<'de> Deserialize<'de> for ApiKeyPatchRequest {
 /// `ApiKeyPostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ApiKeyPostRequest {
-    #[serde(rename = "assignedRoleIds")]
-    pub assigned_role_ids: Vec<uuid::Uuid>,
+    #[serde(rename = "assignedRoleIds", skip_serializing_if = "Option::is_none")]
+    pub assigned_role_ids: Option<Vec<uuid::Uuid>>,
     #[serde(rename = "expireAt", skip_serializing_if = "Option::is_none")]
     pub expire_at: Option<chrono::DateTime<chrono::Utc>>,
     #[serde(rename = "hashData", skip_serializing_if = "Option::is_none")]
     pub hash_data: Option<ApiKeyHashData>,
-    #[serde(rename = "ipAccessList")]
-    pub ip_access_list: Vec<IpAccessListEntry>,
+    #[serde(rename = "ipAccessList", skip_serializing_if = "Option::is_none")]
+    pub ip_access_list: Option<Vec<IpAccessListEntry>>,
     pub name: String,
     #[cfg(feature = "deprecated-fields")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub roles: Option<Vec<String>>,
-    pub state: ApiKeyPostRequestState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<ApiKeyPostRequestState>,
 }
 
 /// `ApiKeyPostResponse` from the ClickHouse Cloud API.

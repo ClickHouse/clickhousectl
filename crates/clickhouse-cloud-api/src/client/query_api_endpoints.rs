@@ -3,7 +3,7 @@ use crate::error::Error;
 use crate::models::*;
 
 impl Client {
-    /// Create a Query API endpoint (Beta).
+    /// Create a Query API endpoint.
     pub async fn query_api_endpoint_create(
         &self,
         organization_id: &str,
@@ -29,7 +29,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Get a Query API endpoint (Beta).
+    /// Get a Query API endpoint.
     pub async fn query_api_endpoint_get(
         &self,
         organization_id: &str,
@@ -55,7 +55,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// List Query API endpoints (Beta).
+    /// List Query API endpoints.
     ///
     /// Pass the previous page's `pagination.nextCursor` to retrieve the next page.
     /// The API defaults to 100 records per page and accepts limits from 1 to 100.
@@ -91,7 +91,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Update a Query API endpoint (Beta).
+    /// Update a Query API endpoint.
     ///
     /// User-owned endpoints cannot be managed through this operation.
     pub async fn query_api_endpoint_update(
@@ -120,7 +120,7 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// Delete a Query API endpoint (Beta).
+    /// Delete a Query API endpoint.
     ///
     /// User-owned endpoints cannot be managed through this operation.
     pub async fn query_api_endpoint_delete(

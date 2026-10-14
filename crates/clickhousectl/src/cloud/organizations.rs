@@ -1069,7 +1069,9 @@ fn build_member_update_request(role_ids: &[String], clear_roles: bool) -> Member
 fn build_invitation_create_request(email: &str, role_ids: &[String]) -> InvitationPostRequest {
     InvitationPostRequest {
         email: email.to_string(),
-        assigned_role_ids: role_ids.to_vec(),
+        // The spec makes `assignedRoleIds` optional; keep sending it (possibly
+        // `[]`) so the create request is unchanged.
+        assigned_role_ids: Some(role_ids.to_vec()),
         #[cfg(feature = "deprecated-fields")]
         role: None,
     }
@@ -1723,7 +1725,7 @@ impl CloudClient {
     ) -> crate::cloud::client::Result<Vec<clickhouse_cloud_api::models::Organization>> {
         let response = self
             .api()
-            .organization_get_list()
+            .organization_get_list(None, None)
             .await
             .map_err(|error| self.convert_error(error))?;
         Self::unwrap_response(response)
@@ -2861,7 +2863,12 @@ mod tests {
         let request = build_invitation_create_request("user@example.com", &[]);
 
         assert_eq!(request.email, "user@example.com");
-        assert!(request.assigned_role_ids.is_empty());
+        assert_eq!(request.assigned_role_ids, Some(vec![]));
+        // The spec makes `assignedRoleIds` optional; the wire request still sends `[]`.
+        assert_eq!(
+            serde_json::to_value(&request).unwrap()["assignedRoleIds"],
+            serde_json::json!([])
+        );
         #[cfg(feature = "deprecated-fields")]
         assert!(request.role.is_none());
     }
@@ -2874,7 +2881,10 @@ mod tests {
         );
 
         assert_eq!(request.email, "user@example.com");
-        assert_eq!(request.assigned_role_ids, vec!["role-1", "role-2"]);
+        assert_eq!(
+            request.assigned_role_ids.as_deref(),
+            Some(&["role-1".to_string(), "role-2".to_string()][..])
+        );
         #[cfg(feature = "deprecated-fields")]
         assert!(request.role.is_none());
     }

@@ -113,8 +113,14 @@ pub struct ScimGroupPostRequest {
     pub display_name: String,
     #[serde(rename = "externalId", skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
+    /// Server-assigned resource ID echoed back by the IdP; ignored on write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub members: Option<Vec<ScimGroupMember>>,
+    /// Server-assigned metadata echoed back by the IdP; ignored on write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<ScimGroupMeta>,
     pub schemas: Vec<String>,
 }
 
@@ -153,7 +159,47 @@ pub struct ScimListResponse {
 pub struct ScimPatchOp {
     #[serde(rename = "Operations")]
     pub operations: Vec<ScimPatchOperation>,
+    /// Server-assigned resource ID echoed back by the IdP; ignored on write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Server-assigned metadata echoed back by the IdP; ignored on write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<ScimPatchOpMeta>,
     pub schemas: Vec<String>,
+}
+
+/// `ScimPatchOp.meta` - one of multiple variants.
+///
+/// The spec's `oneOf` arms are structurally identical, so this dispatches on
+/// the SCIM `resourceType` (RFC 7643 §3.1); see the `discriminated_union!`
+/// invocation below for the wire values.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ScimPatchOpMeta {
+    ScimUserMeta(ScimUserMeta),
+    ScimGroupMeta(ScimGroupMeta),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+
+discriminated_union! {
+    ScimPatchOpMeta, "resourceType" {
+        "User" => ScimUserMeta,
+        "Group" => ScimGroupMeta,
+    }
+}
+
+impl std::fmt::Display for ScimPatchOpMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ScimUserMeta(_) => write!(f, "ScimUserMeta"),
+            Self::ScimGroupMeta(_) => write!(f, "ScimGroupMeta"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
 }
 
 /// `ScimPatchOperation` from the ClickHouse Cloud API.
@@ -328,10 +374,16 @@ pub struct ScimUserPostRequest {
     pub external_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub groups: Option<Vec<ScimUserGroup>>,
+    /// Server-assigned resource ID echoed back by the IdP; ignored on write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ims: Option<Vec<ScimUserIm>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub locale: Option<String>,
+    /// Server-assigned metadata echoed back by the IdP; ignored on write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta: Option<ScimUserMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<ScimUserName>,
     #[serde(rename = "nickName", skip_serializing_if = "Option::is_none")]

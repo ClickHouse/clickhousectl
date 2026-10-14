@@ -59,14 +59,25 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
-    /// List service snapshots, most recent first (beta).
+    /// Get one page of service snapshots, most recent first (beta).
+    ///
+    /// `limit` must be at least 1; omission uses the server default of 250. Pass
+    /// the response's `next_cursor` to fetch another page, until it is `None`.
     pub async fn snapshot_get_list(
         &self,
         organization_id: &str,
         service_id: &str,
+        limit: Option<i64>,
+        cursor: Option<&str>,
     ) -> Result<ApiResponse<Vec<Snapshot>>, Error> {
         let path = format!("/v1/organizations/{organization_id}/services/{service_id}/snapshots");
-        let req = self.request(reqwest::Method::GET, &path);
+        let mut req = self.request(reqwest::Method::GET, &path);
+        if let Some(limit) = limit {
+            req = req.query(&[("limit", limit)]);
+        }
+        if let Some(cursor) = cursor {
+            req = req.query(&[("cursor", cursor)]);
+        }
         let resp = req.send().await?;
         let status = resp.status();
         let body_text = resp.text().await?;

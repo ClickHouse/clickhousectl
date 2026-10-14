@@ -137,7 +137,7 @@ fn clickpipe_new_request_fields_preserve_omission_and_wire_names() {
             .get("startPaused")
             .is_none()
     );
-    request.start_paused = true;
+    request.start_paused = Some(true);
     assert_eq!(serde_json::to_value(&request).unwrap()["startPaused"], true);
 
     let mut table = ClickPipeDestinationTableDefinition::default();
@@ -1720,7 +1720,7 @@ fn deprecated_request_fields_absent_by_default() {
 
     let invitation = InvitationPostRequest {
         email: "alice@example.com".to_string(),
-        assigned_role_ids: vec!["admin".to_string()],
+        assigned_role_ids: Some(vec!["admin".to_string()]),
     };
     assert!(
         serde_json::to_value(&invitation)
@@ -1763,7 +1763,7 @@ fn serialize_create_reverse_private_endpoint() {
 #[test]
 fn serialize_instance_query_endpoint_post_request() {
     let req = InstanceServiceQueryApiEndpointsPostRequest {
-        allowed_origins: "https://example.com".to_string(),
+        allowed_origins: Some("https://example.com".to_string()),
         roles: vec![QueryEndpointRole::SqlConsoleReadOnly],
         ..Default::default()
     };
@@ -1803,7 +1803,7 @@ fn slow_query_sort_enums_preserve_unknown_values() {
 fn serialize_servic_private_endpointe_post_request() {
     let req = ServicPrivateEndpointePostRequest {
         id: "vpce-abc".to_string(),
-        description: "My PE".to_string(),
+        description: Some("My PE".to_string()),
     };
     let json = serde_json::to_value(&req).unwrap();
     assert_eq!(json["id"], "vpce-abc");
@@ -2437,7 +2437,8 @@ fn infrastructure_responses_tolerate_dropped_and_null_fields() {
     let nulled: ReversePrivateEndpoint = serde_json::from_str(
         r#"{"id":null,"description":null,"status":null,"type":null,"dnsNames":null,
             "privateDnsNames":null,"endpointId":null,"serviceId":null,
-            "customPrivateDnsMappings":null}"#,
+            "customPrivateDnsMappings":null,"dnsTargets":null,
+            "privateDnsMappings":null}"#,
     )
     .unwrap();
     assert_eq!(dropped, ReversePrivateEndpoint::default());
@@ -2446,12 +2447,88 @@ fn infrastructure_responses_tolerate_dropped_and_null_fields() {
     // `#[serde(default)]` policy still failed on.
     assert_eq!(nulled.dns_names, None);
     assert_eq!(nulled.custom_private_dns_mappings, None);
+    assert_eq!(nulled.dns_targets, None);
+    assert_eq!(nulled.private_dns_mappings, None);
 
     let quota: OrganizationQuota = serde_json::from_str(r#"{"name":"Services"}"#).unwrap();
     assert_eq!(quota.name.as_deref(), Some("Services"));
     assert_eq!(quota.quota_code, None);
     assert_eq!(quota.value, None);
     assert_eq!(quota.adjustable, None);
+}
+
+#[test]
+fn reverse_private_endpoint_dns_targets_and_mappings_tolerate_dropped_and_null_fields() {
+    // Both nested schemas are response-only, so every field is `Option<T>`.
+    assert_eq!(
+        serde_json::from_str::<ReversePrivateEndpointDnsTarget>("{}").unwrap(),
+        ReversePrivateEndpointDnsTarget::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ReversePrivateEndpointDnsTarget>(
+            r#"{"id":null,"kind":null,"internalDnsName":null}"#
+        )
+        .unwrap(),
+        ReversePrivateEndpointDnsTarget::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ReversePrivateEndpointPrivateDnsMapping>("{}").unwrap(),
+        ReversePrivateEndpointPrivateDnsMapping::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<ReversePrivateEndpointPrivateDnsMapping>(
+            r#"{"privateDnsName":null,"internalDnsName":null}"#
+        )
+        .unwrap(),
+        ReversePrivateEndpointPrivateDnsMapping::default()
+    );
+    assert_eq!(
+        serde_json::from_str::<CustomPrivateDnsMappingResponse>(
+            r#"{"privateDnsName":null,"targetId":null}"#
+        )
+        .unwrap(),
+        CustomPrivateDnsMappingResponse::default()
+    );
+
+    let rpe: ReversePrivateEndpoint = serde_json::from_str(
+        r#"{
+            "customPrivateDnsMappings":[{"privateDnsName":"db.example.com","targetId":"rcfg-1"}],
+            "dnsTargets":[{"id":"rcfg-1","kind":"RESOURCE_CONFIGURATION","internalDnsName":"a.on.aws"},
+                          {"id":"rcfg-2","kind":"FUTURE_KIND"}],
+            "privateDnsMappings":[{"privateDnsName":"my.example.com","internalDnsName":"b.on.aws"}]
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        rpe.custom_private_dns_mappings.unwrap()[0]
+            .target_id
+            .as_deref(),
+        Some("rcfg-1")
+    );
+    assert_eq!(
+        rpe.dns_targets,
+        Some(vec![
+            ReversePrivateEndpointDnsTarget {
+                id: Some("rcfg-1".to_string()),
+                internal_dns_name: Some("a.on.aws".to_string()),
+                kind: Some(ReversePrivateEndpointDnsTargetKind::RESOURCE_CONFIGURATION),
+            },
+            ReversePrivateEndpointDnsTarget {
+                id: Some("rcfg-2".to_string()),
+                internal_dns_name: None,
+                kind: Some(ReversePrivateEndpointDnsTargetKind::Unknown(
+                    "FUTURE_KIND".to_string()
+                )),
+            },
+        ])
+    );
+    assert_eq!(
+        rpe.private_dns_mappings,
+        Some(vec![ReversePrivateEndpointPrivateDnsMapping {
+            private_dns_name: Some("my.example.com".to_string()),
+            internal_dns_name: Some("b.on.aws".to_string()),
+        }])
+    );
 }
 
 #[test]
@@ -2462,6 +2539,7 @@ fn reverse_private_endpoint_omits_absent_fields_when_serialized() {
         description: Some("MSK endpoint".to_string()),
         custom_private_dns_mappings: Some(vec![CustomPrivateDnsMappingResponse {
             private_dns_name: None,
+            target_id: None,
         }]),
         ..Default::default()
     };
@@ -2481,10 +2559,22 @@ fn infrastructure_shared_leaves_stay_strict_on_the_request_side() {
     // response type, and neither variant fabricates a value for a missing key.
     let mapping = CustomPrivateDnsMapping {
         private_dns_name: Some("db.internal".to_string()),
+        target_id: None,
     };
     assert_eq!(
         serde_json::to_value(&mapping).unwrap(),
         serde_json::json!({ "privateDnsName": "db.internal" })
+    );
+    let targeted = CustomPrivateDnsMapping {
+        private_dns_name: Some("db.internal".to_string()),
+        target_id: Some("rcfg-097648d8068504966".to_string()),
+    };
+    assert_eq!(
+        serde_json::to_value(&targeted).unwrap(),
+        serde_json::json!({
+            "privateDnsName": "db.internal",
+            "targetId": "rcfg-097648d8068504966",
+        })
     );
     // Both schemas are all-optional upstream, so the request variants accept an
     // empty object too — what the split guarantees is that the response variant
@@ -6356,7 +6446,9 @@ fn scim_request_models_stay_strict() {
     let group = ScimGroupPostRequest {
         display_name: "Engineering".to_string(),
         external_id: None,
+        id: None,
         members: None,
+        meta: None,
         schemas: vec!["urn:ietf:params:scim:schemas:core:2.0:Group".to_string()],
     };
     let v = serde_json::to_value(&group).unwrap();
@@ -6367,6 +6459,60 @@ fn scim_request_models_stay_strict() {
     );
     assert!(v.get("externalId").is_none());
     assert!(v.get("members").is_none());
+    assert!(v.get("id").is_none());
+    assert!(v.get("meta").is_none());
+}
+
+#[test]
+fn scim_request_echoed_id_and_meta_round_trip() {
+    let created = "2026-01-02T03:04:05Z";
+    let modified = "2026-01-03T03:04:05Z";
+    let patch: ScimPatchOp = serde_json::from_value(serde_json::json!({
+        "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        "Operations": [],
+        "id": "user-1",
+        "meta": {"resourceType": "User", "created": created, "lastModified": modified}
+    }))
+    .unwrap();
+    assert_eq!(patch.id.as_deref(), Some("user-1"));
+    let Some(ScimPatchOpMeta::ScimUserMeta(meta)) = &patch.meta else {
+        panic!("expected user meta, got {:?}", patch.meta);
+    };
+    assert_eq!(meta.resource_type, "User");
+    assert_eq!(
+        serde_json::to_value(&patch).unwrap()["meta"]["resourceType"],
+        "User"
+    );
+
+    let group_meta = serde_json::json!({
+        "resourceType": "Group", "created": created, "lastModified": modified
+    });
+    let parsed: ScimPatchOpMeta = serde_json::from_value(group_meta.clone()).unwrap();
+    assert!(matches!(parsed, ScimPatchOpMeta::ScimGroupMeta(_)));
+    let other = serde_json::json!({"resourceType": "Device"});
+    let parsed: ScimPatchOpMeta = serde_json::from_value(other.clone()).unwrap();
+    assert_eq!(parsed, ScimPatchOpMeta::Unknown(other));
+
+    let group: ScimGroupPostRequest = serde_json::from_value(serde_json::json!({
+        "schemas": [], "displayName": "Engineering", "id": "group-1", "meta": group_meta
+    }))
+    .unwrap();
+    assert_eq!(group.id.as_deref(), Some("group-1"));
+    assert_eq!(
+        group.meta.map(|meta| meta.resource_type).as_deref(),
+        Some("Group")
+    );
+
+    let user = ScimUserPostRequest {
+        user_name: "ada".to_string(),
+        ..Default::default()
+    };
+    let v = serde_json::to_value(&user).unwrap();
+    assert!(v.get("id").is_none());
+    assert!(v.get("meta").is_none());
+    let v = serde_json::to_value(ScimPatchOp::default()).unwrap();
+    assert!(v.get("id").is_none());
+    assert!(v.get("meta").is_none());
 }
 
 #[test]

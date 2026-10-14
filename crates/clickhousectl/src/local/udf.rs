@@ -1890,13 +1890,15 @@ mod tests {
             return_type: "UInt64".into(),
             runtime: UdfRuntime::Python3_11,
             sandbox_type: Some(UdfSandboxType::Netenable),
-            sandbox_version: Some(UdfSandboxVersion::V3),
             send_chunk_header: Some(true),
             r#type: UdfCreateRequestV2Type::ExecutablePool,
             upload_id: "upload".into(),
         };
         let mut value = serde_json::to_value(&maximal).unwrap();
         value.as_object_mut().unwrap().remove("uploadId");
+        // Cloud no longer accepts sandboxVersion, but local definitions still
+        // carry it (and report it as ignored).
+        value["sandboxVersion"] = json!("v3");
         let local: LocalUdfDefinition = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(local.pool_size, Some(4));
         assert_eq!(local.runtime, LocalUdfRuntime::Python311);
@@ -1908,6 +1910,8 @@ mod tests {
         // the library request, so a local definition always deploys to Cloud.
         let mut round_trip = serde_json::to_value(&local).unwrap();
         round_trip["uploadId"] = json!("upload");
+        // The one exception: `cloud udf` drops sandboxVersion with a warning.
+        round_trip.as_object_mut().unwrap().remove("sandboxVersion");
         let request: UdfCreateRequestV2 =
             crate::cloud::config::deserialize_strict_config(round_trip, "UDF definition").unwrap();
         assert_eq!(request, maximal);

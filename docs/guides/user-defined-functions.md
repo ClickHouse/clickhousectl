@@ -66,7 +66,8 @@ The definition maps to ClickHouse's `<function>` XML with the same units as Clou
 | `sendChunkHeader`, `deterministic` | `send_chunk_header`, `deterministic` |
 | `runtime: python3.11` | `execute_direct` `0`; `command` is `exec` with the interpreter and `main.py` paths, so each worker is one Python process |
 | `runtime: native` | `execute_direct` `1`; `command` is `<name>/<arch>/main` for the host CPU |
-| `memoryLimitMib`, `sandboxType`, `sandboxVersion` | No local equivalent; accepted and reported as ignored |
+| `memoryLimitMib`, `sandboxType` | No local equivalent; accepted and reported as ignored |
+| `sandboxVersion` | No local equivalent; accepted and reported as ignored. Cloud no longer accepts it: `cloud udf` warns and omits it |
 
 ## Deploy to Cloud in one step
 

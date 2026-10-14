@@ -2551,7 +2551,7 @@ fn build_query_endpoint_create_request(
             .map(|role| parse_serde_enum(role, "role", QueryEndpointRole::VALUES))
             .collect::<Result<_, _>>()?,
         open_api_keys,
-        allowed_origins,
+        allowed_origins: Some(allowed_origins),
     })
 }
 
@@ -2561,7 +2561,9 @@ fn build_private_endpoint_create_request(
 ) -> ServicPrivateEndpointePostRequest {
     ServicPrivateEndpointePostRequest {
         id: endpoint_id.to_string(),
-        description: description.map(String::from).unwrap_or_default(),
+        // The spec makes `description` optional; keep sending `""` when the
+        // flag is absent so the create request is unchanged.
+        description: Some(description.map(String::from).unwrap_or_default()),
     }
 }
 
@@ -8906,7 +8908,10 @@ mod tests {
 
         assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleReadOnly]);
         assert!(request.open_api_keys.is_empty());
-        assert_eq!(request.allowed_origins, "https://example.com");
+        assert_eq!(
+            request.allowed_origins.as_deref(),
+            Some("https://example.com")
+        );
     }
 
     #[test]
@@ -8934,7 +8939,7 @@ mod tests {
             ]
         );
         assert_eq!(request.open_api_keys, ["key-1", "key-2"]);
-        assert_eq!(request.allowed_origins, "*");
+        assert_eq!(request.allowed_origins.as_deref(), Some("*"));
     }
 
     #[test]
@@ -8956,7 +8961,10 @@ mod tests {
 
         assert_eq!(request.roles, [QueryEndpointRole::SqlConsoleReadOnly]);
         assert_eq!(request.open_api_keys, ["key-1", "key-2", "key-3"]);
-        assert_eq!(request.allowed_origins, "https://before.example.com");
+        assert_eq!(
+            request.allowed_origins.as_deref(),
+            Some("https://before.example.com")
+        );
     }
 
     #[test]
@@ -8992,7 +9000,7 @@ mod tests {
         )
         .unwrap();
         assert!(request.open_api_keys.is_empty());
-        assert!(request.allowed_origins.is_empty());
+        assert_eq!(request.allowed_origins.as_deref(), Some(""));
     }
 
     #[test]
@@ -9009,7 +9017,10 @@ mod tests {
         options.allowed_origins = Some("https://example.com".into());
         let request = build_query_endpoint_create_request(&options, Some(&existing)).unwrap();
         assert_eq!(request.open_api_keys, ["key-1"]);
-        assert_eq!(request.allowed_origins, "https://example.com");
+        assert_eq!(
+            request.allowed_origins.as_deref(),
+            Some("https://example.com")
+        );
     }
 
     #[test]
@@ -9017,7 +9028,9 @@ mod tests {
         let request = build_private_endpoint_create_request("vpce-0123456789abcdef0", None);
 
         assert_eq!(request.id, "vpce-0123456789abcdef0");
-        assert!(request.description.is_empty());
+        assert_eq!(request.description.as_deref(), Some(""));
+        // The spec makes `description` optional; the wire request still sends `""`.
+        assert_eq!(serde_json::to_value(&request).unwrap()["description"], "");
     }
 
     #[test]
@@ -9026,7 +9039,7 @@ mod tests {
             build_private_endpoint_create_request("vpce-0123456789abcdef0", Some("production"));
 
         assert_eq!(request.id, "vpce-0123456789abcdef0");
-        assert_eq!(request.description, "production");
+        assert_eq!(request.description.as_deref(), Some("production"));
     }
 
     #[test]

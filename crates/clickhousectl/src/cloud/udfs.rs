@@ -315,6 +315,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                     name,
                 )?;
             }
+            warn_local_only_fields(&definition);
             let mut request =
                 build_udf_create_request(definition, "pending").map_err(definition_invalid)?;
             let artifact = resolve_artifact(
@@ -349,6 +350,7 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                 &name.function_name,
             )?;
             udf::strip_function_name(&mut definition);
+            warn_local_only_fields(&definition);
             let mut request = build_udf_version_create_request(definition, "pending")
                 .map_err(definition_invalid)?;
             let artifact = resolve_artifact(
@@ -655,11 +657,28 @@ fn check_definition_name(
     })
 }
 
-/// Shape-check the definition (shared with `local udf`), then stamp the
-/// upload session ID the CLI owns into it.
+/// A definition key `local udf` still accepts but ClickHouse Cloud no longer
+/// accepts on UDF create or version create.
+const LOCAL_ONLY_SANDBOX_VERSION: &str = "sandboxVersion";
+
+/// Warn on stderr (never stdout, so `--json` output stays parseable) when a
+/// definition sets `sandboxVersion`, which the cloud builders omit.
+fn warn_local_only_fields(definition: &Value) {
+    if definition.get(LOCAL_ONLY_SANDBOX_VERSION).is_some() {
+        eprint_line(
+            "Warning: ignoring sandboxVersion in the UDF definition; ClickHouse Cloud no longer \
+             accepts it",
+        );
+    }
+}
+
+/// Shape-check the definition (shared with `local udf`), drop the
+/// local-only `sandboxVersion`, then stamp the upload session ID the CLI
+/// owns into it.
 fn validate_udf_config(value: &mut Value, upload_id: &str, create: bool) -> CloudResult<String> {
     let kind = crate::udf::validate_definition(value, create).map_err(CloudError::new)?;
     if let Some(object) = value.as_object_mut() {
+        object.remove(LOCAL_ONLY_SANDBOX_VERSION);
         object.insert("uploadId".into(), Value::String(upload_id.to_owned()));
     }
     Ok(kind)
@@ -668,16 +687,12 @@ fn validate_udf_config(value: &mut Value, upload_id: &str, create: bool) -> Clou
 fn validate_udf_enums(
     runtime: &UdfRuntime,
     sandbox_type: Option<&UdfSandboxType>,
-    sandbox_version: Option<&UdfSandboxVersion>,
 ) -> CloudResult<()> {
     if matches!(runtime, UdfRuntime::Unknown(_)) {
         return Err(CloudError::new("Unsupported UDF runtime"));
     }
     if matches!(sandbox_type, Some(UdfSandboxType::Unknown(_))) {
         return Err(CloudError::new("Unsupported UDF sandboxType"));
-    }
-    if matches!(sandbox_version, Some(UdfSandboxVersion::Unknown(_))) {
-        return Err(CloudError::new("Unsupported UDF sandboxVersion"));
     }
     Ok(())
 }
@@ -686,20 +701,12 @@ fn build_udf_create_request(mut value: Value, upload_id: &str) -> CloudResult<Ud
     match validate_udf_config(&mut value, upload_id, true)?.as_str() {
         "executable" => {
             let body: UdfCreateRequestV1 = deserialize_strict_config(value, "UDF definition")?;
-            validate_udf_enums(
-                &body.runtime,
-                body.sandbox_type.as_ref(),
-                body.sandbox_version.as_ref(),
-            )?;
+            validate_udf_enums(&body.runtime, body.sandbox_type.as_ref())?;
             Ok(UdfCreateRequest::UdfCreateRequestV1(body))
         }
         "executable_pool" => {
             let body: UdfCreateRequestV2 = deserialize_strict_config(value, "UDF definition")?;
-            validate_udf_enums(
-                &body.runtime,
-                body.sandbox_type.as_ref(),
-                body.sandbox_version.as_ref(),
-            )?;
+            validate_udf_enums(&body.runtime, body.sandbox_type.as_ref())?;
             Ok(UdfCreateRequest::UdfCreateRequestV2(body))
         }
         _ => Err(CloudError::new("Unsupported UDF type")),
@@ -714,21 +721,13 @@ fn build_udf_version_create_request(
         "executable" => {
             let body: UdfVersionCreateRequestV1 =
                 deserialize_strict_config(value, "UDF definition")?;
-            validate_udf_enums(
-                &body.runtime,
-                body.sandbox_type.as_ref(),
-                body.sandbox_version.as_ref(),
-            )?;
+            validate_udf_enums(&body.runtime, body.sandbox_type.as_ref())?;
             Ok(UdfVersionCreateRequest::UdfVersionCreateRequestV1(body))
         }
         "executable_pool" => {
             let body: UdfVersionCreateRequestV2 =
                 deserialize_strict_config(value, "UDF definition")?;
-            validate_udf_enums(
-                &body.runtime,
-                body.sandbox_type.as_ref(),
-                body.sandbox_version.as_ref(),
-            )?;
+            validate_udf_enums(&body.runtime, body.sandbox_type.as_ref())?;
             Ok(UdfVersionCreateRequest::UdfVersionCreateRequestV2(body))
         }
         _ => Err(CloudError::new("Unsupported UDF type")),
@@ -1155,6 +1154,7 @@ async fn deploy(client: &CloudClient, args: UdfDeployArgs, json: bool) -> CloudR
     let source = resolve_source(&args.dir, name)?;
     let definition = definition_source(None, Some(&source))?;
     check_definition_name(&definition, None, Some(&source), name)?;
+    warn_local_only_fields(&definition);
     let create_request =
         build_udf_create_request(definition.clone(), "pending").map_err(definition_invalid)?;
     let mut version_definition = definition;
@@ -1862,6 +1862,8 @@ mod tests {
                         serde_json::to_value(request).unwrap()
                     };
                     input["uploadId"] = json!("upload-1");
+                    // Cloud no longer accepts sandboxVersion: the builder omits it.
+                    input.as_object_mut().unwrap().remove("sandboxVersion");
                     if kind == "executable" {
                         input.as_object_mut().unwrap().remove("poolSize");
                     }
@@ -1872,12 +1874,31 @@ mod tests {
     }
 
     #[test]
+    fn udf_builders_omit_sandbox_version() {
+        for value in [json!("v3"), json!("future")] {
+            for kind in ["executable", "executable_pool"] {
+                let mut create = definition(kind, true);
+                create["sandboxVersion"] = value.clone();
+                let request = build_udf_create_request(create, "fresh").unwrap();
+                let body = serde_json::to_value(request).unwrap();
+                assert!(body.get("sandboxVersion").is_none(), "{kind}");
+                assert_eq!(body["uploadId"], json!("fresh"));
+
+                let mut version = definition(kind, false);
+                version["sandboxVersion"] = value.clone();
+                let request = build_udf_version_create_request(version, "fresh").unwrap();
+                let body = serde_json::to_value(request).unwrap();
+                assert!(body.get("sandboxVersion").is_none(), "{kind}");
+            }
+        }
+    }
+
+    #[test]
     fn udf_builders_reject_lossy_or_incomplete_requests() {
         for (key, value) in [
             ("type", json!("future")),
             ("runtime", json!("future")),
             ("sandboxType", json!("future")),
-            ("sandboxVersion", json!("future")),
             ("deterministic", Value::Null),
             ("deterministic", json!("false")),
             ("memoryLimitMib", json!(0)),
