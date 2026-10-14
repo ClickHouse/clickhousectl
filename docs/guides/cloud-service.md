@@ -51,6 +51,13 @@ For recurring capacity changes, `scaling-schedule set --file` replaces the compl
 
 Schedule hours are UTC, start-inclusive and end-exclusive; `24` means midnight, and an end before the start creates an overnight window. Weekdays use Sunday `0` through Saturday `6`. Upgrade windows use the same weekday numbering, last six hours, and start at UTC hour `0`, `6`, `12`, or `18`. Set both day and hour when replacing a window. Only primary services can change it; secondaries inherit it.
 
+Replica aware (sticky) routing is beta and set per protocol; an omitted flag leaves that protocol unchanged. Updating it requires the organization feature. Once HTTP routing is on, every HTTP client must send the `X-ClickHouse-Replica-Tag` header, so update clients before enabling it:
+
+```bash
+clickhousectl cloud service replica-aware-routing get <service-id>
+clickhousectl cloud service replica-aware-routing update <service-id> --native-enabled true
+```
+
 Service tag and IP updates have explicit add/remove flags. Add and remove tags in separate calls. Unmatched removals exit 0 with a warning; verify the resulting service rather than relying on exit 0 to prove a match.
 
 ## Back up and restore

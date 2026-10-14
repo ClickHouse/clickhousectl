@@ -2192,6 +2192,21 @@ async fn query_endpoint_create_explicit_origins_replace_without_dropping_keys() 
 }
 
 #[tokio::test]
+async fn query_endpoint_create_omits_allowed_origins_the_endpoint_does_not_report() {
+    let mock = manual_query_endpoint_mock(manual_query_endpoint_response(serde_json::json!({
+        "openApiKeys": ["existing-1"],
+    })))
+    .await;
+    let body = invoke_cli_capture_body(&mock, &manual_query_endpoint_args(&[])).await;
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "roles": ["sql_console_read_only"], "openApiKeys": ["existing-1"],
+        })
+    );
+}
+
+#[tokio::test]
 async fn query_endpoint_create_key_replacement_is_explicit() {
     let mock = manual_query_endpoint_mock(manual_query_endpoint_response(serde_json::json!({
         "openApiKeys": ["existing-1", "existing-2"],
@@ -2248,11 +2263,6 @@ async fn query_endpoint_create_refuses_failed_or_incomplete_get_without_writing(
                 serde_json::json!({"allowedOrigins": "https://before.example.com"}),
             ),
             vec!["--open-api-key", "new-key"],
-            1,
-        ),
-        (
-            manual_query_endpoint_response(serde_json::json!({"openApiKeys": ["existing-1"]})),
-            vec![],
             1,
         ),
         (
@@ -14099,6 +14109,51 @@ async fn first_use_keeps_an_existing_endpoints_roles_and_origins() {
     );
 }
 
+#[tokio::test]
+async fn first_use_echoes_absent_allowed_origins_as_absent() {
+    // `allowedOrigins` is optional on the read and the upsert, so an endpoint
+    // that reports none is rebound without one rather than refused or given
+    // the new-endpoint default.
+    let control = start_mock_control_plane_with_service().await;
+    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_bound_key_lookup(&control, BOUND_KEY_A, 200).await;
+    Mock::given(method("GET"))
+        .and(path(first_use_endpoint_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "ep-1",
+                "openApiKeys": [BOUND_KEY_A],
+                "roles": ["sql_console_admin"],
+            },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    mount_first_use_endpoint_upsert(&control, endpoint_upsert_ok()).await;
+    let query_host = start_query_host_rejecting_the_first_query().await;
+
+    let (_project, output) = run_first_use_query(&control, &query_host, &[]).await;
+    assert_success(&output);
+    let upsert = control
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::POST
+                && request.url.path() == first_use_endpoint_path()
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&upsert.body).unwrap(),
+        serde_json::json!({
+            "openApiKeys": [BOUND_KEY_A, CALLER_KEY_UUID],
+            "roles": ["sql_console_admin"],
+        })
+    );
+}
+
 /// The control plane of a first use whose endpoint already binds the caller
 /// (listed in uppercase: still the same key) next to a live key, so the bind
 /// has nothing to change.
@@ -14261,8 +14316,8 @@ async fn first_use_with_no_auto_enable_refuses_before_identifying_the_key() {
 async fn first_use_refuses_to_rebind_an_endpoint_whose_settings_are_unknown() {
     // A 200 endpoint GET that omits `openApiKeys` leaves the bound keys
     // unknown: the upsert replaces the list wholesale, so binding on top of an
-    // assumed-empty list would revoke them. An omitted `roles` or
-    // `allowedOrigins` cannot be echoed back, and a default would rewrite it.
+    // assumed-empty list would revoke them. An omitted `roles` cannot be
+    // echoed back, and a default would rewrite it.
     let complete = serde_json::json!({
         "id": "ep-1",
         "allowedOrigins": "*",
@@ -14272,7 +14327,6 @@ async fn first_use_refuses_to_rebind_an_endpoint_whose_settings_are_unknown() {
     for (field, expected) in [
         ("openApiKeys", "'openApiKeys'"),
         ("roles", "'query endpoint roles'"),
-        ("allowedOrigins", "'query endpoint allowedOrigins'"),
     ] {
         let mut result = complete.clone();
         result.as_object_mut().unwrap().remove(field);
@@ -18735,8 +18789,118 @@ async fn reverse_private_endpoint_list_table_renders_absent_fields() {
     assert!(stdout.contains("| ID"), "{stdout}");
     assert!(stdout.contains("DNS Names"), "{stdout}");
     assert!(stdout.contains(RPE_ID), "{stdout}");
-    // Type, Description, Status and DNS Names are all absent here.
-    assert_eq!(stdout.matches(" - ").count(), 4, "{stdout}");
+    // Type, Description, Status, DNS Names and DNS Targets are all absent here.
+    assert_eq!(stdout.matches(" - ").count(), 5, "{stdout}");
+}
+
+/// A `VPC_RESOURCE` endpoint's read-only `dnsTargets` and
+/// `privateDnsMappings`: the list counts the targets, and `get` shows every
+/// target ID (the value `--custom-private-dns-mapping NAME=TARGET_ID` takes)
+/// and every provider DNS mapping.
+fn vpc_resource_endpoint_json() -> serde_json::Value {
+    serde_json::json!({
+        "id": RPE_ID,
+        "type": "VPC_RESOURCE",
+        "description": "warehouse",
+        "status": "Ready",
+        "dnsNames": ["vpce-1.rcfg-1.vpc-lattice-rsc.us-east-1.on.aws"],
+        "dnsTargets": [
+            {
+                "id": "rcfg-097648d8068504966",
+                "kind": "RESOURCE_CONFIGURATION",
+                "internalDnsName": "vpce-052ef.rcfg-097648d8068504966.vpc-lattice-rsc.us-east-1.on.aws",
+            },
+            { "id": "rcfg-2", "kind": "RESOURCE_CONFIGURATION" },
+        ],
+        "privateDnsMappings": [
+            {
+                "privateDnsName": "db.internal.example.com",
+                "internalDnsName": "vpce-0123.vpce-svc-0123.us-east-1.vpce.amazonaws.com",
+            },
+        ],
+        "customPrivateDnsMappings": [
+            { "privateDnsName": "db.example.com", "targetId": "rcfg-2" },
+        ],
+    })
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_list_counts_dns_targets() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(RPE_COLLECTION_PATH))
+        .respond_with(reverse_private_endpoint_envelope(serde_json::json!([
+            vpc_resource_endpoint_json()
+        ])))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let output = invoke_cli_human(
+        &mock,
+        &[
+            "clickpipe",
+            "reverse-private-endpoint",
+            "list",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let row = stdout
+        .lines()
+        .find(|line| line.contains(RPE_ID))
+        .unwrap_or_else(|| panic!("no row for the endpoint: {stdout}"));
+    let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+    assert_eq!(cells[cells.len() - 2], "2", "{stdout}");
+}
+
+#[tokio::test]
+async fn reverse_private_endpoint_get_shows_dns_targets_and_provider_mappings() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(reverse_private_endpoint_path()))
+        .respond_with(reverse_private_endpoint_envelope(
+            vpc_resource_endpoint_json(),
+        ))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    let args = [
+        "clickpipe",
+        "reverse-private-endpoint",
+        "get",
+        "svc-1",
+        RPE_ID,
+        "--org-id",
+        "org-1",
+    ];
+
+    let human = invoke_cli_human(&mock, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    for expected in [
+        "rcfg-097648d8068504966",
+        "rcfg-2",
+        "RESOURCE_CONFIGURATION",
+        "db.internal.example.com",
+        "vpce-0123.vpce-svc-0123.us-east-1.vpce.amazonaws.com",
+    ] {
+        assert!(stdout.contains(expected), "missing {expected}: {stdout}");
+    }
+
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    let stdout: Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(stdout["dnsTargets"][0]["id"], "rcfg-097648d8068504966");
+    assert_eq!(
+        stdout["privateDnsMappings"][0]["privateDnsName"],
+        "db.internal.example.com"
+    );
+    assert_eq!(stdout["customPrivateDnsMappings"][0]["targetId"], "rcfg-2");
 }
 
 #[tokio::test]
@@ -18837,6 +19001,34 @@ async fn reverse_private_endpoint_create_sends_the_body_for_each_type() {
                 "vpcResourceConfigurationId": "rcfg-12345678901234567",
                 "vpcResourceShareArn":
                     "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
+            }),
+        ),
+        (
+            vec![
+                "--type",
+                "VPC_RESOURCE",
+                "--vpc-resource-configuration-id",
+                "rcfg-12345678901234567",
+                "--vpc-resource-share-arn",
+                "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
+                "--custom-private-dns-mapping",
+                "db.example.com=rcfg-097648d8068504966",
+                "--custom-private-dns-mapping",
+                "*.example.com",
+            ],
+            serde_json::json!({
+                "description": "warehouse",
+                "type": "VPC_RESOURCE",
+                "vpcResourceConfigurationId": "rcfg-12345678901234567",
+                "vpcResourceShareArn":
+                    "arn:aws:ram:us-east-1:123456789012:resource-share/share-1",
+                "customPrivateDnsMappings": [
+                    {
+                        "privateDnsName": "db.example.com",
+                        "targetId": "rcfg-097648d8068504966",
+                    },
+                    { "privateDnsName": "*.example.com" },
+                ],
             }),
         ),
         (
@@ -18963,7 +19155,7 @@ async fn reverse_private_endpoint_create_prints_the_status_to_wait_for() {
 /// (exit 2) with no request sent.
 #[tokio::test]
 async fn reverse_private_endpoint_create_validates_flags_before_any_request() {
-    let cases: [(Vec<&str>, &str); 3] = [
+    let cases: [(Vec<&str>, &str); 4] = [
         (
             vec![
                 "--type",
@@ -18996,6 +19188,18 @@ async fn reverse_private_endpoint_create_validates_flags_before_any_request() {
                 "db.example.com",
             ],
             "--custom-private-dns-mapping is not supported for --type MSK_MULTI_VPC",
+        ),
+        (
+            vec![
+                "--type",
+                "VPC_ENDPOINT_SERVICE",
+                "--vpc-endpoint-service-name",
+                "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+                "--custom-private-dns-mapping",
+                "db.example.com=rcfg-1",
+            ],
+            "--custom-private-dns-mapping NAME=TARGET_ID applies to --type VPC_RESOURCE, not \
+             --type VPC_ENDPOINT_SERVICE",
         ),
     ];
 
@@ -19053,7 +19257,7 @@ async fn reverse_private_endpoint_update_patches_the_full_mapping_list() {
             "--custom-private-dns-mapping",
             "db.example.com",
             "--custom-private-dns-mapping",
-            "*.example.com",
+            "*.example.com=rcfg-2",
             "--org-id",
             "org-1",
         ],
@@ -19066,12 +19270,13 @@ async fn reverse_private_endpoint_update_patches_the_full_mapping_list() {
     );
     let requests = mock.received_requests().await.unwrap();
     let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+    // A mapping without `=TARGET_ID` leaves `targetId` off the wire.
     assert_eq!(
         body,
         serde_json::json!({
             "customPrivateDnsMappings": [
                 { "privateDnsName": "db.example.com" },
-                { "privateDnsName": "*.example.com" },
+                { "privateDnsName": "*.example.com", "targetId": "rcfg-2" },
             ],
         })
     );
@@ -24288,6 +24493,264 @@ async fn byoc_create_rejects_duplicate_tags_before_any_request() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+fn invoke_org_with_oauth(mock: &MockServer, cli_args: &[&str]) -> std::process::Output {
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let url = mock.uri();
+    let mut args = vec!["cloud", "--url", &url, "--json", "org"];
+    args.extend(cli_args);
+    let mut command = Command::new(clickhousectl_binary());
+    clear_inherited_env(&mut command);
+    command
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", home)
+        .current_dir(project.path())
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn byoc_private_endpoint_config_and_tags_are_oauth_reads_with_exact_paths() {
+    let mock = MockServer::start().await;
+    let item = "/v1/organizations/org-1/byocInfrastructure/byoc-1";
+    let config = serde_json::json!({
+        "endpointName": "com.amazonaws.vpce.us-east-1.vpce-svc-1",
+        "privateDnsHostname": "byoc-1.private.example.com"
+    });
+    let tags = serde_json::json!({"tags": {"team": "data", "env": "prod"}});
+    Mock::given(method("GET"))
+        .and(path(format!("{item}/privateEndpointConfig")))
+        .respond_with(byoc_envelope(config.clone(), "stub-byoc-pe-config"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{item}/tags")))
+        .respond_with(byoc_envelope(tags.clone(), "stub-byoc-tags"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    for (subcommand, expected) in [("private-endpoint-config", &config), ("tags", &tags)] {
+        let output =
+            invoke_org_with_oauth(&mock, &["byoc", subcommand, "byoc-1", "--org-id", "org-1"]);
+        assert_success(&output);
+        assert_eq!(
+            &serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            expected
+        );
+    }
+
+    let config_human = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "private-endpoint-config",
+            "byoc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&config_human);
+    let stdout = String::from_utf8_lossy(&config_human.stdout);
+    assert!(stdout.contains("byoc-1.private.example.com"), "{stdout}");
+
+    let tags_human = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "byoc", "tags", "byoc-1", "--org-id", "org-1"],
+    );
+    assert_success(&tags_human);
+    let stdout = String::from_utf8_lossy(&tags_human.stdout);
+    for value in ["team", "data", "env", "prod"] {
+        assert!(stdout.contains(value), "{value}: {stdout}");
+    }
+
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 4);
+    for request in requests {
+        assert_eq!(request.method.as_str(), "GET");
+        assert!(request.body.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn byoc_private_endpoint_config_and_tags_tolerate_sparse_results() {
+    let mock = MockServer::start().await;
+    let item = "/v1/organizations/org-1/byocInfrastructure/byoc-1";
+    for suffix in ["privateEndpointConfig", "tags"] {
+        Mock::given(method("GET"))
+            .and(path(format!("{item}/{suffix}")))
+            .respond_with(byoc_envelope(serde_json::json!({}), "stub-sparse"))
+            .expect(1)
+            .mount(&mock)
+            .await;
+    }
+    for subcommand in ["private-endpoint-config", "tags"] {
+        let output = invoke_cli_with_cloud_credentials_human(
+            &mock,
+            &["org", "byoc", subcommand, "byoc-1", "--org-id", "org-1"],
+        );
+        assert_success(&output);
+    }
+}
+
+#[tokio::test]
+async fn byoc_update_sends_connectivity_and_tag_flags() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-1"))
+        .and(body_json(serde_json::json!({
+            "enablePrivateLink": true,
+            "gcpPscSubnetId": "psc-nat",
+            "enablePrivateLoadBalancer": false,
+            "enablePublicLoadBalancer": true,
+            "tags": {"team": "data", "note": "a=b"}
+        })))
+        .respond_with(byoc_envelope(
+            serde_json::json!({"id": "byoc-1", "state": "infra-ready"}),
+            "stub-byoc-update-connectivity",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "update",
+            "byoc-1",
+            "--enable-private-link",
+            "true",
+            "--gcp-psc-subnet-id",
+            "psc-nat",
+            "--enable-private-load-balancer",
+            "false",
+            "--enable-public-load-balancer",
+            "true",
+            "--tag",
+            "team=data",
+            "--tag",
+            "note=a=b",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({"id": "byoc-1", "state": "infra-ready"})
+    );
+}
+
+#[tokio::test]
+async fn byoc_update_rejects_missing_changes_and_bad_tags_before_any_request() {
+    let mock = MockServer::start().await;
+    for args in [
+        vec!["org", "byoc", "update", "byoc-1", "--org-id", "org-1"],
+        vec![
+            "org", "byoc", "update", "byoc-1", "--tag", "env=prod", "--tag", "env=dev", "--org-id",
+            "org-1",
+        ],
+    ] {
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+    }
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn org_notification_types_is_an_oauth_read_preserving_json() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!([
+        {
+            "name": "billing.credit_low",
+            "title": "Credits running low",
+            "description": "Remaining credits fell below the threshold.",
+            "category": "billing",
+            "severity": "warning",
+            "resourceType": "organization",
+            "isConfigurable": true,
+            "isAvailable": false
+        },
+        {"name": "future.type", "severity": "emergency"}
+    ]);
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(byoc_envelope(result.clone(), "stub-notification-types"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_org_with_oauth(&mock, &["notification-types", "--org-id", "org-1"]);
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+}
+
+#[tokio::test]
+async fn org_notification_types_human_output_lists_rows_and_handles_empty() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .respond_with(byoc_envelope(
+            serde_json::json!([
+                {
+                    "name": "billing.credit_low",
+                    "title": "Credits running low",
+                    "category": "billing",
+                    "severity": "critical",
+                    "resourceType": "organization",
+                    "isConfigurable": false,
+                    "isAvailable": true
+                },
+                {}
+            ]),
+            "stub-notification-types",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "notification-types", "--org-id", "org-1"],
+    );
+    assert_success(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for value in [
+        "billing.credit_low",
+        "Credits running low",
+        "critical",
+        "organization",
+    ] {
+        assert!(stdout.contains(value), "{value}: {stdout}");
+    }
+
+    let empty = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .respond_with(byoc_envelope(serde_json::json!([]), "stub-empty"))
+        .expect(1)
+        .mount(&empty)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &empty,
+        &["org", "notification-types", "--org-id", "org-1"],
+    );
+    assert_success(&output);
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "No notification types found\n"
+    );
+}
+
 #[tokio::test]
 async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
     let mock = MockServer::start().await;
@@ -28923,7 +29386,7 @@ async fn key_pagination_invalid_flags_fail_before_network_or_credentials() {
     let project = tempfile::tempdir().unwrap();
     for flags in [
         vec!["--limit", "0"],
-        vec!["--limit", "251"],
+        vec!["--limit", "-1"],
         vec!["--all", "--cursor="],
     ] {
         let output = Command::new(clickhousectl_binary())
@@ -31754,5 +32217,387 @@ async fn udf_deploy_proceeds_on_an_idle_service_without_waking_it_early() {
     assert!(
         !calls.iter().any(|call| call.starts_with("PATCH ")),
         "{calls:?}"
+    );
+}
+
+const REPLICA_AWARE_ROUTING_PATH: &str =
+    "/v1/organizations/org-1/services/svc-1/replicaAwareRouting";
+
+#[tokio::test]
+async fn replica_aware_routing_get_supports_oauth_and_human_output() {
+    let mock = MockServer::start().await;
+    let routing = serde_json::json!({"httpEnabled": true, "nativeEnabled": false});
+    Mock::given(method("GET"))
+        .and(path(REPLICA_AWARE_ROUTING_PATH))
+        .and(header("authorization", "Bearer test-bearer-token"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": routing})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(REPLICA_AWARE_ROUTING_PATH))
+        .and(wiremock::matchers::basic_auth(
+            "fake-key-for-tests",
+            "fake-secret-for-tests",
+        ))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"result": {"nativeEnabled": true}})),
+        )
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "--json",
+            "service",
+            "replica-aware-routing",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        routing
+    );
+
+    // A sparse response renders without inventing the missing protocol.
+    let human = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "service",
+            "replica-aware-routing",
+            "get",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&human);
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    assert!(stdout.contains("nativeEnabled: true"), "{stdout}");
+    assert!(!stdout.contains("httpEnabled: true"), "{stdout}");
+}
+
+#[tokio::test]
+async fn replica_aware_routing_update_sends_only_supplied_fields_with_basic_auth() {
+    for (flags, body) in [
+        (
+            vec!["--http-enabled", "true"],
+            serde_json::json!({"httpEnabled": true}),
+        ),
+        (
+            vec!["--native-enabled", "false"],
+            serde_json::json!({"nativeEnabled": false}),
+        ),
+        (
+            vec!["--http-enabled", "false", "--native-enabled", "true"],
+            serde_json::json!({"httpEnabled": false, "nativeEnabled": true}),
+        ),
+    ] {
+        let mock = MockServer::start().await;
+        let result = serde_json::json!({"httpEnabled": false, "nativeEnabled": true});
+        Mock::given(method("PATCH"))
+            .and(path(REPLICA_AWARE_ROUTING_PATH))
+            .and(wiremock::matchers::basic_auth(
+                "fake-key-for-tests",
+                "fake-secret-for-tests",
+            ))
+            .and(body_json(&body))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": result})),
+            )
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let mut args = vec![
+            "service",
+            "replica-aware-routing",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ];
+        args.extend(flags);
+        let output = invoke_cli_with_cloud_credentials(&mock, &args);
+        assert_success(&output);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+            result
+        );
+    }
+}
+
+#[tokio::test]
+async fn replica_aware_routing_update_rejects_oauth_and_missing_changes_before_http() {
+    let mock = MockServer::start().await;
+    let project = tempfile::tempdir().unwrap();
+    let home = project.path().join("home");
+    let cloud_dir = home.join(".clickhouse");
+    std::fs::create_dir_all(&cloud_dir).unwrap();
+    write_oauth_tokens(&cloud_dir, &mock.uri());
+    let oauth = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", &home)
+        .current_dir(project.path())
+        .args([
+            "cloud",
+            "--url",
+            &mock.uri(),
+            "service",
+            "replica-aware-routing",
+            "update",
+            "svc-1",
+            "--http-enabled",
+            "true",
+            "--org-id",
+            "org-1",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(oauth.status.code(), Some(4), "{oauth:?}");
+
+    let no_change = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "replica-aware-routing",
+            "update",
+            "svc-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(no_change.status.code(), Some(2), "{no_change:?}");
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn replica_aware_routing_errors_preserve_the_api_message() {
+    let mock = MockServer::start().await;
+    Mock::given(method("PATCH"))
+        .and(path(REPLICA_AWARE_ROUTING_PATH))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403,
+            "error": "replica aware routing is not enabled for this organization"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "service",
+            "replica-aware-routing",
+            "update",
+            "svc-1",
+            "--native-enabled",
+            "true",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_ne!(output.status.code(), Some(0));
+    assert!(output.stdout.is_empty());
+    let message = cloud_runtime_error(&output)["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(
+        message.contains("replica aware routing is not enabled"),
+        "{message}"
+    );
+}
+
+const PAGED_ORG_FIRST: &str = "00000000-0000-0000-0000-0000000000a1";
+const PAGED_ORG_SECOND: &str = "00000000-0000-0000-0000-0000000000a2";
+
+async fn mount_cursor_page(
+    mock: &MockServer,
+    route: &str,
+    cursor: Option<&str>,
+    body: Value,
+    expected: u64,
+) {
+    let matcher = Mock::given(method("GET")).and(path(route));
+    let matcher = match cursor {
+        Some(cursor) => matcher.and(query_param("cursor", cursor)),
+        None => matcher.and(wiremock::matchers::query_param_is_missing("cursor")),
+    };
+    matcher
+        .and(wiremock::matchers::query_param_is_missing("limit"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(body))
+        .expect(expected)
+        .mount(mock)
+        .await;
+}
+
+async fn mount_two_org_pages(mock: &MockServer, expected: u64) {
+    mount_cursor_page(
+        mock,
+        "/v1/organizations",
+        None,
+        serde_json::json!({
+            "result": [{"id": PAGED_ORG_FIRST, "name": "first-org"}],
+            "nextCursor": "org-page-2"
+        }),
+        expected,
+    )
+    .await;
+    mount_cursor_page(
+        mock,
+        "/v1/organizations",
+        Some("org-page-2"),
+        serde_json::json!({
+            "result": [{"id": PAGED_ORG_SECOND, "name": "second-org"}],
+            "nextCursor": null
+        }),
+        expected,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn org_list_reads_every_page_in_json_and_human_output() {
+    let mock = MockServer::start().await;
+    mount_two_org_pages(&mock, 2).await;
+    let json = invoke_cli_with_cloud_credentials(&mock, &["org", "list"]);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!([
+            {"id": PAGED_ORG_FIRST, "name": "first-org"},
+            {"id": PAGED_ORG_SECOND, "name": "second-org"}
+        ])
+    );
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &["org", "list"]);
+    assert_success(&human);
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    assert!(stdout.contains("first-org"), "{stdout}");
+    assert!(stdout.contains("second-org"), "{stdout}");
+}
+
+#[tokio::test]
+async fn org_name_resolution_and_auto_detection_read_every_page() {
+    let mock = MockServer::start().await;
+    mount_two_org_pages(&mock, 2).await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/{PAGED_ORG_SECOND}/services"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    // A name found only on the second page resolves to that organization.
+    let named =
+        invoke_cli_with_cloud_credentials(&mock, &["service", "list", "--org-name", "second-org"]);
+    assert_success(&named);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&named.stdout).unwrap(),
+        serde_json::json!([])
+    );
+
+    // One organization per page is still two organizations, not an auto-detected one.
+    let detected = invoke_cli_with_cloud_credentials(&mock, &["service", "list"]);
+    assert_eq!(detected.status.code(), Some(1), "{detected:?}");
+    let message = cloud_runtime_error(&detected)["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(message.contains("Multiple organizations"), "{message}");
+}
+
+#[tokio::test]
+async fn org_list_repeated_cursor_fails_before_another_request() {
+    let mock = MockServer::start().await;
+    mount_cursor_page(
+        &mock,
+        "/v1/organizations",
+        None,
+        serde_json::json!({"result": [], "nextCursor": "loop"}),
+        1,
+    )
+    .await;
+    mount_cursor_page(
+        &mock,
+        "/v1/organizations",
+        Some("loop"),
+        serde_json::json!({"result": [], "nextCursor": "loop"}),
+        1,
+    )
+    .await;
+    let output = invoke_cli_with_cloud_credentials(&mock, &["org", "list"]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let message = cloud_runtime_error(&output)["message"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(message.contains("repeated cursor"), "{message}");
+    assert_eq!(mock.received_requests().await.unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn snapshot_list_reads_every_page_in_json_and_human_output() {
+    const SNAPSHOTS_PATH: &str = "/v1/organizations/org-1/services/svc-1/snapshots";
+    let mock = MockServer::start().await;
+    let first = serde_json::json!({"id": "00000000-0000-0000-0000-0000000000b1", "status": "done"});
+    let second =
+        serde_json::json!({"id": "00000000-0000-0000-0000-0000000000b2", "status": "done"});
+    mount_cursor_page(
+        &mock,
+        SNAPSHOTS_PATH,
+        None,
+        serde_json::json!({"result": [first], "nextCursor": "snap-page-2", "limit": 1}),
+        2,
+    )
+    .await;
+    mount_cursor_page(
+        &mock,
+        SNAPSHOTS_PATH,
+        Some("snap-page-2"),
+        serde_json::json!({"result": [second]}),
+        2,
+    )
+    .await;
+    let args = ["service", "snapshot", "list", "svc-1", "--org-id", "org-1"];
+    let json = invoke_cli_with_cloud_credentials(&mock, &args);
+    assert_success(&json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        serde_json::json!([first, second])
+    );
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &args);
+    assert_success(&human);
+    let stdout = String::from_utf8(human.stdout).unwrap();
+    assert!(
+        stdout.contains("00000000-0000-0000-0000-0000000000b1"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("00000000-0000-0000-0000-0000000000b2"),
+        "{stdout}"
     );
 }

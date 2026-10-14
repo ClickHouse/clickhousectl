@@ -26,7 +26,7 @@ use clickhouse_cloud_api::models::IpAccessListEntry;
 use clickhouse_cloud_api::models::{
     ApiKey, ApiKeyPatchRequest, ApiKeyPatchRequestState, ApiKeyPostRequest, ApiKeyPostRequestState,
 };
-use std::{borrow::Cow, collections::HashSet};
+use std::borrow::Cow;
 use tabled::{Table, Tabled, settings::Style};
 
 const API_KEY_STATES: &[&str] = &["enabled", "disabled"];
@@ -40,8 +40,8 @@ CONTEXT FOR AGENTS:
   JSON pages expose result, nextCursor, limit, and totalCount when provided.
   Name lookup for get, update, and delete always searches every page.")]
     List {
-        /// Maximum keys per page (1–250); omit for the server default
-        #[arg(long, value_parser = clap::value_parser!(i64).range(1..=250))]
+        /// Maximum keys per page, at least 1; omit for the server default
+        #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
         limit: Option<i64>,
 
         /// Opaque continuation token; conflicts with --all
@@ -740,24 +740,13 @@ impl CloudClient {
         org_id: &str,
         limit: Option<i64>,
     ) -> CloudResult<Vec<ApiKey>> {
-        let mut keys = Vec::new();
-        let mut cursor = None;
-        let mut seen_cursors = HashSet::new();
-        loop {
-            let page = self
-                .list_api_keys_page(org_id, limit, cursor.as_deref())
-                .await?;
-            keys.extend(page.result);
-            match page.next_cursor {
-                None => return Ok(keys),
-                Some(next) => {
-                    if !seen_cursors.insert(next.clone()) {
-                        return Err(CloudError::new("API key list returned a repeated cursor"));
-                    }
-                    cursor = Some(next);
-                }
-            }
-        }
+        Self::collect_cursor_pages("API key", |cursor| async move {
+            self.api()
+                .openapi_key_get_list(org_id, limit, cursor.as_deref())
+                .await
+                .map_err(|error| self.convert_error_for_organization(error, org_id))
+        })
+        .await
     }
 
     pub async fn create_api_key(
@@ -848,7 +837,7 @@ mod tests {
         assert_eq!(limit, None);
         assert_eq!(cursor, None);
         assert!(!all);
-        for size in ["1", "250"] {
+        for size in ["1", "250", "251", "10000"] {
             for token in ["", "-opaque +/=&?雪"] {
                 let KeyCommands::List { limit, cursor, all } = parse_key(&[
                     "clickhousectl",
@@ -885,7 +874,7 @@ mod tests {
             ));
             assert!(!command.is_write());
         }
-        for size in ["0", "251", "-1", "1.5", "many"] {
+        for size in ["0", "-1", "1.5", "many"] {
             assert!(
                 Cli::try_parse_from(["clickhousectl", "cloud", "key", "list", "--limit", size])
                     .is_err()

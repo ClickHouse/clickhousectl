@@ -292,10 +292,9 @@ fn inspect_repair_endpoint(
     let original_request = InstanceServiceQueryApiEndpointsPostRequest {
         roles: require_field(endpoint.roles, "query endpoint roles")?,
         open_api_keys: require_field(endpoint.open_api_keys, "query endpoint openApiKeys")?,
-        allowed_origins: Some(require_field(
-            endpoint.allowed_origins,
-            "query endpoint allowedOrigins",
-        )?),
+        // Optional on both sides: an endpoint that reports none is restored
+        // without one.
+        allowed_origins: endpoint.allowed_origins,
     };
     Ok(RepairEndpointState::Existing {
         endpoint_id,
@@ -1192,9 +1191,11 @@ pub(crate) fn existing_open_api_keys(
 
 /// The configuration of the service's existing query endpoint, or `None` when
 /// the service has none yet. A bind rewrites only `openApiKeys`, so `roles`
-/// and `allowedOrigins` are echoed back unchanged and must be known: an absent
-/// field is refused before anything is written rather than replaced by a
-/// default. Every failure belongs to the endpoint read.
+/// and `allowedOrigins` are echoed back unchanged. `roles` is required by the
+/// upsert and must be known: an absent one is refused before anything is
+/// written rather than replaced by a default. `allowedOrigins` is optional on
+/// both sides, so an absent one is echoed back as absent. Every failure
+/// belongs to the endpoint read.
 async fn read_bind_endpoint(
     client: &CloudClient,
     org_id: &str,
@@ -1212,12 +1213,10 @@ async fn read_bind_endpoint(
     let allowed_origins = endpoint.allowed_origins.take();
     let open_api_keys = existing_open_api_keys(endpoint).map_err(at_stage)?;
     let roles = require_field(roles, "query endpoint roles").map_err(at_stage)?;
-    let allowed_origins =
-        require_field(allowed_origins, "query endpoint allowedOrigins").map_err(at_stage)?;
     Ok(Some(InstanceServiceQueryApiEndpointsPostRequest {
         roles,
         open_api_keys,
-        allowed_origins: Some(allowed_origins),
+        allowed_origins,
     }))
 }
 
@@ -2053,6 +2052,30 @@ mod tests {
         .err()
         .unwrap();
         assert!(incomplete.to_string().contains("openApiKeys"));
+    }
+
+    #[test]
+    fn repair_echoes_absent_allowed_origins_as_absent() {
+        let state = inspect_repair_endpoint(
+            Some(ServiceQueryAPIEndpoint {
+                id: Some("endpoint-1".into()),
+                roles: Some(vec![QueryEndpointRole::SqlConsoleAdmin]),
+                open_api_keys: Some(vec!["old-key".into()]),
+                allowed_origins: None,
+            }),
+            "endpoint-1",
+            "service-1",
+        )
+        .unwrap();
+        let request = build_repair_endpoint_request(&state, &["old-key".to_string()], "new-key");
+        assert_eq!(request.open_api_keys, vec!["new-key"]);
+        assert_eq!(request.allowed_origins, None);
+        assert!(
+            serde_json::to_value(&request)
+                .unwrap()
+                .get("allowedOrigins")
+                .is_none()
+        );
     }
 
     #[test]

@@ -770,17 +770,19 @@ fn format_backup_created(value: Option<chrono::DateTime<chrono::Utc>>) -> String
 }
 
 impl CloudClient {
+    /// Every snapshot of the service, read across all pages.
     pub async fn list_snapshots(
         &self,
         org_id: &str,
         service_id: &str,
     ) -> CloudResult<Vec<clickhouse_cloud_api::models::Snapshot>> {
-        let response = self
-            .api()
-            .snapshot_get_list(org_id, service_id, None, None)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
-        Self::unwrap_response(response)
+        Self::collect_cursor_pages("snapshot", |cursor| async move {
+            self.api()
+                .snapshot_get_list(org_id, service_id, None, cursor.as_deref())
+                .await
+                .map_err(|error| self.convert_error_for_organization(error, org_id))
+        })
+        .await
     }
     pub async fn get_snapshot(
         &self,

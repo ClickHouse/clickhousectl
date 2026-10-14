@@ -85,7 +85,7 @@ clickhousectl cloud key get <key-id>
 clickhousectl cloud key update <key-id> --state disabled
 ```
 
-Without `--all`, list returns one page. `--limit` is 1–250 and `--cursor` takes the opaque `nextCursor` unchanged. One-page JSON has a `result` array and optional metadata; only an absent `nextCursor` marks the last page (an empty string is still a token). `--all --json` combines pages into one array and emits no partial array on failure; it conflicts with `--cursor`. Name selectors search every page and reject ambiguity.
+Without `--all`, list returns one page. `--limit` is at least 1 and `--cursor` takes the opaque `nextCursor` unchanged. One-page JSON has a `result` array and optional metadata; only an absent `nextCursor` marks the last page (an empty string is still a token). `--all --json` combines pages into one array and emits no partial array on failure; it conflicts with `--cursor`. Name selectors search every page and reject ambiguity.
 
 Omitting expiry, role, or IP flags on update preserves that setting. `--clear-expiry`, `--clear-roles`, and `--clear-ip-allow` deliberately remove it and conflict with the corresponding set flag. Clearing the IP list denies all network access. After disabling/deleting a key, inspect dependent automation and Query API bindings; do not rotate keys automatically to bypass an administrator's restriction.
 
@@ -103,7 +103,16 @@ Custom organization roles are created/updated with `--file` (`-` for stdin). Upd
 
 ## Other organization tasks
 
-Use `cloud org --help` for quotas, credit balance, usage, settings, BYOC infrastructure, and Prometheus discovery. BYOC `validate` is a preflight that creates nothing but requires an API key. Creation is asynchronous: find infrastructure IDs in `org get`'s `byocConfig`, then inspect `byoc get` and `byoc progress` before creating a service in it.
+Use `cloud org --help` for quotas, credit balance, notification types, usage, settings, BYOC infrastructure, and Prometheus discovery. BYOC `validate` is a preflight that creates nothing but requires an API key. Creation is asynchronous: find infrastructure IDs in `org get`'s `byocConfig`, then inspect `byoc get` and `byoc progress` before creating a service in it.
+
+`byoc update` changes only the flags you pass. Its `--tag` flags replace the infrastructure's whole tag set, so read the current set with `byoc tags` first; `byoc private-endpoint-config` shows the private link endpoint service to connect to:
+
+```bash
+clickhousectl cloud org byoc tags <byoc-id>
+clickhousectl cloud org byoc update <byoc-id> --tag team=data --tag env=prod
+clickhousectl cloud org byoc update <byoc-id> --enable-private-link true
+clickhousectl cloud org byoc private-endpoint-config <byoc-id>
+```
 
 BYO-VPC `--vpc-id` needs `--private-subnet-id` and conflicts with `--vpc-cidr-range`. For private endpoint registration, use the provider's endpoint identity, not an endpoint-service name or ARN; registration affects the organization as well as the service. Removing an organization endpoint requires both provider and region to identify it completely. The CLI's format checks do not prove an endpoint exists or belongs to you.
 

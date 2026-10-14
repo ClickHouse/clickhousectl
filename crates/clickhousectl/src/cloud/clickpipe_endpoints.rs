@@ -87,8 +87,15 @@ pub enum ReversePrivateEndpointCommands {
         endpoint_id: String,
 
         /// Custom private DNS name (repeatable; replaces the whole list)
-        #[arg(long = "custom-private-dns-mapping")]
-        custom_private_dns_mappings: Vec<String>,
+        ///
+        /// =TARGET_ID (VPC_RESOURCE only) routes the name to that `dnsTargets` ID
+        /// from `get`.
+        #[arg(
+            long = "custom-private-dns-mapping",
+            value_name = "NAME[=TARGET_ID]",
+            value_parser = parse_custom_private_dns_mapping
+        )]
+        custom_private_dns_mappings: Vec<CustomDnsMappingArg>,
 
         /// Remove all custom private DNS mappings
         #[arg(long)]
@@ -149,9 +156,43 @@ pub struct ReversePrivateEndpointCreateArgs {
     /// Custom private DNS name, exact or leading wildcard (repeatable)
     ///
     /// Rejected with --type MSK_MULTI_VPC. On the AWS PrivateLink types ClickHouse
-    /// support must enable it for the service first.
-    #[arg(long = "custom-private-dns-mapping")]
-    pub custom_private_dns_mappings: Vec<String>,
+    /// support must enable it first. =TARGET_ID (only with --type VPC_RESOURCE) routes
+    /// the name to that `dnsTargets` ID; it is not served until listed there.
+    #[arg(
+        long = "custom-private-dns-mapping",
+        value_name = "NAME[=TARGET_ID]",
+        value_parser = parse_custom_private_dns_mapping
+    )]
+    pub custom_private_dns_mappings: Vec<CustomDnsMappingArg>,
+}
+
+/// One `--custom-private-dns-mapping` value: a private DNS name and, for
+/// `VPC_RESOURCE`, the optional `dnsTargets` ID it routes to (the spec's
+/// `CustomPrivateDnsMapping.targetId`; omitted means the default target).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomDnsMappingArg {
+    pub name: String,
+    pub target_id: Option<String>,
+}
+
+/// Parse `NAME` or `NAME=TARGET_ID`. A DNS name cannot contain `=`, so the
+/// first `=` always separates the two, and a bare `NAME` keeps the syntax the
+/// flag accepted before `targetId` existed.
+fn parse_custom_private_dns_mapping(value: &str) -> Result<CustomDnsMappingArg, String> {
+    let (name, target_id) = match value.split_once('=') {
+        Some((name, target_id)) => (name, Some(target_id)),
+        None => (value, None),
+    };
+    if name.is_empty() {
+        return Err("expected NAME or NAME=TARGET_ID with a non-empty NAME".to_string());
+    }
+    if target_id.is_some_and(str::is_empty) {
+        return Err("TARGET_ID after '=' must not be empty".to_string());
+    }
+    Ok(CustomDnsMappingArg {
+        name: name.to_string(),
+        target_id: target_id.map(str::to_string),
+    })
 }
 
 impl ReversePrivateEndpointCommands {
@@ -222,6 +263,15 @@ fn join_names(names: Option<&Vec<String>>) -> String {
     }
 }
 
+/// The number of entries in a list-valued response field, for a compact table
+/// cell; `get` shows the entries themselves. Absent and empty render alike.
+fn count_entries<T>(entries: Option<&[T]>) -> String {
+    match entries {
+        Some(entries) if !entries.is_empty() => entries.len().to_string(),
+        _ => ABSENT.to_string(),
+    }
+}
+
 async fn endpoint_list(client: &CloudClient, service_id: &str, json: bool) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
     let endpoints = client
@@ -247,6 +297,8 @@ async fn endpoint_list(client: &CloudClient, service_id: &str, json: bool) -> Cl
             status: String,
             #[tabled(rename = "DNS Names")]
             dns_names: String,
+            #[tabled(rename = "DNS Targets")]
+            dns_targets: String,
         }
         let rows: Vec<Row> = endpoints
             .iter()
@@ -256,6 +308,7 @@ async fn endpoint_list(client: &CloudClient, service_id: &str, json: bool) -> Cl
                 description: or_absent(endpoint.description.as_deref()),
                 status: or_absent(endpoint.status.as_ref()),
                 dns_names: join_names(endpoint.dns_names.as_ref()),
+                dns_targets: count_entries(endpoint.dns_targets.as_deref()),
             })
             .collect();
         println!("{}", Table::new(rows).with(Style::markdown()));
@@ -311,7 +364,7 @@ async fn endpoint_update(
     client: &CloudClient,
     service_id: &str,
     endpoint_id: &str,
-    custom_private_dns_mappings: &[String],
+    custom_private_dns_mappings: &[CustomDnsMappingArg],
     clear_custom_private_dns_mappings: bool,
     json: bool,
 ) -> CloudResult<()> {
@@ -434,21 +487,37 @@ fn validate_create_args(args: &ReversePrivateEndpointCreateArgs) -> CloudResult<
         ));
     }
 
+    // "Supported only for VPC_RESOURCE", per `CustomPrivateDnsMapping.targetId`.
+    if requested != TYPE_VPC_RESOURCE
+        && args
+            .custom_private_dns_mappings
+            .iter()
+            .any(|mapping| mapping.target_id.is_some())
+    {
+        return Err(CloudError::new(format!(
+            "--custom-private-dns-mapping NAME=TARGET_ID applies to --type {TYPE_VPC_RESOURCE}, \
+             not --type {requested}"
+        )));
+    }
+
     Ok(())
 }
 
 /// Map repeated `--custom-private-dns-mapping` values onto the API's array of
-/// objects, omitting the field entirely when no mapping was given.
-fn build_custom_private_dns_mappings(names: &[String]) -> Option<Vec<CustomPrivateDnsMapping>> {
-    if names.is_empty() {
+/// objects, omitting the field entirely when no mapping was given and omitting
+/// `targetId` from a mapping that named none.
+fn build_custom_private_dns_mappings(
+    mappings: &[CustomDnsMappingArg],
+) -> Option<Vec<CustomPrivateDnsMapping>> {
+    if mappings.is_empty() {
         return None;
     }
     Some(
-        names
+        mappings
             .iter()
-            .map(|name| CustomPrivateDnsMapping {
-                private_dns_name: Some(name.clone()),
-                target_id: None,
+            .map(|mapping| CustomPrivateDnsMapping {
+                private_dns_name: Some(mapping.name.clone()),
+                target_id: mapping.target_id.clone(),
             })
             .collect(),
     )
@@ -489,14 +558,14 @@ fn build_create_reverse_private_endpoint_request(
 }
 
 fn build_update_reverse_private_endpoint_request(
-    names: &[String],
+    mappings: &[CustomDnsMappingArg],
     clear_custom_private_dns_mappings: bool,
 ) -> UpdateReversePrivateEndpoint {
     UpdateReversePrivateEndpoint {
         custom_private_dns_mappings: if clear_custom_private_dns_mappings {
             Some(Vec::new())
         } else {
-            build_custom_private_dns_mappings(names)
+            build_custom_private_dns_mappings(mappings)
         },
     }
 }
@@ -635,6 +704,13 @@ mod tests {
         args
     }
 
+    fn mapping(name: &str, target_id: Option<&str>) -> CustomDnsMappingArg {
+        CustomDnsMappingArg {
+            name: name.to_string(),
+            target_id: target_id.map(str::to_string),
+        }
+    }
+
     /// A `VPC_ENDPOINT_SERVICE` create with only its own required flag.
     fn minimal_vpc_endpoint_service_args() -> Box<ReversePrivateEndpointCreateArgs> {
         create_args(&[
@@ -703,7 +779,10 @@ mod tests {
         assert_eq!(endpoint_id, "rpe-1");
         assert_eq!(
             custom_private_dns_mappings,
-            vec!["db.example.com".to_string(), "*.example.com".to_string()]
+            vec![
+                mapping("db.example.com", None),
+                mapping("*.example.com", None)
+            ]
         );
         assert!(!clear_custom_private_dns_mappings);
     }
@@ -816,7 +895,10 @@ mod tests {
         );
         assert_eq!(
             args.custom_private_dns_mappings,
-            vec!["db.example.com".to_string(), "*.example.com".to_string()]
+            vec![
+                mapping("db.example.com", None),
+                mapping("*.example.com", None)
+            ]
         );
     }
 
@@ -1097,7 +1179,10 @@ mod tests {
     #[test]
     fn build_update_request_sends_the_complete_mapping_list() {
         let request = build_update_reverse_private_endpoint_request(
-            &["db.example.com".to_string(), "*.example.com".to_string()],
+            &[
+                mapping("db.example.com", None),
+                mapping("*.example.com", None),
+            ],
             false,
         );
         assert_eq!(
@@ -1136,6 +1221,164 @@ mod tests {
             join_names(Some(&vec!["a.example.com".to_string(), "b".to_string()])),
             "a.example.com, b"
         );
+    }
+
+    /// `NAME` keeps its pre-`targetId` meaning; `NAME=TARGET_ID` adds the
+    /// target, and the flag stays repeatable on both create and update.
+    #[test]
+    fn parses_custom_private_dns_mapping_with_and_without_target_id() {
+        let args = create_args(&[
+            "--type",
+            TYPE_VPC_RESOURCE,
+            "--vpc-resource-configuration-id",
+            "rcfg-1",
+            "--vpc-resource-share-arn",
+            "arn:aws:ram:us-east-1:1:resource-share/share-1",
+            "--custom-private-dns-mapping",
+            "db.example.com=rcfg-097648d8068504966",
+            "--custom-private-dns-mapping",
+            "*.example.com",
+        ]);
+        assert_eq!(
+            args.custom_private_dns_mappings,
+            vec![
+                mapping("db.example.com", Some("rcfg-097648d8068504966")),
+                mapping("*.example.com", None),
+            ]
+        );
+
+        let ReversePrivateEndpointCommands::Update {
+            custom_private_dns_mappings,
+            ..
+        } = parse_endpoint_command(&[
+            "update",
+            "svc-1",
+            "rpe-1",
+            "--custom-private-dns-mapping",
+            "db.example.com",
+            "--custom-private-dns-mapping",
+            "*.example.com=rcfg-2",
+        ])
+        else {
+            panic!("expected update command");
+        };
+        assert_eq!(
+            custom_private_dns_mappings,
+            vec![
+                mapping("db.example.com", None),
+                mapping("*.example.com", Some("rcfg-2")),
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_private_dns_mapping_rejects_an_empty_name_or_target_id() {
+        for value in ["", "=rcfg-1", "db.example.com="] {
+            let error = parse_error(&[
+                "update",
+                "svc-1",
+                "rpe-1",
+                "--custom-private-dns-mapping",
+                value,
+            ]);
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "expected a validation error for {value:?}"
+            );
+        }
+    }
+
+    /// "Supported only for VPC_RESOURCE", per the spec's `targetId`.
+    #[test]
+    fn validation_rejects_a_target_id_outside_vpc_resource() {
+        let args = create_args(&[
+            "--type",
+            TYPE_GCP_PSC_SERVICE_ATTACHMENT,
+            "--gcp-service-attachment",
+            "projects/p/regions/us-central1/serviceAttachments/s",
+            "--custom-private-dns-mapping",
+            "db.example.com=rcfg-1",
+        ]);
+        assert_eq!(
+            validate_create_args(&args).unwrap_err().message,
+            "--custom-private-dns-mapping NAME=TARGET_ID applies to --type VPC_RESOURCE, not \
+             --type GCP_PSC_SERVICE_ATTACHMENT"
+        );
+    }
+
+    #[test]
+    fn build_create_request_maximal_vpc_resource_maps_target_ids() {
+        let request = build_create_reverse_private_endpoint_request(&create_args(&[
+            "--type",
+            TYPE_VPC_RESOURCE,
+            "--vpc-resource-configuration-id",
+            "rcfg-1",
+            "--vpc-resource-share-arn",
+            "arn:aws:ram:us-east-1:1:resource-share/share-1",
+            "--custom-private-dns-mapping",
+            "db.example.com=rcfg-097648d8068504966",
+            "--custom-private-dns-mapping",
+            "*.example.com",
+        ]))
+        .expect("VPC_RESOURCE create should build");
+
+        assert_eq!(
+            request.r#type,
+            CreateReversePrivateEndpointType::VPC_RESOURCE
+        );
+        assert_eq!(
+            request.vpc_resource_configuration_id.as_deref(),
+            Some("rcfg-1")
+        );
+        assert_eq!(
+            request.vpc_resource_share_arn.as_deref(),
+            Some("arn:aws:ram:us-east-1:1:resource-share/share-1")
+        );
+        assert_eq!(
+            request.custom_private_dns_mappings,
+            Some(vec![
+                CustomPrivateDnsMapping {
+                    private_dns_name: Some("db.example.com".into()),
+                    target_id: Some("rcfg-097648d8068504966".into()),
+                },
+                CustomPrivateDnsMapping {
+                    private_dns_name: Some("*.example.com".into()),
+                    target_id: None,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn build_update_request_maps_target_ids() {
+        let request = build_update_reverse_private_endpoint_request(
+            &[
+                mapping("db.example.com", Some("rcfg-1")),
+                mapping("*.example.com", None),
+            ],
+            false,
+        );
+        assert_eq!(
+            request.custom_private_dns_mappings,
+            Some(vec![
+                CustomPrivateDnsMapping {
+                    private_dns_name: Some("db.example.com".into()),
+                    target_id: Some("rcfg-1".into()),
+                },
+                CustomPrivateDnsMapping {
+                    private_dns_name: Some("*.example.com".into()),
+                    target_id: None,
+                },
+            ])
+        );
+    }
+
+    #[test]
+    fn count_entries_renders_absence_and_an_empty_list_alike() {
+        assert_eq!(count_entries::<u8>(None), ABSENT);
+        assert_eq!(count_entries::<u8>(Some(&[])), ABSENT);
+        assert_eq!(count_entries(Some(&[1, 2])), "2");
     }
 
     #[test]

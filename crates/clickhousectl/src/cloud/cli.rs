@@ -20,7 +20,8 @@ pub(crate) use crate::cloud::query_api_endpoints::QueryApiEndpointArgs;
 pub(crate) use crate::cloud::saved_queries::SavedQueryArgs;
 #[allow(unused_imports)]
 pub(crate) use crate::cloud::services::{
-    PrivateEndpointCommands, QueryEndpointCommands, ServiceCommands, UpgradeWindowCommands,
+    PrivateEndpointCommands, QueryEndpointCommands, ReplicaAwareRoutingCommands, ServiceCommands,
+    UpgradeWindowCommands,
 };
 use crate::cloud::udfs::UdfArgs;
 use clap::{Args, Subcommand};
@@ -112,9 +113,8 @@ impl CloudArgs {
 #[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 pub enum CloudCommands {
-    /// Manage user-defined functions (Beta)
+    /// Manage user-defined functions
     #[command(after_help = "CONTEXT FOR AGENTS:
-  UDF operations are beta and may change.
   Writes require API key authentication; list/get support OAuth.
   Function names: `cloud udf list`; service IDs: `cloud service list`.
   Create uploads a ZIP archive and starts an asynchronous build.
@@ -151,7 +151,7 @@ CONTEXT FOR AGENTS:
         command: ServiceCommands,
     },
 
-    /// Manage Query API endpoints (Beta)
+    /// Manage Query API endpoints
     #[command(after_help = "CONTEXT FOR AGENTS:
   Writes require API key authentication; list/get support OAuth.
   Service IDs: `cloud service list`; API key IDs: `cloud key list`.
