@@ -742,13 +742,23 @@ clickhousectl cloud org update --org-id <org-id> --new-name "Renamed Org"
 clickhousectl cloud org update --org-id <org-id> \
   --remove-private-endpoint pe-1,cloud-provider=aws,region=us-east-1 \
   --enable-core-dumps false
+# Preflight a cloud account for BYOC (creates nothing; exits 1 if any check is denied)
+clickhousectl cloud org byoc validate --org-id <org-id> \
+  --region us-east-1 --account-id <aws-account-id> --external-id <external-id>
 # Create BYOC infrastructure (repeat --availability-zone-suffix as needed)
 clickhousectl cloud org byoc create --org-id <org-id> \
   --region us-east-1 --account-id <aws-account-id> \
   --availability-zone-suffix a --availability-zone-suffix b \
-  --vpc-cidr-range 10.0.0.0/16 --display-name production
+  --vpc-cidr-range 10.0.0.0/16 --display-name production --tag team=data
+# Or deploy into your own VPC (BYO-VPC) instead of --vpc-cidr-range
+clickhousectl cloud org byoc create --org-id <org-id> \
+  --region us-east-1 --account-id <aws-account-id> --vpc-id <vpc-id> \
+  --private-subnet-id <subnet-a> --private-subnet-id <subnet-b>
 # Find the infrastructure ID and state in the organization's byocConfig
 clickhousectl cloud org get --org-id <org-id>
+# Inspect one infrastructure and watch its stage-by-stage provisioning (Beta)
+clickhousectl cloud org byoc get <infrastructure-id> --org-id <org-id>
+clickhousectl cloud org byoc progress <infrastructure-id> --org-id <org-id>
 clickhousectl cloud org byoc update <infrastructure-id> \
   --new-name renamed --org-id <org-id>
 clickhousectl cloud org byoc delete <infrastructure-id> --org-id <org-id>
@@ -776,9 +786,16 @@ precedence over an ancestor's value.
 or `--filter tag:KEY` (tag existence). A missing `tag:` prefix or empty key is a
 usage error (exit 2), rejected before authentication or HTTP requests.
 
-BYOC create, update, and delete require API key authentication. Update requires
-`--new-name`, so it cannot send an empty/no-op patch. The API has no separate
-BYOC list command; `cloud org get` returns the organization's `byocConfig` entries.
+BYOC validate, create, update, and delete require API key authentication; `get` and
+`progress` also work with OAuth. Update requires `--new-name`, so it cannot send an
+empty/no-op patch. The API has no separate BYOC list command; `cloud org get` returns
+the organization's `byocConfig` entries.
+
+`validate` takes the same infrastructure flags as `create` (except `--display-name`).
+Only `--region` and `--account-id` are required; `--vpc-cidr-range` cannot be combined
+with the BYO-VPC flags, and `--vpc-id` requires `--private-subnet-id`. Azure regions
+need `--tenant-id` and `--service-principal-client-id`. Each `--tag` is `KEY=VALUE`
+with a unique, nonempty key.
 
 Each `cloud org update --remove-private-endpoint` value must include both
 `cloud-provider` and `region`; incomplete endpoint identities are rejected before

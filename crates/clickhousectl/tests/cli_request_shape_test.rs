@@ -23887,6 +23887,402 @@ async fn byoc_update_human_output_tolerates_sparse_fields() {
     assert!(String::from_utf8_lossy(&output.stdout).contains("infra-provisioning"));
 }
 
+fn byoc_envelope(result: Value, request_id: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": request_id
+    }))
+}
+
+#[tokio::test]
+async fn byoc_get_and_progress_send_exact_paths_and_print_results() {
+    let mock = MockServer::start().await;
+    let item = "/v1/organizations/org-1/byocInfrastructure/byoc-1";
+    let details = serde_json::json!({
+        "id": "byoc-1",
+        "accountId": "123456789012",
+        "state": "infra-ready",
+        "isByoVpc": true,
+        "byoVpcId": "vpc-1",
+        "byoVpcPrivateSubnetIds": ["subnet-a"]
+    });
+    let progress = serde_json::json!({
+        "id": "byoc-1",
+        "status": "in_progress",
+        "updatedAt": "2026-09-30T10:00:00Z",
+        "stages": [{
+            "name": "network",
+            "status": "in_progress",
+            "subStages": [
+                {"name": "vpc", "status": "ready"},
+                {"name": "nat-gateway", "status": "pending", "message": "waiting for quota"}
+            ]
+        }]
+    });
+    Mock::given(method("GET"))
+        .and(path(item))
+        .respond_with(byoc_envelope(details.clone(), "stub-byoc-get"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path(format!("{item}/progress")))
+        .respond_with(byoc_envelope(progress.clone(), "stub-byoc-progress"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let get = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "byoc", "get", "byoc-1", "--org-id", "org-1"],
+    );
+    assert_success(&get);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&get.stdout).unwrap(),
+        details
+    );
+
+    let progress_json = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "byoc", "progress", "byoc-1", "--org-id", "org-1"],
+    );
+    assert_success(&progress_json);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&progress_json.stdout).unwrap(),
+        progress
+    );
+
+    let get_human = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "byoc", "get", "byoc-1", "--org-id", "org-1"],
+    );
+    assert_success(&get_human);
+    let stdout = String::from_utf8_lossy(&get_human.stdout);
+    assert!(stdout.contains("infra-ready"), "{stdout}");
+    assert!(stdout.contains("vpc-1"), "{stdout}");
+
+    let progress_human = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "byoc", "progress", "byoc-1", "--org-id", "org-1"],
+    );
+    assert_success(&progress_human);
+    let stdout = String::from_utf8_lossy(&progress_human.stdout);
+    for nested in ["network", "nat-gateway", "waiting for quota"] {
+        assert!(stdout.contains(nested), "{nested}: {stdout}");
+    }
+
+    for request in mock.received_requests().await.unwrap() {
+        assert_eq!(request.method.as_str(), "GET");
+        assert!(request.body.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn byoc_progress_human_output_tolerates_sparse_stages() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-1/progress",
+        ))
+        .respond_with(byoc_envelope(
+            serde_json::json!({"stages": [{"subStages": [{}]}]}),
+            "stub-sparse-progress",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &["org", "byoc", "progress", "byoc-1", "--org-id", "org-1"],
+    );
+    assert_success(&output);
+}
+
+#[tokio::test]
+async fn byoc_get_api_errors_are_rendered_as_json_errors() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/missing"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "BYOC infrastructure not found",
+            "requestId": "stub-byoc-missing"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &["org", "byoc", "get", "missing", "--org-id", "org-1"],
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    let error = cloud_runtime_error(&output);
+    assert_eq!(error["code"], "http_4xx");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("BYOC infrastructure not found")
+    );
+}
+
+fn byoc_validate_args<'a>() -> Vec<&'a str> {
+    vec![
+        "org",
+        "byoc",
+        "validate",
+        "--region",
+        "us-east-1",
+        "--account-id",
+        "123456789012",
+        "--availability-zone-suffix",
+        "a",
+        "--vpc-id",
+        "vpc-1",
+        "--private-subnet-id",
+        "subnet-a",
+        "--private-subnet-id",
+        "subnet-b",
+        "--public-subnet-id",
+        "subnet-pub",
+        "--external-id",
+        "external-1",
+        "--tag",
+        "team=data",
+        "--org-id",
+        "org-1",
+    ]
+}
+
+fn byoc_validate_body() -> Value {
+    serde_json::json!({
+        "regionId": "us-east-1",
+        "accountId": "123456789012",
+        "availabilityZoneSuffixes": ["a"],
+        "vpcId": "vpc-1",
+        "privateSubnetIds": ["subnet-a", "subnet-b"],
+        "publicSubnetIds": ["subnet-pub"],
+        "externalId": "external-1",
+        "tags": {"team": "data"}
+    })
+}
+
+#[tokio::test]
+async fn byoc_validate_posts_the_shared_body_and_succeeds_when_checks_pass() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!({
+        "cloudProvider": "aws",
+        "supported": true,
+        "allPassed": true,
+        "anyPassed": true,
+        "checks": [{"name": "Create VPC endpoint", "action": "ec2:CreateVpcEndpoint", "allowed": true, "group": "base"}]
+    });
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/validate"))
+        .and(body_json(byoc_validate_body()))
+        .respond_with(byoc_envelope(result.clone(), "stub-byoc-validate"))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(&mock, &byoc_validate_args());
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        result
+    );
+}
+
+#[tokio::test]
+async fn byoc_validate_prints_denied_checks_and_exits_one() {
+    let mock = MockServer::start().await;
+    let result = serde_json::json!({
+        "cloudProvider": "aws",
+        "supported": true,
+        "allPassed": false,
+        "anyPassed": true,
+        "checks": [
+            {"name": "Create VPC endpoint", "action": "ec2:CreateVpcEndpoint", "allowed": true},
+            {"name": "Tag resources", "action": "ec2:CreateTags", "allowed": false, "reason": "explicitDeny"}
+        ]
+    });
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/validate"))
+        .and(body_json(byoc_validate_body()))
+        .respond_with(byoc_envelope(result.clone(), "stub-byoc-validate-denied"))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let json = invoke_cli_with_cloud_credentials(&mock, &byoc_validate_args());
+    assert_eq!(json.status.code(), Some(1));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&json.stdout).unwrap(),
+        result
+    );
+    assert_eq!(
+        cloud_runtime_error(&json)["message"],
+        "BYOC validation failed: 1 of 2 checks denied"
+    );
+
+    let human = invoke_cli_with_cloud_credentials_human(&mock, &byoc_validate_args());
+    assert_eq!(human.status.code(), Some(1));
+    let stdout = String::from_utf8_lossy(&human.stdout);
+    for shown in ["Tag resources", "ec2:CreateTags", "explicitDeny"] {
+        assert!(stdout.contains(shown), "{shown}: {stdout}");
+    }
+    assert!(
+        String::from_utf8_lossy(&human.stderr)
+            .contains("BYOC validation failed: 1 of 2 checks denied")
+    );
+}
+
+#[tokio::test]
+async fn byoc_validate_unsupported_configuration_is_reported_not_failed() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/validate"))
+        .respond_with(byoc_envelope(
+            serde_json::json!({"cloudProvider": "azure", "supported": false, "checks": []}),
+            "stub-byoc-validate-unsupported",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials_human(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "validate",
+            "--region",
+            "eastus",
+            "--account-id",
+            "subscription-1",
+            "--tenant-id",
+            "tenant-1",
+            "--service-principal-client-id",
+            "client-1",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("nothing was verified"));
+    let requests = mock.received_requests().await.unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&requests[0].body).unwrap(),
+        serde_json::json!({
+            "regionId": "eastus",
+            "accountId": "subscription-1",
+            "tenantId": "tenant-1",
+            "servicePrincipalClientId": "client-1"
+        })
+    );
+}
+
+#[tokio::test]
+async fn byoc_validate_api_errors_keep_auth_classification() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/validate"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+            "status": 403,
+            "error": "Forbidden",
+            "requestId": "stub-byoc-validate-forbidden"
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(&mock, &byoc_validate_args());
+    assert_eq!(output.status.code(), Some(4));
+    assert!(output.stdout.is_empty());
+    assert_eq!(cloud_runtime_error(&output)["code"], "auth_required");
+}
+
+#[tokio::test]
+async fn byoc_create_sends_byo_vpc_and_tag_flags() {
+    let mock = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure"))
+        .and(body_json(serde_json::json!({
+            "regionId": "us-central1",
+            "accountId": "gcp-project",
+            "vpcId": "shared-network",
+            "privateSubnetIds": ["subnet-a"],
+            "gcpPodCidrRangeNames": ["pods-1", "pods-2"],
+            "gcpSharedVpcHostProjectId": "host-project",
+            "tags": {"env": "prod", "note": "a=b"}
+        })))
+        .respond_with(byoc_envelope(
+            serde_json::json!({"id": "byoc-2", "accountId": "gcp-project"}),
+            "stub-byoc-create-byo-vpc",
+        ))
+        .expect(1)
+        .mount(&mock)
+        .await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "create",
+            "--region",
+            "us-central1",
+            "--account-id",
+            "gcp-project",
+            "--vpc-id",
+            "shared-network",
+            "--private-subnet-id",
+            "subnet-a",
+            "--gcp-pod-cidr-range-name",
+            "pods-1",
+            "--gcp-pod-cidr-range-name",
+            "pods-2",
+            "--gcp-shared-vpc-host-project-id",
+            "host-project",
+            "--tag",
+            "env=prod",
+            "--tag",
+            "note=a=b",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+        serde_json::json!({"id": "byoc-2", "accountId": "gcp-project"})
+    );
+}
+
+#[tokio::test]
+async fn byoc_create_rejects_duplicate_tags_before_any_request() {
+    let mock = MockServer::start().await;
+    let output = invoke_cli_with_cloud_credentials(
+        &mock,
+        &[
+            "org",
+            "byoc",
+            "create",
+            "--region",
+            "us-east-1",
+            "--account-id",
+            "123456789012",
+            "--tag",
+            "env=prod",
+            "--tag",
+            "env=dev",
+            "--org-id",
+            "org-1",
+        ],
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("duplicate tag key 'env'"));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn service_create_discovers_and_sends_a_dynamic_byoc_profile() {
     let mock = MockServer::start().await;
