@@ -485,6 +485,7 @@ async fn request(
         &auth,
         &create_body,
         "file access request",
+        true,
     )
     .await?;
 
@@ -524,8 +525,13 @@ async fn request(
         &auth,
         &claim_body,
         "claim access key",
+        false,
     )
     .await?;
+
+    if claimed.key_id.is_empty() || claimed.key.is_empty() || claimed.secret.is_empty() {
+        return Err(CloudError::new("claim access key: incomplete response"));
+    }
 
     // Never print the secret; store it with the CLI's existing credential file.
     credentials::set_api_credentials(claimed.key.clone(), claimed.secret)?;
@@ -575,35 +581,44 @@ async fn send_json<T: DeserializeOwned>(
     auth: &RequestAuth,
     body: &impl Serialize,
     action: &str,
+    include_error_body: bool,
 ) -> CloudResult<T> {
     let response = authorized(builder, auth)
         .json(body)
         .send()
         .await
-        .map_err(|error| CloudError::new(format!("{action}: {error}")))?;
-    parse_response(response, action).await
+        .map_err(|error| CloudError::new(format!("{action}: {}", error.without_url())))?;
+    parse_response(response, action, include_error_body).await
 }
 
 async fn parse_response<T: DeserializeOwned>(
     response: reqwest::Response,
     action: &str,
+    include_error_body: bool,
 ) -> CloudResult<T> {
     let status = response.status();
     let bytes = response
         .bytes()
         .await
-        .map_err(|error| CloudError::new(format!("{action}: {error}")))?;
+        .map_err(|error| CloudError::new(format!("{action}: {}", error.without_url())))?;
     if !status.is_success() {
-        let body = String::from_utf8_lossy(&bytes);
-        let message = format!("{action} failed ({status}): {}", body.trim());
+        let message = if include_error_body {
+            format!(
+                "{action} failed ({status}): {}",
+                String::from_utf8_lossy(&bytes).trim()
+            )
+        } else {
+            format!("{action} failed ({status})")
+        };
         return Err(if status.as_u16() == 401 || status.as_u16() == 403 {
             CloudError::auth(message)
         } else {
             CloudError::new(message)
         });
     }
+    // Deserializer diagnostics can quote a secret-bearing unexpected value.
     let envelope: Envelope<T> = serde_json::from_slice(&bytes)
-        .map_err(|error| CloudError::new(format!("{action}: invalid response: {error}")))?;
+        .map_err(|_| CloudError::new(format!("{action}: invalid response")))?;
     Ok(envelope.result)
 }
 
@@ -724,23 +739,27 @@ async fn poll_until_approved(
         let response = authorized(http.get(status_url), auth)
             .send()
             .await
-            .map_err(|error| CloudError::new(format!("poll access request: {error}")))?;
-        if !response.status().is_success() {
-            // Transient control-plane errors should not abort the wait; keep
-            // polling until the deadline. Auth failures surface on the claim.
+            .map_err(|error| {
+                CloudError::new(format!("poll access request: {}", error.without_url()))
+            })?;
+        if response.status().is_server_error()
+            || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+        {
             continue;
         }
-        // Responses are enveloped as `{ "result": <payload>, "requestId": ... }`; unwrap `result`
-        // (the direct `response.json::<AccessRequestStatus>()` read never matched the envelope).
         let status: AccessRequestStatus =
-            match response.json::<Envelope<AccessRequestStatus>>().await {
-                Ok(envelope) => envelope.result,
-                Err(_) => continue,
-            };
-        if status.status.as_deref() == Some("approved")
-            && let Some(code) = status.claim_code
-        {
-            return Ok(code);
+            parse_response(response, "poll access request", false).await?;
+        match status.status.as_deref() {
+            Some("pending") => continue,
+            Some("approved") => {
+                return status
+                    .claim_code
+                    .filter(|code| !code.is_empty())
+                    .ok_or_else(|| CloudError::new("approved access request has no claim code"));
+            }
+            Some("denied") => return Err(CloudError::new("access request denied")),
+            Some("expired") => return Err(CloudError::new("access request expired")),
+            _ => return Err(CloudError::new("invalid access request status")),
         }
     }
 }
@@ -750,6 +769,150 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
+
+    #[tokio::test]
+    async fn poll_until_approved_propagates_terminal_and_invalid_responses() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let mut tasks = Vec::new();
+        for (http_status, body, auth_error) in [
+            (401, serde_json::json!({"error":"echo-claim-code"}), true),
+            (403, serde_json::json!({"error":"echo-claim-code"}), true),
+            (400, serde_json::json!({"error":"echo-claim-code"}), false),
+            (404, serde_json::json!({"error":"echo-claim-code"}), false),
+            (
+                200,
+                serde_json::json!({"result":{"status":"denied"}}),
+                false,
+            ),
+            (
+                200,
+                serde_json::json!({"result":{"status":"expired"}}),
+                false,
+            ),
+            (
+                200,
+                serde_json::json!({"result":{"status":"future"}}),
+                false,
+            ),
+            (200, serde_json::json!({"result":{}}), false),
+            (
+                200,
+                serde_json::json!({"result":{"status":"approved"}}),
+                false,
+            ),
+            (
+                200,
+                serde_json::json!({"result":{"status":"approved","claimCode":""}}),
+                false,
+            ),
+            (
+                200,
+                serde_json::json!({"result":{"status":"approved","claimCode":{"echo-claim-code":1}}}),
+                false,
+            ),
+        ] {
+            tasks.push(tokio::spawn(async move {
+                let server = MockServer::start().await;
+                Mock::given(wiremock::matchers::method("GET"))
+                    .respond_with(ResponseTemplate::new(http_status).set_body_json(body))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                let result = tokio::time::timeout(
+                    Duration::from_secs(8),
+                    poll_until_approved(
+                        &reqwest::Client::new(),
+                        &server.uri(),
+                        &RequestAuth::Bearer {
+                            token: "fake-token".into(),
+                        },
+                    ),
+                )
+                .await
+                .expect("terminal response must not wait for approval timeout")
+                .unwrap_err();
+                assert_eq!(
+                    matches!(result.kind, crate::cloud::client::CloudErrorKind::Auth),
+                    auth_error
+                );
+                assert!(!result.message.contains("echo-claim-code"));
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn poll_until_approved_retries_only_transient_http_and_pending() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let attempts = count.clone();
+        Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(move |_: &wiremock::Request| {
+                match attempts.fetch_add(1, Ordering::SeqCst) {
+                    0 => ResponseTemplate::new(429),
+                    1 => ResponseTemplate::new(503),
+                    2 => ResponseTemplate::new(200)
+                        .set_body_json(serde_json::json!({"result":{"status":"pending"}})),
+                    _ => ResponseTemplate::new(200).set_body_json(
+                        serde_json::json!({"result":{"status":"approved","claimCode":"test-code"}}),
+                    ),
+                }
+            })
+            .expect(4)
+            .mount(&server)
+            .await;
+        let code = tokio::time::timeout(
+            Duration::from_secs(18),
+            poll_until_approved(
+                &reqwest::Client::new(),
+                &server.uri(),
+                &RequestAuth::Bearer {
+                    token: "fake-token".into(),
+                },
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(code, "test-code");
+        assert_eq!(count.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn claim_response_errors_do_not_echo_secret_values() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        for status in [200, 400, 401, 500] {
+            let server = MockServer::start().await;
+            Mock::given(wiremock::matchers::method("POST"))
+                .respond_with(
+                    ResponseTemplate::new(status).set_body_json(serde_json::json!({
+                        "result": "secret-verifier-code", "error": "secret-verifier-code"
+                    })),
+                )
+                .mount(&server)
+                .await;
+            let error = send_json::<ClaimResponse>(
+                reqwest::Client::new().post(server.uri()),
+                &RequestAuth::Bearer {
+                    token: "fake-token".into(),
+                },
+                &serde_json::json!({}),
+                "claim access key",
+                false,
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(!error.message.contains("secret-verifier-code"));
+        }
+    }
 
     fn parse(args: &[&str]) -> AccessRequestArgs {
         let cli = Cli::try_parse_from(args).expect("parse");
