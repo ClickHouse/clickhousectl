@@ -70,24 +70,19 @@ async fn main() {
             let cli = Cli::from_arg_matches(&matches)
                 .expect("Cli::from_arg_matches must accept matches from Cli::command()");
             let read_only_telemetry_status = is_read_only_telemetry_status(&cli.command);
-            let run_result = match validate_post_parse(&cli, &mut cmd) {
-                Ok(()) => run_parsed(cli, read_only_telemetry_status).await,
-                Err(e) => {
-                    stdout::record(e.print());
-                    RunOutcome {
-                        exit_code: e.exit_code(),
-                        is_child_exit: false,
-                        defer_telemetry_notice: false,
-                        local_failure: None,
-                    }
-                }
+            let access_validation = match &cli.command {
+                Commands::Cloud(args) => args.validate_access_selectors(&argv),
+                _ => Ok(()),
             };
-            let RunOutcome {
-                exit_code,
-                is_child_exit,
-                defer_telemetry_notice,
-                local_failure,
-            } = run_result;
+            let run_result =
+                match access_validation.and_then(|()| validate_post_parse(&cli, &mut cmd)) {
+                    Ok(()) => run_parsed(cli, read_only_telemetry_status).await,
+                    Err(e) => {
+                        stdout::record(e.print());
+                        (e.exit_code(), false, false)
+                    }
+                };
+            let (exit_code, is_child_exit, defer_telemetry_notice) = run_result;
             #[cfg(feature = "telemetry")]
             {
                 if is_child_exit {

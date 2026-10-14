@@ -86,11 +86,11 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
 
     // Access negotiation refreshes and uses only the OAuth user identity,
     // bypassing normal API-key precedence and the ordinary OAuth write gate.
-    if let CloudCommands::Access { command } = args.command {
+    if let CloudCommands::Access { command, org } = args.command {
         return access::run(
             command,
             args.url.as_deref(),
-            args.org_id,
+            org.or(args.org_id),
             args.org_name,
             json,
         )

@@ -139,6 +139,8 @@ The command requires your OAuth user identity from `cloud auth login` and refres
 
 The API URL comes from `--url` when provided, otherwise the saved OAuth login environment, or the normal Cloud default (`https://api.clickhouse.cloud/v1`) for older tokens without a saved URL. Local development requires an explicit local URL at login or through `--url`; there is no implicit localhost default. Other Cloud commands retain their normal credential precedence, so a saved negotiated key remains available for subsequent operations. Optional `--purpose`, `--tool`, `--version`, and `--session-id` flags record agent context with the request.
 
+Access organization selection uses your OAuth user's complete, paginated membership list, not the saved API key's organization. A single membership is selected automatically; zero or multiple memberships require action (no remembered default or prompt). Find IDs with `cloud org list --json` and select `cloud access request --org <ID>` (`--org-id` remains supported), or use exact `--org-name`. Conflicting selectors, including across command depths, are usage errors.
+
 ### Debugging which credential source was used
 
 Pass `--debug` to a Cloud resource command to print the resolved credential source (and the API URL) to stderr before the command runs. This works with and without `--json`.
