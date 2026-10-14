@@ -1940,26 +1940,60 @@ async fn a_successful_query_carries_no_failure_classification() {
     }
 }
 
-#[tokio::test]
-async fn a_failed_provisioning_burst_names_the_key_create_stage() {
-    // The API-key path: the management key is refused by the query host, so
-    // the CLI provisions a dedicated key — and the control plane rate-limits
-    // the key creation, exactly the burst #450 could not see.
-    let control = start_control_plane(200).await;
-    Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/keys"))
-        .respond_with(ResponseTemplate::new(429).set_body_string("TOO_MANY_REQUESTS"))
-        .mount(&control)
-        .await;
-    let query_host =
-        start_query_host(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
-            .await;
+/// The organization the first-use bind tests resolve: `whoami` reports a
+/// UUID, and the bind refuses a key whose organization does not match it.
+const BIND_ORG_ID: &str = "5fae43a3-1043-4000-8000-0000000000f1";
+const CALLER_KEY_UUID: &str = "cccccccc-1043-4000-8000-00000000ca11";
 
-    let sandbox = Sandbox::new().await;
-    sandbox.write_state(false);
+fn envelope(result: Value, request_id: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": result,
+        "status": 200,
+        "requestId": request_id,
+    }))
+}
+
+/// A control plane in `org_id` that knows the service and identifies the
+/// caller as an API key of `BIND_ORG_ID`.
+async fn start_bind_control_plane(org_id: &str) -> MockServer {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/v1/organizations/{org_id}/services/{QUERY_SERVICE_ID}"
+        )))
+        .respond_with(envelope(
+            serde_json::json!({ "id": QUERY_SERVICE_ID, "name": "demo" }),
+            "stub-service-get",
+        ))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(envelope(
+            serde_json::json!({
+                "actorType": "apiKey",
+                "keyId": CALLER_KEY_UUID,
+                "organizationId": BIND_ORG_ID,
+            }),
+            "stub-whoami",
+        ))
+        .mount(&mock)
+        .await;
+    mock
+}
+
+/// Run `cloud service query` with API-key auth in `org_id`, in a fresh
+/// project with no stored record, so a rejected key takes the bind path.
+fn run_api_key_query(
+    sandbox: &Sandbox,
+    control: &MockServer,
+    query_host: &MockServer,
+    org_id: &str,
+    sql: &str,
+) -> Output {
     let project = tempfile::tempdir().unwrap();
     let url = control.uri();
-    let output = sandbox
+    sandbox
         .command(&[
             "cloud",
             "--url",
@@ -1969,9 +2003,9 @@ async fn a_failed_provisioning_burst_names_the_key_create_stage() {
             "--id",
             QUERY_SERVICE_ID,
             "--org-id",
-            "org-1",
+            org_id,
             "--query",
-            "SELECT 1",
+            sql,
         ])
         .current_dir(project.path())
         .env("CHCTL_TELEMETRY_DEBUG", "1")
@@ -1979,25 +2013,125 @@ async fn a_failed_provisioning_burst_names_the_key_create_stage() {
         .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
         .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
         .output()
-        .expect("failed to spawn binary");
-    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+        .expect("failed to spawn binary")
+}
 
-    let event = debug_payload(&output);
-    assert_eq!(event["failure_stage"], "key_create");
-    assert_eq!(event["failure_kind"], "rate_limited");
-    assert_eq!(event["http_status"], 429);
-    assert_eq!(
-        event["provisioning_state"], "provisioning",
-        "the run died mid-provisioning, which is what separates it from a query failure: {event}"
-    );
-    let raw = serde_json::to_string(&event).unwrap();
+fn assert_no_identifiers_leaked(event: &Value) {
+    let raw = serde_json::to_string(event).unwrap();
     for secret in [
         "fake-key-for-tests",
         "fake-secret-for-tests",
         QUERY_SERVICE_ID,
+        CALLER_KEY_UUID,
+        BIND_ORG_ID,
     ] {
         assert!(!raw.contains(secret), "payload leaked {secret}: {raw}");
     }
+}
+
+#[tokio::test]
+async fn a_failed_caller_identification_names_the_whoami_stage() {
+    // The API-key path: the caller's key is refused by the query host, so the
+    // CLI identifies it to bind it — and the control plane rate-limits the
+    // `whoami`, the burst #450 could not see.
+    let control = start_control_plane(200).await;
+    Mock::given(method("GET"))
+        .and(path("/v1/whoami"))
+        .respond_with(ResponseTemplate::new(429).set_body_string("TOO_MANY_REQUESTS"))
+        .mount(&control)
+        .await;
+    let query_host =
+        start_query_host(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+            .await;
+
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let output = run_api_key_query(&sandbox, &control, &query_host, "org-1", "SELECT 1");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "whoami");
+    assert_eq!(event["failure_kind"], "rate_limited");
+    assert_eq!(event["http_status"], 429);
+    assert_eq!(
+        event["provisioning_state"], "provisioning",
+        "the run died mid-bind, which is what separates it from a query failure: {event}"
+    );
+    assert_no_identifiers_leaked(&event);
+}
+
+#[tokio::test]
+async fn a_caller_of_another_organization_is_refused_at_the_whoami_stage() {
+    let other_org = "5fae43a3-1043-4000-8000-0000000000f2";
+    let control = start_bind_control_plane(other_org).await;
+    let query_host =
+        start_query_host(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+            .await;
+
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let output = run_api_key_query(&sandbox, &control, &query_host, other_org, "SELECT 1");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "whoami");
+    assert_eq!(event["failure_kind"], "other");
+    assert!(event.get("http_status").is_none(), "{event}");
+    assert_eq!(event["provisioning_state"], "provisioning");
+    assert_no_identifiers_leaked(&event);
+    assert!(!serde_json::to_string(&event).unwrap().contains(other_org));
+}
+
+#[tokio::test]
+async fn a_query_that_fails_after_the_bind_reports_the_bound_caller_key_state() {
+    // The bind succeeded and the re-run query is what fails: the state says
+    // the caller's key was bound during this run, and no key was created.
+    let control = start_bind_control_plane(BIND_ORG_ID).await;
+    let endpoint_path =
+        format!("/v1/organizations/{BIND_ORG_ID}/services/{QUERY_SERVICE_ID}/serviceQueryEndpoint");
+    Mock::given(method("GET"))
+        .and(path(endpoint_path.clone()))
+        .respond_with(ResponseTemplate::new(404).set_body_string("NOT_FOUND"))
+        .mount(&control)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(endpoint_path))
+        .respond_with(envelope(
+            serde_json::json!({ "id": "ep-1" }),
+            "stub-endpoint-upsert",
+        ))
+        .expect(1)
+        .mount(&control)
+        .await;
+    let query_host = MockServer::start().await;
+    let attempts = std::sync::atomic::AtomicUsize::new(0);
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_SERVICE_ID}/run")))
+        .respond_with(move |request: &wiremock::Request| {
+            if attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                return ResponseTemplate::new(401).set_body_string("API key is not authorized");
+            }
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            if body["sql"] == "SELECT 1" {
+                ResponseTemplate::new(200).set_body_string("1\n")
+            } else {
+                ResponseTemplate::new(400)
+                    .set_body_string(r#"{"error":{"code":"62","details":"Syntax error"}}"#)
+            }
+        })
+        .mount(&query_host)
+        .await;
+
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+    let output = run_api_key_query(&sandbox, &control, &query_host, BIND_ORG_ID, "SELECT 2");
+    assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
+
+    let event = debug_payload(&output);
+    assert_eq!(event["failure_stage"], "query_request");
+    assert_eq!(event["failure_kind"], "sql_error");
+    assert_eq!(event["provisioning_state"], "bound_caller_key");
+    assert_no_identifiers_leaked(&event);
 }
 
 fn assert_success_without_failure_details(event: &Value) {
@@ -2189,40 +2323,15 @@ async fn closed_stdout_does_not_hide_a_later_response_stream_failure() {
 }
 
 #[tokio::test]
-async fn a_failed_endpoint_read_during_provisioning_names_the_endpoint_get_stage() {
-    // Key creation succeeds and the endpoint read is what fails, so the stage
-    // is the finer-grained one and the rollback (deleting the key we just
-    // created) does not overwrite the classification.
-    let control = start_control_plane(200).await;
-    Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/keys"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {
-                "key": { "id": "00000000-0000-0000-0000-0000000000aa" },
-                "keyId": "provisioned-key-id",
-                "keySecret": "provisioned-key-secret",
-            },
-            "status": 200,
-            "requestId": "stub-key-create",
-        })))
-        .mount(&control)
-        .await;
+async fn a_failed_endpoint_read_during_the_bind_names_the_endpoint_get_stage() {
+    // The caller is identified and the endpoint read is what fails, so the
+    // stage is the finer-grained one.
+    let control = start_bind_control_plane(BIND_ORG_ID).await;
     Mock::given(method("GET"))
         .and(path(format!(
-            "/v1/organizations/org-1/services/{QUERY_SERVICE_ID}/serviceQueryEndpoint"
+            "/v1/organizations/{BIND_ORG_ID}/services/{QUERY_SERVICE_ID}/serviceQueryEndpoint"
         )))
         .respond_with(ResponseTemplate::new(503).set_body_string("upstream unavailable"))
-        .mount(&control)
-        .await;
-    Mock::given(method("DELETE"))
-        .and(path(
-            "/v1/organizations/org-1/keys/00000000-0000-0000-0000-0000000000aa",
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {},
-            "status": 200,
-            "requestId": "stub-key-delete",
-        })))
         .mount(&control)
         .await;
     let query_host =
@@ -2231,29 +2340,7 @@ async fn a_failed_endpoint_read_during_provisioning_names_the_endpoint_get_stage
 
     let sandbox = Sandbox::new().await;
     sandbox.write_state(false);
-    let project = tempfile::tempdir().unwrap();
-    let url = control.uri();
-    let output = sandbox
-        .command(&[
-            "cloud",
-            "--url",
-            &url,
-            "service",
-            "query",
-            "--id",
-            QUERY_SERVICE_ID,
-            "--org-id",
-            "org-1",
-            "--query",
-            "SELECT 1",
-        ])
-        .current_dir(project.path())
-        .env("CHCTL_TELEMETRY_DEBUG", "1")
-        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
-        .output()
-        .expect("failed to spawn binary");
+    let output = run_api_key_query(&sandbox, &control, &query_host, BIND_ORG_ID, "SELECT 1");
     assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
 
     let event = debug_payload(&output);
@@ -2261,14 +2348,7 @@ async fn a_failed_endpoint_read_during_provisioning_names_the_endpoint_get_stage
     assert_eq!(event["failure_kind"], "http_5xx");
     assert_eq!(event["http_status"], 503);
     assert_eq!(event["provisioning_state"], "provisioning");
-    let raw = serde_json::to_string(&event).unwrap();
-    for secret in [
-        "provisioned-key-secret",
-        "provisioned-key-id",
-        "00000000-0000-0000-0000-0000000000aa",
-    ] {
-        assert!(!raw.contains(secret), "payload leaked {secret}: {raw}");
-    }
+    assert_no_identifiers_leaked(&event);
 }
 
 #[tokio::test]
@@ -2488,7 +2568,7 @@ async fn a_repair_that_waited_on_key_propagation_counts_the_retry() {
         .expect("failed to spawn binary");
     assert_eq!(output.status.code(), Some(1), "{}", stderr_of(&output));
     assert!(
-        stderr_of(&output).contains("Waiting for the new API key"),
+        stderr_of(&output).contains("to accept the API key binding"),
         "{}",
         stderr_of(&output)
     );

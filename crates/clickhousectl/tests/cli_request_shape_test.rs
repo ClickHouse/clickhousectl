@@ -10197,10 +10197,11 @@ async fn dotenv_creds_produce_basic_auth_request() {
 //
 // `cloud service query` has two auth paths:
 //   - API key auth: a stored per-service key is preferred; otherwise the
-//     active API key is tried directly before a new key is auto-provisioned.
+//     active API key is tried directly, and bound to the endpoint only if
+//     the endpoint rejects it (#1043).
 //   - OAuth: the user's own bearer token is sent directly to the query host
-//     — no key lookup and, crucially, NO provisioning calls (key creation
-//     and endpoint upsert need write access an OAuth token doesn't have).
+//     — no key lookup and, crucially, NO binding calls (the endpoint upsert
+//     needs write access an OAuth token doesn't have).
 // Both tests run the binary against two mocks: one impersonating the
 // control plane (service lookup), one impersonating the query host (wired
 // up via CLICKHOUSE_CLOUD_QUERY_HOST, which overrides host derivation).
@@ -10219,13 +10220,17 @@ async fn start_mock_control_plane_with_service() -> MockServer {
         "status": 200,
         "requestId": "stub-service-list",
     });
-    Mock::given(method("GET"))
-        .and(path(format!(
-            "/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(stub_service))
-        .mount(&mock)
-        .await;
+    // The first-use bind tests resolve a UUID organization, as `whoami`
+    // reports one (#1043); everything else uses `org-1`.
+    for org_id in ["org-1", FIRST_USE_ORG_ID] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1/organizations/{org_id}/services/{QUERY_TEST_SERVICE_ID}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(stub_service.clone()))
+            .mount(&mock)
+            .await;
+    }
     Mock::given(method("GET"))
         .and(path("/v1/organizations/org-1/services"))
         .respond_with(ResponseTemplate::new(200).set_body_json(stub_services))
@@ -10239,33 +10244,6 @@ async fn start_mock_query_host() -> MockServer {
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
         .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
-        .mount(&mock)
-        .await;
-    mock
-}
-
-async fn start_mock_query_host_for_provisioning() -> MockServer {
-    let mock = MockServer::start().await;
-    let basic_auth = |credentials: &str| {
-        format!(
-            "Basic {}",
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, credentials)
-        )
-    };
-    let primary_auth = basic_auth("fake-key-for-tests:fake-secret-for-tests");
-    let provisioned_auth = basic_auth("provisioned-key-id:provisioned-key-secret");
-    Mock::given(method("POST"))
-        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
-        .and(header("authorization", primary_auth.as_str()))
-        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
-        .with_priority(1)
-        .mount(&mock)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
-        .and(header("authorization", provisioned_auth.as_str()))
-        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
-        .with_priority(5)
         .mount(&mock)
         .await;
     mock
@@ -12876,14 +12854,15 @@ async fn repeated_repairs_do_not_grow_the_endpoint_binding_or_the_pending_list()
 // `POST /keys` and the endpoint upsert are answered by different services, and
 // the upsert can reject a key created moments earlier with
 // `400 OpenAPI key <id> does not belong to the organization` while
-// `GET /keys/{id}` already returns it. Provisioning and repair both create a
-// key and then bind it, so both wait that out: the upsert alone is retried,
+// `GET /keys/{id}` already returns it. Repair creates a key and then binds
+// it, and the first-use bind of the caller's key goes through the same
+// upsert, so both wait that out: the upsert alone is retried,
 // with the same body, inside a bounded window; the notice below is printed
 // once; a success ends the wait. The condition is structural (a typed
 // `Error::Api` with status 400), never the message text.
 
 const KEY_PROPAGATION_NOTICE: &str =
-    "Waiting for the new API key to become visible to the Query API endpoint...";
+    "Waiting for the Query API endpoint to accept the API key binding...";
 
 /// The control plane's answer while the new key has not propagated yet.
 fn key_not_in_organization_response(api_key_uuid: &str) -> ResponseTemplate {
@@ -13113,62 +13092,32 @@ async fn a_400_that_outlives_the_propagation_window_rolls_the_repair_back() {
 }
 
 #[tokio::test]
-async fn first_use_provisioning_waits_for_the_new_key_to_propagate_before_binding_it() {
-    // The first-use path creates a key, reads the endpoint and binds the key:
-    // the same create-then-bind the repair does, so the same wait applies.
+async fn first_use_bind_waits_for_the_endpoint_to_accept_the_caller_key() {
+    // The first-use bind upserts the caller's key through the same bounded
+    // 400 retry the repair uses, so a transient rejection is waited out.
     let control = start_mock_control_plane_with_service().await;
-    mount_key_create_and_delete(
-        &control,
-        serde_json::json!({
-            "key": { "id": QUERY_TEST_KEY_UUID },
-            "keyId": "provisioned-key-id",
-            "keySecret": "provisioned-key-secret"
-        }),
-    )
-    .await;
-    Mock::given(method("GET"))
-        .and(path(query_endpoint_path()))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "error": "not found",
-            "status": 404,
-            "requestId": "stub-endpoint-get"
-        })))
-        .expect(1)
+    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_first_use_endpoint_get(&control, None).await;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+    let attempts = Arc::new(AtomicUsize::new(0));
+    Mock::given(method("POST"))
+        .and(path(first_use_endpoint_path()))
+        .respond_with(move |_: &wiremock::Request| {
+            if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                key_not_in_organization_response(CALLER_KEY_UUID)
+            } else {
+                endpoint_upsert_ok()
+            }
+        })
+        .expect(2)
         .mount(&control)
         .await;
-    mount_endpoint_upsert_failing_once(
-        &control,
-        key_not_in_organization_response(QUERY_TEST_KEY_UUID),
-        vec![QUERY_TEST_KEY_UUID],
-        2,
-    )
-    .await;
-    let query_host = start_mock_query_host_for_provisioning().await;
+    let query_host = start_query_host_rejecting_the_first_query().await;
 
-    let project = tempfile::tempdir().unwrap();
-    let url = control.uri();
-    let output = Command::new(clickhousectl_binary())
-        .env("DO_NOT_TRACK", "1")
-        .args([
-            "cloud",
-            "--url",
-            &url,
-            "service",
-            "query",
-            "--id",
-            QUERY_TEST_SERVICE_ID,
-            "--org-id",
-            "org-1",
-            "--query",
-            "SELECT 1",
-        ])
-        .current_dir(project.path())
-        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to spawn clickhousectl");
+    let (project, output) = run_first_use_query(&control, &query_host, &[]).await;
     assert_success(&output);
     assert_eq!(String::from_utf8_lossy(&output.stdout), "1\n");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -13178,22 +13127,25 @@ async fn first_use_provisioning_waits_for_the_new_key_to_propagate_before_bindin
         "{stderr}"
     );
 
-    let upserts = endpoint_upserts_received(&control).await;
+    let upserts: Vec<Value> = control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| {
+            request.method == wiremock::http::Method::POST
+                && request.url.path() == first_use_endpoint_path()
+        })
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
     assert_eq!(upserts.len(), 2);
     assert_eq!(upserts[0], upserts[1]);
     assert_eq!(
         upserts[0]["openApiKeys"],
-        serde_json::json!([QUERY_TEST_KEY_UUID])
+        serde_json::json!([CALLER_KEY_UUID])
     );
-    assert!(
-        recorded_key_deletes(&control).await.is_empty(),
-        "a key that was eventually bound is never deleted"
-    );
-    let stored = read_credentials(project.path());
-    assert_eq!(
-        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["api_key_id"],
-        QUERY_TEST_KEY_UUID
-    );
+    assert_eq!(control_plane_writes(&control).await.len(), 2);
+    assert!(!project.path().join(".clickhouse/credentials.json").exists());
 }
 
 // ── Post-repair verification (issue #658) ───────────────────────────────────
@@ -13665,6 +13617,16 @@ fn service_query_process_with_sql(
     query_host: &MockServer,
     sql: &str,
 ) -> tokio::process::Command {
+    service_query_process_in_org(project_dir, control, query_host, "org-1", sql)
+}
+
+fn service_query_process_in_org(
+    project_dir: &Path,
+    control: &MockServer,
+    query_host: &MockServer,
+    org_id: &str,
+    sql: &str,
+) -> tokio::process::Command {
     let mut command = tokio::process::Command::new(clickhousectl_binary());
     command
         .env_clear()
@@ -13684,36 +13646,11 @@ fn service_query_process_with_sql(
             "--id",
             QUERY_TEST_SERVICE_ID,
             "--org-id",
-            "org-1",
+            org_id,
             "--query",
             sql,
         ]);
     command
-}
-
-async fn run_concurrent_service_queries(
-    count: usize,
-    project_dir: &Path,
-    control: &MockServer,
-    query_host: &MockServer,
-) -> Vec<std::process::Output> {
-    let tasks = (0..count)
-        .map(|_| {
-            let mut command = service_query_process(project_dir, control, query_host);
-            tokio::spawn(async move {
-                command
-                    .output()
-                    .await
-                    .expect("failed to spawn clickhousectl")
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let mut outputs = Vec::with_capacity(count);
-    for task in tasks {
-        outputs.push(task.await.expect("clickhousectl task panicked"));
-    }
-    outputs
 }
 
 fn write_preserved_query_credentials(project_dir: &Path) -> Value {
@@ -13740,355 +13677,745 @@ fn write_preserved_query_credentials(project_dir: &Path) -> Value {
     credentials
 }
 
-async fn provision_while_project_auth_changes(auth_args: &[&str]) -> tempfile::TempDir {
-    let control = start_mock_control_plane_with_service().await;
-    let query_host = start_mock_query_host_for_provisioning().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/keys"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {
-                "key": { "id": QUERY_TEST_KEY_UUID },
-                "keyId": "provisioned-key-id",
-                "keySecret": "provisioned-key-secret"
-            },
-            "status": 200,
-            "requestId": "stub-key-create"
-        })))
-        .expect(1)
-        .mount(&control)
-        .await;
-    let endpoint_path =
-        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+// ── First use: bind the caller's own API key (issue #1043) ──────────────────
+//
+// With no stored record, a query the endpoint rejects for the caller's own
+// API key makes the CLI identify that key with `whoami`, merge its resource
+// UUID into the endpoint's `openApiKeys` (pruning bindings to keys the org
+// reports deleted) and re-run the query with the same credentials. No key is
+// created and nothing is written to `credentials.json`. `whoami` answers with
+// a UUID organization, so these tests resolve a UUID org rather than `org-1`.
+
+const FIRST_USE_ORG_ID: &str = "5fae43a3-1043-4000-8000-0000000000f1";
+const OTHER_ORG_ID: &str = "5fae43a3-1043-4000-8000-0000000000f2";
+const CALLER_KEY_UUID: &str = "cccccccc-1043-4000-8000-00000000ca11";
+const BOUND_KEY_A: &str = "aaaaaaaa-1043-4000-8000-00000000000a";
+const BOUND_KEY_B: &str = "bbbbbbbb-1043-4000-8000-00000000000b";
+const DELETED_BOUND_KEY: &str = "dddddddd-1043-4000-8000-00000000000d";
+const UNVERIFIABLE_BOUND_KEY: &str = "eeeeeeee-1043-4000-8000-00000000000e";
+const BIND_NOTICE: &str =
+    "Binding the authenticated API key to the Query API endpoint for service 'demo'...";
+
+fn first_use_endpoint_path() -> String {
+    format!(
+        "/v1/organizations/{FIRST_USE_ORG_ID}/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint"
+    )
+}
+
+fn first_use_key_path(api_key_uuid: &str) -> String {
+    format!("/v1/organizations/{FIRST_USE_ORG_ID}/keys/{api_key_uuid}")
+}
+
+fn caller_api_key_identity(organization_id: &str) -> Value {
+    serde_json::json!({
+        "actorType": "apiKey",
+        "keyId": CALLER_KEY_UUID,
+        "name": "ci",
+        "organizationId": organization_id,
+    })
+}
+
+async fn mount_whoami(control: &MockServer, identity: Value) {
     Mock::given(method("GET"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+        .and(path("/v1/whoami"))
+        .respond_with(whoami_envelope(identity))
+        .mount(control)
+        .await;
+}
+
+/// `GET /keys/{uuid}` for a key bound to the endpoint, answering `status`.
+async fn mount_bound_key_lookup(control: &MockServer, api_key_uuid: &str, status: u16) {
+    let response = if status == 200 {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": { "id": api_key_uuid, "state": "enabled" },
+            "status": 200,
+            "requestId": "stub-key-get",
+        }))
+    } else {
+        ResponseTemplate::new(status).set_body_json(serde_json::json!({
+            "error": "key lookup failed",
+            "status": status,
+            "requestId": "stub-key-get",
+        }))
+    };
+    Mock::given(method("GET"))
+        .and(path(first_use_key_path(api_key_uuid)))
+        .respond_with(response)
+        .expect(1)
+        .mount(control)
+        .await;
+}
+
+/// The endpoint GET: absent (`None`, a 404) or reporting `open_api_keys`.
+async fn mount_first_use_endpoint_get(control: &MockServer, open_api_keys: Option<Value>) {
+    let response = match open_api_keys {
+        None => ResponseTemplate::new(404).set_body_json(serde_json::json!({
             "error": "not found",
             "status": 404,
-            "requestId": "stub-endpoint-get"
-        })))
-        .expect(1)
-        .mount(&control)
+            "requestId": "stub-endpoint-get",
+        })),
+        Some(keys) => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "ep-1",
+                "allowedOrigins": "*",
+                "openApiKeys": keys,
+                "roles": ["sql_console_admin"],
+            },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })),
+    };
+    Mock::given(method("GET"))
+        .and(path(first_use_endpoint_path()))
+        .respond_with(response)
+        .mount(control)
         .await;
+}
 
-    let project = tempfile::tempdir().unwrap();
-    write_preserved_query_credentials(project.path());
-    let home = project.path().join("home");
-    std::fs::create_dir(&home).unwrap();
-    let auth_args = auth_args
-        .iter()
-        .map(|argument| (*argument).to_string())
-        .collect::<Vec<_>>();
-    let auth_project = project.path().to_path_buf();
+async fn mount_first_use_endpoint_upsert(control: &MockServer, response: ResponseTemplate) {
     Mock::given(method("POST"))
-        .and(path(endpoint_path))
-        .respond_with(move |_: &wiremock::Request| {
-            let mut command = Command::new(clickhousectl_binary());
-            clear_inherited_env(&mut command);
-            let output = command
-                .env("DO_NOT_TRACK", "1")
-                .env("HOME", &home)
-                .current_dir(&auth_project)
-                .args(&auth_args)
-                .output()
-                .expect("failed to spawn concurrent auth command");
-            assert_success(&output);
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": { "id": "ep-1", "openApiKeys": [QUERY_TEST_KEY_UUID] },
-                "status": 200,
-                "requestId": "stub-endpoint-upsert"
-            }))
-        })
-        .expect(1)
-        .mount(&control)
+        .and(path(first_use_endpoint_path()))
+        .respond_with(response)
+        .mount(control)
         .await;
+}
 
-    let output = service_query_process(project.path(), &control, &query_host)
+fn endpoint_upsert_ok() -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "result": { "id": "ep-1" },
+        "status": 200,
+        "requestId": "stub-endpoint-upsert",
+    }))
+}
+
+/// Everything a successful first-use bind needs: the caller's identity, an
+/// absent endpoint and an upsert that creates it. Returns the endpoint path.
+async fn mount_successful_caller_key_bind(control: &MockServer) -> String {
+    mount_whoami(control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_first_use_endpoint_get(control, None).await;
+    Mock::given(method("POST"))
+        .and(path(first_use_endpoint_path()))
+        .respond_with(endpoint_upsert_ok())
+        .expect(1)
+        .mount(control)
+        .await;
+    first_use_endpoint_path()
+}
+
+/// A query host that rejects the caller's own key until it is bound: the
+/// first statement is refused with `401`, every later one answers `1`.
+async fn start_query_host_rejecting_the_first_query() -> MockServer {
+    let mock = MockServer::start().await;
+    let caller_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", caller_auth.as_str()))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&mock)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .and(header("authorization", caller_auth.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .with_priority(5)
+        .mount(&mock)
+        .await;
+    mock
+}
+
+fn first_use_query_process(
+    project_dir: &Path,
+    control: &MockServer,
+    query_host: &MockServer,
+    sql: &str,
+) -> tokio::process::Command {
+    service_query_process_in_org(project_dir, control, query_host, FIRST_USE_ORG_ID, sql)
+}
+
+async fn run_first_use_query(
+    control: &MockServer,
+    query_host: &MockServer,
+    extra_args: &[&str],
+) -> (tempfile::TempDir, std::process::Output) {
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir(project.path().join("home")).unwrap();
+    let mut command = first_use_query_process(project.path(), control, query_host, "SELECT 1");
+    command.args(extra_args);
+    let output = command
         .output()
         .await
         .expect("failed to spawn clickhousectl");
+    (project, output)
+}
+
+/// The control-plane requests other than reads: what the run changed.
+async fn control_plane_writes(control: &MockServer) -> Vec<String> {
+    control
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.method != wiremock::http::Method::GET)
+        .map(|request| format!("{} {}", request.method, request.url.path()))
+        .collect()
+}
+
+/// Bind against an endpoint reporting `existing_keys` (or none, `None`) and
+/// return the single upsert body, after asserting the common contract: the
+/// query succeeds with the caller's own key, nothing but the upsert is
+/// written, and no local record appears.
+async fn assert_first_use_binds(
+    control: &MockServer,
+    existing_keys: Option<Value>,
+) -> (tempfile::TempDir, Value) {
+    mount_whoami(control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_first_use_endpoint_get(control, existing_keys).await;
+    mount_first_use_endpoint_upsert(control, endpoint_upsert_ok()).await;
+    let query_host = start_query_host_rejecting_the_first_query().await;
+
+    let (project, output) = run_first_use_query(control, &query_host, &[]).await;
     assert_success(&output);
-    project
-}
-
-#[tokio::test]
-async fn provisioning_merges_a_concurrent_api_key_login() {
-    let project = provision_while_project_auth_changes(&[
-        "cloud",
-        "auth",
-        "login",
-        "--api-key",
-        "concurrent-key",
-        "--api-secret",
-        "concurrent-secret",
-    ])
-    .await;
-
-    let stored: Value = serde_json::from_slice(
-        &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(stored["api_key"], "concurrent-key");
-    assert_eq!(stored["api_secret"], "concurrent-secret");
-    assert_eq!(
-        stored["service_query_keys"][PRESERVED_QUERY_SERVICE_ID]["key_id"],
-        "preserved-key-id"
-    );
-    assert_eq!(
-        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["key_id"],
-        "provisioned-key-id"
-    );
-}
-
-#[tokio::test]
-async fn provisioning_does_not_restore_credentials_cleared_by_concurrent_logout() {
-    let project =
-        provision_while_project_auth_changes(&["cloud", "auth", "logout", "--api-keys"]).await;
-
-    let stored: Value = serde_json::from_slice(
-        &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
-    )
-    .unwrap();
-    assert!(stored.get("api_key").is_none());
-    assert!(stored.get("api_secret").is_none());
+    assert_eq!(output.stdout, b"1\n");
     assert!(
-        stored["service_query_keys"]
-            .get(PRESERVED_QUERY_SERVICE_ID)
-            .is_none()
+        String::from_utf8_lossy(&output.stderr).contains(BIND_NOTICE),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
     );
+
+    // Every query, before and after the bind, used the caller's own key.
+    let caller_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    let queries = query_host.received_requests().await.unwrap();
+    assert!(queries.len() >= 2, "the query must be re-run after binding");
+    assert!(queries.iter().all(|request| {
+        request
+            .headers
+            .get("authorization")
+            .is_some_and(|value| value == caller_auth.as_str())
+    }));
+
+    let endpoint_path = first_use_endpoint_path();
     assert_eq!(
-        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["key_id"],
-        "provisioned-key-id"
+        control_plane_writes(control).await,
+        [format!("POST {endpoint_path}")],
+        "the bind is the only write: no key is created or deleted"
     );
-    assert_eq!(stored["service_query_keys"].as_object().unwrap().len(), 1);
+    assert!(
+        !project.path().join(".clickhouse/credentials.json").exists(),
+        "binding the caller's key writes no local record"
+    );
+    let upsert = control
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::POST && request.url.path() == endpoint_path
+        })
+        .unwrap();
+    (project, serde_json::from_slice(&upsert.body).unwrap())
 }
 
 #[tokio::test]
-async fn concurrent_service_queries_provision_once_and_reuse_atomically_saved_credentials() {
-    const PROCESS_COUNT: usize = 6;
+async fn first_use_binds_the_caller_key_alongside_the_existing_bindings() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_bound_key_lookup(&control, BOUND_KEY_A, 200).await;
+    mount_bound_key_lookup(&control, BOUND_KEY_B, 200).await;
+    let (_project, body) = assert_first_use_binds(
+        &control,
+        Some(serde_json::json!([BOUND_KEY_A, BOUND_KEY_B])),
+    )
+    .await;
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "allowedOrigins": "*",
+            "openApiKeys": [BOUND_KEY_A, BOUND_KEY_B, CALLER_KEY_UUID],
+            "roles": ["sql_console_admin"],
+        })
+    );
+
+    // Every call the run made is one `service query --help` advertises.
+    let help_mock = MockServer::start().await;
+    let help = permission_help(&help_mock, &["service", "query"], "--help");
+    assert_observed_permissions_advertised(&control, &help).await;
+}
+
+#[tokio::test]
+async fn first_use_creates_an_absent_endpoint_binding_only_the_caller_key() {
+    let control = start_mock_control_plane_with_service().await;
+    let (_project, body) = assert_first_use_binds(&control, None).await;
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "allowedOrigins": "*",
+            "openApiKeys": [CALLER_KEY_UUID],
+            "roles": ["sql_console_admin"],
+        })
+    );
+    // An explicitly empty key list is a real answer and binds the same way.
+    let control = start_mock_control_plane_with_service().await;
+    let (_project, body) = assert_first_use_binds(&control, Some(serde_json::json!([]))).await;
+    assert_eq!(body["openApiKeys"], serde_json::json!([CALLER_KEY_UUID]));
+}
+
+#[tokio::test]
+async fn first_use_prunes_only_bound_keys_the_organization_reports_deleted() {
+    // A deleted key's UUID left bound makes every upsert fail (#659), so a
+    // confirmed 404 drops it; a lookup that failed for any other reason says
+    // nothing about the key, so it stays bound.
+    let control = start_mock_control_plane_with_service().await;
+    mount_bound_key_lookup(&control, BOUND_KEY_A, 200).await;
+    mount_bound_key_lookup(&control, DELETED_BOUND_KEY, 404).await;
+    mount_bound_key_lookup(&control, UNVERIFIABLE_BOUND_KEY, 500).await;
+    let (_project, body) = assert_first_use_binds(
+        &control,
+        Some(serde_json::json!([
+            BOUND_KEY_A,
+            DELETED_BOUND_KEY,
+            UNVERIFIABLE_BOUND_KEY
+        ])),
+    )
+    .await;
+    assert_eq!(
+        body["openApiKeys"],
+        serde_json::json!([BOUND_KEY_A, UNVERIFIABLE_BOUND_KEY, CALLER_KEY_UUID])
+    );
+}
+
+#[tokio::test]
+async fn first_use_never_looks_up_the_caller_key_it_is_binding() {
+    // The caller is already bound next to a deleted key: pruning that key is
+    // a real change, so the upsert runs, and the caller's own key is neither
+    // looked up nor dropped.
+    let control = start_mock_control_plane_with_service().await;
+    mount_bound_key_lookup(&control, DELETED_BOUND_KEY, 404).await;
+    let (_project, body) = assert_first_use_binds(
+        &control,
+        Some(serde_json::json!([CALLER_KEY_UUID, DELETED_BOUND_KEY])),
+    )
+    .await;
+    assert_eq!(body["openApiKeys"], serde_json::json!([CALLER_KEY_UUID]));
+    assert_eq!(
+        control_plane_requests_to(&control, &first_use_key_path(CALLER_KEY_UUID)).await,
+        0
+    );
+}
+
+#[tokio::test]
+async fn first_use_keeps_an_existing_endpoints_roles_and_origins() {
+    // Roles are endpoint-wide: binding the caller to an existing read-only
+    // endpoint must not grant every bound key `sql_console_admin`.
+    let control = start_mock_control_plane_with_service().await;
+    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_bound_key_lookup(&control, BOUND_KEY_A, 200).await;
+    Mock::given(method("GET"))
+        .and(path(first_use_endpoint_path()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "result": {
+                "id": "ep-1",
+                "allowedOrigins": "https://app.example.com",
+                "openApiKeys": [BOUND_KEY_A],
+                "roles": ["sql_console_read_only"],
+            },
+            "status": 200,
+            "requestId": "stub-endpoint-get",
+        })))
+        .mount(&control)
+        .await;
+    mount_first_use_endpoint_upsert(&control, endpoint_upsert_ok()).await;
+    let query_host = start_query_host_rejecting_the_first_query().await;
+
+    let (_project, output) = run_first_use_query(&control, &query_host, &[]).await;
+    assert_success(&output);
+    let upsert = control
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|request| {
+            request.method == wiremock::http::Method::POST
+                && request.url.path() == first_use_endpoint_path()
+        })
+        .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<Value>(&upsert.body).unwrap(),
+        serde_json::json!({
+            "allowedOrigins": "https://app.example.com",
+            "openApiKeys": [BOUND_KEY_A, CALLER_KEY_UUID],
+            "roles": ["sql_console_read_only"],
+        })
+    );
+}
+
+/// The control plane of a first use whose endpoint already binds the caller
+/// (listed in uppercase: still the same key) next to a live key, so the bind
+/// has nothing to change.
+async fn start_control_plane_already_binding_the_caller() -> MockServer {
+    let control = start_mock_control_plane_with_service().await;
+    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_bound_key_lookup(&control, BOUND_KEY_A, 200).await;
+    mount_first_use_endpoint_get(
+        &control,
+        Some(serde_json::json!([
+            BOUND_KEY_A,
+            CALLER_KEY_UUID.to_ascii_uppercase()
+        ])),
+    )
+    .await;
+    mount_first_use_endpoint_upsert(&control, endpoint_upsert_ok()).await;
+    control
+}
+
+#[tokio::test]
+async fn first_use_waits_for_an_already_bound_caller_key_without_rebinding() {
+    // A concurrent run may have just bound the key: rebinding would change
+    // nothing, so the run writes nothing and waits for the endpoint instead.
+    let control = start_control_plane_already_binding_the_caller().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .up_to_n_times(3)
+        .with_priority(1)
+        .mount(&query_host)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(200).set_body_string("1\n"))
+        .with_priority(5)
+        .mount(&query_host)
+        .await;
+    let (project, output) = run_first_use_query(&control, &query_host, &[]).await;
+
+    assert_success(&output);
+    assert_eq!(output.stdout, b"1\n");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains(QUERY_READINESS_NOTICE), "{stderr}");
+    assert!(control_plane_writes(&control).await.is_empty());
+    assert!(!project.path().join(".clickhouse/credentials.json").exists());
+}
+
+#[tokio::test]
+#[ignore = "waits out the real 120 s Query API readiness window; run explicitly"]
+async fn first_use_fails_when_an_already_bound_caller_key_is_rejected_for_the_whole_window() {
+    // Rebinding a key the endpoint already lists changes nothing, so the run
+    // makes no upsert, waits out the readiness window, and says where to look.
+    let control = start_control_plane_already_binding_the_caller().await;
+    let query_host = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(403).set_body_string("forbidden"))
+        .mount(&query_host)
+        .await;
+    let (project, output) = run_first_use_query(&control, &query_host, &["--json"]).await;
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let envelope: Value = serde_json::from_str(&stderr[stderr.find('{').unwrap()..]).unwrap();
+    assert_eq!(envelope["error"]["code"], "query_key_bound_rejected");
+    assert_eq!(envelope["error"]["api_key_id"], CALLER_KEY_UUID);
+    let message = envelope["error"]["message"].as_str().unwrap();
+    for fragment in [
+        CALLER_KEY_UUID,
+        "already bound",
+        "after waiting 120s",
+        "cloud service query-endpoint get",
+        "cloud key get",
+    ] {
+        assert!(message.contains(fragment), "{fragment}: {message}");
+    }
+    assert!(control_plane_writes(&control).await.is_empty());
+    assert!(
+        query_host.received_requests().await.unwrap().len() > 2,
+        "the whole window was used"
+    );
+    assert!(!project.path().join(".clickhouse/credentials.json").exists());
+}
+
+#[tokio::test]
+async fn first_use_refuses_a_caller_that_is_not_an_api_key_of_the_resolved_org() {
+    let user = serde_json::json!({
+        "actorType": "user",
+        "userId": "5fae43a3-1043-4000-8000-0000000000aa",
+        "email": "ada@example.com",
+    });
+    let robot = serde_json::json!({ "actorType": "robot", "robotId": "r2" });
+    for (identity, expected) in [
+        (user, vec!["identified the caller as a user".to_string()]),
+        (robot, vec!["unrecognized actor type".to_string()]),
+        (
+            caller_api_key_identity(OTHER_ORG_ID),
+            vec![OTHER_ORG_ID.to_string(), FIRST_USE_ORG_ID.to_string()],
+        ),
+    ] {
+        for json in [false, true] {
+            let control = start_mock_control_plane_with_service().await;
+            mount_whoami(&control, identity.clone()).await;
+            let query_host = start_query_host_rejecting_the_first_query().await;
+            let args: &[&str] = if json { &["--json"] } else { &[] };
+            let (project, output) = run_first_use_query(&control, &query_host, args).await;
+
+            assert_eq!(output.status.code(), Some(1), "{output:?}");
+            assert!(output.stdout.is_empty());
+            let message = if json {
+                // The bind notice precedes the one structured error on stderr.
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let envelope: Value =
+                    serde_json::from_str(&stderr[stderr.find('{').unwrap()..]).unwrap();
+                envelope["error"]["message"].as_str().unwrap().to_string()
+            } else {
+                String::from_utf8_lossy(&output.stderr).to_string()
+            };
+            for fragment in &expected {
+                assert!(message.contains(fragment.as_str()), "{message}");
+            }
+            assert!(
+                message.contains("cannot bind the caller's API key"),
+                "{message}"
+            );
+            // Refused before the lock and before any endpoint read or write.
+            assert!(control_plane_writes(&control).await.is_empty());
+            assert_eq!(
+                control_plane_requests_to(&control, &first_use_endpoint_path()).await,
+                0
+            );
+            assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
+            assert!(!project.path().join(".clickhouse/credentials.json").exists());
+        }
+    }
+}
+
+#[tokio::test]
+async fn first_use_with_no_auto_enable_refuses_before_identifying_the_key() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_first_use_endpoint_get(&control, None).await;
+    mount_first_use_endpoint_upsert(&control, endpoint_upsert_ok()).await;
+    let query_host = start_query_host_rejecting_the_first_query().await;
+    let (project, output) = run_first_use_query(&control, &query_host, &["--no-auto-enable"]).await;
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("--no-auto-enable"), "{stderr}");
+    assert!(!stderr.contains(BIND_NOTICE), "{stderr}");
+    assert_eq!(control_plane_requests_to(&control, "/v1/whoami").await, 0);
+    assert!(control_plane_writes(&control).await.is_empty());
+    assert!(!project.path().join(".clickhouse/credentials.json").exists());
+    assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn first_use_refuses_to_rebind_an_endpoint_whose_settings_are_unknown() {
+    // A 200 endpoint GET that omits `openApiKeys` leaves the bound keys
+    // unknown: the upsert replaces the list wholesale, so binding on top of an
+    // assumed-empty list would revoke them. An omitted `roles` or
+    // `allowedOrigins` cannot be echoed back, and a default would rewrite it.
+    let complete = serde_json::json!({
+        "id": "ep-1",
+        "allowedOrigins": "*",
+        "openApiKeys": [],
+        "roles": ["sql_console_admin"],
+    });
+    for (field, expected) in [
+        ("openApiKeys", "'openApiKeys'"),
+        ("roles", "'query endpoint roles'"),
+        ("allowedOrigins", "'query endpoint allowedOrigins'"),
+    ] {
+        let mut result = complete.clone();
+        result.as_object_mut().unwrap().remove(field);
+        let control = start_mock_control_plane_with_service().await;
+        mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+        Mock::given(method("GET"))
+            .and(path(first_use_endpoint_path()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": result,
+                "status": 200,
+                "requestId": "stub-endpoint-get",
+            })))
+            .mount(&control)
+            .await;
+        let query_host = start_query_host_rejecting_the_first_query().await;
+        let (_project, output) = run_first_use_query(&control, &query_host, &[]).await;
+
+        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{field}: {stderr}");
+        assert!(control_plane_writes(&control).await.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_failed_first_use_bind_has_nothing_to_roll_back() {
+    let control = start_mock_control_plane_with_service().await;
+    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
+    mount_first_use_endpoint_get(&control, Some(serde_json::json!([]))).await;
+    mount_first_use_endpoint_upsert(
+        &control,
+        ResponseTemplate::new(500).set_body_json(serde_json::json!({
+            "error": "upsert failed",
+            "status": 500,
+            "requestId": "stub-endpoint-upsert",
+        })),
+    )
+    .await;
+    let query_host = start_query_host_rejecting_the_first_query().await;
+    let (project, output) = run_first_use_query(&control, &query_host, &[]).await;
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("upsert failed"));
+    // The one write is the failed upsert: no key was created, so none is
+    // deleted, and nothing local was recorded.
+    assert_eq!(
+        control_plane_writes(&control).await,
+        [format!("POST {}", first_use_endpoint_path())]
+    );
+    assert!(!project.path().join(".clickhouse/credentials.json").exists());
+    assert_eq!(query_host.received_requests().await.unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn concurrent_first_use_binds_serialize_and_leave_credentials_untouched() {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
+    const PROCESS_COUNT: usize = 4;
 
     let control = start_mock_control_plane_with_service().await;
-    let query_host = start_mock_query_host_for_provisioning().await;
+    mount_whoami(&control, caller_api_key_identity(FIRST_USE_ORG_ID)).await;
     let project = tempfile::tempdir().unwrap();
     let original_credentials = write_preserved_query_credentials(project.path());
     std::fs::create_dir(project.path().join("home")).unwrap();
 
     // Lock ownership is held by the OS file handle. Contents left by a dead
-    // process must not make the lock stale or block the next provisioner.
-    std::fs::write(
-        project.path().join(".clickhouse/query-provisioning.lock"),
-        "stale owner metadata",
-    )
-    .unwrap();
+    // process must not make the lock stale or block the next bind.
+    let lock_path = project.path().join(".clickhouse/query-provisioning.lock");
+    std::fs::write(&lock_path, "stale owner metadata").unwrap();
     let provisioning_lock = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
-        .open(project.path().join(".clickhouse/query-provisioning.lock"))
+        .open(&lock_path)
         .unwrap();
     provisioning_lock.lock().unwrap();
 
-    Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/keys"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": {
-                "key": { "id": QUERY_TEST_KEY_UUID },
-                "keyId": "provisioned-key-id",
-                "keySecret": "provisioned-key-secret"
-            },
-            "status": 200,
-            "requestId": "stub-key-create"
-        })))
-        .mount(&control)
-        .await;
-    let endpoint_path =
-        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
+    // A stateful endpoint: each GET reports what the last upsert bound, so a
+    // bind that did not see the previous one's result would show up here.
+    let bound: Arc<Mutex<Option<Value>>> = Arc::new(Mutex::new(None));
+    let endpoint_bound = Arc::new(AtomicBool::new(false));
+    let get_state = Arc::clone(&bound);
     Mock::given(method("GET"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "error": "not found",
-            "status": 404,
-            "requestId": "stub-endpoint-get"
-        })))
+        .and(path(first_use_endpoint_path()))
+        .respond_with(
+            move |_: &wiremock::Request| match &*get_state.lock().unwrap() {
+                None => ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                    "error": "not found", "status": 404, "requestId": "stub-endpoint-get"
+                })),
+                Some(keys) => ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "result": {
+                        "id": "ep-1",
+                        "allowedOrigins": "*",
+                        "openApiKeys": keys,
+                        "roles": ["sql_console_admin"],
+                    },
+                    "status": 200,
+                    "requestId": "stub-endpoint-get"
+                })),
+            },
+        )
         .mount(&control)
         .await;
+    let upsert_state = Arc::clone(&bound);
+    let upsert_flag = Arc::clone(&endpoint_bound);
     Mock::given(method("POST"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "id": "ep-1", "openApiKeys": [QUERY_TEST_KEY_UUID] },
-            "status": 200,
-            "requestId": "stub-endpoint-upsert"
-        })))
+        .and(path(first_use_endpoint_path()))
+        .respond_with(move |request: &wiremock::Request| {
+            let body: Value = serde_json::from_slice(&request.body).unwrap();
+            *upsert_state.lock().unwrap() = Some(body["openApiKeys"].clone());
+            upsert_flag.store(true, Ordering::SeqCst);
+            endpoint_upsert_ok()
+        })
+        .expect(1)
         .mount(&control)
+        .await;
+
+    // The query host rejects the caller's key until the endpoint is bound.
+    let query_host = MockServer::start().await;
+    let query_flag = Arc::clone(&endpoint_bound);
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(move |_: &wiremock::Request| {
+            if query_flag.load(Ordering::SeqCst) {
+                ResponseTemplate::new(200).set_body_string("1\n")
+            } else {
+                ResponseTemplate::new(401).set_body_string("API key is not authorized")
+            }
+        })
+        .mount(&query_host)
         .await;
 
     let mut children = Vec::with_capacity(PROCESS_COUNT);
     for _ in 0..PROCESS_COUNT {
         children.push(
-            service_query_process(project.path(), &control, &query_host)
+            first_use_query_process(project.path(), &control, &query_host, "SELECT 1")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::piped())
                 .spawn()
                 .expect("failed to spawn clickhousectl"),
         );
     }
-
-    let primary_auth = format!(
-        "Basic {}",
-        base64::Engine::encode(
-            &base64::engine::general_purpose::STANDARD,
-            "fake-key-for-tests:fake-secret-for-tests",
-        )
-    );
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
-        loop {
-            let started = query_host
-                .received_requests()
-                .await
-                .unwrap()
-                .iter()
-                .filter(|request| {
-                    request
-                        .headers
-                        .get("authorization")
-                        .and_then(|value| value.to_str().ok())
-                        == Some(primary_auth.as_str())
-                })
-                .count();
-            if started == PROCESS_COUNT {
-                break;
-            }
+        while control_plane_requests_to(&control, "/v1/whoami").await < PROCESS_COUNT {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
     })
     .await
-    .expect("concurrent queries did not all reach provisioning");
+    .expect("concurrent queries did not all reach the bind");
+    assert_eq!(
+        control_plane_requests_to(&control, &first_use_endpoint_path()).await,
+        0,
+        "the endpoint is only read under the provisioning lock"
+    );
 
     drop(provisioning_lock);
-    let mut outputs = Vec::with_capacity(PROCESS_COUNT);
     for child in children {
-        outputs.push(
-            child
-                .wait_with_output()
-                .await
-                .expect("failed to wait for clickhousectl"),
-        );
-    }
-    for output in &outputs {
-        assert_success(output);
+        let output = child
+            .wait_with_output()
+            .await
+            .expect("failed to wait for clickhousectl");
+        assert_success(&output);
         assert_eq!(output.stdout, b"1\n");
     }
 
-    // A later process proves the persisted result is immediately reusable and
-    // does not enter provisioning again.
-    let reuse_output = service_query_process(project.path(), &control, &query_host)
-        .output()
-        .await
-        .expect("failed to spawn clickhousectl");
-    assert_success(&reuse_output);
-
     let requests = control.received_requests().await.unwrap();
-    let key_creates = requests
+    let upserts: Vec<Value> = requests
         .iter()
         .filter(|request| {
             request.method == wiremock::http::Method::POST
-                && request.url.path() == "/v1/organizations/org-1/keys"
+                && request.url.path() == first_use_endpoint_path()
         })
-        .count();
-    let endpoint_gets = requests
-        .iter()
-        .filter(|request| {
-            request.method == wiremock::http::Method::GET && request.url.path() == endpoint_path
-        })
-        .count();
-    let endpoint_upserts = requests
-        .iter()
-        .filter(|request| {
-            request.method == wiremock::http::Method::POST && request.url.path() == endpoint_path
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(key_creates, 1, "only the lock holder may create a key");
+        .map(|request| serde_json::from_slice(&request.body).unwrap())
+        .collect();
+    // The first bind writes; every later one, serialized behind it, finds the
+    // caller already bound, writes nothing and retries its query once.
+    assert_eq!(upserts.len(), 1);
     assert_eq!(
-        endpoint_gets, 1,
-        "only the lock holder may inspect the endpoint"
+        upserts[0]["openApiKeys"],
+        serde_json::json!([CALLER_KEY_UUID]),
+        "serialized binds never duplicate or drop the caller's key"
     );
-    assert_eq!(endpoint_upserts.len(), 1, "the endpoint must be bound once");
-    assert!(
-        requests
-            .iter()
-            .all(|request| request.method != wiremock::http::Method::DELETE),
-        "successful provisioning must not delete a key",
-    );
-    let upsert_body: Value = serde_json::from_slice(&endpoint_upserts[0].body).unwrap();
     assert_eq!(
-        upsert_body["openApiKeys"],
-        serde_json::json!([QUERY_TEST_KEY_UUID])
+        control_plane_writes(&control).await.len(),
+        1,
+        "the upsert is the only write"
     );
-
-    let credentials_bytes =
-        std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap();
-    let credentials: Value = serde_json::from_slice(&credentials_bytes)
-        .expect("atomic replacement must leave valid credential JSON");
-    assert_eq!(
-        credentials["service_query_keys"][PRESERVED_QUERY_SERVICE_ID],
-        original_credentials["service_query_keys"][PRESERVED_QUERY_SERVICE_ID],
-        "the under-lock merge must preserve unrelated credentials",
-    );
-    let stored = &credentials["service_query_keys"][QUERY_TEST_SERVICE_ID];
-    assert_eq!(stored["organization_id"], "org-1");
-    assert_eq!(stored["api_key_id"], QUERY_TEST_KEY_UUID);
-    assert_eq!(stored["key_id"], "provisioned-key-id");
-    assert_eq!(stored["key_secret"], "provisioned-key-secret");
-    assert_eq!(stored["endpoint_id"], "ep-1");
-    assert!(stored["created_at"].is_string());
-    assert_eq!(
-        std::fs::read_to_string(project.path().join(".clickhouse/.gitignore")).unwrap(),
-        "*\n",
-        "a pre-existing project metadata directory must still get ignored",
-    );
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(project.path().join(".clickhouse/credentials.json"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600);
-    }
-}
-
-async fn mount_successful_query_provisioning(control: &MockServer) -> String {
-    mount_key_create_and_delete(
-        control,
-        serde_json::json!({
-            "key": { "id": QUERY_TEST_KEY_UUID },
-            "keyId": "provisioned-key-id",
-            "keySecret": "provisioned-key-secret"
-        }),
+    let credentials: Value = serde_json::from_slice(
+        &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
     )
-    .await;
-    let endpoint_path =
-        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
-    Mock::given(method("GET"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "error": "not found",
-            "status": 404,
-            "requestId": "stub-endpoint-get"
-        })))
-        .expect(1)
-        .mount(control)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "id": "ep-1", "openApiKeys": [QUERY_TEST_KEY_UUID] },
-            "status": 200,
-            "requestId": "stub-endpoint-upsert"
-        })))
-        .expect(1)
-        .mount(control)
-        .await;
-    endpoint_path
+    .unwrap();
+    assert_eq!(credentials, original_credentials);
 }
 
 fn query_test_basic_auth(credentials: &str) -> String {
@@ -14099,7 +14426,7 @@ fn query_test_basic_auth(credentials: &str) -> String {
 }
 
 #[tokio::test]
-async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_key() {
+async fn first_use_query_retries_readiness_errors_with_the_caller_key() {
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -14107,26 +14434,27 @@ async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_k
     use std::time::{Duration, Instant};
 
     let control = start_mock_control_plane_with_service().await;
-    let endpoint_path = mount_successful_query_provisioning(&control).await;
+    let endpoint_path = mount_successful_caller_key_bind(&control).await;
     let query_host = MockServer::start().await;
     let query_path = format!("/service/{QUERY_TEST_SERVICE_ID}/run");
-    let primary_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    let caller_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
     Mock::given(method("POST"))
         .and(path(query_path.clone()))
-        .and(header("authorization", primary_auth.as_str()))
+        .and(header("authorization", caller_auth.as_str()))
         .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .up_to_n_times(1)
+        .with_priority(1)
         .expect(1)
         .mount(&query_host)
         .await;
 
-    let provisioned_auth = query_test_basic_auth("provisioned-key-id:provisioned-key-secret");
     let response_index = Arc::new(AtomicUsize::new(0));
     let delivered_statuses = Arc::new(Mutex::new(Vec::new()));
     let responder_index = Arc::clone(&response_index);
     let responder_statuses = Arc::clone(&delivered_statuses);
     Mock::given(method("POST"))
         .and(path(query_path))
-        .and(header("authorization", provisioned_auth.as_str()))
+        .and(header("authorization", caller_auth.as_str()))
         .respond_with(move |request: &wiremock::Request| {
             let body: Value = serde_json::from_slice(&request.body).unwrap();
             match body["sql"].as_str() {
@@ -14146,6 +14474,7 @@ async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_k
                     .set_body_string(format!("unexpected SQL in readiness test: {sql:?}")),
             }
         })
+        .with_priority(5)
         .expect(5)
         .mount(&query_host)
         .await;
@@ -14153,7 +14482,7 @@ async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_k
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir(project.path().join("home")).unwrap();
     let started = Instant::now();
-    let output = service_query_process_with_sql(project.path(), &control, &query_host, "SELECT 42")
+    let output = first_use_query_process(project.path(), &control, &query_host, "SELECT 42")
         .output()
         .await
         .expect("failed to spawn clickhousectl");
@@ -14177,21 +14506,16 @@ async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_k
 
     let query_requests = query_host.received_requests().await.unwrap();
     assert_eq!(query_requests.len(), 6);
-    let provisioned_requests: Vec<_> = query_requests
-        .iter()
-        .filter(|request| {
+    assert!(
+        query_requests.iter().all(|request| {
             request
                 .headers
                 .get("authorization")
-                .is_some_and(|value| value == provisioned_auth.as_str())
-        })
-        .collect();
-    assert_eq!(
-        provisioned_requests.len(),
-        5,
-        "every retry must reuse the new key"
+                .is_some_and(|value| value == caller_auth.as_str())
+        }),
+        "every attempt uses the caller's own key"
     );
-    let sql: Vec<_> = provisioned_requests
+    let sql: Vec<_> = query_requests
         .iter()
         .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap()["sql"].clone())
         .collect();
@@ -14200,59 +14524,52 @@ async fn just_provisioned_service_query_retries_readiness_errors_with_the_same_k
         4,
         "readiness retries must use the harmless probe"
     );
-    let user_queries: Vec<_> = provisioned_requests
+    let user_queries: Vec<_> = query_requests
         .iter()
+        .skip(1)
         .filter(|request| {
             serde_json::from_slice::<Value>(&request.body).unwrap()["sql"] == "SELECT 42"
         })
         .collect();
-    assert_eq!(user_queries.len(), 1, "user SQL must run exactly once");
+    assert_eq!(
+        user_queries.len(),
+        1,
+        "user SQL must run exactly once after the bind"
+    );
     assert_eq!(user_queries[0].headers.get("wake-service").unwrap(), "true");
 
-    let control_requests = control.received_requests().await.unwrap();
-    let request_count = |request_method: wiremock::http::Method, request_path: &str| {
-        control_requests
-            .iter()
-            .filter(|request| {
-                request.method == request_method && request.url.path() == request_path
-            })
-            .count()
-    };
     assert_eq!(
-        request_count(wiremock::http::Method::POST, "/v1/organizations/org-1/keys"),
-        1,
-        "readiness retries must not reprovision the key"
-    );
-    assert_eq!(
-        request_count(wiremock::http::Method::POST, &endpoint_path),
-        1,
-        "readiness retries must not upsert the endpoint again"
+        control_plane_writes(&control).await,
+        [format!("POST {endpoint_path}")],
+        "readiness retries must not bind the endpoint again"
     );
 }
 
 #[tokio::test]
-async fn just_provisioned_service_query_fails_immediately_when_the_service_is_stopped() {
+async fn first_use_query_fails_immediately_when_the_service_is_stopped() {
     use std::time::{Duration, Instant};
 
     let control = start_mock_control_plane_with_service().await;
-    mount_successful_query_provisioning(&control).await;
+    mount_successful_caller_key_bind(&control).await;
     let query_host = MockServer::start().await;
     let query_path = format!("/service/{QUERY_TEST_SERVICE_ID}/run");
-    let primary_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    let caller_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
     Mock::given(method("POST"))
         .and(path(query_path.clone()))
-        .and(header("authorization", primary_auth.as_str()))
+        .and(header("authorization", caller_auth.as_str()))
         .respond_with(ResponseTemplate::new(401).set_body_string("API key is not authorized"))
+        .up_to_n_times(1)
+        .with_priority(1)
         .expect(1)
         .mount(&query_host)
         .await;
-    let provisioned_auth = query_test_basic_auth("provisioned-key-id:provisioned-key-secret");
     Mock::given(method("POST"))
         .and(path(query_path))
-        .and(header("authorization", provisioned_auth.as_str()))
+        .and(header("authorization", caller_auth.as_str()))
         .respond_with(ResponseTemplate::new(404).set_body_string(
             r#"{"error":"ClickHouse service is currently unavailable. Please try again later."}"#,
         ))
+        .with_priority(5)
         .expect(1)
         .mount(&query_host)
         .await;
@@ -14260,7 +14577,7 @@ async fn just_provisioned_service_query_fails_immediately_when_the_service_is_st
     let project = tempfile::tempdir().unwrap();
     std::fs::create_dir(project.path().join("home")).unwrap();
     let started = Instant::now();
-    let output = service_query_process(project.path(), &control, &query_host)
+    let output = first_use_query_process(project.path(), &control, &query_host, "SELECT 1")
         .output()
         .await
         .expect("failed to spawn clickhousectl");
@@ -14276,680 +14593,8 @@ async fn just_provisioned_service_query_fails_immediately_when_the_service_is_st
     assert_eq!(
         String::from_utf8_lossy(&output.stderr),
         format!(
-            "Provisioning Query API endpoint + key for service 'demo'...\nError: service 'demo' is stopped; start it with `clickhousectl cloud service start {QUERY_TEST_SERVICE_ID} --org-id org-1` and retry\n"
+            "{BIND_NOTICE}\nError: service 'demo' is stopped; start it with `clickhousectl cloud service start {QUERY_TEST_SERVICE_ID} --org-id {FIRST_USE_ORG_ID}` and retry\n"
         )
-    );
-}
-
-#[tokio::test]
-async fn concurrent_failed_provisioners_delete_only_their_exact_created_key() {
-    const PROCESS_COUNT: usize = 3;
-    const UNRELATED_BOUND_KEY: &str = "99999999-8888-7777-6666-555555555555";
-
-    let control = start_mock_control_plane_with_service().await;
-    let query_host = start_mock_query_host_for_provisioning().await;
-    let project = tempfile::tempdir().unwrap();
-    let original_credentials = write_preserved_query_credentials(project.path());
-    std::fs::create_dir(project.path().join("home")).unwrap();
-    mount_key_create_and_delete(
-        &control,
-        serde_json::json!({
-            "key": { "id": QUERY_TEST_KEY_UUID },
-            "keyId": "provisioned-key-id",
-            "keySecret": "provisioned-key-secret"
-        }),
-    )
-    .await;
-    let endpoint_path =
-        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
-    Mock::given(method("GET"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "id": "ep-1", "openApiKeys": [UNRELATED_BOUND_KEY] },
-            "status": 200,
-            "requestId": "stub-endpoint-get"
-        })))
-        .mount(&control)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(500).set_body_json(serde_json::json!({
-            "error": "upsert failed",
-            "status": 500,
-            "requestId": "stub-endpoint-upsert"
-        })))
-        .mount(&control)
-        .await;
-
-    let outputs =
-        run_concurrent_service_queries(PROCESS_COUNT, project.path(), &control, &query_host).await;
-    for output in &outputs {
-        assert!(!output.status.success());
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("upsert failed"),
-            "unexpected stderr: {}",
-            String::from_utf8_lossy(&output.stderr),
-        );
-    }
-
-    let requests = control.received_requests().await.unwrap();
-    let count = |request_method: wiremock::http::Method, request_path: &str| {
-        requests
-            .iter()
-            .filter(|request| {
-                request.method == request_method && request.url.path() == request_path
-            })
-            .count()
-    };
-    assert_eq!(
-        count(wiremock::http::Method::POST, "/v1/organizations/org-1/keys"),
-        PROCESS_COUNT
-    );
-    assert_eq!(
-        count(wiremock::http::Method::GET, &endpoint_path),
-        PROCESS_COUNT
-    );
-    assert_eq!(
-        count(wiremock::http::Method::POST, &endpoint_path),
-        PROCESS_COUNT
-    );
-    let deletes = requests
-        .iter()
-        .filter(|request| request.method == wiremock::http::Method::DELETE)
-        .collect::<Vec<_>>();
-    assert_eq!(deletes.len(), PROCESS_COUNT);
-    assert!(deletes.iter().all(|request| {
-        request.url.path() == format!("/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}")
-    }));
-    for upsert in requests.iter().filter(|request| {
-        request.method == wiremock::http::Method::POST && request.url.path() == endpoint_path
-    }) {
-        let body: Value = serde_json::from_slice(&upsert.body).unwrap();
-        assert_eq!(
-            body["openApiKeys"],
-            serde_json::json!([UNRELATED_BOUND_KEY, QUERY_TEST_KEY_UUID]),
-            "the unrelated endpoint binding must be preserved",
-        );
-    }
-
-    let credentials: Value = serde_json::from_slice(
-        &std::fs::read(project.path().join(".clickhouse/credentials.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(credentials, original_credentials);
-    assert!(
-        credentials["service_query_keys"]
-            .get(QUERY_TEST_SERVICE_ID)
-            .is_none(),
-        "a failed provision must not leave an untracked local record",
-    );
-}
-
-/// Mount a key-creation POST returning `result`, plus a key DELETE, on the
-/// control plane. `result` lets each test omit exactly the field under test.
-async fn mount_key_create_and_delete(control: &MockServer, result: Value) {
-    Mock::given(method("POST"))
-        .and(path("/v1/organizations/org-1/keys"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": result,
-            "status": 200,
-            "requestId": "stub-key-create",
-        })))
-        .mount(control)
-        .await;
-    Mock::given(method("DELETE"))
-        .and(path(format!(
-            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "status": 200,
-            "requestId": "stub-key-delete",
-        })))
-        .mount(control)
-        .await;
-}
-
-/// Run `cloud service query` in an empty project dir (no stored key, so the
-/// provisioning path runs) against `control`, with API key env creds.
-async fn invoke_service_query_provisioning(control: &MockServer) -> (tempfile::TempDir, String) {
-    let query_host = start_mock_query_host_for_provisioning().await;
-    let dir = tempfile::tempdir().unwrap();
-    let url = control.uri();
-    let output = Command::new(clickhousectl_binary())
-        .env("DO_NOT_TRACK", "1")
-        .args([
-            "cloud",
-            "--url",
-            &url,
-            "service",
-            "query",
-            "--id",
-            QUERY_TEST_SERVICE_ID,
-            "--org-id",
-            "org-1",
-            "--query",
-            "SELECT 1",
-        ])
-        .current_dir(dir.path())
-        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to spawn clickhousectl");
-
-    assert!(
-        !output.status.success(),
-        "provisioning with an incomplete response must fail\nstdout:\n{}",
-        String::from_utf8_lossy(&output.stdout),
-    );
-    (dir, String::from_utf8_lossy(&output.stderr).to_string())
-}
-
-/// The key UUIDs the control plane was asked to delete.
-async fn recorded_key_deletes(control: &MockServer) -> Vec<String> {
-    control
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .filter(|r| r.method == wiremock::http::Method::DELETE)
-        .map(|r| r.url.path().to_string())
-        .collect()
-}
-
-#[tokio::test]
-async fn service_query_unbinds_before_deleting_key_when_credential_persistence_fails() {
-    const EXISTING_BOUND_KEY: &str = "99999999-8888-7777-6666-555555555555";
-
-    let control = start_mock_control_plane_with_service().await;
-    let query_host = start_mock_query_host_for_provisioning().await;
-    mount_key_create_and_delete(
-        &control,
-        serde_json::json!({
-            "key": { "id": QUERY_TEST_KEY_UUID },
-            "keyId": "provisioned-key-id",
-            "keySecret": "provisioned-key-secret"
-        }),
-    )
-    .await;
-
-    let project = tempfile::tempdir().unwrap();
-    let credentials_dir = project.path().join(".clickhouse");
-    std::fs::create_dir(&credentials_dir).unwrap();
-    let credentials_path = credentials_dir.join("credentials.json");
-    let endpoint_path =
-        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
-    let endpoint_get_count = std::sync::atomic::AtomicUsize::new(0);
-    Mock::given(method("GET"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(move |_: &wiremock::Request| {
-            let result =
-                if endpoint_get_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                    serde_json::json!({
-                        "id": "ep-1",
-                        "allowedOrigins": "https://before.example",
-                        "openApiKeys": [EXISTING_BOUND_KEY],
-                        "roles": ["sql_console_read_only"]
-                    })
-                } else {
-                    serde_json::json!({
-                        "id": "ep-1",
-                        "allowedOrigins": "*",
-                        "openApiKeys": [EXISTING_BOUND_KEY, QUERY_TEST_KEY_UUID],
-                        "roles": ["sql_console_admin"]
-                    })
-                };
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": result,
-                "status": 200,
-                "requestId": "stub-endpoint-get"
-            }))
-        })
-        .expect(2)
-        .mount(&control)
-        .await;
-    let endpoint_upsert_count = std::sync::atomic::AtomicUsize::new(0);
-    Mock::given(method("POST"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(move |_: &wiremock::Request| {
-            if endpoint_upsert_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                // Provisioning has already loaded credentials. A directory at
-                // the destination makes the atomic replacement fail after bind.
-                std::fs::create_dir(&credentials_path).unwrap();
-            }
-            ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "result": { "id": "ep-1" },
-                "status": 200,
-                "requestId": "stub-endpoint-upsert"
-            }))
-        })
-        .expect(2)
-        .mount(&control)
-        .await;
-
-    let output = service_query_process(project.path(), &control, &query_host)
-        .output()
-        .await
-        .expect("failed to spawn clickhousectl");
-    assert!(!output.status.success());
-
-    let requests = control.received_requests().await.unwrap();
-    let endpoint_upserts = requests
-        .iter()
-        .enumerate()
-        .filter(|(_, request)| {
-            request.method == wiremock::http::Method::POST && request.url.path() == endpoint_path
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(endpoint_upserts.len(), 2);
-    let bind_body: Value = serde_json::from_slice(&endpoint_upserts[0].1.body).unwrap();
-    assert_eq!(
-        bind_body["openApiKeys"],
-        serde_json::json!([EXISTING_BOUND_KEY, QUERY_TEST_KEY_UUID])
-    );
-    let unbind_body: Value = serde_json::from_slice(&endpoint_upserts[1].1.body).unwrap();
-    assert_eq!(
-        unbind_body,
-        serde_json::json!({
-            "allowedOrigins": "*",
-            "openApiKeys": [EXISTING_BOUND_KEY],
-            "roles": ["sql_console_admin"]
-        }),
-        "compensation must preserve the current endpoint while removing only its own key",
-    );
-    let key_delete = requests
-        .iter()
-        .position(|request| {
-            request.method == wiremock::http::Method::DELETE
-                && request.url.path()
-                    == format!("/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}")
-        })
-        .expect("the unbound key must be deleted");
-    assert!(
-        endpoint_upserts[1].0 < key_delete,
-        "the endpoint must be repaired before its key is deleted",
-    );
-    assert!(credentials_dir.join("credentials.json").is_dir());
-}
-
-#[tokio::test]
-async fn service_query_retains_key_when_persistence_and_unbind_both_fail() {
-    let control = start_mock_control_plane_with_service().await;
-    let query_host = start_mock_query_host_for_provisioning().await;
-    mount_key_create_and_delete(
-        &control,
-        serde_json::json!({
-            "key": { "id": QUERY_TEST_KEY_UUID },
-            "keyId": "provisioned-key-id",
-            "keySecret": "provisioned-key-secret"
-        }),
-    )
-    .await;
-
-    let project = tempfile::tempdir().unwrap();
-    let credentials_dir = project.path().join(".clickhouse");
-    std::fs::create_dir(&credentials_dir).unwrap();
-    let credentials_path = credentials_dir.join("credentials.json");
-    let endpoint_path =
-        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
-    let endpoint_get_count = std::sync::atomic::AtomicUsize::new(0);
-    Mock::given(method("GET"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(move |_: &wiremock::Request| {
-            if endpoint_get_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                ResponseTemplate::new(404).set_body_json(serde_json::json!({
-                    "error": "not found",
-                    "status": 404,
-                    "requestId": "stub-endpoint-get"
-                }))
-            } else {
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "result": {
-                        "id": "ep-1",
-                        "allowedOrigins": "*",
-                        "openApiKeys": [QUERY_TEST_KEY_UUID],
-                        "roles": ["sql_console_admin"]
-                    },
-                    "status": 200,
-                    "requestId": "stub-endpoint-get-after-bind"
-                }))
-            }
-        })
-        .expect(2)
-        .mount(&control)
-        .await;
-    let endpoint_upsert_count = std::sync::atomic::AtomicUsize::new(0);
-    Mock::given(method("POST"))
-        .and(path(endpoint_path))
-        .respond_with(move |_: &wiremock::Request| {
-            if endpoint_upsert_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                std::fs::create_dir(&credentials_path).unwrap();
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                    "result": { "id": "ep-1" },
-                    "status": 200,
-                    "requestId": "stub-endpoint-bind"
-                }))
-            } else {
-                ResponseTemplate::new(500).set_body_json(serde_json::json!({
-                    "error": "endpoint unbind rejected",
-                    "status": 500,
-                    "requestId": "stub-endpoint-unbind"
-                }))
-            }
-        })
-        .expect(2)
-        .mount(&control)
-        .await;
-
-    let output = service_query_process(project.path(), &control, &query_host)
-        .output()
-        .await
-        .expect("failed to spawn clickhousectl");
-    assert!(!output.status.success());
-    assert!(
-        recorded_key_deletes(&control).await.is_empty(),
-        "a still-bound key must be retained",
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("local credential persistence failed")
-            && stderr.contains("endpoint unbind rejected")
-            && stderr.contains(QUERY_TEST_KEY_UUID)
-            && stderr.contains("retained for recovery"),
-        "the error must report both failures and the recoverable key ID:\n{stderr}",
-    );
-}
-
-#[tokio::test]
-async fn service_query_deletes_the_key_when_the_create_response_omits_the_secret() {
-    let control = start_mock_control_plane_with_service().await;
-    // `keySecret` absent: the key exists but cannot authenticate anything.
-    mount_key_create_and_delete(
-        &control,
-        serde_json::json!({
-            "key": { "id": QUERY_TEST_KEY_UUID },
-            "keyId": "provisioned-key-id",
-        }),
-    )
-    .await;
-
-    let (dir, stderr) = invoke_service_query_provisioning(&control).await;
-    assert!(
-        stderr.contains("keySecret"),
-        "stderr should name the missing field:\n{stderr}",
-    );
-
-    assert_eq!(
-        recorded_key_deletes(&control).await,
-        vec![format!(
-            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
-        )],
-        "the unusable key must be deleted exactly once",
-    );
-
-    // The key was never bound, so no endpoint upsert was attempted, and
-    // nothing was persisted locally.
-    let upserts = control
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .filter(|r| r.url.path().ends_with("/serviceQueryEndpoint"))
-        .count();
-    assert_eq!(upserts, 0, "a keyless credential must not be bound");
-    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
-}
-
-#[tokio::test]
-async fn service_query_keeps_the_key_when_the_endpoint_response_omits_the_id() {
-    let control = start_mock_control_plane_with_service().await;
-    let query_host = start_mock_query_host_for_provisioning().await;
-    mount_key_create_and_delete(
-        &control,
-        serde_json::json!({
-            "key": { "id": QUERY_TEST_KEY_UUID },
-            "keyId": "provisioned-key-id",
-            "keySecret": "provisioned-key-secret",
-        }),
-    )
-    .await;
-    // No endpoint configured yet (404), and the upsert succeeds but answers
-    // without `id`. The key is bound and usable: the echoed id is diagnostic
-    // only, so provisioning completes rather than discarding the credential.
-    let endpoint_path =
-        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
-    Mock::given(method("GET"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
-            "error": "not found",
-            "status": 404,
-            "requestId": "stub-endpoint-get",
-        })))
-        .mount(&control)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(endpoint_path))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "roles": ["sql_console_admin"] },
-            "status": 200,
-            "requestId": "stub-endpoint-upsert",
-        })))
-        .mount(&control)
-        .await;
-
-    let dir = tempfile::tempdir().unwrap();
-    let url = control.uri();
-    let output = Command::new(clickhousectl_binary())
-        .env("DO_NOT_TRACK", "1")
-        .args([
-            "cloud",
-            "--url",
-            &url,
-            "service",
-            "query",
-            "--id",
-            QUERY_TEST_SERVICE_ID,
-            "--org-id",
-            "org-1",
-            "--query",
-            "SELECT 1",
-        ])
-        .current_dir(dir.path())
-        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to spawn clickhousectl");
-    assert_success(&output);
-
-    assert!(
-        recorded_key_deletes(&control).await.is_empty(),
-        "a bound, usable key must not be discarded over an unused echoed id",
-    );
-
-    // The credential is persisted, with `endpoint_id` omitted rather than
-    // written as a placeholder.
-    let stored: Value = serde_json::from_slice(
-        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
-    )
-    .unwrap();
-    let key = &stored["service_query_keys"][QUERY_TEST_SERVICE_ID];
-    assert_eq!(key["organization_id"], "org-1");
-    assert_eq!(key["api_key_id"], QUERY_TEST_KEY_UUID);
-    assert_eq!(key["key_id"], "provisioned-key-id");
-    assert_eq!(key["key_secret"], "provisioned-key-secret");
-    assert!(
-        key.get("endpoint_id").is_none(),
-        "an absent endpoint id must not be stored: {stored}",
-    );
-}
-
-#[tokio::test]
-async fn service_query_deletes_the_key_when_the_endpoint_get_omits_open_api_keys() {
-    let control = start_mock_control_plane_with_service().await;
-    mount_key_create_and_delete(
-        &control,
-        serde_json::json!({
-            "key": { "id": QUERY_TEST_KEY_UUID },
-            "keyId": "provisioned-key-id",
-            "keySecret": "provisioned-key-secret",
-        }),
-    )
-    .await;
-    // A 200 endpoint GET whose `openApiKeys` is absent leaves the currently
-    // bound keys unknown. The upsert replaces the list wholesale, so binding
-    // on top of an assumed-empty list would revoke them.
-    let endpoint_path =
-        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
-    Mock::given(method("GET"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "id": "ep-1", "roles": ["sql_console_admin"] },
-            "status": 200,
-            "requestId": "stub-endpoint-get",
-        })))
-        .mount(&control)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "id": "ep-1" },
-            "status": 200,
-            "requestId": "stub-endpoint-upsert",
-        })))
-        .mount(&control)
-        .await;
-
-    let (dir, stderr) = invoke_service_query_provisioning(&control).await;
-
-    let upserts = control
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .filter(|r| r.method == wiremock::http::Method::POST && r.url.path() == endpoint_path)
-        .count();
-    assert_eq!(
-        upserts, 0,
-        "the endpoint must not be rebound from an unknown key list",
-    );
-    assert_eq!(
-        recorded_key_deletes(&control).await,
-        vec![format!(
-            "/v1/organizations/org-1/keys/{QUERY_TEST_KEY_UUID}"
-        )],
-        "the unbindable key must be deleted exactly once",
-    );
-    assert!(!dir.path().join(".clickhouse/credentials.json").exists());
-    assert!(
-        stderr.contains("'openApiKeys'"),
-        "stderr should name the omitted field:\n{stderr}",
-    );
-}
-
-/// Provision against an endpoint GET that reports `existing_keys`, and return
-/// the `openApiKeys` the upsert was sent, plus the project dir.
-async fn provision_against_endpoint_with_keys(existing_keys: Value) -> (tempfile::TempDir, Value) {
-    let control = start_mock_control_plane_with_service().await;
-    let query_host = start_mock_query_host_for_provisioning().await;
-    mount_key_create_and_delete(
-        &control,
-        serde_json::json!({
-            "key": { "id": QUERY_TEST_KEY_UUID },
-            "keyId": "provisioned-key-id",
-            "keySecret": "provisioned-key-secret",
-        }),
-    )
-    .await;
-    let endpoint_path =
-        format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}/serviceQueryEndpoint");
-    Mock::given(method("GET"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "id": "ep-1", "openApiKeys": existing_keys },
-            "status": 200,
-            "requestId": "stub-endpoint-get",
-        })))
-        .mount(&control)
-        .await;
-    Mock::given(method("POST"))
-        .and(path(endpoint_path.clone()))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "result": { "id": "ep-1" },
-            "status": 200,
-            "requestId": "stub-endpoint-upsert",
-        })))
-        .mount(&control)
-        .await;
-
-    let dir = tempfile::tempdir().unwrap();
-    let url = control.uri();
-    let output = Command::new(clickhousectl_binary())
-        .env("DO_NOT_TRACK", "1")
-        .args([
-            "cloud",
-            "--url",
-            &url,
-            "service",
-            "query",
-            "--id",
-            QUERY_TEST_SERVICE_ID,
-            "--org-id",
-            "org-1",
-            "--query",
-            "SELECT 1",
-        ])
-        .current_dir(dir.path())
-        .env("CLICKHOUSE_CLOUD_API_KEY", "fake-key-for-tests")
-        .env("CLICKHOUSE_CLOUD_API_SECRET", "fake-secret-for-tests")
-        .env("CLICKHOUSE_CLOUD_QUERY_HOST", query_host.uri())
-        .stdin(Stdio::null())
-        .output()
-        .expect("failed to spawn clickhousectl");
-    assert_success(&output);
-
-    assert!(
-        recorded_key_deletes(&control).await.is_empty(),
-        "a successfully bound key must not be discarded",
-    );
-    let upsert = control
-        .received_requests()
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|r| r.method == wiremock::http::Method::POST && r.url.path() == endpoint_path)
-        .expect("the endpoint upsert must be sent");
-    let body: Value = serde_json::from_slice(&upsert.body).unwrap();
-    assert_eq!(body["roles"], serde_json::json!(["sql_console_admin"]));
-    (dir, body["openApiKeys"].clone())
-}
-
-#[tokio::test]
-async fn service_query_binds_the_new_key_when_the_endpoint_reports_no_keys() {
-    // An explicitly empty `openApiKeys` is a real answer, not an omission.
-    let (dir, sent_keys) = provision_against_endpoint_with_keys(serde_json::json!([])).await;
-    assert_eq!(sent_keys, serde_json::json!([QUERY_TEST_KEY_UUID]));
-    let stored: Value = serde_json::from_slice(
-        &std::fs::read(dir.path().join(".clickhouse/credentials.json")).unwrap(),
-    )
-    .unwrap();
-    assert_eq!(
-        stored["service_query_keys"][QUERY_TEST_SERVICE_ID]["endpoint_id"], "ep-1",
-        "an echoed endpoint id is recorded",
-    );
-}
-
-#[tokio::test]
-async fn service_query_merges_the_new_key_into_the_reported_keys() {
-    let existing = "99999999-8888-7777-6666-555555555555";
-    let (_dir, sent_keys) =
-        provision_against_endpoint_with_keys(serde_json::json!([existing])).await;
-    assert_eq!(
-        sent_keys,
-        serde_json::json!([existing, QUERY_TEST_KEY_UUID]),
-        "an existing binding must survive the upsert",
     );
 }
 
@@ -18413,13 +18058,15 @@ async fn start_mock_control_plane_with_query_state(state: Option<&str>) -> MockS
         "status": 200,
         "requestId": "stub-service-get",
     });
-    Mock::given(method("GET"))
-        .and(path(format!(
-            "/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}"
-        )))
-        .respond_with(ResponseTemplate::new(200).set_body_json(stub_service))
-        .mount(&mock)
-        .await;
+    for org_id in ["org-1", FIRST_USE_ORG_ID] {
+        Mock::given(method("GET"))
+            .and(path(format!(
+                "/v1/organizations/{org_id}/services/{QUERY_TEST_SERVICE_ID}"
+            )))
+            .respond_with(ResponseTemplate::new(200).set_body_json(stub_service.clone()))
+            .mount(&mock)
+            .await;
+    }
     mock
 }
 
@@ -18644,6 +18291,10 @@ async fn invoke_service_query_for_timeout_test(
 }
 
 fn assert_query_wake_timeout(output: &std::process::Output, json: bool) {
+    assert_query_wake_timeout_in_org(output, json, "org-1");
+}
+
+fn assert_query_wake_timeout_in_org(output: &std::process::Output, json: bool, org_id: &str) {
     assert_eq!(output.status.code(), Some(1));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -18655,7 +18306,7 @@ fn assert_query_wake_timeout(output: &std::process::Output, json: bool) {
         assert_eq!(error["code"], "query_timeout");
         assert_eq!(
             error["command"],
-            format!("clickhousectl cloud service get {QUERY_TEST_SERVICE_ID} --org-id org-1")
+            format!("clickhousectl cloud service get {QUERY_TEST_SERVICE_ID} --org-id {org_id}")
         );
         assert!(error.get("host").is_none());
         assert!(error.get("port").is_none());
@@ -18780,17 +18431,23 @@ async fn query_timeout_after_explicit_wake_preserves_context_and_never_replays_s
 }
 
 #[tokio::test]
-async fn query_timeout_after_provisioning_idle_probe_submits_user_sql_once() {
+async fn query_timeout_after_first_use_bind_idle_probe_submits_user_sql_once() {
     let control = start_mock_control_plane_with_query_state(Some("running")).await;
-    mount_successful_query_provisioning(&control).await;
+    mount_successful_caller_key_bind(&control).await;
     let query_host = MockServer::start().await;
-    let management_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    let caller_auth = query_test_basic_auth("fake-key-for-tests:fake-secret-for-tests");
+    // The caller's key is refused until the bind; the later attempts use
+    // the same key.
+    Mock::given(method("POST"))
+        .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
+        .respond_with(ResponseTemplate::new(401).set_body_string("not authorized"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&query_host)
+        .await;
     Mock::given(method("POST"))
         .and(path(format!("/service/{QUERY_TEST_SERVICE_ID}/run")))
         .respond_with(move |request: &wiremock::Request| {
-            if request.headers.get("authorization").unwrap() == management_auth.as_str() {
-                return ResponseTemplate::new(401).set_body_string("not authorized");
-            }
             let body: Value = serde_json::from_slice(&request.body).unwrap();
             if body["sql"] == "SELECT 1" {
                 ResponseTemplate::new(206).set_body_string(r#"{"data":"Confirm wake service"}"#)
@@ -18798,12 +18455,23 @@ async fn query_timeout_after_provisioning_idle_probe_submits_user_sql_once() {
                 ResponseTemplate::new(500).set_body_string(QUERY_GATEWAY_TIMEOUT_BODY)
             }
         })
-        .expect(3)
+        .with_priority(5)
+        .expect(2)
         .mount(&query_host)
         .await;
-    let output =
-        invoke_service_query_for_timeout_test(&control, &query_host, "management", true).await;
-    assert_query_wake_timeout(&output, true);
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join("home")).unwrap();
+    let output = first_use_query_process(
+        project.path(),
+        &control,
+        &query_host,
+        "INSERT INTO events VALUES (826)",
+    )
+    .arg("--json")
+    .output()
+    .await
+    .expect("failed to spawn clickhousectl");
+    assert_query_wake_timeout_in_org(&output, true, FIRST_USE_ORG_ID);
     let requests = query_host.received_requests().await.unwrap();
     assert_eq!(
         requests.len(),
@@ -18814,7 +18482,7 @@ async fn query_timeout_after_provisioning_idle_probe_submits_user_sql_once() {
     assert_eq!(submitted.headers.get("wake-service").unwrap(), "true");
     assert_eq!(
         submitted.headers.get("authorization").unwrap(),
-        query_test_basic_auth("provisioned-key-id:provisioned-key-secret").as_str()
+        caller_auth.as_str()
     );
     let submitted_body: Value = serde_json::from_slice(&submitted.body).unwrap();
     assert_eq!(submitted_body["sql"], "INSERT INTO events VALUES (826)");
@@ -18825,7 +18493,7 @@ async fn query_timeout_after_provisioning_idle_probe_submits_user_sql_once() {
         .iter()
         .filter(|request| {
             request.url.path()
-                == format!("/v1/organizations/org-1/services/{QUERY_TEST_SERVICE_ID}")
+                == format!("/v1/organizations/{FIRST_USE_ORG_ID}/services/{QUERY_TEST_SERVICE_ID}")
         })
         .count();
     assert_eq!(service_reads, 1);
