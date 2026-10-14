@@ -104,6 +104,7 @@ Test coverage is non-negotiable.
 ## Dependencies
 
 Use `cargo add` with the latest version and an explicit crate, e.g. `cargo add -p clickhouse-cloud-api url`.
+Every crate declares the same `rust-version`; raise it in all three manifests, both READMEs and `msrv.yml` together.
 
 ## Releases
 
