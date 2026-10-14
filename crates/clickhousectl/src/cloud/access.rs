@@ -66,7 +66,8 @@ CONTEXT FOR AGENTS:
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
-  Opens a browser for a human to approve; waits up to 15 minutes.
+  Approval URL and progress go to stderr, including with --json.
+  A human must approve; waits up to 15 minutes.
   On approval the issued key id + secret are saved to the credentials file; the secret is never printed.
   Discover proposal IDs with `cloud access roles`; proposals do not grant access.
   Uses the login environment unless --url is provided.
@@ -87,6 +88,10 @@ impl AccessCommands {
 
 #[derive(Args)]
 pub struct AccessRequestArgs {
+    /// Print the approval URL without opening a browser
+    #[arg(long)]
+    pub no_browser: bool,
+
     /// Proposed role:<UUID> tokens, comma-separated or repeated (max 100)
     #[arg(long, value_name = "role:UUID", value_delimiter = ',', value_parser = parse_requested_role)]
     pub perms: Vec<uuid::Uuid>,
@@ -509,18 +514,9 @@ async fn request(
     )
     .await?;
 
-    if !json {
-        eprint_line(format!(
-            "Approve this access request in your browser:\n  {}",
-            created.approval_url
-        ));
-    }
-    if open::that(&created.approval_url).is_err() && !json {
-        eprint_line("Could not open a browser automatically. Open the URL above to continue.");
-    }
-    if !json {
-        eprint_line("Waiting for approval (up to 15 minutes)...");
-    }
+    approval_handoff(&created.approval_url, args.no_browser, |url| {
+        open::that(url)
+    });
 
     let status_url = format!(
         "{base_url}/organizations/{org_id}/accessRequests/{}",
@@ -571,6 +567,20 @@ async fn request(
     }
 
     Ok(())
+}
+
+fn approval_handoff(
+    approval_url: &str,
+    no_browser: bool,
+    open_browser: impl FnOnce(&str) -> std::io::Result<()>,
+) {
+    eprint_line(format!(
+        "Approve this access request in your browser:\n  {approval_url}"
+    ));
+    if !no_browser && open_browser(approval_url).is_err() {
+        eprint_line("Could not open a browser automatically. Open the URL above to continue.");
+    }
+    eprint_line("Waiting for approval (up to 15 minutes)...");
 }
 
 fn agent_context(args: &AccessRequestArgs) -> Option<AgentContext<'_>> {
@@ -789,6 +799,29 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
+
+    #[test]
+    fn approval_handoff_no_browser_skips_launcher_and_default_launches_once() {
+        approval_handoff("https://example.invalid/approve", true, |_| {
+            panic!("must not launch")
+        });
+        let mut calls = 0;
+        approval_handoff("https://example.invalid/approve", false, |url| {
+            assert_eq!(url, "https://example.invalid/approve");
+            calls += 1;
+            Ok(())
+        });
+        assert_eq!(calls, 1);
+        // Launcher failure still permits manual approval and polling.
+        approval_handoff("https://example.invalid/approve", false, |_| {
+            Err(std::io::Error::other("fake launcher failure"))
+        });
+        assert!(!parse(&["chctl", "cloud", "access", "request"]).no_browser);
+        assert!(parse(&["chctl", "cloud", "access", "request", "--no-browser"]).no_browser);
+        assert!(
+            Cli::try_parse_from(["chctl", "cloud", "access", "roles", "--no-browser"]).is_err()
+        );
+    }
 
     #[tokio::test]
     async fn poll_until_approved_propagates_terminal_and_invalid_responses() {
