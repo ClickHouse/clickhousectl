@@ -72,15 +72,11 @@ pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
         .await;
     }
 
-    // The access-request handshake runs its own PKCE/loopback flow against a
-    // configurable control-plane base (default local dev), resolving auth, base
-    // URL and organization itself, so it bypasses the standard client build and
-    // the OAuth write gate (filing is a user-authenticated request, not a write).
+    // Access negotiation refreshes and uses only the OAuth user identity,
+    // bypassing normal API-key precedence and the ordinary OAuth write gate.
     if let CloudCommands::Access { command } = args.command {
         return access::run(
             command,
-            args.api_key.as_deref(),
-            args.api_secret.as_deref(),
             args.url.as_deref(),
             args.org_id,
             args.org_name,

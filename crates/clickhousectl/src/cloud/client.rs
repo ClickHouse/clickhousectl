@@ -637,8 +637,54 @@ impl CloudClient {
         Self::from_resolved_auth(resolved, Some(timeout))
     }
 
-    fn from_resolved_auth(resolved: ResolvedAuth) -> Result<Self> {
-        let http = crate::http::client_builder()
+    /// Access negotiation identifies the user, never a previously issued API key.
+    pub(super) async fn for_access(url_override: Option<&str>) -> Result<Self> {
+        // Suppress the normal refresh warning's API-key fallback advice: this
+        // lane requires OAuth even when other credentials are configured.
+        crate::cloud::auth::ensure_fresh_tokens(true)
+            .await
+            .map_err(|error| {
+                CloudError::auth(format!(
+                    "Unable to refresh OAuth identity: {error}. Run `clickhousectl cloud auth login` to re-authenticate."
+                ))
+            })?;
+        Self::from_access_tokens(crate::cloud::auth::load_tokens(), url_override)
+    }
+
+    fn from_access_tokens(
+        tokens: Option<crate::cloud::auth::TokenStore>,
+        url_override: Option<&str>,
+    ) -> Result<Self> {
+        let tokens = tokens
+            .filter(crate::cloud::auth::is_token_valid)
+            .ok_or_else(|| {
+                CloudError::auth(
+                    "Access negotiation requires OAuth identity. Run `clickhousectl cloud auth login` to authenticate. API keys cannot be used for access negotiation.",
+                )
+            })?;
+        Self::from_resolved_auth(
+            ResolvedAuth {
+                creds: ResolvedCreds::Bearer {
+                    token: tokens.access_token,
+                },
+                source: AuthSource::OAuthTokens,
+                base_url: crate::cloud::auth::normalize_api_url(
+                    url_override.unwrap_or(&tokens.api_url),
+                ),
+            },
+            None,
+        )
+    }
+
+    fn from_resolved_auth(
+        resolved: ResolvedAuth,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<Self> {
+        let mut builder = crate::http::client_builder();
+        if let Some(timeout) = timeout {
+            builder = builder.timeout(timeout);
+        }
+        let http = builder
             .build()
             .map_err(|e| CloudError::new(format!("Failed to create HTTP client: {}", e)))?;
 
@@ -903,6 +949,37 @@ mod tests {
     use super::*;
 
     const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
+
+    #[test]
+    fn access_client_uses_explicit_saved_or_legacy_default_api_base() {
+        for (saved, explicit, expected) in [
+            (
+                Some("https://saved.example/v1/"),
+                None,
+                "https://saved.example/v1",
+            ),
+            (
+                Some("https://saved.example/v1"),
+                Some("http://localhost:2023/"),
+                "http://localhost:2023/v1",
+            ),
+            (None, None, DEFAULT_BASE_URL),
+        ] {
+            let mut value = serde_json::json!({
+                "access_token": "test-token", "refresh_token": "unused",
+                "expires_at": 4102444800_i64,
+            });
+            if let Some(saved) = saved {
+                value["api_url"] = saved.into();
+            }
+            let tokens = serde_json::from_value(value).unwrap();
+            let client = CloudClient::from_access_tokens(Some(tokens), explicit).unwrap();
+            assert_eq!(client.base_url(), expected);
+            assert_eq!(client.auth_source(), AuthSource::OAuthTokens);
+            assert!(client.is_bearer_auth());
+            assert!(client.basic_auth_credentials().is_none());
+        }
+    }
 
     #[test]
     fn typed_udf_dependency_error_keeps_message_and_http_classification() {
