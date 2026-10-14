@@ -131,9 +131,9 @@ pub enum CloudCommands {
     /// Request a scoped API key via browser approval
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Authenticates as the current user (OAuth login or API key) to file an access request.
+  Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
   A human approves it in a browser; on approval the issued key is saved to the credentials file.
-  Control-plane base URL defaults to http://localhost:2023; override with --url.")]
+  API URL: explicit --url, then saved OAuth login environment, then the normal Cloud default.")]
     Access {
         #[command(subcommand)]
         command: AccessCommands,
