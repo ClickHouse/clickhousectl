@@ -14,6 +14,10 @@ const LIVE_SPEC_URL: &str = "https://api.clickhouse.cloud/v1";
 #[test]
 fn vendored_openapi_snapshot_matches_rust_api() {
     let config = clickhouse_cloud_config();
+    assert!(
+        config.check_operation_permissions,
+        "snapshot must enforce permission coverage"
+    );
     let report = analyze_spec(SPEC_JSON, &config);
     assert!(!report.has_drift(), "{}", report.render_text());
     assert!(

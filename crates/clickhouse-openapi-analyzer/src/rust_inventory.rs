@@ -492,6 +492,9 @@ pub(crate) struct MethodInfo {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct MetadataInventory {
     pub(crate) beta_operations: BTreeSet<String>,
+    pub(crate) operations:
+        BTreeMap<String, Result<crate::permissions::OperationDescriptor, String>>,
+    pub(crate) operation_catalog: Option<Result<Vec<String>, String>>,
     pub(crate) deprecated_fields: BTreeSet<(String, String)>,
 }
 
@@ -755,7 +758,27 @@ impl RustInventory {
                 continue;
             };
             let name = item_const.ident.unraw().to_string();
-            if name == "BETA_OPERATIONS" {
+            if crate::permissions::is_operation_descriptor(&item_const.ty) {
+                match self.metadata.operations.entry(name.clone()) {
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(crate::permissions::parse_descriptor(item_const));
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut entry) => {
+                        let _ = entry.insert(Err(format!(
+                            "duplicate descriptor constant {name} in metadata tree"
+                        )));
+                    }
+                }
+            } else if name == "ALL" {
+                self.metadata.operation_catalog =
+                    Some(if self.metadata.operation_catalog.is_some() {
+                        Err("duplicate ALL catalogs in metadata tree".into())
+                    } else if !matches!(item_const.vis, Visibility::Public(_)) {
+                        Err("ALL catalog must be public".into())
+                    } else {
+                        crate::permissions::parse_catalog(&item_const.expr)
+                    });
+            } else if name == "BETA_OPERATIONS" {
                 self.metadata.beta_operations = string_array(&item_const.expr);
             } else if name == "DEPRECATED_FIELDS" {
                 self.metadata.deprecated_fields = string_pair_array(&item_const.expr);

@@ -1,4 +1,4 @@
-//! Operation stability metadata.
+//! Offline operation identity, API-key permissions, and stability metadata.
 //!
 //! `BETA_OPERATIONS` mirrors `x-badges` entries on operations in the ClickHouse
 //! Cloud OpenAPI spec. The list is kept sorted so [`is_beta_operation`] can use
@@ -16,6 +16,39 @@
 //!
 //! The shared OpenAPI analyzer reports drift if this list differs from the
 //! snapshot or live spec.
+
+/// Offline endpoint descriptors generated from the Cloud OpenAPI specification.
+pub mod operations;
+
+/// The identity and required API-key permissions of a Cloud API operation.
+///
+/// Every permission in `required_permissions` is required. An empty list means
+/// a valid API key is required without additional named permissions; it does
+/// not imply anonymous access or describe OAuth or SQL authorization.
+///
+/// ```
+/// use clickhouse_cloud_api::meta::operations;
+/// let endpoint = &operations::INSTANCE_GET;
+/// assert_eq!(endpoint.operation_id, "instanceGet");
+/// assert_eq!(endpoint.rust_method, "instance_get");
+/// assert_eq!(endpoint.required_permissions, &["control-plane:service:view"]);
+/// assert_eq!(operations::by_operation_id("instanceGet"), Some(endpoint));
+/// assert!(operations::by_operation_id("unknown").is_none());
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct OperationMetadata {
+    /// Exact operation ID in the OpenAPI specification.
+    pub operation_id: &'static str,
+    /// Name of the corresponding async method on [`crate::Client`].
+    pub rust_method: &'static str,
+    /// Uppercase HTTP method, such as `GET`.
+    pub method: &'static str,
+    /// Path template, including parameter placeholders.
+    pub path: &'static str,
+    /// All required API-key permission IDs, sorted and deduplicated.
+    pub required_permissions: &'static [&'static str],
+}
 
 /// Snake-case operation IDs (matching [`crate::client::Client`] method names)
 /// that the OpenAPI spec marks Beta via `x-badges`.
@@ -192,6 +225,40 @@ pub fn is_deprecated_field(struct_name: &str, field_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn operation_catalog_is_complete_sorted_and_searchable() {
+        assert!(
+            operations::ALL.len() >= 150,
+            "operation inventory unexpectedly collapsed"
+        );
+        for pair in operations::ALL.windows(2) {
+            assert!(pair[0].operation_id < pair[1].operation_id);
+        }
+        for operation in operations::ALL {
+            assert_eq!(
+                operations::by_operation_id(operation.operation_id),
+                Some(operation)
+            );
+            for pair in operation.required_permissions.windows(2) {
+                assert!(pair[0] < pair[1]);
+            }
+        }
+        assert_eq!(operations::by_operation_id("does-not-exist"), None);
+        assert_eq!(operations::by_operation_id("instance_get"), None);
+        assert!(
+            operations::INSTANCE_GET_LIST
+                .required_permissions
+                .is_empty()
+        );
+        assert_eq!(
+            operations::POSTGRES_INSTANCE_RESTORE.required_permissions,
+            &[
+                "control-plane:organization:create-service",
+                "control-plane:postgres-service:manage"
+            ]
+        );
+    }
 
     #[test]
     fn list_is_sorted_and_unique() {

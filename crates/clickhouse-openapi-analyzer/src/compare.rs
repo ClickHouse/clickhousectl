@@ -15,6 +15,9 @@ pub(crate) fn compare(
 ) -> DriftReport {
     let mut report = DriftReport::default();
     compare_operations(rust, spec, config, &mut report);
+    if config.check_operation_permissions {
+        crate::permissions::compare_permissions(rust, spec, snapshot, &mut report);
+    }
     compare_parameters(rust, spec, &mut report);
     compare_success_responses(rust, spec, &mut report);
     compare_models_and_refs(rust, spec, &mut report);
@@ -1814,7 +1817,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
             serde_json::json!({
-                "schema_version": 9,
+                "schema_version": 10,
                 "findings": expected_findings,
                 "unsupported_enum_constraints": [],
             })
@@ -2017,7 +2020,7 @@ mod tests {
             Some("models.rs::WidgetResponse")
         );
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 9);
+        assert_eq!(json["schema_version"], 10);
         assert_eq!(
             json["findings"][0]["kind"],
             "additional_properties_mismatch"

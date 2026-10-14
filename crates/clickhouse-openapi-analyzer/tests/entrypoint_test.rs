@@ -243,3 +243,33 @@ fn captured_contract_prose_and_parameter_order_do_not_produce_drift() {
     let report = contract_report(&edited.to_string(), &before);
     assert!(!report.has_drift(), "{}", report.render_text());
 }
+
+#[test]
+fn executable_generates_catalog_and_preserves_output_on_unsupported_security() {
+    let directory = tempfile::tempdir().unwrap();
+    let spec = directory.path().join("spec.json");
+    let catalog = directory.path().join("operations.rs");
+    std::fs::write(&spec, SPEC).unwrap();
+    let run = || {
+        Command::new(env!("CARGO_BIN_EXE_openapi-drift-analyzer"))
+            .arg("--spec")
+            .arg(&spec)
+            .arg("--generate-operations")
+            .arg(&catalog)
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let expected = clickhouse_openapi_analyzer::generate_operation_metadata(SPEC).unwrap();
+    assert_eq!(std::fs::read_to_string(&catalog).unwrap(), expected);
+    let mut malformed: serde_json::Value = serde_json::from_str(SPEC).unwrap();
+    malformed["security"] = serde_json::json!([]);
+    std::fs::write(&spec, malformed.to_string()).unwrap();
+    assert!(!run().status.success());
+    assert_eq!(std::fs::read_to_string(&catalog).unwrap(), expected);
+}
