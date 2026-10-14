@@ -62,6 +62,44 @@ The beta Query API endpoint management methods are `query_api_endpoint_create`, 
 
 `ServiceClickhouseSetting.value` is `Option<serde_json::Value>`: the published contract permits strings and integers. The response aliases `ServiceClickhouseSettingValueResponse` and `ServiceClickhouseSettingsMapResponse` retain arbitrary JSON to tolerate future response types. Values retain their JSON types; missing and null values remain absent.
 
+## Postgres Query API
+
+`Client::run_postgres_query_bearer(org_id, service_id, &RunPostgresQueryRequest)`
+runs read-only SQL over HTTPS with the client's OAuth Bearer token. The request
+requires `sql` and accepts an optional `database`; omission uses `postgres`.
+Basic/API-key clients receive `Error::AuthMismatch` before any network request. The method neither provisions query credentials nor wakes the
+service or retries queries.
+
+This console Query API route is outside the published OpenAPI. It accepts
+`clickhousectl` audience OAuth tokens with read-only database access; Cloud API
+keys are unsupported.
+
+The returned `reqwest::Response` supports streaming and automatically decompresses
+gzip using the default HTTP client. Its fixed format is
+`JSONCompactEachRowWithNamesAndTypes`: a JSON array of column names, then an array
+of type names, followed by one array per row, all newline-delimited. An empty
+result can have an empty body. SQL errors retain their status, server `code`
+(currently `POSTGRES_ERROR`), and `details` in `Error::Sql`; other HTTP errors retain
+their status and body.
+Query host selection follows `with_query_host`, `CLICKHOUSE_CLOUD_QUERY_HOST`,
+and the management API environment, in that order.
+
+The ignored smoke test checks a read and an empty result against an existing
+service without creating resources. Supply
+`CLICKHOUSE_CLOUD_TEST_BEARER_TOKEN` (a `clickhousectl` audience OAuth token),
+`CLICKHOUSE_CLOUD_TEST_ORG_ID`, and `CLICKHOUSE_CLOUD_TEST_POSTGRES_SERVICE_ID`.
+Optionally set `CLICKHOUSE_CLOUD_TEST_POSTGRES_DATABASE`,
+`CLICKHOUSE_CLOUD_API_BASE_URL`, or `CLICKHOUSE_CLOUD_QUERY_HOST` for another database
+or environment. Run:
+
+```bash
+cargo test -p clickhouse-cloud-api --test run_query_test live_postgres_query_bearer_smoke -- --ignored --nocapture
+```
+
+For additional live coverage, verify that the route rejects write statements,
+invalid tokens, and tokens without access to the requested organization or service,
+and repeat the smoke test with an explicit non-default database.
+
 ## Development
 
 ### Structure

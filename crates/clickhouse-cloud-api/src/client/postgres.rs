@@ -1,8 +1,63 @@
-use super::Client;
+use super::{Auth, Client, query_api_error};
 use crate::error::Error;
 use crate::models::*;
 
 impl Client {
+    /// Run read-only SQL through the Postgres Query API using the client's OAuth token.
+    ///
+    /// This endpoint is outside the published OpenAPI specification and requires
+    /// server support for the `clickhousectl` OAuth audience. API keys are not
+    /// supported; a Basic-auth client returns [`Error::AuthMismatch`] before
+    /// making a request. No query endpoint or database credentials are provisioned.
+    ///
+    /// Uses the same query-host resolution as [`Client::with_query_host`]. Returns
+    /// the streaming `JSONCompactEachRowWithNamesAndTypes` response: a column-name
+    /// array, a type-name array, and one array per row, each on its own line. An
+    /// empty result may have an empty body. Gzip decoding is enabled by default.
+    /// The caller consumes the response; no query retries or service wake-ups occur.
+    pub async fn run_postgres_query_bearer(
+        &self,
+        org_id: &str,
+        service_id: &str,
+        request: &RunPostgresQueryRequest,
+    ) -> Result<reqwest::Response, Error> {
+        let token = match &self.auth {
+            Auth::Bearer { token } => token,
+            Auth::Basic { .. } => {
+                return Err(Error::AuthMismatch(
+                    "run_postgres_query_bearer called on a Basic-auth client".into(),
+                ));
+            }
+        };
+        let url = format!(
+            "{}/service/{service_id}/runPostgres",
+            self.resolved_query_host().trim_end_matches('/'),
+        );
+        let response = self
+            .http
+            .post(url)
+            .query(&[
+                ("orgId", org_id),
+                ("format", "JSONCompactEachRowWithNamesAndTypes"),
+            ])
+            .bearer_auth(token)
+            .header("x-service-type", "postgres")
+            .json(request)
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body_text = response.text().await.map_err(|error| Error::Api {
+                status: status.as_u16(),
+                message: format!(
+                    "Query API returned HTTP {status}, but its response body could not be read: {error}"
+                ),
+            })?;
+            return Err(query_api_error(status, &body_text));
+        }
+        Ok(response)
+    }
+
     /// Create new Postgres service
     pub async fn postgres_service_create(
         &self,
