@@ -64,8 +64,10 @@ class CloudIntegrationClassifierTests(unittest.TestCase):
             frozenset({"service"}): {
                 "crates/clickhouse-cloud-api/src/client/backups.rs",
                 "crates/clickhouse-cloud-api/src/client/query_api_endpoints.rs",
+                "crates/clickhouse-cloud-api/src/client/saved_queries.rs",
                 "crates/clickhouse-cloud-api/src/models/backups.rs",
                 "crates/clickhouse-cloud-api/src/models/query_api_endpoints.rs",
+                "crates/clickhouse-cloud-api/src/models/saved_queries.rs",
             },
             frozenset({"service", "clickpipes"}): {
                 "crates/clickhouse-cloud-api/src/client/services.rs",

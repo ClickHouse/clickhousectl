@@ -139,6 +139,7 @@ mod postgres;
 mod query_api_endpoints;
 mod quotas;
 mod rbac;
+mod saved_queries;
 mod scim;
 mod services;
 mod shared;
@@ -167,8 +168,15 @@ pub use backups::{
 };
 pub use byoc::{
     ByocAvailabilityZoneSuffix, ByocConfig, ByocConfigCloudprovider, ByocConfigRegionid,
-    ByocConfigState, ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
-    ByocInfrastructurePostRequestRegionid,
+    ByocConfigState, ByocInfrastructureDetails, ByocInfrastructureDetailsCloudprovider,
+    ByocInfrastructureDetailsRegionid, ByocInfrastructureDetailsState,
+    ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
+    ByocInfrastructurePostRequestRegionid, ByocInfrastructureProgress,
+    ByocInfrastructureProgressStage, ByocInfrastructureProgressStageStatus,
+    ByocInfrastructureProgressStatus, ByocInfrastructureTags,
+    ByocInfrastructureValidatePostRequest, ByocInfrastructureValidatePostRequestRegionid,
+    ByocInfrastructureValidation, ByocInfrastructureValidationCheck,
+    ByocInfrastructureValidationCloudprovider,
 };
 pub use clickpipes::*;
 pub use clickstack::*;
@@ -214,6 +222,7 @@ pub use rbac::{
     RBACPolicyTags, RBACPolicyTagsResponse, RBACPolicyTagsRolev2, RBACRole, RBACRoleType,
     RoleCreateRequest, RoleUpdateRequest,
 };
+pub use saved_queries::{PublicSavedQuery, PublicSavedQueryListItem, PublicSavedQueryRequest};
 pub use scim::{
     ScimAuthenticationScheme, ScimBooleanFeature, ScimEnterpriseManager, ScimEnterpriseUser,
     ScimGroup, ScimGroupListResponse, ScimGroupMember, ScimGroupMeta, ScimGroupPostRequest,

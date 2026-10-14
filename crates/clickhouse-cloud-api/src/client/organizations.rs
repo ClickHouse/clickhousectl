@@ -189,6 +189,82 @@ impl Client {
         Ok(serde_json::from_str(&body_text)?)
     }
 
+    /// Validate BYOC infrastructure prerequisites
+    ///
+    /// Preflight-checks the cloud account's permissions without creating infrastructure.
+    pub async fn organization_byoc_infrastructure_validate(
+        &self,
+        organization_id: &str,
+        body: &ByocInfrastructureValidatePostRequest,
+    ) -> Result<ApiResponse<ByocInfrastructureValidation>, Error> {
+        let path = format!("/v1/organizations/{organization_id}/byocInfrastructure/validate");
+        let mut req = self.request(reqwest::Method::POST, &path);
+        req = req.json(body);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Get BYOC infrastructure details
+    pub async fn organization_byoc_infrastructure_get(
+        &self,
+        organization_id: &str,
+        byoc_infrastructure_id: &str,
+    ) -> Result<ApiResponse<ByocInfrastructureDetails>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
+    /// Get BYOC infrastructure provisioning progress
+    pub async fn organization_byoc_infrastructure_progress_get(
+        &self,
+        organization_id: &str,
+        byoc_infrastructure_id: &str,
+    ) -> Result<ApiResponse<ByocInfrastructureProgress>, Error> {
+        let path = format!(
+            "/v1/organizations/{organization_id}/byocInfrastructure/{byoc_infrastructure_id}/progress"
+        );
+        let req = self.request(reqwest::Method::GET, &path);
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body_text = resp.text().await?;
+        if !status.is_success() {
+            return Err(Error::Api {
+                status: status.as_u16(),
+                message: serde_json::from_str::<ApiResponse<serde_json::Value>>(&body_text)
+                    .ok()
+                    .and_then(|r| r.error)
+                    .unwrap_or(body_text.clone()),
+            });
+        }
+        Ok(serde_json::from_str(&body_text)?)
+    }
+
     /// Remove a BYOC infrastructure
     pub async fn organization_byoc_infrastructure_delete(
         &self,

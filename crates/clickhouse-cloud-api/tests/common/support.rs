@@ -490,6 +490,8 @@ pub struct CleanupRegistry {
     query_endpoint_service_ids: Vec<String>,
     // Saved Query API endpoints are distinct from instance-level bindings.
     query_api_endpoints: Vec<(String, String)>,
+    /// `(service_id, saved_query_id)` pairs deleted before their service.
+    saved_queries: Vec<(String, String)>,
     role_ids: Vec<String>,
     invitation_ids: Vec<String>,
     clickhouse_setting_restores: Vec<ClickhouseSettingRestore>,
@@ -581,6 +583,7 @@ impl CleanupRegistry {
             .append(&mut other.query_endpoint_service_ids);
         self.query_api_endpoints
             .append(&mut other.query_api_endpoints);
+        self.saved_queries.append(&mut other.saved_queries);
         self.role_ids.append(&mut other.role_ids);
         self.invitation_ids.append(&mut other.invitation_ids);
         self.clickhouse_setting_restores
@@ -621,6 +624,20 @@ impl CleanupRegistry {
     pub fn unregister_query_api_endpoint(&mut self, service_id: &str, endpoint_id: &str) {
         self.query_api_endpoints
             .retain(|(service, endpoint)| service != service_id || endpoint != endpoint_id);
+    }
+
+    pub fn register_saved_query(
+        &mut self,
+        service_id: impl Into<String>,
+        query_id: impl Into<String>,
+    ) {
+        self.saved_queries
+            .push((service_id.into(), query_id.into()));
+    }
+
+    pub fn unregister_saved_query(&mut self, service_id: &str, query_id: &str) {
+        self.saved_queries
+            .retain(|(service, query)| service != service_id || query != query_id);
     }
 
     pub fn register_role(&mut self, role_id: impl Into<String>) {
@@ -799,6 +816,19 @@ impl CleanupRegistry {
                     "upgrade window restore {service_id}: {error}",
                     service_id = restore.service_id
                 ));
+            }
+        }
+
+        // Saved queries belong to the service; delete only IDs this test
+        // created and registered, before the service itself.
+        while let Some((service_id, query_id)) = self.saved_queries.pop() {
+            match client
+                .saved_query_delete(org_id, &service_id, &query_id)
+                .await
+            {
+                Ok(_) => {}
+                Err(clickhouse_cloud_api::Error::Api { status: 404, .. }) => {}
+                Err(e) => failures.push(format!("saved query {query_id} on {service_id}: {e}")),
             }
         }
 

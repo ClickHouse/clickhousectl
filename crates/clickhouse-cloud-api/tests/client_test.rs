@@ -369,11 +369,11 @@ async fn create_byoc_infrastructure() {
 
     let body = ByocInfrastructurePostRequest {
         account_id: "123456789012".to_string(),
-        availability_zone_suffixes: vec![
+        availability_zone_suffixes: Some(vec![
             ByocAvailabilityZoneSuffix::A,
             ByocAvailabilityZoneSuffix::B,
-        ],
-        display_name: "My BYOC".to_string(),
+        ]),
+        display_name: Some("My BYOC".to_string()),
         ..Default::default()
     };
     let resp = c
@@ -382,6 +382,258 @@ async fn create_byoc_infrastructure() {
         .unwrap();
     let config = resp.result.unwrap();
     assert_eq!(config.display_name.as_deref(), Some("My BYOC"));
+}
+
+#[tokio::test]
+async fn create_byoc_infrastructure_sends_byo_vpc_fields_and_tags() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure"))
+        .and(body_json(serde_json::json!({
+            "accountId": "123456789012",
+            "regionId": "us-east-1",
+            "externalId": "ch-ext",
+            "vpcId": "vpc-1",
+            "privateSubnetIds": ["subnet-a", "subnet-b"],
+            "publicSubnetIds": ["subnet-pub"],
+            "tags": {"team": "data", "cost-center": "42"}
+        })))
+        .respond_with(ok_json(serde_json::json!({"id": "byoc-1"})))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ByocInfrastructurePostRequest {
+        account_id: "123456789012".to_string(),
+        region_id: ByocInfrastructurePostRequestRegionid::Us_east_1,
+        external_id: Some("ch-ext".to_string()),
+        vpc_id: Some("vpc-1".to_string()),
+        private_subnet_ids: Some(vec!["subnet-a".to_string(), "subnet-b".to_string()]),
+        public_subnet_ids: Some(vec!["subnet-pub".to_string()]),
+        tags: Some(ByocInfrastructureTags::from([
+            ("team".to_string(), "data".to_string()),
+            ("cost-center".to_string(), "42".to_string()),
+        ])),
+        ..Default::default()
+    };
+    let resp = c
+        .organization_byoc_infrastructure_create("org-1", &body)
+        .await
+        .unwrap();
+    assert_eq!(resp.result.unwrap().id.as_deref(), Some("byoc-1"));
+}
+
+#[tokio::test]
+async fn validate_byoc_infrastructure() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/validate"))
+        .and(body_json(serde_json::json!({
+            "accountId": "123456789012",
+            "regionId": "eu-west-1",
+            "availabilityZoneSuffixes": ["a", "b", "c"],
+            "vpcCidrRange": "10.0.0.0/16",
+            "externalId": "ch-ext"
+        })))
+        .respond_with(ok_json(serde_json::json!({
+            "cloudProvider": "aws",
+            "allPassed": false,
+            "anyPassed": true,
+            "supported": true,
+            "checks": [
+                {
+                    "name": "Create EKS cluster",
+                    "action": "eks:CreateCluster",
+                    "allowed": true,
+                    "group": "base"
+                },
+                {
+                    "name": "Create VPC",
+                    "action": "ec2:CreateVpc",
+                    "allowed": false,
+                    "reason": "implicitDeny",
+                    "group": "vpc-write"
+                }
+            ]
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ByocInfrastructureValidatePostRequest {
+        account_id: "123456789012".to_string(),
+        region_id: ByocInfrastructureValidatePostRequestRegionid::Eu_west_1,
+        availability_zone_suffixes: Some(vec![
+            ByocAvailabilityZoneSuffix::A,
+            ByocAvailabilityZoneSuffix::B,
+            ByocAvailabilityZoneSuffix::C,
+        ]),
+        vpc_cidr_range: Some("10.0.0.0/16".to_string()),
+        external_id: Some("ch-ext".to_string()),
+        ..Default::default()
+    };
+    let resp = c
+        .organization_byoc_infrastructure_validate("org-1", &body)
+        .await
+        .unwrap();
+    let validation = resp.result.unwrap();
+    assert_eq!(
+        validation.cloud_provider,
+        Some(ByocInfrastructureValidationCloudprovider::Aws)
+    );
+    assert_eq!(validation.all_passed, Some(false));
+    assert_eq!(validation.any_passed, Some(true));
+    assert_eq!(validation.supported, Some(true));
+    let checks = validation.checks.unwrap();
+    assert_eq!(checks.len(), 2);
+    assert_eq!(checks[0].action.as_deref(), Some("eks:CreateCluster"));
+    assert_eq!(checks[0].allowed, Some(true));
+    assert_eq!(checks[0].reason, None);
+    assert_eq!(checks[1].allowed, Some(false));
+    assert_eq!(checks[1].reason.as_deref(), Some("implicitDeny"));
+    assert_eq!(checks[1].group.as_deref(), Some("vpc-write"));
+}
+
+#[tokio::test]
+async fn get_byoc_infrastructure() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-1"))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "byoc-1",
+            "state": "infra-provisioning",
+            "accountId": "123456789012",
+            "regionId": "us-central1",
+            "cloudProvider": "gcp",
+            "displayName": "My BYOC",
+            "enablePrivateLink": true,
+            "enablePrivateLoadBalancer": false,
+            "enablePublicLoadBalancer": true,
+            "vpcAvailabilityZoneList": ["us-central1-a", "us-central1-b"],
+            "isByoVpc": true,
+            "byoVpcId": "my-network",
+            "byoVpcPrivateSubnetIds": ["my-subnet"],
+            "byoVpcPodCidrRangeNames": ["pods"],
+            "byoVpcSharedVpcHostProjectId": "host-project",
+            "gcpPscSubnetId": "psc-subnet"
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .organization_byoc_infrastructure_get("org-1", "byoc-1")
+        .await
+        .unwrap();
+    let details = resp.result.unwrap();
+    assert_eq!(details.id.as_deref(), Some("byoc-1"));
+    assert_eq!(
+        details.state,
+        Some(ByocInfrastructureDetailsState::Infra_provisioning)
+    );
+    assert_eq!(
+        details.region_id,
+        Some(ByocInfrastructureDetailsRegionid::Us_central1)
+    );
+    assert_eq!(
+        details.cloud_provider,
+        Some(ByocInfrastructureDetailsCloudprovider::Gcp)
+    );
+    assert_eq!(details.enable_private_link, Some(true));
+    assert_eq!(details.enable_private_load_balancer, Some(false));
+    assert_eq!(details.is_byo_vpc, Some(true));
+    assert_eq!(details.byo_vpc_id.as_deref(), Some("my-network"));
+    assert_eq!(
+        details.byo_vpc_private_subnet_ids,
+        Some(vec!["my-subnet".to_string()])
+    );
+    assert_eq!(
+        details.byo_vpc_shared_vpc_host_project_id.as_deref(),
+        Some("host-project")
+    );
+    assert_eq!(details.gcp_psc_subnet_id.as_deref(), Some("psc-subnet"));
+    assert_eq!(details.vpc_cidr_range, None);
+}
+
+#[tokio::test]
+async fn get_byoc_infrastructure_progress() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-1/progress",
+        ))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "byoc-1",
+            "status": "in_progress",
+            "updatedAt": "2026-09-30T12:00:00Z",
+            "stages": [
+                {
+                    "name": "network",
+                    "status": "ready",
+                    "subStages": [{"name": "vpc", "status": "ready"}]
+                },
+                {"name": "cluster", "status": "failed", "message": "quota exceeded"}
+            ]
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .organization_byoc_infrastructure_progress_get("org-1", "byoc-1")
+        .await
+        .unwrap();
+    let progress = resp.result.unwrap();
+    assert_eq!(progress.id.as_deref(), Some("byoc-1"));
+    assert_eq!(
+        progress.status,
+        Some(ByocInfrastructureProgressStatus::InProgress)
+    );
+    assert_eq!(
+        progress.updated_at.map(|t| t.to_rfc3339()),
+        Some("2026-09-30T12:00:00+00:00".to_string())
+    );
+    let stages = progress.stages.unwrap();
+    assert_eq!(stages.len(), 2);
+    let sub = stages[0].sub_stages.as_ref().unwrap();
+    assert_eq!(sub[0].name.as_deref(), Some("vpc"));
+    assert_eq!(
+        stages[1].status,
+        Some(ByocInfrastructureProgressStageStatus::Failed)
+    );
+    assert_eq!(stages[1].message.as_deref(), Some("quota exceeded"));
+}
+
+#[tokio::test]
+async fn byoc_infrastructure_get_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/missing/progress",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "BYOC infrastructure not found"
+        })))
+        .mount(&s)
+        .await;
+
+    let err = c
+        .organization_byoc_infrastructure_progress_get("org-1", "missing")
+        .await
+        .unwrap_err();
+    match err {
+        clickhouse_cloud_api::Error::Api { status, message } => {
+            assert_eq!(status, 404);
+            assert_eq!(message, "BYOC infrastructure not found");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -5496,6 +5748,287 @@ async fn query_api_endpoint_methods_propagate_api_errors() {
                 .unwrap_err(),
             client
                 .query_api_endpoint_delete("org", "svc", "endpoint")
+                .await
+                .unwrap_err(),
+        ];
+        for error in errors {
+            assert!(
+                matches!(error, clickhouse_cloud_api::Error::Api { status: actual_status, message } if actual_status == status && message == expected_message)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn saved_query_create_and_update_send_complete_requests() {
+    let (server, client) = setup().await;
+    let collection = "/v1/organizations/org-1/services/svc-1/saved-queries";
+    let minimal = serde_json::json!({
+        "name": "daily total", "sql": "SELECT count() FROM events", "database": "default"
+    });
+    let maximal = serde_json::json!({
+        "name": "filtered total", "sql": "SELECT count() FROM events WHERE kind = {kind:String}",
+        "database": "analytics", "parameters": {"kind": "page view"}
+    });
+    for body in [minimal, maximal] {
+        let request: PublicSavedQueryRequest = serde_json::from_value(body.clone()).unwrap();
+        let mut returned = body.clone();
+        returned["id"] = serde_json::json!("00000000-0000-4000-8000-000000000003");
+        if returned.get("parameters").is_none() {
+            returned["parameters"] = serde_json::json!({});
+        }
+        Mock::given(method("POST"))
+            .and(path(collection))
+            .and(basic_auth("key", "secret"))
+            .and(body_json(body.clone()))
+            .respond_with(created_json(returned.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client
+            .saved_query_create("org-1", "svc-1", &request)
+            .await
+            .unwrap();
+        assert_eq!(response.status, Some(201));
+        assert_eq!(
+            serde_json::to_value(response.result.unwrap()).unwrap(),
+            returned
+        );
+
+        Mock::given(method("PUT"))
+            .and(path(format!("{collection}/query-1")))
+            .and(basic_auth("key", "secret"))
+            .and(body_json(body))
+            .respond_with(ok_json(returned.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client
+            .saved_query_update("org-1", "svc-1", "query-1", &request)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(response.result.unwrap()).unwrap(),
+            returned
+        );
+    }
+    for request in server.received_requests().await.unwrap() {
+        assert!(request.url.query().is_none());
+    }
+}
+
+#[tokio::test]
+async fn saved_query_get_and_delete_use_query_path() {
+    let (server, client) = setup().await;
+    let query_path = "/v1/organizations/org-1/services/svc-1/saved-queries/query-1";
+    Mock::given(method("GET"))
+        .and(path(query_path))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "00000000-0000-4000-8000-000000000003",
+            "name": "example",
+            "sql": "SELECT {n:UInt8}",
+            "database": "default",
+            "parameters": {"n": "1"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let query = client
+        .saved_query_get("org-1", "svc-1", "query-1")
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    assert_eq!(
+        query.id,
+        Some(uuid::Uuid::parse_str("00000000-0000-4000-8000-000000000003").unwrap())
+    );
+    assert_eq!(query.name.as_deref(), Some("example"));
+    assert_eq!(query.sql.as_deref(), Some("SELECT {n:UInt8}"));
+    assert_eq!(query.database.as_deref(), Some("default"));
+    assert_eq!(
+        query.parameters,
+        Some(std::collections::BTreeMap::from([(
+            "n".to_string(),
+            "1".to_string()
+        )]))
+    );
+    Mock::given(method("DELETE"))
+        .and(path(query_path))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_empty())
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client
+        .saved_query_delete("org-1", "svc-1", "query-1")
+        .await
+        .unwrap();
+    assert_eq!(response.status, Some(200));
+    assert_eq!(response.request_id.as_deref(), Some("req-test"));
+    assert!(response.result.is_none());
+    for request in server.received_requests().await.unwrap() {
+        assert!(request.body.is_empty());
+        assert!(request.url.query().is_none());
+    }
+}
+
+#[tokio::test]
+async fn saved_query_list_encodes_cursor_and_reads_envelope_pagination() {
+    for (cursor, limit) in [
+        (None, None),
+        (Some("next+/=&? page"), None),
+        (None, Some(25)),
+        (Some("next+/=&? page"), Some(25)),
+    ] {
+        let (server, client) = setup().await;
+        let items = serde_json::json!([
+            {"id": "00000000-0000-4000-8000-000000000003", "name": "example", "database": "default"}
+        ]);
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/services/svc-1/saved-queries"))
+            .and(basic_auth("key", "secret"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 200,
+                "requestId": "req-test",
+                "result": items,
+                "limit": 25,
+                "totalCount": 2,
+                "nextCursor": "another-page"
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let response = client
+            .saved_query_list("org-1", "svc-1", cursor, limit)
+            .await
+            .unwrap();
+        assert_eq!(response.limit, Some(25));
+        assert_eq!(response.total_count, Some(2));
+        assert_eq!(response.next_cursor.as_deref(), Some("another-page"));
+        assert_eq!(
+            serde_json::to_value(response.result.unwrap()).unwrap(),
+            items
+        );
+        let requests = server.received_requests().await.unwrap();
+        let query: std::collections::HashMap<_, _> =
+            requests[0].url.query_pairs().into_owned().collect();
+        let mut expected = std::collections::HashMap::new();
+        if let Some(cursor) = cursor {
+            expected.insert("cursor".to_owned(), cursor.to_owned());
+        }
+        if let Some(limit) = limit {
+            expected.insert("limit".to_owned(), limit.to_string());
+        }
+        assert_eq!(query, expected);
+        if cursor.is_none() && limit.is_none() {
+            assert!(requests[0].url.query().is_none());
+        }
+        assert!(requests[0].body.is_empty());
+    }
+}
+
+#[tokio::test]
+async fn saved_query_list_last_page_has_null_next_cursor() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org/services/svc/saved-queries"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200,
+            "requestId": "req-test",
+            "result": [],
+            "limit": 100,
+            "totalCount": 0,
+            "nextCursor": null
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client
+        .saved_query_list("org", "svc", None, None)
+        .await
+        .unwrap();
+    assert_eq!(response.result, Some(vec![]));
+    assert_eq!(response.next_cursor, None);
+    assert_eq!(response.total_count, Some(0));
+}
+
+#[tokio::test]
+async fn saved_query_reads_use_bearer_auth() {
+    let server = MockServer::start().await;
+    let client = Client::with_bearer_token(server.uri(), "token");
+    for (query_path, result) in [
+        (
+            "/v1/organizations/org/services/svc/saved-queries",
+            serde_json::json!([]),
+        ),
+        (
+            "/v1/organizations/org/services/svc/saved-queries/query",
+            serde_json::json!({}),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path(query_path))
+            .and(bearer_token("token"))
+            .respond_with(ok_json(result))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+    client
+        .saved_query_list("org", "svc", None, None)
+        .await
+        .unwrap();
+    client.saved_query_get("org", "svc", "query").await.unwrap();
+}
+
+#[tokio::test]
+async fn saved_query_methods_propagate_api_errors() {
+    for (status, body, expected_message) in [
+        (
+            404,
+            serde_json::json!({"status": 404, "error": "Saved query not found"}).to_string(),
+            "Saved query not found",
+        ),
+        (
+            409,
+            serde_json::json!({"status": 409, "error": "name already exists"}).to_string(),
+            "name already exists",
+        ),
+        (500, "upstream failed".to_owned(), "upstream failed"),
+    ] {
+        let (server, client) = setup().await;
+        Mock::given(basic_auth("key", "secret"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .expect(5)
+            .mount(&server)
+            .await;
+        let request = PublicSavedQueryRequest {
+            name: "example".into(),
+            sql: "SELECT 1".into(),
+            database: "default".into(),
+            parameters: None,
+        };
+        let errors = [
+            client
+                .saved_query_create("org", "svc", &request)
+                .await
+                .unwrap_err(),
+            client
+                .saved_query_get("org", "svc", "query")
+                .await
+                .unwrap_err(),
+            client
+                .saved_query_list("org", "svc", None, None)
+                .await
+                .unwrap_err(),
+            client
+                .saved_query_update("org", "svc", "query", &request)
+                .await
+                .unwrap_err(),
+            client
+                .saved_query_delete("org", "svc", "query")
                 .await
                 .unwrap_err(),
         ];
