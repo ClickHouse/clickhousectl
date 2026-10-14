@@ -34703,3 +34703,246 @@ async fn org_notifications_accepts_an_empty_cursor_without_fetching_more_pages()
         })
     );
 }
+
+// ── Access negotiation's OAuth-only identity lane ──────────────────────────
+
+fn access_command(dir: &Path) -> Command {
+    let mut command = Command::new(clickhousectl_binary());
+    command
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.join("home"))
+        .current_dir(dir)
+        .args(["cloud", "access", "request", "--json", "--debug"]);
+    command
+}
+
+fn access_credentials(dir: &Path) -> PathBuf {
+    let project = dir.join(".clickhouse");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(
+        project.join("credentials.json"),
+        r#"{"api_key":"saved-basic-key","api_secret":"saved-basic-secret"}"#,
+    )
+    .unwrap();
+    let tokens = dir.join("home/.clickhouse");
+    std::fs::create_dir_all(&tokens).unwrap();
+    tokens
+}
+
+fn assert_access_output_has_no_credentials(output: &std::process::Output) {
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for secret in [
+        "saved-basic-key",
+        "saved-basic-secret",
+        "flag-basic-secret",
+        "env-basic-secret",
+        "test-bearer-token",
+        "refreshed-bearer-token",
+        "refresh-secret",
+    ] {
+        assert!(
+            !text.contains(secret),
+            "credential leaked in command output"
+        );
+    }
+}
+
+#[tokio::test]
+async fn access_request_uses_oauth_for_discovery_and_filing_with_saved_or_explicit_url() {
+    for explicit_url in [false, true] {
+        let selected = MockServer::start().await;
+        let saved = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .and(header("authorization", "Bearer test-bearer-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": [{"id": "11111111-2222-3333-4444-555555555555", "name": "Only org"}]
+            })))
+            .expect(1)
+            .mount(&selected)
+            .await;
+        // Stop before browser launch, while exercising the real PKCE POST.
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1/organizations/11111111-2222-3333-4444-555555555555/accessRequests",
+            ))
+            .and(header("authorization", "Bearer test-bearer-token"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(serde_json::json!({
+                "error": "fixture rejection"
+            })))
+            .expect(1)
+            .mount(&selected)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let token_dir = access_credentials(dir.path());
+        write_oauth_tokens(
+            &token_dir,
+            &if explicit_url {
+                saved.uri()
+            } else {
+                selected.uri()
+            },
+        );
+        let mut command = access_command(dir.path());
+        // Even explicit/environment Basic credentials cannot change the user lane.
+        command
+            .args(["--api-key", "flag-key", "--api-secret", "flag-basic-secret"])
+            .env("CLICKHOUSE_CLOUD_API_KEY", "env-key")
+            .env("CLICKHOUSE_CLOUD_API_SECRET", "env-basic-secret");
+        if explicit_url {
+            command.args(["--url", &format!("{}/v1/", selected.uri())]);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_access_output_has_no_credentials(&output);
+        assert!(saved.received_requests().await.unwrap().is_empty());
+        let requests = selected.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 2);
+        let body: Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(body["codeChallengeMethod"], "S256");
+        assert_eq!(body["codeChallenge"].as_str().unwrap().len(), 43);
+        assert!(!body["state"].as_str().unwrap().is_empty());
+        assert!(
+            body["redirectUri"]
+                .as_str()
+                .unwrap()
+                .starts_with("http://127.0.0.1:")
+        );
+        assert!(body.get("codeVerifier").is_none());
+        assert_eq!(body.as_object().unwrap().len(), 4);
+        let credentials =
+            std::fs::read_to_string(dir.path().join(".clickhouse/credentials.json")).unwrap();
+        assert!(credentials.contains("saved-basic-secret"));
+        assert!(token_dir.join("tokens.json").exists());
+    }
+}
+
+#[tokio::test]
+async fn access_request_missing_or_unrefreshable_identity_never_falls_back_to_basic() {
+    for token_state in ["missing", "no-refresh", "unknown-host", "rejected"] {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let token_dir = access_credentials(dir.path());
+        if token_state != "missing" {
+            std::fs::write(token_dir.join("tokens.json"), serde_json::to_vec(&serde_json::json!({
+                "access_token": "test-bearer-token",
+                "refresh_token": if token_state == "no-refresh" { "" } else { "refresh-secret" },
+                "expires_at": 1,
+                "api_url": format!("{}/v1", server.uri()),
+            })).unwrap()).unwrap();
+        }
+        let mut command = access_command(dir.path());
+        command.args([
+            "--url",
+            &server.uri(),
+            "--org-id",
+            "11111111-2222-3333-4444-555555555555",
+        ]);
+        if token_state == "rejected" {
+            Mock::given(method("POST"))
+                .and(path("/oauth/token"))
+                // Even an identity provider echoing a secret must not leak it.
+                .respond_with(ResponseTemplate::new(401).set_body_string("refresh-secret"))
+                .expect(1)
+                .mount(&server)
+                .await;
+            command
+                .env("CLICKHOUSECTL_AUTH_URL", server.uri())
+                .env("CLICKHOUSECTL_CLIENT_ID", "test-client");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(4), "{token_state}");
+        let error: Value = serde_json::from_slice(&output.stderr).unwrap();
+        assert!(
+            error["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("cloud auth login")
+        );
+        assert_access_output_has_no_credentials(&output);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), usize::from(token_state == "rejected"));
+        assert!(dir.path().join(".clickhouse/credentials.json").exists());
+        assert_eq!(
+            token_dir.join("tokens.json").exists(),
+            token_state == "unknown-host"
+        );
+    }
+}
+
+#[tokio::test]
+async fn access_request_refreshes_oauth_despite_stored_basic_and_preserves_login_environment() {
+    let issuer = MockServer::start().await;
+    let target = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/oauth/token"))
+        .and(header("content-type", "application/x-www-form-urlencoded"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "access_token": "refreshed-bearer-token", "expires_in": 3600, "token_type": "Bearer"
+        })))
+        .expect(1)
+        .mount(&issuer)
+        .await;
+    Mock::given(method("POST"))
+        .and(path(
+            "/v1/organizations/11111111-2222-3333-4444-555555555555/accessRequests",
+        ))
+        .and(header("authorization", "Bearer refreshed-bearer-token"))
+        .respond_with(ResponseTemplate::new(403))
+        .expect(1)
+        .mount(&target)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let token_dir = access_credentials(dir.path());
+    std::fs::write(
+        token_dir.join("tokens.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "access_token": "test-bearer-token", "refresh_token": "refresh-secret",
+            "expires_at": 1, "api_url": format!("{}/v1", issuer.uri()),
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = access_command(dir.path())
+        .args([
+            "--url",
+            &target.uri(),
+            "--org-id",
+            "11111111-2222-3333-4444-555555555555",
+        ])
+        .env("CLICKHOUSECTL_AUTH_URL", format!("{}/", issuer.uri()))
+        .env("CLICKHOUSECTL_CLIENT_ID", "test-client")
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_access_output_has_no_credentials(&output);
+    let requests = issuer.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    let form: std::collections::HashMap<_, _> = url::form_urlencoded::parse(&requests[0].body)
+        .into_owned()
+        .collect();
+    assert_eq!(form["grant_type"], "refresh_token");
+    assert_eq!(form["client_id"], "test-client");
+    assert_eq!(form["refresh_token"], "refresh-secret");
+    let tokens: Value =
+        serde_json::from_slice(&std::fs::read(token_dir.join("tokens.json")).unwrap()).unwrap();
+    assert_eq!(tokens["access_token"], "refreshed-bearer-token");
+    assert_eq!(tokens["refresh_token"], "refresh-secret");
+    assert_eq!(tokens["api_url"], format!("{}/v1", issuer.uri()));
+    assert!(tokens["expires_at"].as_i64().unwrap() > chrono::Utc::now().timestamp() + 60);
+}
