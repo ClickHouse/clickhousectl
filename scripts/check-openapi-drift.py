@@ -677,11 +677,7 @@ def build_issue_body(report: dict, live_spec: dict) -> str:
     lines += [
         "## Implementation Guide",
         "",
-        "1. Replace `crates/clickhouse-cloud-api/clickhouse_cloud_openapi.json` with this same live document; do not hand-edit it.",
-        "2. Follow each finding's `spec_pointer` and `rust_item` to update `client.rs`, `models.rs`, or `meta.rs`.",
-        "3. Regenerate beta/deprecation metadata when applicable and add focused model/client tests.",
-        "4. Edit `crates/clickhouse-openapi-analyzer/src/config.rs` only for a deliberate, documented divergence. New unsupported acknowledgements require a tracking issue.",
-        "5. Run the analyzer and Cloud API tests, Clippy, Python renderer tests, and this dry run again; see `AGENTS.md` for the exact commands.",
+        "Follow the `openapi-drift-remediation` skill (`.agents/skills/openapi-drift-remediation/SKILL.md`).",
         "",
     ]
     return "\n".join(lines)
