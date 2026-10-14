@@ -50,7 +50,9 @@ pub fn clickhouse_cloud_config() -> AnalyzerConfig {
         non_openapi_client_methods: strings(&[
             "run_query",
             "run_query_bearer",
-            "run_postgres_query_bearer",
+            // Explicit verified-CLI auth lane of organizationRolesGetList; the
+            // administrative method keeps its legacy RBACRole response contract.
+            "organization_assignable_roles_get_list",
         ]),
         optionality_exemptions: pairs(OPTIONALITY_EXEMPTIONS),
         fractional_response_exemptions: pairs(FRACTIONAL_RESPONSE_EXEMPTIONS),
