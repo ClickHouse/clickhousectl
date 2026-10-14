@@ -34946,3 +34946,190 @@ async fn access_request_refreshes_oauth_despite_stored_basic_and_preserves_login
     assert_eq!(tokens["api_url"], format!("{}/v1", issuer.uri()));
     assert!(tokens["expires_at"].as_i64().unwrap() > chrono::Utc::now().timestamp() + 60);
 }
+
+#[tokio::test]
+async fn access_organization_resolution_reads_complete_user_memberships() {
+    const ONE: &str = "11111111-2222-3333-4444-555555555555";
+    const TWO: &str = "22222222-2222-3333-4444-555555555555";
+    for scenario in [
+        "zero",
+        "one",
+        "multi",
+        "paged-single",
+        "paged-multi",
+        "named",
+        "case-mismatch",
+        "ambiguous-name",
+        "repeat",
+        "no-progress",
+        "page-error",
+        "missing-result",
+        "missing-id",
+        "explicit",
+    ] {
+        let server = MockServer::start().await;
+        let first_rows = match scenario {
+            "zero" | "explicit" => serde_json::json!([]),
+            "multi" => {
+                serde_json::json!([{"id": ONE, "name": "First"}, {"id": TWO, "name": "Second"}])
+            }
+            _ => serde_json::json!([{"id": ONE, "name": "First"}]),
+        };
+        let paged = [
+            "paged-single",
+            "paged-multi",
+            "named",
+            "case-mismatch",
+            "ambiguous-name",
+            "repeat",
+            "no-progress",
+            "page-error",
+            "missing-result",
+            "missing-id",
+        ]
+        .contains(&scenario);
+        let mut first = serde_json::json!({"result": first_rows});
+        if paged {
+            first["nextCursor"] = "opaque+/= &?".into();
+        }
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations"))
+            .and(header("authorization", "Bearer test-bearer-token"))
+            .and(|request: &wiremock::Request| request.url.query().is_none())
+            .respond_with(ResponseTemplate::new(200).set_body_json(first))
+            .expect(if scenario == "explicit" { 0 } else { 1 })
+            .mount(&server)
+            .await;
+        if paged {
+            let second = match scenario {
+                "paged-single" => serde_json::json!({"result": [], "nextCursor": null}),
+                "repeat" => serde_json::json!({"result": [], "nextCursor": "opaque+/= &?"}),
+                "no-progress" => {
+                    serde_json::json!({"result": [{"id": ONE}], "nextCursor": "different"})
+                }
+                "missing-result" => serde_json::json!({"nextCursor": null}),
+                "missing-id" => serde_json::json!({"result": [{"name": "Second"}]}),
+                "ambiguous-name" => serde_json::json!({"result": [{"id": TWO, "name": "First"}]}),
+                _ => serde_json::json!({"result": [{"id": TWO, "name": "Second"}]}),
+            };
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations"))
+                .and(query_param("cursor", "opaque+/= &?"))
+                .and(header("authorization", "Bearer test-bearer-token"))
+                .respond_with(
+                    ResponseTemplate::new(if scenario == "page-error" { 500 } else { 200 })
+                        .set_body_json(second),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let files = ["one", "paged-single", "named", "explicit"].contains(&scenario);
+        let selected = if ["named", "explicit"].contains(&scenario) {
+            TWO
+        } else {
+            ONE
+        };
+        Mock::given(method("POST"))
+            .and(path(format!("/v1/organizations/{selected}/accessRequests")))
+            .and(header("authorization", "Bearer test-bearer-token"))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(if files { 1 } else { 0 })
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let token_dir = access_credentials(dir.path());
+        write_oauth_tokens(&token_dir, &server.uri());
+        let mut command = access_command(dir.path());
+        match scenario {
+            "named" => {
+                command.args(["--org-name", "Second"]);
+            }
+            "case-mismatch" => {
+                command.args(["--org-name", "second"]);
+            }
+            "ambiguous-name" => {
+                command.args(["--org-name", "First"]);
+            }
+            "explicit" => {
+                command.args(["--org", TWO]);
+            }
+            _ => {}
+        }
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if files { 4 } else { 1 }),
+            "{scenario}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_access_output_has_no_credentials(&output);
+        if ["zero", "multi", "paged-multi"].contains(&scenario) {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("cloud org list --json"));
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            usize::from(scenario != "explicit") + usize::from(paged) + usize::from(files),
+            "{scenario}"
+        );
+    }
+}
+
+#[test]
+fn access_organization_conflicts_fail_usage_before_authentication() {
+    let dir = tempfile::tempdir().unwrap();
+    for args in [
+        vec![
+            "cloud",
+            "--org-id=first",
+            "access",
+            "request",
+            "--org-id=second",
+        ],
+        vec![
+            "cloud",
+            "--org-id=first",
+            "access",
+            "request",
+            "--org=second",
+        ],
+        vec![
+            "cloud",
+            "access",
+            "--org=first",
+            "request",
+            "--org-id=second",
+        ],
+        vec![
+            "cloud",
+            "--org-name=first",
+            "access",
+            "request",
+            "--org-name=second",
+        ],
+        vec![
+            "cloud",
+            "--org-name=same",
+            "access",
+            "request",
+            "--org=same",
+        ],
+    ] {
+        let output = Command::new(clickhousectl_binary())
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", dir.path())
+            .current_dir(dir.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+    }
+}
