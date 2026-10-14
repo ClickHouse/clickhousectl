@@ -33575,6 +33575,345 @@ async fn org_notifications_accepts_an_empty_cursor_without_fetching_more_pages()
 
 // ── Access negotiation's OAuth-only identity lane ──────────────────────────
 
+fn access_roles_command(dir: &Path, json: bool) -> Command {
+    let mut command = Command::new(clickhousectl_binary());
+    command
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.join("home"))
+        .current_dir(dir)
+        .args(["cloud", "access", "roles"]);
+    if json {
+        command.arg("--json");
+    }
+    command
+}
+
+fn assignable_roles_fixture() -> Value {
+    serde_json::json!([
+        {"id": "00000000-0000-0000-0000-000000000001", "name": "System reader", "type": "system", "policies": [
+            {"allowDeny": "ALLOW", "permissions": ["service:view"], "resources": ["*"], "tags": {"roleV2": "sql-console-readonly"}},
+            {"allowDeny": "DENY", "permissions": ["service:delete"], "resources": ["instance/private"]}
+        ]},
+        {"id": "55555555-5555-4555-8555-555555555555", "name": "Custom SQL", "type": "custom", "policies": [
+            {"allowDeny": "ALLOW", "permissions": ["sql-console:database:access"], "resources": ["instance/service-a"], "tags": {"roleV2": "sql-console-admin", "grants": ["GRANT SELECT ON db.* TO role", "REVOKE SELECT ON db.secret FROM role"]}},
+            {"allowDeny": "future-effect", "permissions": [], "resources": [], "tags": {"roleV2": "future-role", "grants": []}}
+        ]},
+        {"id": "22222222-2222-2222-2222-222222222222", "name": "Future type", "type": "future-type", "policies": []}
+    ])
+}
+
+#[tokio::test]
+async fn access_roles_outputs_complete_oauth_menu_with_selected_organization() {
+    const ORG: &str = "11111111-2222-3333-4444-555555555555";
+    for selector in ["explicit", "auto", "name"] {
+        for json in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations"))
+                .and(header("authorization", "Bearer test-bearer-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"result": [{"id": ORG, "name": "Selected org"}]}),
+                ))
+                .expect(if selector == "explicit" { 0 } else { 1 })
+                .mount(&server)
+                .await;
+            let roles = assignable_roles_fixture();
+            Mock::given(method("GET")).and(path(format!("/v1/organizations/{ORG}/roles")))
+                .and(header("authorization", "Bearer test-bearer-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": roles, "requestId": "correlation", "nextCursor": "must-not-page"})))
+                .expect(1).mount(&server).await;
+            let dir = tempfile::tempdir().unwrap();
+            let tokens = access_credentials(dir.path());
+            write_oauth_tokens(&tokens, &server.uri());
+            let mut command = access_roles_command(dir.path(), json);
+            if selector == "explicit" {
+                command.args(["--org", ORG]);
+            }
+            if selector == "name" {
+                command.args(["--org-name", "Selected org"]);
+            }
+            let output = command.output().unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_access_output_has_no_credentials(&output);
+            if json {
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                    roles
+                );
+            } else {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for value in [
+                    ORG,
+                    "System reader",
+                    "Custom SQL",
+                    "DENY",
+                    "instance/private",
+                    "Unknown effect (future-effect)",
+                    "Unknown (future-type)",
+                    "00000000-0000-0000-0000-000000000001",
+                ] {
+                    assert!(text.contains(value), "missing {value}: {text}");
+                }
+            }
+            assert_eq!(
+                server.received_requests().await.unwrap().len(),
+                if selector == "explicit" { 1 } else { 2 }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn access_roles_empty_and_optional_tags_are_valid() {
+    for roles in [
+        serde_json::json!([]),
+        serde_json::json!([
+            {"id": "00000000-0000-0000-0000-000000000001", "name": "empty", "type": "system", "policies": [
+                {"allowDeny": "DENY", "permissions": [], "resources": [], "tags": null},
+                {"allowDeny": "ALLOW", "permissions": [], "resources": [], "tags": {"grants": null, "roleV2": null}}
+            ]}
+        ]),
+    ] {
+        for json in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations/org/roles"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": roles})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let dir = tempfile::tempdir().unwrap();
+            write_oauth_tokens(&access_credentials(dir.path()), &server.uri());
+            let output = access_roles_command(dir.path(), json)
+                .args(["--org", "org"])
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if json {
+                let expected: Vec<clickhouse_cloud_api::models::AssignableRole> =
+                    serde_json::from_value(roles.clone()).unwrap();
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                    serde_json::to_value(expected).unwrap()
+                );
+            } else if roles.as_array().unwrap().is_empty() {
+                assert!(String::from_utf8_lossy(&output.stdout).contains("No assignable roles"));
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn access_roles_rejects_incomplete_menus_before_any_success_output() {
+    let fixture = assignable_roles_fixture();
+    let mut invalid = vec![
+        serde_json::json!({}),
+        serde_json::json!({"result": null}),
+        serde_json::json!({"result": fixture, "error": "envelope failure"}),
+        serde_json::json!({"result": fixture, "status": 500}),
+        serde_json::json!({"result": {"roles": []}}),
+    ];
+    for field in ["id", "name", "type", "policies"] {
+        for null in [false, true] {
+            let mut roles = fixture.clone();
+            if null {
+                roles[1][field] = Value::Null;
+            } else {
+                roles[1].as_object_mut().unwrap().remove(field);
+            }
+            invalid.push(serde_json::json!({"result": roles}));
+        }
+    }
+    for field in ["allowDeny", "permissions", "resources"] {
+        for null in [false, true] {
+            let mut roles = fixture.clone();
+            if null {
+                roles[1]["policies"][0][field] = Value::Null;
+            } else {
+                roles[1]["policies"][0]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove(field);
+            }
+            invalid.push(serde_json::json!({"result": roles}));
+        }
+    }
+    let mut roles = fixture.clone();
+    roles[1]["id"] = "not-a-uuid".into();
+    invalid.push(serde_json::json!({"result": roles}));
+    for response in invalid {
+        for json in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations/org/roles"))
+                .and(header("authorization", "Bearer test-bearer-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(response.clone()))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let dir = tempfile::tempdir().unwrap();
+            write_oauth_tokens(&access_credentials(dir.path()), &server.uri());
+            let output = access_roles_command(dir.path(), json)
+                .args(["--org", "org"])
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{response}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert!(
+                output.stdout.is_empty(),
+                "partial success: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            assert!(!output.stderr.is_empty());
+            assert_access_output_has_no_credentials(&output);
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn access_roles_preserves_server_denials_without_fallback() {
+    for (status, message, exit) in [
+        (401, "non-CLI identity", 4),
+        (403, "cross-org denial", 4),
+        (400, "RBAC prerequisite", 1),
+        (500, "upstream error", 1),
+    ] {
+        for json in [false, true] {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations/other-org/roles"))
+                .and(header("authorization", "Bearer test-bearer-token"))
+                .respond_with(
+                    ResponseTemplate::new(status)
+                        .set_body_json(serde_json::json!({"error": message})),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let dir = tempfile::tempdir().unwrap();
+            write_oauth_tokens(&access_credentials(dir.path()), &server.uri());
+            let output = access_roles_command(dir.path(), json)
+                .args(["--org", "other-org"])
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(exit));
+            assert!(output.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+            assert_eq!(server.received_requests().await.unwrap().len(), 1);
+        }
+    }
+}
+
+#[tokio::test]
+async fn access_roles_requires_and_refreshes_oauth_despite_basic_credentials() {
+    for state in ["missing", "unrefreshable", "refresh"] {
+        let issuer = MockServer::start().await;
+        let target = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let tokens = access_credentials(dir.path());
+        if state != "missing" {
+            std::fs::write(tokens.join("tokens.json"), serde_json::to_vec(&serde_json::json!({
+                "access_token": "test-bearer-token", "refresh_token": "refresh-secret", "expires_at": 1,
+                "api_url": format!("{}/v1", issuer.uri())
+            })).unwrap()).unwrap();
+            Mock::given(method("POST")).and(path("/oauth/token"))
+                .respond_with(if state == "refresh" {
+                    ResponseTemplate::new(200).set_body_json(serde_json::json!({"access_token": "refreshed-bearer-token", "expires_in": 3600, "token_type": "Bearer"}))
+                } else { ResponseTemplate::new(401).set_body_string("refresh-secret") })
+                .expect(1).mount(&issuer).await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org/roles"))
+            .and(header("authorization", "Bearer refreshed-bearer-token"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": []})),
+            )
+            .expect(if state == "refresh" { 1 } else { 0 })
+            .mount(&target)
+            .await;
+        let output = access_roles_command(dir.path(), true)
+            .args([
+                "--org",
+                "org",
+                "--url",
+                &target.uri(),
+                "--api-key",
+                "flag-basic-key",
+                "--api-secret",
+                "flag-basic-secret",
+            ])
+            .env("CLICKHOUSECTL_AUTH_URL", issuer.uri())
+            .env("CLICKHOUSECTL_CLIENT_ID", "test-client")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(if state == "refresh" { 0 } else { 4 })
+        );
+        assert_access_output_has_no_credentials(&output);
+        if state == "refresh" {
+            assert_eq!(
+                serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                serde_json::json!([])
+            );
+        } else {
+            assert!(output.stdout.is_empty());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("cloud auth login"));
+        }
+        assert_eq!(
+            target.received_requests().await.unwrap().len(),
+            usize::from(state == "refresh")
+        );
+    }
+}
+
+#[test]
+fn access_roles_selector_conflicts_exit_usage_before_oauth() {
+    for args in [
+        vec!["cloud", "--org-id=one", "access", "roles", "--org=two"],
+        vec![
+            "cloud",
+            "--org-name=one",
+            "access",
+            "roles",
+            "--org-name=two",
+        ],
+        vec!["cloud", "access", "--org=one", "roles", "--org-id=two"],
+        vec!["cloud", "--org-name=one", "access", "roles", "--org=one"],
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        access_credentials(dir.path());
+        let output = Command::new(clickhousectl_binary())
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", dir.path().join("home"))
+            .current_dir(dir.path())
+            .args(args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2));
+        assert!(output.stdout.is_empty());
+    }
+}
+
 fn access_command(dir: &Path) -> Command {
     let mut command = Command::new(clickhousectl_binary());
     command
