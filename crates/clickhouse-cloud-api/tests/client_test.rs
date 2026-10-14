@@ -654,6 +654,7 @@ async fn update_byoc_infrastructure() {
 
     let body = ByocInfrastructurePatchRequest {
         display_name: Some("Renamed BYOC".to_string()),
+        ..Default::default()
     };
     let resp = c
         .organization_byoc_infrastructure_update("org-1", "byoc-1", &body)
@@ -661,6 +662,129 @@ async fn update_byoc_infrastructure() {
         .unwrap();
     let config = resp.result.unwrap();
     assert_eq!(config.display_name.as_deref(), Some("Renamed BYOC"));
+}
+
+#[tokio::test]
+async fn update_byoc_infrastructure_sends_connectivity_and_tags() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/byocInfrastructure/byoc-1"))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({
+            "enablePrivateLink": true,
+            "enablePrivateLoadBalancer": false,
+            "enablePublicLoadBalancer": true,
+            "gcpPscSubnetId": "psc-subnet",
+            "tags": {"team": "data"}
+        })))
+        .respond_with(ok_json(serde_json::json!({"id": "byoc-1"})))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ByocInfrastructurePatchRequest {
+        display_name: None,
+        enable_private_link: Some(true),
+        enable_private_load_balancer: Some(false),
+        enable_public_load_balancer: Some(true),
+        gcp_psc_subnet_id: Some("psc-subnet".to_string()),
+        tags: Some(ByocInfrastructureTags::from([(
+            "team".to_string(),
+            "data".to_string(),
+        )])),
+    };
+    let resp = c
+        .organization_byoc_infrastructure_update("org-1", "byoc-1", &body)
+        .await
+        .unwrap();
+    assert_eq!(resp.result.unwrap().id.as_deref(), Some("byoc-1"));
+}
+
+#[tokio::test]
+async fn get_byoc_infrastructure_private_endpoint_config() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-1/privateEndpointConfig",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "endpointName": "com.amazonaws.vpce.us-east-1.vpce-svc-123",
+            "privateDnsHostname": "byoc-1.private.clickhouse.cloud"
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .organization_byoc_infrastructure_private_endpoint_config_get("org-1", "byoc-1")
+        .await
+        .unwrap();
+    let config = resp.result.unwrap();
+    assert_eq!(
+        config.endpoint_name.as_deref(),
+        Some("com.amazonaws.vpce.us-east-1.vpce-svc-123")
+    );
+    assert_eq!(
+        config.private_dns_hostname.as_deref(),
+        Some("byoc-1.private.clickhouse.cloud")
+    );
+}
+
+#[tokio::test]
+async fn get_byoc_infrastructure_tags() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/byoc-1/tags",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "tags": {"team": "data", "env": "prod"}
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c
+        .organization_byoc_infrastructure_tags_get("org-1", "byoc-1")
+        .await
+        .unwrap();
+    let tags = resp.result.unwrap().tags.unwrap();
+    assert_eq!(tags.len(), 2);
+    assert_eq!(tags.get("team").map(String::as_str), Some("data"));
+    assert_eq!(tags.get("env").map(String::as_str), Some("prod"));
+}
+
+#[tokio::test]
+async fn byoc_infrastructure_tags_get_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/byocInfrastructure/missing/tags",
+        ))
+        .respond_with(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+            "status": 404,
+            "error": "BYOC infrastructure not found"
+        })))
+        .mount(&s)
+        .await;
+
+    let err = c
+        .organization_byoc_infrastructure_tags_get("org-1", "missing")
+        .await
+        .unwrap_err();
+    match err {
+        clickhouse_cloud_api::Error::Api { status, message } => {
+            assert_eq!(status, 404);
+            assert_eq!(message, "BYOC infrastructure not found");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -6447,5 +6571,181 @@ async fn whoami_get_propagates_api_errors() {
             matches!(error, clickhouse_cloud_api::Error::Api { status: actual_status, ref message } if actual_status == status && message == expected_message),
             "unexpected error: {error:?}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Notification types
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn list_notification_types() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!([
+            {
+                "name": "service_backup_failed",
+                "title": "Backup failed",
+                "description": "A scheduled backup did not complete.",
+                "category": "service",
+                "severity": "warning",
+                "resourceType": "service",
+                "isConfigurable": true,
+                "isAvailable": true
+            },
+            {
+                "name": "billing_new_tier",
+                "title": "New tier",
+                "category": "billing",
+                "severity": "page_someone",
+                "resourceType": "organization",
+                "isConfigurable": false,
+                "isAvailable": false
+            }
+        ])))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c.notification_types_get_list("org-1").await.unwrap();
+    let types = resp.result.unwrap();
+    assert_eq!(types.len(), 2);
+    assert_eq!(types[0].name.as_deref(), Some("service_backup_failed"));
+    assert_eq!(types[0].title.as_deref(), Some("Backup failed"));
+    assert_eq!(
+        types[0].description.as_deref(),
+        Some("A scheduled backup did not complete.")
+    );
+    assert_eq!(types[0].category.as_deref(), Some("service"));
+    assert_eq!(types[0].severity, Some(NotificationTypeSeverity::Warning));
+    assert_eq!(types[0].resource_type.as_deref(), Some("service"));
+    assert_eq!(types[0].is_configurable, Some(true));
+    assert_eq!(types[0].is_available, Some(true));
+    assert_eq!(types[1].description, None);
+    assert_eq!(
+        types[1].severity,
+        Some(NotificationTypeSeverity::Unknown(
+            "page_someone".to_string()
+        ))
+    );
+    assert_eq!(types[1].is_available, Some(false));
+}
+
+#[tokio::test]
+async fn notification_types_get_list_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notificationTypes"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "Invalid organization"
+        })))
+        .mount(&s)
+        .await;
+
+    let err = c.notification_types_get_list("org-1").await.unwrap_err();
+    match err {
+        clickhouse_cloud_api::Error::Api { status, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(message, "Invalid organization");
+        }
+        other => panic!("unexpected error: {other:?}"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Replica aware routing
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_replica_aware_routing() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/replicaAwareRouting",
+        ))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(serde_json::json!({
+            "httpEnabled": false,
+            "nativeEnabled": true
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let resp = c.replica_aware_routing_get("org-1", "svc-1").await.unwrap();
+    let routing = resp.result.unwrap();
+    assert_eq!(routing.http_enabled, Some(false));
+    assert_eq!(routing.native_enabled, Some(true));
+}
+
+#[tokio::test]
+async fn update_replica_aware_routing_sends_only_set_fields() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/replicaAwareRouting",
+        ))
+        .and(basic_auth("key", "secret"))
+        .and(body_json(serde_json::json!({"httpEnabled": true})))
+        .respond_with(ok_json(serde_json::json!({
+            "httpEnabled": true,
+            "nativeEnabled": false
+        })))
+        .expect(1)
+        .mount(&s)
+        .await;
+
+    let body = ReplicaAwareRoutingPatchRequest {
+        http_enabled: Some(true),
+        native_enabled: None,
+    };
+    let resp = c
+        .replica_aware_routing_update("org-1", "svc-1", &body)
+        .await
+        .unwrap();
+    let routing = resp.result.unwrap();
+    assert_eq!(routing.http_enabled, Some(true));
+    assert_eq!(routing.native_enabled, Some(false));
+}
+
+#[tokio::test]
+async fn replica_aware_routing_update_surfaces_api_errors() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path(
+            "/v1/organizations/org-1/services/svc-1/replicaAwareRouting",
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+            "status": 400,
+            "error": "Replica aware routing is not enabled for this organization"
+        })))
+        .mount(&s)
+        .await;
+
+    let body = ReplicaAwareRoutingPatchRequest {
+        http_enabled: None,
+        native_enabled: Some(true),
+    };
+    let err = c
+        .replica_aware_routing_update("org-1", "svc-1", &body)
+        .await
+        .unwrap_err();
+    match err {
+        clickhouse_cloud_api::Error::Api { status, message } => {
+            assert_eq!(status, 400);
+            assert_eq!(
+                message,
+                "Replica aware routing is not enabled for this organization"
+            );
+        }
+        other => panic!("unexpected error: {other:?}"),
     }
 }

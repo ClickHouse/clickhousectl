@@ -632,6 +632,45 @@ pub struct ByocConfig {
 pub struct ByocInfrastructurePatchRequest {
     #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    #[serde(rename = "enablePrivateLink", skip_serializing_if = "Option::is_none")]
+    pub enable_private_link: Option<bool>,
+    #[serde(
+        rename = "enablePrivateLoadBalancer",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub enable_private_load_balancer: Option<bool>,
+    #[serde(
+        rename = "enablePublicLoadBalancer",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub enable_public_load_balancer: Option<bool>,
+    /// GCP BYO-VPC only: Private Service Connect NAT subnet name; only accepted with
+    /// `enable_private_link: Some(true)`.
+    #[serde(rename = "gcpPscSubnetId", skip_serializing_if = "Option::is_none")]
+    pub gcp_psc_subnet_id: Option<String>,
+    /// Replaces the infrastructure's additional tags as a whole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<ByocInfrastructureTags>,
+}
+
+/// `ByocInfrastructurePrivateEndpointConfig` from the ClickHouse Cloud API.
+///
+/// Private link endpoint service details of a BYOC infrastructure.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocInfrastructurePrivateEndpointConfig {
+    #[serde(rename = "endpointName", skip_serializing_if = "Option::is_none")]
+    pub endpoint_name: Option<String>,
+    #[serde(rename = "privateDnsHostname", skip_serializing_if = "Option::is_none")]
+    pub private_dns_hostname: Option<String>,
+}
+
+/// `ByocInfrastructureTagsResponse` from the ClickHouse Cloud API.
+///
+/// Additional tags currently applied to the cloud resources of a BYOC infrastructure.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ByocInfrastructureTagsResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<ByocInfrastructureTags>,
 }
 
 /// `ByocInfrastructurePostRequest` from the ClickHouse Cloud API.

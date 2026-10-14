@@ -1921,6 +1921,29 @@ pub struct ServiceQueryAPIEndpoint {
     pub roles: Option<Vec<QueryEndpointRole>>,
 }
 
+/// `ReplicaAwareRouting` from the ClickHouse Cloud API.
+///
+/// Whether replica aware (sticky) routing is enabled per protocol.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReplicaAwareRouting {
+    /// When enabled, HTTP clients must send the `X-ClickHouse-Replica-Tag` header.
+    #[serde(rename = "httpEnabled", skip_serializing_if = "Option::is_none")]
+    pub http_enabled: Option<bool>,
+    #[serde(rename = "nativeEnabled", skip_serializing_if = "Option::is_none")]
+    pub native_enabled: Option<bool>,
+}
+
+/// `ReplicaAwareRoutingPatchRequest` from the ClickHouse Cloud API.
+///
+/// Provide at least one field; an omitted field is left unchanged.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ReplicaAwareRoutingPatchRequest {
+    #[serde(rename = "httpEnabled", skip_serializing_if = "Option::is_none")]
+    pub http_enabled: Option<bool>,
+    #[serde(rename = "nativeEnabled", skip_serializing_if = "Option::is_none")]
+    pub native_enabled: Option<bool>,
+}
+
 /// `ServiceReplicaScalingPatchRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServiceReplicaScalingPatchRequest {

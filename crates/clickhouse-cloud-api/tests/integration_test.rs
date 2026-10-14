@@ -2959,6 +2959,90 @@ async fn cloud_service_crud_lifecycle() -> TestResult<()> {
             }
         }
 
+        // ── Replica Aware Routing ────────────────────────────────────
+        //
+        // Read the current sticky-routing state, then PATCH the same values
+        // back so the service ends exactly as it started. The update requires
+        // an organization feature flag; a 400 when it is off still proves
+        // routing, auth and error decoding.
+
+        log_phase("Replica Aware Routing");
+
+        let routing = failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "replica_aware_routing get",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let service_id = service_id.clone();
+                    async move {
+                        let resp = client
+                            .replica_aware_routing_get(&org_id, &service_id)
+                            .await?;
+                        resp.result
+                            .ok_or_else(|| "replica_aware_routing get returned no result".into())
+                    }
+                },
+            )
+            .await?;
+
+        if let Some(routing) = routing {
+            eprintln!(
+                "  replica aware routing: http={:?}, native={:?}",
+                routing.http_enabled, routing.native_enabled,
+            );
+            let body = ReplicaAwareRoutingPatchRequest {
+                http_enabled: routing.http_enabled,
+                native_enabled: routing.native_enabled,
+            };
+            failures
+                .run(
+                    &ctx,
+                    StepKind::NonBlocking,
+                    "replica_aware_routing no-op update",
+                    || {
+                        let client = client.clone();
+                        let org_id = ctx.org_id.clone();
+                        let service_id = service_id.clone();
+                        let body = body.clone();
+                        let expected = routing.clone();
+                        async move {
+                            match client
+                                .replica_aware_routing_update(&org_id, &service_id, &body)
+                                .await
+                            {
+                                Ok(resp) => {
+                                    let updated = resp.result.ok_or(
+                                        "replica_aware_routing update returned no result",
+                                    )?;
+                                    if updated != expected {
+                                        return Err(format!(
+                                            "no-op replica_aware_routing update changed state: \
+                                             {expected:?} -> {updated:?}"
+                                        )
+                                        .into());
+                                    }
+                                    Ok(())
+                                }
+                                Err(clickhouse_cloud_api::Error::Api {
+                                    status: 400,
+                                    message,
+                                }) => {
+                                    eprintln!(
+                                        "  expected 400 (org feature not enabled?): {message}"
+                                    );
+                                    Ok(())
+                                }
+                                Err(e) => Err(e.into()),
+                            }
+                        }
+                    },
+                )
+                .await?;
+        }
+
         // ── 10. Upgrade Window ───────────────────────────────────────
         //
         // The upgrade window controls when ClickHouse Cloud is allowed to

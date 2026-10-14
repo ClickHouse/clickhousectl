@@ -172,12 +172,12 @@ pub use byoc::{
     ByocConfigState, ByocInfrastructureDetails, ByocInfrastructureDetailsCloudprovider,
     ByocInfrastructureDetailsRegionid, ByocInfrastructureDetailsState,
     ByocInfrastructurePatchRequest, ByocInfrastructurePostRequest,
-    ByocInfrastructurePostRequestRegionid, ByocInfrastructureProgress,
-    ByocInfrastructureProgressStage, ByocInfrastructureProgressStageStatus,
-    ByocInfrastructureProgressStatus, ByocInfrastructureTags,
-    ByocInfrastructureValidatePostRequest, ByocInfrastructureValidatePostRequestRegionid,
-    ByocInfrastructureValidation, ByocInfrastructureValidationCheck,
-    ByocInfrastructureValidationCloudprovider,
+    ByocInfrastructurePostRequestRegionid, ByocInfrastructurePrivateEndpointConfig,
+    ByocInfrastructureProgress, ByocInfrastructureProgressStage,
+    ByocInfrastructureProgressStageStatus, ByocInfrastructureProgressStatus,
+    ByocInfrastructureTags, ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
+    ByocInfrastructureValidatePostRequestRegionid, ByocInfrastructureValidation,
+    ByocInfrastructureValidationCheck, ByocInfrastructureValidationCloudprovider,
 };
 pub use clickpipes::*;
 pub use clickstack::*;
@@ -193,9 +193,9 @@ pub use organization_private_endpoints::{
     OrganizationPrivateEndpointRegion, OrganizationPrivateEndpointsPatch,
 };
 pub use organizations::{
-    ActiveBalance, ActiveBalances, CreditBalance, CreditBalanceType, CreditBalances, Organization,
-    OrganizationCapabilities, OrganizationPatchRequest, PrometheusDiscoveryLabels,
-    PrometheusDiscoveryTargetGroup,
+    ActiveBalance, ActiveBalances, CreditBalance, CreditBalanceType, CreditBalances,
+    NotificationType, NotificationTypeSeverity, Organization, OrganizationCapabilities,
+    OrganizationPatchRequest, PrometheusDiscoveryLabels, PrometheusDiscoveryTargetGroup,
 };
 pub use postgres::{
     BasePostgresService, PgBouncerConfig, PgBouncerConfigResponse, PgConfig,
@@ -241,10 +241,10 @@ pub use services::{
     CurrentScalingEffectiveautoscalingmode, InstancePrivateEndpoint,
     InstancePrivateEndpointCloudprovider, InstancePrivateEndpointRegion,
     InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch,
-    PrivateEndpointConfig, QueryEndpointRole, ScalingSchedule, ScalingScheduleBaseConfig,
-    ScalingScheduleEntry, ScalingScheduleEntryRequest, ScalingSchedulePostRequest,
-    ServicPrivateEndpointePostRequest, Service, ServiceClickhouseSetting,
-    ServiceClickhouseSettingSchemaEntry, ServiceClickhouseSettingValue,
+    PrivateEndpointConfig, QueryEndpointRole, ReplicaAwareRouting, ReplicaAwareRoutingPatchRequest,
+    ScalingSchedule, ScalingScheduleBaseConfig, ScalingScheduleEntry, ScalingScheduleEntryRequest,
+    ScalingSchedulePostRequest, ServicPrivateEndpointePostRequest, Service,
+    ServiceClickhouseSetting, ServiceClickhouseSettingSchemaEntry, ServiceClickhouseSettingValue,
     ServiceClickhouseSettingValueResponse, ServiceClickhouseSettingWarning,
     ServiceClickhouseSettingsList, ServiceClickhouseSettingsMap,
     ServiceClickhouseSettingsMapResponse, ServiceClickhouseSettingsPatchRequest,

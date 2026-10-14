@@ -1675,9 +1675,74 @@ fn byoc_availability_zone_suffix_preserves_unknown_values() {
 fn serialize_byoc_infrastructure_patch_request() {
     let req = ByocInfrastructurePatchRequest {
         display_name: Some("Renamed".to_string()),
+        ..Default::default()
     };
     let json = serde_json::to_value(&req).unwrap();
-    assert_eq!(json["displayName"], "Renamed");
+    assert_eq!(json, serde_json::json!({"displayName": "Renamed"}));
+}
+
+#[test]
+fn serialize_byoc_infrastructure_patch_request_full() {
+    let req = ByocInfrastructurePatchRequest {
+        display_name: Some("Renamed".to_string()),
+        enable_private_link: Some(true),
+        enable_private_load_balancer: Some(true),
+        enable_public_load_balancer: Some(false),
+        gcp_psc_subnet_id: Some("psc-subnet".to_string()),
+        tags: Some(ByocInfrastructureTags::from([(
+            "team".to_string(),
+            "data".to_string(),
+        )])),
+    };
+    assert_eq!(
+        serde_json::to_value(&req).unwrap(),
+        serde_json::json!({
+            "displayName": "Renamed",
+            "enablePrivateLink": true,
+            "enablePrivateLoadBalancer": true,
+            "enablePublicLoadBalancer": false,
+            "gcpPscSubnetId": "psc-subnet",
+            "tags": {"team": "data"}
+        })
+    );
+    assert_eq!(
+        serde_json::to_value(ByocInfrastructurePatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn byoc_infrastructure_private_endpoint_config_missing_and_null_fields_are_none() {
+    let missing: ByocInfrastructurePrivateEndpointConfig = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocInfrastructurePrivateEndpointConfig::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocInfrastructurePrivateEndpointConfig = serde_json::from_value(serde_json::json!({
+        "endpointName": null, "privateDnsHostname": null
+    }))
+    .unwrap();
+    assert_eq!(null, ByocInfrastructurePrivateEndpointConfig::default());
+}
+
+#[test]
+fn byoc_infrastructure_tags_response_missing_and_null_fields_are_none() {
+    let missing: ByocInfrastructureTagsResponse = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ByocInfrastructureTagsResponse::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ByocInfrastructureTagsResponse =
+        serde_json::from_value(serde_json::json!({"tags": null})).unwrap();
+    assert_eq!(null, ByocInfrastructureTagsResponse::default());
+
+    let empty: ByocInfrastructureTagsResponse =
+        serde_json::from_value(serde_json::json!({"tags": {}})).unwrap();
+    assert_eq!(empty.tags, Some(ByocInfrastructureTags::new()));
 }
 
 #[test]
@@ -8443,4 +8508,87 @@ fn whoami_actor_types_preserve_unknown_values() {
     let key: WhoamiApiKeyActortype = serde_json::from_str("\"futureKey\"").unwrap();
     assert_eq!(key, WhoamiApiKeyActortype::Unknown("futureKey".into()));
     assert_eq!(WhoamiApiKeyActortype::ApiKey.to_string(), "apiKey");
+}
+
+#[test]
+fn notification_type_missing_and_null_fields_are_none() {
+    let missing: NotificationType = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, NotificationType::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: NotificationType = serde_json::from_value(serde_json::json!({
+        "name": null, "title": null, "description": null, "category": null,
+        "severity": null, "resourceType": null, "isConfigurable": null,
+        "isAvailable": null, "futureField": 1
+    }))
+    .unwrap();
+    assert_eq!(null, NotificationType::default());
+}
+
+#[test]
+fn notification_type_severity_round_trips_and_preserves_unknown() {
+    for (wire, value) in [
+        ("info", NotificationTypeSeverity::Info),
+        ("warning", NotificationTypeSeverity::Warning),
+        ("critical", NotificationTypeSeverity::Critical),
+    ] {
+        let parsed: NotificationTypeSeverity =
+            serde_json::from_value(serde_json::json!(wire)).unwrap();
+        assert_eq!(parsed, value);
+        assert_eq!(value.to_string(), wire);
+        assert_eq!(
+            serde_json::to_value(&value).unwrap(),
+            serde_json::json!(wire)
+        );
+    }
+    let unknown: NotificationTypeSeverity =
+        serde_json::from_value(serde_json::json!("emergency")).unwrap();
+    assert_eq!(
+        unknown,
+        NotificationTypeSeverity::Unknown("emergency".to_string())
+    );
+    assert_eq!(unknown.to_string(), "emergency");
+}
+
+#[test]
+fn replica_aware_routing_missing_and_null_fields_are_none() {
+    let missing: ReplicaAwareRouting = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, ReplicaAwareRouting::default());
+    assert_eq!(
+        serde_json::to_value(&missing).unwrap(),
+        serde_json::json!({})
+    );
+
+    let null: ReplicaAwareRouting = serde_json::from_value(serde_json::json!({
+        "httpEnabled": null, "nativeEnabled": null
+    }))
+    .unwrap();
+    assert_eq!(null, ReplicaAwareRouting::default());
+}
+
+#[test]
+fn serialize_replica_aware_routing_patch_request() {
+    assert_eq!(
+        serde_json::to_value(ReplicaAwareRoutingPatchRequest::default()).unwrap(),
+        serde_json::json!({})
+    );
+    assert_eq!(
+        serde_json::to_value(ReplicaAwareRoutingPatchRequest {
+            http_enabled: Some(false),
+            native_enabled: None,
+        })
+        .unwrap(),
+        serde_json::json!({"httpEnabled": false})
+    );
+    assert_eq!(
+        serde_json::to_value(ReplicaAwareRoutingPatchRequest {
+            http_enabled: Some(true),
+            native_enabled: Some(false),
+        })
+        .unwrap(),
+        serde_json::json!({"httpEnabled": true, "nativeEnabled": false})
+    );
 }
