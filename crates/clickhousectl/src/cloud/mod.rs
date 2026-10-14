@@ -59,32 +59,34 @@ fn ignored_env_credentials_notice(
 }
 
 pub async fn run(args: CloudArgs, json: bool) -> Result<()> {
-    // Auth subcommands don't need a client.
-    if let CloudCommands::Auth { command } = args.command {
-        return auth::run(
-            command,
-            args.api_key.as_deref(),
-            args.api_secret.as_deref(),
-            args.url.as_deref(),
-            args.debug,
-            json,
-        )
-        .await;
-    }
-
-    // Access negotiation refreshes and uses only the OAuth user identity,
-    // bypassing normal API-key precedence and the ordinary OAuth write gate.
-    if let CloudCommands::Access { command } = args.command {
-        return access::run(
-            command,
-            args.url.as_deref(),
-            args.org_id,
-            args.org_name,
-            json,
-        )
-        .await
-        .map_err(cloud_error_to_top_level);
-    }
+    // Local auth subcommands don't need a client; `whoami` takes the normal path.
+    let command = match args.command {
+        CloudCommands::Auth { command } if !command.needs_client() => {
+            return auth::run(
+                command,
+                args.api_key.as_deref(),
+                args.api_secret.as_deref(),
+                args.url.as_deref(),
+                args.debug,
+                json,
+            )
+            .await;
+        }
+        // Access negotiation refreshes and uses only the OAuth user identity,
+        // bypassing normal API-key precedence and the ordinary OAuth write gate.
+        CloudCommands::Access { command, org } => {
+            return access::run(
+                command,
+                args.url.as_deref(),
+                org.or(args.org_id),
+                args.org_name,
+                json,
+            )
+            .await
+            .map_err(cloud_error_to_top_level);
+        }
+        command => command,
+    };
 
     // Explicit key flags select API-key auth (even an incomplete pair must fail
     // validation without touching OAuth). Otherwise refresh only when no higher

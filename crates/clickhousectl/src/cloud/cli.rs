@@ -64,6 +64,74 @@ pub struct CloudArgs {
 }
 
 impl CloudArgs {
+    /// Reparse only access invocations without selector propagation so clap
+    /// cannot erase conflicting values supplied at different command depths.
+    pub fn validate_access_selectors(
+        &self,
+        argv: &[std::ffi::OsString],
+    ) -> Result<(), clap::Error> {
+        if !matches!(self.command, CloudCommands::Access { .. }) {
+            return Ok(());
+        }
+        fn without_selector_globals(
+            mut command: clap::Command,
+            inherited: &[clap::Arg],
+        ) -> clap::Command {
+            for arg in inherited {
+                if !command
+                    .get_arguments()
+                    .any(|local| local.get_id() == arg.get_id())
+                {
+                    command = command.arg(arg.clone());
+                }
+            }
+            let selectors: Vec<_> = command
+                .get_arguments()
+                .filter(|arg| {
+                    ["org", "org_id", "org_name"].contains(&arg.get_id().as_str())
+                        && arg.is_global_set()
+                })
+                .cloned()
+                .collect();
+            for arg in &selectors {
+                command = command.mut_arg(arg.get_id().clone(), |arg| arg.global(false));
+            }
+            for child in command.get_subcommands_mut() {
+                *child = without_selector_globals(child.clone(), &selectors);
+            }
+            command
+        }
+        // Never mutate a built clap command: its cached parser indexes would
+        // describe the old globals. Reuse fresh derive definitions instead.
+        use clap::CommandFactory;
+        let mut validation = without_selector_globals(crate::cli::Cli::command(), &[]);
+        let matches = validation.try_get_matches_from_mut(argv)?;
+        let mut current = &matches;
+        let mut selected: Option<(&str, &str)> = None;
+        loop {
+            for id in ["org", "org_id", "org_name"] {
+                if current.try_get_one::<String>(id).ok().flatten().is_none()
+                    || current.value_source(id) != Some(clap::parser::ValueSource::CommandLine)
+                {
+                    continue;
+                }
+                let value = current.get_one::<String>(id).expect("explicit selector");
+                let kind = if id == "org_name" { "name" } else { "id" };
+                if selected.is_some_and(|previous| previous != (kind, value.as_str())) {
+                    return Err(validation.error(
+                        clap::error::ErrorKind::ArgumentConflict,
+                        "Conflicting organization selectors: use one organization ID (--org or --org-id) or one exact --org-name",
+                    ));
+                }
+                selected = Some((kind, value));
+            }
+            match current.subcommand() {
+                Some((_, child)) => current = child,
+                None => return Ok(()),
+            }
+        }
+    }
+
     /// Clap validates conflicts before propagating globals from other depths.
     pub fn has_organization_selector_conflict(&self) -> bool {
         self.org_id.is_some() && self.org_name.is_some()
@@ -133,8 +201,13 @@ pub enum CloudCommands {
 CONTEXT FOR AGENTS:
   Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
   A human approves it in a browser; on approval the issued key is saved to the credentials file.
-  API URL: explicit --url, then saved OAuth login environment, then the normal Cloud default.")]
+  API URL: explicit --url, then saved OAuth login environment, then the normal Cloud default.
+  Exactly one user organization is selected automatically; otherwise choose --org or --org-name.
+  Organization IDs: `cloud org list --json`. --org-id remains supported.")]
     Access {
+        /// Organization ID (conflicts with --org-name)
+        #[arg(long, global = true, value_name = "ID", conflicts_with = "org_name")]
+        org: Option<String>,
         #[command(subcommand)]
         command: AccessCommands,
     },
@@ -297,7 +370,7 @@ impl CloudCommands {
     pub fn is_write_command(&self) -> bool {
         match self {
             CloudCommands::Auth { command } => command.is_write(),
-            CloudCommands::Access { command } => command.is_write(),
+            CloudCommands::Access { command, .. } => command.is_write(),
             CloudCommands::Org { command } => command.is_write(),
             CloudCommands::Service { command } => command.is_write(),
             CloudCommands::Backup { command } => command.is_write(),

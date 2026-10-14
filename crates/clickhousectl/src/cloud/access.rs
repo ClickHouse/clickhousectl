@@ -60,7 +60,8 @@ CONTEXT FOR AGENTS:
   Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
   Opens a browser for a human to approve; waits up to 15 minutes.
   On approval the issued key id + secret are saved to the credentials file; the secret is never printed.
-  Uses the login environment unless --url is provided.")]
+  Uses the login environment unless --url is provided.
+  Select --org/--org-id or exact --org-name when your user belongs to multiple organizations.")]
     Request(AccessRequestArgs),
 }
 
@@ -200,6 +201,78 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 
 // ── entry point ─────────────────────────────────────────────────────────────
 
+impl CloudClient {
+    /// Read all user memberships before auto-selection or exact-name selection.
+    async fn resolve_access_organization_id(
+        &self,
+        org_id: Option<String>,
+        org_name: Option<String>,
+    ) -> CloudResult<String> {
+        if org_id.is_some() && org_name.is_some() {
+            return Err(CloudError::usage(
+                "Organization ID conflicts with --org-name",
+            ));
+        }
+        if let Some(id) = org_id {
+            return Ok(id);
+        }
+        let mut organizations = Vec::new();
+        let mut cursor = None;
+        let mut seen_cursors = std::collections::HashSet::new();
+        let mut seen_ids = std::collections::HashSet::new();
+        loop {
+            let response = self
+                .api()
+                .organization_get_list(None, cursor.as_deref())
+                .await
+                .map_err(|error| self.convert_error(error))?;
+            let next_cursor = response.next_cursor.clone();
+            let page = Self::unwrap_response(response)?;
+            let had_rows = !page.is_empty();
+            let previous_count = organizations.len();
+            for organization in page {
+                let id = organization.id.ok_or_else(|| CloudError::new(
+                    "Organization response is missing its id; cannot safely select an organization",
+                ))?;
+                if seen_ids.insert(id) {
+                    organizations.push((id, organization));
+                }
+            }
+            match next_cursor {
+                None => break,
+                Some(next) => {
+                    if (had_rows && previous_count == organizations.len())
+                        || !seen_cursors.insert(next.clone())
+                    {
+                        return Err(CloudError::new(
+                            "Organization pagination made no progress; cannot safely select an organization",
+                        ));
+                    }
+                    cursor = Some(next);
+                }
+            }
+        }
+        if let Some(name) = org_name {
+            return crate::cloud::shared::select_named_id(
+                "organization",
+                &name,
+                organizations
+                    .iter()
+                    .map(|(id, org)| (org.name.as_deref(), Some(id))),
+            );
+        }
+        match organizations.as_slice() {
+            [] => Err(CloudError::new(
+                "Your OAuth user has no organizations. Join or create an organization, then run `clickhousectl cloud org list --json`.",
+            )),
+            [(id, _)] => Ok(id.to_string()),
+            _ => Err(CloudError::new(
+                "Your OAuth user belongs to multiple organizations. Run `clickhousectl cloud org list --json` and select an ID with --org (or --org-id).",
+            )),
+        }
+    }
+}
+
 pub async fn run(
     command: AccessCommands,
     url_override: Option<&str>,
@@ -221,11 +294,10 @@ async fn request(
 ) -> CloudResult<()> {
     // Resolve the user identity and endpoint once for organization discovery
     // and every step of the existing PKCE handshake.
-    let client = CloudClient::for_access(url_override)
-        .await?
-        .with_organization_id(org_id)
-        .with_organization_name(org_name);
-    let org_id = client.resolve_organization_id().await?;
+    let client = CloudClient::for_access(url_override).await?;
+    let org_id = client
+        .resolve_access_organization_id(org_id, org_name)
+        .await?;
     let auth = client.request_auth();
     let base_url = client.base_url().to_string();
 
@@ -532,11 +604,161 @@ mod tests {
         let Commands::Cloud(cloud) = cli.command else {
             panic!("expected cloud command");
         };
-        let crate::cloud::cli::CloudCommands::Access { command } = cloud.command else {
+        let crate::cloud::cli::CloudCommands::Access { command, .. } = cloud.command else {
             panic!("expected access command");
         };
         let AccessCommands::Request(args) = command;
         args
+    }
+
+    #[test]
+    fn access_organization_selectors_validate_original_command_depths() {
+        use clap::{CommandFactory, FromArgMatches};
+        fn validate(args: &[&str]) -> Result<(), clap::Error> {
+            let argv: Vec<std::ffi::OsString> = std::iter::once("chctl")
+                .chain(args.iter().copied())
+                .map(Into::into)
+                .collect();
+            let mut command = Cli::command();
+            let matches = command.try_get_matches_from_mut(&argv)?;
+            let cli = Cli::from_arg_matches(&matches)?;
+            let Commands::Cloud(args) = cli.command else {
+                panic!("cloud expected")
+            };
+            args.validate_access_selectors(&argv)
+        }
+        for args in [
+            vec!["cloud", "access", "request", "--org", "id"],
+            vec!["cloud", "access", "request", "--org=id", "--org-id=id"],
+            vec!["cloud", "access", "--org=id", "request", "--org=id"],
+            vec!["cloud", "access", "--org=id", "request"],
+            vec!["cloud", "--org-id=id", "access", "request", "--org=id"],
+            vec!["cloud", "--org-id=id", "access", "request", "--org-id=id"],
+            vec![
+                "cloud",
+                "--org-name=name",
+                "access",
+                "request",
+                "--org-name=name",
+            ],
+            vec![
+                "cloud",
+                "access",
+                "request",
+                "--purpose=--org=other",
+                "--org=id",
+            ],
+            vec![
+                "cloud",
+                "access",
+                "request",
+                "--purpose",
+                "text --org=other",
+                "--org=id",
+            ],
+            vec!["cloud", "access", "request", "--org=id", "--"],
+            vec![
+                "cloud",
+                "--json",
+                "--url=http://localhost:1/v1",
+                "--org-id=id",
+                "access",
+                "request",
+                "--org=id",
+            ],
+            vec![
+                "cloud",
+                "access",
+                "request",
+                "--json",
+                "--url=http://localhost:1/v1",
+                "--org=id",
+            ],
+            vec!["cloud", "--org-id=first", "org", "list", "--org-id=second"],
+        ] {
+            validate(&args).unwrap_or_else(|error| panic!("{args:?}: {error}"));
+        }
+        for args in [
+            vec![
+                "cloud",
+                "access",
+                "request",
+                "--org=first",
+                "--org-id=second",
+            ],
+            vec!["cloud", "access", "request", "--org=first", "--org=first"],
+            vec![
+                "cloud",
+                "--org-id=first",
+                "access",
+                "request",
+                "--org-id=second",
+            ],
+            vec![
+                "cloud", "access", "--org", "first", "request", "--org", "second",
+            ],
+            vec![
+                "cloud",
+                "--org-id=first",
+                "access",
+                "request",
+                "--org=second",
+            ],
+            vec![
+                "cloud",
+                "access",
+                "--org=first",
+                "request",
+                "--org-id=second",
+            ],
+            vec![
+                "cloud",
+                "--org-name=first",
+                "access",
+                "request",
+                "--org-name=second",
+            ],
+            vec![
+                "cloud",
+                "--org-name=same",
+                "access",
+                "request",
+                "--org=same",
+            ],
+            vec![
+                "cloud",
+                "--org-id=same",
+                "access",
+                "request",
+                "--org-name=same",
+            ],
+            vec![
+                "cloud",
+                "access",
+                "--org=same",
+                "request",
+                "--org-name=same",
+            ],
+        ] {
+            let error = validate(&args).expect_err("conflict");
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{args:?}: {error}"
+            );
+            assert_eq!(error.exit_code(), 2);
+        }
+        for args in [
+            vec!["cloud", "access", "--help"],
+            vec!["cloud", "access", "request", "--help"],
+        ] {
+            assert_eq!(
+                validate(&args).unwrap_err().kind(),
+                clap::error::ErrorKind::DisplayHelp
+            );
+        }
+        assert!(validate(&["cloud", "access", "request", "--", "--org=id"]).is_err());
+        assert!(validate(&["cloud", "org", "list", "--org=id"]).is_err());
     }
 
     #[test]
