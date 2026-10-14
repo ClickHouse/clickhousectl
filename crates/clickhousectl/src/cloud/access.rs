@@ -2,7 +2,7 @@
 //! access-request PKCE handshake.
 //!
 //! The user authenticates with their existing CLI identity (OAuth Bearer from
-//! `cloud auth login`, or an API key), files an access request carrying a PKCE
+//! `cloud auth login`), files an access request carrying a PKCE
 //! challenge and a CSRF `state`, approves it in a browser, and the CLI claims
 //! the issued key over a loopback redirect — falling back to polling the
 //! request's status. The claimed key id and secret are stored with the CLI's
@@ -26,10 +26,6 @@ use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-/// Default control-plane base URL. Points at the local dev control plane so the
-/// MVP is testable without production credentials; override with `--url`.
-const DEFAULT_ACCESS_API_BASE: &str = "http://localhost:2023";
-
 /// How long to wait for a human to approve the request before giving up.
 const APPROVAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
@@ -41,10 +37,10 @@ pub enum AccessCommands {
     /// Request a scoped API key via browser approval
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Authenticates as the current user (OAuth login or API key) to file the request.
+  Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
   Opens a browser for a human to approve; waits up to 15 minutes.
   On approval the issued key id + secret are saved to the credentials file; the secret is never printed.
-  Control-plane base URL defaults to http://localhost:2023; override with --url.")]
+  Uses the login environment unless --url is provided.")]
     Request(AccessRequestArgs),
 }
 
@@ -186,47 +182,27 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 
 pub async fn run(
     command: AccessCommands,
-    api_key: Option<&str>,
-    api_secret: Option<&str>,
     url_override: Option<&str>,
     org_id: Option<String>,
     org_name: Option<String>,
     json: bool,
 ) -> CloudResult<()> {
     match command {
-        AccessCommands::Request(args) => {
-            request(
-                args,
-                api_key,
-                api_secret,
-                url_override,
-                org_id,
-                org_name,
-                json,
-            )
-            .await
-        }
+        AccessCommands::Request(args) => request(args, url_override, org_id, org_name, json).await,
     }
-}
-
-/// The CLI base URL (with `/v1` suffix) for the access-request endpoints.
-fn access_api_base(url_override: Option<&str>) -> String {
-    crate::cloud::auth::normalize_api_url(url_override.unwrap_or(DEFAULT_ACCESS_API_BASE))
 }
 
 async fn request(
     args: AccessRequestArgs,
-    api_key: Option<&str>,
-    api_secret: Option<&str>,
     url_override: Option<&str>,
     org_id: Option<String>,
     org_name: Option<String>,
     json: bool,
 ) -> CloudResult<()> {
-    // Resolve credentials, base URL, and organization through the shared
-    // client, pointed at the control plane the handshake talks to.
-    let api_base = access_api_base(url_override);
-    let client = CloudClient::new(api_key, api_secret, Some(&api_base))?
+    // Resolve the user identity and endpoint once for organization discovery
+    // and every step of the existing PKCE handshake.
+    let client = CloudClient::for_access(url_override)
+        .await?
         .with_organization_id(org_id)
         .with_organization_name(org_name);
     let org_id = client.resolve_organization_id().await?;
@@ -559,20 +535,6 @@ mod tests {
     fn pkce_and_state_are_unique_per_call() {
         assert_ne!(generate_pkce().verifier, generate_pkce().verifier);
         assert_ne!(generate_state(), generate_state());
-    }
-
-    #[test]
-    fn access_api_base_defaults_to_local_control_plane_with_v1() {
-        assert_eq!(access_api_base(None), "http://localhost:2023/v1");
-        assert_eq!(
-            access_api_base(Some("https://api.control-plane.example.com")),
-            "https://api.control-plane.example.com/v1"
-        );
-        // An explicit /v1 suffix is not doubled.
-        assert_eq!(
-            access_api_base(Some("http://localhost:9000/v1")),
-            "http://localhost:9000/v1"
-        );
     }
 
     #[test]

@@ -908,6 +908,37 @@ mod tests {
     const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
 
     #[test]
+    fn access_client_uses_explicit_saved_or_legacy_default_api_base() {
+        for (saved, explicit, expected) in [
+            (
+                Some("https://saved.example/v1/"),
+                None,
+                "https://saved.example/v1",
+            ),
+            (
+                Some("https://saved.example/v1"),
+                Some("http://localhost:2023/"),
+                "http://localhost:2023/v1",
+            ),
+            (None, None, DEFAULT_BASE_URL),
+        ] {
+            let mut value = serde_json::json!({
+                "access_token": "test-token", "refresh_token": "unused",
+                "expires_at": 4102444800_i64,
+            });
+            if let Some(saved) = saved {
+                value["api_url"] = saved.into();
+            }
+            let tokens = serde_json::from_value(value).unwrap();
+            let client = CloudClient::from_access_tokens(Some(tokens), explicit).unwrap();
+            assert_eq!(client.base_url(), expected);
+            assert_eq!(client.auth_source(), AuthSource::OAuthTokens);
+            assert!(client.is_bearer_auth());
+            assert!(client.basic_auth_credentials().is_none());
+        }
+    }
+
+    #[test]
     fn typed_udf_dependency_error_keeps_message_and_http_classification() {
         let error =
             test_client().convert_error(clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
