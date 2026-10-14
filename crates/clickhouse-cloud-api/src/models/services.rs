@@ -1847,6 +1847,12 @@ pub struct ServicePatchRequest {
     pub transparent_data_encryption_key_id: Option<String>,
 }
 
+/// The `encryption_config.json` stored alongside a backup in your own bucket.
+///
+/// The shape is versioned and provider-specific, so the object is passed through unchanged: deserialize the file
+/// contents into this map rather than constructing it field by field.
+pub type BackupEncryptionConfig = std::collections::BTreeMap<String, serde_json::Value>;
+
 /// `ServicePostRequest` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct ServicePostRequest {
@@ -1854,6 +1860,15 @@ pub struct ServicePostRequest {
     pub autoscaling_mode: Option<AutoscalingMode>,
     #[serde(rename = "backupId", skip_serializing_if = "Option::is_none")]
     pub backup_id: Option<uuid::Uuid>,
+    /// Encryption config for restoring `backup_id` from your own bucket.
+    ///
+    /// Required when `backup_id` refers to a backup stored in your organization's own bucket, and must be
+    /// omitted otherwise. Pass the contents of the backup's `encryption_config.json` verbatim.
+    #[serde(
+        rename = "backupEncryptionConfig",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub backup_encryption_config: Option<BackupEncryptionConfig>,
     #[serde(rename = "byocId", skip_serializing_if = "Option::is_none")]
     pub byoc_id: Option<String>,
     #[serde(rename = "complianceType", skip_serializing_if = "Option::is_none")]

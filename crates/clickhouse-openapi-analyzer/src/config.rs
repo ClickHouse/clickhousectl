@@ -109,6 +109,10 @@ const OPTIONALITY_EXEMPTIONS: &[(&str, &str)] = &[
     ("ServicePostRequest", "releaseChannel"),
     ("ServicePostRequest", "tags"),
     ("ServicePostRequest", "tier"),
+    // backupEncryptionConfig is a bare $ref, so the description heuristic marks
+    // it required. backupId's description makes it conditional: required only
+    // for a backup in the organization's own bucket and forbidden otherwise.
+    ("ServicePostRequest", "backupEncryptionConfig"),
     // Non-Postgres pipe requests must be able to omit the Postgres union arm.
     ("ClickPipePostSource", "postgres"),
     ("ClickPipePatchSource", "postgres"),

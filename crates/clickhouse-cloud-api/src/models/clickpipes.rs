@@ -156,9 +156,9 @@ impl std::fmt::Display for ClickPipeKafkaOffsetStrategy {
     }
 }
 
-/// Inline enum for `ClickPipeKafkaSchemaRegistry.authentication`.
+/// Inline enum for `ClickPipeKafkaConfluentSchemaRegistry.authentication`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ClickPipeKafkaSchemaRegistryAuthentication {
+pub enum ClickPipeKafkaConfluentSchemaRegistryAuthentication {
     #[default]
     PLAIN,
     /// Catch-all for unknown or newly-added values.
@@ -166,7 +166,7 @@ pub enum ClickPipeKafkaSchemaRegistryAuthentication {
     Unknown(String),
 }
 
-impl std::fmt::Display for ClickPipeKafkaSchemaRegistryAuthentication {
+impl std::fmt::Display for ClickPipeKafkaConfluentSchemaRegistryAuthentication {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PLAIN => write!(f, "PLAIN"),
@@ -434,9 +434,9 @@ impl std::fmt::Display for ClickPipeMongoDBSourceReadpreference {
     }
 }
 
-/// Inline enum for `ClickPipeMutateKafkaSchemaRegistry.authentication`.
+/// Inline enum for `ClickPipeMutateKafkaConfluentSchemaRegistry.authentication`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub enum ClickPipeMutateKafkaSchemaRegistryAuthentication {
+pub enum ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication {
     #[default]
     PLAIN,
     /// Catch-all for unknown or newly-added values.
@@ -444,7 +444,7 @@ pub enum ClickPipeMutateKafkaSchemaRegistryAuthentication {
     Unknown(String),
 }
 
-impl std::fmt::Display for ClickPipeMutateKafkaSchemaRegistryAuthentication {
+impl std::fmt::Display for ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PLAIN => write!(f, "PLAIN"),
@@ -2229,15 +2229,132 @@ pub struct ClickPipeKafkaOffsetResponse {
     pub timestamp: Option<String>,
 }
 
-/// `ClickPipeKafkaSchemaRegistry` from the ClickHouse Cloud API.
+/// Values of `ClickPipeKafkaConfluentSchemaRegistry.type` in the Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickPipeKafkaSchemaRegistry {
+pub enum ClickPipeKafkaConfluentSchemaRegistryType {
+    #[serde(rename = "confluent")]
+    #[default]
+    Confluent,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKafkaConfluentSchemaRegistryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Confluent => write!(f, "confluent"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `ClickPipeKafkaConfluentSchemaRegistry` in a Kafka source response.
+///
+/// The API omits `type` for registries created before AWS Glue support; an
+/// absent `type` means a Confluent-compatible registry.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeKafkaConfluentSchemaRegistry {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickPipeKafkaConfluentSchemaRegistryType>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub authentication: Option<ClickPipeKafkaSchemaRegistryAuthentication>,
+    pub authentication: Option<ClickPipeKafkaConfluentSchemaRegistryAuthentication>,
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+}
+
+/// Values of `ClickPipeKafkaGlueSchemaRegistry.type` in the Cloud API.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum ClickPipeKafkaGlueSchemaRegistryType {
+    #[serde(rename = "glue")]
+    #[default]
+    Glue,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeKafkaGlueSchemaRegistryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Glue => write!(f, "glue"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `ClickPipeKafkaGlueSchemaRegistry` for Kafka create requests.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeKafkaGlueSchemaRegistry {
+    #[serde(rename = "type")]
+    pub r#type: ClickPipeKafkaGlueSchemaRegistryType,
+    #[serde(rename = "glueRegion")]
+    pub glue_region: String,
+    #[serde(rename = "glueRegistryName")]
+    pub glue_registry_name: String,
+    /// Omit to use the Kafka source's IAM role for Glue access; required when
+    /// the source does not authenticate with IAM.
+    #[serde(rename = "glueRoleArn", skip_serializing_if = "Option::is_none")]
+    pub glue_role_arn: Option<String>,
+}
+
+/// `ClickPipeKafkaGlueSchemaRegistry` in a Kafka source response.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeKafkaGlueSchemaRegistryResponse {
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickPipeKafkaGlueSchemaRegistryType>,
+    #[serde(rename = "glueRegion", skip_serializing_if = "Option::is_none")]
+    pub glue_region: Option<String>,
+    #[serde(rename = "glueRegistryName", skip_serializing_if = "Option::is_none")]
+    pub glue_registry_name: Option<String>,
+    #[serde(rename = "glueRoleArn", skip_serializing_if = "Option::is_none")]
+    pub glue_role_arn: Option<String>,
+}
+
+/// `ClickPipeKafkaSchemaRegistry` from the ClickHouse Cloud API, selected by `type`.
+///
+/// An absent `type` selects the Confluent variant, matching the API's default
+/// and legacy payloads, unless the payload carries a Glue-only key; such a
+/// payload is kept verbatim in `Unknown` rather than misread as Confluent.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickPipeKafkaSchemaRegistry {
+    ClickPipeKafkaConfluentSchemaRegistry(ClickPipeKafkaConfluentSchemaRegistry),
+    ClickPipeKafkaGlueSchemaRegistryResponse(ClickPipeKafkaGlueSchemaRegistryResponse),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+discriminated_union! {
+    ClickPipeKafkaSchemaRegistry, "type" {
+        "confluent" => ClickPipeKafkaConfluentSchemaRegistry,
+        "glue" => ClickPipeKafkaGlueSchemaRegistryResponse,
+        none unless "glueRegion" | "glueRegistryName" | "glueRoleArn" => ClickPipeKafkaConfluentSchemaRegistry,
+    }
+}
+impl Default for ClickPipeKafkaSchemaRegistry {
+    fn default() -> Self {
+        // `{}` dispatches to Confluent through the absent-`type` arm, so the
+        // default round-trips without fabricating a discriminator.
+        Self::ClickPipeKafkaConfluentSchemaRegistry(ClickPipeKafkaConfluentSchemaRegistry::default())
+    }
+}
+impl std::fmt::Display for ClickPipeKafkaSchemaRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickPipeKafkaConfluentSchemaRegistry(_) => {
+                write!(f, "ClickPipeKafkaConfluentSchemaRegistry")
+            }
+            Self::ClickPipeKafkaGlueSchemaRegistryResponse(_) => {
+                write!(f, "ClickPipeKafkaGlueSchemaRegistryResponse")
+            }
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
 }
 
 /// `ClickPipeKafkaSchemaRegistryCredentials` from the ClickHouse Cloud API.
@@ -2540,14 +2657,80 @@ pub struct ClickPipeMutateDestination {
     pub table_definition: Option<ClickPipeDestinationTableDefinition>,
 }
 
-/// `ClickPipeMutateKafkaSchemaRegistry` from the ClickHouse Cloud API.
+/// Values of `ClickPipeMutateKafkaConfluentSchemaRegistry.type` in the Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
-pub struct ClickPipeMutateKafkaSchemaRegistry {
-    pub authentication: ClickPipeMutateKafkaSchemaRegistryAuthentication,
+pub enum ClickPipeMutateKafkaConfluentSchemaRegistryType {
+    #[serde(rename = "confluent")]
+    #[default]
+    Confluent,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for ClickPipeMutateKafkaConfluentSchemaRegistryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Confluent => write!(f, "confluent"),
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
+}
+
+/// `ClickPipeMutateKafkaConfluentSchemaRegistry` for Kafka create requests.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ClickPipeMutateKafkaConfluentSchemaRegistry {
+    /// Omit for the API default, a Confluent-compatible registry.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub r#type: Option<ClickPipeMutateKafkaConfluentSchemaRegistryType>,
+    pub authentication: ClickPipeMutateKafkaConfluentSchemaRegistryAuthentication,
     #[serde(rename = "caCertificate", skip_serializing_if = "Option::is_none")]
     pub ca_certificate: Option<String>,
     pub credentials: ClickPipeKafkaSchemaRegistryCredentials,
     pub url: String,
+}
+
+/// `ClickPipeMutateKafkaSchemaRegistry` from the ClickHouse Cloud API, selected by `type`.
+///
+/// An absent `type` selects the Confluent variant (the API default) unless the
+/// payload carries a Glue-only key, which is kept verbatim in `Unknown`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum ClickPipeMutateKafkaSchemaRegistry {
+    ClickPipeMutateKafkaConfluentSchemaRegistry(ClickPipeMutateKafkaConfluentSchemaRegistry),
+    ClickPipeKafkaGlueSchemaRegistry(ClickPipeKafkaGlueSchemaRegistry),
+    /// Catch-all for unknown or newly-added values.
+    ///
+    /// Holds the raw payload as `serde_json::Value` so it round-trips
+    /// losslessly; its `Display` emits the payload as compact JSON.
+    Unknown(serde_json::Value),
+}
+discriminated_union! {
+    ClickPipeMutateKafkaSchemaRegistry, "type" {
+        "confluent" => ClickPipeMutateKafkaConfluentSchemaRegistry,
+        "glue" => ClickPipeKafkaGlueSchemaRegistry,
+        none unless "glueRegion" | "glueRegistryName" | "glueRoleArn" => ClickPipeMutateKafkaConfluentSchemaRegistry,
+    }
+}
+impl Default for ClickPipeMutateKafkaSchemaRegistry {
+    fn default() -> Self {
+        Self::ClickPipeMutateKafkaConfluentSchemaRegistry(
+            ClickPipeMutateKafkaConfluentSchemaRegistry::default(),
+        )
+    }
+}
+impl std::fmt::Display for ClickPipeMutateKafkaSchemaRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ClickPipeMutateKafkaConfluentSchemaRegistry(_) => {
+                write!(f, "ClickPipeMutateKafkaConfluentSchemaRegistry")
+            }
+            Self::ClickPipeKafkaGlueSchemaRegistry(_) => {
+                write!(f, "ClickPipeKafkaGlueSchemaRegistry")
+            }
+            Self::Unknown(value) => write!(f, "{value}"),
+        }
+    }
 }
 
 /// `ClickPipeMutateMongoDBSource` from the ClickHouse Cloud API.
@@ -4210,6 +4393,18 @@ impl From<ClickPipePostBigQueryServiceAccountSource> for ClickPipeMutateBigQuery
 impl From<ClickPipePostBigQueryWorkloadIdentitySource> for ClickPipeMutateBigQuerySource {
     fn from(value: ClickPipePostBigQueryWorkloadIdentitySource) -> Self {
         Self::ClickPipePostBigQueryWorkloadIdentitySource(value)
+    }
+}
+
+impl From<ClickPipeMutateKafkaConfluentSchemaRegistry> for ClickPipeMutateKafkaSchemaRegistry {
+    fn from(value: ClickPipeMutateKafkaConfluentSchemaRegistry) -> Self {
+        Self::ClickPipeMutateKafkaConfluentSchemaRegistry(value)
+    }
+}
+
+impl From<ClickPipeKafkaGlueSchemaRegistry> for ClickPipeMutateKafkaSchemaRegistry {
+    fn from(value: ClickPipeKafkaGlueSchemaRegistry) -> Self {
+        Self::ClickPipeKafkaGlueSchemaRegistry(value)
     }
 }
 

@@ -2288,6 +2288,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         enable_core_dumps: options.enable_core_dumps,
         autoscaling_mode: horizontal.autoscaling_mode,
         byoc_id: options.byoc_id.clone(),
+        backup_encryption_config: None,
         min_replicas: horizontal.min_replicas,
         max_replicas: horizontal.max_replicas,
         #[cfg(feature = "deprecated-fields")]

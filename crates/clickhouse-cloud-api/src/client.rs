@@ -15,6 +15,7 @@ mod query_api_endpoints;
 mod saved_queries;
 mod services;
 mod udfs;
+mod whoami;
 
 /// Authentication mode for the API client.
 #[derive(Debug, Clone)]

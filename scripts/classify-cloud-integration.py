@@ -43,6 +43,7 @@ SOURCE_PATH_SUITES = {
         {"service", "clickpipes"}
     ),
     "crates/clickhouse-cloud-api/src/client/udfs.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/client/whoami.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/convert.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/convert/clickstack.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/convert/clickpipes.rs": frozenset(
@@ -101,6 +102,7 @@ SOURCE_PATH_SUITES = {
     ),
     "crates/clickhouse-cloud-api/src/models/shared.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/models/udfs.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/whoami.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/serde_helpers.rs": ALL_SUITES,
 }
 

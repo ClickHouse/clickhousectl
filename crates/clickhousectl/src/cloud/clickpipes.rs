@@ -2823,7 +2823,7 @@ fn build_kafka_source_with_exactly_once(
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKafkaSource> {
     use clickhouse_cloud_api::models::{
         ClickPipeKafkaOffset, ClickPipeKafkaSchemaRegistryCredentials,
-        ClickPipeMutateKafkaSchemaRegistry, ClickPipePostKafkaSource,
+        ClickPipeMutateKafkaConfluentSchemaRegistry, ClickPipePostKafkaSource,
         ClickPipePostKafkaSourceAuthentication,
     };
 
@@ -2873,12 +2873,14 @@ fn build_kafka_source_with_exactly_once(
                 Some(path) => Some(std::fs::read_to_string(path)?),
                 None => None,
             };
-            Ok(ClickPipeMutateKafkaSchemaRegistry {
+            Ok(ClickPipeMutateKafkaConfluentSchemaRegistry {
+                r#type: None,
                 url: url.clone(),
                 authentication: Default::default(),
                 credentials,
                 ca_certificate,
-            })
+            }
+            .into())
         })
         .transpose()?;
 
@@ -13821,9 +13823,13 @@ mod tests {
         let offset = source.offset.expect("Kafka offset is always populated");
         assert_eq!(offset.strategy.to_string(), "from_timestamp");
         assert_eq!(offset.timestamp.as_deref(), Some("2021-01-01T00:00"));
-        let registry = source
-            .schema_registry
-            .expect("schema registry is populated");
+        let Some(clickhouse_cloud_api::models::ClickPipeMutateKafkaSchemaRegistry::ClickPipeMutateKafkaConfluentSchemaRegistry(
+            registry,
+        )) = source.schema_registry
+        else {
+            panic!("a Confluent schema registry is populated");
+        };
+        assert_eq!(registry.r#type, None);
         assert_eq!(registry.url, "https://registry.example");
         assert_eq!(registry.credentials.username, "registry-user");
         assert_eq!(registry.credentials.password, "registry-password");

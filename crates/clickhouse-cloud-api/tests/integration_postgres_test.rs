@@ -219,6 +219,43 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
+        // ── Backups ─────────────────────────────────────────────────
+        //
+        // A freshly provisioned service may not have a retained base backup
+        // yet, so only the envelope and page bound are asserted; any listed
+        // backup must carry its key.
+
+        log_phase("Backups");
+        failures
+            .run(&ctx, StepKind::NonBlocking, "list postgres backups", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                let postgres_id = postgres_id.clone();
+                async move {
+                    let resp = client
+                        .postgres_service_backup_get_list(&org_id, &postgres_id, None, Some(10))
+                        .await?;
+                    let backups = resp
+                        .result
+                        .ok_or("postgres backup list returned no result")?;
+                    if backups.len() > 10 {
+                        return Err(format!(
+                            "postgres backup list ignored limit=10: {} entries",
+                            backups.len()
+                        )
+                        .into());
+                    }
+                    if backups.iter().any(|backup| backup.key.is_none()) {
+                        return Err("postgres backup list entry had no key".into());
+                    }
+                    if resp.total_count.is_none() {
+                        return Err("postgres backup list omitted totalCount".into());
+                    }
+                    Ok(())
+                }
+            })
+            .await?;
+
         // ── Runtime Config ──────────────────────────────────────────
 
         log_phase("Runtime Config");

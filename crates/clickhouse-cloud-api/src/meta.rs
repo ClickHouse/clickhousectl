@@ -104,6 +104,7 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "postgres_instance_restore",
     "postgres_logs_get_list",
     "postgres_org_prometheus_get",
+    "postgres_service_backup_get_list",
     "postgres_service_certs_get",
     "postgres_service_create",
     "postgres_service_delete",
@@ -148,6 +149,7 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "udf_version_create",
     "udf_version_delete",
     "udf_version_list",
+    "whoami_get",
 ];
 
 /// Returns `true` if `name` matches a client method backed by a Beta endpoint.
