@@ -201,7 +201,7 @@ pub enum CloudCommands {
 CONTEXT FOR AGENTS:
   Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
   Discover assignable roles with `cloud access roles`; policies describe current authority.
-  Request a scoped key with `cloud access request`; a human approves it in a browser.
+  Request a scoped key with `cloud access request --perms role:<UUID>`; a human approves it.
   API URL: explicit --url, then saved OAuth login environment, then the normal Cloud default.
   Exactly one user organization is selected automatically; otherwise choose --org or --org-name.
   Organization IDs: `cloud org list --json`. --org-id remains supported.")]
