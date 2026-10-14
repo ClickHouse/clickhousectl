@@ -71,59 +71,138 @@ async fn list_organizations() {
 }
 
 #[tokio::test]
-async fn organization_get_list_page_preserves_cursor_and_bearer_auth() {
-    for cursor in [None, Some("opaque+/= &?"), Some("")] {
-        for next_cursor in [
-            None,
-            Some(serde_json::Value::Null),
-            Some(serde_json::json!("next")),
-        ] {
-            let server = MockServer::start().await;
-            let mut body = serde_json::json!({"result": [], "requestId": "page", "limit": 100});
-            if let Some(next) = &next_cursor {
-                body["nextCursor"] = next.clone();
-            }
-            Mock::given(method("GET"))
-                .and(path("/v1/organizations"))
-                .and(bearer_token("user-token"))
-                .respond_with(ResponseTemplate::new(200).set_body_json(body))
-                .expect(1)
-                .mount(&server)
-                .await;
-            let client =
-                Client::with_http_client_bearer(reqwest::Client::new(), server.uri(), "user-token");
-            let response = client.organization_get_list_page(cursor).await.unwrap();
-            assert_eq!(
-                response.next_cursor.as_deref(),
-                next_cursor.as_ref().and_then(|value| value.as_str())
-            );
-            assert_eq!(response.request_id.as_deref(), Some("page"));
-            assert_eq!(response.limit, Some(100));
-            assert!(response.result.unwrap().is_empty());
-            let requests = server.received_requests().await.unwrap();
-            let query: Vec<_> = requests[0].url.query_pairs().collect();
-            match cursor {
-                Some(cursor) => assert_eq!(query, [("cursor".into(), cursor.into())]),
-                None => assert!(query.is_empty()),
-            }
-        }
-    }
+async fn organization_assignable_roles_get_list_preserves_full_policy_array() {
+    let server = MockServer::start().await;
+    let roles = serde_json::json!([
+        {"id": "00000000-0000-0000-0000-000000000001", "name": "System reader", "type": "system", "policies": [
+            {"allowDeny": "ALLOW", "permissions": ["control-plane:service:view", "future:permission"], "resources": ["*", "instance/service-a"], "tags": {"roleV2": "sql-console-readonly"}},
+            {"allowDeny": "DENY", "permissions": ["control-plane:service:delete"], "resources": ["instance/service-b"]}
+        ]},
+        {"id": "55555555-5555-4555-8555-555555555555", "name": "Custom SQL", "type": "custom", "policies": [
+            {"allowDeny": "ALLOW", "permissions": ["sql-console:database:access"], "resources": ["instance/service-a"], "tags": {"roleV2": "sql-console-admin", "grants": ["GRANT SELECT ON db.* TO role", "REVOKE SELECT ON db.secret FROM role"]}}
+        ]}
+    ]);
+    Mock::given(method("GET"))
+        .and(path(
+            "/v1/organizations/11111111-1111-4111-8111-111111111111/roles",
+        ))
+        .and(bearer_token("cli-user-token"))
+        .respond_with(ok_json(roles.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let client =
+        Client::with_http_client_bearer(reqwest::Client::new(), server.uri(), "cli-user-token");
+    let response = client
+        .organization_assignable_roles_get_list("11111111-1111-4111-8111-111111111111")
+        .await
+        .unwrap();
+    assert_eq!(response.status, Some(200));
+    assert_eq!(response.request_id.as_deref(), Some("req-test"));
+    let result = response.result.unwrap();
+    assert_eq!(result[0].r#type, Some(RBACRoleType::System));
+    assert_eq!(result[1].r#type, Some(RBACRoleType::Custom));
+    assert_eq!(
+        result[0].policies.as_ref().unwrap()[1].allow_deny,
+        Some(RBACPolicyAllowdeny::DENY)
+    );
+    assert_eq!(serde_json::to_value(result).unwrap(), roles);
+    let requests = server.received_requests().await.unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].url.query().is_none());
+    assert!(requests[0].body.is_empty());
 }
 
 #[tokio::test]
-async fn organization_get_list_page_preserves_api_error() {
+async fn organization_assignable_roles_get_list_rejects_basic_without_catalog_fallback() {
     let (server, client) = setup().await;
+    assert!(matches!(
+        client.organization_assignable_roles_get_list("org").await,
+        Err(clickhouse_cloud_api::Error::AuthMismatch(_))
+    ));
+    assert!(server.received_requests().await.unwrap().is_empty());
+
+    // The pre-existing administrative method still uses Basic and its legacy DTO.
     Mock::given(method("GET"))
-        .and(path("/v1/organizations"))
-        .respond_with(
-            ResponseTemplate::new(403).set_body_json(serde_json::json!({"error": "denied"})),
-        )
+        .and(path("/v1/organizations/org/roles"))
+        .and(basic_auth("key", "secret"))
+        .respond_with(ok_json(
+            serde_json::json!([{"id": "role", "actors": ["actor"], "ownerId": "owner"}]),
+        ))
+        .expect(1)
         .mount(&server)
         .await;
-    assert!(
-        matches!(client.organization_get_list_page(Some("next")).await,
-        Err(clickhouse_cloud_api::Error::Api { status: 403, message }) if message == "denied")
-    );
+    let response = client.organization_roles_get_list("org").await.unwrap();
+    let result = response.result.unwrap();
+    assert_eq!(result[0].actors.as_ref().unwrap(), &["actor"]);
+    assert_eq!(result[0].owner_id.as_deref(), Some("owner"));
+}
+
+#[tokio::test]
+async fn organization_assignable_roles_get_list_preserves_errors_and_incomplete_envelopes() {
+    for (status, body) in [
+        (401, r#"{"error":"login required"}"#),
+        (403, r#"{"error":"not authorized"}"#),
+        (400, r#"{"error":"RBAC v2 required"}"#),
+        (500, "upstream failure"),
+        (200, "not-json"),
+        (200, r#"{"result":{"roles":[]}}"#),
+        (200, "[]"),
+        (200, r#"{"result":[{"policies":"wrong-type"}]}"#),
+        (200, r#"{"error":"envelope error"}"#),
+        (200, "{}"),
+        (200, r#"{"result":null}"#),
+        (200, r#"{"result":[]}"#),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org/roles"))
+            .and(bearer_token("cli-user-token"))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client =
+            Client::with_http_client_bearer(reqwest::Client::new(), server.uri(), "cli-user-token");
+        let response = client.organization_assignable_roles_get_list("org").await;
+        if status != 200 {
+            let Err(clickhouse_cloud_api::Error::Api {
+                status: actual,
+                message,
+            }) = response
+            else {
+                panic!("expected API error")
+            };
+            assert_eq!(actual, status);
+            let expected = serde_json::from_str::<serde_json::Value>(body)
+                .ok()
+                .and_then(|body| body["error"].as_str().map(str::to_owned))
+                .unwrap_or_else(|| body.into());
+            assert_eq!(message, expected);
+        } else if matches!(
+            body,
+            "{}" | r#"{"result":null}"# | r#"{"error":"envelope error"}"#
+        ) {
+            let response = response.unwrap();
+            assert!(response.result.is_none());
+            assert_eq!(
+                response.error.as_deref(),
+                if body.contains("envelope error") {
+                    Some("envelope error")
+                } else {
+                    None
+                }
+            );
+        } else if body == r#"{"result":[]}"# {
+            assert_eq!(response.unwrap().result, Some(vec![]));
+        } else {
+            assert!(
+                matches!(response, Err(clickhouse_cloud_api::Error::Json(_))),
+                "{body}"
+            );
+        }
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
 }
 
 #[tokio::test]
