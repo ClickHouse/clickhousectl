@@ -210,6 +210,20 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
         ));
     }
 
+    if let cloud::cli::CloudCommands::Access {
+        command: cloud::cli::AccessCommands::Request(request),
+        ..
+    } = &args.command
+        && let Err(message) = request.requested_role_ids()
+    {
+        let command = cmd
+            .find_subcommand_mut("cloud")
+            .and_then(|cloud| cloud.find_subcommand_mut("access"))
+            .and_then(|access| access.find_subcommand_mut("request"))
+            .expect("cloud access request command must exist");
+        return Err(command.error(ErrorKind::ValueValidation, message));
+    }
+
     // Login's credentials are global arguments. Validate after propagation so
     // a pair split across command levels remains valid.
     if let cloud::cli::CloudCommands::Auth { command } = &args.command
