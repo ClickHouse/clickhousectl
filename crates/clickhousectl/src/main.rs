@@ -74,16 +74,31 @@ async fn main() {
                 Ok(()) => run_parsed(cli, read_only_telemetry_status).await,
                 Err(e) => {
                     stdout::record(e.print());
-                    (e.exit_code(), false, false)
+                    RunOutcome {
+                        exit_code: e.exit_code(),
+                        is_child_exit: false,
+                        defer_telemetry_notice: false,
+                        local_failure: None,
+                    }
                 }
             };
-            let (exit_code, is_child_exit, defer_telemetry_notice) = run_result;
+            let RunOutcome {
+                exit_code,
+                is_child_exit,
+                defer_telemetry_notice,
+                local_failure,
+            } = run_result;
             #[cfg(feature = "telemetry")]
-            if is_child_exit {
-                invocation.mark_child_exit();
+            {
+                if is_child_exit {
+                    invocation.mark_child_exit();
+                }
+                if let Some(code) = local_failure {
+                    invocation.mark_local_failure(code);
+                }
             }
             #[cfg(not(feature = "telemetry"))]
-            let _ = is_child_exit;
+            let _ = (is_child_exit, local_failure);
             (
                 exit_code,
                 invocation,
@@ -267,7 +282,7 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
 /// The hidden `telemetry send` child is the one deliberate early exit in the
 /// binary: it does exactly one POST — no update-cache refresh, no dispatch,
 /// and no telemetry hook of its own, so a send can never trigger another send.
-async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, bool) {
+async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> RunOutcome {
     #[cfg(feature = "telemetry")]
     if matches!(
         cli.command,
@@ -293,6 +308,7 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
     // Decide whether to surface the update notice before `run` consumes the
     // command. Shown on every command that does not emit machine-readable JSON.
     let show_notice = should_show_update_notice(&cli.command);
+    let is_local = matches!(cli.command, Commands::Local(_));
     let local_json = match &cli.command {
         Commands::Local(args) => json_output(args.json),
         _ => false,
@@ -311,8 +327,8 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
         let _ = tokio::time::timeout(std::time::Duration::from_millis(500), handle).await;
     }
 
-    let (exit_code, is_child_exit, defer_telemetry_notice) = match result {
-        Ok(()) => (0, false, false),
+    let (exit_code, is_child_exit, defer_telemetry_notice, local_failure) = match result {
+        Ok(()) => (0, false, false, None),
         Err(e) => {
             let is_child_exit = matches!(&e, Error::ChildExit(_));
             // All Cloud runtime failures share one envelope, including auth
@@ -333,10 +349,16 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
                     }
                 }
             }
+            // Recorded for exactly the failures that have a local error
+            // object, whatever the output mode: usage errors keep clap's
+            // rendering and child exits have no object at all (#1063).
+            let local_failure = (is_local && !is_child_exit && !is_usage_error)
+                .then(|| local::output::error_code(&e));
             (
                 e.exit_code(),
                 is_child_exit,
                 (local_json && !is_child_exit && !is_usage_error) || structured_cloud_error,
+                local_failure,
             )
         }
     };
@@ -347,7 +369,21 @@ async fn run_parsed(cli: Cli, read_only_telemetry_status: bool) -> (i32, bool, b
         update::print_cached_update_notice();
     }
 
-    (exit_code, is_child_exit, defer_telemetry_notice)
+    RunOutcome {
+        exit_code,
+        is_child_exit,
+        defer_telemetry_notice,
+        local_failure,
+    }
+}
+
+/// How a parsed invocation ended, as the telemetry tail needs it.
+struct RunOutcome {
+    exit_code: i32,
+    is_child_exit: bool,
+    defer_telemetry_notice: bool,
+    /// The code of a local runtime failure, as its `--json` error carries it.
+    local_failure: Option<local::output::LocalErrorCode>,
 }
 
 /// `telemetry status` reports persisted consent without changing any global

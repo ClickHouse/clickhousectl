@@ -222,6 +222,10 @@ async fn enabled_run_sends_payload_with_expected_shape() {
     assert_eq!(event["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(event["os"], std::env::consts::OS);
     assert_eq!(event["arch"], std::env::consts::ARCH);
+    assert!(
+        event.get("failure_kind").is_none(),
+        "a successful run carries no failure kind: {event}"
+    );
 
     // The send deliberately bypasses http::client_builder() (see
     // no_agent_correlation_headers_on_the_wire) but keeps the same canonical
@@ -308,6 +312,72 @@ async fn failure_reported_and_positional_value_never_leaks() {
         !raw.contains("no-such-version-xyz"),
         "positional argument leaked into the payload: {raw}"
     );
+}
+
+/// The `error.code` of a local `--json` error object on stderr.
+fn json_error_code(output: &Output) -> String {
+    let stderr = stderr_of(output);
+    let value: Value = serde_json::from_str(stderr.trim())
+        .unwrap_or_else(|e| panic!("stderr is not one JSON error object ({e}):\n{stderr}"));
+    value["error"]["code"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no error.code in {value}"))
+        .to_string()
+}
+
+/// A local failure's event carries the code of its `--json` error object as
+/// `failure_kind`, whichever output mode the command ran in (#1063).
+#[tokio::test]
+async fn local_failure_kind_is_the_json_error_code() {
+    let project = tempfile::tempdir().unwrap();
+    for args in [
+        &["local", "server", "stop", "no-such-server"][..],
+        &["local", "remove", "99.99.99.99"][..],
+    ] {
+        let json_argv = [args, &["--json"]].concat();
+        for argv in [json_argv.as_slice(), args] {
+            let sandbox = Sandbox::new().await;
+            sandbox.write_state(false);
+            let output = sandbox
+                .command(argv)
+                .current_dir(project.path())
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(1), "{argv:?}");
+            let event = &sandbox.wait_for_requests(1).await[0];
+
+            // The code the same failure reports in `--json` mode.
+            let expected = json_error_code(
+                &sandbox
+                    .command(&json_argv)
+                    .current_dir(project.path())
+                    .output()
+                    .unwrap(),
+            );
+            assert_eq!(event["outcome"], "error", "{argv:?}");
+            assert_eq!(
+                event["failure_kind"],
+                expected.as_str(),
+                "{argv:?}: {event}"
+            );
+            assert!(event.get("failure_stage").is_none(), "{event}");
+        }
+    }
+}
+
+/// Cloud failures keep the Cloud vocabulary: a local code never lands on a
+/// Cloud event.
+#[tokio::test]
+async fn cloud_failure_carries_no_local_error_code() {
+    let sandbox = Sandbox::new().await;
+    sandbox.write_state(false);
+
+    let output = sandbox.run(&["cloud", "org", "list", "--json"]);
+    assert!(!output.status.success());
+
+    let event = &sandbox.wait_for_requests(1).await[0];
+    assert_eq!(event["command"], "cloud org list");
+    assert!(event.get("failure_kind").is_none(), "{event}");
 }
 
 #[tokio::test]
@@ -1062,6 +1132,10 @@ async fn invalid_subcommand_reports_kind_but_never_the_token() {
     let event = &payloads[0];
     assert_eq!(event["command"], "");
     assert_eq!(event["outcome"], "invalid_subcommand");
+    assert!(
+        event.get("failure_kind").is_none(),
+        "a parse error carries no failure kind: {event}"
+    );
     let raw = serde_json::to_string(event).unwrap();
     assert!(
         !raw.contains("hallucinated-subcommand-xyz"),

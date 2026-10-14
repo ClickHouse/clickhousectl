@@ -6,7 +6,7 @@ The CLI collects anonymous usage data to guide development. Events contain the c
 
 Argument values, SQL, credentials, resource identifiers, native arguments after `--`, and unrecognized input tokens are not recorded. Defaults and values supplied by the environment do not count as explicitly passed arguments. For example, `local server stop analytics-prod` records that `name` was supplied, not `analytics-prod`.
 
-Runtime failures can add bounded fields: failure stage/kind, an allowlisted HTTP status, and retry, provisioning-state, and duration categories. These are fixed vocabularies, not error messages, response bodies, or exact timings. Successful runs have no failure classification. See the [failure definitions](../../crates/clickhousectl/src/failure.rs) for the current values and [development notes](../development.md#telemetry-changes) for the rules governing changes.
+Runtime failures can add bounded fields: failure stage/kind, an allowlisted HTTP status, and retry, provisioning-state, and duration categories. These are fixed vocabularies, not error messages, response bodies, or exact timings. A failed local command records the `code` of its `--json` error object (for example `server_not_found`) as its failure kind, in either output mode. Successful runs have no failure classification. See the [failure definitions](../../crates/clickhousectl/src/failure.rs) and the [local error codes](automation.md#local-error-codes) for the current values and [development notes](../development.md#telemetry-changes) for the rules governing changes.
 
 ## Notice and controls
 
