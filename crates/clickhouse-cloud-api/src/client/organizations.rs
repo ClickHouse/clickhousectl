@@ -87,6 +87,7 @@ impl Client {
         }
         Ok(serde_json::from_str(&body_text)?)
     }
+
     /// Get organization details
     pub async fn organization_get(
         &self,

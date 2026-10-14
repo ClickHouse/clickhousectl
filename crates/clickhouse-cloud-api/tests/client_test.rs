@@ -71,6 +71,62 @@ async fn list_organizations() {
 }
 
 #[tokio::test]
+async fn organization_get_list_page_preserves_cursor_and_bearer_auth() {
+    for cursor in [None, Some("opaque+/= &?"), Some("")] {
+        for next_cursor in [
+            None,
+            Some(serde_json::Value::Null),
+            Some(serde_json::json!("next")),
+        ] {
+            let server = MockServer::start().await;
+            let mut body = serde_json::json!({"result": [], "requestId": "page", "limit": 100});
+            if let Some(next) = &next_cursor {
+                body["nextCursor"] = next.clone();
+            }
+            Mock::given(method("GET"))
+                .and(path("/v1/organizations"))
+                .and(bearer_token("user-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let client =
+                Client::with_http_client_bearer(reqwest::Client::new(), server.uri(), "user-token");
+            let response = client.organization_get_list_page(cursor).await.unwrap();
+            assert_eq!(
+                response.next_cursor.as_deref(),
+                next_cursor.as_ref().and_then(|value| value.as_str())
+            );
+            assert_eq!(response.request_id.as_deref(), Some("page"));
+            assert_eq!(response.limit, Some(100));
+            assert!(response.result.unwrap().is_empty());
+            let requests = server.received_requests().await.unwrap();
+            let query: Vec<_> = requests[0].url.query_pairs().collect();
+            match cursor {
+                Some(cursor) => assert_eq!(query, [("cursor".into(), cursor.into())]),
+                None => assert!(query.is_empty()),
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn organization_get_list_page_preserves_api_error() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations"))
+        .respond_with(
+            ResponseTemplate::new(403).set_body_json(serde_json::json!({"error": "denied"})),
+        )
+        .mount(&server)
+        .await;
+    assert!(
+        matches!(client.organization_get_list_page(Some("next")).await,
+        Err(clickhouse_cloud_api::Error::Api { status: 403, message }) if message == "denied")
+    );
+}
+
+#[tokio::test]
 async fn get_organization() {
     let mock_server = MockServer::start().await;
 
