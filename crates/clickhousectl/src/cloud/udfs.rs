@@ -1,4 +1,4 @@
-use super::permissions::Declaration as Permission;
+use super::permissions::{Conditional, Declaration as Permission};
 use clickhouse_cloud_api::meta::operations as op;
 
 // Declare every API call made by these workflows, including optional lookups.
@@ -10,7 +10,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         &[&op::UDF_UPLOAD_SESSION_CREATE, &op::UDF_CREATE],
     ),
     Permission::api("udf delete", &[&op::UDF_DELETE]),
-    Permission::api("udf attach", &[&op::UDF_ATTACH]),
+    Permission::api("udf attach", &[&op::UDF_ATTACH]).when(&[Conditional::flag(
+        "wake",
+        &[&op::INSTANCE_STATE_UPDATE, &op::INSTANCE_GET],
+    )]),
     Permission::api("udf detach", &[&op::UDF_DETACH]),
     Permission::api("udf attachment list", &[&op::UDF_ATTACHMENT_LIST]),
     Permission::api("udf attachment get", &[&op::UDF_ATTACHMENT_GET]),
@@ -22,23 +25,39 @@ pub(super) const PERMISSIONS: &[Permission] = &[
     Permission::api("udf version delete", &[&op::UDF_VERSION_DELETE]),
 ];
 
-use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
+use crate::cloud::client::{CloudClient, CloudError, CloudErrorKind, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
-use crate::cloud::output::{or_absent, print_human, print_line};
-use crate::cloud::shared::resolve_org_id;
+use crate::cloud::output::{
+    CloudErrorCode, CloudErrorDetail, eprint_line, or_absent, print_human, print_line,
+};
+use crate::cloud::shared::{PollProgress, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
+use crate::failure::{ApiFailure, FailureKind};
+use crate::udf::{self, DEFINITION_FILE, SourceEntry, UdfDirArg, UdfInputError, UdfRuntimeKind};
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::*;
 use serde::Serialize;
 use serde_json::Value;
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 use tabled::{Table, Tabled, settings::Style};
+
+/// Gap between polls while the CLI waits on the service (a wake).
+const UDF_POLL_INTERVAL: Duration = Duration::from_secs(5);
+/// Longest `--wake` waits for an idle service to reach `running`.
+const SERVICE_WAKE_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[derive(Args)]
 pub struct UdfArgs {
     #[command(subcommand)]
     command: UdfCommands,
 }
+
+/// Both `cloud udf create` forms; clap would otherwise derive one line that
+/// puts NAME after the `--file`/`--artifact` flags it conflicts with.
+const CREATE_USAGE: &str = "clickhousectl cloud udf create [OPTIONS] <NAME>
+       clickhousectl cloud udf create [OPTIONS] --file <PATH> --artifact <PATH>";
 
 #[derive(Subcommand)]
 pub enum UdfCommands {
@@ -47,6 +66,10 @@ pub enum UdfCommands {
     /// Get UDF details
     Get(UdfNameArgs),
     /// Create a UDF
+    #[command(
+        override_usage = CREATE_USAGE,
+        after_help = "CONTEXT FOR AGENTS:\n  NAME/ must hold udf.json, the definition; symbolic links are rejected before any upload.\n  python3.11 archives need main.py at the root; native ones ship only amd64/main and arm64/main.\n  Returns while the build runs: poll `cloud udf get <name>` until status is `ready` or `error`."
+    )]
     Create(UdfCreateArgs),
     /// Delete a UDF
     #[command(
@@ -55,7 +78,7 @@ pub enum UdfCommands {
     Delete(UdfNameArgs),
     /// Attach a UDF to a service
     #[command(
-        after_help = "CONTEXT FOR AGENTS:\n  Replaces the service's attached version; omission selects the latest ready version.\n  The service must be running; wake an idle service before attaching."
+        after_help = "CONTEXT FOR AGENTS:\n  Replaces the service's attached version; omission selects the latest ready version.\n  Fails on an idle service unless --wake; a stopped service must be started first.\n  Returns while it provisions: poll `cloud udf attachment get <name> <service-id>` until status is `deployed`."
     )]
     Attach {
         #[command(flatten)]
@@ -63,6 +86,9 @@ pub enum UdfCommands {
         /// UDF version number
         #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
         version: Option<i64>,
+        /// Wake an idle service before attaching
+        #[arg(long)]
+        wake: bool,
     },
     /// Detach a UDF from a service
     Detach(UdfAttachmentArgs),
@@ -102,13 +128,13 @@ pub enum UdfVersionCommands {
     },
     /// Create a UDF version
     #[command(
-        after_help = "CONTEXT FOR AGENTS:\n  Supply the complete definition; omitted options use defaults, not previous values.\n  Each retry uploads a fresh archive and consumes a new upload session."
+        after_help = "CONTEXT FOR AGENTS:\n  Supply the complete definition; omitted options use defaults, not previous values.\n  Without --artifact, archives NAME/ under --dir; its udf.json must name NAME.\n  Returns while the build runs: poll `cloud udf get <name>` until status is `ready` or `error`."
     )]
     Create {
         #[command(flatten)]
         name: UdfNameArgs,
         #[command(flatten)]
-        input: UdfCreateArgs,
+        input: UdfVersionInputArgs,
     },
     /// Delete a UDF version
     #[command(
@@ -148,14 +174,56 @@ pub struct UdfPageArgs {
     limit: Option<i64>,
 }
 
+/// `create NAME [--dir PATH]` archives a directory holding `udf.json`;
+/// `create --file PATH --artifact PATH` uploads a ZIP as is.
 #[derive(Args)]
 pub struct UdfCreateArgs {
-    /// Complete JSON definition without uploadId (file path or - for stdin)
-    #[arg(long = "file", value_name = "PATH", aliases = ["config-file", "config"])]
-    config: String,
-    /// Source archive path in ZIP format
-    #[arg(long)]
-    artifact: PathBuf,
+    /// Function name; archives NAME/ under --dir instead of --artifact
+    #[arg(
+        value_name = "NAME",
+        value_parser = parse_udf_name,
+        required_unless_present_any = ["config", "artifact"],
+        conflicts_with = "artifact"
+    )]
+    name: Option<String>,
+    #[command(flatten)]
+    dir: UdfDirArg,
+    /// JSON definition with functionName, no uploadId (path or - for stdin)
+    #[arg(
+        long = "file",
+        value_name = "PATH",
+        aliases = ["config-file", "config"],
+        requires = "artifact",
+        conflicts_with_all = ["name", "dir"]
+    )]
+    config: Option<String>,
+    /// Source archive path in ZIP format; requires --file
+    #[arg(
+        long,
+        value_name = "PATH",
+        requires = "config",
+        conflicts_with_all = ["name", "dir"]
+    )]
+    artifact: Option<PathBuf>,
+}
+
+/// `version create NAME [--dir PATH]` archives the directory holding `udf.json`;
+/// `--file PATH --artifact PATH` uploads a ZIP as is.
+#[derive(Args)]
+pub struct UdfVersionInputArgs {
+    #[command(flatten)]
+    dir: UdfDirArg,
+    /// JSON definition; functionName only if it is NAME (path or - for stdin)
+    #[arg(
+        long = "file",
+        value_name = "PATH",
+        aliases = ["config-file", "config"],
+        requires = "artifact"
+    )]
+    config: Option<String>,
+    /// Source archive path in ZIP format; requires --file
+    #[arg(long, value_name = "PATH", requires = "config", conflicts_with = "dir")]
+    artifact: Option<PathBuf>,
 }
 
 impl UdfArgs {
@@ -182,12 +250,31 @@ fn parse_udf_name(value: &str) -> Result<String, String> {
 }
 
 pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult<()> {
-    // Parse and validate input before even auto-resolving the organization.
+    // Parse, validate and package input before even auto-resolving the
+    // organization, so nothing reaches the API for a bad definition.
     match args.command {
         UdfCommands::Create(input) => {
+            let source = match &input.name {
+                Some(name) => Some(resolve_source(&input.dir, name)?),
+                None => None,
+            };
+            let definition = definition_source(input.config.as_deref(), source.as_deref())?;
+            if let Some(name) = &input.name {
+                check_definition_name(
+                    &definition,
+                    input.config.as_deref(),
+                    source.as_deref(),
+                    name,
+                )?;
+            }
             let mut request =
-                build_udf_create_request(read_config_value(&input.config)?, "pending")?;
-            let file = open_artifact(&input.artifact).await?;
+                build_udf_create_request(definition, "pending").map_err(definition_invalid)?;
+            let artifact = resolve_artifact(
+                input.artifact.as_deref(),
+                source.as_deref(),
+                create_request_runtime(&request)?,
+            )?;
+            let file = open_artifact(artifact.path()).await?;
             let org = resolve_org_id(client).await?;
             let upload_id = upload_artifact(client, &org, file).await?;
             match &mut request {
@@ -195,14 +282,33 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                 UdfCreateRequest::UdfCreateRequestV2(body) => body.upload_id = upload_id,
                 UdfCreateRequest::Unknown(_) => unreachable!("builder accepts known variants only"),
             }
-            output(&client.create_udf(&org, &request).await?, json)
+            let created = client.create_udf(&org, &request).await?;
+            drop(artifact);
+            output(&created, json)
         }
         UdfCommands::Version {
             command: UdfVersionCommands::Create { name, input },
         } => {
-            let mut request =
-                build_udf_version_create_request(read_config_value(&input.config)?, "pending")?;
-            let file = open_artifact(&input.artifact).await?;
+            let source = match &input.artifact {
+                Some(_) => None,
+                None => Some(resolve_source(&input.dir, &name.function_name)?),
+            };
+            let mut definition = definition_source(input.config.as_deref(), source.as_deref())?;
+            check_definition_name(
+                &definition,
+                input.config.as_deref(),
+                source.as_deref(),
+                &name.function_name,
+            )?;
+            udf::strip_function_name(&mut definition);
+            let mut request = build_udf_version_create_request(definition, "pending")
+                .map_err(definition_invalid)?;
+            let artifact = resolve_artifact(
+                input.artifact.as_deref(),
+                source.as_deref(),
+                version_request_runtime(&request)?,
+            )?;
+            let file = open_artifact(artifact.path()).await?;
             let org = resolve_org_id(client).await?;
             let upload_id = upload_artifact(client, &org, file).await?;
             match &mut request {
@@ -216,12 +322,11 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                     unreachable!("builder accepts known variants only")
                 }
             }
-            output(
-                &client
-                    .create_udf_version(&org, &name.function_name, &request)
-                    .await?,
-                json,
-            )
+            let created = client
+                .create_udf_version(&org, &name.function_name, &request)
+                .await?;
+            drop(artifact);
+            output(&created, json)
         }
         command => {
             let org = resolve_org_id(client).await?;
@@ -248,15 +353,21 @@ pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult
                         Ok(())
                     }
                 }
-                UdfCommands::Attach { target, version } => output(
-                    &client
-                        .attach_udf(
-                            &org,
-                            &target.name.function_name,
-                            &target.service_id,
-                            version,
-                        )
-                        .await?,
+                UdfCommands::Attach {
+                    target,
+                    version,
+                    wake,
+                } => output(
+                    &attach_with_wake(
+                        client,
+                        &org,
+                        &target.name.function_name,
+                        &target.service_id,
+                        version,
+                        wake,
+                        !json,
+                    )
+                    .await?,
                     json,
                 ),
                 UdfCommands::Detach(target) => output(
@@ -418,6 +529,77 @@ fn print_pagination(pagination: Option<Pagination>) {
     }
 }
 
+// ── definitions and archives ────────────────────────────────────────────────
+
+/// `<--dir>/<NAME>/`, a real directory (no symlink), or a usage error.
+fn resolve_source(dir: &UdfDirArg, name: &str) -> CloudResult<PathBuf> {
+    udf::resolve_source_dir(&dir.dir, name).map_err(|error| CloudError::usage(error.to_string()))
+}
+
+/// The definition JSON: `--file` (only with `--artifact`), else `DIR/udf.json`.
+fn definition_source(config: Option<&str>, source: Option<&Path>) -> CloudResult<Value> {
+    match (config, source) {
+        (Some(config), _) => read_config_value(config),
+        (None, Some(dir)) => udf::load_definition_from_dir(dir).map_err(input_error),
+        (None, None) => Err(CloudError::usage("Pass NAME, or --file with --artifact")),
+    }
+}
+
+/// A UDF directory failure, with the code `local udf deploy` gives it: a
+/// missing `udf.json`, entrypoint or directory, or a symbolic link, is
+/// `udf_source_invalid`; a `udf.json` that is not JSON is
+/// `udf_definition_invalid`; any other read failure is local I/O.
+fn input_error(error: UdfInputError) -> CloudError {
+    let code = match &error {
+        UdfInputError::Read { path, source }
+            if source.kind() == std::io::ErrorKind::NotFound
+                && path.file_name() == Some(OsStr::new(DEFINITION_FILE)) =>
+        {
+            CloudErrorCode::UdfSourceInvalid
+        }
+        UdfInputError::Read { .. } => {
+            return CloudError::new(error.to_string())
+                .with_failure(ApiFailure::new(FailureKind::Io));
+        }
+        UdfInputError::Parse { .. } => CloudErrorCode::UdfDefinitionInvalid,
+        UdfInputError::Invalid { .. } | UdfInputError::Missing { .. } => {
+            CloudErrorCode::UdfSourceInvalid
+        }
+    };
+    let message = error.to_string();
+    CloudError::new(message.clone()).with_details(CloudErrorDetail::new(code, message))
+}
+
+/// A definition that fails the shape check or the typed request schema is
+/// `udf_definition_invalid`, as in `local udf deploy`. Usage errors keep
+/// clap's rendering, and an already structured error keeps its code.
+fn definition_invalid(error: CloudError) -> CloudError {
+    if error.kind != CloudErrorKind::Generic || error.details.is_some() {
+        return error;
+    }
+    let detail = CloudErrorDetail::new(CloudErrorCode::UdfDefinitionInvalid, error.message.clone());
+    error.with_details(detail)
+}
+
+/// A definition (`--file`, else `udf.json` read from `NAME/`) that carries
+/// `functionName` must name `NAME`; the error names the file it came from.
+fn check_definition_name(
+    definition: &Value,
+    config: Option<&str>,
+    source: Option<&Path>,
+    name: &str,
+) -> CloudResult<()> {
+    udf::check_function_name(definition, name).map_err(|reason| {
+        let origin = match (config, source) {
+            (Some("-"), _) => "<stdin>".to_owned(),
+            (Some(config), _) => config.to_owned(),
+            (None, Some(dir)) => dir.join(DEFINITION_FILE).display().to_string(),
+            (None, None) => DEFINITION_FILE.to_owned(),
+        };
+        CloudError::usage(format!("{origin}: {reason}"))
+    })
+}
+
 /// Shape-check the definition (shared with `local udf`), then stamp the
 /// upload session ID the CLI owns into it.
 fn validate_udf_config(value: &mut Value, upload_id: &str, create: bool) -> CloudResult<String> {
@@ -498,6 +680,99 @@ fn build_udf_version_create_request(
     }
 }
 
+fn runtime_kind(runtime: &UdfRuntime) -> CloudResult<UdfRuntimeKind> {
+    match runtime {
+        UdfRuntime::Python3_11 => Ok(UdfRuntimeKind::Python311),
+        UdfRuntime::Native => Ok(UdfRuntimeKind::Native),
+        UdfRuntime::Unknown(_) => Err(CloudError::new("Unsupported UDF runtime")),
+    }
+}
+
+fn create_request_runtime(request: &UdfCreateRequest) -> CloudResult<UdfRuntimeKind> {
+    match request {
+        UdfCreateRequest::UdfCreateRequestV1(body) => runtime_kind(&body.runtime),
+        UdfCreateRequest::UdfCreateRequestV2(body) => runtime_kind(&body.runtime),
+        UdfCreateRequest::Unknown(_) => Err(CloudError::new("Unsupported UDF type")),
+    }
+}
+
+fn version_request_runtime(request: &UdfVersionCreateRequest) -> CloudResult<UdfRuntimeKind> {
+    match request {
+        UdfVersionCreateRequest::UdfVersionCreateRequestV1(body) => runtime_kind(&body.runtime),
+        UdfVersionCreateRequest::UdfVersionCreateRequestV2(body) => runtime_kind(&body.runtime),
+        UdfVersionCreateRequest::Unknown(_) => Err(CloudError::new("Unsupported UDF type")),
+    }
+}
+
+/// The archive to upload: a user-supplied ZIP, or one packaged from the UDF
+/// directory that lives until the upload completes.
+enum Artifact {
+    File(PathBuf),
+    Packaged(tempfile::NamedTempFile),
+}
+
+impl Artifact {
+    fn path(&self) -> &Path {
+        match self {
+            Self::File(path) => path,
+            Self::Packaged(file) => file.path(),
+        }
+    }
+}
+
+fn resolve_artifact(
+    artifact: Option<&Path>,
+    source: Option<&Path>,
+    runtime: UdfRuntimeKind,
+) -> CloudResult<Artifact> {
+    match (artifact, source) {
+        (Some(path), _) => Ok(Artifact::File(path.to_path_buf())),
+        (None, Some(dir)) => package_source_dir(dir, runtime).map(Artifact::Packaged),
+        (None, None) => Err(CloudError::usage("Pass NAME, or --file with --artifact")),
+    }
+}
+
+/// Package a UDF directory into a deterministic ZIP: the shared walk fixes
+/// the entry order and exclusions (for `native`, only `amd64/` and
+/// `arm64/`), timestamps are constant, and Unix permission bits are kept so
+/// a native entrypoint stays executable.
+fn package_source_dir(dir: &Path, runtime: UdfRuntimeKind) -> CloudResult<tempfile::NamedTempFile> {
+    let entries = udf::collect_source_entries(dir, runtime).map_err(input_error)?;
+    let mut archive = tempfile::Builder::new()
+        .prefix("chctl-udf-")
+        .suffix(".zip")
+        .tempfile()
+        .map_err(|error| CloudError::new(format!("Cannot create a temporary archive: {error}")))?;
+    write_archive(archive.as_file_mut(), &entries)
+        .map_err(|error| CloudError::new(format!("Cannot archive {}: {error}", dir.display())))?;
+    Ok(archive)
+}
+
+fn write_archive(file: &mut std::fs::File, entries: &[SourceEntry]) -> std::io::Result<()> {
+    let mut writer = zip::ZipWriter::new(file);
+    for entry in entries {
+        let name = entry.relative.to_str().ok_or_else(|| {
+            std::io::Error::other(format!(
+                "path {} is not valid UTF-8",
+                entry.relative.display()
+            ))
+        })?;
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated)
+            .last_modified_time(zip::DateTime::default())
+            .unix_permissions(entry.mode);
+        if entry.is_dir {
+            writer.add_directory(name, options)?;
+        } else {
+            writer.start_file(name, options)?;
+            let mut source = std::fs::File::open(&entry.absolute)?;
+            std::io::copy(&mut source, &mut writer)?;
+        }
+    }
+    writer.finish()?;
+    Ok(())
+}
+
 async fn open_artifact(path: &std::path::Path) -> CloudResult<tokio::fs::File> {
     let file = tokio::fs::File::open(path)
         .await
@@ -572,6 +847,290 @@ async fn upload_artifact(
     Ok(id)
 }
 
+// ── waiting ─────────────────────────────────────────────────────────────────
+
+/// What one poll showed.
+enum Outcome {
+    Done,
+    Pending(String),
+    /// The wait cannot succeed; the code is the JSON code it reports.
+    Failed(String, CloudErrorCode),
+}
+
+/// Poll `fetch` every [`UDF_POLL_INTERVAL`] until `classify` says the wait
+/// is over. Progress lines (state transitions only) go to stderr in human
+/// mode; the caller prints the final object exactly once. `follow_up` is the
+/// command a timeout points at.
+async fn wait_for<T, Fut, F, C>(
+    what: String,
+    timeout: Duration,
+    verbose: bool,
+    follow_up: &str,
+    mut fetch: F,
+    classify: C,
+) -> CloudResult<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = CloudResult<T>>,
+    C: Fn(&T) -> CloudResult<Outcome>,
+{
+    let started = Instant::now();
+    let mut progress = PollProgress::default();
+    if verbose {
+        eprint_line(format!("Waiting for {what} (up to {}s)", timeout.as_secs()));
+    }
+    loop {
+        let value = fetch().await?;
+        match classify(&value)? {
+            Outcome::Done => return Ok(value),
+            Outcome::Failed(reason, code) => {
+                let message = format!("{what} failed: {reason}");
+                return Err(CloudError::new(message.clone())
+                    .with_details(CloudErrorDetail::new(code, message)));
+            }
+            Outcome::Pending(state) => {
+                if verbose && let Some(line) = progress.render(&state, false) {
+                    eprint_line(line);
+                }
+            }
+        }
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Err(wait_timeout_error(&what, timeout, follow_up));
+        }
+        tokio::time::sleep(UDF_POLL_INTERVAL.min(timeout - elapsed)).await;
+    }
+}
+
+fn wait_timeout_error(what: &str, timeout: Duration, follow_up: &str) -> CloudError {
+    CloudError::new(format!(
+        "{what} did not finish within {}s; it may still complete, check `{follow_up}`",
+        timeout.as_secs()
+    ))
+    .with_failure(ApiFailure::new(FailureKind::Timeout))
+}
+
+fn classify_wake_state(state: Option<&ServiceState>) -> CloudResult<Outcome> {
+    match state {
+        Some(ServiceState::Running) => Ok(Outcome::Done),
+        Some(
+            state @ (ServiceState::Stopped
+            | ServiceState::Stopping
+            | ServiceState::Terminating
+            | ServiceState::Terminated
+            | ServiceState::Softdeleting
+            | ServiceState::Softdeleted
+            | ServiceState::Failed),
+        ) => {
+            let code = match state {
+                ServiceState::Stopped | ServiceState::Stopping => CloudErrorCode::ServiceStopped,
+                _ => CloudErrorCode::ServiceNotRunning,
+            };
+            Ok(Outcome::Failed(
+                format!(
+                    "the service is {state}; start it with `cloud service start <id>` before attaching"
+                ),
+                code,
+            ))
+        }
+        Some(state) => Ok(Outcome::Pending(state.to_string())),
+        None => Err(CloudError::new("service response omitted state")),
+    }
+}
+
+async fn wait_for_service_running(
+    client: &CloudClient,
+    org: &str,
+    service: &str,
+    timeout: Duration,
+    verbose: bool,
+) -> CloudResult<Service> {
+    wait_for(
+        format!("the wake of service {service}"),
+        timeout,
+        verbose,
+        &format!("clickhousectl cloud service get {service}"),
+        || client.get_service(org, service),
+        |service| classify_wake_state(service.state.as_ref()),
+    )
+    .await
+}
+
+// ── attaching and waking ────────────────────────────────────────────────────
+
+/// What the typed HTTP 424 payload allows the CLI to do about it.
+#[derive(Debug, PartialEq, Eq)]
+enum WakeAction {
+    /// The service is idle and may be woken.
+    Wake,
+    /// The service is already coming up; just wait.
+    WaitOnly,
+    /// Stopped, unknown, or not wakeable: report.
+    GiveUp,
+}
+
+fn wake_action(response: &UdfAttachResponse424) -> WakeAction {
+    match (&response.code, response.can_wake, &response.service_state) {
+        (Some(UdfAttachErrorCode::ServiceIdle), Some(true), _) => WakeAction::Wake,
+        (
+            Some(UdfAttachErrorCode::ServiceNotRunning),
+            _,
+            Some(ServiceState::Awaking | ServiceState::Starting | ServiceState::Provisioning),
+        ) => WakeAction::WaitOnly,
+        _ => WakeAction::GiveUp,
+    }
+}
+
+/// The JSON code for a typed HTTP 424 payload, so an agent can branch on
+/// the service's state without parsing prose. `None` for an absent or
+/// unrecognised code, which keeps the code derived from the failure.
+fn attach_unavailable_code(response: &UdfAttachResponse424) -> Option<CloudErrorCode> {
+    match response.code.as_ref()? {
+        UdfAttachErrorCode::ServiceIdle => Some(CloudErrorCode::ServiceIdle),
+        UdfAttachErrorCode::ServiceStopped => Some(CloudErrorCode::ServiceStopped),
+        UdfAttachErrorCode::ServiceNotRunning => Some(CloudErrorCode::ServiceNotRunning),
+        UdfAttachErrorCode::Unknown(_) => None,
+    }
+}
+
+/// Keep the API's message and classification, add the typed reason, and
+/// name the way out.
+fn attach_unavailable_error(
+    error: CloudError,
+    response: &UdfAttachResponse424,
+    service: &str,
+) -> CloudError {
+    let mut message = error.message.clone();
+    let mut context = Vec::new();
+    if let Some(code) = &response.code {
+        context.push(code.to_string());
+    }
+    // The state only adds information when the code does not already say it.
+    let state_is_redundant = matches!(
+        (&response.code, &response.service_state),
+        (
+            Some(UdfAttachErrorCode::ServiceIdle),
+            Some(ServiceState::Idle)
+        ) | (
+            Some(UdfAttachErrorCode::ServiceStopped),
+            Some(ServiceState::Stopped)
+        )
+    );
+    if let Some(state) = &response.service_state
+        && !state_is_redundant
+    {
+        context.push(format!("service state {state}"));
+    }
+    if !context.is_empty() {
+        message.push_str(&format!(" ({})", context.join(", ")));
+    }
+    let wake_command = format!("clickhousectl cloud service wake {service}");
+    let start_command = format!("clickhousectl cloud service start {service}");
+    let (hint, command) = match wake_action(response) {
+        WakeAction::Wake => (
+            Some(format!(
+                "Rerun with --wake, or run `{wake_command}` and retry once it is running."
+            )),
+            Some(wake_command),
+        ),
+        WakeAction::WaitOnly => (
+            Some(
+                "The service is starting; retry shortly, or rerun with --wake to wait for it."
+                    .into(),
+            ),
+            None,
+        ),
+        WakeAction::GiveUp if matches!(response.code, Some(UdfAttachErrorCode::ServiceStopped)) => {
+            (
+                Some(format!("Start it with `{start_command}` and retry.")),
+                Some(start_command),
+            )
+        }
+        WakeAction::GiveUp => (None, None),
+    };
+    if let Some(hint) = hint {
+        message.push('\n');
+        message.push_str(&hint);
+    }
+    let details = attach_unavailable_code(response).map(|code| CloudErrorDetail {
+        command,
+        ..CloudErrorDetail::new(code, message.clone())
+    });
+    let error = CloudError { message, ..error };
+    match details {
+        Some(details) => error.with_details(details),
+        None => error,
+    }
+}
+
+/// Attach once; with `wake`, an idle service is woken (or an awaking one
+/// waited for) and the attach retried once. Returns as soon as the API
+/// accepts the attachment; it does not wait for `deployed`.
+async fn attach_with_wake(
+    client: &CloudClient,
+    org: &str,
+    name: &str,
+    service: &str,
+    version: Option<i64>,
+    wake: bool,
+    verbose: bool,
+) -> CloudResult<UdfAttachment> {
+    let (response, error) = match client
+        .attach_udf_checked(org, name, service, version)
+        .await?
+    {
+        UdfAttachOutcome::Attached(attachment) => return Ok(attachment),
+        UdfAttachOutcome::Unavailable { response, error } => (response, error),
+    };
+    let action = wake_action(&response);
+    if !wake || action == WakeAction::GiveUp {
+        return Err(attach_unavailable_error(error, &response, service));
+    }
+    if action == WakeAction::Wake {
+        if verbose {
+            eprint_line(format!(
+                "Service {service} is idle; waking it before attaching"
+            ));
+        }
+        if let Err(wake_error) = client
+            .change_service_state(org, service, ServiceStatePatchRequestCommand::Awake)
+            .await
+        {
+            // Another caller may have woken it first; only give up when the
+            // service is in a state the wait would fail on anyway.
+            let state = client.get_service(org, service).await?.state;
+            if let Outcome::Failed(..) = classify_wake_state(state.as_ref())? {
+                return Err(wake_error);
+            }
+        }
+    } else if verbose {
+        eprint_line(format!(
+            "Service {service} is starting; waiting before attaching"
+        ));
+    }
+    wait_for_service_running(client, org, service, SERVICE_WAKE_TIMEOUT, verbose).await?;
+    match client
+        .attach_udf_checked(org, name, service, version)
+        .await?
+    {
+        UdfAttachOutcome::Attached(attachment) => Ok(attachment),
+        UdfAttachOutcome::Unavailable { response, error } => {
+            Err(attach_unavailable_error(error, &response, service))
+        }
+    }
+}
+
+/// Result of an attach call that keeps the typed HTTP 424 payload.
+pub(crate) enum UdfAttachOutcome {
+    Attached(UdfAttachment),
+    Unavailable {
+        response: Box<UdfAttachResponse424>,
+        /// The same failure converted the ordinary way, so classification
+        /// and the API's message are preserved when it is reported.
+        error: CloudError,
+    },
+}
+
 impl CloudClient {
     async fn list_udfs(
         &self,
@@ -632,19 +1191,34 @@ impl CloudClient {
             .map_err(|error| self.convert_error_for_organization(error, org))?;
         Self::unwrap_response(response)
     }
-    async fn attach_udf(
+    /// Attach, keeping the typed HTTP 424 payload instead of flattening it
+    /// into a message, so callers can decide whether to wake the service.
+    async fn attach_udf_checked(
         &self,
         org: &str,
         name: &str,
         service: &str,
         version: Option<i64>,
-    ) -> CloudResult<UdfAttachment> {
-        let response = self
-            .api()
-            .udf_attach(org, name, service, version)
-            .await
-            .map_err(|error| self.convert_error_for_organization(error, org))?;
-        Self::unwrap_response(response)
+    ) -> CloudResult<UdfAttachOutcome> {
+        match self.api().udf_attach(org, name, service, version).await {
+            Ok(response) => Ok(UdfAttachOutcome::Attached(Self::unwrap_response(response)?)),
+            Err(clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+                status,
+                message,
+                response,
+            }) => {
+                let error = self.convert_error_for_organization(
+                    clickhouse_cloud_api::Error::UdfAttachmentUnavailable {
+                        status,
+                        message,
+                        response: response.clone(),
+                    },
+                    org,
+                );
+                Ok(UdfAttachOutcome::Unavailable { response, error })
+            }
+            Err(error) => Err(self.convert_error_for_organization(error, org)),
+        }
     }
     async fn detach_udf(
         &self,
@@ -758,8 +1332,10 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use crate::cloud::cli::CloudCommands;
+    use crate::cloud::client::CloudErrorKind;
     use clap::Parser;
     use serde_json::json;
+    use std::os::unix::fs::PermissionsExt;
 
     fn definition(kind: &str, create: bool) -> Value {
         let mut value = json!({"type": kind, "runtime": "native", "arguments": [{"name": "x", "type": "UInt64"}], "returnType": "UInt64"});
@@ -900,6 +1476,593 @@ mod tests {
         }
     }
 
+    fn write_python_dir(dir: &Path) {
+        std::fs::create_dir_all(dir.join("lib/__pycache__")).unwrap();
+        std::fs::create_dir_all(dir.join("bin")).unwrap();
+        let mut udf = definition("executable", true);
+        udf["runtime"] = json!("python3.11");
+        std::fs::write(dir.join("udf.json"), udf.to_string()).unwrap();
+        std::fs::write(dir.join("main.py"), "import sys\n").unwrap();
+        std::fs::write(dir.join("lib/helper.py"), "x = 1\n").unwrap();
+        std::fs::write(dir.join("lib/__pycache__/helper.pyc"), "").unwrap();
+        std::fs::write(dir.join(".env"), "SECRET=1\n").unwrap();
+        std::fs::write(dir.join("bin/tool"), "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(dir.join("bin/tool"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+    }
+
+    fn write_native_dir(dir: &Path) {
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(
+            dir.join("udf.json"),
+            definition("executable", true).to_string(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "[package]\n").unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+        for arch in ["amd64", "arm64"] {
+            std::fs::create_dir_all(dir.join(arch)).unwrap();
+            std::fs::write(dir.join(arch).join("main"), "binary\n").unwrap();
+            std::fs::set_permissions(
+                dir.join(arch).join("main"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.join("amd64/model.bin"), "weights\n").unwrap();
+    }
+
+    fn archive_names(file: &tempfile::NamedTempFile) -> Vec<String> {
+        let bytes = std::fs::read(file.path()).unwrap();
+        assert!(bytes.starts_with(b"PK\x03\x04"));
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn package_source_dir_is_deterministic_and_applies_the_shared_walk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("my_udf");
+        write_python_dir(&dir);
+
+        let first = package_source_dir(&dir, UdfRuntimeKind::Python311).unwrap();
+        let second = package_source_dir(&dir, UdfRuntimeKind::Python311).unwrap();
+        assert_eq!(
+            std::fs::read(first.path()).unwrap(),
+            std::fs::read(second.path()).unwrap()
+        );
+        assert_eq!(
+            archive_names(&first),
+            ["bin/", "bin/tool", "lib/", "lib/helper.py", "main.py"]
+        );
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(first.path()).unwrap()).unwrap();
+        let tool = archive.by_name("bin/tool").unwrap();
+        assert_eq!(tool.unix_mode().unwrap() & 0o111, 0o111);
+        drop(tool);
+        let mut main = archive.by_name("main.py").unwrap();
+        let mut contents = String::new();
+        std::io::Read::read_to_string(&mut main, &mut contents).unwrap();
+        assert_eq!(contents, "import sys\n");
+    }
+
+    #[test]
+    fn native_archives_hold_only_the_architecture_directories() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("my_udf");
+        write_native_dir(&dir);
+        let archive = package_source_dir(&dir, UdfRuntimeKind::Native).unwrap();
+        assert_eq!(
+            archive_names(&archive),
+            [
+                "amd64/",
+                "amd64/main",
+                "amd64/model.bin",
+                "arm64/",
+                "arm64/main"
+            ]
+        );
+        let mut zip = zip::ZipArchive::new(std::fs::File::open(archive.path()).unwrap()).unwrap();
+        assert_eq!(
+            zip.by_name("arm64/main").unwrap().unix_mode().unwrap() & 0o111,
+            0o111
+        );
+
+        std::fs::remove_file(dir.join("arm64/main")).unwrap();
+        let error = package_source_dir(&dir, UdfRuntimeKind::Native).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("is missing amd64/main or arm64/main"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn package_source_dir_rejects_symlinks_and_missing_entrypoints_without_an_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("my_udf");
+        write_python_dir(&dir);
+        std::fs::remove_file(dir.join("main.py")).unwrap();
+        let error = package_source_dir(&dir, UdfRuntimeKind::Python311).unwrap_err();
+        assert!(error.to_string().contains("is missing main.py"), "{error}");
+        assert_eq!(
+            error.details.unwrap().code,
+            CloudErrorCode::UdfSourceInvalid
+        );
+
+        std::fs::write(dir.join("main.py"), "").unwrap();
+        std::os::unix::fs::symlink(dir.join("lib/helper.py"), dir.join("link.py")).unwrap();
+        let error = package_source_dir(&dir, UdfRuntimeKind::Python311).unwrap_err();
+        assert!(error.to_string().contains("symbolic link"), "{error}");
+        assert_eq!(
+            error.details.unwrap().code,
+            CloudErrorCode::UdfSourceInvalid
+        );
+
+        let error =
+            package_source_dir(&tmp.path().join("missing"), UdfRuntimeKind::Native).unwrap_err();
+        assert!(error.to_string().contains("is not a directory"), "{error}");
+    }
+
+    #[test]
+    fn udf_json_failures_carry_the_local_udf_codes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("my_udf");
+        write_python_dir(&dir);
+        let code = |error: CloudError| error.details.map(|detail| detail.code);
+
+        std::fs::write(dir.join("udf.json"), "{ not json").unwrap();
+        let parse = definition_source(None, Some(&dir)).unwrap_err();
+        assert_eq!(code(parse), Some(CloudErrorCode::UdfDefinitionInvalid));
+
+        std::fs::remove_file(dir.join("udf.json")).unwrap();
+        let missing = definition_source(None, Some(&dir)).unwrap_err();
+        assert_eq!(missing.kind, CloudErrorKind::Generic);
+        assert_eq!(code(missing), Some(CloudErrorCode::UdfSourceInvalid));
+
+        let invalid = build_udf_create_request(serde_json::json!({}), "pending")
+            .map_err(definition_invalid)
+            .unwrap_err();
+        assert_eq!(code(invalid), Some(CloudErrorCode::UdfDefinitionInvalid));
+
+        // Unreadable for a reason other than absence: local I/O, not a UDF code.
+        let read = input_error(UdfInputError::Read {
+            path: dir.join("udf.json"),
+            source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        });
+        assert!(read.details.is_none());
+        assert_eq!(read.failure.unwrap().kind, FailureKind::Io);
+
+        // Usage errors and already-structured errors keep what they had.
+        let usage = definition_invalid(CloudError::usage("bad"));
+        assert!(usage.details.is_none());
+        let structured =
+            definition_invalid(input_error(UdfInputError::Missing { path: dir.clone() }));
+        assert_eq!(code(structured), Some(CloudErrorCode::UdfSourceInvalid));
+    }
+
+    #[test]
+    fn sources_resolve_under_dir_and_definitions_prefer_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parent = tmp.path().join("udfs");
+        let dir = parent.join("my_udf");
+        write_python_dir(&dir);
+        let dir_arg = UdfDirArg {
+            dir: parent.clone(),
+        };
+        assert_eq!(resolve_source(&dir_arg, "my_udf").unwrap(), dir);
+        let missing = resolve_source(&dir_arg, "nope").unwrap_err();
+        assert_eq!(missing.kind, CloudErrorKind::Usage);
+        assert!(missing.to_string().ends_with("does not exist"), "{missing}");
+        std::os::unix::fs::symlink(&dir, parent.join("linked")).unwrap();
+        let linked = resolve_source(&dir_arg, "linked").unwrap_err();
+        assert_eq!(linked.kind, CloudErrorKind::Usage);
+        assert!(
+            linked.to_string().ends_with("is a symbolic link"),
+            "{linked}"
+        );
+
+        let override_path = tmp.path().join("override.json");
+        std::fs::write(
+            &override_path,
+            definition("executable_pool", true).to_string(),
+        )
+        .unwrap();
+        let from_dir = definition_source(None, Some(&dir)).unwrap();
+        assert_eq!(from_dir["runtime"], "python3.11");
+        let from_file =
+            definition_source(Some(override_path.to_str().unwrap()), Some(&dir)).unwrap();
+        assert_eq!(from_file["type"], "executable_pool");
+        assert_eq!(
+            definition_source(None, None).unwrap_err().kind,
+            CloudErrorKind::Usage
+        );
+
+        assert!(check_definition_name(&from_dir, None, Some(&dir), "my_udf").is_ok());
+        let mismatch = check_definition_name(&from_dir, None, Some(&dir), "other").unwrap_err();
+        assert_eq!(mismatch.kind, CloudErrorKind::Usage);
+        assert_eq!(
+            mismatch.to_string(),
+            format!(
+                "{}: functionName is my_udf, but the command targets other",
+                dir.join("udf.json").display()
+            )
+        );
+        let from_file = check_definition_name(&from_dir, Some("def.json"), None, "other");
+        let from_file = from_file.unwrap_err();
+        assert_eq!(from_file.kind, CloudErrorKind::Usage);
+        assert!(
+            from_file.to_string().starts_with("def.json: "),
+            "{from_file}"
+        );
+        let from_stdin = check_definition_name(&from_dir, Some("-"), None, "other").unwrap_err();
+        assert!(
+            from_stdin.to_string().starts_with("<stdin>: "),
+            "{from_stdin}"
+        );
+        assert!(check_definition_name(&from_dir, Some("def.json"), None, "my_udf").is_ok());
+    }
+
+    #[test]
+    fn request_runtimes_map_to_the_shared_kind() {
+        let python = build_udf_create_request(
+            {
+                let mut value = definition("executable", true);
+                value["runtime"] = json!("python3.11");
+                value
+            },
+            "fresh",
+        )
+        .unwrap();
+        assert_eq!(
+            create_request_runtime(&python).unwrap(),
+            UdfRuntimeKind::Python311
+        );
+        let native =
+            build_udf_version_create_request(definition("executable_pool", false), "fresh")
+                .unwrap();
+        assert_eq!(
+            version_request_runtime(&native).unwrap(),
+            UdfRuntimeKind::Native
+        );
+        assert!(runtime_kind(&UdfRuntime::Unknown("future".into())).is_err());
+    }
+
+    fn outcome(result: CloudResult<Outcome>) -> String {
+        match result {
+            Ok(Outcome::Done) => "done".into(),
+            Ok(Outcome::Pending(state)) => format!("pending:{state}"),
+            Ok(Outcome::Failed(reason, _)) => format!("failed:{reason}"),
+            Err(error) => format!("error:{error}"),
+        }
+    }
+
+    #[test]
+    fn wake_states_are_classified_closed_and_timeouts_name_their_follow_up() {
+        assert_eq!(
+            outcome(classify_wake_state(Some(&ServiceState::Running))),
+            "done"
+        );
+        assert_eq!(
+            outcome(classify_wake_state(Some(&ServiceState::Awaking))),
+            "pending:awaking"
+        );
+        assert_eq!(
+            outcome(classify_wake_state(Some(&ServiceState::Idle))),
+            "pending:idle"
+        );
+        assert_eq!(
+            outcome(classify_wake_state(Some(&ServiceState::Unknown(
+                "warming".into()
+            )))),
+            "pending:warming"
+        );
+        assert!(
+            outcome(classify_wake_state(Some(&ServiceState::Stopped)))
+                .starts_with("failed:the service is stopped")
+        );
+        assert!(outcome(classify_wake_state(None)).starts_with("error:"));
+
+        let timeout = wait_timeout_error(
+            "the wake of service svc-1",
+            Duration::from_secs(7),
+            "clickhousectl cloud service get svc-1",
+        );
+        assert_eq!(
+            timeout.to_string(),
+            "the wake of service svc-1 did not finish within 7s; it may still complete, check `clickhousectl cloud service get svc-1`"
+        );
+        assert_eq!(timeout.failure.unwrap().kind, FailureKind::Timeout);
+    }
+
+    #[test]
+    fn wake_actions_and_messages_follow_the_typed_424_payload() {
+        let detail = |error: &CloudError| {
+            error
+                .details
+                .as_deref()
+                .map(|detail| (detail.code, detail.command.clone()))
+        };
+        let idle = UdfAttachResponse424 {
+            code: Some(UdfAttachErrorCode::ServiceIdle),
+            service_state: Some(ServiceState::Idle),
+            can_wake: Some(true),
+            ..Default::default()
+        };
+        assert_eq!(wake_action(&idle), WakeAction::Wake);
+        let error = attach_unavailable_error(
+            CloudError::new("service is idle")
+                .with_failure(ApiFailure::with_status(FailureKind::Http4xx, 424)),
+            &idle,
+            "svc-1",
+        );
+        assert_eq!(
+            error.to_string(),
+            "service is idle (SERVICE_IDLE)\nRerun with --wake, or run `clickhousectl cloud service wake svc-1` and retry once it is running."
+        );
+        assert_eq!(
+            detail(&error),
+            Some((
+                CloudErrorCode::ServiceIdle,
+                Some("clickhousectl cloud service wake svc-1".into())
+            ))
+        );
+        assert_eq!(error.details.as_deref().unwrap().message, error.message);
+        // The JSON code is added; the failure classification is kept.
+        assert_eq!(
+            error.failure,
+            Some(ApiFailure::with_status(FailureKind::Http4xx, 424))
+        );
+
+        let awaking = UdfAttachResponse424 {
+            code: Some(UdfAttachErrorCode::ServiceNotRunning),
+            service_state: Some(ServiceState::Awaking),
+            can_wake: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(wake_action(&awaking), WakeAction::WaitOnly);
+        let error = attach_unavailable_error(CloudError::new("not running"), &awaking, "svc-1");
+        assert_eq!(
+            error.to_string(),
+            "not running (SERVICE_NOT_RUNNING, service state awaking)\nThe service is starting; retry shortly, or rerun with --wake to wait for it."
+        );
+        assert_eq!(
+            detail(&error),
+            Some((CloudErrorCode::ServiceNotRunning, None))
+        );
+
+        let stopped = UdfAttachResponse424 {
+            code: Some(UdfAttachErrorCode::ServiceStopped),
+            service_state: Some(ServiceState::Stopped),
+            can_wake: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(wake_action(&stopped), WakeAction::GiveUp);
+        let error = attach_unavailable_error(CloudError::new("stopped"), &stopped, "svc-1");
+        assert_eq!(
+            error.to_string(),
+            "stopped (SERVICE_STOPPED)\nStart it with `clickhousectl cloud service start svc-1` and retry."
+        );
+        assert_eq!(
+            detail(&error),
+            Some((
+                CloudErrorCode::ServiceStopped,
+                Some("clickhousectl cloud service start svc-1".into())
+            ))
+        );
+
+        // A stopped service reported as SERVICE_NOT_RUNNING keeps its state.
+        let not_running_stopped = UdfAttachResponse424 {
+            code: Some(UdfAttachErrorCode::ServiceNotRunning),
+            service_state: Some(ServiceState::Stopped),
+            ..Default::default()
+        };
+        let error = attach_unavailable_error(
+            CloudError::new("not running"),
+            &not_running_stopped,
+            "svc-1",
+        );
+        assert_eq!(
+            error.to_string(),
+            "not running (SERVICE_NOT_RUNNING, service state stopped)"
+        );
+        assert_eq!(
+            detail(&error),
+            Some((CloudErrorCode::ServiceNotRunning, None))
+        );
+
+        let untyped = UdfAttachResponse424::default();
+        assert_eq!(wake_action(&untyped), WakeAction::GiveUp);
+        let plain = CloudError::new("dependency unavailable")
+            .with_failure(ApiFailure::new(FailureKind::Http4xx));
+        let error = attach_unavailable_error(plain, &untyped, "svc-1");
+        assert_eq!(error.to_string(), "dependency unavailable");
+        assert_eq!(error.failure.unwrap().kind, FailureKind::Http4xx);
+        assert!(error.details.is_none());
+
+        let unknown = UdfAttachResponse424 {
+            code: Some(UdfAttachErrorCode::Unknown("SERVICE_FUTURE".into())),
+            ..Default::default()
+        };
+        assert_eq!(attach_unavailable_code(&unknown), None);
+    }
+
+    #[test]
+    fn wake_wait_failures_carry_a_service_state_code() {
+        let code = |state: ServiceState| match classify_wake_state(Some(&state)) {
+            Ok(Outcome::Failed(_, code)) => code,
+            _ => panic!("{state} should fail the wait"),
+        };
+        for state in [ServiceState::Stopped, ServiceState::Stopping] {
+            assert_eq!(code(state), CloudErrorCode::ServiceStopped);
+        }
+        for state in [
+            ServiceState::Terminating,
+            ServiceState::Terminated,
+            ServiceState::Softdeleting,
+            ServiceState::Softdeleted,
+            ServiceState::Failed,
+        ] {
+            assert_eq!(code(state), CloudErrorCode::ServiceNotRunning);
+        }
+    }
+
+    fn parse_udf(args: &[&str]) -> UdfArgs {
+        let mut all = vec!["chctl", "cloud", "udf"];
+        all.extend_from_slice(args);
+        all.extend(["--org-id", "org-1"]);
+        let cli = Cli::try_parse_from(all).unwrap();
+        let Commands::Cloud(cloud) = cli.command else {
+            panic!("cloud");
+        };
+        let CloudCommands::Udf(udf) = cloud.command else {
+            panic!("udf");
+        };
+        udf
+    }
+
+    #[test]
+    fn udf_name_dir_and_wake_flags_parse_and_conflict() {
+        use clap::error::ErrorKind;
+        let UdfCommands::Create(input) = parse_udf(&["create", "my_udf"]).command else {
+            panic!("create");
+        };
+        assert_eq!(input.name.as_deref(), Some("my_udf"));
+        assert_eq!(input.dir.dir, PathBuf::from("clickhouse/udfs"));
+        assert!(input.config.is_none());
+        assert!(input.artifact.is_none());
+
+        let UdfCommands::Create(input) =
+            parse_udf(&["create", "my_udf", "--dir", "../shared/udfs"]).command
+        else {
+            panic!("create");
+        };
+        assert_eq!(input.dir.dir, PathBuf::from("../shared/udfs"));
+        assert!(input.config.is_none());
+
+        let UdfCommands::Create(input) =
+            parse_udf(&["create", "--file", "def.json", "--artifact", "code.zip"]).command
+        else {
+            panic!("create");
+        };
+        assert!(input.name.is_none());
+        assert_eq!(input.artifact, Some(PathBuf::from("code.zip")));
+
+        let UdfCommands::Version {
+            command: UdfVersionCommands::Create { input, name },
+        } = parse_udf(&["version", "create", "my_udf", "--dir", "funcs"]).command
+        else {
+            panic!("version create");
+        };
+        assert_eq!(name.function_name, "my_udf");
+        assert_eq!(input.dir.dir, PathBuf::from("funcs"));
+        assert!(input.artifact.is_none());
+
+        let UdfCommands::Attach { wake, version, .. } =
+            parse_udf(&["attach", "my_udf", "svc-1", "--wake"]).command
+        else {
+            panic!("attach");
+        };
+        assert!(wake);
+        assert_eq!(version, None);
+        let UdfCommands::Attach { wake, .. } = parse_udf(&["attach", "my_udf", "svc-1"]).command
+        else {
+            panic!("attach");
+        };
+        assert!(!wake);
+
+        for (args, kind) in [
+            (
+                vec!["create", "my_udf", "--artifact", "z.zip"],
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["create", "--dir", "d", "--file", "f", "--artifact", "z.zip"],
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["create", "--file", "f"],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                vec!["create", "--artifact", "z.zip"],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (vec!["create"], ErrorKind::MissingRequiredArgument),
+            (vec!["create", "../x"], ErrorKind::ValueValidation),
+            (
+                vec!["version", "create", "my_udf", "--artifact", "z.zip"],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                vec![
+                    "version",
+                    "create",
+                    "my_udf",
+                    "--dir",
+                    "d",
+                    "--artifact",
+                    "z",
+                    "--file",
+                    "f",
+                ],
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["create", "my_udf", "--file", "f.json"],
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                vec!["version", "create", "my_udf", "--file", "f.json"],
+                ErrorKind::MissingRequiredArgument,
+            ),
+        ] {
+            let mut all = vec!["chctl", "cloud", "udf"];
+            all.extend(args.iter().copied());
+            assert_eq!(
+                Cli::try_parse_from(all).err().unwrap().kind(),
+                kind,
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn udf_create_usage_and_missing_input_lead_with_name() {
+        use clap::CommandFactory;
+        use clap::error::{ContextKind, ContextValue};
+        let mut cli = Cli::command();
+        let create = cli
+            .find_subcommand_mut("cloud")
+            .and_then(|c| c.find_subcommand_mut("udf"))
+            .and_then(|c| c.find_subcommand_mut("create"))
+            .expect("cloud udf create");
+        let usage = create.render_usage().to_string();
+        let forms: Vec<&str> = usage.lines().collect();
+        assert_eq!(forms.len(), 2, "{usage}");
+        assert!(forms[0].ends_with("create [OPTIONS] <NAME>"), "{usage}");
+        assert!(!forms[1].contains("NAME"), "{usage}");
+        assert!(
+            forms[1].contains("--file <PATH>") && forms[1].contains("--artifact <PATH>"),
+            "{usage}"
+        );
+
+        let error = Cli::try_parse_from(["chctl", "cloud", "udf", "create"])
+            .err()
+            .unwrap();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(error.exit_code(), 2);
+        let Some(ContextValue::Strings(missing)) = error.get(ContextKind::InvalidArg) else {
+            panic!("missing arguments");
+        };
+        assert_eq!(missing, &["<NAME>".to_string()]);
+    }
+
     #[test]
     fn udf_clap_auth_classification_and_values() {
         for (args, write) in [
@@ -910,7 +2073,9 @@ mod tests {
                 vec!["create", "--file", "-", "--artifact", "code.zip"],
                 true,
             ),
+            (vec!["create", "my_udf"], true),
             (vec!["attach", "my_udf", "svc-1", "--version", "2"], true),
+            (vec!["attach", "my_udf", "svc-1", "--wake"], true),
             (vec!["detach", "my_udf", "svc-1"], true),
             (
                 vec![
@@ -938,6 +2103,7 @@ mod tests {
                 ],
                 true,
             ),
+            (vec!["version", "create", "my_udf"], true),
             (vec!["version", "delete", "my_udf", "3"], true),
         ] {
             let mut all = vec!["chctl", "cloud", "udf"];
@@ -958,16 +2124,18 @@ mod tests {
                     assert_eq!(page.cursor.as_deref(), Some("next"));
                     assert_eq!(page.limit, Some(2));
                 }
-                UdfCommands::Create(input) => {
-                    assert_eq!(input.config, "-");
-                    assert_eq!(input.artifact, PathBuf::from("code.zip"));
+                UdfCommands::Create(input) if input.name.is_none() => {
+                    assert_eq!(input.config.as_deref(), Some("-"));
+                    assert_eq!(input.artifact, Some(PathBuf::from("code.zip")));
                 }
-                UdfCommands::Attach { version, .. } => assert_eq!(version, Some(2)),
+                UdfCommands::Attach { version, wake, .. } => {
+                    assert!(version == Some(2) || wake);
+                }
                 UdfCommands::Version {
                     command: UdfVersionCommands::Create { input, .. },
-                } => {
-                    assert_eq!(input.config, "file.json");
-                    assert_eq!(input.artifact, PathBuf::from("code.zip"));
+                } if input.artifact.is_some() => {
+                    assert_eq!(input.config.as_deref(), Some("file.json"));
+                    assert_eq!(input.artifact, Some(PathBuf::from("code.zip")));
                 }
                 _ => {}
             }

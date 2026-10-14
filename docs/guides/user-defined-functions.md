@@ -4,6 +4,8 @@
 
 `local udf` deploys [executable UDFs](https://clickhouse.com/docs/sql-reference/functions/udf#executable-user-defined-functions) to a local server, and `cloud udf` manages organization-scoped executable UDFs, versions, and service attachments in Cloud. Both read the same source directory: a `udf.json` definition in the Cloud API's field names next to the function's files. Cloud UDF operations are beta. Cloud reads support OAuth; Cloud writes require API key authentication.
 
+The examples below upload a definition file and a ZIP you built. To upload a scaffolded directory instead, see [Deploy a source directory](#deploy-a-source-directory).
+
 Save the definition below as `udf.json` and prepare a [source ZIP archive](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions#manage-udfs-with-the-cloud-api). `--file` accepts a file or `-` for stdin. The definition uses the API's field names and excludes `uploadId`, which the CLI obtains from a fresh upload session:
 
 ```json
@@ -73,18 +75,32 @@ clickhousectl cloud udf create --file udf.json --artifact source.zip
 clickhousectl cloud udf get my_udf
 ```
 
-Wait for `status=ready` and ensure the target service is running (wake it if idle), then attach:
+`create`, `version create` and `attach` return as soon as the API accepts them. Poll `cloud udf get` until `status` is `ready` (or `error`), then attach:
 
 ```bash
-clickhousectl cloud udf attach my_udf <service-id>
+clickhousectl cloud udf attach my_udf <service-id> --wake
 clickhousectl cloud udf attachment get my_udf <service-id>
 ```
 
-Attachment replaces the version already attached to that service. Without `--version`, it selects the latest ready version. A dependency error (HTTP 424) requires inspecting the UDF and service before retrying.
+Poll `attachment get` until it is `deployed`. The target service must be running. `--wake` wakes an idle service, waits up to ten minutes for it to reach `running`, then attaches once; without it, attaching to an idle service fails with the service state and the `cloud service wake` command. A stopped service must be started first. With `--json`, the error code is `service_idle`, `service_stopped` or `service_not_running`.
+
+Attachment replaces the version already attached to that service. Without `--version`, it selects the latest ready version. Any other dependency error (HTTP 424) requires inspecting the UDF and service before retrying.
+
+## Deploy a source directory
+
+Pass a name instead of `--file` and `--artifact` to read `clickhouse/udfs/<name>/udf.json` and archive the rest of that directory, the same one `local udf deploy` uses:
+
+```bash
+clickhousectl cloud udf create my_udf
+# After editing udf.json or the code
+clickhousectl cloud udf version create my_udf
+```
+
+`--dir PATH` selects another parent directory. `--file` and `--artifact` go together and combine with neither `--dir` nor, for `create`, a name. The directory must not be a symbolic link and its `udf.json` must name the function; `version create` drops `functionName` from the request. The archive is deterministic and excludes `udf.json`, hidden entries and `__pycache__`; symbolic links inside are rejected. Runtime `python3.11` needs `main.py` at the root. Runtime `native` uploads only `amd64/main` and `arm64/main`, Linux binaries you build (see the [Cloud UDF docs](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions)).
 
 ## Create a new version
 
-`version.json` contains the complete desired definition without `functionName` or `uploadId`:
+`version.json` contains the complete desired definition without `uploadId`. It may keep a `functionName` equal to the command's name, so a `udf.json` can be reused; the CLI drops it from the request:
 
 ```bash
 clickhousectl cloud udf version create my_udf --file version.json --artifact source-v2.zip
