@@ -1,5 +1,5 @@
-//! `cloud access request`: obtain a scoped API key through the control-plane
-//! access-request PKCE handshake.
+//! `cloud access`: discover assignable roles and obtain scoped API keys.
+//! Role discovery uses the typed API client; requests use the PKCE handshake.
 //!
 //! The user authenticates with their existing CLI identity (OAuth Bearer from
 //! `cloud auth login`), files an access request carrying a PKCE
@@ -8,7 +8,7 @@
 //! request's status. The claimed key id and secret are stored with the CLI's
 //! existing credential storage; the secret is never printed or placed in a URL.
 //!
-//! These endpoints are not modelled by the typed `clickhouse-cloud-api` client,
+//! The handshake endpoints are not modelled by the typed `clickhouse-cloud-api` client,
 //! so the handshake calls them directly with a plain `reqwest` client carrying
 //! the credentials resolved by [`CloudClient`] ([`CloudClient::request_auth`]).
 
@@ -38,11 +38,13 @@ pub(super) const PERMISSIONS: &[Permission] = &[
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use clap::{Args, Subcommand};
+use clickhouse_cloud_api::models::{AssignableRole, RBACPolicyAllowdeny, RBACRoleType};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tabled::{Table, Tabled, settings::Style};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
@@ -54,6 +56,12 @@ const POLL_INTERVAL: Duration = Duration::from_secs(3);
 
 #[derive(Subcommand)]
 pub enum AccessCommands {
+    /// List caller-assignable roles with policy scopes
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Returns current assignable roles, not a guarantee of later approval.
+  JSON output is the complete role array, including all policies and tags.")]
+    Roles,
     /// Request a scoped API key via browser approval
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -71,7 +79,7 @@ impl AccessCommands {
     /// write command and must not be blocked by the OAuth write gate.
     pub fn is_write(&self) -> bool {
         match self {
-            AccessCommands::Request(_) => false,
+            AccessCommands::Request(_) | AccessCommands::Roles => false,
         }
     }
 }
@@ -202,6 +210,25 @@ fn random_bytes<const N: usize>() -> [u8; N] {
 // ── entry point ─────────────────────────────────────────────────────────────
 
 impl CloudClient {
+    async fn list_assignable_roles(&self, org_id: &str) -> CloudResult<Vec<AssignableRole>> {
+        let response = self
+            .api()
+            .organization_assignable_roles_get_list(org_id)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        if let Some(error) = &response.error {
+            return Err(CloudError::new(format!("Role discovery failed: {error}")));
+        }
+        if let Some(status) = response.status.filter(|status| *status >= 400) {
+            return Err(CloudError::new(format!(
+                "Role discovery failed with envelope status {status}"
+            )));
+        }
+        let roles = Self::unwrap_response(response)?;
+        validate_assignable_roles(&roles)?;
+        Ok(roles)
+    }
+
     /// Read all user memberships before auto-selection or exact-name selection.
     async fn resolve_access_organization_id(
         &self,
@@ -282,6 +309,112 @@ pub async fn run(
 ) -> CloudResult<()> {
     match command {
         AccessCommands::Request(args) => request(args, url_override, org_id, org_name, json).await,
+        AccessCommands::Roles => roles(url_override, org_id, org_name, json).await,
+    }
+}
+
+/// Validate the entire menu before either output mode can claim success.
+fn validate_assignable_roles(roles: &[AssignableRole]) -> CloudResult<()> {
+    fn required<T>(value: &Option<T>, field: &str) -> CloudResult<()> {
+        if value.is_none() {
+            return Err(CloudError::new(format!(
+                "Incomplete role discovery response: missing {field}"
+            )));
+        }
+        Ok(())
+    }
+    for role in roles {
+        required(&role.id, "role.id")?;
+        if let Some(id) = &role.id {
+            uuid::Uuid::parse_str(id).map_err(|_| {
+                CloudError::new("Invalid role discovery response: role.id is not a UUID")
+            })?;
+        }
+        required(&role.name, "role.name")?;
+        required(&role.r#type, "role.type")?;
+        required(&role.policies, "role.policies")?;
+        if let Some(policies) = &role.policies {
+            for policy in policies {
+                required(&policy.allow_deny, "policy.allowDeny")?;
+                required(&policy.permissions, "policy.permissions")?;
+                required(&policy.resources, "policy.resources")?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn roles(
+    url_override: Option<&str>,
+    org_id: Option<String>,
+    org_name: Option<String>,
+    json: bool,
+) -> CloudResult<()> {
+    let client = CloudClient::for_access(url_override).await?;
+    let org_id = client
+        .resolve_access_organization_id(org_id, org_name)
+        .await?;
+    let roles = client.list_assignable_roles(&org_id).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&roles)?);
+    } else {
+        print_assignable_roles(&org_id, &roles);
+    }
+    Ok(())
+}
+
+fn print_assignable_roles(org_id: &str, roles: &[AssignableRole]) {
+    use crate::cloud::output::or_absent;
+    #[derive(Tabled)]
+    struct RoleRow {
+        id: String,
+        name: String,
+        r#type: String,
+        policies: String,
+    }
+    let rows = roles
+        .iter()
+        .map(|role| {
+            let role_type = match &role.r#type {
+                Some(RBACRoleType::Unknown(value)) => format!("Unknown ({value})"),
+                other => or_absent(other.as_ref()).to_string(),
+            };
+            let mut summaries = Vec::new();
+            if let Some(policies) = &role.policies {
+                if policies.is_empty() {
+                    summaries.push("No policies".into());
+                }
+                for policy in policies {
+                    let effect = match &policy.allow_deny {
+                        Some(RBACPolicyAllowdeny::Unknown(value)) => {
+                            format!("Unknown effect ({value})")
+                        }
+                        other => or_absent(other.as_ref()).to_string(),
+                    };
+                    if let (Some(permissions), Some(resources)) =
+                        (&policy.permissions, &policy.resources)
+                    {
+                        summaries.push(format!(
+                            "{effect}: permissions [{}]; resources [{}]",
+                            permissions.join(", "),
+                            resources.join(", ")
+                        ));
+                    }
+                }
+            }
+            RoleRow {
+                id: or_absent(role.id.as_ref()).to_string(),
+                name: or_absent(role.name.as_ref()).to_string(),
+                r#type: role_type,
+                policies: summaries.join("\n"),
+            }
+        })
+        .collect::<Vec<_>>();
+    println!("Organization: {org_id}");
+    if rows.is_empty() {
+        println!("No assignable roles for your user in this organization.");
+    } else {
+        println!("{}", Table::new(rows).with(Style::markdown()));
     }
 }
 
@@ -607,8 +740,70 @@ mod tests {
         let crate::cloud::cli::CloudCommands::Access { command, .. } = cloud.command else {
             panic!("expected access command");
         };
-        let AccessCommands::Request(args) = command;
+        let AccessCommands::Request(args) = command else {
+            panic!("expected request")
+        };
         args
+    }
+
+    #[test]
+    fn roles_selectors_and_help_preserve_command_grammar() {
+        use clap::{CommandFactory, FromArgMatches};
+        for (selectors, conflict) in [
+            (vec!["--org-id=one", "access", "roles", "--org=one"], false),
+            (vec!["--org-id=one", "access", "roles", "--org=two"], true),
+            (
+                vec!["--org-name=name", "access", "roles", "--org-name=name"],
+                false,
+            ),
+            (vec!["--org-name=name", "access", "roles", "--org=id"], true),
+            (vec!["access", "--org=one", "roles", "--org=two"], true),
+            (
+                vec![
+                    "--json",
+                    "access",
+                    "roles",
+                    "--url=http://localhost:1/v1",
+                    "--",
+                ],
+                false,
+            ),
+        ] {
+            let argv: Vec<std::ffi::OsString> = ["chctl", "cloud"]
+                .into_iter()
+                .chain(selectors)
+                .map(Into::into)
+                .collect();
+            let mut cmd = Cli::command();
+            let matches = cmd.try_get_matches_from_mut(&argv).unwrap();
+            let cli = Cli::from_arg_matches(&matches).unwrap();
+            let Commands::Cloud(args) = cli.command else {
+                panic!("cloud expected")
+            };
+            let result = args.validate_access_selectors(&argv);
+            if conflict {
+                assert_eq!(
+                    result.unwrap_err().kind(),
+                    clap::error::ErrorKind::ArgumentConflict
+                );
+            } else {
+                result.unwrap();
+            }
+            assert!(!args.command.is_write_command());
+        }
+        for args in [
+            vec!["chctl", "cloud", "access", "--help"],
+            vec!["chctl", "cloud", "access", "roles", "--help"],
+        ] {
+            assert_eq!(
+                Cli::try_parse_from(args).err().unwrap().kind(),
+                clap::error::ErrorKind::DisplayHelp
+            );
+        }
+        assert!(Cli::try_parse_from(["chctl", "cloud", "org", "list", "--org=id"]).is_err());
+        assert!(
+            Cli::try_parse_from(["chctl", "cloud", "access", "roles", "--purpose=test"]).is_err()
+        );
     }
 
     #[test]
