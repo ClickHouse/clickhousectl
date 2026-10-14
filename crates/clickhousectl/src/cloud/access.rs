@@ -23,7 +23,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tabled::{Table, Tabled, settings::Style};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -33,6 +33,9 @@ const APPROVAL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// How often to poll the request's status as a fallback to the loopback redirect.
 const POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+const OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_EPOCH_MILLIS: i64 = 8_640_000_000_000_000;
 
 #[derive(Subcommand)]
 pub enum AccessCommands {
@@ -163,25 +166,29 @@ struct CreateAccessRequestBody<'a> {
 #[derive(serde::Deserialize)]
 struct Envelope<T> {
     result: T,
+    error: Option<serde_json::Value>,
+    status: Option<u16>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateAccessRequestResponse {
     request_id: String,
-    #[allow(dead_code)]
     status: Option<String>,
     approval_url: String,
-    /// Epoch milliseconds.
-    #[allow(dead_code)]
+    /// Pending approval deadline only, in epoch milliseconds.
     expires_at: Option<i64>,
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AccessRequestStatus {
+    request_id: Option<String>,
+    expires_at: Option<i64>,
     status: Option<String>,
     claim_code: Option<String>,
+    claim_code_expires_at: Option<i64>,
+    issued_key_id: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -485,14 +492,21 @@ async fn request(
         state: &state,
         redirect_uri: &redirect_uri,
     };
-    let created: CreateAccessRequestResponse = send_json(
-        http.post(&create_url),
-        &auth,
-        &create_body,
-        "file access request",
-        true,
+    let created: CreateAccessRequestResponse = operation(
+        OPERATION_TIMEOUT,
+        send_json(
+            http.post(&create_url),
+            &auth,
+            &create_body,
+            "file access request",
+            true,
+        ),
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        error.into_cloud("file access request timed out; the request may have been filed")
+    })?;
+    let pending = PendingApproval::new(&created)?;
 
     approval_handoff(&created.approval_url, args.no_browser, |url| {
         open::that(url)
@@ -503,27 +517,10 @@ async fn request(
         created.request_id
     );
 
-    // The loopback redirect is the primary path; polling the request status is
-    // the fallback when the browser cannot reach the loopback server. Whichever
-    // yields the claim code first wins.
-    let claim_code = tokio::select! {
-        result = wait_for_callback(listener, &state) => result?,
-        result = poll_until_approved(&http, &status_url, &auth) => result?,
-    };
-
+    // A callback only wakes the single status/claim owner; GET supplies authority.
+    let permit = wait_for_approval(&http, &status_url, &auth, pending, listener, &state).await?;
     let claim_url = format!("{status_url}/claim");
-    let claim_body = ClaimBody {
-        claim_code: &claim_code,
-        code_verifier: &pkce.verifier,
-    };
-    let claimed: ClaimResponse = send_json(
-        http.post(&claim_url),
-        &auth,
-        &claim_body,
-        "claim access key",
-        false,
-    )
-    .await?;
+    let claimed = claim_access_key(&http, &claim_url, &auth, &permit, &pkce.verifier).await?;
 
     if claimed.key_id.is_empty() || claimed.key.is_empty() || claimed.secret.is_empty() {
         return Err(CloudError::new("claim access key: incomplete response"));
@@ -629,6 +626,11 @@ async fn parse_response<T: DeserializeOwned>(
     // Deserializer diagnostics can quote a secret-bearing unexpected value.
     let envelope: Envelope<T> = serde_json::from_slice(&bytes)
         .map_err(|_| CloudError::new(format!("{action}: invalid response")))?;
+    if envelope.error.is_some() || envelope.status.is_some_and(|status| status >= 400) {
+        return Err(CloudError::new(format!(
+            "{action}: invalid response envelope"
+        )));
+    }
     Ok(envelope.result)
 }
 
@@ -638,52 +640,47 @@ async fn parse_response<T: DeserializeOwned>(
 /// matching `state`, then return the code. A `state` mismatch is a CSRF failure
 /// and aborts; unrelated paths (e.g. `/favicon.ico`) are answered and ignored.
 async fn wait_for_callback(listener: TcpListener, expected_state: &str) -> CloudResult<String> {
-    let accept = async {
-        loop {
-            let (mut stream, _) = listener
-                .accept()
-                .await
-                .map_err(|error| CloudError::new(format!("loopback accept failed: {error}")))?;
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|error| CloudError::new(format!("loopback accept failed: {error}")))?;
 
-            let target = match read_request_target(&mut stream).await {
-                Some(target) => target,
-                None => {
-                    write_response(&mut stream, "400 Bad Request", BAD_REQUEST_HTML).await;
-                    continue;
-                }
-            };
-
-            let (path, query) = split_target(&target);
-            if path != "/callback" {
-                write_response(&mut stream, "404 Not Found", NOT_FOUND_HTML).await;
+        let target = match read_request_target(&mut stream).await {
+            Some(target) => target,
+            None => {
+                write_response(&mut stream, "400 Bad Request", BAD_REQUEST_HTML).await;
                 continue;
             }
+        };
 
-            let params = parse_query(query);
-            match (params.get("code"), params.get("state")) {
-                (Some(code), Some(got_state)) if got_state == expected_state => {
-                    write_response(&mut stream, "200 OK", SUCCESS_HTML).await;
-                    return Ok(code.clone());
-                }
-                (_, Some(_)) => {
+        let (path, query) = split_target(&target);
+        if path != "/callback" {
+            write_response(&mut stream, "404 Not Found", NOT_FOUND_HTML).await;
+            continue;
+        }
+
+        let params = parse_query(query);
+        match (params.get("code"), params.get("state")) {
+            (Some(code), Some(got_state)) if got_state == expected_state => {
+                if !valid_claim_code(code) {
                     write_response(&mut stream, "400 Bad Request", BAD_REQUEST_HTML).await;
-                    return Err(CloudError::auth(
-                        "access request callback failed CSRF check (state mismatch)",
-                    ));
+                    return Err(CloudError::new("invalid access request callback code"));
                 }
-                _ => {
-                    write_response(&mut stream, "400 Bad Request", BAD_REQUEST_HTML).await;
-                    continue;
-                }
+                write_response(&mut stream, "200 OK", SUCCESS_HTML).await;
+                return Ok(code.clone());
+            }
+            (_, Some(_)) => {
+                write_response(&mut stream, "400 Bad Request", BAD_REQUEST_HTML).await;
+                return Err(CloudError::auth(
+                    "access request callback failed CSRF check (state mismatch)",
+                ));
+            }
+            _ => {
+                write_response(&mut stream, "400 Bad Request", BAD_REQUEST_HTML).await;
+                continue;
             }
         }
-    };
-
-    match tokio::time::timeout(APPROVAL_TIMEOUT, accept).await {
-        Ok(result) => result,
-        Err(_) => Err(CloudError::new(
-            "timed out waiting for access request approval",
-        )),
     }
 }
 
@@ -733,45 +730,255 @@ const BAD_REQUEST_HTML: &str = "<!doctype html><html><body>Invalid request. You 
 
 // ── status polling fallback ──────────────────────────────────────────────────
 
-async fn poll_until_approved(
+/// An immutable wall deadline with a monotonic ceiling: clock rollback cannot
+/// extend it, while a forward adjustment may shorten it.
+struct Deadline {
+    epoch_millis: i64,
+    monotonic: Instant,
+}
+
+fn epoch_millis() -> CloudResult<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .ok_or_else(|| CloudError::new("invalid system clock for access request"))
+}
+
+impl Deadline {
+    fn new(value: Option<i64>, now: i64, instant: Instant) -> CloudResult<Self> {
+        let epoch_millis = value.filter(|value| (1..=MAX_EPOCH_MILLIS).contains(value))
+            .ok_or_else(|| CloudError::new("access request has a missing or invalid deadline; server deadline support is required"))?;
+        let remaining = Duration::from_millis(epoch_millis.saturating_sub(now).max(0) as u64);
+        let monotonic = instant
+            .checked_add(remaining)
+            .ok_or_else(|| CloudError::new("access request deadline is not representable"))?;
+        Ok(Self {
+            epoch_millis,
+            monotonic,
+        })
+    }
+
+    fn remaining_at(&self, now: i64, instant: Instant) -> Duration {
+        Duration::from_millis(self.epoch_millis.saturating_sub(now).max(0) as u64)
+            .min(self.monotonic.saturating_duration_since(instant))
+    }
+
+    fn remaining(&self) -> CloudResult<Duration> {
+        Ok(self.remaining_at(epoch_millis()?, Instant::now()))
+    }
+}
+
+struct PendingApproval<'a> {
+    request_id: &'a str,
+    deadline: Deadline,
+}
+
+impl<'a> PendingApproval<'a> {
+    fn new(created: &'a CreateAccessRequestResponse) -> CloudResult<Self> {
+        if created.request_id.trim().is_empty()
+            || created.approval_url.trim().is_empty()
+            || created.status.as_deref() != Some("pending")
+        {
+            return Err(CloudError::new("file access request: incomplete response"));
+        }
+        let now = Instant::now();
+        let mut deadline = Deadline::new(created.expires_at, epoch_millis()?, now)?;
+        deadline.monotonic = deadline.monotonic.min(now + APPROVAL_TIMEOUT);
+        Ok(Self {
+            request_id: &created.request_id,
+            deadline,
+        })
+    }
+}
+
+// Contains a secret. Do not derive Debug or include it in diagnostics.
+struct ClaimPermit {
+    code: String,
+    deadline: Deadline,
+}
+
+fn valid_claim_code(code: &str) -> bool {
+    (1..=512).contains(&code.len())
+        && code
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+}
+
+fn interpret_status(
+    status: AccessRequestStatus,
+    pending: &PendingApproval<'_>,
+    callback_code: Option<&str>,
+) -> CloudResult<Option<ClaimPermit>> {
+    if status.request_id.as_deref() != Some(pending.request_id)
+        || status.expires_at != Some(pending.deadline.epoch_millis)
+    {
+        return Err(CloudError::new(
+            "access request status has inconsistent identity or pending deadline",
+        ));
+    }
+    match status.status.as_deref() {
+        Some("pending") => Ok(None),
+        Some("denied") => Err(CloudError::new("access request denied")),
+        Some("expired") => Err(CloudError::new("access request expired")),
+        Some("approved") => {
+            let deadline = Deadline::new(
+                status.claim_code_expires_at,
+                epoch_millis()?,
+                Instant::now(),
+            )?;
+            if let Some(key_id) = status.issued_key_id {
+                return Err(CloudError::new(if key_id.trim().is_empty() {
+                    "access request has invalid issued key identity"
+                } else {
+                    "access request has already been claimed"
+                }));
+            }
+            if deadline.remaining()?.is_zero() {
+                return Err(CloudError::new("access request claim window expired"));
+            }
+            let code = status
+                .claim_code
+                .filter(|code| valid_claim_code(code))
+                .ok_or_else(|| {
+                    CloudError::new("approved access request has no usable claim code")
+                })?;
+            if callback_code.is_some_and(|callback| callback != code) {
+                return Err(CloudError::new(
+                    "access request callback does not match authoritative status",
+                ));
+            }
+            Ok(Some(ClaimPermit { code, deadline }))
+        }
+        _ => Err(CloudError::new("invalid access request status")),
+    }
+}
+
+enum OperationError {
+    Timeout,
+    Failed(CloudError),
+}
+
+impl OperationError {
+    fn into_cloud(self, timeout_message: &str) -> CloudError {
+        match self {
+            Self::Timeout => CloudError::new(timeout_message),
+            Self::Failed(error) => error,
+        }
+    }
+}
+
+/// Covers send, body and decoding. The elapsed check also catches synchronous
+/// decoding that finishes after the timeout without yielding to Tokio.
+async fn operation<T>(
+    budget: Duration,
+    future: impl std::future::Future<Output = CloudResult<T>>,
+) -> Result<T, OperationError> {
+    if budget.is_zero() {
+        return Err(OperationError::Timeout);
+    }
+    let start = Instant::now();
+    match tokio::time::timeout(budget, future).await {
+        Ok(result) if start.elapsed() < budget => result.map_err(OperationError::Failed),
+        _ => Err(OperationError::Timeout),
+    }
+}
+
+async fn fetch_status(
     http: &reqwest::Client,
     status_url: &str,
     auth: &RequestAuth,
-) -> CloudResult<String> {
-    let deadline = Instant::now() + APPROVAL_TIMEOUT;
+) -> CloudResult<Option<AccessRequestStatus>> {
+    let response = authorized(http.get(status_url), auth)
+        .send()
+        .await
+        .map_err(|error| {
+            CloudError::new(format!("poll access request: {}", error.without_url()))
+        })?;
+    if response.status().is_server_error()
+        || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
+    {
+        return Ok(None);
+    }
+    parse_response(response, "poll access request", false)
+        .await
+        .map(Some)
+}
+
+async fn wait_for_approval(
+    http: &reqwest::Client,
+    status_url: &str,
+    auth: &RequestAuth,
+    pending: PendingApproval<'_>,
+    listener: TcpListener,
+    state: &str,
+) -> CloudResult<ClaimPermit> {
+    let callback = wait_for_callback(listener, state);
+    tokio::pin!(callback);
+    let mut callback_code = None;
     loop {
-        tokio::time::sleep(POLL_INTERVAL).await;
-        if Instant::now() > deadline {
+        let remaining = pending.deadline.remaining()?;
+        if !remaining.is_zero() {
+            tokio::select! {
+                result = &mut callback, if callback_code.is_none() => callback_code = Some(result?),
+                _ = tokio::time::sleep(POLL_INTERVAL.min(remaining)) => {},
+            }
+        }
+        let remaining = pending.deadline.remaining()?;
+        let final_observation = remaining.is_zero();
+        let budget = if final_observation {
+            OPERATION_TIMEOUT
+        } else {
+            OPERATION_TIMEOUT.min(remaining)
+        };
+        let fetch = operation(budget, fetch_status(http, status_url, auth));
+        tokio::pin!(fetch);
+        let fetched = tokio::select! {
+            biased;
+            result = &mut callback, if callback_code.is_none() => {
+                callback_code = Some(result?);
+                fetch.await
+            }
+            result = &mut fetch => result,
+        };
+        let status = match fetched {
+            Ok(status) => status,
+            Err(OperationError::Timeout)
+                if !final_observation && pending.deadline.remaining()?.is_zero() =>
+            {
+                continue;
+            }
+            Err(error) => return Err(error.into_cloud("poll access request timed out")),
+        };
+        if let Some(status) = status
+            && let Some(permit) = interpret_status(status, &pending, callback_code.as_deref())?
+        {
+            return Ok(permit);
+        }
+        if final_observation {
             return Err(CloudError::new(
-                "timed out waiting for access request approval",
+                "access request approval wait ended without a usable approval",
             ));
         }
-        let response = authorized(http.get(status_url), auth)
-            .send()
-            .await
-            .map_err(|error| {
-                CloudError::new(format!("poll access request: {}", error.without_url()))
-            })?;
-        if response.status().is_server_error()
-            || response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS
-        {
-            continue;
-        }
-        let status: AccessRequestStatus =
-            parse_response(response, "poll access request", false).await?;
-        match status.status.as_deref() {
-            Some("pending") => continue,
-            Some("approved") => {
-                return status
-                    .claim_code
-                    .filter(|code| !code.is_empty())
-                    .ok_or_else(|| CloudError::new("approved access request has no claim code"));
-            }
-            Some("denied") => return Err(CloudError::new("access request denied")),
-            Some("expired") => return Err(CloudError::new("access request expired")),
-            _ => return Err(CloudError::new("invalid access request status")),
-        }
     }
+}
+
+async fn claim_access_key(
+    http: &reqwest::Client,
+    claim_url: &str,
+    auth: &RequestAuth,
+    permit: &ClaimPermit,
+    verifier: &str,
+) -> CloudResult<ClaimResponse> {
+    let remaining = permit.deadline.remaining()?;
+    if remaining.is_zero() {
+        return Err(CloudError::new("access request claim window expired"));
+    }
+    operation(OPERATION_TIMEOUT.min(remaining), send_json(
+        http.post(claim_url), auth,
+        &ClaimBody { claim_code: &permit.code, code_verifier: verifier },
+        "claim access key", false,
+    )).await.map_err(|error| error.into_cloud("claim access key timed out; the claim may have completed on the server; no credentials were installed"))
 }
 
 #[cfg(test)]
@@ -779,6 +986,371 @@ mod tests {
     use super::*;
     use crate::cli::{Cli, Commands};
     use clap::Parser;
+
+    fn created(expires_at: i64) -> CreateAccessRequestResponse {
+        CreateAccessRequestResponse {
+            request_id: "request-1".into(),
+            status: Some("pending".into()),
+            approval_url: "https://example.invalid/approve".into(),
+            expires_at: Some(expires_at),
+        }
+    }
+
+    fn status_body(status: &str, expires_at: i64) -> serde_json::Value {
+        serde_json::json!({"result": {"requestId":"request-1", "expiresAt":expires_at, "status":status, "claimCode":"test-code", "claimCodeExpiresAt":4102444800000_i64}})
+    }
+
+    async fn poll_until_approved(
+        http: &reqwest::Client,
+        url: &str,
+        auth: &RequestAuth,
+    ) -> CloudResult<String> {
+        let created = created(4102444800000);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        wait_for_approval(
+            http,
+            url,
+            auth,
+            PendingApproval::new(&created)?,
+            listener,
+            "state",
+        )
+        .await
+        .map(|permit| permit.code)
+    }
+
+    #[test]
+    fn deadline_boundaries_clock_changes_and_epoch_domain() {
+        let instant = Instant::now();
+        for (epoch, remaining) in [(999, 0), (1000, 0), (1001, 1)] {
+            let deadline = Deadline::new(Some(epoch), 1000, instant).unwrap();
+            assert_eq!(
+                deadline.remaining_at(1000, instant),
+                Duration::from_millis(remaining)
+            );
+        }
+        let deadline = Deadline::new(Some(2000), 1000, instant).unwrap();
+        assert_eq!(
+            deadline.remaining_at(500, instant + Duration::from_millis(600)),
+            Duration::from_millis(400)
+        );
+        assert_eq!(
+            deadline.remaining_at(1900, instant),
+            Duration::from_millis(100)
+        );
+        for value in [
+            None,
+            Some(-1),
+            Some(0),
+            Some(MAX_EPOCH_MILLIS + 1),
+            Some(i64::MAX),
+        ] {
+            assert!(Deadline::new(value, 1000, instant).is_err());
+        }
+        // Platforms may reject a huge Instant, but must never panic or clamp.
+        if let Ok(deadline) = Deadline::new(Some(MAX_EPOCH_MILLIS), 1000, instant) {
+            assert_eq!(deadline.epoch_millis, MAX_EPOCH_MILLIS);
+        }
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!(1.5),
+            serde_json::json!("secret"),
+            serde_json::json!(18446744073709551615_u64),
+        ] {
+            let wire = serde_json::json!({"requestId":"request-1", "status":"pending", "approvalUrl":"https://example.invalid", "expiresAt":value});
+            if let Ok(created) = serde_json::from_value::<CreateAccessRequestResponse>(wire) {
+                assert!(PendingApproval::new(&created).is_err());
+            }
+        }
+        let future = created(4102444800000);
+        assert!(
+            PendingApproval::new(&future)
+                .unwrap()
+                .deadline
+                .remaining()
+                .unwrap()
+                <= APPROVAL_TIMEOUT
+        );
+    }
+
+    #[test]
+    fn interpret_status_requires_independent_claim_deadline_and_valid_code() {
+        let created = created(1); // pending expiry cannot cut off an approved claim
+        let pending = PendingApproval::new(&created).unwrap();
+        let body = status_body("approved", 1);
+        let parse = |body: serde_json::Value| {
+            serde_json::from_value::<AccessRequestStatus>(body["result"].clone()).unwrap()
+        };
+        assert!(
+            interpret_status(parse(body.clone()), &pending, Some("test-code"))
+                .unwrap()
+                .is_some()
+        );
+        for (field, value) in [
+            ("claimCodeExpiresAt", serde_json::json!(null)),
+            ("claimCodeExpiresAt", serde_json::json!(1)),
+            ("claimCode", serde_json::json!(null)),
+            ("claimCode", serde_json::json!(" ")),
+            ("claimCode", serde_json::json!("a".repeat(513))),
+            ("issuedKeyId", serde_json::json!("issued")),
+            ("issuedKeyId", serde_json::json!("")),
+            ("requestId", serde_json::json!("other")),
+            ("expiresAt", serde_json::json!(2)),
+        ] {
+            let mut invalid = body.clone();
+            invalid["result"][field] = value;
+            assert!(
+                interpret_status(parse(invalid), &pending, None).is_err(),
+                "{field}"
+            );
+        }
+        assert!(interpret_status(parse(body), &pending, Some("different-secret")).is_err());
+        for code in ["a", "_-09AZaz"] {
+            assert!(valid_claim_code(code));
+        }
+        for code in ["", "a=", " a", "a\n", "é"] {
+            assert!(!valid_claim_code(code));
+        }
+        assert!(valid_claim_code(&"a".repeat(512)));
+    }
+
+    #[tokio::test]
+    async fn wait_for_approval_final_observation_is_once_and_can_claim_after_pending_expiry() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        for (http_status, status, success) in [
+            (200, "approved", true),
+            (200, "pending", false),
+            (429, "pending", false),
+            (503, "pending", false),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(http_status).set_body_json(status_body(status, 1)),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+            let created = created(1);
+            let result = wait_for_approval(
+                &reqwest::Client::new(),
+                &server.uri(),
+                &RequestAuth::Bearer {
+                    token: "fake".into(),
+                },
+                PendingApproval::new(&created).unwrap(),
+                TcpListener::bind("127.0.0.1:0").await.unwrap(),
+                "state",
+            )
+            .await;
+            assert_eq!(result.is_ok(), success);
+        }
+    }
+
+    #[tokio::test]
+    async fn operation_timeout_covers_body_and_claim_is_not_retried() {
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(Duration::from_secs(1)))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let permit = ClaimPermit {
+            code: "secret-code".into(),
+            deadline: Deadline::new(
+                Some(epoch_millis().unwrap() + 50),
+                epoch_millis().unwrap(),
+                Instant::now(),
+            )
+            .unwrap(),
+        };
+        let error = claim_access_key(
+            &reqwest::Client::new(),
+            &server.uri(),
+            &RequestAuth::Bearer {
+                token: "fake".into(),
+            },
+            &permit,
+            "secret-verifier",
+        )
+        .await
+        .err()
+        .unwrap();
+        assert!(error.message.contains("may have completed"));
+        assert!(!error.message.contains("secret"));
+        let result = operation::<()>(Duration::from_millis(5), async {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            Ok(())
+        })
+        .await;
+        assert!(matches!(result, Err(OperationError::Timeout)));
+    }
+
+    #[tokio::test]
+    async fn wait_for_approval_callback_is_only_a_signal_and_idle_socket_is_bounded() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        for callback in [true, false] {
+            let server = MockServer::start().await;
+            let attempts = Arc::new(AtomicUsize::new(0));
+            let count = attempts.clone();
+            Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(move |_: &wiremock::Request| {
+                    let status = if callback && count.fetch_add(1, Ordering::SeqCst) == 0 {
+                        "pending"
+                    } else {
+                        "approved"
+                    };
+                    ResponseTemplate::new(200).set_body_json(status_body(status, 4102444800000))
+                })
+                .expect(if callback { 2 } else { 1 })
+                .mount(&server)
+                .await;
+            let created = created(4102444800000);
+            let mut pending = PendingApproval::new(&created).unwrap();
+            // Exercise the local wait cap without waiting fifteen minutes.
+            pending.deadline.monotonic = Instant::now() + Duration::from_millis(100);
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let client = reqwest::Client::new();
+            let auth = RequestAuth::Bearer {
+                token: "fake".into(),
+            };
+            let url = server.uri();
+            let wait = wait_for_approval(&client, &url, &auth, pending, listener, "state");
+            let notify = async {
+                let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+                if callback {
+                    stream
+                        .write_all(b"GET /callback?code=test-code&state=state HTTP/1.1\r\n\r\n")
+                        .await
+                        .unwrap();
+                    let mut response = Vec::new();
+                    stream.read_to_end(&mut response).await.unwrap();
+                    assert!(String::from_utf8_lossy(&response).starts_with("HTTP/1.1 200"));
+                } else {
+                    // No request line: the outer pending clock must cancel this read.
+                    let mut response = Vec::new();
+                    stream.read_to_end(&mut response).await.unwrap();
+                }
+            };
+            let (permit, ()) =
+                tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(wait, notify) })
+                    .await
+                    .unwrap();
+            assert_eq!(permit.unwrap().code, "test-code");
+        }
+    }
+
+    #[tokio::test]
+    async fn wait_for_approval_pending_transport_crosses_boundary_once() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let count = Arc::new(AtomicUsize::new(0));
+        let attempts = count.clone();
+        Mock::given(wiremock::matchers::method("GET"))
+            .respond_with(move |_: &wiremock::Request| {
+                let response = ResponseTemplate::new(200)
+                    .set_body_json(status_body("approved", 4102444800000));
+                if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                    response.set_delay(Duration::from_secs(1))
+                } else {
+                    response
+                }
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+        let created = created(4102444800000);
+        let mut pending = PendingApproval::new(&created).unwrap();
+        pending.deadline.monotonic = Instant::now() + Duration::from_millis(100);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let client = reqwest::Client::new();
+        let auth = RequestAuth::Bearer {
+            token: "fake".into(),
+        };
+        let url = server.uri();
+        let wait = wait_for_approval(&client, &url, &auth, pending, listener, "state");
+        let notify = async {
+            client
+                .get(format!(
+                    "http://{address}/callback?code=test-code&state=state"
+                ))
+                .send()
+                .await
+                .unwrap();
+        };
+        let (permit, ()) =
+            tokio::time::timeout(Duration::from_secs(2), async { tokio::join!(wait, notify) })
+                .await
+                .unwrap();
+        assert_eq!(permit.unwrap().code, "test-code");
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn operation_bounds_response_body_read_and_sanitizes_envelope() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(stream.read(&mut request).await.unwrap() > 0);
+            stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\n{")
+                .await
+                .unwrap();
+            std::future::pending::<()>().await;
+        });
+        let client = reqwest::Client::new();
+        let result = operation(Duration::from_millis(50), async {
+            let response = client
+                .get(format!("http://{address}"))
+                .send()
+                .await
+                .unwrap();
+            parse_response::<AccessRequestStatus>(response, "poll access request", false).await
+        })
+        .await;
+        server.abort();
+        assert!(matches!(result, Err(OperationError::Timeout)));
+
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        for field in ["error", "status"] {
+            let server = MockServer::start().await;
+            let mut body = status_body("approved", 1);
+            body[field] = if field == "error" {
+                serde_json::json!("secret-echo")
+            } else {
+                serde_json::json!(500)
+            };
+            Mock::given(wiremock::matchers::method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(body))
+                .mount(&server)
+                .await;
+            let error = fetch_status(
+                &client,
+                &server.uri(),
+                &RequestAuth::Bearer {
+                    token: "fake".into(),
+                },
+            )
+            .await
+            .err()
+            .unwrap();
+            assert!(!error.message.contains("secret-echo"));
+            assert!(error.message.contains("envelope"));
+        }
+    }
 
     #[test]
     fn approval_handoff_no_browser_skips_launcher_and_default_launches_once() {
@@ -807,7 +1379,7 @@ mod tests {
     async fn poll_until_approved_propagates_terminal_and_invalid_responses() {
         use wiremock::{Mock, MockServer, ResponseTemplate};
         let mut tasks = Vec::new();
-        for (http_status, body, auth_error) in [
+        for (http_status, mut body, auth_error) in [
             (401, serde_json::json!({"error":"echo-claim-code"}), true),
             (403, serde_json::json!({"error":"echo-claim-code"}), true),
             (400, serde_json::json!({"error":"echo-claim-code"}), false),
@@ -844,6 +1416,17 @@ mod tests {
                 false,
             ),
         ] {
+            if let Some(result) = body
+                .get_mut("result")
+                .and_then(serde_json::Value::as_object_mut)
+            {
+                result.insert("requestId".into(), serde_json::json!("request-1"));
+                result.insert("expiresAt".into(), serde_json::json!(4102444800000_i64));
+                result.insert(
+                    "claimCodeExpiresAt".into(),
+                    serde_json::json!(4102444800000_i64),
+                );
+            }
             tasks.push(tokio::spawn(async move {
                 let server = MockServer::start().await;
                 Mock::given(wiremock::matchers::method("GET"))
@@ -892,10 +1475,9 @@ mod tests {
                     0 => ResponseTemplate::new(429),
                     1 => ResponseTemplate::new(503),
                     2 => ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({"result":{"status":"pending"}})),
-                    _ => ResponseTemplate::new(200).set_body_json(
-                        serde_json::json!({"result":{"status":"approved","claimCode":"test-code"}}),
-                    ),
+                        .set_body_json(status_body("pending", 4102444800000)),
+                    _ => ResponseTemplate::new(200)
+                        .set_body_json(status_body("approved", 4102444800000)),
                 }
             })
             .expect(4)

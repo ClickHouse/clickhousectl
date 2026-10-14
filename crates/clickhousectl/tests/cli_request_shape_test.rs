@@ -29814,6 +29814,14 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
             "claim-malformed",
             "claim-empty",
             "csrf",
+            "callback-mismatch",
+            "claim-deadline-missing",
+            "claim-deadline-expired",
+            "already-claimed",
+            "pending-expired-approved",
+            "pending-expired-pending",
+            "create-deadline-missing",
+            "create-envelope-error",
         ] {
             tasks.push(tokio::spawn(async move {
                 let server = MockServer::start().await;
@@ -29824,24 +29832,36 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                 let before = std::fs::read(&credentials_path).unwrap();
                 let oauth_before = std::fs::read(tokens.join("tokens.json")).unwrap();
                 let approval_url = format!("{}/approve/request-1", server.uri());
+                let pending_expiry = if scenario.starts_with("pending-expired") {1_i64} else {4102444800000_i64};
+                let mut create = serde_json::json!({"result": {
+                    "requestId":"request-1", "status":"pending", "approvalUrl":approval_url, "expiresAt":pending_expiry
+                }});
+                if scenario == "create-deadline-missing" { create["result"]["expiresAt"] = Value::Null; }
+                if scenario == "create-envelope-error" { create["error"] = serde_json::json!("secret-envelope-error"); }
                 Mock::given(method("POST")).and(path("/v1/organizations/org/accessRequests"))
                     .and(header("authorization", "Bearer test-bearer-token"))
-                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
-                        "requestId":"request-1", "status":"pending", "approvalUrl":approval_url, "expiresAt":4102444800000_i64
-                    }}))).expect(1).mount(&server).await;
+                    .respond_with(ResponseTemplate::new(200).set_body_json(create)).expect(1).mount(&server).await;
+                let mut approved = serde_json::json!({"result":{"requestId":"request-1","expiresAt":pending_expiry,"claimCodeExpiresAt":4102444800000_i64,"status":"approved","claimCode":"claim-code-secret"}});
+                match scenario {
+                    "claim-deadline-missing" => approved["result"]["claimCodeExpiresAt"] = Value::Null,
+                    "claim-deadline-expired" => approved["result"]["claimCodeExpiresAt"] = serde_json::json!(1),
+                    "already-claimed" => approved["result"]["issuedKeyId"] = serde_json::json!("issued-id"),
+                    "pending-expired-pending" => approved["result"]["status"] = serde_json::json!("pending"),
+                    _ => {},
+                }
                 let status = match scenario {
                     "401" | "403" => ResponseTemplate::new(scenario.parse::<u16>().unwrap()).set_body_string("claim-code-secret"),
-                    "denied" | "expired" | "unknown" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"status":scenario}})),
+                    "denied" | "expired" | "unknown" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"requestId":"request-1","expiresAt":4102444800000_i64,"status":scenario}})),
                     "malformed" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":"claim-code-secret"})),
-                    "empty-code" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"status":"approved","claimCode":""}})),
-                    "callback" | "csrf" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"status":"pending"}})),
-                    _ => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"status":"approved","claimCode":"claim-code-secret"}})),
+                    "empty-code" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"requestId":"request-1","expiresAt":4102444800000_i64,"claimCodeExpiresAt":4102444800000_i64,"status":"approved","claimCode":""}})),
+                    "csrf" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"requestId":"request-1","expiresAt":4102444800000_i64,"status":"pending"}})),
+                    _ => ResponseTemplate::new(200).set_body_json(approved),
                 };
                 Mock::given(method("GET")).and(path("/v1/organizations/org/accessRequests/request-1"))
                     .and(header("authorization", "Bearer test-bearer-token"))
                     .respond_with(status).mount(&server).await;
-                let successful = matches!(scenario, "callback" | "poll");
-                let claims = usize::from(successful || scenario.starts_with("claim-"));
+                let successful = matches!(scenario, "callback" | "poll" | "pending-expired-approved");
+                let claims = usize::from(successful || matches!(scenario, "claim-error" | "claim-malformed" | "claim-empty"));
                 Mock::given(method("POST")).and(path("/v1/organizations/org/accessRequests/request-1/claim"))
                     .and(header("authorization", "Bearer test-bearer-token"))
                     .respond_with(move |request: &wiremock::Request| {
@@ -29876,7 +29896,7 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                     }
                     child.wait_with_output().unwrap()
                 });
-                if matches!(scenario, "callback" | "csrf") {
+                if matches!(scenario, "callback" | "csrf" | "callback-mismatch") {
                     let filed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
                         loop {
                             if let Some(request) = server.received_requests().await.unwrap().first() {
@@ -29886,7 +29906,7 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                         }
                     }).await.unwrap();
                     let response = reqwest::Client::new().get(filed["redirectUri"].as_str().unwrap())
-                        .query(&[("code", "claim-code-secret"), ("state", if scenario == "csrf" {"wrong-state"} else {filed["state"].as_str().unwrap()})])
+                        .query(&[("code", if scenario == "callback-mismatch" {"mismatched-secret-code"} else {"claim-code-secret"}), ("state", if scenario == "csrf" {"wrong-state"} else {filed["state"].as_str().unwrap()})])
                         .send().await.unwrap();
                     assert_eq!(response.status().as_u16(), if scenario == "csrf" {400} else {200});
                 }
@@ -29894,12 +29914,14 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                 let expected_exit = if successful {0} else if matches!(scenario, "401" | "403" | "claim-error" | "csrf") {4} else {1};
                 assert_eq!(output.status.code(), Some(expected_exit), "{scenario}: {}", String::from_utf8_lossy(&output.stderr));
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                assert!(stderr.contains(&approval_url), "{scenario}: {stderr}");
+                assert_eq!(stderr.contains(&approval_url), !scenario.starts_with("create-"), "{scenario}: {stderr}");
                 assert!(!String::from_utf8_lossy(&output.stdout).contains(&approval_url));
                 assert_access_output_has_no_credentials(&output);
                 let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), stderr);
                 assert!(!combined.contains("claim-code-secret"));
                 assert!(!combined.contains("issued-secret"));
+                assert!(!combined.contains("mismatched-secret-code"));
+                assert!(!combined.contains("secret-envelope-error"));
                 let requests = server.received_requests().await.unwrap();
                 let filed: Value = serde_json::from_slice(&requests[0].body).unwrap();
                 assert!(!combined.contains(filed["state"].as_str().unwrap()));
