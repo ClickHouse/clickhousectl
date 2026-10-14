@@ -196,11 +196,12 @@ pub enum CloudCommands {
         command: AuthCommands,
     },
 
-    /// Request a scoped API key via browser approval
+    /// Discover roles and request scoped API keys
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
-  A human approves it in a browser; on approval the issued key is saved to the credentials file.
+  Discover assignable roles with `cloud access roles`; policies describe current authority.
+  Request a scoped key with `cloud access request`; a human approves it in a browser.
   API URL: explicit --url, then saved OAuth login environment, then the normal Cloud default.
   Exactly one user organization is selected automatically; otherwise choose --org or --org-name.
   Organization IDs: `cloud org list --json`. --org-id remains supported.")]

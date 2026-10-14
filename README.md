@@ -126,6 +126,15 @@ CLI flags take precedence, clickhousectl prints a one-line note to stderr.
 `cloud auth status` also marks the environment credentials as configured but
 inactive and identifies the source that outranked them.
 
+### Discover assignable roles
+
+```bash
+clickhousectl cloud access roles
+clickhousectl cloud access roles --org <organization-id> --json
+```
+
+Discovery uses your refreshed OAuth user identity even when an API key is saved, with the same organization selectors and endpoint precedence as `cloud access request`. Human output identifies the selected organization and lists role IDs/names with policy effects and resource scopes. `--json` returns exactly the complete role array, including all ALLOW/DENY policies and optional SQL tags; an eligible empty menu is `[]`. SQL grant/revoke strings and unknown values remain opaque. Incomplete required discovery data fails before any menu is printed, rather than implying empty permissions or falling back to the administrative catalog. Discovery describes current authority, not a guarantee of later approval or a role recommendation.
+
 ### Request a scoped API key (access request)
 
 `cloud access request` obtains a scoped API key through the control plane's PKCE approval handshake, so an agent can get a narrowly-scoped key that a human approves in a browser rather than reusing a long-lived one.
