@@ -3,10 +3,12 @@
 //! Users drop named ClickHouse config files into `~/.clickhouse/configs/` and
 //! reference them by name with `clickhousectl local server start --config
 //! <NAME>`. The file is staged into the server's `config.d/` directory, so it
-//! is merged as an overlay on ClickHouse's built-in defaults; the launcher
-//! still forces `--path=./` and the ports as command-line overrides (which beat
-//! config-file values), so the managed server lifecycle is preserved regardless
-//! of what the config file contains.
+//! is merged as an overlay on ClickHouse's built-in defaults. The launcher
+//! writes the data path and ports to its own `config.d/` file, named to merge
+//! after every other file there, so the managed server lifecycle is preserved
+//! regardless of what the config file contains. That file, unlike command-line
+//! overrides, survives the config reloads ClickHouse runs whenever `config.d/`
+//! changes on a running server.
 
 use crate::error::{Error, Result};
 use crate::paths;
@@ -17,6 +19,13 @@ const CONFIG_EXTS: [&str; 3] = ["xml", "yaml", "yml"];
 
 /// Filename stem for the chctl-managed `config.d` overlay file.
 const OVERLAY_STEM: &str = "chctl-config";
+
+/// File holding the settings the launcher manages: the data path and ports.
+///
+/// ClickHouse merges `config.d/` files in lexicographic order with later files
+/// winning, so the name sorts after every other chctl file there (`chctl-*`),
+/// including the `--config` overlay.
+pub const MANAGED_CONFIG_FILE: &str = "zz-chctl-managed.xml";
 
 /// Returns true if `name` already ends in a recognized config extension.
 fn has_config_ext(name: &str) -> bool {
@@ -167,6 +176,58 @@ pub fn apply_config_overlay(data_dir: &Path, source: Option<&Path>) -> Result<()
     std::fs::create_dir_all(&config_d)?;
     std::fs::copy(source, config_d.join(format!("{OVERLAY_STEM}.{ext}")))?;
     Ok(())
+}
+
+/// Renders the managed config file for a server listening on these ports.
+fn managed_config_xml(http_port: u16, tcp_port: u16) -> String {
+    format!(
+        "<!-- Managed by clickhousectl; rewritten on every `local server start`. -->\n\
+         <clickhouse>\n    \
+         <path>./</path>\n    \
+         <http_port>{http_port}</http_port>\n    \
+         <tcp_port>{tcp_port}</tcp_port>\n\
+         </clickhouse>\n"
+    )
+}
+
+/// Writes the managed config file into `<data_dir>/config.d/`.
+///
+/// The file is left untouched when it already holds this content: any write
+/// under `config.d/` makes a running ClickHouse reload its config, and this
+/// runs only before the server starts, so it must never be the trigger itself.
+pub fn write_managed_config(data_dir: &Path, http_port: u16, tcp_port: u16) -> Result<()> {
+    let config_d = data_dir.join("config.d");
+    let path = config_d.join(MANAGED_CONFIG_FILE);
+    let content = managed_config_xml(http_port, tcp_port);
+    if std::fs::read_to_string(&path).is_ok_and(|existing| existing == content) {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&config_d)?;
+    std::fs::write(path, content)?;
+    Ok(())
+}
+
+/// Reads the ports from the managed config file in `<data_dir>/config.d/`.
+///
+/// Returns `(http_port, tcp_port)`, each absent when the file or the element is
+/// missing or unparseable. Only the file [`write_managed_config`] writes is
+/// read, so plain element matching is enough.
+pub fn read_managed_ports(data_dir: &Path) -> (Option<u16>, Option<u16>) {
+    let Ok(content) = std::fs::read_to_string(data_dir.join("config.d").join(MANAGED_CONFIG_FILE))
+    else {
+        return (None, None);
+    };
+    (
+        element_u16(&content, "http_port"),
+        element_u16(&content, "tcp_port"),
+    )
+}
+
+fn element_u16(content: &str, tag: &str) -> Option<u16> {
+    let open = format!("<{tag}>");
+    let start = content.find(&open)? + open.len();
+    let end = start + content[start..].find(&format!("</{tag}>"))?;
+    content[start..end].trim().parse().ok()
 }
 
 #[cfg(test)]
@@ -372,5 +433,72 @@ mod tests {
         let data_dir = tmp.path().join("data");
         // Should not error even though config.d does not exist.
         apply_config_overlay(&data_dir, None).unwrap();
+    }
+
+    #[test]
+    fn managed_config_sets_path_and_ports() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_managed_config(tmp.path(), 18123, 19000).unwrap();
+
+        let staged =
+            std::fs::read_to_string(tmp.path().join("config.d").join(MANAGED_CONFIG_FILE)).unwrap();
+        assert!(staged.contains("<path>./</path>"), "got: {staged}");
+        assert_eq!(read_managed_ports(tmp.path()), (Some(18123), Some(19000)));
+    }
+
+    #[test]
+    fn managed_config_rewrites_changed_ports() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_managed_config(tmp.path(), 8123, 9000).unwrap();
+        write_managed_config(tmp.path(), 8124, 9001).unwrap();
+        assert_eq!(read_managed_ports(tmp.path()), (Some(8124), Some(9001)));
+    }
+
+    #[test]
+    fn managed_config_unchanged_content_is_not_rewritten() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_managed_config(tmp.path(), 8123, 9000).unwrap();
+        let path = tmp.path().join("config.d").join(MANAGED_CONFIG_FILE);
+        let old = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1);
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(old)
+            .unwrap();
+
+        write_managed_config(tmp.path(), 8123, 9000).unwrap();
+
+        assert_eq!(std::fs::metadata(&path).unwrap().modified().unwrap(), old);
+    }
+
+    #[test]
+    fn managed_config_merges_after_other_chctl_files() {
+        // ClickHouse merges config.d in byte order, later files winning.
+        for other in ["chctl-config.xml", "chctl-config.yaml", "chctl-udf.xml"] {
+            assert!(
+                other < MANAGED_CONFIG_FILE,
+                "{other} would merge after {MANAGED_CONFIG_FILE}"
+            );
+        }
+    }
+
+    #[test]
+    fn managed_ports_absent_without_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert_eq!(read_managed_ports(tmp.path()), (None, None));
+    }
+
+    #[test]
+    fn managed_ports_ignore_unparseable_values() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config_d = tmp.path().join("config.d");
+        std::fs::create_dir(&config_d).unwrap();
+        std::fs::write(
+            config_d.join(MANAGED_CONFIG_FILE),
+            "<clickhouse><http_port>abc</http_port><tcp_port>9000</tcp_port></clickhouse>",
+        )
+        .unwrap();
+        assert_eq!(read_managed_ports(tmp.path()), (None, Some(9000)));
     }
 }

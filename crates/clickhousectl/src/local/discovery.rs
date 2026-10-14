@@ -1,10 +1,11 @@
 //! OS-level process discovery for running ClickHouse servers.
 //!
-//! Finds ClickHouse processes via `pgrep`, resolves their working directories
-//! and command-line arguments to recover server metadata (project root, name,
-//! ports, version). Used for orphaned server recovery and global server listing.
+//! Finds ClickHouse processes via `pgrep`, then reads their working
+//! directories, command-line arguments and managed config files to recover
+//! server metadata (project root, name, ports, version). Used for orphaned
+//! server recovery and global server listing.
 
-use std::{collections::HashMap, process::Command};
+use std::{collections::HashMap, path::Path, process::Command};
 
 /// The name the ClickHouse watchdog rewrites its `argv[0]` to, which is what
 /// `ps` reports as the command line of a supervising parent.
@@ -68,7 +69,8 @@ pub fn discover_clickhouse_processes() -> Vec<DiscoveredProcess> {
         .iter()
         .filter_map(|pid| {
             // Server metadata always comes from the server process, whose
-            // command line still carries the binary path and the port flags.
+            // command line carries the binary path and whose cwd holds the
+            // managed config.
             // Only the reported PID is the supervisor's.
             let reported_pid = supervisors.get(pid).copied().unwrap_or(*pid);
             let command = commands.get(pid).copied().unwrap_or_default();
@@ -98,8 +100,11 @@ fn find_clickhouse_pids() -> Vec<u32> {
 /// `cmdline`, which leaves every parsed field absent.
 fn inspect_process(reported_pid: u32, cwd: &str, cmdline: &str) -> Option<DiscoveredProcess> {
     let (project_root, server_name) = parse_server_cwd(cwd)?;
-    let http_port = parse_port_flag(cmdline, "--http_port");
-    let tcp_port = parse_port_flag(cmdline, "--tcp_port");
+    // Servers started by this CLI take their ports from the managed config
+    // file in their data directory; older releases passed them as flags.
+    let (file_http_port, file_tcp_port) = super::config::read_managed_ports(Path::new(cwd));
+    let http_port = parse_port_flag(cmdline, "--http_port").or(file_http_port);
+    let tcp_port = parse_port_flag(cmdline, "--tcp_port").or(file_tcp_port);
     let version = parse_version_from_cmdline(cmdline);
 
     Some(DiscoveredProcess {
@@ -576,6 +581,40 @@ mod tests {
         assert_eq!(proc.http_port, None);
         assert_eq!(proc.tcp_port, None);
         assert_eq!(proc.version, None);
+    }
+
+    #[test]
+    fn ports_come_from_the_managed_config_when_the_command_line_has_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("app/.clickhouse/servers/dev/data");
+        crate::local::config::write_managed_config(&data_dir, 18123, 19000).unwrap();
+
+        let proc = inspect_process(
+            4211,
+            data_dir.to_str().unwrap(),
+            "/home/al/.clickhouse/versions/26.9.1.531/clickhouse server",
+        )
+        .expect("a CLI-managed cwd is a discovered server");
+
+        assert_eq!(proc.http_port, Some(18123));
+        assert_eq!(proc.tcp_port, Some(19000));
+    }
+
+    #[test]
+    fn command_line_ports_from_older_releases_win_over_the_managed_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data_dir = tmp.path().join("app/.clickhouse/servers/dev/data");
+        crate::local::config::write_managed_config(&data_dir, 18123, 19000).unwrap();
+
+        let proc = inspect_process(
+            4211,
+            data_dir.to_str().unwrap(),
+            "/home/al/.clickhouse/versions/26.9.1.531/clickhouse server -- --path=./ --http_port=8123 --tcp_port=9000",
+        )
+        .expect("a CLI-managed cwd is a discovered server");
+
+        assert_eq!(proc.http_port, Some(8123));
+        assert_eq!(proc.tcp_port, Some(9000));
     }
 
     #[test]

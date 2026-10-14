@@ -107,11 +107,6 @@ fn create_project_scaffold(dir: PathBuf, subdirs: &[&str]) -> Result<bool> {
     Ok(created)
 }
 
-/// Returns CLI flags that point ClickHouse data into the current directory.
-pub fn server_flags() -> Vec<String> {
-    vec!["--".into(), "--path=./".into()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

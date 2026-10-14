@@ -661,16 +661,20 @@ async fn start_server(
     // config.d/ next to its working directory, so a partial override file (e.g.
     // just <query_log>) takes effect without replacing the whole config.
     // Passing it as --config-file instead would replace the embedded defaults
-    // and a partial file would fail to start. The forced --path=./ and port
-    // flags below are command-line overrides that still win over the file, so
-    // the managed lifecycle is preserved regardless of the file's contents.
+    // and a partial file would fail to start.
     config::apply_config_overlay(&data_dir, resolved_config.as_deref())?;
+    // The data path and ports go in a config.d file that merges after the
+    // overlay, so they win over the file's contents and the managed lifecycle
+    // is preserved. Command-line overrides would win too, but only until the
+    // first config reload: ClickHouse 26.1 and earlier drop them when anything
+    // in config.d changes and rebind to the default ports.
+    config::write_managed_config(&data_dir, http_port, tcp_port)?;
 
     cmd.current_dir(&data_dir);
-    cmd.args(init::server_flags());
-
-    cmd.args(server::port_flags(http_port, tcp_port));
-    cmd.args(&args);
+    if !args.is_empty() {
+        cmd.arg("--");
+        cmd.args(&args);
+    }
 
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
