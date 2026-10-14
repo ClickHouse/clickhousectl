@@ -60,6 +60,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         "postgres prometheus org",
         &[&op::POSTGRES_ORG_PROMETHEUS_GET],
     ),
+    Permission::api(
+        "postgres backup list",
+        &[&op::POSTGRES_SERVICE_BACKUP_GET_LIST],
+    ),
     Permission::api("postgres restore", &[&op::POSTGRES_INSTANCE_RESTORE]).when(&[
         Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
     ]),
@@ -88,12 +92,13 @@ use clickhouse_cloud_api::RunPostgresQueryRequest;
 use clickhouse_cloud_api::models::{
     ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultTransactionIsolation,
     PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType, PgIdProperty, PgProvider,
-    PgSize, PgVersion, PostgresInstanceConfig, PostgresLogEntry, PostgresLogsGetListSortorder,
-    PostgresMetrics, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
-    PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
-    PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
-    PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail, ResourceTagsV1,
-    ResourceTagsV1Response, SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
+    PgSize, PgVersion, PostgresBackup, PostgresInstanceConfig, PostgresLogEntry,
+    PostgresLogsGetListSortorder, PostgresMetrics, PostgresService, PostgresServiceListItem,
+    PostgresServicePatchRequest, PostgresServicePostRequest, PostgresServiceReadReplicaRequest,
+    PostgresServiceRestoreRequest, PostgresServiceSetPassword, PostgresServiceSetState,
+    PostgresServiceSetStateCommand, PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail,
+    ResourceTagsV1, ResourceTagsV1Response, SlowQueryPatternsGetListSortby,
+    SlowQueryPatternsGetListSortorder,
 };
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
@@ -331,6 +336,10 @@ CONTEXT FOR AGENTS:
     )]
     Prometheus(PrometheusCommands),
 
+    /// Inspect Postgres service backups
+    #[command(subcommand)]
+    Backup(PostgresBackupCommands),
+
     /// Restore a Postgres service to a point in time
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
@@ -482,6 +491,24 @@ CONTEXT FOR AGENTS:
 }
 
 #[derive(Subcommand)]
+pub enum PostgresBackupCommands {
+    /// List Postgres service backups
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Restore targets a point in time, not a backup key: `cloud postgres restore --restore-target`.")]
+    List {
+        /// Postgres service ID (from `cloud postgres list`)
+        postgres_id: String,
+        /// Cursor from nextCursor
+        #[arg(long)]
+        cursor: Option<String>,
+        /// Maximum records per page (1–100)
+        #[arg(long, allow_negative_numbers = true, value_parser = clap::value_parser!(i64).range(1..=100))]
+        limit: Option<i64>,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum PrometheusCommands {
     /// Get metrics for one Postgres service
     Service {
@@ -578,6 +605,7 @@ impl PostgresCommands {
             | PostgresCommands::Logs { .. }
             | PostgresCommands::SlowQueries(_)
             | PostgresCommands::Prometheus(_) => false,
+            PostgresCommands::Backup(PostgresBackupCommands::List { .. }) => false,
             PostgresCommands::Certs(CertsCommands::Get { .. }) => false,
             PostgresCommands::Config(ConfigCommands::Get { .. }) => false,
 
@@ -852,6 +880,11 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
         PostgresCommands::Prometheus(PrometheusCommands::Org) => {
             postgres_prometheus_org(client, json).await
         }
+        PostgresCommands::Backup(PostgresBackupCommands::List {
+            postgres_id,
+            cursor,
+            limit,
+        }) => postgres_backup_list(client, &postgres_id, cursor.as_deref(), limit, json).await,
         PostgresCommands::Restore {
             postgres_id,
             name,
@@ -2740,11 +2773,94 @@ async fn postgres_prometheus_org(client: &CloudClient, json: bool) -> CloudResul
     print_prometheus(&metrics, json)
 }
 
+/// One backup list page, keeping the envelope's continuation metadata for `--json`.
+#[derive(serde::Serialize)]
+struct PostgresBackupPage {
+    result: Vec<PostgresBackup>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<i64>,
+    #[serde(rename = "totalCount", skip_serializing_if = "Option::is_none")]
+    total_count: Option<i64>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
+async fn postgres_backup_list(
+    client: &CloudClient,
+    postgres_id: &str,
+    cursor: Option<&str>,
+    limit: Option<i64>,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let page = client
+        .list_postgres_backups_page(&org_id, postgres_id, cursor, limit)
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&page)?);
+    } else {
+        println!("{}", render_postgres_backup_page(page));
+    }
+    Ok(())
+}
+
+fn render_postgres_backup_page(page: PostgresBackupPage) -> String {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "Key")]
+        key: String,
+        #[tabled(rename = "Last modified")]
+        last_modified: String,
+    }
+
+    let mut out = if page.result.is_empty() {
+        "No Postgres backups found".to_owned()
+    } else {
+        let rows = page.result.into_iter().map(|backup| Row {
+            key: or_absent(backup.key),
+            last_modified: or_absent(
+                backup
+                    .last_modified
+                    .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)),
+            ),
+        });
+        Table::new(rows).with(Style::markdown()).to_string()
+    };
+    if let Some(cursor) = page.next_cursor {
+        out.push_str(&format!("\nNext cursor: {cursor}"));
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // Role changes: promote / switchover
 // ---------------------------------------------------------------------------
 
 impl CloudClient {
+    /// Fetch one page of a Postgres service's retained base backups.
+    async fn list_postgres_backups_page(
+        &self,
+        org_id: &str,
+        postgres_id: &str,
+        cursor: Option<&str>,
+        limit: Option<i64>,
+    ) -> CloudResult<PostgresBackupPage> {
+        let mut response = self
+            .api()
+            .postgres_service_backup_get_list(org_id, postgres_id, cursor, limit)
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        let limit = response.limit;
+        let total_count = response.total_count;
+        let next_cursor = response.next_cursor.take();
+        Ok(PostgresBackupPage {
+            result: Self::unwrap_response(response)?,
+            limit,
+            total_count,
+            next_cursor,
+        })
+    }
+
     /// Fetch raw Prometheus exposition text for a Postgres service.
     pub async fn get_postgres_prometheus(
         &self,
@@ -3020,6 +3136,111 @@ mod tests {
             panic!("expected postgres command");
         };
         command
+    }
+
+    #[test]
+    fn parses_backup_list_pagination_as_read() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "backup",
+            "list",
+            "pg-1",
+        ]);
+        assert!(!cmd.is_write());
+        let PostgresCommands::Backup(PostgresBackupCommands::List {
+            postgres_id,
+            cursor,
+            limit,
+        }) = cmd
+        else {
+            panic!("expected backup list");
+        };
+        assert_eq!(postgres_id, "pg-1");
+        assert!(cursor.is_none());
+        assert!(limit.is_none());
+
+        for limit_value in ["1", "100"] {
+            let cmd = parse_postgres(&[
+                "clickhousectl",
+                "cloud",
+                "postgres",
+                "backup",
+                "list",
+                "pg-1",
+                "--cursor",
+                "next+/=",
+                "--limit",
+                limit_value,
+                "--org-id",
+                "org-1",
+            ]);
+            assert!(!cmd.is_write());
+            let PostgresCommands::Backup(PostgresBackupCommands::List { cursor, limit, .. }) = cmd
+            else {
+                panic!("expected backup list");
+            };
+            assert_eq!(cursor.as_deref(), Some("next+/="));
+            assert_eq!(limit, Some(limit_value.parse().unwrap()));
+        }
+    }
+
+    #[test]
+    fn backup_list_requires_an_id_and_bounds_limit() {
+        let base = ["clickhousectl", "cloud", "postgres", "backup", "list"];
+        assert_eq!(
+            Cli::try_parse_from(base).err().unwrap().kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        for value in ["-1", "0", "101", "many"] {
+            let mut args = base.to_vec();
+            args.extend(["pg-1", "--limit", value]);
+            assert_eq!(
+                Cli::try_parse_from(args).err().unwrap().kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{value}"
+            );
+        }
+        // The group itself is not executable without a leaf.
+        assert!(Cli::try_parse_from(["clickhousectl", "cloud", "postgres", "backup"]).is_err());
+    }
+
+    #[test]
+    fn backup_page_human_view_renders_absent_fields_and_next_cursor() {
+        let page = PostgresBackupPage {
+            result: vec![
+                PostgresBackup {
+                    key: Some("basebackups_005/0001_backup_stop_sentinel.json".into()),
+                    last_modified: Some("2026-03-31T18:17:37Z".parse().unwrap()),
+                },
+                PostgresBackup::default(),
+            ],
+            limit: Some(100),
+            total_count: Some(2),
+            next_cursor: Some("page-2".into()),
+        };
+        let rendered = render_postgres_backup_page(page);
+        assert!(rendered.contains("| Key"), "{rendered}");
+        assert!(rendered.contains("Last modified"), "{rendered}");
+        assert!(rendered.contains("basebackups_005/0001_backup_stop_sentinel.json"));
+        assert!(rendered.contains("2026-03-31T18:17:37Z"), "{rendered}");
+        assert!(
+            rendered.lines().any(|line| {
+                line.split('|').map(str::trim).collect::<Vec<_>>() == ["", "-", "-", ""]
+            }),
+            "{rendered}"
+        );
+        assert_eq!(rendered.lines().last(), Some("Next cursor: page-2"));
+
+        let empty = render_postgres_backup_page(PostgresBackupPage {
+            result: vec![],
+            limit: None,
+            total_count: None,
+            next_cursor: None,
+        });
+        assert!(!empty.contains("Next cursor"));
+        assert!(!empty.contains('|'));
     }
 
     #[test]

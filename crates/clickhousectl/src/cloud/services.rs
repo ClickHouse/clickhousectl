@@ -168,17 +168,17 @@ use crate::failure::{self, ApiFailure, FailureKind, FailureStage, ProvisioningSt
 use clap::builder::PossibleValuesParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::models::{
-    AutoscalingMode, InstancePrivateEndpointsPatch, InstanceServiceQueryApiEndpointsPostRequest,
-    InstanceTagsPatch, IpAccessListEntry, IpAccessListPatch, QueryEndpointRole, ScalingSchedule,
-    ScalingScheduleEntryRequest, ScalingSchedulePostRequest, ServicPrivateEndpointePostRequest,
-    Service, ServiceClickhouseSetting, ServiceClickhouseSettingsList,
-    ServiceClickhouseSettingsPatchRequest, ServiceClickhouseSettingsPatchResponse,
-    ServiceClickhouseSettingsSchema, ServiceEndpoint, ServiceEndpointChange,
-    ServiceEndpointChangeProtocol, ServiceEndpointProtocol, ServicePasswordPatchRequest,
-    ServicePatchRequest, ServicePatchRequestReleasechannel, ServicePostRequest,
-    ServicePostRequestCompliancetype, ServicePostRequestProfile, ServicePostRequestProvider,
-    ServicePostRequestRegion, ServicePostRequestReleasechannel, ServiceProfile,
-    ServiceQueryAPIEndpoint, ServiceReplicaScalingPatchRequest, ServiceState,
+    AutoscalingMode, BackupEncryptionConfig, InstancePrivateEndpointsPatch,
+    InstanceServiceQueryApiEndpointsPostRequest, InstanceTagsPatch, IpAccessListEntry,
+    IpAccessListPatch, QueryEndpointRole, ScalingSchedule, ScalingScheduleEntryRequest,
+    ScalingSchedulePostRequest, ServicPrivateEndpointePostRequest, Service,
+    ServiceClickhouseSetting, ServiceClickhouseSettingsList, ServiceClickhouseSettingsPatchRequest,
+    ServiceClickhouseSettingsPatchResponse, ServiceClickhouseSettingsSchema, ServiceEndpoint,
+    ServiceEndpointChange, ServiceEndpointChangeProtocol, ServiceEndpointProtocol,
+    ServicePasswordPatchRequest, ServicePatchRequest, ServicePatchRequestReleasechannel,
+    ServicePostRequest, ServicePostRequestCompliancetype, ServicePostRequestProfile,
+    ServicePostRequestProvider, ServicePostRequestRegion, ServicePostRequestReleasechannel,
+    ServiceProfile, ServiceQueryAPIEndpoint, ServiceReplicaScalingPatchRequest, ServiceState,
     ServiceStatePatchRequest, ServiceStatePatchRequestCommand, UpgradeWindow,
     UpgradeWindowPutRequest, UpgradeWindowStartHourUtc,
 };
@@ -329,6 +329,13 @@ CONTEXT FOR AGENTS:
         /// Backup ID to restore from
         #[arg(long)]
         backup_id: Option<String>,
+
+        /// Backup's encryption_config.json file, or - for stdin (private preview)
+        ///
+        /// Only with --backup-id, for a backup of a TDE-enabled service in your own
+        /// bucket. The restored service has TDE enabled.
+        #[arg(long, value_name = "PATH", requires = "backup_id")]
+        backup_encryption_config: Option<String>,
 
         /// Release channel: slow, default, fast (production services only)
         #[arg(long)]
@@ -1141,6 +1148,7 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
             idle_timeout_minutes,
             ip_allow,
             backup_id,
+            backup_encryption_config,
             release_channel,
             data_warehouse_id,
             readonly,
@@ -1170,6 +1178,10 @@ pub async fn run(client: &CloudClient, command: ServiceCommands, json: bool) -> 
                 idle_timeout_minutes,
                 ip_allow,
                 backup_id,
+                backup_encryption_config: backup_encryption_config
+                    .as_deref()
+                    .map(read_backup_encryption_config)
+                    .transpose()?,
                 release_channel,
                 data_warehouse_id,
                 is_readonly: readonly,
@@ -2111,6 +2123,7 @@ struct CreateServiceOptions {
     idle_timeout_minutes: Option<u32>,
     ip_allow: Vec<String>,
     backup_id: Option<String>,
+    backup_encryption_config: Option<BackupEncryptionConfig>,
     release_channel: Option<String>,
     data_warehouse_id: Option<String>,
     is_readonly: bool,
@@ -2183,6 +2196,41 @@ fn resolve_horizontal_autoscaling(
         min_replicas: min_replicas.map(i64::from),
         max_replicas: max_replicas.map(i64::from),
     })
+}
+
+/// Read a backup's `encryption_config.json` from a file or stdin (`-`), passing
+/// the object through unchanged. Every failure is a usage error raised before
+/// any request is sent.
+fn read_backup_encryption_config(path: &str) -> CloudResult<BackupEncryptionConfig> {
+    use std::io::Read as _;
+
+    let (raw, source) = if path == "-" {
+        let mut raw = String::new();
+        std::io::stdin().read_to_string(&mut raw).map_err(|error| {
+            CloudError::usage(format!(
+                "failed to read --backup-encryption-config from stdin: {error}"
+            ))
+        })?;
+        (raw, "stdin".to_string())
+    } else {
+        (
+            std::fs::read_to_string(path).map_err(|error| {
+                CloudError::usage(format!(
+                    "failed to read --backup-encryption-config file '{path}': {error}"
+                ))
+            })?,
+            format!("file '{path}'"),
+        )
+    };
+    match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(object)) => Ok(object.into_iter().collect()),
+        Ok(_) => Err(CloudError::usage(format!(
+            "--backup-encryption-config {source} must contain a JSON object"
+        ))),
+        Err(error) => Err(CloudError::usage(format!(
+            "--backup-encryption-config {source} is not valid JSON: {error}"
+        ))),
+    }
 }
 
 fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<ServicePostRequest> {
@@ -2288,7 +2336,7 @@ fn build_create_service_request(options: &CreateServiceOptions) -> CloudResult<S
         enable_core_dumps: options.enable_core_dumps,
         autoscaling_mode: horizontal.autoscaling_mode,
         byoc_id: options.byoc_id.clone(),
-        backup_encryption_config: None,
+        backup_encryption_config: options.backup_encryption_config.clone(),
         min_replicas: horizontal.min_replicas,
         max_replicas: horizontal.max_replicas,
         #[cfg(feature = "deprecated-fields")]
@@ -4913,6 +4961,7 @@ mod tests {
             idle_timeout_minutes,
             ip_allow,
             backup_id,
+            backup_encryption_config,
             release_channel,
             data_warehouse_id,
             readonly,
@@ -4945,6 +4994,7 @@ mod tests {
         assert!(idle_timeout_minutes.is_none());
         assert!(ip_allow.is_empty());
         assert!(backup_id.is_none());
+        assert!(backup_encryption_config.is_none());
         assert!(release_channel.is_none());
         assert!(data_warehouse_id.is_none());
         assert!(!readonly);
@@ -4992,6 +5042,8 @@ mod tests {
             "2001:db8::/32=\u{6771}\u{4eac}",
             "--backup-id",
             "backup-1",
+            "--backup-encryption-config",
+            "-",
             "--release-channel",
             "fast",
             "--data-warehouse-id",
@@ -5034,6 +5086,7 @@ mod tests {
             idle_timeout_minutes,
             ip_allow,
             backup_id,
+            backup_encryption_config,
             release_channel,
             data_warehouse_id,
             readonly,
@@ -5068,6 +5121,7 @@ mod tests {
             vec!["10.0.0.0/8=office", "2001:db8::/32=\u{6771}\u{4eac}"]
         );
         assert_eq!(backup_id.as_deref(), Some("backup-1"));
+        assert_eq!(backup_encryption_config.as_deref(), Some("-"));
         assert_eq!(release_channel.as_deref(), Some("fast"));
         assert_eq!(data_warehouse_id.as_deref(), Some("dw-1"));
         assert!(readonly);
@@ -7944,6 +7998,7 @@ mod tests {
         assert!(request.idle_scaling.is_none());
         assert!(request.idle_timeout_minutes.is_none());
         assert!(request.backup_id.is_none());
+        assert!(request.backup_encryption_config.is_none());
         assert!(request.release_channel.is_none());
         assert!(request.tags.is_none());
         assert!(request.data_warehouse_id.is_none());
@@ -7970,6 +8025,13 @@ mod tests {
             idle_timeout_minutes: Some(10),
             ip_allow: vec!["2001:db8::/32=office".to_string()],
             backup_id: Some("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6".to_string()),
+            backup_encryption_config: Some(BackupEncryptionConfig::from([
+                ("schema_version".to_string(), serde_json::json!(1)),
+                (
+                    "restore_key_pairs".to_string(),
+                    serde_json::json!([{ "encrypted_dek": "wrapped" }]),
+                ),
+            ])),
             release_channel: Some("fast".to_string()),
             data_warehouse_id: Some("dw-1".to_string()),
             is_readonly: true,
@@ -8009,6 +8071,13 @@ mod tests {
             Some(uuid::Uuid::parse_str("a1a2a3a4-b1b2-c1c2-d1d2-e1e2e3e4e5e6").unwrap())
         );
         assert_eq!(
+            serde_json::to_value(request.backup_encryption_config.as_ref().unwrap()).unwrap(),
+            serde_json::json!({
+                "schema_version": 1,
+                "restore_key_pairs": [{ "encrypted_dek": "wrapped" }]
+            })
+        );
+        assert_eq!(
             request.release_channel,
             Some(ServicePostRequestReleasechannel::Fast)
         );
@@ -8038,6 +8107,63 @@ mod tests {
         assert_eq!(request.private_preview_terms_checked, Some(true));
         assert_eq!(request.enable_core_dumps, Some(true));
         assert!(request.byoc_id.is_none());
+    }
+
+    #[test]
+    fn backup_encryption_config_requires_backup_id() {
+        let error = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "service",
+            "create",
+            "--name",
+            "svc",
+            "--backup-encryption-config",
+            "config.json",
+        ])
+        .err()
+        .expect("--backup-encryption-config without --backup-id should fail");
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn read_backup_encryption_config_passes_a_json_object_through_unchanged() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("encryption_config.json");
+        let document = serde_json::json!({
+            "schema_version": 1,
+            "restore_key_pairs": [{
+                "customer_managed_encryption_key": { "aws_kms_key_arn": "arn:aws:kms:k" },
+                "encrypted_dek": "d2VsbA==",
+                "future_field": null
+            }]
+        });
+        std::fs::write(&path, document.to_string()).unwrap();
+
+        let config = read_backup_encryption_config(path.to_str().unwrap()).unwrap();
+        assert_eq!(serde_json::to_value(&config).unwrap(), document);
+    }
+
+    #[test]
+    fn read_backup_encryption_config_rejects_bad_input_as_usage_errors() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.json");
+        let array = directory.path().join("array.json");
+        let invalid = directory.path().join("invalid.json");
+        std::fs::write(&array, "[1, 2]").unwrap();
+        std::fs::write(&invalid, "{not json").unwrap();
+
+        for path in [&missing, &array, &invalid] {
+            let error = read_backup_encryption_config(path.to_str().unwrap()).unwrap_err();
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{path:?}: {error:?}"
+            );
+        }
     }
 
     #[test]

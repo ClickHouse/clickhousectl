@@ -551,7 +551,9 @@ impl ClickPipeCommands {
             ),
             ClickPipeCreateCommands::Kafka(args) => (
                 "kafka",
-                build_create_request_args(&args.request, ClickPipeSourceKind::Kafka).err(),
+                build_create_request_args(&args.request, ClickPipeSourceKind::Kafka)
+                    .and_then(|_| validate_kafka_schema_registry_args(&args.source))
+                    .err(),
             ),
             ClickPipeCreateCommands::Kinesis(args) => (
                 "kinesis",
@@ -583,15 +585,22 @@ impl ClickPipeCommands {
     pub(crate) fn clickpipe_schema_discover_validation_error(
         &self,
     ) -> Option<(&'static str, String)> {
-        let Self::SchemaDiscover {
-            command: ClickPipeSchemaDiscoverCommands::Kinesis(args),
-        } = self
-        else {
+        let Self::SchemaDiscover { command } = self else {
             return None;
         };
-        validate_kinesis_source_args(&args.source)
-            .err()
-            .map(|error| ("kinesis", error.message))
+        match command {
+            ClickPipeSchemaDiscoverCommands::Kinesis(args) => {
+                validate_kinesis_source_args(&args.source)
+                    .err()
+                    .map(|error| ("kinesis", error.message))
+            }
+            ClickPipeSchemaDiscoverCommands::Kafka(args) => {
+                validate_kafka_schema_registry_args(&args.source)
+                    .err()
+                    .map(|error| ("kafka", error.message))
+            }
+            _ => None,
+        }
     }
 
     pub(crate) fn reverse_private_endpoint_create_validation_error(&self) -> Option<String> {
@@ -1139,6 +1148,10 @@ pub struct ObjectStorageCreateArgs {
     pub destination_roles: DestinationRoleArgs,
 }
 
+/// Glue-only schema registry flags; each conflicts with the Confluent flags.
+const KAFKA_GLUE_SCHEMA_REGISTRY_ARGS: [&str; 3] =
+    ["glue_region", "glue_registry_name", "glue_role_arn"];
+
 /// Source-connection fields for a Kafka / Kafka-compatible ClickPipe source.
 /// Flattened into both `KafkaCreateArgs` (pipe creation) and the schema-discover
 /// Kafka subcommand so the source field set has a single definition.
@@ -1226,27 +1239,63 @@ pub struct KafkaSourceFields {
     #[arg(long)]
     pub offset_timestamp: Option<String>,
 
-    /// Schema registry URL (for Avro/Protobuf formats)
-    #[arg(long)]
+    /// Schema registry type; confluent when omitted
+    #[arg(long, value_name = "TYPE", value_parser = ["confluent", "glue"])]
+    pub schema_registry_type: Option<String>,
+
+    /// Schema registry URL (for Avro/Protobuf formats; confluent only)
+    #[arg(
+        long,
+        required_if_eq("schema_registry_type", "confluent"),
+        conflicts_with_all = KAFKA_GLUE_SCHEMA_REGISTRY_ARGS
+    )]
     pub schema_registry_url: Option<String>,
 
-    /// Schema registry username
-    #[arg(long)]
+    /// Schema registry username (confluent only)
+    #[arg(long, conflicts_with_all = KAFKA_GLUE_SCHEMA_REGISTRY_ARGS)]
     pub schema_registry_username: Option<String>,
 
-    /// Schema registry password
-    #[arg(long)]
+    /// Schema registry password (confluent only)
+    #[arg(long, conflicts_with_all = KAFKA_GLUE_SCHEMA_REGISTRY_ARGS)]
     pub schema_registry_password: Option<String>,
+
+    /// Glue registry AWS region (only with --schema-registry-type glue)
+    #[arg(
+        long,
+        value_name = "REGION",
+        requires = "schema_registry_type",
+        required_if_eq("schema_registry_type", "glue")
+    )]
+    pub glue_region: Option<String>,
+
+    /// Glue registry name (only with --schema-registry-type glue)
+    #[arg(
+        long,
+        value_name = "NAME",
+        requires = "schema_registry_type",
+        required_if_eq("schema_registry_type", "glue")
+    )]
+    pub glue_registry_name: Option<String>,
+
+    /// IAM role ARN for Glue access (only with --schema-registry-type glue)
+    ///
+    /// Defaults to --iam-role, so it is required when --iam-role is not set.
+    #[arg(long, value_name = "ARN", requires = "schema_registry_type")]
+    pub glue_role_arn: Option<String>,
 
     /// Path to a .proto file or FileDescriptorSet, or - to read stdin
     #[arg(
         long,
         value_name = "PATH",
         conflicts_with_all = [
+            "schema_registry_type",
             "schema_registry_url",
             "schema_registry_username",
             "schema_registry_password",
-            "schema_registry_ca_certificate"
+            "schema_registry_ca_certificate",
+            "glue_region",
+            "glue_registry_name",
+            "glue_role_arn"
         ]
     )]
     pub protobuf_schema_file: Option<String>,
@@ -1263,8 +1312,8 @@ pub struct KafkaSourceFields {
     #[arg(long, requires = "client_certificate")]
     pub client_key: Option<String>,
 
-    /// Path to schema registry CA certificate file
-    #[arg(long)]
+    /// Path to schema registry CA certificate file (confluent only)
+    #[arg(long, conflicts_with_all = KAFKA_GLUE_SCHEMA_REGISTRY_ARGS)]
     pub schema_registry_ca_certificate: Option<String>,
 
     /// Reverse private endpoint IDs (repeatable)
@@ -2660,15 +2709,15 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
         ));
     }
     if args.protobuf_schema_file.is_some()
-        && (args.schema_registry_url.is_some()
-            || args.schema_registry_username.is_some()
-            || args.schema_registry_password.is_some()
-            || args.schema_registry_ca_certificate.is_some())
+        && (has_confluent_registry_flags(args)
+            || has_glue_registry_flags(args)
+            || args.schema_registry_type.is_some())
     {
         return Err(CloudError::new(
             "--protobuf-schema-file cannot be combined with schema registry flags",
         ));
     }
+    validate_kafka_schema_registry_args(args)?;
 
     if args.event_hubs_connection_string.is_some()
         && source_type != ClickPipePostKafkaSourceType::Azureeventhub
@@ -2781,6 +2830,121 @@ fn validate_kafka_source_args(args: &KafkaSourceFields) -> CloudResult<()> {
     Ok(())
 }
 
+fn has_confluent_registry_flags(args: &KafkaSourceFields) -> bool {
+    args.schema_registry_url.is_some()
+        || args.schema_registry_username.is_some()
+        || args.schema_registry_password.is_some()
+        || args.schema_registry_ca_certificate.is_some()
+}
+
+fn has_glue_registry_flags(args: &KafkaSourceFields) -> bool {
+    args.glue_region.is_some() || args.glue_registry_name.is_some() || args.glue_role_arn.is_some()
+}
+
+/// Check the schema-registry flag combination clap cannot express on its own.
+/// Runs before credentials or network access, and again in the builder.
+fn validate_kafka_schema_registry_args(args: &KafkaSourceFields) -> CloudResult<()> {
+    match args.schema_registry_type.as_deref() {
+        Some("glue") => {
+            if has_confluent_registry_flags(args) {
+                return Err(CloudError::usage(
+                    "--schema-registry-type glue cannot be combined with --schema-registry-url, \
+                     --schema-registry-username, --schema-registry-password or \
+                     --schema-registry-ca-certificate",
+                ));
+            }
+            if args.glue_region.is_none() || args.glue_registry_name.is_none() {
+                return Err(CloudError::usage(
+                    "--schema-registry-type glue requires --glue-region and --glue-registry-name",
+                ));
+            }
+            if args.glue_role_arn.is_none() && args.iam_role.is_none() {
+                return Err(CloudError::usage(
+                    "--schema-registry-type glue requires --glue-role-arn when the source does not \
+                     authenticate with --iam-role",
+                ));
+            }
+        }
+        explicit => {
+            if has_glue_registry_flags(args) {
+                return Err(CloudError::usage(
+                    "--glue-region, --glue-registry-name and --glue-role-arn require \
+                     --schema-registry-type glue",
+                ));
+            }
+            if explicit.is_some() && args.schema_registry_url.is_none() {
+                return Err(CloudError::usage(
+                    "--schema-registry-type confluent requires --schema-registry-url",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Build the Kafka source's schema registry from validated flags; `None` when
+/// no registry was requested.
+fn build_kafka_schema_registry(
+    args: &KafkaSourceFields,
+) -> CloudResult<Option<clickhouse_cloud_api::models::ClickPipeMutateKafkaSchemaRegistry>> {
+    use clickhouse_cloud_api::models::{
+        ClickPipeKafkaGlueSchemaRegistry, ClickPipeKafkaGlueSchemaRegistryType,
+        ClickPipeKafkaSchemaRegistryCredentials, ClickPipeMutateKafkaConfluentSchemaRegistry,
+        ClickPipeMutateKafkaConfluentSchemaRegistryType,
+    };
+
+    if args.schema_registry_type.as_deref() == Some("glue") {
+        let (Some(glue_region), Some(glue_registry_name)) =
+            (args.glue_region.as_ref(), args.glue_registry_name.as_ref())
+        else {
+            return Err(CloudError::usage(
+                "--schema-registry-type glue requires --glue-region and --glue-registry-name",
+            ));
+        };
+        return Ok(Some(
+            ClickPipeKafkaGlueSchemaRegistry {
+                r#type: ClickPipeKafkaGlueSchemaRegistryType::Glue,
+                glue_region: glue_region.clone(),
+                glue_registry_name: glue_registry_name.clone(),
+                glue_role_arn: args.glue_role_arn.clone(),
+            }
+            .into(),
+        ));
+    }
+
+    let Some(url) = args.schema_registry_url.as_ref() else {
+        return Ok(None);
+    };
+    let credentials = match (
+        args.schema_registry_username.as_deref(),
+        args.schema_registry_password.as_deref(),
+    ) {
+        (Some(username), Some(password)) => ClickPipeKafkaSchemaRegistryCredentials {
+            username: username.to_string(),
+            password: password.to_string(),
+        },
+        _ => ClickPipeKafkaSchemaRegistryCredentials::default(),
+    };
+    let ca_certificate = match args.schema_registry_ca_certificate.as_deref() {
+        Some(path) => Some(std::fs::read_to_string(path)?),
+        None => None,
+    };
+    Ok(Some(
+        ClickPipeMutateKafkaConfluentSchemaRegistry {
+            // Send `type` only when the user named it; the API defaults to confluent.
+            r#type: args
+                .schema_registry_type
+                .as_ref()
+                .map(|_| ClickPipeMutateKafkaConfluentSchemaRegistryType::Confluent),
+            url: url.clone(),
+            authentication: Default::default(),
+            credentials,
+            ca_certificate,
+        }
+        .into(),
+    ))
+}
+
 // Keep I/O failures typed; the source chooses how invalid schema content is
 // reported independently of failures to open or read its input.
 fn read_protobuf_schema_file(
@@ -2822,9 +2986,7 @@ fn build_kafka_source_with_exactly_once(
     exactly_once: Option<bool>,
 ) -> CloudResult<clickhouse_cloud_api::models::ClickPipePostKafkaSource> {
     use clickhouse_cloud_api::models::{
-        ClickPipeKafkaOffset, ClickPipeKafkaSchemaRegistryCredentials,
-        ClickPipeMutateKafkaConfluentSchemaRegistry, ClickPipePostKafkaSource,
-        ClickPipePostKafkaSourceAuthentication,
+        ClickPipeKafkaOffset, ClickPipePostKafkaSource, ClickPipePostKafkaSourceAuthentication,
     };
 
     validate_kafka_source_args(args)?;
@@ -2855,34 +3017,7 @@ fn build_kafka_source_with_exactly_once(
     };
     let credentials = build_kafka_credentials(authentication.as_ref(), args, mtls_cert_contents)?;
 
-    let schema_registry = args
-        .schema_registry_url
-        .as_ref()
-        .map(|url| -> CloudResult<_> {
-            let credentials = match (
-                args.schema_registry_username.as_deref(),
-                args.schema_registry_password.as_deref(),
-            ) {
-                (Some(username), Some(password)) => ClickPipeKafkaSchemaRegistryCredentials {
-                    username: username.to_string(),
-                    password: password.to_string(),
-                },
-                _ => ClickPipeKafkaSchemaRegistryCredentials::default(),
-            };
-            let ca_certificate = match args.schema_registry_ca_certificate.as_deref() {
-                Some(path) => Some(std::fs::read_to_string(path)?),
-                None => None,
-            };
-            Ok(ClickPipeMutateKafkaConfluentSchemaRegistry {
-                r#type: None,
-                url: url.clone(),
-                authentication: Default::default(),
-                credentials,
-                ca_certificate,
-            }
-            .into())
-        })
-        .transpose()?;
+    let schema_registry = build_kafka_schema_registry(args)?;
 
     let ca_certificate = match args.ca_certificate.as_deref() {
         Some(path) => Some(std::fs::read_to_string(path)?),
@@ -13488,9 +13623,13 @@ mod tests {
                 secret_key: None,
                 offset: "from_beginning".into(),
                 offset_timestamp: None,
+                schema_registry_type: None,
                 schema_registry_url: None,
                 schema_registry_username: None,
                 schema_registry_password: None,
+                glue_region: None,
+                glue_registry_name: None,
+                glue_role_arn: None,
                 protobuf_schema_file: None,
                 ca_certificate: None,
                 client_certificate: None,
@@ -13834,6 +13973,298 @@ mod tests {
         assert_eq!(registry.credentials.username, "registry-user");
         assert_eq!(registry.credentials.password, "registry-password");
         assert_eq!(registry.ca_certificate.as_deref(), Some("REGISTRY_CA"));
+    }
+
+    fn glue_registry(
+        source: clickhouse_cloud_api::models::ClickPipePostKafkaSource,
+    ) -> clickhouse_cloud_api::models::ClickPipeKafkaGlueSchemaRegistry {
+        let Some(
+            clickhouse_cloud_api::models::ClickPipeMutateKafkaSchemaRegistry::ClickPipeKafkaGlueSchemaRegistry(
+                registry,
+            ),
+        ) = source.schema_registry
+        else {
+            panic!("a Glue schema registry is populated");
+        };
+        registry
+    }
+
+    #[test]
+    fn build_kafka_source_builds_a_minimal_glue_schema_registry() {
+        let mut args = kafka_args().source;
+        args.format = "Avro".into();
+        args.kafka_type = "msk".into();
+        args.iam_role = Some("arn:aws:iam::123456789012:role/Source".into());
+        args.schema_registry_type = Some("glue".into());
+        args.glue_region = Some("us-east-1".into());
+        args.glue_registry_name = Some("my-registry".into());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("IAM_ROLE"));
+        let registry = glue_registry(source);
+        assert_eq!(
+            registry.r#type,
+            clickhouse_cloud_api::models::ClickPipeKafkaGlueSchemaRegistryType::Glue
+        );
+        assert_eq!(registry.glue_region, "us-east-1");
+        assert_eq!(registry.glue_registry_name, "my-registry");
+        assert_eq!(registry.glue_role_arn, None);
+    }
+
+    #[test]
+    fn build_kafka_source_builds_a_maximal_glue_schema_registry() {
+        let mut args = kafka_args().source;
+        args.format = "AvroConfluent".into();
+        args.kafka_type = "msk".into();
+        args.username = Some("user".into());
+        args.password = Some("password".into());
+        args.schema_registry_type = Some("glue".into());
+        args.glue_region = Some("eu-west-1".into());
+        args.glue_registry_name = Some("registry".into());
+        args.glue_role_arn = Some("arn:aws:iam::123456789012:role/Glue".into());
+
+        let source = build_kafka_source(&args).unwrap();
+        assert_eq!(kafka_auth(&source).as_deref(), Some("PLAIN"));
+        assert_eq!(source.iam_role, None);
+        let registry = glue_registry(source);
+        assert_eq!(registry.glue_region, "eu-west-1");
+        assert_eq!(registry.glue_registry_name, "registry");
+        assert_eq!(
+            registry.glue_role_arn.as_deref(),
+            Some("arn:aws:iam::123456789012:role/Glue")
+        );
+    }
+
+    #[test]
+    fn build_kafka_source_sends_confluent_type_only_when_named() {
+        let mut args = kafka_args().source;
+        args.schema_registry_url = Some("https://registry.example".into());
+        args.schema_registry_type = Some("confluent".into());
+
+        let source = build_kafka_source(&args).unwrap();
+        let Some(
+            clickhouse_cloud_api::models::ClickPipeMutateKafkaSchemaRegistry::ClickPipeMutateKafkaConfluentSchemaRegistry(
+                registry,
+            ),
+        ) = source.schema_registry
+        else {
+            panic!("a Confluent schema registry is populated");
+        };
+        assert_eq!(
+            registry.r#type,
+            Some(clickhouse_cloud_api::models::ClickPipeMutateKafkaConfluentSchemaRegistryType::Confluent)
+        );
+        assert_eq!(registry.url, "https://registry.example");
+
+        args.schema_registry_type = None;
+        args.schema_registry_url = None;
+        assert_eq!(build_kafka_source(&args).unwrap().schema_registry, None);
+    }
+
+    #[test]
+    fn kafka_schema_registry_misuse_is_a_usage_error() {
+        let glue = || {
+            let mut args = kafka_args().source;
+            args.schema_registry_type = Some("glue".into());
+            args.glue_region = Some("us-east-1".into());
+            args.glue_registry_name = Some("my-registry".into());
+            args
+        };
+        let mut cases = Vec::new();
+
+        // No role: neither --glue-role-arn nor a source --iam-role.
+        cases.push(glue());
+        let mut confluent_flag = glue();
+        confluent_flag.glue_role_arn = Some("arn:role".into());
+        confluent_flag.schema_registry_url = Some("https://registry.example".into());
+        cases.push(confluent_flag);
+        let mut missing_name = glue();
+        missing_name.glue_role_arn = Some("arn:role".into());
+        missing_name.glue_registry_name = None;
+        cases.push(missing_name);
+        let mut untyped = kafka_args().source;
+        untyped.glue_region = Some("us-east-1".into());
+        cases.push(untyped);
+        let mut confluent_without_url = kafka_args().source;
+        confluent_without_url.schema_registry_type = Some("confluent".into());
+        cases.push(confluent_without_url);
+
+        for args in cases {
+            let error = build_kafka_source(&args).unwrap_err();
+            assert_eq!(
+                error.kind,
+                crate::cloud::client::CloudErrorKind::Usage,
+                "{error:?}"
+            );
+        }
+
+        let mut protobuf = kafka_args().source;
+        protobuf.format = "Protobuf".into();
+        protobuf.protobuf_schema_file = Some("/file/that/does/not/exist".into());
+        protobuf.schema_registry_type = Some("glue".into());
+        let error = build_kafka_source(&protobuf).unwrap_err();
+        assert!(error.message.contains("schema registry flags"), "{error:?}");
+    }
+
+    #[test]
+    fn parses_kafka_glue_schema_registry_flags_on_both_surfaces() {
+        for base in [kafka_create_cli_args(), kafka_discover_cli_args()] {
+            let mut args = base;
+            args.extend([
+                "--schema-registry-type",
+                "glue",
+                "--glue-region",
+                "us-east-1",
+                "--glue-registry-name",
+                "my-registry",
+                "--glue-role-arn",
+                "arn:role",
+            ]);
+            let source = match parse_clickpipe(&args) {
+                ClickPipeCommands::Create {
+                    command: ClickPipeCreateCommands::Kafka(args),
+                } => args.source,
+                ClickPipeCommands::SchemaDiscover {
+                    command: ClickPipeSchemaDiscoverCommands::Kafka(args),
+                } => args.source,
+                _ => panic!("expected a Kafka command"),
+            };
+            assert_eq!(source.schema_registry_type.as_deref(), Some("glue"));
+            assert_eq!(source.glue_region.as_deref(), Some("us-east-1"));
+            assert_eq!(source.glue_registry_name.as_deref(), Some("my-registry"));
+            assert_eq!(source.glue_role_arn.as_deref(), Some("arn:role"));
+            assert_eq!(source.schema_registry_url, None);
+        }
+
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::Kafka(args),
+        } = parse_clickpipe(&kafka_create_cli_args())
+        else {
+            panic!("expected kafka create");
+        };
+        assert_eq!(args.source.schema_registry_type, None);
+        assert_eq!(args.source.glue_region, None);
+        assert_eq!(args.source.glue_registry_name, None);
+        assert_eq!(args.source.glue_role_arn, None);
+    }
+
+    #[test]
+    fn kafka_glue_schema_registry_flag_constraints_are_clap_errors() {
+        use clap::error::ErrorKind;
+        let glue = [
+            "--schema-registry-type",
+            "glue",
+            "--glue-region",
+            "us-east-1",
+            "--glue-registry-name",
+            "my-registry",
+        ];
+        let cases: Vec<(Vec<&str>, ErrorKind)> = vec![
+            (
+                vec!["--schema-registry-type", "avro"],
+                ErrorKind::InvalidValue,
+            ),
+            (
+                vec!["--schema-registry-type", "glue"],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                vec![
+                    "--schema-registry-type",
+                    "glue",
+                    "--glue-region",
+                    "us-east-1",
+                ],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                vec!["--glue-region", "us-east-1"],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                vec!["--glue-role-arn", "arn:role"],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                vec!["--schema-registry-type", "confluent"],
+                ErrorKind::MissingRequiredArgument,
+            ),
+            (
+                [
+                    &glue[..],
+                    &["--schema-registry-url", "https://registry.example"],
+                ]
+                .concat(),
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                [&glue[..], &["--schema-registry-username", "user"]].concat(),
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                [&glue[..], &["--schema-registry-password", "password"]].concat(),
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                [
+                    &glue[..],
+                    &["--schema-registry-ca-certificate", "/tmp/ca.pem"],
+                ]
+                .concat(),
+                ErrorKind::ArgumentConflict,
+            ),
+            (
+                [
+                    &[
+                        "--format",
+                        "Protobuf",
+                        "--protobuf-schema-file",
+                        "/tmp/e.proto",
+                    ][..],
+                    &glue[..],
+                ]
+                .concat(),
+                ErrorKind::ArgumentConflict,
+            ),
+        ];
+        for (extra, kind) in cases {
+            let mut args = kafka_create_cli_args();
+            args.extend(extra.iter().copied());
+            assert_eq!(clickpipe_parse_error(&args).kind(), kind, "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn kafka_glue_schema_registry_runtime_rules_run_before_execution() {
+        let mut create = kafka_create_cli_args();
+        create.extend([
+            "--schema-registry-type",
+            "glue",
+            "--glue-region",
+            "us-east-1",
+            "--glue-registry-name",
+            "my-registry",
+        ]);
+        let message = clickpipe_validation_message(&parse_clickpipe(&create))
+            .expect("Glue without a role is rejected before execution");
+        assert!(message.contains("--glue-role-arn"), "{message}");
+
+        let mut discover = kafka_discover_cli_args();
+        discover.extend(&create[create.len() - 6..]);
+        let message = parse_clickpipe(&discover)
+            .clickpipe_schema_discover_validation_error()
+            .map(|(source, message)| {
+                assert_eq!(source, "kafka");
+                message
+            })
+            .expect("Glue without a role is rejected before schema discovery");
+        assert!(message.contains("--glue-role-arn"), "{message}");
+
+        create.extend(["--iam-role", "arn:role"]);
+        assert_eq!(
+            clickpipe_validation_message(&parse_clickpipe(&create)),
+            None
+        );
     }
 
     #[test]

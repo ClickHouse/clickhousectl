@@ -413,6 +413,7 @@ pub(crate) mod tests {
             &["activity", "get", "activity-1"],
             &["backup", "get", "svc-1", "backup-1"],
             &["postgres", "config", "get", "pg-1"],
+            &["postgres", "backup", "list", "pg-1"],
             &["clickstack", "dashboard", "get", "svc-1", "dashboard-1"],
             &[
                 "clickpipe",
