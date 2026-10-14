@@ -143,7 +143,10 @@ Discovery uses your refreshed OAuth user identity even when an API key is saved,
 ```bash
 clickhousectl cloud access request
 clickhousectl cloud access request --key-name agent-key --purpose "CI deploy" --tool claude
+clickhousectl cloud access request --org <organization-id> --perms role:<role-uuid>,role:<another-role-uuid>
 ```
+
+Use IDs from `cloud access roles` to propose roles with `--perms role:<UUID>` (repeat the flag or separate tokens with commas). UUIDs are normalized to lowercase and deduplicated by identity in first-seen order; at most 100 distinct roles are allowed. Empty tokens, whitespace, wrong prefixes and malformed UUIDs fail before authentication or network access. Role names, raw permissions and resource overrides are not supported. Omit `--perms` for manual browser selection; an explicitly empty value is invalid. A proposal is not a grant: the server validates the whole proposal atomically, and the human's eventual selection may differ. The CLI neither filters rejected proposals nor retries a subset.
 
 The command requires your OAuth user identity from `cloud auth login` and refreshes it when needed; API keys from flags, saved credentials, or environment variables are never used for negotiation. Missing or expired identity that cannot be refreshed fails with authentication exit code 4 and login guidance. It generates a PKCE verifier/challenge and a CSRF `state`, starts a loopback redirect server on `127.0.0.1`, and opens the approval URL (printed as a fallback). After you approve it, the CLI claims the issued key with the PKCE verifier and stores the key id and secret in `.clickhouse/credentials.json`. The secret is never printed or placed in a URL. If the browser cannot reach the loopback server, the CLI falls back to polling the request's status until it is approved. Approval times out after 15 minutes.
 

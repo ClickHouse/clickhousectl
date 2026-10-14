@@ -42,7 +42,7 @@ use clickhouse_cloud_api::models::{AssignableRole, RBACPolicyAllowdeny, RBACRole
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tabled::{Table, Tabled, settings::Style};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -68,6 +68,7 @@ CONTEXT FOR AGENTS:
   Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
   Opens a browser for a human to approve; waits up to 15 minutes.
   On approval the issued key id + secret are saved to the credentials file; the secret is never printed.
+  Discover proposal IDs with `cloud access roles`; proposals do not grant access.
   Uses the login environment unless --url is provided.
   Select --org/--org-id or exact --org-name when your user belongs to multiple organizations.")]
     Request(AccessRequestArgs),
@@ -86,6 +87,10 @@ impl AccessCommands {
 
 #[derive(Args)]
 pub struct AccessRequestArgs {
+    /// Proposed role:<UUID> tokens, comma-separated or repeated (max 100)
+    #[arg(long, value_name = "role:UUID", value_delimiter = ',', value_parser = parse_requested_role)]
+    pub perms: Vec<uuid::Uuid>,
+
     /// Name to give the issued API key
     #[arg(long)]
     pub key_name: Option<String>,
@@ -107,6 +112,36 @@ pub struct AccessRequestArgs {
     pub session_id: Option<String>,
 }
 
+// Keep the token grammar narrower than Uuid::parse_str (which also accepts
+// compact, braced and URN representations). UUID version is unrestricted.
+fn parse_requested_role(token: &str) -> Result<uuid::Uuid, &'static str> {
+    let id = token.strip_prefix("role:").ok_or("expected role:<UUID>")?;
+    let parsed = uuid::Uuid::parse_str(id).map_err(|_| "expected role:<UUID>")?;
+    if !id.eq_ignore_ascii_case(&parsed.hyphenated().to_string()) {
+        return Err("expected role:<hyphenated UUID> without whitespace");
+    }
+    Ok(parsed)
+}
+
+impl AccessRequestArgs {
+    pub fn requested_role_ids(&self) -> Result<Option<Vec<String>>, &'static str> {
+        if self.perms.is_empty() {
+            return Ok(None);
+        }
+        let mut seen = HashSet::new();
+        let ids: Vec<_> = self
+            .perms
+            .iter()
+            .filter(|id| seen.insert(**id))
+            .map(|id| id.hyphenated().to_string())
+            .collect();
+        if ids.len() > 100 {
+            return Err("--perms accepts at most 100 distinct roles");
+        }
+        Ok(Some(ids))
+    }
+}
+
 // ── request/response bodies ────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -125,6 +160,8 @@ struct AgentContext<'a> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateAccessRequestBody<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested_role_ids: Option<&'a [String]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     key_name: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -425,6 +462,7 @@ async fn request(
     org_name: Option<String>,
     json: bool,
 ) -> CloudResult<()> {
+    let requested_role_ids = args.requested_role_ids().map_err(CloudError::usage)?;
     // Resolve the user identity and endpoint once for organization discovery
     // and every step of the existing PKCE handshake.
     let client = CloudClient::for_access(url_override).await?;
@@ -454,6 +492,7 @@ async fn request(
     let agent = agent_context(&args);
     let create_url = format!("{base_url}/organizations/{org_id}/accessRequests");
     let create_body = CreateAccessRequestBody {
+        requested_role_ids: requested_role_ids.as_deref(),
         key_name: args.key_name.as_deref(),
         agent,
         code_challenge: &pkce.challenge,
@@ -747,6 +786,87 @@ mod tests {
     }
 
     #[test]
+    fn request_perms_parse_deduplicates_uuid_identity_and_preserves_order() {
+        let first = "abcdefab-1234-1234-1234-123456789abc";
+        let system = "21111111-1111-1111-9999-000000000007";
+        let args = parse(&[
+            "chctl",
+            "cloud",
+            "access",
+            "request",
+            "--perms",
+            &format!("role:{first},role:{system}"),
+            "--perms",
+            &format!("role:{}", first.to_uppercase()),
+        ]);
+        assert_eq!(
+            args.requested_role_ids().unwrap(),
+            Some(vec![first.into(), system.into()])
+        );
+        assert_eq!(
+            parse(&["chctl", "cloud", "access", "request"])
+                .requested_role_ids()
+                .unwrap(),
+            None
+        );
+        let ids: Vec<_> = (0..100)
+            .map(|i| format!("role:00000000-0000-0000-0000-{i:012x}"))
+            .collect();
+        let repeated = format!("{},{}", ids.join(","), ids.join(","));
+        assert_eq!(
+            parse(&["chctl", "cloud", "access", "request", "--perms", &repeated])
+                .requested_role_ids()
+                .unwrap()
+                .unwrap()
+                .len(),
+            100
+        );
+        let oversized = format!(
+            "{},role:00000000-0000-0000-0000-000000000100",
+            ids.join(",")
+        );
+        assert!(
+            parse(&["chctl", "cloud", "access", "request", "--perms", &oversized])
+                .requested_role_ids()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn request_perms_rejects_empty_malformed_and_unsupported_tokens() {
+        let valid = "role:00000000-0000-0000-0000-000000000001";
+        for value in [
+            "".to_string(),
+            ",".into(),
+            format!("{valid},"),
+            format!(",{valid}"),
+            format!("{valid},,{valid}"),
+            format!(" {valid}"),
+            format!("{valid} "),
+            format!("{valid}\n"),
+            format!("{valid}, {valid}"),
+            "role:00000000-0000-0000-0000-00000000000 1".into(),
+            "role:00000000000000000000000000000001".into(),
+            "role:{00000000-0000-0000-0000-000000000001}".into(),
+            "role:urn:uuid:00000000-0000-0000-0000-000000000001".into(),
+            "Role:00000000-0000-0000-0000-000000000001".into(),
+            "00000000-0000-0000-0000-000000000001".into(),
+            "role:Admin".into(),
+            "control-plane:service:view".into(),
+            "role:*".into(),
+        ] {
+            assert!(
+                Cli::try_parse_from(["chctl", "cloud", "access", "request", "--perms", &value])
+                    .is_err(),
+                "{value:?}"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["chctl", "cloud", "access", "roles", "--perms", valid]).is_err()
+        );
+    }
+
+    #[test]
     fn roles_selectors_and_help_preserve_command_grammar() {
         use clap::{CommandFactory, FromArgMatches};
         for (selectors, conflict) in [
@@ -1020,6 +1140,7 @@ mod tests {
         );
         let agent = agent_context(&args).expect("agent present");
         let body = CreateAccessRequestBody {
+            requested_role_ids: None,
             key_name: args.key_name.as_deref(),
             agent: Some(agent),
             code_challenge: "challenge",

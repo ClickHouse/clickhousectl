@@ -35092,6 +35092,152 @@ fn assert_access_output_has_no_credentials(output: &std::process::Output) {
 }
 
 #[tokio::test]
+async fn access_request_perms_files_canonical_proposal_once_without_grant_or_subset() {
+    let first = "abcdefab-1234-1234-1234-123456789abc";
+    let system = "21111111-1111-1111-9999-000000000007";
+    for json in [false, true] {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/organizations/selected/accessRequests"))
+            .and(header("authorization", "Bearer test-bearer-token"))
+            .respond_with(
+                ResponseTemplate::new(403).set_body_json(
+                    serde_json::json!({"error": "role selection is not assignable"}),
+                ),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let tokens = access_credentials(dir.path());
+        write_oauth_tokens(&tokens, &server.uri());
+        let credentials_path = dir.path().join(".clickhouse/credentials.json");
+        let before = std::fs::read(&credentials_path).unwrap();
+        let mut command = Command::new(clickhousectl_binary());
+        command
+            .env_clear()
+            .env("DO_NOT_TRACK", "1")
+            .env("HOME", dir.path().join("home"))
+            .current_dir(dir.path())
+            .args([
+                "cloud",
+                "access",
+                "request",
+                "--debug",
+                "--org",
+                "selected",
+                "--perms",
+                &format!("role:{first},role:{system}"),
+                "--perms",
+                &format!("role:{}", first.to_uppercase()),
+                "--key-name",
+                "proposed-key",
+                "--purpose",
+                "bounded proposal",
+            ]);
+        if json {
+            command.arg("--json");
+        }
+        let output = command.output().unwrap();
+        assert_eq!(output.status.code(), Some(4));
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("role selection is not assignable")
+        );
+        assert_access_output_has_no_credentials(&output);
+        assert_eq!(std::fs::read(&credentials_path).unwrap(), before);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1, "no role catalog lookup or subset retry");
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["requestedRoleIds"], serde_json::json!([first, system]));
+        assert_eq!(body["keyName"], "proposed-key");
+        assert_eq!(
+            body["agent"],
+            serde_json::json!({"purpose": "bounded proposal"})
+        );
+        assert_eq!(body["codeChallengeMethod"], "S256");
+        assert_eq!(body["codeChallenge"].as_str().unwrap().len(), 43);
+        assert!(!body["state"].as_str().unwrap().is_empty());
+        assert!(
+            body["redirectUri"]
+                .as_str()
+                .unwrap()
+                .starts_with("http://127.0.0.1:")
+        );
+        assert!(body["redirectUri"].as_str().unwrap().ends_with("/callback"));
+        assert_eq!(body.as_object().unwrap().len(), 7);
+        for field in ["codeChallenge", "state"] {
+            assert!(
+                !String::from_utf8_lossy(&output.stderr).contains(body[field].as_str().unwrap())
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn access_request_perms_usage_validation_precedes_oauth_and_network() {
+    let server = MockServer::start().await;
+    let dir = tempfile::tempdir().unwrap();
+    let tokens = access_credentials(dir.path());
+    // Expired identity would attempt refresh if usage validation were late.
+    std::fs::write(
+        tokens.join("tokens.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "access_token": "test-bearer-token", "refresh_token": "refresh-secret", "expires_at": 1,
+            "api_url": format!("{}/v1", server.uri())
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let oversized = (0..101)
+        .map(|i| format!("role:00000000-0000-0000-0000-{i:012x}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    for value in [
+        "",
+        ",",
+        "role:Admin",
+        "Role:00000000-0000-0000-0000-000000000001",
+        "role:00000000-0000-0000-0000-000000000001,",
+        "role:00000000-0000-0000-0000-000000000001 ,role:*",
+        &oversized,
+    ] {
+        let output = access_command(dir.path())
+            .args(["--perms", value])
+            .env("CLICKHOUSECTL_AUTH_URL", server.uri())
+            .env("CLICKHOUSECTL_CLIENT_ID", "test-client")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+        assert_access_output_has_no_credentials(&output);
+    }
+    let output = Command::new(clickhousectl_binary())
+        .env_clear()
+        .env("DO_NOT_TRACK", "1")
+        .env("HOME", dir.path().join("home"))
+        .current_dir(dir.path())
+        .args([
+            "cloud",
+            "--org-id=one",
+            "access",
+            "request",
+            "--org=two",
+            "--perms",
+            "role:00000000-0000-0000-0000-000000000001",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn access_request_uses_oauth_for_discovery_and_filing_with_saved_or_explicit_url() {
     for explicit_url in [false, true] {
         let selected = MockServer::start().await;
