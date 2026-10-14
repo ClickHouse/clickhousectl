@@ -543,6 +543,19 @@ mod selector_tests {
                 &["--file", "endpoint.json"],
             ),
             (&["query-api-endpoint", "delete", "parent"], &[]),
+            (&["saved-query", "get", "parent"], &[]),
+            (
+                &["saved-query", "update", "parent"],
+                &[
+                    "--new-name",
+                    "q",
+                    "--sql",
+                    "SELECT 1",
+                    "--database",
+                    "default",
+                ],
+            ),
+            (&["saved-query", "delete", "parent"], &[]),
         ];
         for (prefix, suffix) in cases {
             let parse = |selector: &[&str]| {
@@ -864,6 +877,7 @@ mod selector_usage_tests {
             vec!["cloud", "clickpipe", "get"],
             vec!["cloud", "clickpipe", "settings", "get"],
             vec!["cloud", "query-api-endpoint", "get"],
+            vec!["cloud", "saved-query", "get"],
             vec!["cloud", "clickstack", "alert", "delete"],
             vec!["cloud", "clickstack", "webhook", "delete"],
             vec!["cloud", "clickstack", "source", "get"],

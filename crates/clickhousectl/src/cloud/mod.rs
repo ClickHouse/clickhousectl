@@ -14,6 +14,7 @@ pub mod output;
 pub(crate) mod permissions;
 pub mod postgres;
 pub mod query_api_endpoints;
+pub mod saved_queries;
 pub mod service_query;
 pub mod services;
 mod shared;
@@ -159,6 +160,7 @@ async fn dispatch(client: &CloudClient, command: CloudCommands, json: bool) -> c
         CloudCommands::Key { command } => api_keys::run(client, command, json).await,
         CloudCommands::Udf(args) => udfs::run(client, args, json).await,
         CloudCommands::QueryApiEndpoint(args) => query_api_endpoints::run(client, args, json).await,
+        CloudCommands::SavedQuery(args) => saved_queries::run(client, args, json).await,
         CloudCommands::Activity { command } => activity::run(client, command, json).await,
         CloudCommands::Backup { command } => backups::run(client, command, json).await,
         CloudCommands::Postgres { command } => postgres::run(client, command, json).await,
