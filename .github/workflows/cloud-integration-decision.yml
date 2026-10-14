@@ -35,7 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # pull_request_target must never execute the PR or an unmerged stack base.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
@@ -56,7 +56,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # For workflow_run, github.sha is a trusted default-branch revision.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # issue_comment workflows also execute only the trusted default branch.
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
