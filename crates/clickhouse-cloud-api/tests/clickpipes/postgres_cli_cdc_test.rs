@@ -16,6 +16,8 @@ use std::time::Duration;
 
 use clickhouse_cloud_api::models::*;
 use rustls::RootCertStore;
+use rustls::pki_types::CertificateDer;
+use rustls::pki_types::pem::PemObject;
 use support::*;
 use tokio_postgres_rustls::MakeRustlsConnect;
 
@@ -699,10 +701,8 @@ async fn connect_postgres(
         let _ = roots.add(cert);
     }
     if let Some(pem) = extra_ca_pem {
-        let mut reader = std::io::BufReader::new(pem.as_bytes());
-        for cert in rustls_pemfile::certs(&mut reader) {
-            let cert = cert?;
-            roots.add(cert)?;
+        for cert in CertificateDer::pem_slice_iter(pem.as_bytes()) {
+            roots.add(cert?)?;
         }
     }
     let client_config = rustls::ClientConfig::builder()
