@@ -118,7 +118,7 @@ pub enum CloudCommands {
   Writes require API key authentication; list/get support OAuth.
   Function names: `cloud udf list`; service IDs: `cloud service list`.
   Create uploads a ZIP archive and starts an asynchronous build.
-  Typical flow: create -> get until ready -> attach -> attachment get.")]
+  Typical flow: deploy NAME --service <id>, or create -> get until ready -> attach -> attachment get.")]
     Udf(UdfArgs),
 
     /// Manage authentication (OAuth login, API keys)
@@ -424,6 +424,7 @@ pub(crate) mod tests {
             ],
             &["udf", "version", "list", "my_udf"],
             &["udf", "attachment", "get", "my_udf", "svc-1"],
+            &["udf", "deploy", "my_udf", "--service", "svc-1"],
             &["query-api-endpoint", "get", "svc-1", "endpoint-1"],
             &["saved-query", "get", "svc-1", "query-1"],
             &["org", "get"],

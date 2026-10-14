@@ -11,7 +11,7 @@ Start with the [README](../README.md) for installation and product examples. The
 | Connect to and operate ClickHouse Managed Postgres | [ClickHouse Managed Postgres](guides/managed-postgres.md) |
 | Load object storage or replicate Postgres, then verify ingestion | [ClickPipes](guides/clickpipes.md) |
 | Create and safely replace a ClickStack dashboard | [ClickStack](guides/clickstack.md) |
-| Test an executable UDF locally, then upload, attach, and update it in Cloud | [User-defined functions](guides/user-defined-functions.md) |
+| Test an executable UDF locally, then deploy and update it in Cloud | [User-defined functions](guides/user-defined-functions.md) |
 
 ## Reference
 

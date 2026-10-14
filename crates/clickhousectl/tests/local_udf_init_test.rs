@@ -186,7 +186,7 @@ fn udf_init_native_warns_off_linux_that_only_cloud_can_run_it() {
     } else {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         let warning = warnings[0].as_str().unwrap();
-        assert!(warning.contains("cloud udf create"), "{warning}");
+        assert!(warning.contains("cloud udf deploy"), "{warning}");
         assert_eq!(stderr, format!("Warning: {warning}\n"));
     }
 }

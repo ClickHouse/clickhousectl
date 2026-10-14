@@ -783,7 +783,7 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   The server must already exist; if it is running, functions reload at once.
   Redeploying the same function name replaces its files and definition.
-  Runtime native deploys only from Linux amd64/arm64 hosts; elsewhere use `cloud udf create`.
+  Runtime native deploys only from Linux amd64/arm64 hosts; elsewhere use `cloud udf deploy`.
   Fields with no local effect are accepted and reported in ignored_fields.
   If a running server does not load the function, deploy exits 1 with the server log path.
   A broken UDF fails every function reload on its server until fixed or removed; others still load.")]

@@ -23,6 +23,7 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `local server list --json` | Object with `servers`, `total_servers`, and `project_scope` |
 | `local udf deploy --json` | Object with `name`, `server`, `type`, `runtime`, `reloaded` (the server was running, so functions were reloaded), `loaded` (`null` when the server is stopped), `interpreter`, `ignored_fields`, `ignored_files`, `warnings` (such as an interpreter that is not Python 3.11, or another deployed UDF that is broken), `function_config`, and `scripts_dir` |
 | `local udf list --json` | Object with `server`, `server_running`, and a `udfs` array of `name`, `type`, `runtime`, `loaded` (`null` when the server is stopped), and `last_deploy_rejected` (the running server rejected the last deploy of these files; a loaded function runs an earlier definition) |
+| `cloud udf deploy --json` | Object with `action` (`created` or `version_created`), `udf`, and `attachment` |
 | `cloud postgres metrics --json` | API-shaped metrics; data-point timestamps are epoch seconds |
 | `cloud service query` | ClickHouse format; `--format` overrides agent auto-JSON and conflicts with explicit `--json` |
 | `cloud postgres query --json` | JSON array lines: names, types, rows; success may be empty |
@@ -75,7 +76,7 @@ Local errors redact external logs, subprocess output, and OS details where neede
 | Reverse private endpoint | Wait for `Ready`; resolve source-side acceptance if needed |
 | Query API timeout | SQL may have completed; check the result before repeating a write |
 | Query-key repair | Replacement can persist despite failed verification; do not blindly rotate again |
-| UDF creation/attachment | Wait for the version to be ready and inspect the service attachment |
+| UDF creation/attachment | Wait for the version to be ready and inspect the service attachment; `udf deploy` waits for both |
 
 See the relevant [task guide](../README.md) for the full sequence. Resource creation, resync, password reset, and SQL writes are not safe generic retry targets. Reconcile the observed state before deciding what to repeat.
 
