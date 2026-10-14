@@ -1,3 +1,27 @@
+use super::permissions::Declaration as Permission;
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api("udf list", &[&op::UDF_LIST]),
+    Permission::api("udf get", &[&op::UDF_GET]),
+    Permission::api(
+        "udf create",
+        &[&op::UDF_UPLOAD_SESSION_CREATE, &op::UDF_CREATE],
+    ),
+    Permission::api("udf delete", &[&op::UDF_DELETE]),
+    Permission::api("udf attach", &[&op::UDF_ATTACH]),
+    Permission::api("udf detach", &[&op::UDF_DETACH]),
+    Permission::api("udf attachment list", &[&op::UDF_ATTACHMENT_LIST]),
+    Permission::api("udf attachment get", &[&op::UDF_ATTACHMENT_GET]),
+    Permission::api("udf version list", &[&op::UDF_VERSION_LIST]),
+    Permission::api(
+        "udf version create",
+        &[&op::UDF_UPLOAD_SESSION_CREATE, &op::UDF_VERSION_CREATE],
+    ),
+    Permission::api("udf version delete", &[&op::UDF_VERSION_DELETE]),
+];
+
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{or_absent, print_human, print_line};

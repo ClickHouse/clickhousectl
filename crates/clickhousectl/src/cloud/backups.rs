@@ -1,3 +1,46 @@
+use super::permissions::{Conditional, Declaration as Permission};
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api("backup list", &[&op::BACKUP_GET_LIST]),
+    Permission::api("backup get", &[&op::BACKUP_GET]),
+    Permission::api("backup bucket get", &[&op::BACKUP_BUCKET_GET]),
+    Permission::api("backup bucket create", &[&op::BACKUP_BUCKET_CREATE]),
+    Permission::api("backup bucket update", &[&op::BACKUP_BUCKET_UPDATE]),
+    Permission::api("backup bucket delete", &[&op::BACKUP_BUCKET_DELETE]),
+    Permission::api("service snapshot list", &[&op::SNAPSHOT_GET_LIST])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api("service snapshot get", &[&op::SNAPSHOT_GET])
+        .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service snapshot config get",
+        &[&op::SNAPSHOT_CONFIGURATION_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service snapshot config update",
+        &[&op::SNAPSHOT_CONFIGURATION_UPDATE],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service backup-config get",
+        &[&op::BACKUP_CONFIGURATION_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::INSTANCE_GET_LIST])]),
+    Permission::api(
+        "service backup-config update",
+        &[&op::BACKUP_CONFIGURATION_UPDATE],
+    )
+    .when(&[
+        Conditional::flag("name", &[&op::INSTANCE_GET_LIST]),
+        Conditional::new(
+            "Start time without period",
+            &[&op::BACKUP_CONFIGURATION_GET],
+        ),
+    ]),
+];
+
 use crate::cloud::client::{CloudClient, CloudError, Result as CloudResult};
 use crate::cloud::config::{deserialize_strict_config, read_config_value};
 use crate::cloud::output::{or_absent, print_human};

@@ -11,6 +11,7 @@ mod config;
 pub mod credentials;
 pub mod organizations;
 pub mod output;
+pub(crate) mod permissions;
 pub mod postgres;
 pub mod query_api_endpoints;
 pub mod service_query;

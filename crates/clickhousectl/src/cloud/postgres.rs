@@ -1,3 +1,77 @@
+use super::permissions::{Conditional, Declaration as Permission};
+use clickhouse_cloud_api::meta::operations as op;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::api("postgres list", &[&op::POSTGRES_SERVICE_GET_LIST]),
+    Permission::api("postgres get", &[&op::POSTGRES_SERVICE_GET])
+        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres logs", &[&op::POSTGRES_LOGS_GET_LIST])
+        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres create", &[&op::POSTGRES_SERVICE_CREATE]),
+    Permission::api(
+        "postgres delete",
+        &[&op::POSTGRES_SERVICE_GET, &op::POSTGRES_SERVICE_DELETE],
+    )
+    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres certs get", &[&op::POSTGRES_SERVICE_CERTS_GET])
+        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres config get", &[&op::POSTGRES_INSTANCE_CONFIG_GET])
+        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api(
+        "postgres config replace",
+        &[&op::POSTGRES_INSTANCE_CONFIG_POST],
+    )
+    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api(
+        "postgres config patch",
+        &[&op::POSTGRES_INSTANCE_CONFIG_PATCH],
+    )
+    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api(
+        "postgres reset-password",
+        &[&op::POSTGRES_SERVICE_SET_PASSWORD],
+    )
+    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api(
+        "postgres read-replica create",
+        &[&op::POSTGRES_INSTANCE_CREATE_READ_REPLICA],
+    )
+    .when(&[Conditional::flag(
+        "source-name",
+        &[&op::POSTGRES_SERVICE_GET_LIST],
+    )]),
+    Permission::api("postgres metrics", &[&op::POSTGRES_INSTANCE_METRICS_GET])
+        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api(
+        "postgres slow-queries list",
+        &[&op::SLOW_QUERY_PATTERNS_GET_LIST],
+    ),
+    Permission::api("postgres slow-queries get", &[&op::SLOW_QUERY_PATTERN_GET]),
+    Permission::api(
+        "postgres prometheus service",
+        &[&op::POSTGRES_INSTANCE_PROMETHEUS_GET],
+    )
+    .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api(
+        "postgres prometheus org",
+        &[&op::POSTGRES_ORG_PROMETHEUS_GET],
+    ),
+    Permission::api("postgres restore", &[&op::POSTGRES_INSTANCE_RESTORE]).when(&[
+        Conditional::flag("source-name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+    ]),
+    Permission::api("postgres restart", &[&op::POSTGRES_SERVICE_PATCH_STATE])
+        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres promote", &[&op::POSTGRES_SERVICE_PATCH_STATE])
+        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres switchover", &[&op::POSTGRES_SERVICE_PATCH_STATE])
+        .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
+    Permission::api("postgres update", &[&op::POSTGRES_SERVICE_PATCH]).when(&[
+        Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
+        Conditional::new("Without --clear-tags", &[&op::POSTGRES_SERVICE_GET]),
+    ]),
+];
+
 use crate::cloud::client::{
     CloudClient, CloudError, ResourceKind, ResourceLookup, Result as CloudResult,
 };

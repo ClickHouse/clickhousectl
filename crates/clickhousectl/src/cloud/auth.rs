@@ -1,3 +1,22 @@
+use super::permissions::Declaration as Permission;
+
+// Declare every API call made by these workflows, including optional lookups.
+pub(super) const PERMISSIONS: &[Permission] = &[
+    Permission::non_api(
+        "auth login",
+        "Saves API keys or starts OAuth login; no Cloud API-key permissions.",
+    ),
+    Permission::non_api(
+        "auth logout",
+        "Clears local credentials; no Cloud API call.",
+    ),
+    Permission::non_api(
+        "auth status",
+        "Reads local authentication state; no Cloud API call.",
+    ),
+    Permission::non_api("auth signup", "Opens account signup; no Cloud API call."),
+];
+
 use crate::cloud::credentials;
 use crate::cloud::output::eprint_line;
 use crate::cloud::{
