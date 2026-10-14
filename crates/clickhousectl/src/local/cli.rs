@@ -8,6 +8,44 @@ fn parse_server_name_arg(name: &str) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
+fn parse_udf_name_arg(name: &str) -> Result<String, String> {
+    crate::udf::validate_function_name(name).map(|()| name.to_string())
+}
+
+/// UDF runtime as spelled in `udf.json` and by the Cloud API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum UdfRuntimeArg {
+    #[value(name = "python3.11")]
+    Python311,
+    Native,
+}
+
+impl UdfRuntimeArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Python311 => "python3.11",
+            Self::Native => "native",
+        }
+    }
+}
+
+/// UDF type as spelled in `udf.json` and by the Cloud API.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum UdfTypeArg {
+    Executable,
+    #[value(name = "executable_pool", alias = "executable-pool")]
+    ExecutablePool,
+}
+
+impl UdfTypeArg {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Executable => "executable",
+            Self::ExecutablePool => "executable_pool",
+        }
+    }
+}
+
 const INSTALL_AFTER_HELP: &str = "\
 CONTEXT FOR AGENTS:
   The first ClickHouse version installed becomes the default; later installs do not change it.
@@ -310,6 +348,16 @@ CONTEXT FOR AGENTS:
     Postgres {
         #[command(subcommand)]
         command: PostgresCommands,
+    },
+
+    /// Manage executable UDFs for local servers
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  A UDF is a directory with udf.json (the definition `cloud udf create --file` accepts) and its entrypoint.
+  Typical flow: `local udf init my_fn` -> edit clickhouse/udfs/my_fn/main.py")]
+    Udf {
+        #[command(subcommand)]
+        command: UdfCommands,
     },
 }
 
@@ -707,6 +755,28 @@ CONTEXT FOR AGENTS:
     },
 }
 
+#[derive(Subcommand)]
+pub enum UdfCommands {
+    /// Scaffold a UDF source directory
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Writes udf.json and main.py (python3.11) or amd64/ and arm64/ (native) into clickhouse/udfs/<NAME>.
+  Idempotent: existing files are kept and only new files are reported.")]
+    Init {
+        /// Function name: a letter, then letters, digits or underscores
+        #[arg(value_name = "NAME", value_parser = parse_udf_name_arg)]
+        name: String,
+
+        /// Runtime for the generated entrypoint
+        #[arg(long, value_enum, default_value_t = UdfRuntimeArg::Python311)]
+        runtime: UdfRuntimeArg,
+
+        /// Function type written to udf.json
+        #[arg(long = "type", value_enum, default_value_t = UdfTypeArg::Executable)]
+        kind: UdfTypeArg,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -762,6 +832,79 @@ mod tests {
             .expect("--help should stop parsing");
         assert_eq!(error.kind(), clap::error::ErrorKind::DisplayHelp);
         error.to_string()
+    }
+
+    #[test]
+    fn udf_init_parses_defaults_and_enums() {
+        let LocalCommands::Udf {
+            command:
+                UdfCommands::Init {
+                    name,
+                    runtime,
+                    kind,
+                },
+        } = local_command(&["udf", "init", "my_fn"])
+        else {
+            panic!("expected udf init");
+        };
+        assert_eq!(name, "my_fn");
+        assert_eq!(runtime, UdfRuntimeArg::Python311);
+        assert_eq!(kind, UdfTypeArg::Executable);
+
+        let LocalCommands::Udf {
+            command: UdfCommands::Init { runtime, kind, .. },
+        } = local_command(&[
+            "udf",
+            "init",
+            "my_fn",
+            "--runtime",
+            "native",
+            "--type",
+            "executable_pool",
+        ])
+        else {
+            panic!("expected udf init");
+        };
+        assert_eq!(runtime, UdfRuntimeArg::Native);
+        assert_eq!(kind, UdfTypeArg::ExecutablePool);
+
+        let LocalCommands::Udf {
+            command: UdfCommands::Init { kind, .. },
+        } = local_command(&["udf", "init", "my_fn", "--type", "executable-pool"])
+        else {
+            panic!("expected udf init");
+        };
+        assert_eq!(kind, UdfTypeArg::ExecutablePool);
+
+        assert!(local_args(&["udf", "init", "my_fn", "--json"]).json);
+        assert_eq!(UdfRuntimeArg::Python311.as_str(), "python3.11");
+        assert_eq!(UdfRuntimeArg::Native.as_str(), "native");
+        assert_eq!(UdfTypeArg::Executable.as_str(), "executable");
+        assert_eq!(UdfTypeArg::ExecutablePool.as_str(), "executable_pool");
+    }
+
+    #[test]
+    fn udf_init_rejects_invalid_names_and_values() {
+        use clap::error::ErrorKind;
+        for name in ["1abc", "../oops", "a-b", ""] {
+            assert_eq!(
+                local_parse_error(&["udf", "init", name]).kind(),
+                ErrorKind::ValueValidation,
+                "{name:?}"
+            );
+        }
+        assert_eq!(
+            local_parse_error(&["udf", "init", "f", "--runtime", "python2"]).kind(),
+            ErrorKind::InvalidValue
+        );
+        assert_eq!(
+            local_parse_error(&["udf", "init", "f", "--type", "pool"]).kind(),
+            ErrorKind::InvalidValue
+        );
+        assert_eq!(
+            local_parse_error(&["udf", "init"]).kind(),
+            ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]

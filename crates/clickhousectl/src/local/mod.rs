@@ -6,6 +6,7 @@ pub mod output;
 pub mod postgres;
 pub mod server;
 pub mod symlink;
+pub mod udf;
 
 use cli::{ClientVersionArg, InstallVersionArg, LocalCommands, ServerCommands, ServerVersionArg};
 
@@ -76,6 +77,7 @@ pub async fn run(cmd: LocalCommands, json: bool) -> Result<()> {
         ),
         LocalCommands::Server { command } => run_server_commands(command, json).await,
         LocalCommands::Postgres { command } => postgres::run(command, json).await,
+        LocalCommands::Udf { command } => udf::run(command, json).await,
     }
 }
 

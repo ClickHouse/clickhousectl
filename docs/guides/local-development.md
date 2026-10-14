@@ -12,7 +12,7 @@ clickhousectl local client dev --query "SELECT version()"
 clickhousectl local server list
 ```
 
-`local init` optionally scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, and seed data; it is not required to start a server.
+`local init` optionally scaffolds `clickhouse/` and `postgres/` directories for schemas, queries, seed data, and [UDF sources](user-defined-functions.md#scaffold-a-function); it is not required to start a server.
 
 Named starts reuse the server's data. Background starts wait up to 30 seconds for HTTP and TCP readiness; `--no-wait` returns after spawning. Failures point to `.clickhouse/servers/<name>/server.log`. Default ports are HTTP 8123 and TCP 9000, with free ports assigned when occupied. Use `--http-port` and `--tcp-port` to request specific ports.
 

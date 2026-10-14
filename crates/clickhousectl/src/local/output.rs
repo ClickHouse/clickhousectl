@@ -908,6 +908,38 @@ impl fmt::Display for InitOutput {
     }
 }
 
+// ── udf ─────────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UdfInitOutput {
+    pub name: String,
+    /// The UDF directory, e.g. `clickhouse/udfs/my_fn`.
+    pub dir: String,
+    /// Files and directories (with a trailing `/`) relative to `dir` this
+    /// invocation created; empty when everything existed.
+    pub created: Vec<String>,
+    /// What the user must still do before the UDF can run, if anything.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_step: Option<String>,
+}
+
+impl fmt::Display for UdfInitOutput {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.created.is_empty() {
+            write!(f, "UDF {} already exists in {}", self.name, self.dir)?;
+        } else {
+            write!(f, "Scaffolded UDF {} in {}", self.name, self.dir)?;
+            for file in &self.created {
+                write!(f, "\nCreated {}/{file}", self.dir)?;
+            }
+        }
+        if let Some(next_step) = &self.next_step {
+            write!(f, "\n{next_step}")?;
+        }
+        Ok(())
+    }
+}
+
 // ── server configs ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]

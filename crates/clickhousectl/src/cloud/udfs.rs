@@ -178,13 +178,7 @@ impl UdfArgs {
 }
 
 fn parse_udf_name(value: &str) -> Result<String, String> {
-    let mut bytes = value.bytes();
-    if !bytes.next().is_some_and(|b| b.is_ascii_alphabetic())
-        || !bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
-    {
-        return Err("Use a letter followed by letters, digits or underscores".into());
-    }
-    Ok(value.to_owned())
+    crate::udf::validate_function_name(value).map(|()| value.to_owned())
 }
 
 pub async fn run(client: &CloudClient, args: UdfArgs, json: bool) -> CloudResult<()> {
@@ -424,89 +418,13 @@ fn print_pagination(pagination: Option<Pagination>) {
     }
 }
 
+/// Shape-check the definition (shared with `local udf`), then stamp the
+/// upload session ID the CLI owns into it.
 fn validate_udf_config(value: &mut Value, upload_id: &str, create: bool) -> CloudResult<String> {
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| CloudError::new("UDF definition must be a JSON object"))?;
-    if object.contains_key("uploadId") {
-        return Err(CloudError::new(
-            "Omit uploadId; --artifact creates a fresh upload session",
-        ));
+    let kind = crate::udf::validate_definition(value, create).map_err(CloudError::new)?;
+    if let Some(object) = value.as_object_mut() {
+        object.insert("uploadId".into(), Value::String(upload_id.to_owned()));
     }
-    for name in [
-        "commandReadTimeout",
-        "commandWriteTimeout",
-        "maxCommandExecutionTime",
-        "poolSize",
-        "memoryLimitMib",
-    ] {
-        if let Some(value) = object.get(name).filter(|v| !v.is_null()) {
-            let max = if name == "memoryLimitMib" {
-                1_048_576
-            } else {
-                i64::MAX
-            };
-            if !value.as_i64().is_some_and(|v| (1..=max).contains(&v)) {
-                return Err(CloudError::new(format!(
-                    "UDF {name} must be an integer from 1 to {max}"
-                )));
-            }
-        }
-    }
-    let kind = object
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or_else(|| CloudError::new("UDF definition requires type"))?
-        .to_owned();
-    // Option<T> is also used for non-nullable optional request fields; reject
-    // explicit null here instead of silently converting it into omission.
-    for name in [
-        "runtime",
-        "type",
-        "deterministic",
-        "sendChunkHeader",
-        "format",
-        "sandboxType",
-        "sandboxVersion",
-        "commandReadTimeout",
-        "commandWriteTimeout",
-    ] {
-        if object.get(name).is_some_and(Value::is_null) {
-            return Err(CloudError::new(format!("UDF {name} cannot be null")));
-        }
-    }
-    if kind == "executable_pool" {
-        for name in ["poolSize", "maxCommandExecutionTime"] {
-            if object.get(name).is_some_and(Value::is_null) {
-                return Err(CloudError::new(format!(
-                    "UDF {name} cannot be null for executable_pool"
-                )));
-            }
-        }
-    }
-    for name in ["returnName", "functionName"] {
-        if let Some(value) = object.get(name).filter(|v| !v.is_null()) {
-            let valid = value.as_str().is_some_and(|v| parse_udf_name(v).is_ok());
-            if !valid {
-                return Err(CloudError::new(format!("Invalid UDF {name}")));
-            }
-        }
-    }
-    if create && !object.get("functionName").is_some_and(Value::is_string) {
-        return Err(CloudError::new("UDF definition requires functionName"));
-    }
-    if let Some(arguments) = object.get("arguments").and_then(Value::as_array) {
-        for argument in arguments {
-            if argument
-                .get("name")
-                .and_then(Value::as_str)
-                .is_none_or(|v| parse_udf_name(v).is_err())
-            {
-                return Err(CloudError::new("Every UDF argument requires a valid name"));
-            }
-        }
-    }
-    object.insert("uploadId".into(), Value::String(upload_id.to_owned()));
     Ok(kind)
 }
 
@@ -947,6 +865,39 @@ mod tests {
         let mut nullable = definition("executable", true);
         nullable["memoryLimitMib"] = Value::Null;
         assert!(build_udf_create_request(nullable, "fresh").is_ok());
+    }
+
+    #[test]
+    fn local_udf_scaffold_definition_builds_a_cloud_create_request() {
+        use crate::local::cli::{UdfRuntimeArg, UdfTypeArg};
+        for (runtime, kind, expected) in [
+            (
+                UdfRuntimeArg::Python311,
+                UdfTypeArg::Executable,
+                UdfRuntime::Python3_11,
+            ),
+            (
+                UdfRuntimeArg::Native,
+                UdfTypeArg::ExecutablePool,
+                UdfRuntime::Native,
+            ),
+        ] {
+            let text = crate::local::udf::definition_template("my_fn", runtime, kind);
+            let value: Value = serde_json::from_str(&text).unwrap();
+            match build_udf_create_request(value, "fresh").unwrap() {
+                UdfCreateRequest::UdfCreateRequestV1(body) => {
+                    assert_eq!(kind, UdfTypeArg::Executable);
+                    assert_eq!(body.runtime, expected);
+                    assert_eq!(body.function_name, "my_fn");
+                }
+                UdfCreateRequest::UdfCreateRequestV2(body) => {
+                    assert_eq!(kind, UdfTypeArg::ExecutablePool);
+                    assert_eq!(body.runtime, expected);
+                    assert_eq!(body.upload_id, "fresh");
+                }
+                UdfCreateRequest::Unknown(_) => panic!("known variant"),
+            }
+        }
     }
 
     #[test]

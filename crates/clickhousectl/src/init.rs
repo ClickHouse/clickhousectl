@@ -78,7 +78,7 @@ pub fn init() -> Result<InitResult> {
 
     let clickhouse_scaffold_created = create_project_scaffold(
         project_dir(),
-        &["tables", "materialized_views", "queries", "seed"],
+        &["tables", "materialized_views", "queries", "seed", "udfs"],
     )?;
     let postgres_scaffold_created = create_project_scaffold(
         postgres_project_dir(),
