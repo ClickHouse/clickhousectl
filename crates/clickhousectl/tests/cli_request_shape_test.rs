@@ -35045,6 +35045,150 @@ fn access_roles_selector_conflicts_exit_usage_before_oauth() {
     }
 }
 
+#[tokio::test]
+async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_safe() {
+    use base64::Engine as _;
+    use sha2::{Digest as _, Sha256};
+    let mut tasks = Vec::new();
+    for json in [false, true] {
+        for scenario in [
+            "callback",
+            "poll",
+            "denied",
+            "expired",
+            "401",
+            "403",
+            "unknown",
+            "malformed",
+            "empty-code",
+            "claim-error",
+            "claim-malformed",
+            "claim-empty",
+            "csrf",
+        ] {
+            tasks.push(tokio::spawn(async move {
+                let server = MockServer::start().await;
+                let dir = tempfile::tempdir().unwrap();
+                let tokens = access_credentials(dir.path());
+                write_oauth_tokens(&tokens, &server.uri());
+                let credentials_path = dir.path().join(".clickhouse/credentials.json");
+                let before = std::fs::read(&credentials_path).unwrap();
+                let oauth_before = std::fs::read(tokens.join("tokens.json")).unwrap();
+                let approval_url = format!("{}/approve/request-1", server.uri());
+                Mock::given(method("POST")).and(path("/v1/organizations/org/accessRequests"))
+                    .and(header("authorization", "Bearer test-bearer-token"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+                        "requestId":"request-1", "status":"pending", "approvalUrl":approval_url, "expiresAt":4102444800000_i64
+                    }}))).expect(1).mount(&server).await;
+                let status = match scenario {
+                    "401" | "403" => ResponseTemplate::new(scenario.parse::<u16>().unwrap()).set_body_string("claim-code-secret"),
+                    "denied" | "expired" | "unknown" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"status":scenario}})),
+                    "malformed" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":"claim-code-secret"})),
+                    "empty-code" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"status":"approved","claimCode":""}})),
+                    "callback" | "csrf" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"status":"pending"}})),
+                    _ => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"status":"approved","claimCode":"claim-code-secret"}})),
+                };
+                Mock::given(method("GET")).and(path("/v1/organizations/org/accessRequests/request-1"))
+                    .and(header("authorization", "Bearer test-bearer-token"))
+                    .respond_with(status).mount(&server).await;
+                let successful = matches!(scenario, "callback" | "poll");
+                let claims = usize::from(successful || scenario.starts_with("claim-"));
+                Mock::given(method("POST")).and(path("/v1/organizations/org/accessRequests/request-1/claim"))
+                    .and(header("authorization", "Bearer test-bearer-token"))
+                    .respond_with(move |request: &wiremock::Request| {
+                        if scenario == "claim-error" || scenario == "claim-malformed" {
+                            // Deliberately echo the actual submitted verifier and claim code.
+                            let echoed = String::from_utf8_lossy(&request.body).to_string();
+                            ResponseTemplate::new(if scenario == "claim-error" {401} else {200})
+                                .set_body_json(serde_json::json!({"error":echoed,"result":echoed}))
+                        } else {
+                            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
+                                "keyId":"issued-id", "key":"issued-key", "secret":if scenario == "claim-empty" {""} else {"issued-secret"}
+                            }}))
+                        }
+                    }).expect(claims as u64).mount(&server).await;
+                let mut command = Command::new(clickhousectl_binary());
+                command.env_clear().env("DO_NOT_TRACK", "1").env("HOME", dir.path().join("home"))
+                    .env("PATH", dir.path().join("empty-path")).current_dir(dir.path())
+                    .args(["cloud", "access", "request", "--org", "org", "--no-browser", "--debug"])
+                    .stdout(Stdio::piped()).stderr(Stdio::piped());
+                if json { command.arg("--json"); }
+                let child = command.spawn().unwrap();
+                let output_task = tokio::task::spawn_blocking(move || {
+                    let mut child = child;
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(12);
+                    while child.try_wait().unwrap().is_none() {
+                        if std::time::Instant::now() >= deadline {
+                            child.kill().unwrap();
+                            let output = child.wait_with_output().unwrap();
+                            panic!("request failed to terminate promptly: {}", String::from_utf8_lossy(&output.stderr));
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    child.wait_with_output().unwrap()
+                });
+                if matches!(scenario, "callback" | "csrf") {
+                    let filed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                        loop {
+                            if let Some(request) = server.received_requests().await.unwrap().first() {
+                                break serde_json::from_slice::<Value>(&request.body).unwrap();
+                            }
+                            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                        }
+                    }).await.unwrap();
+                    let response = reqwest::Client::new().get(filed["redirectUri"].as_str().unwrap())
+                        .query(&[("code", "claim-code-secret"), ("state", if scenario == "csrf" {"wrong-state"} else {filed["state"].as_str().unwrap()})])
+                        .send().await.unwrap();
+                    assert_eq!(response.status().as_u16(), if scenario == "csrf" {400} else {200});
+                }
+                let output = output_task.await.unwrap();
+                let expected_exit = if successful {0} else if matches!(scenario, "401" | "403" | "claim-error" | "csrf") {4} else {1};
+                assert_eq!(output.status.code(), Some(expected_exit), "{scenario}: {}", String::from_utf8_lossy(&output.stderr));
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.contains(&approval_url), "{scenario}: {stderr}");
+                assert!(!String::from_utf8_lossy(&output.stdout).contains(&approval_url));
+                assert_access_output_has_no_credentials(&output);
+                let combined = format!("{}{}", String::from_utf8_lossy(&output.stdout), stderr);
+                assert!(!combined.contains("claim-code-secret"));
+                assert!(!combined.contains("issued-secret"));
+                let requests = server.received_requests().await.unwrap();
+                let filed: Value = serde_json::from_slice(&requests[0].body).unwrap();
+                assert!(!combined.contains(filed["state"].as_str().unwrap()));
+                let claim_requests: Vec<_> = requests.iter().filter(|r| r.url.path().ends_with("/claim")).collect();
+                assert_eq!(claim_requests.len(), claims);
+                for claim in claim_requests {
+                    let body: Value = serde_json::from_slice(&claim.body).unwrap();
+                    assert_eq!(body.as_object().unwrap().len(), 2);
+                    assert_eq!(body["claimCode"], "claim-code-secret");
+                    let verifier = body["codeVerifier"].as_str().unwrap();
+                    assert!(!combined.contains(verifier));
+                    assert_eq!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())), filed["codeChallenge"]);
+                }
+                if successful {
+                    if json {
+                        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+                        assert_eq!(result.as_object().unwrap().len(), 4);
+                        assert_eq!(result["status"], "approved");
+                        assert_eq!(result["keyId"], "issued-id");
+                        assert_eq!(result["key"], "issued-key");
+                    }
+                    let stored: Value = serde_json::from_slice(&std::fs::read(&credentials_path).unwrap()).unwrap();
+                    assert_eq!(stored["api_key"], "issued-key");
+                    assert_eq!(stored["api_secret"], "issued-secret");
+                } else {
+                    assert!(output.stdout.is_empty());
+                    assert_eq!(std::fs::read(&credentials_path).unwrap(), before);
+                }
+                assert_eq!(std::fs::read(tokens.join("tokens.json")).unwrap(), oauth_before);
+                assert!(requests.iter().all(|r| !r.url.path().starts_with("/approve")));
+            }));
+        }
+    }
+    for task in tasks {
+        task.await.unwrap();
+    }
+}
+
 fn access_command(dir: &Path) -> Command {
     let mut command = Command::new(clickhousectl_binary());
     command
