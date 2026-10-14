@@ -174,7 +174,7 @@ pub fn pg_instance_key(name: &str, major: &str) -> String {
     format!("{}-pg{}", name, major)
 }
 
-fn is_pg_instance_key(name: &str) -> bool {
+pub(crate) fn is_pg_instance_key(name: &str) -> bool {
     name.rsplit_once("-pg").is_some_and(|(name, major)| {
         !name.is_empty() && !major.is_empty() && major.chars().all(|c| c.is_ascii_digit())
     })

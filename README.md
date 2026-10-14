@@ -240,7 +240,7 @@ Structured commands support `--json` and select it automatically for detected co
 | [ClickHouse Managed Postgres](docs/guides/managed-postgres.md) | Connect, query, configure, and recover services |
 | [ClickPipes](docs/guides/clickpipes.md) | Load files, replicate databases, verify ingestion, and update pipelines |
 | [ClickStack](docs/guides/clickstack.md) | Sources, dashboards, alerts, and safe resource updates |
-| [User-defined functions](docs/guides/user-defined-functions.md) | Upload, attach, and update executable UDFs |
+| [User-defined functions](docs/guides/user-defined-functions.md) | Test executable UDFs locally, then upload, attach, and update them in Cloud |
 | [Authentication and access](docs/reference/authentication.md) | OAuth, API keys, credential precedence, roles, and logout |
 | [SQL and Query API](docs/reference/query-api.md) | Key binding, SQL input, output, timeouts, and named endpoints |
 | [ClickPipe configuration](docs/reference/clickpipe-configuration.md) | Partial updates, table mappings, source credentials, and private connectivity |

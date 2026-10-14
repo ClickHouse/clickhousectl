@@ -1,8 +1,8 @@
-# Upload and attach a user-defined function
+# Develop and deploy a user-defined function
 
 [All documentation](../README.md)
 
-`cloud udf` manages organization-scoped executable UDFs, versions, and service attachments. Cloud UDF operations are beta. Reads support OAuth; writes require API key authentication.
+`local udf` deploys [executable UDFs](https://clickhouse.com/docs/sql-reference/functions/udf#executable-user-defined-functions) to a local server, and `cloud udf` manages organization-scoped executable UDFs, versions, and service attachments in Cloud. Both read the same source directory: a `udf.json` definition in the Cloud API's field names next to the function's files. Cloud UDF operations are beta. Cloud reads support OAuth; Cloud writes require API key authentication.
 
 Save the definition below as `udf.json` and prepare a [source ZIP archive](https://clickhouse.com/docs/products/cloud/features/sql-console-features/user-defined-functions#manage-udfs-with-the-cloud-api). `--file` accepts a file or `-` for stdin. The definition uses the API's field names and excludes `uploadId`, which the CLI obtains from a fresh upload session:
 
@@ -27,9 +27,46 @@ clickhousectl local udf init my_udf                    # udf.json and an executa
 clickhousectl local udf init my_udf --runtime native   # udf.json, amd64/ and arm64/
 ```
 
-For runtime `native`, build a Linux `main` binary into each architecture directory. Pass `--type executable_pool` for a pooled function. Re-running keeps existing files and reports only the ones it created.
+For runtime `native`, build a Linux `main` binary into each architecture directory. On a host other than Linux amd64/arm64, `init` warns that the UDF can be deployed to Cloud but not to a local server. Pass `--type executable_pool` for a pooled function. Re-running keeps existing files and reports only the ones it created.
 
-## Create and attach
+## Test on a local server
+
+```bash
+clickhousectl local server start
+clickhousectl local udf deploy my_udf
+clickhousectl local client --query "SELECT my_udf(1)"
+clickhousectl local udf list
+clickhousectl local udf remove my_udf
+```
+
+Every command except `init` takes `--server NAME` (default `default`). The server must already exist; `deploy`, `list` and `remove` work whether or not it is running, and `reload` needs it running. Like every local command, `local udf` looks for servers only in the current directory's project and never in parent directories, so run it from the project root. `deploy NAME` reads `clickhouse/udfs/NAME/` (`--dir PATH` selects another parent directory), and `functionName` must equal `NAME`. Local names are at most 235 characters, so every file named after the function fits the file-name limit. Redeploying replaces the function's files and definition.
+
+`deploy` validates `udf.json` exactly as `cloud udf create --file` does and rejects symbolic links, as Cloud does. Runtime `python3.11` needs `main.py` at the root; runtime `native` runs only on Linux amd64/arm64 hosts and needs only the host's binary (`amd64/main` or `arm64/main`); the other architecture's directory is reported in `ignored_files` and not copied. `--python` with a native UDF is a usage error. Files are written under `.clickhouse/servers/<name>/data/`:
+
+| Path | Contents |
+| --- | --- |
+| `config.d/chctl-udf.xml` | Managed overlay that points `user_defined_executable_functions_config` and `user_scripts_path` at the directories below. Rewritten on every `server start`; these two settings win over a `--config` overlay. |
+| `user_defined_functions/<name>_function.xml` | The rendered `<function>` block, plus the `<name>.json` copy of the definition that `list` reads |
+| `user_scripts/<name>/` | The source directory without `udf.json`, hidden entries and `__pycache__` (for `native`, only the host's `amd64/` or `arm64/`) |
+
+On a running server, `deploy` first refuses (exit 2, nothing written) a name the server already uses for a built-in function, an alias, or a SQL function created with `CREATE FUNCTION`; built-in names that are case-insensitive clash in any case, so `LOWER` is refused like `lower`. A stopped server cannot be checked. `deploy` then reloads functions and confirms the function appears in `system.functions`. If ClickHouse does not load it, `deploy` exits 1 with `udf_not_loaded` and the path of the server log that records why. If ClickHouse rejects the reload because the function is broken, `deploy` exits 1 with `udf_rejected`. Both keep the deployed files. ClickHouse loads each function file on its own, so other functions still load, but `SYSTEM RELOAD FUNCTIONS` (sent by `deploy`, `reload` and `remove`) keeps failing on that server until you fix and redeploy the broken function or remove it. When the deployed function loads but another deployed UDF is broken, `deploy` succeeds and adds a warning naming the broken one. The broken function is named from ClickHouse's per-function load status (26.2 and later); older servers name a staged function they do not list, or one a name clash names. Older servers cannot show whether a function that was already loaded now runs its new definition, so such a redeploy exits 1 with `udf_rejected` naming the broken UDF; fix or remove it and redeploy. After a rejected redeploy the earlier definition stays loaded: `list` shows `yes (stale: last deploy rejected)` (JSON `last_deploy_rejected: true`) until a deploy, `reload` or `remove` reloads successfully. A stopped server loads the files on its next start. ClickHouse also rescans the function directory every few seconds, so `reload` is rarely needed outside scripts; a rejected `reload` exits 1 with `udf_reload_blocked`, naming the broken function when ClickHouse identifies it.
+
+Runtime `python3.11` runs `main.py` through an absolute interpreter path, so no shebang or execute bit is needed. The interpreter is `--python PATH`, else `python3.11`, else `python3` on `PATH`, resolved to an absolute path at deploy time: redeploy after moving the project or the interpreter. Cloud runs Python 3.11, so `deploy` warns when the interpreter reports another version or none. `requirements.txt` is copied but not installed; install its packages into the interpreter you deploy with, such as a virtualenv passed with `--python`.
+
+The definition maps to ClickHouse's `<function>` XML with the same units as Cloud:
+
+| `udf.json` | `<function>` element |
+| --- | --- |
+| `functionName`, `type`, `arguments[].name/type`, `returnType`, `returnName` | `name`, `type`, `argument/name`, `argument/type`, `return_type`, `return_name` |
+| `format` | `format` (`TabSeparated` when omitted) |
+| `commandReadTimeout`, `commandWriteTimeout` (ms) | `command_read_timeout`, `command_write_timeout` |
+| `poolSize`, `maxCommandExecutionTime` (s) | `pool_size`, `max_command_execution_time` (`executable_pool` only; on `executable` they are reported in `ignored_fields`) |
+| `sendChunkHeader`, `deterministic` | `send_chunk_header`, `deterministic` |
+| `runtime: python3.11` | `execute_direct` `0`; `command` is `exec` with the interpreter and `main.py` paths, so each worker is one Python process |
+| `runtime: native` | `execute_direct` `1`; `command` is `<name>/<arch>/main` for the host CPU |
+| `memoryLimitMib`, `sandboxType`, `sandboxVersion` | No local equivalent; accepted and reported as ignored |
+
+## Create and attach in Cloud
 
 ```bash
 clickhousectl cloud udf create --file udf.json --artifact source.zip

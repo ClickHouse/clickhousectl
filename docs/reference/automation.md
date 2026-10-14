@@ -21,6 +21,8 @@ Cloud structured output follows each command's API-shaped contract, usually came
 | `cloud service settings list --json` | Object with `settings`; values retain string/number types |
 | `cloud clickpipe settings get --json` | Object with snake_case setting names |
 | `local server list --json` | Object with `servers`, `total_servers`, and `project_scope` |
+| `local udf deploy --json` | Object with `name`, `server`, `type`, `runtime`, `reloaded` (the server was running, so functions were reloaded), `loaded` (`null` when the server is stopped), `interpreter`, `ignored_fields`, `ignored_files`, `warnings` (such as an interpreter that is not Python 3.11, or another deployed UDF that is broken), `function_config`, and `scripts_dir` |
+| `local udf list --json` | Object with `server`, `server_running`, and a `udfs` array of `name`, `type`, `runtime`, `loaded` (`null` when the server is stopped), and `last_deploy_rejected` (the running server rejected the last deploy of these files; a loaded function runs an earlier definition) |
 | `cloud postgres metrics --json` | API-shaped metrics; data-point timestamps are epoch seconds |
 | `cloud service query` | ClickHouse format; `--format` overrides agent auto-JSON and conflicts with explicit `--json` |
 | `cloud postgres query --json` | JSON array lines: names, types, rows; success may be empty |
@@ -50,13 +52,13 @@ Local and Cloud runtime errors in JSON mode write an envelope to stderr:
 {"error":{"code":"server_not_found","message":"The selected server was not found"}}
 ```
 
-`error.code` and `error.message` are always present; `command` and command-specific recovery fields are optional. Branch on the stable code, not English wording. Debug, progress, or cleanup diagnostics can precede the object, so stderr as a whole is not guaranteed to be one JSON document. Clap usage errors remain text and exit 2. Management-command failures (`skills`, `telemetry`, `update`) keep their existing diagnostics rather than sharing this runtime envelope.
+`error.code` and `error.message` are always present; `command`, `details`, and command-specific recovery fields are optional. `details` carries the underlying ClickHouse or parser error text when `message` is a summary. Branch on the stable code, not English wording. Debug, progress, or cleanup diagnostics can precede the object, so stderr as a whole is not guaranteed to be one JSON document. Clap usage errors remain text and exit 2. Management-command failures (`skills`, `telemetry`, `update`) keep their existing diagnostics rather than sharing this runtime envelope.
 
 Error rendering adds nothing to stdout, but a streaming query or a command that already committed a change may have emitted a result before failing. Do not accept partial output as success or assume nonzero exit means no side effects.
 
 Cloud generic codes are `auth_required`, `cancelled`, `http_4xx`, `http_5xx`, `rate_limited`, `transport`, `timeout`, `sql_error`, `service_stopped`, `io`, and `other`, with specific recovery codes taking precedence. `resource_not_found` applies to supported service/Postgres/organization lookups, not every resource: check the organization scope and use the relevant list command. A malformed identifier or a missing ClickPipe/key can carry the API's own diagnostic instead.
 
-Local errors redact external logs, subprocess output, and OS details where needed. Managed-client failures include `project_scope.path`, `server.selection`/`name`, and ordered `guidance`; project-local stop/remove errors can also carry scope and guidance instead of a top-level recovery command. These identify the exact directory inspected, without searching parent projects. New optional fields and codes may be added compatibly.
+Local errors redact external logs, subprocess output, and OS details where needed. The UDF codes `udf_definition_invalid` (invalid JSON), `udf_rejected`, `udf_reload_blocked`, `udf_query_failed`, and `udf_server_unreachable` keep ClickHouse's, the HTTP client's, or the JSON parser's text out of `message` and return it in `details`. Managed-client failures include `project_scope.path`, `server.selection`/`name`, and ordered `guidance`; project-local stop/remove errors can also carry scope and guidance instead of a top-level recovery command. These identify the exact directory inspected, without searching parent projects. New optional fields and codes may be added compatibly.
 
 ## Wait for completion and retry deliberately
 
@@ -92,7 +94,17 @@ Unattended `skills` requires `--agent`, `--all`, or `--detected-only`; omission 
 
 | Code | Meaning |
 | ---- | ------- |
-| `server_not_found` | The selected local server does not exist |
+| `server_not_found` | The selected local server does not exist, or `--server` names a local Postgres instance |
+| `udf_definition_invalid` | `udf.json` is not valid JSON (message names the file, line and column; `details` has the parser's text) or fails validation (message carries the reason) |
+| `udf_source_invalid` | The UDF directory does not exist (the message and `command` suggest `udf init`), is not a directory or is itself a symbolic link, has no `udf.json` or entrypoint, or contains a symbolic link; or the staged script path contains a single quote |
+| `udf_runtime_unsupported` | Runtime `native` needs a Linux amd64/arm64 host |
+| `udf_not_loaded` | The running server did not load the deployed function; see the log path in the message |
+| `udf_rejected` | The running server rejected the function reload after a deploy, and the deployed function is broken or (before ClickHouse 26.2) could not be confirmed to run its new definition; the message and `command` name the broken function when identified, which may not be the one deployed; `details` has ClickHouse's error. Other functions still load, but every function reload fails until the broken one is fixed or removed |
+| `udf_reload_blocked` | `udf reload` was rejected, or `udf remove` deleted the files but the reload still fails, because a deployed function is broken; `command` removes it when identified; `details` has ClickHouse's error |
+| `udf_not_found` | No UDF of that name is deployed to the selected server |
+| `udf_interpreter_not_found` | No `python3.11` or `python3` on `PATH` and no usable `--python`, or the interpreter path contains a single quote |
+| `udf_query_failed` | The local server rejected a UDF statement; the server's text is in `details` |
+| `udf_server_unreachable` | The local server's HTTP port did not answer; the client's text is in `details` |
 | `managed_client_server_not_found` | Managed client lookup did not find the selected server in the current project |
 | `managed_client_server_not_running` | The managed client server exists in the current project but is stopped |
 | `managed_client_binary_not_found` | The client binary selected by managed server metadata is not installed |

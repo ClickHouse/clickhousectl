@@ -665,9 +665,13 @@ async fn start_server(
     // Passing it as --config-file instead would replace the embedded defaults
     // and a partial file would fail to start.
     config::apply_config_overlay(&data_dir, resolved_config.as_deref())?;
-    // The data path and ports go in a config.d file that merges after the
-    // overlay, so they win over the file's contents and the managed lifecycle
-    // is preserved. Command-line overrides would win too, but only until the
+    // Point the embedded config at this server's executable UDF directories.
+    // Sorted after `chctl-config.*`, so the managed paths win if a named
+    // config also sets them; deploy/remove rewrite the same file.
+    udf::write_overlay(&data_dir)?;
+    // The data path and ports go in a config.d file that merges after both
+    // overlays, so they win over their contents and the managed lifecycle is
+    // preserved. Command-line overrides would win too, but only until the
     // first config reload: ClickHouse 26.1 and earlier drop them when anything
     // in config.d changes and rebind to the default ports.
     config::write_managed_config(&data_dir, http_port, tcp_port)?;

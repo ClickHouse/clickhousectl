@@ -7,7 +7,7 @@ pub mod clickpipe_endpoints;
 pub mod clickpipes;
 pub mod clickstack;
 pub mod client;
-mod config;
+pub(crate) mod config;
 pub mod credentials;
 pub mod organizations;
 pub mod output;
