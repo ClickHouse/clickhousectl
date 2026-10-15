@@ -958,15 +958,20 @@ fn load_json_file<T: DeserializeOwned>(path: &Path) -> CloudResult<T> {
 /// The closed set of Postgres GUCs accepted by the Cloud API's `pgConfig`
 /// schema. The library stays tolerant when reading responses, so write inputs
 /// are checked here before serde can discard a misspelled field.
-const PG_CONFIG_KEYS: [&str; 31] = [
+const PG_CONFIG_KEYS: [&str; 38] = [
     "autovacuum_analyze_scale_factor",
+    "autovacuum_analyze_threshold",
+    "autovacuum_freeze_max_age",
     "autovacuum_max_workers",
     "autovacuum_naptime",
     "autovacuum_vacuum_cost_delay",
     "autovacuum_vacuum_cost_limit",
     "autovacuum_vacuum_insert_scale_factor",
+    "autovacuum_vacuum_insert_threshold",
     "autovacuum_vacuum_scale_factor",
+    "autovacuum_vacuum_threshold",
     "autovacuum_work_mem",
+    "checkpoint_timeout",
     "default_transaction_isolation",
     "effective_cache_size",
     "effective_io_concurrency",
@@ -983,9 +988,11 @@ const PG_CONFIG_KEYS: [&str; 31] = [
     "max_worker_processes",
     "min_wal_size",
     "random_page_cost",
+    "shared_memory_percent",
     "ssl_min_protocol_version",
     "statement_timeout",
     "transaction_timeout",
+    "wal_buffers",
     "wal_compression",
     "wal_keep_size",
     "wal_sender_timeout",
@@ -5559,6 +5566,21 @@ mod tests {
             err.contains("unknown configuration section 'pgBouncerConfigs'"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn pg_config_accepts_the_autovacuum_checkpoint_and_memory_gucs() {
+        let input = serde_json::json!({
+            "autovacuum_analyze_threshold": 50,
+            "autovacuum_freeze_max_age": 200000000,
+            "autovacuum_vacuum_insert_threshold": -1,
+            "autovacuum_vacuum_threshold": 50,
+            "checkpoint_timeout": "5min",
+            "shared_memory_percent": 25,
+            "wal_buffers": "16MB"
+        });
+        let parsed = pg_config_from_json(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), input);
     }
 
     #[test]

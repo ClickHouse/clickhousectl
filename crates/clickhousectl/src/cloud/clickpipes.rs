@@ -1812,8 +1812,8 @@ pub struct MongoDbCreateArgs {
 
     /// Full table mapping as a JSON object (repeatable)
     ///
-    /// Supports tableEngine. Combinable with --table-mapping; unknown fields
-    /// are rejected.
+    /// Supports tableEngine and structuredIngestion (typed columns).
+    /// Combinable with --table-mapping; unknown fields are rejected.
     #[arg(long = "table-mapping-json", value_name = "JSON")]
     pub table_mappings_json: Vec<String>,
 
@@ -5024,6 +5024,7 @@ const MONGODB_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
     "sourceCollection",
     "targetTable",
     "tableEngine",
+    "structuredIngestion",
 ];
 
 fn parse_mongodb_table_mapping_json(
@@ -5045,7 +5046,53 @@ fn parse_mongodb_table_mapping_json(
         &mapping.table_engine,
         ClickPipeMongoDBPipeTableMappingTableengine::VALUES,
     )?;
+    mapping.structured_ingestion = mapping
+        .structured_ingestion
+        .map(|ingestion| validate_mongodb_structured_ingestion(&flag, ingestion))
+        .transpose()?;
     Ok(mapping)
+}
+
+/// Trims the names in `structuredIngestion` and rejects empty ones; the
+/// spec requires `excludedColumns` and `sortingKeys` entries to be unique.
+fn validate_mongodb_structured_ingestion(
+    flag: &str,
+    mut ingestion: clickhouse_cloud_api::models::ClickPipeMongoDBStructuredIngestion,
+) -> CloudResult<clickhouse_cloud_api::models::ClickPipeMongoDBStructuredIngestion> {
+    if let Some(columns) = ingestion.columns.as_mut() {
+        for column in columns.iter_mut() {
+            column.name = required_table_mapping_name(
+                flag,
+                "structuredIngestion.columns[].name",
+                std::mem::take(&mut column.name),
+            )?;
+            column.r#type = required_table_mapping_name(
+                flag,
+                "structuredIngestion.columns[].type",
+                std::mem::take(&mut column.r#type),
+            )?;
+        }
+    }
+    ingestion.excluded_columns = validate_table_mapping_entries(
+        flag,
+        "structuredIngestion.excludedColumns",
+        ingestion.excluded_columns,
+        true,
+    )?;
+    ingestion.sorting_keys = validate_table_mapping_entries(
+        flag,
+        "structuredIngestion.sortingKeys",
+        ingestion.sorting_keys,
+        true,
+    )?;
+    if let Some(expr) = &ingestion.partition_by_expr {
+        ingestion.partition_by_expr = Some(required_table_mapping_name(
+            flag,
+            "structuredIngestion.partitionByExpr",
+            expr.clone(),
+        )?);
+    }
+    Ok(ingestion)
 }
 
 const BIGQUERY_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
@@ -12118,6 +12165,88 @@ mod tests {
         assert_eq!(bigquery.sorting_keys, Some(vec![]));
         assert_eq!(bigquery.use_custom_sorting_key, Some(false));
         assert_eq!(bigquery.table_engine, None);
+    }
+
+    #[test]
+    fn mongodb_table_mapping_json_accepts_structured_ingestion() {
+        use clickhouse_cloud_api::models::{
+            ClickPipeMongoDBPipeColumn, ClickPipeMongoDBStructuredIngestion,
+        };
+
+        let minimal = parse_mongodb_table_mapping_json(
+            0,
+            r#"{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","structuredIngestion":{"enabled":true}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            minimal.structured_ingestion,
+            Some(ClickPipeMongoDBStructuredIngestion {
+                enabled: true,
+                ..Default::default()
+            })
+        );
+
+        let maximal = parse_mongodb_table_mapping_json(
+            0,
+            r#"{"sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t","structuredIngestion":{
+                "enabled":true,
+                "dropUnexpectedValues":true,
+                "columns":[{"name":" amount ","type":"Float64"}],
+                "excludedColumns":["internal_notes"],
+                "sortingKeys":["_id","created_at"],
+                "partitionByExpr":"toYYYYMM(created_at)"
+            }}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            maximal.structured_ingestion,
+            Some(ClickPipeMongoDBStructuredIngestion {
+                enabled: true,
+                drop_unexpected_values: Some(true),
+                columns: Some(vec![ClickPipeMongoDBPipeColumn {
+                    name: "amount".to_string(),
+                    r#type: "Float64".to_string(),
+                }]),
+                excluded_columns: Some(vec!["internal_notes".to_string()]),
+                sorting_keys: Some(vec!["_id".to_string(), "created_at".to_string()]),
+                partition_by_expr: Some("toYYYYMM(created_at)".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn mongodb_table_mapping_json_rejects_invalid_structured_ingestion() {
+        let base = r#""sourceDatabaseName":"db","sourceCollection":"c","targetTable":"t""#;
+        let cases = [
+            (r#"{}"#, "missing field `enabled`"),
+            (r#"{"enabled":true,"sortKeys":[]}"#, "unknown field"),
+            (
+                r#"{"enabled":true,"columns":[{"name":"a"}]}"#,
+                "missing field `type`",
+            ),
+            (
+                r#"{"enabled":true,"columns":[{"name":"","type":"String"}]}"#,
+                "structuredIngestion.columns[].name is required",
+            ),
+            (
+                r#"{"enabled":true,"excludedColumns":["a","a"]}"#,
+                "structuredIngestion.excludedColumns must not contain duplicate entry 'a'",
+            ),
+            (
+                r#"{"enabled":true,"sortingKeys":["_id",""]}"#,
+                "structuredIngestion.sortingKeys must not contain an empty entry",
+            ),
+            (
+                r#"{"enabled":true,"partitionByExpr":" "}"#,
+                "structuredIngestion.partitionByExpr is required",
+            ),
+        ];
+        for (ingestion, diagnostic) in cases {
+            let raw = format!(r#"{{{base},"structuredIngestion":{ingestion}}}"#);
+            let error = parse_mongodb_table_mapping_json(0, &raw).unwrap_err();
+            assert!(error.message.starts_with("--table-mapping-json #1: "));
+            assert!(error.message.contains(diagnostic), "{}", error.message);
+        }
     }
 
     #[test]
