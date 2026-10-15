@@ -33918,6 +33918,9 @@ fn access_roles_selector_conflicts_exit_usage_before_oauth() {
 async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_safe() {
     use base64::Engine as _;
     use sha2::{Digest as _, Sha256};
+    const A: &str = "21111111-1111-1111-9999-000000000007";
+    const B: &str = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const C: &str = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
     let mut tasks = Vec::new();
     for json in [false, true] {
         for scenario in [
@@ -33942,6 +33945,24 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
             "pending-expired-pending",
             "create-deadline-missing",
             "create-envelope-error",
+            "create-proposal-missing",
+            "create-proposal-null",
+            "create-proposal-malformed",
+            "create-proposal-duplicate",
+            "create-proposal-oversized",
+            "create-proposal-mismatch",
+            "create-proposal-unexpected",
+            "get-proposal-missing",
+            "get-proposal-null",
+            "get-proposal-mismatch",
+            "get-proposal-duplicate",
+            "get-identity-mismatch",
+            "claim-grants-missing",
+            "claim-grants-null",
+            "claim-grants-empty",
+            "claim-grants-malformed",
+            "claim-grants-duplicate",
+            "claim-grants-many",
         ] {
             tasks.push(tokio::spawn(async move {
                 let server = MockServer::start().await;
@@ -33953,16 +33974,32 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                 let oauth_before = std::fs::read(tokens.join("tokens.json")).unwrap();
                 let approval_url = format!("{}/approve/request-1", server.uri());
                 let pending_expiry = if scenario.starts_with("pending-expired") {1_i64} else {4102444800000_i64};
+                let proposed = matches!(scenario, "callback" | "poll") || scenario.starts_with("create-proposal") || scenario.starts_with("get-proposal");
+                let proposal = if proposed {serde_json::json!([A, B.to_uppercase()])} else {serde_json::json!([])};
                 let mut create = serde_json::json!({"result": {
-                    "requestId":"request-1", "status":"pending", "approvalUrl":approval_url, "expiresAt":pending_expiry
+                    "requestedRoleIds":proposal, "requestId":"request-1", "status":"pending", "approvalUrl":approval_url, "expiresAt":pending_expiry
                 }});
                 if scenario == "create-deadline-missing" { create["result"]["expiresAt"] = Value::Null; }
                 if scenario == "create-envelope-error" { create["error"] = serde_json::json!("secret-envelope-error"); }
+                match scenario {
+                    "create-proposal-missing" => { create["result"].as_object_mut().unwrap().remove("requestedRoleIds"); },
+                    "create-proposal-null" => create["result"]["requestedRoleIds"] = Value::Null,
+                    "create-proposal-malformed" => create["result"]["requestedRoleIds"] = serde_json::json!(["secret-invalid-role"]),
+                    "create-proposal-duplicate" => create["result"]["requestedRoleIds"] = serde_json::json!([B, B.to_uppercase()]),
+                    "create-proposal-oversized" => create["result"]["requestedRoleIds"] = serde_json::json!((1..=101).map(|id| format!("00000000-0000-0000-0000-{id:012x}")).collect::<Vec<_>>()),
+                    "create-proposal-mismatch" => create["result"]["requestedRoleIds"] = serde_json::json!([B, A]),
+                    _ => {},
+                }
                 Mock::given(method("POST")).and(path("/v1/organizations/org/accessRequests"))
                     .and(header("authorization", "Bearer test-bearer-token"))
                     .respond_with(ResponseTemplate::new(200).set_body_json(create)).expect(1).mount(&server).await;
-                let mut approved = serde_json::json!({"result":{"requestId":"request-1","expiresAt":pending_expiry,"claimCodeExpiresAt":4102444800000_i64,"status":"approved","claimCode":"claim-code-secret"}});
+                let mut approved = serde_json::json!({"result":{"requestedRoleIds":proposal,"grantedRoleIds":[A],"requestId":"request-1","expiresAt":pending_expiry,"claimCodeExpiresAt":4102444800000_i64,"status":"approved","claimCode":"claim-code-secret"}});
                 match scenario {
+                    "get-proposal-missing" => {approved["result"].as_object_mut().unwrap().remove("requestedRoleIds");},
+                    "get-proposal-null" => approved["result"]["requestedRoleIds"] = Value::Null,
+                    "get-proposal-mismatch" => approved["result"]["requestedRoleIds"] = serde_json::json!([B, A]),
+                    "get-proposal-duplicate" => approved["result"]["requestedRoleIds"] = serde_json::json!([B, B.to_uppercase()]),
+                    "get-identity-mismatch" => approved["result"]["requestId"] = serde_json::json!("other-request"),
                     "claim-deadline-missing" => approved["result"]["claimCodeExpiresAt"] = Value::Null,
                     "claim-deadline-expired" => approved["result"]["claimCodeExpiresAt"] = serde_json::json!(1),
                     "already-claimed" => approved["result"]["issuedKeyId"] = serde_json::json!("issued-id"),
@@ -33971,17 +34008,17 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                 }
                 let status = match scenario {
                     "401" | "403" => ResponseTemplate::new(scenario.parse::<u16>().unwrap()).set_body_string("claim-code-secret"),
-                    "denied" | "expired" | "unknown" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"requestId":"request-1","expiresAt":4102444800000_i64,"status":scenario}})),
+                    "denied" | "expired" | "unknown" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"requestedRoleIds":[],"requestId":"request-1","expiresAt":4102444800000_i64,"status":scenario}})),
                     "malformed" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":"claim-code-secret"})),
-                    "empty-code" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"requestId":"request-1","expiresAt":4102444800000_i64,"claimCodeExpiresAt":4102444800000_i64,"status":"approved","claimCode":""}})),
-                    "csrf" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"requestId":"request-1","expiresAt":4102444800000_i64,"status":"pending"}})),
+                    "empty-code" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"requestedRoleIds":[],"requestId":"request-1","expiresAt":4102444800000_i64,"claimCodeExpiresAt":4102444800000_i64,"status":"approved","claimCode":""}})),
+                    "csrf" => ResponseTemplate::new(200).set_body_json(serde_json::json!({"result":{"requestedRoleIds":[],"requestId":"request-1","expiresAt":4102444800000_i64,"status":"pending"}})),
                     _ => ResponseTemplate::new(200).set_body_json(approved),
                 };
                 Mock::given(method("GET")).and(path("/v1/organizations/org/accessRequests/request-1"))
                     .and(header("authorization", "Bearer test-bearer-token"))
                     .respond_with(status).mount(&server).await;
-                let successful = matches!(scenario, "callback" | "poll" | "pending-expired-approved");
-                let claims = usize::from(successful || matches!(scenario, "claim-error" | "claim-malformed" | "claim-empty"));
+                let successful = matches!(scenario, "callback" | "poll" | "pending-expired-approved" | "claim-grants-many");
+                let claims = usize::from(successful || scenario.starts_with("claim-grants-") || matches!(scenario, "claim-error" | "claim-malformed" | "claim-empty"));
                 Mock::given(method("POST")).and(path("/v1/organizations/org/accessRequests/request-1/claim"))
                     .and(header("authorization", "Bearer test-bearer-token"))
                     .respond_with(move |request: &wiremock::Request| {
@@ -33991,9 +34028,20 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                             ResponseTemplate::new(if scenario == "claim-error" {401} else {200})
                                 .set_body_json(serde_json::json!({"error":echoed,"result":echoed}))
                         } else {
-                            ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {
-                                "keyId":"issued-id", "key":"issued-key", "secret":if scenario == "claim-empty" {""} else {"issued-secret"}
-                            }}))
+                            let mut claimed = serde_json::json!({"result": {
+                                "keyId":"issued-id", "key":"issued-key", "secret":if scenario == "claim-empty" {""} else {"issued-secret"},
+                                "grantedRoleIds":[B.to_uppercase(), C]
+                            }});
+                            match scenario {
+                                "claim-grants-missing" => {claimed["result"].as_object_mut().unwrap().remove("grantedRoleIds");},
+                                "claim-grants-null" => claimed["result"]["grantedRoleIds"] = Value::Null,
+                                "claim-grants-empty" => claimed["result"]["grantedRoleIds"] = serde_json::json!([]),
+                                "claim-grants-malformed" => claimed["result"]["grantedRoleIds"] = serde_json::json!(["secret-invalid-role"]),
+                                "claim-grants-duplicate" => claimed["result"]["grantedRoleIds"] = serde_json::json!([B, B.to_uppercase()]),
+                                "claim-grants-many" => claimed["result"]["grantedRoleIds"] = serde_json::json!((1..=101).map(|id| format!("00000000-0000-0000-0000-{id:012x}")).collect::<Vec<_>>()),
+                                _ => {},
+                            }
+                            ResponseTemplate::new(200).set_body_json(claimed)
                         }
                     }).expect(claims as u64).mount(&server).await;
                 let mut command = Command::new(clickhousectl_binary());
@@ -34002,6 +34050,7 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                     .args(["cloud", "access", "request", "--org", "org", "--no-browser", "--debug"])
                     .stdout(Stdio::piped()).stderr(Stdio::piped());
                 if json { command.arg("--json"); }
+                if proposed && scenario != "create-proposal-unexpected" { command.args(["--perms", &format!("role:{A},role:{B}")]); }
                 let child = command.spawn().unwrap();
                 let output_task = tokio::task::spawn_blocking(move || {
                     let mut child = child;
@@ -34042,6 +34091,7 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                 assert!(!combined.contains("issued-secret"));
                 assert!(!combined.contains("mismatched-secret-code"));
                 assert!(!combined.contains("secret-envelope-error"));
+                assert!(!combined.contains("secret-invalid-role"));
                 let requests = server.received_requests().await.unwrap();
                 let filed: Value = serde_json::from_slice(&requests[0].body).unwrap();
                 assert!(!combined.contains(filed["state"].as_str().unwrap()));
@@ -34058,10 +34108,24 @@ async fn access_request_no_browser_handoff_keeps_stdout_final_and_credentials_sa
                 if successful {
                     if json {
                         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-                        assert_eq!(result.as_object().unwrap().len(), 4);
+                        assert_eq!(result.as_object().unwrap().len(), 8);
+                        assert_eq!(result["requestId"], "request-1");
+                        assert_eq!(result["organizationId"], "org");
+                        assert_eq!(result["credentialsPath"], credentials_path.canonicalize().unwrap().display().to_string());
+                        assert_eq!(result["requestedRoleIds"], if proposed {serde_json::json!([A, B])} else {serde_json::json!([])});
+                        if scenario == "claim-grants-many" {
+                            assert_eq!(result["grantedRoleIds"].as_array().unwrap().len(), 101);
+                        } else { assert_eq!(result["grantedRoleIds"], serde_json::json!([B, C])); }
                         assert_eq!(result["status"], "approved");
                         assert_eq!(result["keyId"], "issued-id");
                         assert_eq!(result["key"], "issued-key");
+                    } else {
+                        let stdout = String::from_utf8_lossy(&output.stdout);
+                        assert!(stdout.contains("Organization: org"));
+                        assert!(stdout.contains("Request ID: request-1"));
+                        if proposed { assert!(stdout.contains(&format!("Requested roles: {A}, {B}"))); }
+                        else { assert!(stdout.contains("Requested roles: none (manual selection)")); }
+                        if scenario != "claim-grants-many" { assert!(stdout.contains(&format!("Granted roles: {B}, {C}"))); }
                     }
                     let stored: Value = serde_json::from_slice(&std::fs::read(&credentials_path).unwrap()).unwrap();
                     assert_eq!(stored["api_key"], "issued-key");
