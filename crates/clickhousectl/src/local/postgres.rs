@@ -8,6 +8,7 @@ use crate::error::{Error, PortKind, Result, StartupKind};
 use crate::local::cli::PostgresCommands;
 use crate::local::docker::{self, PostgresRunOpts};
 use crate::local::output;
+use crate::local::pg_native;
 use crate::local::server::{self, Engine, ServerInfo};
 use rand::distr::{Alphanumeric, SampleString};
 use std::collections::HashSet;
@@ -18,8 +19,8 @@ use std::process::Command;
 use std::time::Duration;
 
 const DEFAULT_PG_PORT: u16 = 5432;
-const DEFAULT_USER: &str = "postgres";
-const DEFAULT_DATABASE: &str = "postgres";
+pub(crate) const DEFAULT_USER: &str = "postgres";
+pub(crate) const DEFAULT_DATABASE: &str = "postgres";
 /// Default image tag when `--version` is not given. Within the supported
 /// range; users can override with any 17/18 tag (`17`, `17.0`, `18-bookworm`, etc).
 pub const DEFAULT_PG_TAG: &str = "18";
@@ -182,6 +183,32 @@ fn validate_start_options(
 
 pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
     match cmd {
+        PostgresCommands::Start {
+            name,
+            name_flag,
+            version,
+            port,
+            user,
+            password,
+            database,
+            env,
+            wait_timeout,
+        } if pg_native::native_runtime_selected()? => {
+            pg_native::start(
+                pg_native::StartArgs {
+                    name: name.or(name_flag),
+                    version,
+                    port,
+                    user,
+                    password,
+                    database,
+                    extra_env: env,
+                    wait_timeout: Duration::from_secs(wait_timeout.into()),
+                },
+                json,
+            )
+            .await
+        }
         PostgresCommands::Start {
             name,
             name_flag,
@@ -445,6 +472,7 @@ async fn start(
         let out = output::PostgresStartOutput {
             name: user_name,
             container_id,
+            pid: None,
             image: format!("postgres:{tag}"),
             port: host_port,
             user,
@@ -694,6 +722,7 @@ async fn resume_existing(
     let out = output::PostgresStartOutput {
         name: display_name,
         container_id,
+        pid: None,
         image: info.version,
         port: info.tcp_port,
         user,
@@ -961,7 +990,7 @@ fn format_postgres_readiness_error(
     }
 }
 
-fn resolve_port(explicit: Option<u16>) -> Result<u16> {
+pub(crate) fn resolve_port(explicit: Option<u16>) -> Result<u16> {
     match explicit {
         Some(0) => {
             return Err(Error::PostgresUsage(
@@ -990,7 +1019,7 @@ fn resolve_port(explicit: Option<u16>) -> Result<u16> {
     Err(Error::PortUnavailable(PortKind::Postgres))
 }
 
-fn generate_password() -> String {
+pub(crate) fn generate_password() -> String {
     // 24 alphanumeric chars. Persisted in `.clickhouse/servers/<name>.json`
     // so other processes (and `dotenv`) can recover the value.
     Alphanumeric.sample_string(&mut rand::rng(), 24)
@@ -1057,6 +1086,19 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
         });
     }
 
+    let pg_dir = server::servers_dir_join(&key);
+    if pg_native::is_native(&target) {
+        // Native data is owned by this user; no container to clean up.
+        std::fs::remove_dir_all(&pg_dir)?;
+        server::try_remove_server_info_locked(&key, &metadata_lock)?;
+        let out = output::ServerRemoveOutput {
+            name: name.to_string(),
+            selection: None,
+        };
+        output::print_output(&out, json);
+        return Ok(());
+    }
+
     if let Some(cid) = target.container_id.as_deref() {
         let _ = docker::stop_and_remove_blocking(cid);
     }
@@ -1066,7 +1108,6 @@ fn remove(name: &str, version: Option<&str>, json: bool) -> Result<()> {
     // On Linux the bind-mounted PGDATA contains files owned by uid 999, so
     // a plain rm fails — `remove_host_dir_blocking` falls back to a
     // privileged container in that case.
-    let pg_dir = server::servers_dir_join(&key);
     docker::remove_host_dir_blocking(&pg_dir)?;
     server::try_remove_server_info_locked(&key, &metadata_lock)?;
     let out = output::ServerRemoveOutput {
@@ -1122,6 +1163,21 @@ async fn client(
         return Err(Error::ServerNotRunning(server_name.to_string()));
     }
     drop(metadata_lock);
+
+    if pg_native::is_native(&info) {
+        let (user, password, database) = pg_native::credentials(&info)?;
+        return exec_psql(
+            &pg_native::psql_path(&info)?,
+            "127.0.0.1",
+            info.tcp_port,
+            &user,
+            Some(&password),
+            &database,
+            query,
+            queries_file,
+            extra_args,
+        );
+    }
 
     let docker = docker::connect().await?;
     let container_id = info
@@ -1225,8 +1281,34 @@ fn exec_host_psql(
     queries_file: Option<String>,
     extra_args: Vec<String>,
 ) -> Result<()> {
+    exec_psql(
+        Path::new("psql"),
+        host,
+        port,
+        user,
+        password,
+        database,
+        query,
+        queries_file,
+        extra_args,
+    )
+}
+
+/// Replace this process with `psql` (the host's, or a native bundle's).
+#[allow(clippy::too_many_arguments)]
+fn exec_psql(
+    program: &Path,
+    host: &str,
+    port: u16,
+    user: &str,
+    password: Option<&str>,
+    database: &str,
+    query: Option<String>,
+    queries_file: Option<String>,
+    extra_args: Vec<String>,
+) -> Result<()> {
     use std::os::unix::process::CommandExt;
-    let mut cmd = Command::new("psql");
+    let mut cmd = Command::new(program);
     cmd.arg("-h")
         .arg(host)
         .arg("-p")
@@ -1268,10 +1350,15 @@ fn dotenv(name: Option<&str>, version: Option<&str>, use_local: bool, json: bool
     }
     drop(metadata_lock);
 
-    // Read user/password/db from the container env so we always emit accurate creds.
-    let (user, password, database) = docker::block_on(read_pg_env_for_dotenv(
-        info.container_id.as_deref().unwrap_or_default(),
-    ));
+    // Read user/password/db from the container env (or native state) so we
+    // always emit accurate creds.
+    let (user, password, database) = if pg_native::is_native(&info) {
+        pg_native::credentials(&info)?
+    } else {
+        docker::block_on(read_pg_env_for_dotenv(
+            info.container_id.as_deref().unwrap_or_default(),
+        ))
+    };
 
     let vars: Vec<(&str, String)> = vec![
         ("POSTGRES_HOST", "127.0.0.1".to_string()),

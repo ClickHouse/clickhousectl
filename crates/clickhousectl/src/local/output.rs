@@ -1525,7 +1525,8 @@ impl fmt::Display for ServerListOutput {
                         e.container_id
                             .as_deref()
                             .map(|s| s.chars().take(12).collect::<String>())
-                            .unwrap_or_else(|| ABSENT.to_string())
+                            // Native Postgres has a postmaster PID instead.
+                            .unwrap_or_else(|| or_absent(e.pid))
                     } else {
                         or_absent(e.pid)
                     };
@@ -1612,6 +1613,9 @@ impl fmt::Display for ServerListOutput {
 pub struct PostgresStartOutput {
     pub name: String,
     pub container_id: String,
+    /// Postmaster PID for the native (bundle) runtime; absent for Docker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
     pub image: String,
     pub port: u16,
     pub user: String,
@@ -1621,9 +1625,14 @@ pub struct PostgresStartOutput {
 
 impl fmt::Display for PostgresStartOutput {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let short = self.container_id.chars().take(12).collect::<String>();
-        writeln!(f, "Postgres '{}' running (container: {})", self.name, short)?;
-        writeln!(f, "  Image:    {}", self.image)?;
+        if let Some(pid) = self.pid {
+            writeln!(f, "Postgres '{}' running (native, pid: {})", self.name, pid)?;
+            writeln!(f, "  Bundle:   {}", self.image)?;
+        } else {
+            let short = self.container_id.chars().take(12).collect::<String>();
+            writeln!(f, "Postgres '{}' running (container: {})", self.name, short)?;
+            writeln!(f, "  Image:    {}", self.image)?;
+        }
         writeln!(f, "  Port:     {}", self.port)?;
         writeln!(f, "  User:     {}", self.user)?;
         writeln!(f, "  Password: {}", self.password)?;
