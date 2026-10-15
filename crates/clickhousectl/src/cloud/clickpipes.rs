@@ -83,11 +83,11 @@ use clickhouse_cloud_api::models::{
     ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipeBigQueryPipeTableMappingTableengine,
     ClickPipeKafkaOffsetStrategy, ClickPipeMongoDBPipeSettingsReplicationmode,
     ClickPipeMongoDBPipeTableMappingTableengine, ClickPipeMutateMongoDBSourceReadpreference,
-    ClickPipeMutateMySQLSourceAuthentication, ClickPipeMutateMySQLSourceType,
-    ClickPipeMySQLPipeSettingsReplicationmechanism, ClickPipeMySQLPipeSettingsReplicationmode,
-    ClickPipeMySQLPipeTableMappingTableengine, ClickPipePostKafkaSourceAuthentication,
-    ClickPipePostKafkaSourceFormat, ClickPipePostKafkaSourceType,
-    ClickPipePostgresPipeTableMapping, ClickPipePostgresPipeTableMappingTableengine,
+    ClickPipeMutateMySQLSourceType, ClickPipeMySQLPipeSettingsReplicationmechanism,
+    ClickPipeMySQLPipeSettingsReplicationmode, ClickPipeMySQLPipeTableMappingTableengine,
+    ClickPipePostKafkaSourceAuthentication, ClickPipePostKafkaSourceFormat,
+    ClickPipePostKafkaSourceType, ClickPipePostgresPipeTableMapping,
+    ClickPipePostgresPipeTableMappingTableengine,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -1697,7 +1697,7 @@ pub struct MySqlCreateArgs {
     #[arg(
         long,
         default_value = "basic",
-        value_parser = PossibleValuesParser::new(ClickPipeMutateMySQLSourceAuthentication::VALUES),
+        value_parser = PossibleValuesParser::new(DB_AUTHS),
     )]
     pub auth: String,
 
@@ -5383,8 +5383,9 @@ fn build_postgres_request(
         // stay off the wire entirely.
         ClickPipeMutatePostgresSourceAuthentication::IAM_ROLE => None,
         // Unreachable for parsed input, since --auth is restricted to
-        // DB_AUTHS; an unknown mode has no credential shape to send.
-        ClickPipeMutatePostgresSourceAuthentication::Unknown(_) => None,
+        // DB_AUTHS; these modes have no credential shape to send.
+        ClickPipeMutatePostgresSourceAuthentication::ServiceAccountWorkloadIdentity
+        | ClickPipeMutatePostgresSourceAuthentication::Unknown(_) => None,
     };
     let source = ClickPipeMutatePostgresSource {
         r#type: Some(parse_enum(&args.postgres_type)?),
@@ -5590,11 +5591,8 @@ fn build_mysql_request(
         "MySQL replication mechanism",
         ClickPipeMySQLPipeSettingsReplicationmechanism::VALUES,
     )?;
-    let authentication: ClickPipeMutateMySQLSourceAuthentication = parse_serde_enum(
-        &args.auth,
-        "MySQL authentication",
-        ClickPipeMutateMySQLSourceAuthentication::VALUES,
-    )?;
+    let authentication: ClickPipeMutateMySQLSourceAuthentication =
+        parse_serde_enum(&args.auth, "MySQL authentication", DB_AUTHS)?;
     let table_mappings = resolve_mysql_table_mappings(args)?;
 
     let ca_certificate = args
@@ -5621,8 +5619,9 @@ fn build_mysql_request(
         // stay off the wire entirely.
         ClickPipeMutateMySQLSourceAuthentication::IAM_ROLE => None,
         // Unreachable for parsed input, since --auth is restricted to
-        // DB_AUTHS; an unknown mode has no credential shape to send.
-        ClickPipeMutateMySQLSourceAuthentication::Unknown(_) => None,
+        // DB_AUTHS; these modes have no credential shape to send.
+        ClickPipeMutateMySQLSourceAuthentication::ServiceAccountWorkloadIdentity
+        | ClickPipeMutateMySQLSourceAuthentication::Unknown(_) => None,
     };
 
     let source = ClickPipeMutateMySQLSource {
@@ -10150,7 +10149,7 @@ mod tests {
         for &value in ClickPipeBigQueryPipeSettingsReplicationmode::VALUES {
             assert_bigquery_value("--replication-mode", value);
         }
-        for &value in ClickPipeMutateMySQLSourceAuthentication::VALUES {
+        for &value in DB_AUTHS {
             assert_mysql_value("--auth", value);
         }
         for &value in ClickPipeMySQLPipeSettingsReplicationmode::VALUES {
