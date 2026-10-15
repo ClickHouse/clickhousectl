@@ -3,6 +3,7 @@ pub mod config;
 pub mod discovery;
 pub mod docker;
 pub mod output;
+pub mod pg_native;
 pub mod postgres;
 pub mod server;
 pub mod symlink;
@@ -1221,7 +1222,9 @@ fn list_servers_local(json: bool) -> Result<()> {
                     match e.info {
                         Some(info) => {
                             let is_ch = info.engine == server::Engine::Clickhouse;
-                            let pid = if is_ch && running {
+                            // Native Postgres (no container) is tracked by PID.
+                            let has_pid = is_ch || info.container_id.is_none();
+                            let pid = if has_pid && running {
                                 Some(info.pid)
                             } else {
                                 None
