@@ -232,30 +232,46 @@ fn bundle_pg_version(name: &str) -> Option<&str> {
 }
 
 /// Bundle target triple for this host, matching the pg-bundles release names.
+/// Linux uses the musl bundles, which ship their own loader and run on both
+/// glibc and musl distros, so no libc detection is needed.
 fn host_target() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => Some("aarch64-apple-darwin"),
         ("macos", "x86_64") => Some("x86_64-apple-darwin"),
-        ("linux", "x86_64") => Some("x86_64-unknown-linux-gnu"),
-        ("linux", "aarch64") => Some("aarch64-unknown-linux-gnu"),
+        ("linux", "x86_64") => Some("x86_64-unknown-linux-musl"),
+        ("linux", "aarch64") => Some("aarch64-unknown-linux-musl"),
         _ => None,
     }
 }
 
-/// Pick the bundle asset for `target` from a GitHub "release" API response.
-fn select_release_asset(release: &serde_json::Value, target: &str) -> Option<String> {
+/// Pick the bundle asset for `target` from a GitHub "release" API response:
+/// the newest Postgres version, restricted to `major` when one is requested.
+fn select_release_asset(
+    release: &serde_json::Value,
+    target: &str,
+    major: Option<&str>,
+) -> Option<String> {
     let suffix = format!("-{target}.tar.gz");
     release["assets"]
         .as_array()?
         .iter()
-        .filter(|asset| {
-            asset["name"]
-                .as_str()
-                .is_some_and(|name| name.starts_with("pg-") && name.ends_with(&suffix))
+        .filter_map(|asset| {
+            let name = asset["name"].as_str()?.strip_suffix(".tar.gz")?;
+            if !asset["name"].as_str()?.ends_with(&suffix) {
+                return None;
+            }
+            let version = bundle_pg_version(name)?;
+            if major.is_some_and(|major| pg_major_from_tag(version) != major) {
+                return None;
+            }
+            let key: Vec<u64> = version
+                .split('.')
+                .map(|part| part.parse().unwrap_or(0))
+                .collect();
+            Some((key, asset["browser_download_url"].as_str()?))
         })
-        .filter_map(|asset| asset["browser_download_url"].as_str())
-        .max()
-        .map(str::to_string)
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, url)| url.to_string())
 }
 
 fn http_client() -> Result<reqwest::Client> {
@@ -271,7 +287,7 @@ fn with_github_token(request: reqwest::RequestBuilder) -> reqwest::RequestBuilde
     }
 }
 
-async fn resolve_bundle_source() -> Result<BundleSource> {
+async fn resolve_bundle_source(major: Option<&str>) -> Result<BundleSource> {
     if let Ok(value) = std::env::var(BUNDLE_ENV)
         && !value.trim().is_empty()
     {
@@ -303,8 +319,14 @@ async fn resolve_bundle_source() -> Result<BundleSource> {
         .json()
         .await
         .map_err(|error| unavailable(error.to_string()))?;
-    let url = select_release_asset(&release, target)
-        .ok_or_else(|| unavailable(format!("no asset for {target} in the latest release")))?;
+    let url = select_release_asset(&release, target, major).ok_or_else(|| {
+        let wanted = major
+            .map(|major| format!("Postgres {major} "))
+            .unwrap_or_default();
+        unavailable(format!(
+            "no {wanted}asset for {target} in the latest release"
+        ))
+    })?;
     Ok(BundleSource::Https(url))
 }
 
@@ -330,8 +352,8 @@ fn bundles_dir() -> Result<PathBuf> {
 }
 
 /// Resolve the bundle and make sure it is extracted into the cache.
-async fn ensure_bundle(json: bool) -> Result<Bundle> {
-    let source = resolve_bundle_source().await?;
+async fn ensure_bundle(json: bool, major: Option<&str>) -> Result<Bundle> {
+    let source = resolve_bundle_source(major).await?;
     let name = bundle_name(&source)?;
     let dir = bundles_dir()?;
     let root = dir.join(&name);
@@ -553,7 +575,7 @@ pub async fn start(args: StartArgs, json: bool) -> Result<()> {
 
     // Fresh instance. Install the bundle outside the metadata lock.
     let started = Instant::now();
-    let bundle = ensure_bundle(json).await?;
+    let bundle = ensure_bundle(json, wanted_major.as_deref()).await?;
     let major = pg_major_from_tag(bundle.pg_version());
     if let Some(wanted) = wanted_major.as_deref()
         && wanted != major
@@ -977,15 +999,28 @@ mod tests {
                  "browser_download_url": "https://x/a.sha256"},
                 {"name": "pg-18.6-pgch-0.11.0-aarch64-apple-darwin.tar.gz",
                  "browser_download_url": "https://x/pg-18.6-pgch-0.11.0-aarch64-apple-darwin.tar.gz"},
-                {"name": "pg-18.6-pgch-0.11.0-x86_64-unknown-linux-gnu.tar.gz",
+                {"name": "pg-17.11-pgch-0.11.0-aarch64-apple-darwin.tar.gz",
+                 "browser_download_url": "https://x/pg-17.11-pgch-0.11.0-aarch64-apple-darwin.tar.gz"},
+                {"name": "pg-18.6-pgch-0.11.0-x86_64-unknown-linux-musl.tar.gz",
                  "browser_download_url": "https://x/linux.tar.gz"}
             ]
         });
         assert_eq!(
-            select_release_asset(&release, "aarch64-apple-darwin").as_deref(),
+            select_release_asset(&release, "aarch64-apple-darwin", None).as_deref(),
             Some("https://x/pg-18.6-pgch-0.11.0-aarch64-apple-darwin.tar.gz")
         );
-        assert_eq!(select_release_asset(&release, "x86_64-apple-darwin"), None);
+        assert_eq!(
+            select_release_asset(&release, "aarch64-apple-darwin", Some("17")).as_deref(),
+            Some("https://x/pg-17.11-pgch-0.11.0-aarch64-apple-darwin.tar.gz")
+        );
+        assert_eq!(
+            select_release_asset(&release, "aarch64-apple-darwin", Some("16")),
+            None
+        );
+        assert_eq!(
+            select_release_asset(&release, "x86_64-apple-darwin", None),
+            None
+        );
     }
 
     #[test]
