@@ -5,7 +5,7 @@
     "version": "1.0",
     "contact": {
       "name": "ClickHouse Support",
-      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1234548",
+      "url": "https://clickhouse.com/docs/en/cloud/manage/openapi?referrer=openapi-1242575",
       "email": "support@clickhouse.com"
     }
   },
@@ -610,8 +610,8 @@
     },
     "/v1/organizations/{organizationId}/prometheus/discovery": {
       "get": {
-        "summary": "List Prometheus scrape targets",
-        "description": "Returns one Prometheus scrape target per service in the organization, in the [HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/) (`http_sd`) format. Only services the API key is authorized to view are included; services that are being deleted or have been deleted are omitted.\n\nPoint an [`http_sd_configs`](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#http_sd_config) job at this endpoint to discover and scrape all services in the organization automatically. Prometheus refreshes the target list on every discovery poll, so newly created and deleted services are picked up without configuration changes.\n\nDiscovered targets scrape with `filtered_metrics=true` by default; pass `?filtered_metrics=false` to this endpoint to discover unfiltered targets. See the [Prometheus integration guide](https://clickhouse.com/docs/integrations/prometheus) for more on the exported metrics.",
+        "summary": "Get Prometheus service discovery targets",
+        "description": "Returns one Prometheus scrape target per service in the organization, in the [HTTP service discovery](https://prometheus.io/docs/prometheus/latest/http_sd/) (`http_sd`) format. Only services the API key is authorized to view are included; services that are being deleted or have been deleted are omitted.\n\nPoint an [`http_sd_configs`](https://prometheus.io/docs/prometheus/latest/configuration/configuration/#http_sd_config) job at this endpoint to discover and scrape all services in the organization automatically. Prometheus refreshes the target list on every discovery poll, so newly created and deleted services are picked up without configuration changes.\n\nFilter targets in `relabel_configs` by `__meta_clickhouse_region`, `__meta_clickhouse_provider` or `__meta_clickhouse_tag_<key>`. Invalid label name characters in tag keys become `_`. `__meta_clickhouse_tagpresent_<key>` is `true` for every tag, including tags without a value.\n\nDiscovered targets scrape with `filtered_metrics=true` by default; pass `?filtered_metrics=false` to this endpoint to discover unfiltered targets. See the [Prometheus integration guide](https://clickhouse.com/docs/integrations/prometheus) for more on the exported metrics.",
         "operationId": "organizationPrometheusDiscoveryGet",
         "parameters": [
           {
@@ -5212,7 +5212,7 @@
         "security": [
           {
             "basicAuth": [
-              "control-plane:service:view-backups"
+              "control-plane:service:view-snapshots"
             ]
           }
         ],
@@ -5346,7 +5346,7 @@
         "security": [
           {
             "basicAuth": [
-              "control-plane:service:view-backups"
+              "control-plane:service:view-snapshots"
             ]
           }
         ],
@@ -5713,7 +5713,7 @@
         "security": [
           {
             "basicAuth": [
-              "control-plane:service:view-backups"
+              "control-plane:service:view-snapshots"
             ]
           }
         ],
@@ -5844,7 +5844,7 @@
         "security": [
           {
             "basicAuth": [
-              "control-plane:service:manage-backups"
+              "control-plane:service:manage-snapshots"
             ]
           }
         ],
@@ -16460,7 +16460,7 @@
     "/v1/organizations/{organizationId}/postgres/{postgresId}/metrics": {
       "get": {
         "summary": "Get Postgres time-series metrics",
-        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns bucketed time-series metrics for a PostgreSQL service over the requested window (CPU, memory, disk, network, connections, cache hit ratio, throughput, transactions, and more). Use this to chart or analyze how a service behaved over time.",
+        "description": "**This endpoint is in beta.** API contract is stable, and no breaking changes are expected in the future. <br /><br /> Returns bucketed time-series metrics for a PostgreSQL service over the requested window (CPU, memory, disk, network, connections, cache hit ratio, throughput, transactions, wait events, lock waits, and more). Use this to chart or analyze how a service behaved over time.",
         "operationId": "postgresInstanceMetricsGet",
         "parameters": [
           {
@@ -20405,7 +20405,7 @@
       "get": {
         "operationId": "savedQueryList",
         "summary": "List saved queries",
-        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns saved queries for the service.",
+        "description": "Returns saved queries for the service.",
         "tags": [
           "Saved queries"
         ],
@@ -20698,18 +20698,12 @@
               }
             }
           }
-        },
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
-        ]
+        }
       },
       "post": {
         "operationId": "savedQueryCreate",
         "summary": "Create a saved query",
-        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Creates a saved query.",
+        "description": "Creates a saved query.",
         "tags": [
           "Saved queries"
         ],
@@ -20990,20 +20984,14 @@
               }
             }
           }
-        },
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
-        ]
+        }
       }
     },
     "/v1/organizations/{organizationId}/services/{serviceId}/saved-queries/{queryId}": {
       "delete": {
         "operationId": "savedQueryDelete",
         "summary": "Delete a saved query",
-        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Deletes a saved query.",
+        "description": "Deletes a saved query.",
         "tags": [
           "Saved queries"
         ],
@@ -21283,18 +21271,12 @@
               }
             }
           }
-        },
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
-        ]
+        }
       },
       "get": {
         "operationId": "savedQueryGet",
         "summary": "Get a saved query",
-        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Returns a saved query.",
+        "description": "Returns a saved query.",
         "tags": [
           "Saved queries"
         ],
@@ -21545,18 +21527,12 @@
               }
             }
           }
-        },
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
-        ]
+        }
       },
       "put": {
         "operationId": "savedQueryUpdate",
         "summary": "Update a saved query",
-        "description": "**Disclaimer:** This beta endpoint is evolving; the API contract may change. <br /><br /> Updates a saved query.",
+        "description": "Updates a saved query.",
         "tags": [
           "Saved queries"
         ],
@@ -21849,13 +21825,7 @@
               }
             }
           }
-        },
-        "x-badges": [
-          {
-            "name": "Beta",
-            "position": "after"
-          }
-        ]
+        }
       }
     },
     "/v1/organizations/{organizationId}/udfUploads/url": {
@@ -25925,7 +25895,18 @@
           "clickhouse_discovery_service_name": {
             "description": "Service name.",
             "type": "string"
+          },
+          "__meta_clickhouse_region": {
+            "description": "Service region, for example `us-east-1`.",
+            "type": "string"
+          },
+          "__meta_clickhouse_provider": {
+            "description": "Cloud provider, for example `aws`.",
+            "type": "string"
           }
+        },
+        "additionalProperties": {
+          "type": "string"
         }
       },
       "PrometheusDiscoveryTargetGroup": {
@@ -28300,9 +28281,8 @@
             ]
           },
           "host": {
-            "description": "PostgreSQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here.",
+            "description": "PostgreSQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here. For Cloud SQL with SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication, pass the instance connection name (project:region:instance).",
             "type": "string",
-            "format": "hostname",
             "example": "my-postgres-server.example.com"
           },
           "port": {
@@ -28322,7 +28302,8 @@
             "type": "string",
             "enum": [
               "basic",
-              "IAM_ROLE"
+              "IAM_ROLE",
+              "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
             ],
             "example": "IAM_ROLE"
           },
@@ -28389,9 +28370,8 @@
             "$ref": "#/components/schemas/PLAIN"
           },
           "host": {
-            "description": "PostgreSQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here.",
+            "description": "PostgreSQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here. For Cloud SQL with SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication, pass the instance connection name (project:region:instance).",
             "type": "string",
-            "format": "hostname",
             "example": "my-postgres-server.example.com"
           },
           "port": {
@@ -28414,7 +28394,8 @@
             "type": "string",
             "enum": [
               "basic",
-              "IAM_ROLE"
+              "IAM_ROLE",
+              "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
             ],
             "example": "IAM_ROLE"
           },
@@ -28459,12 +28440,11 @@
             "$ref": "#/components/schemas/PLAIN"
           },
           "host": {
-            "description": "PostgreSQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here.",
+            "description": "PostgreSQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here. For Cloud SQL with SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication, pass the instance connection name (project:region:instance).",
             "type": [
               "string",
               "null"
             ],
-            "format": "hostname",
             "example": "my-postgres-server.example.com"
           },
           "port": {
@@ -28786,14 +28766,14 @@
               "mysql",
               "rdsmysql",
               "auroramysql",
+              "cloudsqlmysql",
               "mariadb",
               "rdsmariadb"
             ]
           },
           "host": {
-            "description": "MySQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here.",
+            "description": "MySQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here. For Cloud SQL with SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication, pass the instance connection name (project:region:instance).",
             "type": "string",
-            "format": "hostname",
             "example": "my-mysql-server.example.com"
           },
           "port": {
@@ -28808,7 +28788,8 @@
             "type": "string",
             "enum": [
               "basic",
-              "IAM_ROLE"
+              "IAM_ROLE",
+              "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
             ],
             "example": "basic"
           },
@@ -28874,6 +28855,7 @@
               "mysql",
               "rdsmysql",
               "auroramysql",
+              "cloudsqlmysql",
               "mariadb",
               "rdsmariadb"
             ]
@@ -28882,9 +28864,8 @@
             "$ref": "#/components/schemas/PLAIN"
           },
           "host": {
-            "description": "MySQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here.",
+            "description": "MySQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here. For Cloud SQL with SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication, pass the instance connection name (project:region:instance).",
             "type": "string",
-            "format": "hostname",
             "example": "my-mysql-server.example.com"
           },
           "port": {
@@ -28902,7 +28883,8 @@
             "type": "string",
             "enum": [
               "basic",
-              "IAM_ROLE"
+              "IAM_ROLE",
+              "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
             ],
             "example": "basic"
           },
@@ -28960,12 +28942,11 @@
             "$ref": "#/components/schemas/PLAIN"
           },
           "host": {
-            "description": "MySQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here.",
+            "description": "MySQL server hostname or IP address. To use a reverse private endpoint, pass the endpoint hostname here. For Cloud SQL with SERVICE_ACCOUNT_WORKLOAD_IDENTITY authentication, pass the instance connection name (project:region:instance).",
             "type": [
               "string",
               "null"
             ],
-            "format": "hostname",
             "example": "my-mysql-server.example.com"
           },
           "port": {
@@ -28986,7 +28967,8 @@
             ],
             "enum": [
               "basic",
-              "IAM_ROLE"
+              "IAM_ROLE",
+              "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
             ],
             "example": "basic"
           },
@@ -29393,6 +29375,77 @@
           }
         }
       },
+      "ClickPipeMongoDBPipeColumn": {
+        "properties": {
+          "name": {
+            "description": "Top-level document field name.",
+            "type": "string",
+            "example": "amount"
+          },
+          "type": {
+            "description": "ClickHouse type the field is replicated as. Must be a valid ClickHouse column type supported by structured ingestion.",
+            "type": "string",
+            "example": "Float64"
+          }
+        },
+        "required": [
+          "name",
+          "type"
+        ]
+      },
+      "ClickPipeMongoDBStructuredIngestion": {
+        "properties": {
+          "enabled": {
+            "description": "Replicate the collection into typed ClickHouse columns instead of a single JSON document column.",
+            "type": "boolean",
+            "example": true
+          },
+          "dropUnexpectedValues": {
+            "description": "When true, values that don't fit their column are reported with only the field name and reason, without the value.",
+            "type": "boolean",
+            "example": false,
+            "default": false
+          },
+          "columns": {
+            "type": "array",
+            "description": "Typed columns of the collection, taken as provided. When omitted, the columns are inferred from a sample of the collection documents. The _id document is always replicated and uses String type.",
+            "items": {
+              "$ref": "#/components/schemas/ClickPipeMongoDBPipeColumn"
+            }
+          },
+          "excludedColumns": {
+            "type": "array",
+            "description": "Names of columns, provided or inferred, to leave out of replication. Names that match no column are ignored. Column names must be unique within this list.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "internal_notes"
+            ],
+            "uniqueItems": true
+          },
+          "sortingKeys": {
+            "type": "array",
+            "description": "Ordered list of column names to use as the sorting (ORDER BY) key in ClickHouse. When omitted, the sorting key is the _id document key.",
+            "items": {
+              "type": "string"
+            },
+            "example": [
+              "_id",
+              "created_at"
+            ],
+            "uniqueItems": true
+          },
+          "partitionByExpr": {
+            "description": "ClickHouse PARTITION BY expression applied to the destination table when ClickPipes creates it.",
+            "type": "string",
+            "example": "toYYYYMM(created_at)"
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
       "ClickPipeMongoDBPipeTableMapping": {
         "properties": {
           "sourceDatabaseName": {
@@ -29419,6 +29472,9 @@
               "Null"
             ],
             "example": "ReplacingMergeTree"
+          },
+          "structuredIngestion": {
+            "$ref": "#/components/schemas/ClickPipeMongoDBStructuredIngestion"
           }
         },
         "required": [
@@ -38635,6 +38691,19 @@
             "example": 2,
             "minimum": 0
           },
+          "shared_memory_percent": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Percent of VM memory reserved for the shared_memory, from 25% to 75%. shared_buffers sized to fit in it. Limited to 50% on VMs with memory less or equal 16GB",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/shared_buffers/"
+            },
+            "example": 25,
+            "minimum": 25,
+            "maximum": 75
+          },
           "statement_timeout": {
             "type": [
               "string",
@@ -38743,6 +38812,19 @@
             "example": "5GB",
             "minimum": 32768
           },
+          "checkpoint_timeout": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Sets the maximum time between automatic WAL checkpoints.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/checkpoint_timeout/"
+            },
+            "example": "5min",
+            "minimum": 30,
+            "maximum": 3600
+          },
           "max_slot_wal_keep_size": {
             "type": [
               "string",
@@ -38761,13 +38843,26 @@
             "externalDocs": {
               "url": "https://postgresqlco.nf/doc/en/param/wal_compression/"
             },
-            "example": "off",
+            "example": "lz4",
             "enum": [
               "off",
               "on",
               "lz4",
               "zstd"
             ]
+          },
+          "wal_buffers": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Sets the number of disk-page buffers in shared memory for WAL. A number without a unit is in 8 kB pages.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/wal_buffers/"
+            },
+            "example": "16MB",
+            "minimum": 32,
+            "maximum": 262144
           },
           "autovacuum_max_workers": {
             "type": [
@@ -38840,6 +38935,58 @@
             },
             "example": 0.2,
             "minimum": 0
+          },
+          "autovacuum_vacuum_threshold": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Minimum number of tuple updates or deletes prior to vacuum.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_vacuum_threshold/"
+            },
+            "example": 50,
+            "minimum": 0,
+            "maximum": 2147483647
+          },
+          "autovacuum_analyze_threshold": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Minimum number of tuple inserts, updates, or deletes prior to analyze.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_analyze_threshold/"
+            },
+            "example": 50,
+            "minimum": 0,
+            "maximum": 2147483647
+          },
+          "autovacuum_vacuum_insert_threshold": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Minimum number of tuple inserts prior to vacuum, or -1 to disable insert vacuums.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_vacuum_insert_threshold/"
+            },
+            "example": 1000,
+            "minimum": -1,
+            "maximum": 2147483647
+          },
+          "autovacuum_freeze_max_age": {
+            "type": [
+              "string",
+              "integer"
+            ],
+            "description": "Age at which to autovacuum a table to prevent transaction ID wraparound.",
+            "externalDocs": {
+              "url": "https://postgresqlco.nf/doc/en/param/autovacuum_freeze_max_age/"
+            },
+            "example": 200000000,
+            "minimum": 100000,
+            "maximum": 2000000000
           },
           "autovacuum_vacuum_cost_limit": {
             "type": [
@@ -39458,7 +39605,7 @@
       "PostgresMetricSeries": {
         "properties": {
           "label": {
-            "description": "Distinguishing label for this series within the metric (for example a CPU mode, a database name, or \"Reads\").",
+            "description": "Distinguishing label for this series within the metric (for example a CPU mode, a database name, a wait event such as \"Lock:relation\", or \"Reads\").",
             "type": "string"
           },
           "dataPoints": {
@@ -39477,7 +39624,7 @@
       "PostgresMetric": {
         "properties": {
           "key": {
-            "description": "Stable metric identifier (for example cpu_usage, connection_count, cache_hit_ratio).",
+            "description": "Stable metric identifier (for example cpu_usage, connection_count, cache_hit_ratio, active_sessions_by_wait).",
             "type": "string"
           },
           "name": {
@@ -40238,7 +40385,7 @@
             "$ref": "#/components/schemas/InstancePrivateEndpointsPatch"
           },
           "releaseChannel": {
-            "description": "Select fast if you want to get new ClickHouse releases as soon as they are available. You'll get new features faster, but with a higher risk of bugs. Select slow if you would like to defer releases to give yourself more time to test. This feature is only available for production services. default is the regular release channel.",
+            "description": "Select fast if you want to get new ClickHouse releases as soon as they are available. You'll get new features faster, but with a higher risk of bugs. Select slow if you would like to defer releases to give yourself more time to test. This feature is only available for production services. default is the regular release channel. All services in a warehouse share one release channel, so changing it on one service changes it for all of them. Changing it through a secondary service also requires the `control-plane:service:manage` permission on the warehouse's primary service.",
             "type": "string",
             "enum": [
               "slow",

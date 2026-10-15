@@ -1256,6 +1256,10 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_analyze_scale_factor: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_analyze_threshold: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_freeze_max_age: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_max_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_naptime: Option<serde_json::Value>,
@@ -1266,9 +1270,15 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_insert_scale_factor: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_insert_threshold: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_scale_factor: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_threshold: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1302,11 +1312,15 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub random_page_cost: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_memory_percent: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ssl_min_protocol_version: Option<PgConfigSslMinProtocolVersion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statement_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal_buffers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_compression: Option<PgConfigWalCompression>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1326,6 +1340,10 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_analyze_scale_factor: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_analyze_threshold: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_freeze_max_age: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_max_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_naptime: Option<serde_json::Value>,
@@ -1336,9 +1354,15 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_insert_scale_factor: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_insert_threshold: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_vacuum_scale_factor: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub autovacuum_vacuum_threshold: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checkpoint_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1372,11 +1396,15 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub random_page_cost: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub shared_memory_percent: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ssl_min_protocol_version: Option<PgConfigSslMinProtocolVersion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statement_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wal_buffers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_compression: Option<PgConfigWalCompression>,
     #[serde(skip_serializing_if = "Option::is_none")]
