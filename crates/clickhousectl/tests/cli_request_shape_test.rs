@@ -31061,7 +31061,7 @@ async fn mount_udf_upload_session(server: &MockServer, storage: &MockServer) {
 fn zip_entry_names(bytes: &[u8]) -> Vec<String> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
     (0..archive.len())
-        .map(|index| archive.by_index(index).unwrap().name().to_string())
+        .map(|index| archive.by_index(index).unwrap().name().unwrap().to_string())
         .collect()
 }
 
