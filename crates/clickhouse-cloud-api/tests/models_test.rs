@@ -8667,3 +8667,129 @@ fn pg_config_carries_new_gucs_through_write_back() {
         })
     );
 }
+
+#[test]
+fn database_clickpipe_sources_accept_workload_identity_and_cloud_sql_mysql() {
+    macro_rules! assert_round_trip {
+        ($ty:ty, $variant:expr, $wire:literal) => {{
+            let parsed: $ty = serde_json::from_str(concat!('"', $wire, '"')).unwrap();
+            assert_eq!(parsed, $variant);
+            assert_eq!(parsed.to_string(), $wire);
+            assert_eq!(
+                serde_json::to_string(&parsed).unwrap(),
+                concat!('"', $wire, '"')
+            );
+        }};
+    }
+
+    assert_round_trip!(
+        ClickPipeMutateMySQLSourceAuthentication,
+        ClickPipeMutateMySQLSourceAuthentication::ServiceAccountWorkloadIdentity,
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
+    );
+    assert_round_trip!(
+        ClickPipeMySQLSourceAuthentication,
+        ClickPipeMySQLSourceAuthentication::ServiceAccountWorkloadIdentity,
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
+    );
+    assert_round_trip!(
+        ClickPipePatchMySQLSourceAuthentication,
+        ClickPipePatchMySQLSourceAuthentication::ServiceAccountWorkloadIdentity,
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
+    );
+    assert_round_trip!(
+        ClickPipeMutatePostgresSourceAuthentication,
+        ClickPipeMutatePostgresSourceAuthentication::ServiceAccountWorkloadIdentity,
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
+    );
+    assert_round_trip!(
+        ClickPipePostgresSourceAuthentication,
+        ClickPipePostgresSourceAuthentication::ServiceAccountWorkloadIdentity,
+        "SERVICE_ACCOUNT_WORKLOAD_IDENTITY"
+    );
+    assert_round_trip!(
+        ClickPipeMutateMySQLSourceType,
+        ClickPipeMutateMySQLSourceType::Cloudsqlmysql,
+        "cloudsqlmysql"
+    );
+    assert_round_trip!(
+        ClickPipeMySQLSourceType,
+        ClickPipeMySQLSourceType::Cloudsqlmysql,
+        "cloudsqlmysql"
+    );
+    assert!(
+        ClickPipeMutateMySQLSourceAuthentication::VALUES
+            .contains(&"SERVICE_ACCOUNT_WORKLOAD_IDENTITY")
+    );
+    assert!(ClickPipeMutateMySQLSourceType::VALUES.contains(&"cloudsqlmysql"));
+}
+
+#[test]
+fn mongodb_structured_ingestion_request_is_strict_and_omits_unset_fields() {
+    let minimal = ClickPipeMongoDBPipeTableMapping {
+        source_database_name: "mydb".to_string(),
+        source_collection: "users".to_string(),
+        target_table: "mydb_users".to_string(),
+        structured_ingestion: Some(ClickPipeMongoDBStructuredIngestion {
+            enabled: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&minimal).unwrap(),
+        serde_json::json!({
+            "sourceDatabaseName": "mydb",
+            "sourceCollection": "users",
+            "targetTable": "mydb_users",
+            "structuredIngestion": { "enabled": true }
+        })
+    );
+
+    let maximal: ClickPipeMongoDBStructuredIngestion = serde_json::from_value(serde_json::json!({
+        "enabled": true,
+        "dropUnexpectedValues": false,
+        "columns": [{ "name": "amount", "type": "Float64" }],
+        "excludedColumns": ["internal_notes"],
+        "sortingKeys": ["_id", "created_at"],
+        "partitionByExpr": "toYYYYMM(created_at)"
+    }))
+    .unwrap();
+    assert_eq!(
+        maximal.columns,
+        Some(vec![ClickPipeMongoDBPipeColumn {
+            name: "amount".to_string(),
+            r#type: "Float64".to_string(),
+        }])
+    );
+    assert_eq!(
+        maximal.partition_by_expr.as_deref(),
+        Some("toYYYYMM(created_at)")
+    );
+
+    // `enabled` and both column fields are required in request position.
+    assert!(serde_json::from_str::<ClickPipeMongoDBStructuredIngestion>("{}").is_err());
+    assert!(serde_json::from_str::<ClickPipeMongoDBPipeColumn>(r#"{"name":"amount"}"#).is_err());
+}
+
+#[test]
+fn mongodb_structured_ingestion_response_tolerates_absent_and_null_fields() {
+    let mapping: ClickPipeMongoDBPipeTableMappingResponse = serde_json::from_str(
+        r#"{"sourceDatabaseName":"mydb","structuredIngestion":{"enabled":null,"columns":[{"name":null}],"sortingKeys":null}}"#,
+    )
+    .unwrap();
+    let ingestion = mapping.structured_ingestion.unwrap();
+    assert_eq!(ingestion.enabled, None);
+    assert_eq!(
+        ingestion.columns,
+        Some(vec![ClickPipeMongoDBPipeColumnResponse::default()])
+    );
+    assert_eq!(
+        serde_json::from_str::<ClickPipeMongoDBStructuredIngestionResponse>("{}").unwrap(),
+        ClickPipeMongoDBStructuredIngestionResponse::default()
+    );
+    assert_eq!(
+        serde_json::to_value(ClickPipeMongoDBStructuredIngestionResponse::default()).unwrap(),
+        serde_json::json!({})
+    );
+}

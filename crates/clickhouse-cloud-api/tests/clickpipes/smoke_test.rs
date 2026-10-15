@@ -469,6 +469,7 @@ async fn cloud_clickpipe_create_mongodb_cdc_smoke() -> TestResult<()> {
                     source_collection: "smoke_collection".to_string(),
                     target_table: "smoke_target".to_string(),
                     table_engine: None,
+                    structured_ingestion: None,
                 }],
                 ..Default::default()
             }),
