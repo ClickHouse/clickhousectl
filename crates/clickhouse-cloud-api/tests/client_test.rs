@@ -231,7 +231,9 @@ async fn discover_organization_prometheus_targets() {
                     "__param_filtered_metrics": "false",
                     "clickhouse_org_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
                     "clickhouse_service_id": "b1b2c3d4-e5f6-7890-abcd-ef1234567890",
-                    "clickhouse_discovery_service_name": "analytics"
+                    "clickhouse_discovery_service_name": "analytics",
+                    "__meta_clickhouse_region": "us-east-1",
+                    "__meta_clickhouse_provider": "aws"
                 }
             }])),
         )
@@ -250,6 +252,10 @@ async fn discover_organization_prometheus_targets() {
             .and_then(|labels| labels.scheme.as_deref()),
         Some("https")
     );
+    let labels = groups[0].labels.as_ref().unwrap();
+    assert_eq!(labels.meta_clickhouse_region.as_deref(), Some("us-east-1"));
+    assert_eq!(labels.meta_clickhouse_provider.as_deref(), Some("aws"));
+    assert_eq!(labels.additional_labels, None);
 }
 
 #[tokio::test]
