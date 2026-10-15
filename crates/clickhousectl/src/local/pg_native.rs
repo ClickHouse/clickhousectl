@@ -56,6 +56,32 @@ fn parse_runtime(value: &str) -> Result<bool> {
     }
 }
 
+/// Whether `start` should use the native backend: selected by the env var,
+/// or because the named instance (default "default") already exists as a
+/// native one, so resuming never needs the env var again.
+pub fn should_start_native(name: Option<&str>) -> Result<bool> {
+    if native_runtime_selected()? {
+        return Ok(true);
+    }
+    let name = name.unwrap_or("default");
+    if server::validate_server_name(name).is_err() {
+        return Ok(false);
+    }
+    // Read-only probe: taking the metadata lock would create project state
+    // before Docker start validation runs.
+    let Ok(entries) = std::fs::read_dir(server::servers_dir_join("")) else {
+        return Ok(false);
+    };
+    let prefix = format!("{name}-pg");
+    Ok(entries.flatten().any(|entry| {
+        entry.file_name().to_str().is_some_and(|key| {
+            key.strip_prefix(&prefix)
+                .is_some_and(|major| !major.is_empty() && major.chars().all(|c| c.is_ascii_digit()))
+                && entry.path().join(STATE_FILE).is_file()
+        })
+    }))
+}
+
 // ── instance state ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,7 +152,7 @@ pub fn psql_path(info: &ServerInfo) -> Result<PathBuf> {
 }
 
 fn missing_state(key: &str) -> Error {
-    Error::Postgres(format!(
+    Error::PostgresUsage(format!(
         "native Postgres '{}' has no state file at '{}'",
         user_name_from_key(key),
         state_path(key).display()
@@ -257,7 +283,7 @@ async fn resolve_bundle_source() -> Result<BundleSource> {
         ))
     })?;
     let unavailable = |detail: String| {
-        Error::Postgres(format!(
+        Error::PostgresUsage(format!(
             "could not find the latest Postgres bundle ({detail}); set {BUNDLE_ENV} to an \
              https:// or file:// bundle URL"
         ))
@@ -350,7 +376,7 @@ async fn ensure_bundle(json: bool) -> Result<Bundle> {
         Some(expected) => {
             let actual = sha256_file(&archive)?;
             if actual != expected {
-                return Err(Error::Postgres(format!(
+                return Err(Error::PostgresUsage(format!(
                     "sha256 mismatch for bundle {name}: expected {expected}, got {actual}"
                 )));
             }
@@ -372,7 +398,7 @@ async fn ensure_bundle(json: bool) -> Result<Bundle> {
 
     let extracted = extract_dir.join(&name);
     if !extracted.join("bin").join("postgres").is_file() {
-        return Err(Error::Postgres(format!(
+        return Err(Error::PostgresUsage(format!(
             "bundle archive does not contain {name}/bin/postgres"
         )));
     }
@@ -655,7 +681,7 @@ async fn resume(
     }
     let state = load_state(&prior.name)?.ok_or_else(|| missing_state(&prior.name))?;
     if !state.bin_dir.join("postgres").is_file() {
-        return Err(Error::Postgres(format!(
+        return Err(Error::PostgresUsage(format!(
             "bundle '{}' is missing from '{}'; reinstall it or remove this instance",
             state.bundle,
             state.bin_dir.display()

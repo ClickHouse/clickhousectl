@@ -193,7 +193,7 @@ pub async fn run(cmd: PostgresCommands, json: bool) -> Result<()> {
             database,
             env,
             wait_timeout,
-        } if pg_native::native_runtime_selected()? => {
+        } if pg_native::should_start_native(name.as_deref().or(name_flag.as_deref()))? => {
             pg_native::start(
                 pg_native::StartArgs {
                     name: name.or(name_flag),
