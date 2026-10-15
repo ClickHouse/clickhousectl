@@ -107,7 +107,7 @@ impl FakeDocker {
                     ("GET", path) if path.starts_with("/containers/json?") => {
                         write_json(&mut stream, 200, "[]")
                     }
-                    ("GET", "/images/postgres:18/json") => {
+                    ("GET", "/images/ghcr.io/clickhouse/pg_clickhouse:18/json") => {
                         inject_metadata_during_image_inspect(&project);
                         write_json(&mut stream, 200, "{}");
                     }
@@ -136,6 +136,9 @@ impl FakeDocker {
                             started = false;
                             write_json(&mut stream, 201, r#"{"Id":"pg-id","Warnings":[]}"#);
                         }
+                    }
+                    ("PUT", path) if path.starts_with("/containers/pg-id/archive?") => {
+                        write_response(&mut stream, 200, "application/json", b"")
                     }
                     ("POST", path) if path.starts_with("/containers/pg-id/start") => {
                         let status = start_statuses.pop_front().unwrap_or(204);
@@ -632,12 +635,25 @@ fn fresh_start_waits_for_delayed_postgres_readiness_without_exposing_password() 
     }
     let image_inspect = requests
         .iter()
-        .find(|request| request.path == "/images/postgres:18/json")
+        .find(|request| request.path == "/images/ghcr.io/clickhouse/pg_clickhouse:18/json")
         .expect("fresh image inspection request");
     assert!(
         image_inspect.metadata_lock_available,
         "metadata lock was held during image inspection: {image_inspect:?}"
     );
+    let upload = request_index(&requests, "PUT", "/containers/pg-id/archive?");
+    let start = request_index(&requests, "POST", "/containers/pg-id/start");
+    assert!(upload < start, "init script must be uploaded before start");
+    let upload = &requests[upload];
+    assert!(upload.path.contains("path=%2Fdocker-entrypoint-initdb.d"));
+    for extension in ["pg_clickhouse", "re2"] {
+        assert!(
+            upload
+                .body
+                .contains(&format!("CREATE EXTENSION IF NOT EXISTS {extension};")),
+            "init script does not enable {extension}"
+        );
+    }
 }
 
 #[test]
@@ -1189,7 +1205,9 @@ fn retry_after_rolled_back_start_failure_succeeds_cleanly() {
             .iter()
             .filter(|request| request.method == "POST"
                 && request.path.starts_with("/containers/create?")
-                && request.body.contains(r#""Image":"postgres:18""#))
+                && request
+                    .body
+                    .contains(r#""Image":"ghcr.io/clickhouse/pg_clickhouse:18""#))
             .count(),
         2
     );

@@ -68,7 +68,7 @@ fn spawn_fake_docker(socket_path: &Path, pull_response: String) -> JoinHandle<()
         let request = read_request(&mut pull);
         assert!(
             request.starts_with("POST /images/create?")
-                && request.contains("fromImage=postgres%3A"),
+                && request.contains("fromImage=ghcr.io%2Fclickhouse%2Fpg_clickhouse%3A"),
             "unexpected request: {request}"
         );
         write_response(&mut pull, "application/json", &pull_response);
@@ -130,25 +130,27 @@ fn non_tty_pull_collapses_repeated_layer_events() {
     );
     assert_eq!(
         String::from_utf8(output.stderr).unwrap(),
-        "Pulling postgres:18... done\n"
+        "Pulling ghcr.io/clickhouse/pg_clickhouse:18... done\n"
     );
 }
 
 #[test]
 fn non_tty_pull_reports_failure_once_and_preserves_diagnostics() {
     let output = run_install(
-        "18-missing",
-        "{\"errorDetail\":{\"message\":\"manifest for postgres:18-missing not found\"}}\n",
+        "17",
+        "{\"errorDetail\":{\"message\":\"manifest for ghcr.io/clickhouse/pg_clickhouse:17 not found\"}}\n",
     );
 
     let stderr = String::from_utf8(output.stderr).unwrap();
     assert_eq!(output.status.code(), Some(1), "stderr: {stderr}");
     assert!(
-        stderr.starts_with("Pulling postgres:18-missing... failed\n"),
+        stderr.starts_with("Pulling ghcr.io/clickhouse/pg_clickhouse:17... failed\n"),
         "unexpected stderr: {stderr}"
     );
     assert!(
-        stderr.contains("Docker stream error: manifest for postgres:18-missing not found"),
+        stderr.contains(
+            "Docker stream error: manifest for ghcr.io/clickhouse/pg_clickhouse:17 not found"
+        ),
         "missing Docker diagnostics: {stderr}"
     );
     assert!(

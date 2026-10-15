@@ -50,7 +50,7 @@ const INSTALL_AFTER_HELP: &str = "\
 CONTEXT FOR AGENTS:
   The first ClickHouse version installed becomes the default; later installs do not change it.
   `clickhousectl local use <version>` auto-installs a missing version and sets it as default.
-  `postgres@<tag>` pulls a Docker image instead (needs Docker running) and never sets a default.";
+  `postgres@17|18` pulls the pg_clickhouse Postgres image instead (needs Docker running) and never sets a default.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InstallVersionArg {
@@ -558,7 +558,8 @@ CONTEXT FOR AGENTS:
   Without --version, an existing instance selects the major; two majors under one name error.
   The generated password is printed once by start — re-read connection details later with
   `postgres dotenv` or `postgres client`.
-  A failed fresh start rolls back the container and data it created; pre-existing data is kept.")]
+  A failed fresh start rolls back the container and data it created; pre-existing data is kept.
+  A fresh instance enables the pg_clickhouse and re2 extensions in its database and template1.")]
     Start {
         /// Server name (default: "default", or random if default is already running)
         #[arg(value_name = "NAME", conflicts_with = "name_flag", value_parser = parse_server_name_arg)]
@@ -574,9 +575,9 @@ CONTEXT FOR AGENTS:
         )]
         name_flag: Option<String>,
 
-        /// Postgres image tag, major 17 or 18 (e.g. 17-alpine, 18.1). Default: 18
+        /// Postgres major version, 17 or 18. Default: 18
         ///
-        /// Pulls the image if it is not present locally.
+        /// Pulls the pg_clickhouse image for that major if it is not present locally.
         #[arg(long, short = 'v', value_parser = crate::local::postgres::parse_pg_tag_arg)]
         version: Option<String>,
 
@@ -2003,7 +2004,7 @@ mod tests {
             "--name",
             "analytics",
             "--version",
-            "18.1-alpine3.20",
+            "17",
             "--port",
             "55432",
             "--password",
@@ -2020,7 +2021,7 @@ mod tests {
         };
 
         assert_eq!(name.or(name_flag).as_deref(), Some("analytics"));
-        assert_eq!(version.as_deref(), Some("18.1-alpine3.20"));
+        assert_eq!(version.as_deref(), Some("17"));
         assert_eq!(port, Some(55432));
         assert_eq!(password.as_deref(), Some("secret"));
         assert_eq!(wait_timeout, 75);
@@ -2059,7 +2060,7 @@ mod tests {
                 "invalid or unsupported postgres version",
             ),
             (
-                vec!["--version", "18..1"],
+                vec!["--version", "17-alpine"],
                 "invalid or unsupported postgres version",
             ),
             (
