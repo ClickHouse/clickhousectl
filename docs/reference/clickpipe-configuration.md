@@ -48,7 +48,23 @@ Database creates require at least one mapping. Repeat or combine the simple and 
 }
 ```
 
-Postgres, MySQL, and BigQuery support excluded columns and custom sorting keys; MongoDB supports the names and engine. Nonempty `sortingKeys` enables `useCustomSortingKey` automatically. Explicit `false` with keys, or `true` without keys, fails. Unknown fields/engines and missing names fail locally.
+Postgres, MySQL, and BigQuery support excluded columns and custom sorting keys; MongoDB supports the names, engine, and `structuredIngestion`, which replicates a collection into typed columns instead of one JSON document column. Nonempty `sortingKeys` enables `useCustomSortingKey` automatically. Explicit `false` with keys, or `true` without keys, fails. Unknown fields/engines and missing names fail locally.
+
+For MongoDB structured ingestion, `enabled` is required. Omit `columns` to infer them from sampled documents; `_id` is always replicated as `String`. `excludedColumns` and `sortingKeys` entries must be unique, and the sorting key defaults to `_id`:
+
+```json
+{
+  "sourceDatabaseName": "shop",
+  "sourceCollection": "orders",
+  "targetTable": "orders",
+  "structuredIngestion": {
+    "enabled": true,
+    "columns": [{"name": "amount", "type": "Float64"}],
+    "sortingKeys": ["_id", "created_at"],
+    "partitionByExpr": "toYYYYMM(created_at)"
+  }
+}
+```
 
 `partitionByExpr` defines destination `PARTITION BY`; `partitionKey` selects a source column for parallel snapshotting. They serve different purposes; Postgres/MySQL support both. Choices shaping a destination table are made at creation, not changed later on an existing mapping.
 

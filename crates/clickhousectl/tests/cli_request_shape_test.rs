@@ -9775,6 +9775,47 @@ async fn mongodb_table_mapping_json_can_be_the_only_mapping() {
 }
 
 #[tokio::test]
+async fn mongodb_table_mapping_json_sends_structured_ingestion() {
+    let mock = start_mock_clickpipes_api().await;
+    let body = invoke_cli_capture_body(
+        &mock,
+        &[
+            "clickpipe",
+            "create",
+            "mongodb",
+            "svc-id",
+            "--name",
+            "mongodb-structured",
+            "--uri",
+            "mongodb://mongo.example/source",
+            "--username",
+            "u",
+            "--password",
+            "p",
+            "--table-mapping-json",
+            r#"{"sourceDatabaseName":"sales","sourceCollection":"orders","targetTable":"orders","structuredIngestion":{"enabled":true,"columns":[{"name":"amount","type":"Float64"}],"sortingKeys":["_id"]}}"#,
+            "--org-id",
+            "org",
+        ],
+    )
+    .await;
+
+    assert_eq!(
+        body["source"]["mongodb"]["tableMappings"],
+        serde_json::json!([{
+            "sourceDatabaseName": "sales",
+            "sourceCollection": "orders",
+            "targetTable": "orders",
+            "structuredIngestion": {
+                "enabled": true,
+                "columns": [{"name": "amount", "type": "Float64"}],
+                "sortingKeys": ["_id"],
+            },
+        }])
+    );
+}
+
+#[tokio::test]
 async fn bigquery_service_account_table_mapping_json_preserves_optional_shapes() {
     let mock = start_mock_clickpipes_api().await;
     let directory = tempfile::tempdir().unwrap();
