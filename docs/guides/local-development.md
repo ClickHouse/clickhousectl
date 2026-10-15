@@ -118,7 +118,9 @@ Edit the source file and restart with `--config` again to apply changes. The sel
 
 ## Add Postgres
 
-Docker must be running. Postgres 17 and 18, including image sub-tags, are supported; new instances default to 18. A random password is generated unless supplied.
+Docker must be running. Postgres 17 and 18 are supported; new instances default to 18. A random password is generated unless supplied.
+
+Instances run the [`ghcr.io/clickhouse/pg_clickhouse`](https://github.com/ClickHouse/pg_clickhouse/pkgs/container/pg_clickhouse) image: official Postgres with the latest [pg_clickhouse](https://github.com/ClickHouse/pg_clickhouse) and `re2` extensions. A new instance enables both in its database and in `template1`, so databases you create later have them too. Instances created by earlier clickhousectl releases keep the official `postgres` image until you remove them.
 
 ```bash
 clickhousectl local postgres start app --version 18
