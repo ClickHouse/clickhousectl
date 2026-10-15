@@ -2006,7 +2006,7 @@ mod tests {
         assert!(bytes.starts_with(b"PK\x03\x04"));
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
         (0..archive.len())
-            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .map(|index| archive.by_index(index).unwrap().name().unwrap().to_string())
             .collect()
     }
 
