@@ -173,6 +173,7 @@ struct Envelope<T> {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct CreateAccessRequestResponse {
+    requested_role_ids: Option<Vec<String>>,
     request_id: String,
     status: Option<String>,
     approval_url: String,
@@ -183,6 +184,7 @@ struct CreateAccessRequestResponse {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AccessRequestStatus {
+    requested_role_ids: Option<Vec<String>>,
     request_id: Option<String>,
     expires_at: Option<i64>,
     status: Option<String>,
@@ -201,9 +203,40 @@ struct ClaimBody<'a> {
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ClaimResponse {
+    granted_role_ids: Option<Vec<String>>,
     key_id: String,
     key: String,
     secret: String,
+}
+
+// Server arrays are authoritative: reject duplicate identities rather than silently
+// deduplicating them as we do for user proposal input. Never echo invalid values.
+fn canonical_role_ids(ids: Option<&[String]>, proposal: bool) -> CloudResult<Vec<String>> {
+    let field = if proposal {
+        "requestedRoleIds"
+    } else {
+        "grantedRoleIds"
+    };
+    let invalid = || {
+        CloudError::new(format!(
+            "access request: missing or invalid {field}; server role reporting support is required"
+        ))
+    };
+    let ids = ids.ok_or_else(invalid)?;
+    if (proposal && ids.len() > 100) || (!proposal && ids.is_empty()) {
+        return Err(invalid());
+    }
+    let mut seen = HashSet::new();
+    ids.iter()
+        .map(|id| {
+            let parsed = uuid::Uuid::parse_str(id).map_err(|_| invalid())?;
+            let canonical = parsed.hyphenated().to_string();
+            if !id.eq_ignore_ascii_case(&canonical) || !seen.insert(parsed) {
+                return Err(invalid());
+            }
+            Ok(canonical)
+        })
+        .collect()
 }
 
 // ── PKCE ───────────────────────────────────────────────────────────────────
@@ -507,6 +540,12 @@ async fn request(
         error.into_cloud("file access request timed out; the request may have been filed")
     })?;
     let pending = PendingApproval::new(&created)?;
+    if pending.requested_role_ids.as_slice() != requested_role_ids.as_deref().unwrap_or_default() {
+        return Err(CloudError::new(
+            "file access request: saved proposal differs from submitted proposal",
+        ));
+    }
+    let saved_requested_role_ids = pending.requested_role_ids.clone();
 
     approval_handoff(&created.approval_url, args.no_browser, |url| {
         open::that(url)
@@ -526,21 +565,42 @@ async fn request(
         return Err(CloudError::new("claim access key: incomplete response"));
     }
 
-    // Never print the secret; store it with the CLI's existing credential file.
-    credentials::set_api_credentials(claimed.key.clone(), claimed.secret)?;
-
-    if json {
-        let out = serde_json::json!({
+    let granted_role_ids = canonical_role_ids(claimed.granted_role_ids.as_deref(), false)?;
+    let credentials_path = credentials::credentials_path().display().to_string();
+    // Prepare the complete output before the only credential write. Actual roles
+    // come only from the successful claim, never from the proposal or status GET.
+    let json_result = if json {
+        Some(serde_json::to_string_pretty(&serde_json::json!({
             "status": "approved",
             "keyId": claimed.key_id,
             "key": claimed.key,
-            "credentialsPath": credentials::credentials_path().display().to_string(),
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+            "credentialsPath": credentials_path,
+            "requestId": created.request_id,
+            "organizationId": org_id,
+            "requestedRoleIds": saved_requested_role_ids,
+            "grantedRoleIds": granted_role_ids,
+        }))?)
+    } else {
+        None
+    };
+
+    // Never print the secret; store it with the CLI's existing credential file.
+    credentials::set_api_credentials(claimed.key.clone(), claimed.secret)?;
+
+    if let Some(out) = json_result {
+        println!("{out}");
     } else {
         println!("Access approved. Scoped API key stored.");
+        println!("  Organization: {org_id}");
+        println!("  Request ID: {}", created.request_id);
+        if saved_requested_role_ids.is_empty() {
+            println!("  Requested roles: none (manual selection)");
+        } else {
+            println!("  Requested roles: {}", saved_requested_role_ids.join(", "));
+        }
+        println!("  Granted roles: {}", granted_role_ids.join(", "));
         println!("  Key ID: {}", claimed.key_id);
-        println!("  Saved to: {}", credentials::credentials_path().display());
+        println!("  Saved to: {credentials_path}");
     }
 
     Ok(())
@@ -770,6 +830,7 @@ impl Deadline {
 }
 
 struct PendingApproval<'a> {
+    requested_role_ids: Vec<String>,
     request_id: &'a str,
     deadline: Deadline,
 }
@@ -786,6 +847,7 @@ impl<'a> PendingApproval<'a> {
         let mut deadline = Deadline::new(created.expires_at, epoch_millis()?, now)?;
         deadline.monotonic = deadline.monotonic.min(now + APPROVAL_TIMEOUT);
         Ok(Self {
+            requested_role_ids: canonical_role_ids(created.requested_role_ids.as_deref(), true)?,
             request_id: &created.request_id,
             deadline,
         })
@@ -815,6 +877,12 @@ fn interpret_status(
     {
         return Err(CloudError::new(
             "access request status has inconsistent identity or pending deadline",
+        ));
+    }
+    if canonical_role_ids(status.requested_role_ids.as_deref(), true)? != pending.requested_role_ids
+    {
+        return Err(CloudError::new(
+            "access request status has inconsistent saved proposal",
         ));
     }
     match status.status.as_deref() {
@@ -989,6 +1057,7 @@ mod tests {
 
     fn created(expires_at: i64) -> CreateAccessRequestResponse {
         CreateAccessRequestResponse {
+            requested_role_ids: Some(vec![]),
             request_id: "request-1".into(),
             status: Some("pending".into()),
             approval_url: "https://example.invalid/approve".into(),
@@ -997,7 +1066,7 @@ mod tests {
     }
 
     fn status_body(status: &str, expires_at: i64) -> serde_json::Value {
-        serde_json::json!({"result": {"requestId":"request-1", "expiresAt":expires_at, "status":status, "claimCode":"test-code", "claimCodeExpiresAt":4102444800000_i64}})
+        serde_json::json!({"result": {"requestedRoleIds":[], "requestId":"request-1", "expiresAt":expires_at, "status":status, "claimCode":"test-code", "claimCodeExpiresAt":4102444800000_i64}})
     }
 
     async fn poll_until_approved(
@@ -1017,6 +1086,99 @@ mod tests {
         )
         .await
         .map(|permit| permit.code)
+    }
+
+    #[test]
+    fn canonical_role_ids_validate_server_arrays_without_inferring_grants() {
+        let system = "21111111-1111-1111-9999-000000000007".to_string();
+        let upper = "AAAAAAAA-AAAA-AAAA-AAAA-AAAAAAAAAAAA".to_string();
+        assert_eq!(
+            canonical_role_ids(Some(&[system.clone(), upper.clone()]), true).unwrap(),
+            vec![system, upper.to_lowercase()]
+        );
+        assert_eq!(
+            canonical_role_ids(Some(&[]), true).unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(canonical_role_ids(Some(&[]), false).is_err());
+        for proposal in [true, false] {
+            assert!(canonical_role_ids(None, proposal).is_err());
+            assert!(
+                canonical_role_ids(Some(&[upper.clone(), upper.to_lowercase()]), proposal).is_err()
+            );
+            for invalid in [
+                "",
+                "role-name",
+                "*",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "{aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}",
+                "urn:uuid:aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+                " aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+            ] {
+                let error = canonical_role_ids(Some(&[invalid.into()]), proposal).unwrap_err();
+                assert!(!error.message.contains("aaaaaaaa"));
+            }
+        }
+        let many: Vec<_> = (1..=101)
+            .map(|id| format!("00000000-0000-0000-0000-{id:012x}"))
+            .collect();
+        assert!(canonical_role_ids(Some(&many[..100]), true).is_ok());
+        assert!(canonical_role_ids(Some(&many), true).is_err());
+        assert_eq!(canonical_role_ids(Some(&many), false).unwrap().len(), 101);
+    }
+
+    #[test]
+    fn role_response_fields_reject_malformed_types_and_status_proposal_changes() {
+        for value in [
+            serde_json::json!(42),
+            serde_json::json!("secret-value"),
+            serde_json::json!([null]),
+            serde_json::json!([1]),
+            serde_json::json!({}),
+        ] {
+            let create = serde_json::json!({"requestId":"request-1", "status":"pending", "approvalUrl":"https://example.invalid", "expiresAt":4102444800000_i64, "requestedRoleIds":value});
+            assert!(serde_json::from_value::<CreateAccessRequestResponse>(create).is_err());
+            assert!(
+                serde_json::from_value::<AccessRequestStatus>(
+                    serde_json::json!({"requestedRoleIds":value})
+                )
+                .is_err()
+            );
+            let claim = serde_json::json!({"keyId":"key-id", "key":"key", "secret":"secret", "grantedRoleIds":value});
+            assert!(serde_json::from_value::<ClaimResponse>(claim).is_err());
+        }
+        let a = "21111111-1111-1111-9999-000000000007".to_string();
+        let b = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa".to_string();
+        let mut created = created(4102444800000);
+        created.requested_role_ids = Some(vec![a.clone(), b.to_uppercase()]);
+        let pending = PendingApproval::new(&created).unwrap();
+        let mut status = status_body("approved", 4102444800000);
+        for ids in [
+            serde_json::json!(null),
+            serde_json::json!([]),
+            serde_json::json!([b, a]),
+            serde_json::json!([b, b.to_uppercase()]),
+        ] {
+            status["result"]["requestedRoleIds"] = ids;
+            assert!(
+                interpret_status(
+                    serde_json::from_value(status["result"].clone()).unwrap(),
+                    &pending,
+                    None
+                )
+                .is_err()
+            );
+        }
+        status["result"]["requestedRoleIds"] = serde_json::json!([a, b]);
+        assert!(
+            interpret_status(
+                serde_json::from_value(status["result"].clone()).unwrap(),
+                &pending,
+                None
+            )
+            .unwrap()
+            .is_some()
+        );
     }
 
     #[test]
@@ -1420,6 +1582,7 @@ mod tests {
                 .get_mut("result")
                 .and_then(serde_json::Value::as_object_mut)
             {
+                result.insert("requestedRoleIds".into(), serde_json::json!([]));
                 result.insert("requestId".into(), serde_json::json!("request-1"));
                 result.insert("expiresAt".into(), serde_json::json!(4102444800000_i64));
                 result.insert(
