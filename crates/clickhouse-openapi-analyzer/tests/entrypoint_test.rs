@@ -85,6 +85,21 @@ fn udf_payload_migration_remains_actionable_after_component_removal_and_snapshot
                 .clone(),
         );
     let config = clickhouse_cloud_config();
+    let historical = before.to_string();
+    let original_contract = analyze(
+        AnalysisInput {
+            spec_json: &historical,
+            snapshot_json: &historical,
+            rust_source_root: source.path(),
+        },
+        &config,
+    )
+    .unwrap();
+    assert!(
+        !original_contract.has_drift(),
+        "{}",
+        original_contract.render_text()
+    );
     let analyze_with = |snapshot: &str| {
         analyze(
             AnalysisInput {

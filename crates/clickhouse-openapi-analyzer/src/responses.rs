@@ -136,6 +136,22 @@ pub(crate) fn compare(
         let Some(method) = rust.client_methods.get(&response.operation) else {
             continue;
         };
+        // Envelope-only reference/composition cycles have no productive model
+        // edge. Recursive object fields are handled separately by the pair guard.
+        for pointer in response
+            .unsupported
+            .iter()
+            .filter(|pointer| !pointer.ends_with("/oneOf") && !pointer.ends_with("/anyOf"))
+        {
+            report.findings.push(
+                Finding::new(
+                    FindingKind::UnsupportedResponseSchema,
+                    "cyclic success response envelope reference/composition",
+                )
+                .at_spec(pointer)
+                .at_rust(format!("client.rs::Client::{}", response.operation)),
+            );
+        }
         let Some(ty) = &method.success_type else {
             report.findings.push(
                 Finding::new(
@@ -257,6 +273,19 @@ impl Checker<'_> {
             self.finding(
                 FindingKind::UnsupportedResponseSchema,
                 "unsupported Rust response type",
+                pointer,
+                item,
+                ty,
+            );
+            return;
+        }
+        if let TypeNode::Applied(name, _) = ty
+            && !self.rust.model_types.contains(name)
+            && name != "DateTime"
+        {
+            self.finding(
+                FindingKind::UnsupportedResponseSchema,
+                "unknown generic response encoding",
                 pointer,
                 item,
                 ty,
@@ -482,12 +511,41 @@ impl Checker<'_> {
                             && value.as_object().is_some_and(|object| !object.is_empty())
                     })
                 {
+                    let bindings = match self.rust.bindings(ty) {
+                        Ok(bindings) => bindings,
+                        Err(reason) => {
+                            self.finding(
+                                FindingKind::UnsupportedResponseSchema,
+                                reason,
+                                pointer,
+                                item,
+                                ty,
+                            );
+                            return;
+                        }
+                    };
                     let flattened = self
                         .rust
                         .structs
                         .get(scalar)
                         .and_then(|info| info.fields.values().find(|field| field.flatten))
-                        .and_then(|field| self.rust.response_type(&field.rust_type).ok());
+                        .map(|field| {
+                            self.rust
+                                .response_type(&substitute(&field.rust_type, &bindings))
+                        });
+                    let flattened = match flattened.transpose() {
+                        Ok(flattened) => flattened,
+                        Err(reason) => {
+                            self.finding(
+                                FindingKind::UnsupportedResponseSchema,
+                                reason,
+                                pointer,
+                                item,
+                                ty,
+                            );
+                            return;
+                        }
+                    };
                     if let TypeNode::Map(key, value) = flattened.as_ref().unwrap_or(ty) {
                         if self
                             .rust
@@ -584,6 +642,7 @@ mod tests {
             pub struct Envelope<T, Meta = String> { #[serde(flatten)] pub body: Body<T>, pub unused: Option<Meta> }
             pub struct Body<T> { pub result: Option<Box<T>> }
             pub type Rows<T> = Vec<T>;
+            pub struct Dynamic<T> { #[serde(flatten)] pub values: BTreeMap<String, T> }
         "#;
         for (ty, payload) in [
             (
@@ -592,6 +651,10 @@ mod tests {
             ),
             (
                 "Page<BTreeMap<String, Vec<bool>>>",
+                serde_json::json!({"type":"object","additionalProperties":{"type":"array","items":{"type":"boolean"}}}),
+            ),
+            (
+                "Page<Dynamic<Vec<bool>>>",
                 serde_json::json!({"type":"object","additionalProperties":{"type":"array","items":{"type":"boolean"}}}),
             ),
         ] {
@@ -696,6 +759,16 @@ mod tests {
                 "pub struct Envelope<T> { pub result: Option<T> } pub type Cycle = Other; pub type Other = Cycle;",
                 serde_json::json!({"type":"string"}),
             ),
+            (
+                "Envelope<External<String>>",
+                "pub struct Envelope<T> { pub result: Option<T> }",
+                serde_json::json!({"type":"string"}),
+            ),
+            (
+                "Envelope<External<String, 3>>",
+                "pub struct Envelope<T> { pub result: Option<T> }",
+                serde_json::json!({"type":"string"}),
+            ),
         ] {
             let report = report(ty, models, schema);
             assert!(
@@ -707,6 +780,44 @@ mod tests {
                 report.render_text()
             );
         }
+    }
+
+    #[test]
+    fn unproductive_schema_reference_cycles_are_explicitly_unsupported() {
+        let config = AnalyzerConfig::default();
+        let spec = serde_json::json!({
+            "paths":{"/widgets":{"get":{"operationId":"listWidgets","responses":{"200":{"content":{"application/json":{"schema":{"$ref":"#/components/schemas/Page"}}}}}}}},
+            "components":{"schemas":{"Page":{"$ref":"#/components/schemas/Page"}}}
+        });
+        let inventory = OpenApiInventory::build(&spec, &config).unwrap();
+        let rust = RustInventory::parse(
+            "impl Client {pub async fn list_widgets(&self) -> Result<Page, Error> {}}",
+            "pub struct Page;",
+            "",
+        )
+        .unwrap();
+        let report = crate::compare::compare(&rust, &inventory, &inventory, &config);
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|finding| finding.kind == FindingKind::UnsupportedResponseSchema),
+            "{}",
+            report.render_text()
+        );
+        let mut recursive = spec;
+        recursive["components"]["schemas"]["Page"] = serde_json::json!({
+            "type":"object", "properties":{"next":{"$ref":"#/components/schemas/Page"}}
+        });
+        let inventory = OpenApiInventory::build(&recursive, &config).unwrap();
+        let rust = RustInventory::parse(
+            "impl Client {pub async fn list_widgets(&self) -> Result<Page, Error> {}}",
+            "pub struct Page {pub next: Option<Box<Page>>}",
+            "",
+        )
+        .unwrap();
+        let report = crate::compare::compare(&rust, &inventory, &inventory, &config);
+        assert!(!report.has_drift(), "{}", report.render_text());
     }
 
     #[test]
