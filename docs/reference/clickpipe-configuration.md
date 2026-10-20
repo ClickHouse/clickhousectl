@@ -13,7 +13,7 @@ Use `cloud clickpipe create <source> --help` for flag names, allowed values, def
 | Object storage | Grant read access through IAM, access keys, an Azure connection string, or a GCP service account. Schema discovery needs a running destination service. |
 | Postgres / MySQL | Basic auth requires both username and password; `IAM_ROLE` on supported RDS/Aurora sources requires a role ARN and rejects username/password. |
 | MongoDB | CDC requires MongoDB 5.1+ with a replica set or sharded cluster and Change Streams/oplog access. |
-| BigQuery | Snapshot loads require a pre-created GCS staging bucket and permissions for reads, export jobs, and staging objects. Only snapshot replication is supported. |
+| BigQuery | Snapshot loads require a pre-created GCS staging bucket and permissions for reads, export jobs, and staging objects. CDC additionally requires a replication method and per-table CDC fields. |
 | Pub/Sub | Service-account key or enabled workload identity; this source is limited preview. Choose `earliest`, `latest`, or `timestamp` deliberately. |
 
 For MySQL CDC, use `ROW` binlogs with `FULL` row images and at least 72 hours of retention. Default `GTID` requires GTID replication; choose `FILE_POS` only for a matching setup. Grant source `SELECT`, `REPLICATION CLIENT`, and `REPLICATION SLAVE`. See [MySQL setup](https://clickhouse.com/docs/integrations/clickpipes/mysql).
@@ -79,6 +79,30 @@ For Postgres, snapshot worker/partition settings, nullability, failover slots, a
 Kafka/Kinesis Protobuf schema inputs accept `.proto` or serialized `FileDescriptorSet`; use `--protobuf-schema-file -` for stdin. The encoded limit is 1 MiB. Kafka Protobuf input conflicts with registry flags; `--exactly-once` is create-only. Pub/Sub timestamp seek requires `--seek-timestamp`; `earliest` reads backlog and `latest` reads new messages only.
 
 Object storage `--skip-initial-load` and `--start-after` cannot be combined. Schema discovery probes the source without creating a pipe and requires an API key, including for workload identity. `--validate-samples` is optional on creates; the API documents it as having no effect for Postgres/MySQL.
+
+## Configure BigQuery CDC
+
+BigQuery defaults to a one-time `snapshot`. For `--replication-mode cdc` or
+`cdc_only`, supply `--replication-method query_based` or `events_based` and use
+`--table-mapping-json` for every table. Query-based CDC requires a TIMESTAMP
+`queryCdcWatermarkColumn`; event-based CDC requires `eventsFunction` (`appends`
+or `changes`). Each method rejects the other method's table field.
+
+```bash
+chctl cloud clickpipe create bigquery "$SERVICE_ID" --name orders \
+  --service-account-file ./service-account.json --staging-path gs://bucket/staging \
+  --replication-mode cdc --replication-method query_based \
+  --sync-interval-seconds 60 --query-cdc-pull-sync-parallelism 4 \
+  --sync-delay-seconds 60 --pull-window-size-seconds 86400 \
+  --table-mapping-json '{"sourceDatasetName":"sales","sourceTable":"orders","targetTable":"orders","queryCdcWatermarkColumn":"updated_at"}'
+```
+
+The sync interval, table parallelism, and pull window must be at least 1; the
+visibility delay can be 0. A delay that is too short can skip rows that become
+visible late; increase it for batch jobs or Dataflow. The pull window bounds each
+catch-up query when a pipe falls behind. Omitted settings use the service defaults.
+Snapshot mode rejects these CDC settings and both CDC table fields. The same
+controls work with workload identity; BigQuery source updates remain unsupported.
 
 ## Update a pipe
 

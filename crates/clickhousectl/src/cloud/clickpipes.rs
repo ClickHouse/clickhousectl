@@ -80,13 +80,14 @@ use crate::cloud::shared::{parse_datetime, parse_serde_enum, resolve_org_id};
 use clap::builder::{PossibleValue, PossibleValuesParser, TypedValueParser};
 use clap::{ArgGroup, Args, Subcommand};
 use clickhouse_cloud_api::models::{
-    ClickPipeBigQueryPipeTableMappingTableengine, ClickPipeKafkaOffsetStrategy,
-    ClickPipeMongoDBPipeSettingsReplicationmode, ClickPipeMongoDBPipeTableMappingTableengine,
-    ClickPipeMutateMongoDBSourceReadpreference, ClickPipeMutateMySQLSourceType,
-    ClickPipeMySQLPipeSettingsReplicationmechanism, ClickPipeMySQLPipeSettingsReplicationmode,
-    ClickPipeMySQLPipeTableMappingTableengine, ClickPipePostKafkaSourceAuthentication,
-    ClickPipePostKafkaSourceFormat, ClickPipePostKafkaSourceType,
-    ClickPipePostgresPipeTableMapping, ClickPipePostgresPipeTableMappingTableengine,
+    ClickPipeBigQueryPipeSettingsReplicationmode, ClickPipeBigQueryPipeTableMappingTableengine,
+    ClickPipeKafkaOffsetStrategy, ClickPipeMongoDBPipeSettingsReplicationmode,
+    ClickPipeMongoDBPipeTableMappingTableengine, ClickPipeMutateMongoDBSourceReadpreference,
+    ClickPipeMutateMySQLSourceType, ClickPipeMySQLPipeSettingsReplicationmechanism,
+    ClickPipeMySQLPipeSettingsReplicationmode, ClickPipeMySQLPipeTableMappingTableengine,
+    ClickPipePostKafkaSourceAuthentication, ClickPipePostKafkaSourceFormat,
+    ClickPipePostKafkaSourceType, ClickPipePostgresPipeTableMapping,
+    ClickPipePostgresPipeTableMappingTableengine,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -1940,9 +1941,8 @@ pub struct BigQueryCreateArgs {
 
     /// Full table mapping as a JSON object (repeatable)
     ///
-    /// Supports excludedColumns, sortingKeys, useCustomSortingKey and
-    /// tableEngine. Combinable with --table-mapping; unknown fields are
-    /// rejected.
+    /// Supports sorting, exclusions, engines and CDC watermark/event fields.
+    /// Combinable with --table-mapping; unknown fields are rejected.
     #[arg(long = "table-mapping-json", value_name = "JSON")]
     pub table_mappings_json: Vec<String>,
 
@@ -1950,9 +1950,32 @@ pub struct BigQueryCreateArgs {
     #[arg(
         long,
         default_value = "snapshot",
-        value_parser = PossibleValuesParser::new(["snapshot"]),
+        value_parser = PossibleValuesParser::new(ClickPipeBigQueryPipeSettingsReplicationmode::VALUES),
     )]
     pub replication_mode: String,
+
+    /// CDC method (required with --replication-mode cdc or cdc_only)
+    ///
+    /// Each table needs queryCdcWatermarkColumn for query_based or
+    /// eventsFunction for events_based in --table-mapping-json.
+    #[arg(long, value_parser = ["query_based", "events_based"])]
+    pub replication_method: Option<String>,
+
+    /// CDC sync interval in seconds (not with snapshot replication)
+    #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+    pub sync_interval_seconds: Option<i64>,
+
+    /// Parallel table pulls per CDC sync (not with snapshot replication)
+    #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+    pub query_cdc_pull_sync_parallelism: Option<i64>,
+
+    /// CDC visibility delay in seconds (not with snapshot replication)
+    #[arg(long, value_parser = clap::value_parser!(i64).range(0..))]
+    pub sync_delay_seconds: Option<i64>,
+
+    /// Maximum CDC pull window in seconds (not with snapshot replication)
+    #[arg(long, value_parser = clap::value_parser!(i64).range(1..))]
+    pub pull_window_size_seconds: Option<i64>,
 
     /// Preserve BigQuery nullability in destination columns
     #[arg(long, value_name = "true|false")]
@@ -5102,6 +5125,8 @@ const BIGQUERY_TABLE_MAPPING_JSON_FIELDS: &[&str] = &[
     "sortingKeys",
     "useCustomSortingKey",
     "tableEngine",
+    "queryCdcWatermarkColumn",
+    "eventsFunction",
 ];
 
 fn parse_bigquery_table_mapping_json(
@@ -5128,6 +5153,22 @@ fn parse_bigquery_table_mapping_json(
         &mapping.table_engine,
         ClickPipeBigQueryPipeTableMappingTableengine::VALUES,
     )?;
+    if let Some(column) = mapping.query_cdc_watermark_column {
+        mapping.query_cdc_watermark_column = Some(required_table_mapping_name(
+            &flag,
+            "queryCdcWatermarkColumn",
+            column,
+        )?);
+    }
+    if let Some(function) = mapping.events_function {
+        let function = required_table_mapping_name(&flag, "eventsFunction", function)?;
+        if !["appends", "changes"].contains(&function.as_str()) {
+            return Err(CloudError::usage(format!(
+                "{flag}: eventsFunction must be appends or changes"
+            )));
+        }
+        mapping.events_function = Some(function);
+    }
     Ok(mapping)
 }
 
@@ -5906,6 +5947,53 @@ fn validate_bigquery_create_args(args: &BigQueryCreateArgs) -> CloudResult<()> {
         }
     }
 
+    for (flag, value, minimum) in [
+        ("--sync-interval-seconds", args.sync_interval_seconds, 1),
+        (
+            "--query-cdc-pull-sync-parallelism",
+            args.query_cdc_pull_sync_parallelism,
+            1,
+        ),
+        ("--sync-delay-seconds", args.sync_delay_seconds, 0),
+        (
+            "--pull-window-size-seconds",
+            args.pull_window_size_seconds,
+            1,
+        ),
+    ] {
+        if value.is_some_and(|value| value < minimum) {
+            return Err(CloudError::usage(format!(
+                "{flag} must be at least {minimum}"
+            )));
+        }
+        if args.replication_mode == "snapshot" && value.is_some() {
+            return Err(CloudError::usage(format!(
+                "{flag} cannot be used with --replication-mode snapshot"
+            )));
+        }
+    }
+    match (
+        args.replication_mode.as_str(),
+        args.replication_method.as_deref(),
+    ) {
+        ("snapshot", Some(_)) => {
+            return Err(CloudError::usage(
+                "--replication-method cannot be used with --replication-mode snapshot",
+            ));
+        }
+        ("cdc" | "cdc_only", None) => {
+            return Err(CloudError::usage(
+                "--replication-method is required with --replication-mode cdc or cdc_only",
+            ));
+        }
+        (_, Some(method)) if !["query_based", "events_based"].contains(&method) => {
+            return Err(CloudError::usage(
+                "--replication-method must be query_based or events_based",
+            ));
+        }
+        _ => {}
+    }
+
     let authentication = parse_bigquery_authentication(&args.auth)?;
     match (
         authentication,
@@ -5960,6 +6048,21 @@ fn resolve_bigquery_table_mappings(
     for (position, mapping) in args.table_mappings_json.iter().enumerate() {
         mappings.push(parse_bigquery_table_mapping_json(position, mapping)?);
     }
+    for (position, mapping) in mappings.iter().enumerate() {
+        let watermark = mapping.query_cdc_watermark_column.is_some();
+        let events = mapping.events_function.is_some();
+        let valid = match args.replication_method.as_deref() {
+            Some("query_based") => watermark && !events,
+            Some("events_based") => events && !watermark,
+            _ => !watermark && !events,
+        };
+        if !valid {
+            return Err(CloudError::usage(format!(
+                "table mapping #{}: query_based requires queryCdcWatermarkColumn only; events_based requires eventsFunction only; snapshot allows neither",
+                position + 1,
+            )));
+        }
+    }
     Ok(mappings)
 }
 
@@ -5984,7 +6087,11 @@ fn build_bigquery_request(
         initial_load_parallelism: args.initial_load_parallelism,
         snapshot_num_rows_per_partition: args.snapshot_rows_per_partition,
         snapshot_number_of_parallel_tables: args.snapshot_parallel_tables,
-        ..Default::default()
+        replication_method: args.replication_method.clone(),
+        sync_interval_seconds: args.sync_interval_seconds,
+        query_cdc_pull_sync_parallelism: args.query_cdc_pull_sync_parallelism,
+        sync_delay_seconds: args.sync_delay_seconds,
+        pull_window_size_seconds: args.pull_window_size_seconds,
     };
     let source = match authentication {
         GcpAuthentication::ServiceAccount => {
@@ -10193,7 +10300,9 @@ mod tests {
         for &value in REPLICATION_MODES {
             assert_postgres_value("--replication-mode", value);
         }
-        assert_bigquery_value("--replication-mode", "snapshot");
+        for &value in ClickPipeBigQueryPipeSettingsReplicationmode::VALUES {
+            assert_bigquery_value("--replication-mode", value);
+        }
         for &value in DB_AUTHS {
             assert_mysql_value("--auth", value);
         }
@@ -12929,6 +13038,11 @@ mod tests {
             table_mappings: vec!["source.events:events".into()],
             table_mappings_json: vec![],
             replication_mode: "snapshot".into(),
+            replication_method: None,
+            sync_interval_seconds: None,
+            query_cdc_pull_sync_parallelism: None,
+            sync_delay_seconds: None,
+            pull_window_size_seconds: None,
             allow_nullable_columns: None,
             initial_load_parallelism: None,
             snapshot_rows_per_partition: None,
@@ -15006,6 +15120,179 @@ mod tests {
                 .unwrap_err()
                 .message
                 .contains("requires --service-account-file")
+        );
+    }
+    #[test]
+    fn parses_bigquery_cdc_controls_and_rejects_invalid_values() {
+        let base = [
+            "create",
+            "bigquery",
+            "svc-1",
+            "--name",
+            "cdc",
+            "--service-account-file",
+            "/tmp/account.json",
+            "--staging-path",
+            "gs://bucket/staging",
+            "--table-mapping",
+            "dataset.orders:orders",
+        ];
+        let mut command = base.to_vec();
+        command.extend([
+            "--replication-mode",
+            "cdc_only",
+            "--replication-method",
+            "query_based",
+            "--sync-interval-seconds",
+            "60",
+            "--query-cdc-pull-sync-parallelism",
+            "4",
+            "--sync-delay-seconds",
+            "0",
+            "--pull-window-size-seconds",
+            "86400",
+        ]);
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::BigQuery(args),
+        } = parse_clickpipe(&command)
+        else {
+            panic!("expected BigQuery create")
+        };
+        assert_eq!(args.replication_method.as_deref(), Some("query_based"));
+        assert_eq!(args.sync_interval_seconds, Some(60));
+        assert_eq!(args.query_cdc_pull_sync_parallelism, Some(4));
+        assert_eq!(args.sync_delay_seconds, Some(0));
+        assert_eq!(args.pull_window_size_seconds, Some(86400));
+        let ClickPipeCommands::Create {
+            command: ClickPipeCreateCommands::BigQuery(defaults),
+        } = parse_clickpipe(&base)
+        else {
+            panic!("expected BigQuery create")
+        };
+        assert_eq!(defaults.replication_method, None);
+        assert_eq!(defaults.sync_interval_seconds, None);
+        assert_eq!(defaults.query_cdc_pull_sync_parallelism, None);
+        assert_eq!(defaults.sync_delay_seconds, None);
+        assert_eq!(defaults.pull_window_size_seconds, None);
+        for (flag, value) in [
+            ("--replication-method", "invalid"),
+            ("--sync-interval-seconds", "0"),
+            ("--query-cdc-pull-sync-parallelism", "0"),
+            ("--sync-delay-seconds", "-1"),
+            ("--pull-window-size-seconds", "0"),
+        ] {
+            let mut command = base.to_vec();
+            command.extend([flag, value]);
+            assert_rejected(&command);
+        }
+        let mut repeated = base.to_vec();
+        repeated.extend(["--sync-delay-seconds", "0", "--sync-delay-seconds", "1"]);
+        assert_rejected(&repeated);
+    }
+
+    #[test]
+    fn builds_bigquery_cdc_settings_and_method_specific_mappings() {
+        for (method, field, value) in [
+            ("query_based", "queryCdcWatermarkColumn", "updated_at"),
+            ("events_based", "eventsFunction", "changes"),
+        ] {
+            let mut args = bigquery_builder_args("/unused/key.json".into());
+            args.auth = "SERVICE_ACCOUNT_WORKLOAD_IDENTITY".into();
+            args.service_account_file = None;
+            args.project_id = Some("source-project".into());
+            args.replication_mode = "cdc_only".into();
+            args.replication_method = Some(method.into());
+            args.sync_interval_seconds = Some(60);
+            args.query_cdc_pull_sync_parallelism = Some(4);
+            args.sync_delay_seconds = Some(0);
+            args.pull_window_size_seconds = Some(86400);
+            args.table_mappings.clear();
+            args.table_mappings_json = vec![serde_json::json!({
+                "sourceDatasetName":"sales", "sourceTable":"orders", "targetTable":"orders_raw", field: value
+            }).to_string()];
+            let request = build_bigquery_request(&args).unwrap();
+            let source = serde_json::to_value(request).unwrap()["source"]["bigquery"].clone();
+            assert_eq!(
+                source["settings"],
+                serde_json::json!({"replicationMode":"cdc_only",
+                "replicationMethod":method, "syncIntervalSeconds":60, "queryCdcPullSyncParallelism":4,
+                "syncDelaySeconds":0, "pullWindowSizeSeconds":86400})
+            );
+            assert_eq!(source["tableMappings"][0][field], value);
+            assert!(source.get("credentials").is_none());
+        }
+    }
+
+    #[test]
+    fn rejects_bigquery_cdc_mismatches_before_reading_key_file() {
+        for (mode, method, mapping) in [
+            ("snapshot", Some("query_based"), "{}"),
+            ("cdc", None, "{}"),
+            ("cdc_only", Some("invalid"), "{}"),
+            (
+                "cdc",
+                Some("query_based"),
+                r#"{"eventsFunction":"appends"}"#,
+            ),
+            (
+                "cdc_only",
+                Some("events_based"),
+                r#"{"queryCdcWatermarkColumn":"updated_at"}"#,
+            ),
+            (
+                "snapshot",
+                None,
+                r#"{"queryCdcWatermarkColumn":"updated_at"}"#,
+            ),
+            (
+                "cdc",
+                Some("query_based"),
+                r#"{"queryCdcWatermarkColumn":" "}"#,
+            ),
+            (
+                "cdc",
+                Some("events_based"),
+                r#"{"eventsFunction":"future"}"#,
+            ),
+        ] {
+            let mut args = bigquery_builder_args("/missing/key.json".into());
+            args.replication_mode = mode.into();
+            args.replication_method = method.map(str::to_owned);
+            args.table_mappings.clear();
+            let mut mapping: serde_json::Value = serde_json::from_str(mapping).unwrap();
+            mapping["sourceDatasetName"] = "sales".into();
+            mapping["sourceTable"] = "orders".into();
+            mapping["targetTable"] = "orders_raw".into();
+            args.table_mappings_json = vec![mapping.to_string()];
+            let error = build_bigquery_request(&args).unwrap_err();
+            assert!(
+                !error.message.contains("/missing/key.json"),
+                "{}",
+                error.message
+            );
+        }
+        for (flag, minimum) in [("sync", 1), ("parallelism", 1), ("delay", 0), ("window", 1)] {
+            let mut args = bigquery_builder_args("/missing/key.json".into());
+            match flag {
+                "sync" => args.sync_interval_seconds = Some(minimum - 1),
+                "parallelism" => args.query_cdc_pull_sync_parallelism = Some(minimum - 1),
+                "delay" => args.sync_delay_seconds = Some(minimum - 1),
+                _ => args.pull_window_size_seconds = Some(minimum - 1),
+            }
+            assert!(
+                build_bigquery_request(&args)
+                    .unwrap_err()
+                    .message
+                    .contains("must be at least")
+            );
+        }
+        let mut args = bigquery_builder_args("/missing/key.json".into());
+        args.sync_delay_seconds = Some(0);
+        assert!(
+            build_bigquery_request(&args)
+                .unwrap_err()
+                .message
+                .contains("snapshot")
         );
     }
 }
