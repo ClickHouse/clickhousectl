@@ -3534,7 +3534,7 @@ async fn list_udfs_encodes_pagination() {
         .and(path("/v1/organizations/org-1/udfs"))
         .and(query_param("cursor", "next-page"))
         .and(query_param("limit", "25"))
-        .respond_with(ok_json(serde_json::json!({"items": []})))
+        .respond_with(ok_json(serde_json::json!([])))
         .mount(&s)
         .await;
 
@@ -3543,8 +3543,6 @@ async fn list_udfs_encodes_pagination() {
             .await
             .unwrap()
             .result
-            .unwrap()
-            .items
             .unwrap()
             .is_empty()
     );
@@ -3578,7 +3576,7 @@ async fn list_udf_attachments_encodes_pagination() {
         .and(path("/v1/organizations/org-1/udfs/my_udf/attachments"))
         .and(query_param("cursor", "next-page"))
         .and(query_param("limit", "25"))
-        .respond_with(ok_json(serde_json::json!({"items": []})))
+        .respond_with(ok_json(serde_json::json!([])))
         .mount(&s)
         .await;
 
@@ -3587,8 +3585,6 @@ async fn list_udf_attachments_encodes_pagination() {
             .await
             .unwrap()
             .result
-            .unwrap()
-            .items
             .unwrap()
             .is_empty()
     );
@@ -3624,7 +3620,7 @@ async fn list_udf_versions_encodes_pagination() {
         .and(path("/v1/organizations/org-1/udfs/my_udf/versions"))
         .and(query_param("cursor", "next-page"))
         .and(query_param("limit", "25"))
-        .respond_with(ok_json(serde_json::json!({"items": []})))
+        .respond_with(ok_json(serde_json::json!([])))
         .mount(&s)
         .await;
 
@@ -3634,10 +3630,74 @@ async fn list_udf_versions_encodes_pagination() {
             .unwrap()
             .result
             .unwrap()
-            .items
-            .unwrap()
             .is_empty()
     );
+}
+
+#[tokio::test]
+async fn udf_list_pages_decode_arrays_and_nullable_outer_metadata() {
+    for endpoint in ["", "/my_udf/versions", "/my_udf/attachments"] {
+        for results in [
+            serde_json::json!([]),
+            serde_json::json!([{
+                "functionName":"my_udf", "serviceId":"svc-1", "version":7,
+                "status":"future-status", "runtime":null, "futureField":true
+            }]),
+        ] {
+            for metadata in [
+                serde_json::json!({"limit":1,"totalCount":3,"nextCursor":"page /+?"}),
+                serde_json::json!({"limit":null,"totalCount":null,"nextCursor":null}),
+                serde_json::json!({}),
+            ] {
+                let (server, client) = setup().await;
+                let mut wire = metadata.clone();
+                wire["result"] = results.clone();
+                wire["status"] = 200.into();
+                wire["requestId"] = "udf-page".into();
+                Mock::given(method("GET"))
+                    .and(path(format!("/v1/organizations/org-1/udfs{endpoint}")))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(wire))
+                    .expect(1)
+                    .mount(&server)
+                    .await;
+                let decoded = match endpoint {
+                    "" => serde_json::to_value(client.udf_list("org-1", None, None).await.unwrap())
+                        .unwrap(),
+                    "/my_udf/versions" => serde_json::to_value(
+                        client
+                            .udf_version_list("org-1", "my_udf", None, None)
+                            .await
+                            .unwrap(),
+                    )
+                    .unwrap(),
+                    _ => serde_json::to_value(
+                        client
+                            .udf_attachment_list("org-1", "my_udf", None, None)
+                            .await
+                            .unwrap(),
+                    )
+                    .unwrap(),
+                };
+                assert_eq!(
+                    decoded["result"].as_array().unwrap().len(),
+                    results.as_array().unwrap().len()
+                );
+                assert_eq!(decoded["status"], 200);
+                assert_eq!(decoded["requestId"], "udf-page");
+                for field in ["limit", "totalCount", "nextCursor"] {
+                    assert_eq!(decoded[field], metadata[field]);
+                    if metadata[field].is_null() {
+                        assert!(decoded.get(field).is_none());
+                    }
+                }
+                if !results.as_array().unwrap().is_empty() {
+                    assert_eq!(decoded["result"][0]["version"], 7);
+                    assert_eq!(decoded["result"][0]["status"], "future-status");
+                    assert!(decoded["result"][0].get("futureField").is_none());
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test]

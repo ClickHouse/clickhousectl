@@ -1597,12 +1597,21 @@ impl CloudClient {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> CloudResult<UdfListResponse> {
-        let response = self
+        let mut response = self
             .api()
             .udf_list(org, cursor, limit)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org))?;
-        Self::unwrap_response(response)
+        let pagination = Pagination {
+            current_cursor: cursor.map(str::to_owned),
+            limit: response.limit,
+            next_cursor: response.next_cursor.take(),
+            total_records: response.total_count,
+        };
+        Ok(UdfListResponse {
+            items: Some(Self::unwrap_response(response)?),
+            pagination: Some(pagination),
+        })
     }
     /// `None` when the UDF does not exist, so `deploy` can choose between
     /// create and version create.
@@ -1639,12 +1648,21 @@ impl CloudClient {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> CloudResult<UdfAttachmentListResponse> {
-        let response = self
+        let mut response = self
             .api()
             .udf_attachment_list(org, name, cursor, limit)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org))?;
-        Self::unwrap_response(response)
+        let pagination = Pagination {
+            current_cursor: cursor.map(str::to_owned),
+            limit: response.limit,
+            next_cursor: response.next_cursor.take(),
+            total_records: response.total_count,
+        };
+        Ok(UdfAttachmentListResponse {
+            items: Some(Self::unwrap_response(response)?),
+            pagination: Some(pagination),
+        })
     }
     async fn get_udf_attachment(
         &self,
@@ -1711,12 +1729,21 @@ impl CloudClient {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> CloudResult<UdfVersionListResponse> {
-        let response = self
+        let mut response = self
             .api()
             .udf_version_list(org, name, cursor, limit)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org))?;
-        Self::unwrap_response(response)
+        let pagination = Pagination {
+            current_cursor: cursor.map(str::to_owned),
+            limit: response.limit,
+            next_cursor: response.next_cursor.take(),
+            total_records: response.total_count,
+        };
+        Ok(UdfVersionListResponse {
+            items: Some(Self::unwrap_response(response)?),
+            pagination: Some(pagination),
+        })
     }
     async fn delete_udf_version(
         &self,

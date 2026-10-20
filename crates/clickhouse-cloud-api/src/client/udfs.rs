@@ -81,7 +81,7 @@ impl Client {
         organization_id: &str,
         cursor: Option<&str>,
         limit: Option<i64>,
-    ) -> Result<ApiResponse<UdfListResponse>, Error> {
+    ) -> Result<ApiResponse<Vec<Udf>>, Error> {
         let path = format!("/v1/organizations/{organization_id}/udfs");
         let mut req = self.request(reqwest::Method::GET, &path);
         if let Some(v) = cursor {
@@ -135,7 +135,7 @@ impl Client {
         function_name: &str,
         cursor: Option<&str>,
         limit: Option<i64>,
-    ) -> Result<ApiResponse<UdfAttachmentListResponse>, Error> {
+    ) -> Result<ApiResponse<Vec<UdfAttachment>>, Error> {
         let path = format!("/v1/organizations/{organization_id}/udfs/{function_name}/attachments");
         let mut req = self.request(reqwest::Method::GET, &path);
         if let Some(v) = cursor {
@@ -192,7 +192,7 @@ impl Client {
         function_name: &str,
         cursor: Option<&str>,
         limit: Option<i64>,
-    ) -> Result<ApiResponse<UdfVersionListResponse>, Error> {
+    ) -> Result<ApiResponse<Vec<Udf>>, Error> {
         let path = format!("/v1/organizations/{organization_id}/udfs/{function_name}/versions");
         let mut req = self.request(reqwest::Method::GET, &path);
         if let Some(v) = cursor {

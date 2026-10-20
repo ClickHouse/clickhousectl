@@ -20,7 +20,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhousectl/src/cloud/permissions.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/query_api_endpoints.rs": NO_SUITES,
     "crates/clickhousectl/src/cloud/saved_queries.rs": NO_SUITES,
-    "crates/clickhousectl/src/cloud/udfs.rs": NO_SUITES,
+    "crates/clickhousectl/src/cloud/udfs.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/client/activity.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/client/api_keys.rs": frozenset(
@@ -42,7 +42,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/client/services.rs": frozenset(
         {"service", "clickpipes"}
     ),
-    "crates/clickhouse-cloud-api/src/client/udfs.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/client/udfs.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/client/whoami.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/convert.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/convert/clickstack.rs": NO_SUITES,
@@ -61,6 +61,7 @@ SOURCE_PATH_SUITES = {
     "crates/clickhouse-cloud-api/src/meta.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/meta/operations.rs": NO_SUITES,
     "crates/clickhouse-openapi-analyzer/src/permissions.rs": NO_SUITES,
+    "crates/clickhouse-openapi-analyzer/src/responses.rs": NO_SUITES,
     "crates/clickhouse-cloud-api/src/models.rs": ALL_SUITES,
     "crates/clickhouse-cloud-api/src/models/activity.rs": frozenset(
         {"organization"}
@@ -101,14 +102,17 @@ SOURCE_PATH_SUITES = {
         {"service", "clickpipes"}
     ),
     "crates/clickhouse-cloud-api/src/models/shared.rs": ALL_SUITES,
-    "crates/clickhouse-cloud-api/src/models/udfs.rs": NO_SUITES,
+    "crates/clickhouse-cloud-api/src/models/udfs.rs": frozenset({"service"}),
     "crates/clickhouse-cloud-api/src/models/whoami.rs": frozenset({"organization"}),
     "crates/clickhouse-cloud-api/src/serde_helpers.rs": ALL_SUITES,
 }
 
 TEST_PATH_SUITES = {
+    "crates/clickhouse-cloud-api/tests/integration_udf_test.rs": frozenset({"service"}),
+    "crates/clickhouse-cloud-api/tests/fixtures/udf_source.zip": frozenset({"service"}),
     "crates/clickhousectl/tests/local_stdout_test.rs": NO_SUITES,
     "crates/clickhouse-openapi-analyzer/tests/fixtures/operation_contracts/before.json": NO_SUITES,
+    "crates/clickhouse-openapi-analyzer/tests/fixtures/udf_contracts/before.json": NO_SUITES,
     "crates/clickhouse-openapi-analyzer/tests/fixtures/operation_contracts/after.json": NO_SUITES,
     "crates/clickhousectl/tests/local_docker_status_test.rs": NO_SUITES,
     "crates/clickhousectl/tests/skills_usage_test.rs": NO_SUITES,

@@ -21,6 +21,7 @@
 mod compare;
 mod openapi;
 mod permissions;
+mod responses;
 
 pub use permissions::generate_operation_metadata;
 mod rust_inventory;

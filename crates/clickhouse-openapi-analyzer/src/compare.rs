@@ -19,10 +19,10 @@ pub(crate) fn compare(
         crate::permissions::compare_permissions(rust, spec, snapshot, &mut report);
     }
     compare_parameters(rust, spec, &mut report);
-    compare_success_responses(rust, spec, &mut report);
     compare_models_and_refs(rust, spec, &mut report);
     compare_inline_fields(rust, spec, config, &mut report);
     compare_additional_properties(rust, spec, &mut report);
+    crate::responses::compare(rust, spec, config, &mut report);
     compare_beta_and_deprecation(rust, spec, config, &mut report);
     compare_enums(rust, spec, config, &mut report);
     compare_acknowledged_enums(spec, snapshot, config, &mut report);
@@ -271,137 +271,6 @@ fn parameter_shape_matches(
     }
 }
 
-fn compare_success_responses(
-    rust: &RustInventory,
-    spec: &OpenApiInventory,
-    report: &mut DriftReport,
-) {
-    for response in &spec.success_responses {
-        let Some(method) = rust.client_methods.get(&response.operation) else {
-            continue;
-        };
-        for pointer in &response.unsupported {
-            // A named union is already checked through its concrete Rust enum
-            // and inline variant payloads. Merely being a component is not enough.
-            let named_union = pointer
-                .strip_prefix("/components/schemas/")
-                .and_then(|suffix| suffix.split_once('/'))
-                .filter(|(_, tail)| matches!(*tail, "oneOf" | "anyOf"))
-                .map(|(name, _)| name.replace("~1", "/").replace("~0", "~"));
-            if named_union.is_some_and(|schema_name| {
-                let expected = response_position_type(rust, spec, &pascalize(&schema_name));
-                rust.enums.contains_key(&expected)
-                    && method
-                        .success_type
-                        .as_ref()
-                        .and_then(|ty| response_root_type(rust, ty))
-                        .as_deref()
-                        == Some(expected.as_str())
-            }) {
-                continue;
-            }
-            report.findings.push(
-                Finding::new(
-                    FindingKind::UnsupportedResponseSchema,
-                    format!(
-                        "{} success response has an unsupported envelope composition",
-                        response.operation
-                    ),
-                )
-                .at_spec(pointer)
-                .at_rust(format!("client.rs::Client::{}", response.operation)),
-            );
-        }
-        if response.properties.is_empty() {
-            continue;
-        }
-        let name = method
-            .success_type
-            .as_ref()
-            .and_then(|ty| response_root_type(rust, ty));
-        let Some((name, info)) = name
-            .as_ref()
-            .and_then(|name| rust.structs.get(name).map(|info| (name, info)))
-        else {
-            report.findings.push(
-                Finding::new(
-                    FindingKind::UnsupportedResponseSchema,
-                    format!(
-                        "{} success envelope has no identifiable returned struct",
-                        response.operation
-                    ),
-                )
-                .at_spec(&response.pointer)
-                .at_rust(format!("client.rs::Client::{}", response.operation)),
-            );
-            continue;
-        };
-        for (field, pointer) in &response.properties {
-            if !response_field_present(rust, info, field, &mut BTreeSet::new()) {
-                report.findings.push(
-                    Finding::new(
-                        FindingKind::MissingStructField,
-                        format!(
-                            "{name}.{field} is missing from the {} success envelope",
-                            response.operation
-                        ),
-                    )
-                    .at_spec(pointer)
-                    .at_rust(format!("models.rs::{name}::{field}"))
-                    .detail("schema", name)
-                    .detail("field", field)
-                    .detail("operation", &response.operation),
-                );
-            }
-        }
-    }
-}
-
-/// Do not confuse an array's element or an error payload with the envelope.
-fn response_root_type<'a>(rust: &'a RustInventory, mut ty: &'a TypeNode) -> Option<String> {
-    let mut seen = BTreeSet::new();
-    loop {
-        match ty {
-            TypeNode::Option(inner) | TypeNode::Reference(inner) | TypeNode::Boxed(inner) => {
-                ty = inner
-            }
-            TypeNode::Path(name) => {
-                if !seen.insert(name) {
-                    return None;
-                }
-                match rust.aliases.get(name) {
-                    Some(alias) => ty = alias,
-                    None => return Some(name.clone()),
-                }
-            }
-            _ => return None,
-        }
-    }
-}
-
-fn response_field_present(
-    rust: &RustInventory,
-    info: &crate::rust_inventory::StructInfo,
-    field: &str,
-    seen: &mut BTreeSet<String>,
-) -> bool {
-    info.fields.contains_key(field)
-        || info
-            .fields
-            .values()
-            .filter(|field| field.flatten)
-            .any(|flattened| {
-                let Some(name) = response_root_type(rust, &flattened.rust_type) else {
-                    return false;
-                };
-                seen.insert(name.clone())
-                    && rust
-                        .structs
-                        .get(&name)
-                        .is_some_and(|info| response_field_present(rust, info, field, seen))
-            })
-}
-
 fn stale_strings(
     kind: &str,
     configured: &BTreeSet<String>,
@@ -472,7 +341,11 @@ pub(crate) enum Direction {
 /// `{Name}Response` variant when such a Rust type exists (and is not itself
 /// the model of a spec schema literally named `{Name}Response`), otherwise
 /// the unsplit `{Name}` type.
-fn response_position_type(rust: &RustInventory, spec: &OpenApiInventory, base: &str) -> String {
+pub(crate) fn response_position_type(
+    rust: &RustInventory,
+    spec: &OpenApiInventory,
+    base: &str,
+) -> String {
     let candidate = format!("{base}Response");
     if rust.model_types.contains(&candidate) && !spec.rust_schema_names.contains(&candidate) {
         candidate
@@ -1558,6 +1431,54 @@ fn compare_snapshot(
         }
     }
 
+    // Compare resolved wire contracts, not component names. Moving a response
+    // behind a reference or changing prose is not drift; changing its payload is.
+    for operation in live_operations.intersection(&snapshot_operations) {
+        let current: BTreeMap<_, _> = spec
+            .success_responses
+            .iter()
+            .filter(|response| &response.operation == operation)
+            .map(|response| (&response.status, response))
+            .collect();
+        let previous: BTreeMap<_, _> = snapshot
+            .success_responses
+            .iter()
+            .filter(|response| &response.operation == operation)
+            .map(|response| (&response.status, response))
+            .collect();
+        let statuses: BTreeSet<_> = current.keys().chain(previous.keys()).copied().collect();
+        for status in statuses {
+            let now = current.get(status);
+            let old = previous.get(status);
+            let kind = match (now, old) {
+                (Some(now), Some(old)) if now.contract == old.contract => continue,
+                (Some(_), Some(_)) => FindingKind::SnapshotChangedResponse,
+                (Some(_), None) => FindingKind::SnapshotAddedResponse,
+                (None, Some(_)) => FindingKind::SnapshotRemovedResponse,
+                (None, None) => unreachable!(),
+            };
+            let mut finding = Finding::new(
+                kind,
+                format!("{operation} JSON success response {status} differs from the snapshot"),
+            )
+            .at_spec(now.map_or(&spec.operations[operation].pointer, |response| {
+                &response.pointer
+            }))
+            .at_rust(format!("client.rs::Client::{operation}"))
+            .detail("operation", operation)
+            .detail("status", status);
+            if let Some(now) = now {
+                finding = finding.detail("current_contract", now.contract.to_string());
+            }
+            if let Some(old) = old {
+                finding = finding
+                    .detail("previous_contract", old.contract.to_string())
+                    .detail("previous_spec_pointer", &old.pointer);
+            }
+            report.findings.push(finding);
+        }
+    }
+
     let live_schemas: BTreeSet<_> = spec.schemas.keys().cloned().collect();
     let snapshot_schemas: BTreeSet<_> = snapshot.schemas.keys().cloned().collect();
     for schema in live_schemas.difference(&snapshot_schemas) {
@@ -1817,7 +1738,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&report).unwrap(),
             serde_json::json!({
-                "schema_version": 10,
+                "schema_version": 11,
                 "findings": expected_findings,
                 "unsupported_enum_constraints": [],
             })
@@ -2020,7 +1941,7 @@ mod tests {
             Some("models.rs::WidgetResponse")
         );
         let json = serde_json::to_value(&report).unwrap();
-        assert_eq!(json["schema_version"], 10);
+        assert_eq!(json["schema_version"], 11);
         assert_eq!(
             json["findings"][0]["kind"],
             "additional_properties_mismatch"

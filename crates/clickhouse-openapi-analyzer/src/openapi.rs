@@ -29,6 +29,8 @@ pub(crate) struct ParameterInfo {
 #[derive(Debug, Clone)]
 pub(crate) struct SuccessResponseInfo {
     pub(crate) operation: String,
+    pub(crate) status: String,
+    pub(crate) contract: Value,
     pub(crate) pointer: String,
     /// Resolved top-level properties retain pointers into their defining schema.
     pub(crate) properties: BTreeMap<String, String>,
@@ -101,6 +103,7 @@ pub(crate) struct EnumConstraint {
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct OpenApiInventory {
+    pub(crate) document: Value,
     pub(crate) operations: BTreeMap<String, OperationInfo>,
     pub(crate) success_responses: Vec<SuccessResponseInfo>,
     /// Inline object branches retain their parent direction and exact spec pointer.
@@ -133,7 +136,10 @@ pub(crate) struct OpenApiInventory {
 
 impl OpenApiInventory {
     pub(crate) fn build(spec: &Value, config: &AnalyzerConfig) -> Result<Self, String> {
-        let mut inventory = Self::default();
+        let mut inventory = Self {
+            document: spec.clone(),
+            ..Self::default()
+        };
         inventory.collect_operations(spec)?;
         inventory.collect_schemas(spec, config)?;
         inventory.collect_schema_positions(spec);
@@ -247,6 +253,8 @@ impl OpenApiInventory {
                                 format!("{response_pointer}/content/application~1json/schema");
                             let mut info = SuccessResponseInfo {
                                 operation: rust_name.clone(),
+                                status: status.clone(),
+                                contract: normalize_contract(spec, schema, &mut BTreeSet::new())?,
                                 pointer: schema_pointer.clone(),
                                 properties: BTreeMap::new(),
                                 unsupported: Vec::new(),
@@ -1297,7 +1305,7 @@ pub(crate) fn json_pointer(path: &[String]) -> String {
     )
 }
 
-fn escape_pointer(value: &str) -> String {
+pub(crate) fn escape_pointer(value: &str) -> String {
     value.replace('~', "~0").replace('/', "~1")
 }
 

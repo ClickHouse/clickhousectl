@@ -362,6 +362,7 @@ pub(crate) enum TypeNode {
     Boxed(Box<TypeNode>),
     Reference(Box<TypeNode>),
     Path(String),
+    Applied(String, Vec<TypeNode>),
     Other(String),
 }
 
@@ -376,6 +377,11 @@ impl TypeNode {
                     return Self::Other(ty.to_token_stream().to_string());
                 };
                 let name = segment.ident.unraw().to_string();
+                if type_path.qself.is_some()
+                    || matches!(&segment.arguments, PathArguments::AngleBracketed(arguments) if arguments.args.iter().any(|argument| !matches!(argument, GenericArgument::Type(_) | GenericArgument::Lifetime(_))))
+                {
+                    return Self::Other(ty.to_token_stream().to_string());
+                }
                 let types: Vec<_> = match &segment.arguments {
                     PathArguments::AngleBracketed(arguments) => arguments
                         .args
@@ -393,11 +399,11 @@ impl TypeNode {
                 if matches!(name.as_str(), "BTreeMap" | "HashMap" | "Map") && types.len() >= 2 {
                     return Self::Map(Box::new(types[0].clone()), Box::new(types[1].clone()));
                 }
-                let first_type = types.into_iter().next();
-                match (name.as_str(), first_type) {
+                match (name.as_str(), types.first().cloned()) {
                     ("Option", Some(inner)) => Self::Option(Box::new(inner)),
                     ("Vec", Some(inner)) => Self::Vec(Box::new(inner)),
                     ("Box", Some(inner)) => Self::Boxed(Box::new(inner)),
+                    _ if !types.is_empty() => Self::Applied(name, types),
                     _ => Self::Path(name),
                 }
             }
@@ -421,7 +427,7 @@ impl TypeNode {
             | Self::Vec(inner)
             | Self::Boxed(inner)
             | Self::Reference(inner) => inner.terminal(),
-            Self::Path(name) => Some(name),
+            Self::Path(name) | Self::Applied(name, _) => Some(name),
             Self::Map(_, _) | Self::Other(_) => None,
         }
     }
@@ -433,6 +439,14 @@ impl TypeNode {
             Self::Map(key, value) => format!("Map<{}, {}>", key.display(), value.display()),
             Self::Boxed(inner) => format!("Box<{}>", inner.display()),
             Self::Reference(inner) => format!("&{}", inner.display()),
+            Self::Applied(name, arguments) => format!(
+                "{name}<{}>",
+                arguments
+                    .iter()
+                    .map(Self::display)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             Self::Path(name) | Self::Other(name) => name.clone(),
         }
     }
@@ -505,6 +519,7 @@ pub(crate) struct RustInventory {
     pub(crate) structs: BTreeMap<String, StructInfo>,
     pub(crate) enums: BTreeMap<String, EnumInfo>,
     pub(crate) aliases: BTreeMap<String, TypeNode>,
+    pub(crate) generic_parameters: BTreeMap<String, Vec<(String, Option<TypeNode>)>>,
     /// Named types mentioned anywhere in each alias's target type, for
     /// response-tree reachability (parallel to `aliases`).
     pub(crate) alias_type_names: BTreeMap<String, BTreeSet<String>>,
@@ -645,6 +660,8 @@ impl RustInventory {
                             );
                         }
                     }
+                    self.generic_parameters
+                        .insert(name.clone(), type_parameters(&item_struct.generics));
                     self.structs.insert(name, StructInfo { fields });
                 }
                 Item::Enum(item_enum) if matches!(item_enum.vis, Visibility::Public(_)) => {
@@ -704,6 +721,8 @@ impl RustInventory {
                     let mut type_names = BTreeSet::new();
                     collect_type_names(&item_type.ty, &mut type_names);
                     self.alias_type_names.insert(name.clone(), type_names);
+                    self.generic_parameters
+                        .insert(name.clone(), type_parameters(&item_type.generics));
                     self.aliases.insert(name, TypeNode::from_syn(&item_type.ty));
                 }
                 _ => {}
@@ -911,7 +930,7 @@ impl RustInventory {
                     .get(name)
                     .and_then(|alias| self.resolve_array_item(alias, seen))
             }
-            TypeNode::Map(_, _) | TypeNode::Other(_) => None,
+            TypeNode::Map(_, _) | TypeNode::Applied(_, _) | TypeNode::Other(_) => None,
         }
     }
 }
@@ -935,6 +954,21 @@ impl RustInventory {
             })
             .collect()
     }
+}
+
+fn type_parameters(generics: &syn::Generics) -> Vec<(String, Option<TypeNode>)> {
+    generics
+        .type_params()
+        .map(|parameter| {
+            (
+                parameter.ident.unraw().to_string(),
+                parameter
+                    .default
+                    .as_ref()
+                    .map(|(_, ty)| TypeNode::from_syn(ty)),
+            )
+        })
+        .collect()
 }
 
 fn success_type(output: &syn::ReturnType) -> Option<TypeNode> {
