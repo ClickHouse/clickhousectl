@@ -2215,15 +2215,22 @@ async fn get_backup_bucket() {
         .and(path("/v1/organizations/org-1/services/svc-1/backupBucket"))
         .respond_with(ok_json(serde_json::json!({
             "bucketPath": "s3://my-backup-bucket/prefix",
-            "bucketProvider": "aws_s3",
+            "bucketProvider": "AWS",
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
-            "roleArn": "arn:aws:iam::123:role/backup-role"
+            "iamRoleArn": "arn:aws:iam::123:role/backup-role",
+            "iamRoleExternalId": "trust-policy-id"
         })))
         .mount(&s)
         .await;
 
     let resp = c.backup_bucket_get("org-1", "svc-1").await.unwrap();
-    assert!(resp.result.is_some());
+    let Some(BackupBucket::AwsBackupBucket(bucket)) = resp.result else {
+        panic!("expected AWS bucket");
+    };
+    assert_eq!(
+        bucket.iam_role_external_id.as_deref(),
+        Some("trust-policy-id")
+    );
 }
 
 #[tokio::test]
@@ -2233,11 +2240,11 @@ async fn create_backup_bucket() {
     Mock::given(method("POST"))
         .and(path("/v1/organizations/org-1/services/svc-1/backupBucket"))
         .and(body_partial_json(
-            serde_json::json!({"bucketPath": "s3://new-bucket"}),
+            serde_json::json!({"bucketPath": "s3://new-bucket", "iamRoleExternalId": "trust-policy-id"}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "bucketPath": "s3://new-bucket",
-            "bucketProvider": "aws_s3",
+            "bucketProvider": "AWS",
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         })))
         .mount(&s)
@@ -2246,6 +2253,7 @@ async fn create_backup_bucket() {
     let body =
         BackupBucketPostRequest::AwsBackupBucketPostRequestV1(AwsBackupBucketPostRequestV1 {
             bucket_path: "s3://new-bucket".to_string(),
+            iam_role_external_id: "trust-policy-id".to_string(),
             ..Default::default()
         });
     let resp = c
@@ -2262,11 +2270,11 @@ async fn update_backup_bucket() {
     Mock::given(method("PATCH"))
         .and(path("/v1/organizations/org-1/services/svc-1/backupBucket"))
         .and(body_partial_json(
-            serde_json::json!({"bucketPath": "s3://updated-bucket"}),
+            serde_json::json!({"bucketPath": "s3://updated-bucket", "iamRoleExternalId": null}),
         ))
         .respond_with(ok_json(serde_json::json!({
             "bucketPath": "s3://updated-bucket",
-            "bucketProvider": "aws_s3",
+            "bucketProvider": "AWS",
             "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
         })))
         .mount(&s)
@@ -2275,6 +2283,7 @@ async fn update_backup_bucket() {
     let body =
         BackupBucketPatchRequest::AwsBackupBucketPatchRequestV1(AwsBackupBucketPatchRequestV1 {
             bucket_path: "s3://updated-bucket".to_string(),
+            iam_role_external_id: Some(None),
             ..Default::default()
         });
     let resp = c

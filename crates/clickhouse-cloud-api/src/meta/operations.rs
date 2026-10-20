@@ -549,7 +549,10 @@ pub const INSTANCE_CREATE: OperationMetadata = OperationMetadata {
     rust_method: "instance_create",
     method: "POST",
     path: "/v1/organizations/{organizationId}/services",
-    required_permissions: &["control-plane:organization:create-service"],
+    required_permissions: &[
+        "control-plane:organization:create-service",
+        "control-plane:service:manage",
+    ],
 };
 
 /// `DELETE /v1/organizations/{organizationId}/services/{serviceId}` (`instanceDelete`).
@@ -748,6 +751,15 @@ pub const MEMBER_UPDATE: OperationMetadata = OperationMetadata {
     method: "PATCH",
     path: "/v1/organizations/{organizationId}/members/{userId}",
     required_permissions: &["control-plane:organization:manage"],
+};
+
+/// `GET /v1/organizations/{organizationId}/notifications` (`notificationGetList`).
+pub const NOTIFICATION_GET_LIST: OperationMetadata = OperationMetadata {
+    operation_id: "notificationGetList",
+    rust_method: "notification_get_list",
+    method: "GET",
+    path: "/v1/organizations/{organizationId}/notifications",
+    required_permissions: &[],
 };
 
 /// `GET /v1/organizations/{organizationId}/notificationTypes` (`notificationTypesGetList`).
@@ -1643,6 +1655,7 @@ pub const ALL: &[OperationMetadata] = &[
     MEMBER_GET,
     MEMBER_GET_LIST,
     MEMBER_UPDATE,
+    NOTIFICATION_GET_LIST,
     NOTIFICATION_TYPES_GET_LIST,
     OPENAPI_KEY_CREATE,
     OPENAPI_KEY_DELETE,
