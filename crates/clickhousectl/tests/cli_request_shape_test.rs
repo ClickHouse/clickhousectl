@@ -8497,6 +8497,11 @@ async fn bigquery_destination_omits_table_columns_managed_table_definition() {
         "initialLoadParallelism",
         "snapshotNumRowsPerPartition",
         "snapshotNumberOfParallelTables",
+        "replicationMethod",
+        "syncIntervalSeconds",
+        "queryCdcPullSyncParallelism",
+        "syncDelaySeconds",
+        "pullWindowSizeSeconds",
     ] {
         assert!(
             settings.get(field).is_none(),

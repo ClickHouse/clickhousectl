@@ -6,6 +6,17 @@ Requires Rust 1.94 or later.
 
 ## Updated Cloud API surface
 
+BigQuery replication modes now include `Cdc` and `CdcOnly`, alongside `Snapshot`,
+matching the modes documented by the API. BigQuery settings add optional `replication_method`, `sync_interval_seconds`,
+`query_cdc_pull_sync_parallelism`, `sync_delay_seconds`, and
+`pull_window_size_seconds`; table mappings add `query_cdc_watermark_column` and
+`events_function`. These strings remain open as specified by the API. Responses
+preserve absent and null values as `None`, and `TryFrom` converts settings and
+mappings back to request types after checking required fields. Struct-literal
+callers must supply the new fields or use `..Default::default()`. The API requires
+CDC settings and table mapping fields to match the replication method; snapshot
+requests omit them.
+
 `openapi_key_get_list(organization_id, limit, cursor)` returns one page of API keys.
 Migrate existing calls by passing `None, None` for the new arguments. The server
 accepts limits from 1–250 and defaults to 250; continue with the response's

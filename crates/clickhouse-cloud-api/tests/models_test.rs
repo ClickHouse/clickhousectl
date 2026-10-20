@@ -8896,3 +8896,125 @@ fn mongodb_structured_ingestion_response_tolerates_absent_and_null_fields() {
         serde_json::json!({})
     );
 }
+
+#[test]
+fn bigquery_cdc_fields_round_trip_and_write_back() {
+    let settings = serde_json::json!({
+        "replicationMode": "cdc", "replicationMethod": "query_based",
+        "syncIntervalSeconds": 60, "queryCdcPullSyncParallelism": 4,
+        "syncDelaySeconds": 0, "pullWindowSizeSeconds": 86400
+    });
+    let response: ClickPipeBigQueryPipeSettingsResponse =
+        serde_json::from_value(settings.clone()).unwrap();
+    let request = ClickPipeBigQueryPipeSettings::try_from(response).unwrap();
+    assert_eq!(request.replication_method.as_deref(), Some("query_based"));
+    assert_eq!(request.sync_interval_seconds, Some(60));
+    assert_eq!(request.query_cdc_pull_sync_parallelism, Some(4));
+    assert_eq!(request.sync_delay_seconds, Some(0));
+    assert_eq!(request.pull_window_size_seconds, Some(86400));
+    assert_eq!(serde_json::to_value(&request).unwrap(), settings);
+    assert_eq!(
+        serde_json::from_value::<ClickPipeBigQueryPipeSettings>(settings).unwrap(),
+        request
+    );
+
+    let mapping = serde_json::json!({
+        "sourceDatasetName": "sales", "sourceTable": "orders", "targetTable": "orders_raw",
+        "queryCdcWatermarkColumn": "updated_at", "eventsFunction": "future_function"
+    });
+    let response: ClickPipeBigQueryPipeTableMappingResponse =
+        serde_json::from_value(mapping.clone()).unwrap();
+    let request = ClickPipeBigQueryPipeTableMapping::try_from(response).unwrap();
+    assert_eq!(
+        request.query_cdc_watermark_column.as_deref(),
+        Some("updated_at")
+    );
+    assert_eq!(request.events_function.as_deref(), Some("future_function"));
+    assert_eq!(serde_json::to_value(request).unwrap(), mapping);
+}
+
+#[test]
+fn bigquery_cdc_response_fields_tolerate_absence_and_null() {
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "replicationMode": null, "replicationMethod": null, "syncIntervalSeconds": null,
+            "queryCdcPullSyncParallelism": null, "syncDelaySeconds": null, "pullWindowSizeSeconds": null
+        }),
+    ] {
+        let response: ClickPipeBigQueryPipeSettingsResponse =
+            serde_json::from_value(value).unwrap();
+        assert_eq!(response, ClickPipeBigQueryPipeSettingsResponse::default());
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            serde_json::json!({})
+        );
+        assert_eq!(
+            ClickPipeBigQueryPipeSettings::try_from(response)
+                .unwrap_err()
+                .fields(),
+            &["replicationMode"]
+        );
+    }
+    for value in [
+        serde_json::json!({}),
+        serde_json::json!({
+            "eventsFunction": null, "queryCdcWatermarkColumn": null
+        }),
+    ] {
+        let response: ClickPipeBigQueryPipeTableMappingResponse =
+            serde_json::from_value(value).unwrap();
+        assert_eq!(
+            response,
+            ClickPipeBigQueryPipeTableMappingResponse::default()
+        );
+        assert_eq!(
+            serde_json::to_value(&response).unwrap(),
+            serde_json::json!({})
+        );
+        assert_eq!(
+            ClickPipeBigQueryPipeTableMapping::try_from(response)
+                .unwrap_err()
+                .fields(),
+            &["sourceDatasetName", "sourceTable", "targetTable"]
+        );
+    }
+    assert!(
+        serde_json::from_value::<ClickPipeBigQueryPipeSettings>(serde_json::json!({})).is_err()
+    );
+    assert!(
+        serde_json::from_value::<ClickPipeBigQueryPipeTableMapping>(serde_json::json!({})).is_err()
+    );
+}
+
+#[test]
+fn bigquery_replication_modes_cover_cdc_and_preserve_future_values() {
+    for (wire, expected) in [
+        (
+            "snapshot",
+            ClickPipeBigQueryPipeSettingsReplicationmode::Snapshot,
+        ),
+        ("cdc", ClickPipeBigQueryPipeSettingsReplicationmode::Cdc),
+        (
+            "cdc_only",
+            ClickPipeBigQueryPipeSettingsReplicationmode::CdcOnly,
+        ),
+        (
+            "future",
+            ClickPipeBigQueryPipeSettingsReplicationmode::Unknown("future".into()),
+        ),
+    ] {
+        let parsed: ClickPipeBigQueryPipeSettingsReplicationmode =
+            serde_json::from_value(serde_json::json!(wire)).unwrap();
+        assert_eq!(parsed, expected);
+        assert_eq!(parsed.to_string(), wire);
+        assert_eq!(
+            serde_json::to_value(parsed).unwrap(),
+            serde_json::json!(wire)
+        );
+    }
+    assert_eq!(
+        ClickPipeBigQueryPipeSettingsReplicationmode::VALUES,
+        &["snapshot", "cdc", "cdc_only"]
+    );
+}
