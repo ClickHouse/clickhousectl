@@ -12,6 +12,7 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         "org prometheus discovery",
         &[&op::ORGANIZATION_PROMETHEUS_DISCOVERY_GET],
     ),
+    Permission::api("org notifications", &[&op::NOTIFICATION_GET_LIST]),
     Permission::api("org usage", &[&op::USAGE_COST_GET]),
     Permission::api("org quota list", &[&op::ORGANIZATION_QUOTAS_GET_LIST]),
     Permission::api("org quota get", &[&op::ORGANIZATION_QUOTA_GET]),
@@ -86,7 +87,7 @@ use crate::cloud::client::{CloudClient, CloudError, ResourceLookup, Result as Cl
 use crate::cloud::config::read_typed_config;
 use crate::cloud::output::{ABSENT, or_absent, print_human};
 use crate::cloud::shared::{EmailSelector, NameSelector, NamedResource};
-use crate::cloud::shared::{parse_date_only, parse_tag_filter, resolve_org_id};
+use crate::cloud::shared::{parse_date_only, parse_datetime, parse_tag_filter, resolve_org_id};
 use crate::cloud::types::DeleteResponse;
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::{
@@ -95,10 +96,11 @@ use clickhouse_cloud_api::models::{
     ByocInfrastructurePrivateEndpointConfig, ByocInfrastructureProgress, ByocInfrastructureTags,
     ByocInfrastructureTagsResponse, ByocInfrastructureValidatePostRequest,
     ByocInfrastructureValidatePostRequestRegionid, ByocInfrastructureValidation,
-    InvitationPostRequest, MemberPatchRequest, NotificationType, OrganizationPatchPrivateEndpoint,
-    OrganizationPatchPrivateEndpointCloudprovider, OrganizationPatchPrivateEndpointRegion,
-    OrganizationPatchRequest, OrganizationPrivateEndpointsPatch, RBACPolicyCreateRequest,
-    RBACPolicyCreateRequestAllowdeny, RBACPolicyTagsRolev2, RoleCreateRequest, RoleUpdateRequest,
+    InvitationPostRequest, MemberPatchRequest, Notification, NotificationType,
+    OrganizationPatchPrivateEndpoint, OrganizationPatchPrivateEndpointCloudprovider,
+    OrganizationPatchPrivateEndpointRegion, OrganizationPatchRequest,
+    OrganizationPrivateEndpointsPatch, RBACPolicyCreateRequest, RBACPolicyCreateRequestAllowdeny,
+    RBACPolicyTagsRolev2, RoleCreateRequest, RoleUpdateRequest,
 };
 use tabled::{Table, Tabled, settings::Style};
 
@@ -118,6 +120,14 @@ pub enum OrgCommands {
 
     /// View active credit balances (Beta)
     Balance,
+
+    /// List organization notifications (Beta)
+    #[command(after_help = "\
+CONTEXT FOR AGENTS:
+  Returns one page; JSON exposes result, limit, and nextCursor when provided.
+  Pass nextCursor unchanged as --cursor until it is absent.
+  Use `cloud org notification-types` to discover notification type names.")]
+    Notifications(NotificationListArgs),
 
     /// List notification types (Beta)
     NotificationTypes,
@@ -204,6 +214,7 @@ impl OrgCommands {
             OrgCommands::Get => false,
             OrgCommands::Quota { .. } => false,
             OrgCommands::Balance => false,
+            OrgCommands::Notifications(_) => false,
             OrgCommands::NotificationTypes => false,
             OrgCommands::Byoc { command } => command.is_write(),
             OrgCommands::Role { command } => command.is_write(),
@@ -212,6 +223,41 @@ impl OrgCommands {
             OrgCommands::Update { .. } => true,
         }
     }
+}
+
+#[derive(Args, Debug, Default)]
+pub struct NotificationListArgs {
+    /// Maximum notifications per page, 1-250; omit for 100
+    #[arg(long, value_parser = clap::value_parser!(i64).range(1..=250))]
+    limit: Option<i64>,
+
+    /// Opaque nextCursor from the previous page
+    #[arg(long, allow_hyphen_values = true)]
+    cursor: Option<String>,
+
+    /// Notification severity
+    #[arg(long)]
+    severity: Option<String>,
+
+    /// Notification type from `cloud org notification-types`
+    #[arg(long = "type")]
+    notification_type: Option<String>,
+
+    /// Resource ID; service IDs also match their ClickPipes
+    #[arg(long)]
+    resource_id: Option<String>,
+
+    /// Resource kind, such as service, organization, clickpipe or postgres
+    #[arg(long)]
+    resource_type: Option<String>,
+
+    /// Earliest creation time, inclusive (RFC 3339)
+    #[arg(long, value_parser = parse_datetime)]
+    from_date: Option<String>,
+
+    /// Latest creation time, inclusive (RFC 3339)
+    #[arg(long, value_parser = parse_datetime)]
+    to_date: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -576,6 +622,7 @@ pub async fn run_org(client: &CloudClient, command: OrgCommands, json: bool) -> 
         }
         OrgCommands::Quota { command } => run_quota(client, command, json).await,
         OrgCommands::Balance => org_balance(client, json).await,
+        OrgCommands::Notifications(args) => org_notifications(client, args, json).await,
         OrgCommands::NotificationTypes => org_notification_types(client, json).await,
         OrgCommands::Byoc { command } => run_byoc(client, command, json).await,
         OrgCommands::Role { command } => run_role(client, command, json).await,
@@ -1267,6 +1314,74 @@ async fn quota_get(client: &CloudClient, quota_code: &str, json: bool) -> CloudR
     Ok(())
 }
 
+#[derive(serde::Serialize)]
+struct NotificationPage {
+    result: Vec<Notification>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    limit: Option<i64>,
+    #[serde(rename = "nextCursor", skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<String>,
+}
+
+async fn org_notifications(
+    client: &CloudClient,
+    args: NotificationListArgs,
+    json: bool,
+) -> CloudResult<()> {
+    let org_id = resolve_org_id(client).await?;
+    let page = client.list_notifications(&org_id, &args).await?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&page)?);
+    } else {
+        if page.result.is_empty() {
+            println!("No notifications found");
+        } else {
+            println!("{}", notifications_table(page.result));
+        }
+        if let Some(cursor) = page.next_cursor {
+            // JSON escaping keeps opaque tokens visible without suggesting shell execution.
+            println!(
+                "Next cursor (JSON string): {}",
+                serde_json::to_string(&cursor)?
+            );
+        }
+    }
+    Ok(())
+}
+
+fn notifications_table(notifications: Vec<Notification>) -> String {
+    #[derive(Tabled)]
+    struct Row {
+        #[tabled(rename = "ID")]
+        id: String,
+        #[tabled(rename = "Created At")]
+        created_at: String,
+        #[tabled(rename = "Severity")]
+        severity: String,
+        #[tabled(rename = "Type")]
+        notification_type: String,
+        #[tabled(rename = "Resource Type")]
+        resource_type: String,
+        #[tabled(rename = "Resource ID")]
+        resource_id: String,
+        #[tabled(rename = "Title")]
+        title: String,
+    }
+    let rows: Vec<Row> = notifications
+        .into_iter()
+        .map(|notification| Row {
+            id: or_absent(notification.id),
+            created_at: or_absent(notification.created_at),
+            severity: or_absent(notification.severity),
+            notification_type: or_absent(notification.r#type),
+            resource_type: or_absent(notification.resource_type),
+            resource_id: or_absent(notification.resource_id),
+            title: or_absent(notification.title),
+        })
+        .collect();
+    Table::new(rows).with(Style::markdown()).to_string()
+}
+
 async fn org_notification_types(client: &CloudClient, json: bool) -> CloudResult<()> {
     let org_id = resolve_org_id(client).await?;
     let types = client.list_notification_types(&org_id).await?;
@@ -1923,6 +2038,35 @@ impl CloudClient {
             .await
             .map_err(|error| self.convert_error_for_organization(error, org_id))?;
         Self::unwrap_response(response)
+    }
+
+    async fn list_notifications(
+        &self,
+        org_id: &str,
+        args: &NotificationListArgs,
+    ) -> CloudResult<NotificationPage> {
+        let mut response = self
+            .api()
+            .notification_get_list(
+                org_id,
+                args.limit,
+                args.cursor.as_deref(),
+                args.severity.as_deref(),
+                args.notification_type.as_deref(),
+                args.resource_id.as_deref(),
+                args.resource_type.as_deref(),
+                args.from_date.as_deref(),
+                args.to_date.as_deref(),
+            )
+            .await
+            .map_err(|error| self.convert_error_for_organization(error, org_id))?;
+        let limit = response.limit;
+        let next_cursor = response.next_cursor.take();
+        Ok(NotificationPage {
+            result: Self::unwrap_response(response)?,
+            limit,
+            next_cursor,
+        })
     }
 
     pub async fn list_notification_types(
@@ -2805,6 +2949,95 @@ mod tests {
             panic!("expected quota get command");
         };
         assert_eq!(quota_code, "replicas-per-warehouse");
+    }
+
+    #[test]
+    fn parses_org_notifications_filters_and_defaults() {
+        let CloudCommands::Org {
+            command: OrgCommands::Notifications(defaults),
+        } = parse_cloud_command(&["clickhousectl", "cloud", "org", "notifications"])
+        else {
+            panic!("expected org notifications")
+        };
+        assert_eq!(defaults.limit, None);
+        assert_eq!(defaults.cursor, None);
+        assert_eq!(defaults.severity, None);
+        assert_eq!(defaults.notification_type, None);
+        assert_eq!(defaults.resource_id, None);
+        assert_eq!(defaults.resource_type, None);
+        assert_eq!(defaults.from_date, None);
+        assert_eq!(defaults.to_date, None);
+        let CloudCommands::Org {
+            command: OrgCommands::Notifications(args),
+        } = parse_cloud_command(&[
+            "clickhousectl",
+            "cloud",
+            "org",
+            "notifications",
+            "--limit",
+            "250",
+            "--cursor",
+            "-opaque +/=&?",
+            "--severity",
+            "warning",
+            "--type",
+            "future.type",
+            "--resource-id",
+            "service-1",
+            "--resource-type",
+            "service",
+            "--from-date",
+            "2026-10-01T00:00:00+02:00",
+            "--to-date",
+            "2026-10-08T00:00:00Z",
+        ])
+        else {
+            panic!("expected org notifications")
+        };
+        assert_eq!(args.limit, Some(250));
+        assert_eq!(args.cursor.as_deref(), Some("-opaque +/=&?"));
+        assert_eq!(args.severity.as_deref(), Some("warning"));
+        assert_eq!(args.notification_type.as_deref(), Some("future.type"));
+        assert_eq!(args.resource_id.as_deref(), Some("service-1"));
+        assert_eq!(args.resource_type.as_deref(), Some("service"));
+        assert_eq!(args.from_date.as_deref(), Some("2026-10-01T00:00:00+02:00"));
+        assert_eq!(args.to_date.as_deref(), Some("2026-10-08T00:00:00Z"));
+        assert_write(&["clickhousectl", "cloud", "org", "notifications"], false);
+    }
+
+    #[test]
+    fn rejects_invalid_or_repeated_notification_flags() {
+        for extra in [
+            vec!["--limit", "0"],
+            vec!["--limit", "251"],
+            vec!["--from-date", "2026-10-01"],
+            vec!["--to-date", "yesterday"],
+            vec!["--limit", "1", "--limit", "2"],
+        ] {
+            assert!(
+                Cli::try_parse_from(
+                    ["clickhousectl", "cloud", "org", "notifications"]
+                        .into_iter()
+                        .chain(extra)
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn notifications_table_tolerates_absent_fields() {
+        let table = notifications_table(vec![
+            Notification::default(),
+            Notification {
+                title: Some("Backup failed".into()),
+                severity: Some("future".into()),
+                ..Default::default()
+            },
+        ]);
+        assert!(table.contains("Backup failed"));
+        assert!(table.contains("future"));
+        assert!(table.contains("-"));
     }
 
     #[test]

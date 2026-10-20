@@ -101,9 +101,22 @@ Member/invitation email selectors match exactly, including case. Omitting member
 
 Custom organization roles are created/updated with `--file` (`-` for stdin). Updates are partial at the root, but supplied `actors` and `policies` replace their complete lists. Only custom roles can be updated/deleted. Policy `allowDeny` is `ALLOW` or `DENY`; SQL `roleV2` values are `sql-console-readonly` or `sql-console-admin`. Inspect `org role get` and prepare a writable request without unrelated response fields.
 
+## Read organization notifications
+
+```bash
+clickhousectl cloud org notification-types --org-id <org-id>
+clickhousectl cloud org notifications --org-id <org-id> --severity warning \
+  --from-date 2026-10-01T00:00:00Z --limit 100 --json
+clickhousectl cloud org notifications --org-id <org-id> --cursor '<nextCursor>' --json
+```
+
+Notifications are Beta and support OAuth reads. Each invocation returns one page; JSON contains `result` and optional `limit`/`nextCursor`. Pass the cursor unchanged until it is absent; an empty string is still a cursor. Keep the same filters across pages. `--limit` accepts 1–250; omission uses the server default of 100. Results are retained for 180 days and include only resources the caller can access.
+
+Use `--type` with a name from `notification-types`, `--severity`, `--resource-id`, or `--resource-type` to narrow results. A service ID also matches its ClickPipes unless a resource kind narrows it. `--from-date` and `--to-date` are inclusive RFC 3339 timestamps. Human output shows a table and the next cursor as a JSON string; JSON preserves notification descriptions and resource names too.
+
 ## Other organization tasks
 
-Use `cloud org --help` for quotas, credit balance, notification types, usage, settings, BYOC infrastructure, and Prometheus discovery. BYOC `validate` is a preflight that creates nothing but requires an API key. Creation is asynchronous: find infrastructure IDs in `org get`'s `byocConfig`, then inspect `byoc get` and `byoc progress` before creating a service in it.
+Use `cloud org --help` for quotas, credit balance, notifications, notification types, usage, settings, BYOC infrastructure, and Prometheus discovery. BYOC `validate` is a preflight that creates nothing but requires an API key. Creation is asynchronous: find infrastructure IDs in `org get`'s `byocConfig`, then inspect `byoc get` and `byoc progress` before creating a service in it.
 
 `byoc update` changes only the flags you pass. Its `--tag` flags replace the infrastructure's whole tag set, so read the current set with `byoc tags` first; `byoc private-endpoint-config` shows the private link endpoint service to connect to:
 
