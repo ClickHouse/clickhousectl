@@ -25,6 +25,50 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 const SERVICE_PROFILES_PATH: &str = "/v1/organizations/org-1/serviceProfiles";
 const SCALING_SCHEDULE_PATH: &str = "/v1/organizations/org-1/services/svc-1/scalingSchedule";
 
+#[tokio::test]
+async fn aws_backup_bucket_external_id_is_preserved_in_create_and_update_requests() {
+    for (action, http_method, external_id) in [
+        ("create", "POST", Some(serde_json::json!("trust-policy-id"))),
+        ("update", "PATCH", None),
+        ("update", "PATCH", Some(serde_json::json!("replacement-id"))),
+        ("update", "PATCH", Some(Value::Null)),
+    ] {
+        let mock = MockServer::start().await;
+        let mut expected = serde_json::json!({
+            "bucketProvider": "AWS", "bucketPath": "s3://backups/prefix",
+            "iamRoleArn": "arn:aws:iam::123:role/backups"
+        });
+        if action == "create" {
+            expected["iamRoleSessionName"] = serde_json::json!("backups");
+        }
+        if let Some(value) = external_id {
+            expected["iamRoleExternalId"] = value;
+        }
+        Mock::given(method(http_method))
+            .and(path(BACKUP_BUCKET_PATH))
+            .and(header("authorization", TEST_BASIC_AUTH))
+            .and(body_json(expected.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 200, "result": {"bucketProvider": "AWS"}
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_cli_with_cloud_credentials_and_stdin(
+            &mock,
+            &[
+                "backup", "bucket", action, "svc-1", "--org-id", "org-1", "--file", "-",
+            ],
+            &serde_json::to_string(&expected).unwrap(),
+        );
+        assert_success(&output);
+        let requests = mock.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let actual: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(actual, expected);
+    }
+}
+
 /// Inspect the real help path without ambient credentials or a writable real home.
 fn permission_help(mock: &MockServer, command: &[&str], help_flag: &str) -> String {
     let project = tempfile::tempdir().unwrap();
