@@ -21571,11 +21571,12 @@ async fn udf_all_reads_preserve_pagination_and_sparse_responses_with_oauth() {
             assert_success(&output);
             let output: Value = serde_json::from_slice(&output.stdout).unwrap();
             if list {
-                assert_eq!(
-                    output["pagination"],
-                    serde_json::json!({"currentCursor":"page /+?","nextCursor":"next page","limit":2,"totalRecords":3})
-                );
-                assert_eq!(output["items"][0]["status"], result[0]["status"]);
+                assert_eq!(output["nextCursor"], "next page");
+                assert_eq!(output["limit"], 2);
+                assert_eq!(output["totalCount"], 3);
+                assert_eq!(output["result"][0]["status"], result[0]["status"]);
+                assert!(output.get("items").is_none());
+                assert!(output.get("pagination").is_none());
                 let req = server.received_requests().await.unwrap().pop().unwrap();
                 let query: std::collections::HashMap<_, _> =
                     req.url.query_pairs().into_owned().collect();
@@ -21720,6 +21721,59 @@ async fn udf_empty_lists_have_named_empty_states_and_readable_pagination() {
                 "{empty_state}\nPagination: 0 total records; page limit 100; next cursor: next page\n"
             )
         );
+    }
+}
+
+#[tokio::test]
+async fn udf_list_json_preserves_zero_and_omits_nullable_metadata_without_fabricating_results() {
+    for (args, suffix) in [
+        (vec!["list"], ""),
+        (vec!["version", "list", "my_udf"], "/my_udf/versions"),
+        (vec!["attachment", "list", "my_udf"], "/my_udf/attachments"),
+    ] {
+        for (wire, expected) in [
+            (
+                serde_json::json!({"result":[],"limit":25,"totalCount":0,"nextCursor":null}),
+                Some(serde_json::json!({"result":[],"limit":25,"totalCount":0})),
+            ),
+            (
+                serde_json::json!({"result":[],"limit":null,"totalCount":null,"nextCursor":null}),
+                Some(serde_json::json!({"result":[]})),
+            ),
+            (
+                serde_json::json!({"result":[{}]}),
+                Some(serde_json::json!({"result":[{}]})),
+            ),
+            (serde_json::json!({"result":null}), None),
+            (serde_json::json!({}), None),
+        ] {
+            let server = MockServer::start().await;
+            let project = tempfile::tempdir().unwrap();
+            Mock::given(method("GET"))
+                .and(path(format!("/v1/organizations/org-1/udfs{suffix}")))
+                .respond_with(ResponseTemplate::new(200).set_body_json(wire))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let output = udf_test_command(&server, project.path(), false, true, &args)
+                .output()
+                .unwrap();
+            if let Some(expected) = expected {
+                assert_success(&output);
+                assert_eq!(
+                    serde_json::from_slice::<Value>(&output.stdout).unwrap(),
+                    expected
+                );
+            } else {
+                assert_eq!(output.status.code(), Some(1));
+                assert!(
+                    serde_json::from_slice::<Value>(&output.stderr)
+                        .unwrap()
+                        .get("error")
+                        .is_some()
+                );
+            }
+        }
     }
 }
 
