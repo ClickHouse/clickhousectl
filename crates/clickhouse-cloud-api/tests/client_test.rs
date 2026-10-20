@@ -5869,16 +5869,18 @@ async fn query_api_endpoint_list_encodes_cursor_and_omits_absent_parameters() {
         (Some("next+/=&? page"), Some(25)),
     ] {
         let (server, client) = setup().await;
-        let result = serde_json::json!({
-            "items": [{"id": "00000000-0000-4000-8000-000000000003", "name": "example", "ownerType": "user"}],
-            "pagination": {"nextCursor": "another-page"}
-        });
+        let result = serde_json::json!([
+            {"id": "00000000-0000-4000-8000-000000000003", "name": "example", "ownerType": "user"}
+        ]);
         Mock::given(method("GET"))
             .and(path(
                 "/v1/organizations/org-1/services/svc-1/query-api-endpoints",
             ))
             .and(basic_auth("key", "secret"))
-            .respond_with(ok_json(result.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "result": result, "limit": 25, "totalCount": 42,
+                "nextCursor": "another-page", "status": 200
+            })))
             .expect(1)
             .mount(&server)
             .await;
@@ -5886,6 +5888,9 @@ async fn query_api_endpoint_list_encodes_cursor_and_omits_absent_parameters() {
             .query_api_endpoint_list("org-1", "svc-1", cursor, limit)
             .await
             .unwrap();
+        assert_eq!(response.limit, Some(25));
+        assert_eq!(response.total_count, Some(42));
+        assert_eq!(response.next_cursor.as_deref(), Some("another-page"));
         assert_eq!(
             serde_json::to_value(response.result.unwrap()).unwrap(),
             result
@@ -5912,14 +5917,20 @@ async fn query_api_endpoint_list_encodes_cursor_and_omits_absent_parameters() {
 async fn query_api_endpoint_reads_use_bearer_auth() {
     let server = MockServer::start().await;
     let client = Client::with_bearer_token(server.uri(), "token");
-    for endpoint_path in [
-        "/v1/organizations/org/services/svc/query-api-endpoints",
-        "/v1/organizations/org/services/svc/query-api-endpoints/endpoint",
+    for (endpoint_path, result) in [
+        (
+            "/v1/organizations/org/services/svc/query-api-endpoints",
+            serde_json::json!([]),
+        ),
+        (
+            "/v1/organizations/org/services/svc/query-api-endpoints/endpoint",
+            serde_json::json!({}),
+        ),
     ] {
         Mock::given(method("GET"))
             .and(path(endpoint_path))
             .and(bearer_token("token"))
-            .respond_with(ok_json(serde_json::json!({})))
+            .respond_with(ok_json(result))
             .expect(1)
             .mount(&server)
             .await;

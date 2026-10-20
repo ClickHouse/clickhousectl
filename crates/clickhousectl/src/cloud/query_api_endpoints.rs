@@ -29,7 +29,7 @@ use crate::cloud::shared::{NameSelector, resolve_org_id, select_named_id};
 use crate::cloud::types::DeleteResponse;
 use clap::{Args, Subcommand};
 use clickhouse_cloud_api::models::{
-    PublicQueryApiEndpoint, PublicQueryApiEndpointRequest, QueryApiEndpointListResponse,
+    Pagination, PublicQueryApiEndpoint, PublicQueryApiEndpointRequest, QueryApiEndpointListResponse,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -368,12 +368,21 @@ impl CloudClient {
         cursor: Option<&str>,
         limit: Option<i64>,
     ) -> CloudResult<QueryApiEndpointListResponse> {
-        let response = self
+        let mut response = self
             .api()
             .query_api_endpoint_list(org, service, cursor, limit)
             .await
             .map_err(|error| self.convert_error_for_organization(error, org))?;
-        Self::unwrap_response(response)
+        let pagination = Pagination {
+            current_cursor: cursor.map(str::to_owned),
+            limit: response.limit,
+            next_cursor: response.next_cursor.take(),
+            total_records: response.total_count,
+        };
+        Ok(QueryApiEndpointListResponse {
+            items: Some(Self::unwrap_response(response)?),
+            pagination: Some(pagination),
+        })
     }
     async fn delete_query_api_endpoint(
         &self,

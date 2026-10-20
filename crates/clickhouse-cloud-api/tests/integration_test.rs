@@ -38,18 +38,12 @@ async fn list_saved_query_endpoints(
     for _ in 0..100 {
         let page = client
             .query_api_endpoint_list(org, service, cursor.as_deref(), Some(1))
-            .await?
+            .await?;
+        let items = page
             .result
             .ok_or("Query API endpoint list returned no result")?;
-        let items = page.items.ok_or("Query API endpoint list omitted items")?;
-        let pagination = page
-            .pagination
-            .ok_or("Query API endpoint list omitted pagination")?;
-        if items.len() > 1 || pagination.limit != Some(1) {
+        if items.len() > 1 || page.limit != Some(1) {
             return Err("Query API endpoint list did not respect limit=1".into());
-        }
-        if cursor.is_none() && pagination.current_cursor.is_some() {
-            return Err("Query API endpoint first page has a non-null current cursor".into());
         }
         for item in items {
             let id = item.id.ok_or("Query API endpoint list item omitted id")?;
@@ -58,9 +52,9 @@ async fn list_saved_query_endpoints(
             }
             listed.push(item);
         }
-        cursor = pagination.next_cursor;
+        cursor = page.next_cursor;
         let Some(next_cursor) = &cursor else {
-            if pagination.total_records != Some(listed.len() as i64) {
+            if page.total_count != Some(listed.len() as i64) {
                 return Err("Query API endpoint pagination total does not match items".into());
             }
             return Ok(listed);

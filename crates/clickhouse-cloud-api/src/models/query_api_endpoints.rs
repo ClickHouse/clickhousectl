@@ -118,10 +118,11 @@ pub struct PublicQueryApiEndpointRequest {
     pub allowed_origins: Option<Vec<String>>,
 }
 
-/// `QueryApiEndpointListResponse` from the ClickHouse Cloud API.
+/// Legacy nested page container retained for existing callers.
 ///
-/// Used in response position only: every field is `Option<T>`, so a field the
-/// API drops or sends as `null` deserializes to `None` instead of failing.
+/// [`crate::Client::query_api_endpoint_list`] returns an
+/// [`super::ApiResponse<Vec<PublicQueryApiEndpointListItem>>`] with pagination
+/// on the envelope. This container is not the endpoint's wire response.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct QueryApiEndpointListResponse {
     #[serde(rename = "items", skip_serializing_if = "Option::is_none")]

@@ -57,7 +57,7 @@ impl Client {
 
     /// List Query API endpoints.
     ///
-    /// Pass the previous page's `pagination.nextCursor` to retrieve the next page.
+    /// Pass the previous response's `next_cursor` to retrieve the next page.
     /// The API defaults to 100 records per page and accepts limits from 1 to 100.
     pub async fn query_api_endpoint_list(
         &self,
@@ -65,7 +65,7 @@ impl Client {
         service_id: &str,
         cursor: Option<&str>,
         limit: Option<i64>,
-    ) -> Result<ApiResponse<QueryApiEndpointListResponse>, Error> {
+    ) -> Result<ApiResponse<Vec<PublicQueryApiEndpointListItem>>, Error> {
         let path = format!(
             "/v1/organizations/{organization_id}/services/{service_id}/query-api-endpoints"
         );
