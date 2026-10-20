@@ -9018,3 +9018,24 @@ fn bigquery_replication_modes_cover_cdc_and_preserve_future_values() {
         &["snapshot", "cdc", "cdc_only"]
     );
 }
+
+#[test]
+fn notification_tolerates_missing_null_and_future_values() {
+    let missing: Notification = serde_json::from_str("{}").unwrap();
+    assert_eq!(missing, Notification::default());
+    let null: Notification = serde_json::from_value(serde_json::json!({
+        "id": null, "type": null, "severity": null, "resourceType": null,
+        "resourceId": null, "resourceName": null, "createdAt": null,
+        "title": null, "description": null, "future": true
+    }))
+    .unwrap();
+    assert_eq!(null, missing);
+    assert_eq!(serde_json::to_value(null).unwrap(), serde_json::json!({}));
+    let future: Notification = serde_json::from_value(serde_json::json!({
+        "type": "future.type", "severity": "future.severity", "resourceType": "future.resource"
+    }))
+    .unwrap();
+    assert_eq!(future.r#type.as_deref(), Some("future.type"));
+    assert_eq!(future.severity.as_deref(), Some("future.severity"));
+    assert_eq!(future.resource_type.as_deref(), Some("future.resource"));
+}

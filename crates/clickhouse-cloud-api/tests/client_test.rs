@@ -6775,3 +6775,119 @@ async fn replica_aware_routing_update_surfaces_api_errors() {
         other => panic!("unexpected error: {other:?}"),
     }
 }
+
+#[tokio::test]
+async fn notification_get_list_preserves_filters_cursor_and_envelope() {
+    let (server, client) = setup().await;
+    let cursor = "opaque +/=&?é";
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notifications"))
+        .and(basic_auth("key", "secret"))
+        .and(query_param("limit", "25"))
+        .and(query_param("cursor", cursor))
+        .and(query_param("severity", "warning"))
+        .and(query_param("type", "service_backup_failed"))
+        .and(query_param("resource_id", "service-1"))
+        .and(query_param("resource_type", "service"))
+        .and(query_param("from_date", "2026-10-01T00:00:00+02:00"))
+        .and(query_param("to_date", "2026-10-08T00:00:00Z"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "status": 200, "requestId": "notification-page", "limit": 25, "nextCursor": "",
+            "result": [{
+                "id": "1b7e0a94-2d0f-4c3a-8f1e-6c9b2d5a4e7f",
+                "type": "service_backup_failed", "severity": "warning", "resourceType": "service",
+                "resourceId": "service-1", "resourceName": "analytics", "createdAt": "2026-10-07T09:30:00Z",
+                "title": "Backup failed", "description": "Review backup settings.", "future": 42
+            }]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let response = client
+        .notification_get_list(
+            "org-1",
+            Some(25),
+            Some(cursor),
+            Some("warning"),
+            Some("service_backup_failed"),
+            Some("service-1"),
+            Some("service"),
+            Some("2026-10-01T00:00:00+02:00"),
+            Some("2026-10-08T00:00:00Z"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.request_id.as_deref(), Some("notification-page"));
+    assert_eq!(response.limit, Some(25));
+    assert_eq!(response.next_cursor.as_deref(), Some(""));
+    let notifications = response.result.unwrap();
+    assert_eq!(notifications.len(), 1);
+    assert_eq!(notifications[0].title.as_deref(), Some("Backup failed"));
+    assert_eq!(notifications[0].resource_name.as_deref(), Some("analytics"));
+    assert!(notifications[0].created_at.is_some());
+}
+
+#[tokio::test]
+async fn notification_get_list_tolerates_sparse_null_and_empty_pages() {
+    for body in [
+        serde_json::json!({"result": [{}, {"id": null, "createdAt": null}], "nextCursor": null}),
+        serde_json::json!({"result": []}),
+        serde_json::json!({"result": null}),
+        serde_json::json!({}),
+    ] {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/v1/organizations/org-1/notifications"))
+            .and(bearer_token("token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body.clone()))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = Client::with_bearer_token(server.uri(), "token");
+        let response = client
+            .notification_get_list("org-1", None, None, None, None, None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(response.next_cursor, None);
+        if body["result"].is_array() {
+            assert_eq!(
+                response.result.as_ref().unwrap().len(),
+                body["result"].as_array().unwrap().len()
+            );
+        } else {
+            assert_eq!(response.result, None);
+        }
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests[0].url.query(), None);
+    }
+}
+
+#[tokio::test]
+async fn notification_get_list_surfaces_api_errors() {
+    let (server, client) = setup().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/organizations/org-1/notifications"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_json(serde_json::json!({"error": "invalid cursor"})),
+        )
+        .mount(&server)
+        .await;
+    let error = client
+        .notification_get_list(
+            "org-1",
+            None,
+            Some("bad"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, clickhouse_cloud_api::Error::Api { status: 400, message } if message == "invalid cursor")
+    );
+}

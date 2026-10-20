@@ -259,3 +259,11 @@ fn extracted_models_keep_root_and_models_paths() {
     );
     assert_same_type(api::Udf::default(), api::models::Udf::default());
 }
+
+#[test]
+fn notification_is_available_through_both_public_paths() {
+    assert_same_type(
+        api::Notification::default(),
+        api::models::Notification::default(),
+    );
+}

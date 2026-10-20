@@ -116,6 +116,30 @@ async fn cloud_org_lifecycle() -> TestResult<()> {
             })
             .await?;
 
+        // This read-only step permits an empty notification history.
+        failures
+            .run(&ctx, StepKind::NonBlocking, "list notifications", || {
+                let client = client.clone();
+                let org_id = ctx.org_id.clone();
+                async move {
+                    let page = client.notification_get_list(
+                        &org_id, Some(1), None, None, None, None, None, None, None,
+                    ).await?;
+                    let notifications = page.result.ok_or("notifications returned no result")?;
+                    if notifications.len() > 1 {
+                        return Err("notification page exceeded requested limit".into());
+                    }
+                    if let Some(cursor) = page.next_cursor {
+                        let next = client.notification_get_list(
+                            &org_id, Some(1), Some(&cursor), None, None, None, None, None, None,
+                        ).await?;
+                        next.result.ok_or("next notification page returned no result")?;
+                    }
+                    Ok(())
+                }
+            })
+            .await?;
+
         // ── Members ─────────────────────────────────────────────────
         //
         // Cover `member_get_list`, `member_get`, and `member_update`
