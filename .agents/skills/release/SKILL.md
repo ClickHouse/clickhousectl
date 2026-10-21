@@ -1,16 +1,18 @@
 ---
 name: release
-description: Releases a new `clickhousectl` and `clickhouse-cloud-api` version — bumps versions in lockstep, tags, watches the release workflow, then runs the ClickHouse/ClickHouse NightlyUpload workflow that puts the binaries on builds.clickhouse.com. Use when cutting, tagging, or publishing a release, bumping the version, or when `clickhousectl update`, `install.sh` or `npm install` cannot download the latest version.
+description: Releases a new `clickhousectl` and `clickhouse-cloud-api` version — bumps versions in lockstep, tags, watches the release workflow (which also uploads the binaries to builds.clickhouse.com), then verifies the downloads. Use when cutting, tagging, or publishing a release, bumping the version, or when `clickhousectl update`, `install.sh` or `npm install` cannot download the latest version.
 ---
 
 # Release
 
 One tag publishes everything. `.github/workflows/release.yml` runs on a `v*` tag push: build → smoke tests →
-**Create Release** (the GitHub release and its `.tar.gz` assets) → crates.io, npm and PyPI in separate jobs.
-crates.io uses a token; npm and PyPI use OIDC.
+**Upload to builds.clickhouse.com** → **Create Release** (the GitHub release and its `.tar.gz` assets) →
+crates.io, npm and PyPI in separate jobs. crates.io uses a token; npm, PyPI and the S3 upload use OIDC.
 
-The binaries are served from builds.clickhouse.com, not from GitHub. A separate workflow in another repo copies
-them there. A release doesn't trigger it, so the release isn't finished until you run it (step 4).
+The binaries are served from builds.clickhouse.com, not from GitHub. `clickhousectl update`, `install.sh` and the
+npm postinstall read the latest version from the GitHub release, then download
+`clickhousectl-<target>-vX.Y.Z.tar.gz` from `https://builds.clickhouse.com/clickhousectl/`. The upload runs before
+**Create Release** so a new release is never visible without its archives.
 
 ## 1. Bump versions in lockstep
 
@@ -37,23 +39,19 @@ git tag vX.Y.Z <merge-commit> && git push origin vX.Y.Z
 Every job must be green. Re-run a failed publish job alone; the crates.io job skips `clickhouse-cloud-api` if that
 version is already published.
 
-## 4. Upload the binaries to builds.clickhouse.com
+## 4. If the upload fails
 
-As soon as **Create Release** succeeds, run the `NightlyUpload` workflow in ClickHouse/ClickHouse:
+**Upload to builds.clickhouse.com** assumes `arn:aws:iam::542516086801:role/external-s3-upload` through GitHub
+OIDC and copies the four `.tar.gz` archives (`aarch64`/`x86_64` × `apple-darwin`/`unknown-linux-musl`) to
+`s3://clickhouse-builds/clickhousectl/`. It skips an archive already in the bucket and never overwrites one:
+builds.clickhouse.com caches them for days.
 
-```bash
-gh workflow run nightly_upload.yml -R ClickHouse/ClickHouse
-```
-
-- Why: `clickhousectl update`, `install.sh` and the npm postinstall all read the latest version from the GitHub
-  release, then download `clickhousectl-<target>-vX.Y.Z.tar.gz` from `https://builds.clickhouse.com/clickhousectl/`.
-  Until the upload runs, every one of them fails with a 404 for the new version.
-- What it does: its `Upload clickhousectl` job (`ci/jobs/upload_clickhousectl.py`) copies the four `.tar.gz`
-  assets (`aarch64`/`x86_64` × `apple-darwin`/`unknown-linux-musl`) of the latest GitHub release into the
-  `clickhouse-builds` bucket, skipping any already there. It fails if one is missing.
-- It otherwise runs only on a daily schedule (06:13 UTC), so a release left alone breaks downloads for up to a day.
-- Triggering it needs workflow-run access to ClickHouse/ClickHouse. If you don't have it, ask the user to run it.
-- Watch it: `gh run list -R ClickHouse/ClickHouse -w nightly_upload.yml -L 1`, then `gh run watch`.
+- An AWS `AccessDenied` or OIDC error means the role or its trust policy changed. The role is managed in
+  ClickHouse/clickhouse-private `tests/ci/terraform/external_s3_upload.tf`; ask the user to raise it with the CI
+  owners there.
+- Re-run the failed job once fixed; **Create Release** and the publish jobs then continue.
+- The `NightlyUpload` workflow in ClickHouse/ClickHouse is the old pull-based copy of the latest GitHub release.
+  Don't rely on it.
 
 ## 5. Verify
 
@@ -72,7 +70,6 @@ and PyPI pages show the new version.
 - [ ] Versions bumped in lockstep and merged to main
 - [ ] Tag pushed on the merge commit
 - [ ] release.yml fully green
-- [ ] NightlyUpload run and green
 - [ ] All four builds.clickhouse.com archives return 200
 - [ ] `clickhousectl update` reaches the new version
 ```
