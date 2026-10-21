@@ -131,9 +131,68 @@ jobs:
             ${{ matrix.distro }} \
             sh -c 'clickhousectl --version && clickhousectl --help'
 
+  # `clickhousectl update`, install.sh and the npm postinstall read the latest
+  # version from the GitHub release, then download the archive from
+  # builds.clickhouse.com. Uploading before Create Release means the newest
+  # release is never visible without its archives.
+  upload-builds:
+    name: Upload to builds.clickhouse.com
+    needs: [build, smoke-test]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    # `id-token: write` lets the job assume the external-s3-upload role
+    # (ClickHouse/clickhouse-private tests/ci/terraform/external_s3_upload.tf)
+    # through GitHub OIDC. It may write only under clickhouse-builds/clickhousectl/.
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      S3_BUCKET: clickhouse-builds
+      S3_PREFIX: clickhousectl
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+          pattern: clickhousectl-*
+          merge-multiple: true
+
+      - name: Check archives
+        run: |
+          missing=0
+          for target in aarch64-apple-darwin aarch64-unknown-linux-musl x86_64-apple-darwin x86_64-unknown-linux-musl; do
+            f="artifacts/clickhousectl-${target}-${GITHUB_REF_NAME}.tar.gz"
+            [ -f "$f" ] || { echo "::error::missing $f"; missing=1; }
+          done
+          ls -l artifacts/
+          exit "$missing"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::542516086801:role/external-s3-upload
+          aws-region: us-east-1
+
+      # Published archives are immutable and CDN-cached for days, so an archive
+      # already in the bucket is left alone rather than overwritten.
+      - name: Upload archives
+        run: |
+          for f in artifacts/*.tar.gz; do
+            key="${S3_PREFIX}/$(basename "$f")"
+            if err=$(aws s3api head-object --bucket "$S3_BUCKET" --key "$key" 2>&1 >/dev/null); then
+              echo "Skip: s3://${S3_BUCKET}/${key} already exists"
+              continue
+            fi
+            if ! echo "$err" | grep -q "Not Found"; then
+              echo "::error::head-object failed for ${key}: ${err}"
+              exit 1
+            fi
+            aws s3 cp "$f" "s3://${S3_BUCKET}/${key}" --content-type application/gzip
+          done
+
   release:
     name: Create Release
-    needs: [build, smoke-test]
+    needs: [build, smoke-test, upload-builds]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
