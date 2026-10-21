@@ -710,6 +710,11 @@ fn map_value_matches(
         };
         return ty == rust.resolve_alias(&TypeNode::Path(expected));
     }
+    // An inline composition (e.g. string or object) has no single Rust value
+    // shape; raw JSON keeps every branch, so it is the only lossless match.
+    if schema.get("oneOf").is_some() || schema.get("anyOf").is_some() {
+        return matches!(ty, TypeNode::Path(name) if name == "Value");
+    }
     match schema.get("type").and_then(serde_json::Value::as_str) {
         Some("string") => matches!(ty, TypeNode::Path(name) if name == "String"),
         Some("boolean") => matches!(ty, TypeNode::Path(name) if name == "bool"),
@@ -1972,6 +1977,40 @@ mod tests {
                 AnalyzerConfig::default(),
             );
             assert!(!report.has_drift(), "{}", report.render_text());
+        }
+    }
+
+    #[test]
+    fn additional_properties_with_composed_values_require_raw_json_values() {
+        let composed = serde_json::json!({
+            "type": "object",
+            "additionalProperties": {"oneOf": [
+                {"type": "string"},
+                {"type": "object", "properties": {"$regex": {"type": "string"}}}
+            ]}
+        });
+        let report = analyze_directional(
+            "pub type Widget = BTreeMap<String, serde_json::Value>; pub type WidgetResponse = Widget;",
+            directional_spec(composed.clone(), true, true),
+            AnalyzerConfig::default(),
+        );
+        assert!(!report.has_drift(), "{}", report.render_text());
+
+        for models in [
+            "pub type Widget = BTreeMap<String, String>;",
+            "pub type Widget = serde_json::Value;",
+        ] {
+            let report = analyze_fixture(models, composed.clone(), AnalyzerConfig::default());
+            assert_eq!(
+                report.findings.len(),
+                1,
+                "{models}: {}",
+                report.render_text()
+            );
+            assert_eq!(
+                report.findings[0].kind,
+                FindingKind::AdditionalPropertiesMismatch
+            );
         }
     }
 
