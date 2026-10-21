@@ -8069,6 +8069,34 @@ fn query_api_endpoint_responses_tolerate_missing_and_null_fields() {
 }
 
 #[test]
+fn query_api_endpoint_list_response_preserves_array_entries_and_envelope_pagination() {
+    for items in [serde_json::json!([]), serde_json::json!([{}])] {
+        let response: ApiResponse<Vec<PublicQueryApiEndpointListItem>> =
+            serde_json::from_value(serde_json::json!({
+                "result": items, "limit": 1, "totalCount": 2,
+                "nextCursor": "opaque +/=&? page", "futureEnvelopeField": true
+            }))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(response.result.unwrap()).unwrap(),
+            items
+        );
+        assert_eq!(response.limit, Some(1));
+        assert_eq!(response.total_count, Some(2));
+        assert_eq!(response.next_cursor.as_deref(), Some("opaque +/=&? page"));
+    }
+    for wire in [serde_json::json!({}), serde_json::json!({"result": null})] {
+        let response: ApiResponse<Vec<PublicQueryApiEndpointListItem>> =
+            serde_json::from_value(wire).unwrap();
+        assert!(response.result.is_none());
+        assert_eq!(
+            serde_json::to_value(response).unwrap(),
+            serde_json::json!({})
+        );
+    }
+}
+
+#[test]
 fn saved_query_request_is_strict_and_omits_optional_fields() {
     let required = serde_json::json!({
         "name": "orders",

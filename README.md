@@ -119,7 +119,7 @@ clickhousectl cloud service create --name analytics \
 
 Creation returns before provisioning finishes. Queries use OAuth for read-only SQL or an API key for permitted reads and writes. On first use, API-key queries can bind the caller's key to the service's Query API endpoint; use `--no-auto-enable` to require an existing binding.
 
-The Query API may time out while SQL continues running. Check the outcome before retrying a write. Use a native client for long queries and bulk loads. See [create and operate a Cloud service](docs/guides/cloud-service.md) and [SQL and Query API behavior](docs/reference/query-api.md).
+The Query API may time out while SQL continues running. Check the outcome before retrying a write. Use a native client for long queries and bulk loads. Named endpoint lists return one page; pass `pagination.nextCursor` from JSON output to `query-api-endpoint list --cursor` to continue. See [create and operate a Cloud service](docs/guides/cloud-service.md) and [SQL and Query API behavior](docs/reference/query-api.md).
 
 ### Create ClickHouse Managed Postgres
 

@@ -101,7 +101,7 @@ clickhousectl cloud query-api-endpoint create <service-id> --file endpoint.json
 clickhousectl cloud query-api-endpoint get <service-id> <endpoint-id>
 ```
 
-Update replaces the complete definition. Omitted parameters/origins become empty; GET output has response-only fields and cannot be resubmitted unchanged. User-owned endpoints can be read but not updated/deleted through this command. List returns one page; continue with `pagination.nextCursor` and `--cursor` (`--limit` is 1–100).
+Update replaces the complete definition. Omitted parameters/origins become empty; GET output has response-only fields and cannot be resubmitted unchanged. User-owned endpoints can be read but not updated/deleted through this command. List JSON contains `items` and `pagination`; continue with `pagination.nextCursor` and `--cursor` (`--limit` is 1–100). `pagination.currentCursor` reflects the supplied cursor; `pagination.totalRecords` reflects the API's optional total count.
 
 Call the returned `url` using the bound key's authentication `keyId` and `keySecret`, not its management ID. Supply every SQL placeholder explicitly: stored parameter defaults were not applied during live endpoint validation.
 

@@ -26651,6 +26651,22 @@ fn query_api_endpoint_envelope(status: u16, result: Value) -> ResponseTemplate {
     }))
 }
 
+fn query_api_endpoint_list_page(
+    items: Value,
+    next_cursor: Option<&str>,
+    total_count: Option<i64>,
+    limit: Option<i64>,
+) -> ResponseTemplate {
+    ResponseTemplate::new(200).set_body_json(serde_json::json!({
+        "status": 200,
+        "requestId": "query-api-endpoint-request",
+        "result": items,
+        "nextCursor": next_cursor,
+        "totalCount": total_count,
+        "limit": limit
+    }))
+}
+
 #[tokio::test]
 async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies() {
     for file_flag in ["--file", "--config-file"] {
@@ -26677,7 +26693,7 @@ async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies_
             "url": format!("https://queries.clickhouse.cloud/run/{QUERY_API_ENDPOINT_ID}"),
             "ownerType": "queryApiEndpoint"
         }],
-        "pagination": {"currentCursor": "current", "limit": 100, "totalRecords": 1}
+        "pagination": {"limit": 100, "totalRecords": 1}
     });
     for (verb, suffix, body, status, result) in [
         (
@@ -26712,10 +26728,12 @@ async fn query_api_endpoint_all_verbs_use_exact_routes_auth_and_complete_bodies_
         if let Some(body) = body {
             mock = mock.and(body_json(body));
         }
-        mock.respond_with(query_api_endpoint_envelope(status, result))
-            .expect(1)
-            .mount(&server)
-            .await;
+        let response = if verb == "GET" && suffix.is_empty() {
+            query_api_endpoint_list_page(result["items"].clone(), None, Some(1), Some(100))
+        } else {
+            query_api_endpoint_envelope(status, result)
+        };
+        mock.respond_with(response).expect(1).mount(&server).await;
     }
     Mock::given(method("DELETE"))
         .and(path(format!(
@@ -26860,7 +26878,12 @@ async fn query_api_endpoint_reads_support_oauth_and_preserve_reserved_list_curso
     Mock::given(method("GET"))
         .and(path(QUERY_API_ENDPOINTS_PATH))
         .and(header("authorization", "Bearer test-bearer-token"))
-        .respond_with(query_api_endpoint_envelope(200, result.clone()))
+        .respond_with(query_api_endpoint_list_page(
+            result["items"].clone(),
+            None,
+            Some(3),
+            Some(2),
+        ))
         .expect(1)
         .mount(&server)
         .await;
@@ -26933,21 +26956,20 @@ async fn query_api_endpoint_human_reads_tolerate_sparse_fields_and_show_next_cur
         .await;
     Mock::given(method("GET"))
         .and(path(QUERY_API_ENDPOINTS_PATH))
-        .respond_with(query_api_endpoint_envelope(
-            200,
-            serde_json::json!({
-                "items": [
-                    {},
-                    {
-                        "id": QUERY_API_ENDPOINT_ID,
-                        "name": "orders",
-                        "database": "analytics",
-                        "ownerType": "futureOwner",
-                        "url": "https://queries.clickhouse.cloud/run/example"
-                    }
-                ],
-                "pagination": {"nextCursor": "next /+?"}
-            }),
+        .respond_with(query_api_endpoint_list_page(
+            serde_json::json!([
+                {},
+                {
+                    "id": QUERY_API_ENDPOINT_ID,
+                    "name": "orders",
+                    "database": "analytics",
+                    "ownerType": "futureOwner",
+                    "url": "https://queries.clickhouse.cloud/run/example"
+                }
+            ]),
+            Some("next /+?"),
+            None,
+            None,
         ))
         .expect(1)
         .mount(&server)
@@ -26977,11 +26999,11 @@ async fn query_api_endpoint_human_reads_tolerate_sparse_fields_and_show_next_cur
         assert!(stdout.contains(value), "missing {value}:\n{stdout}");
     }
 
-    for result in [serde_json::json!({}), serde_json::json!({"items": null})] {
+    for response in [serde_json::json!({}), serde_json::json!({"result": null})] {
         let sparse_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path(QUERY_API_ENDPOINTS_PATH))
-            .respond_with(query_api_endpoint_envelope(200, result))
+            .respond_with(ResponseTemplate::new(200).set_body_json(response))
             .expect(1)
             .mount(&sparse_server)
             .await;
@@ -26994,22 +27016,18 @@ async fn query_api_endpoint_human_reads_tolerate_sparse_fields_and_show_next_cur
             &["list", "svc-1", "--org-id", "org-1"],
             None,
         );
-        assert_success(&output);
-        assert_eq!(
-            String::from_utf8_lossy(&output.stdout),
-            "Query API endpoints: -\n"
-        );
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
     }
 
     let empty_server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path(QUERY_API_ENDPOINTS_PATH))
-        .respond_with(query_api_endpoint_envelope(
-            200,
-            serde_json::json!({
-                "items": [],
-                "pagination": {"nextCursor": "after-empty-page"}
-            }),
+        .respond_with(query_api_endpoint_list_page(
+            serde_json::json!([]),
+            Some("after-empty-page"),
+            None,
+            None,
         ))
         .expect(1)
         .mount(&empty_server)
@@ -28043,25 +28061,32 @@ async fn selectors_query_endpoints_read_all_cursor_pages_before_mutating() {
     let first_id = "11111111-2222-3333-4444-555555555555";
     let second_id = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
     for second in [
-        serde_json::json!({"items": [], "pagination": {"nextCursor": null}}),
-        serde_json::json!({"items": [{"id": second_id, "name": "target"}], "pagination": {"nextCursor": null}}),
-        serde_json::json!({"items": []}),
-        serde_json::json!({"items": [], "pagination": {"nextCursor": "page-2"}}),
+        serde_json::json!({"result": [], "nextCursor": null}),
+        serde_json::json!({"result": [{"id": second_id, "name": "target"}], "nextCursor": null}),
+        serde_json::json!({"result": null, "nextCursor": null}),
+        serde_json::json!({"result": [], "nextCursor": "page-2"}),
     ] {
-        let unique = second["pagination"].is_object()
-            && second["pagination"]["nextCursor"].is_null()
-            && second["items"].as_array().unwrap().is_empty();
+        let unique = second["nextCursor"].is_null()
+            && second["result"].as_array().is_some_and(Vec::is_empty);
         let mock = MockServer::start().await;
         let list_path = "/v1/organizations/org-1/services/parent/query-api-endpoints";
-        Mock::given(method("GET")).and(path(list_path)).and(query_param("limit", "100")).and(wiremock::matchers::query_param_is_missing("cursor"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {"items": [{"id": first_id, "name": "target"}], "pagination": {"nextCursor": "page-2"}}})))
-            .expect(1).mount(&mock).await;
+        Mock::given(method("GET"))
+            .and(path(list_path))
+            .and(query_param("limit", "100"))
+            .and(wiremock::matchers::query_param_is_missing("cursor"))
+            .respond_with(query_api_endpoint_list_page(
+                serde_json::json!([{"id": first_id, "name": "target"}]),
+                Some("page-2"),
+                None,
+                Some(100),
+            ))
+            .expect(1)
+            .mount(&mock)
+            .await;
         Mock::given(method("GET"))
             .and(path(list_path))
             .and(query_param("cursor", "page-2"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": second})),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_json(second))
             .expect(1)
             .mount(&mock)
             .await;
@@ -28386,17 +28411,17 @@ async fn selectors_endpoint_pagination_integrity_and_later_errors_block_mutation
     for (status, second, exit) in [
         (
             200,
-            serde_json::json!({"items": [{"id": other_id, "name": "other"}], "pagination": {"totalRecords": 3, "nextCursor": null}}),
+            serde_json::json!({"result": [{"id": other_id, "name": "other"}], "totalCount": 3, "nextCursor": null}),
             1,
         ),
         (
             200,
-            serde_json::json!({"items": [], "pagination": {"totalRecords": 4, "nextCursor": null}}),
+            serde_json::json!({"result": [], "totalCount": 4, "nextCursor": null}),
             1,
         ),
         (
             200,
-            serde_json::json!({"items": [], "pagination": {"totalRecords": 3, "nextCursor": null}}),
+            serde_json::json!({"result": [], "totalCount": 3, "nextCursor": null}),
             1,
         ),
         (403, serde_json::json!({"error": "later page forbidden"}), 4),
@@ -28404,18 +28429,12 @@ async fn selectors_endpoint_pagination_integrity_and_later_errors_block_mutation
         let mock = MockServer::start().await;
         let list_path = "/v1/organizations/org-1/services/parent/query-api-endpoints";
         Mock::given(method("GET")).and(path(list_path)).and(wiremock::matchers::query_param_is_missing("cursor"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"result": {"items": [{"id": target_id, "name": "target"}, {"id": other_id, "name": "other"}], "pagination": {"totalRecords": 3, "nextCursor": "page-2"}}})))
+            .respond_with(query_api_endpoint_list_page(serde_json::json!([{"id": target_id, "name": "target"}, {"id": other_id, "name": "other"}]), Some("page-2"), Some(3), Some(100)))
             .expect(1).mount(&mock).await;
         Mock::given(method("GET"))
             .and(path(list_path))
             .and(query_param("cursor", "page-2"))
-            .respond_with(
-                ResponseTemplate::new(status).set_body_json(if status == 200 {
-                    serde_json::json!({"result": second})
-                } else {
-                    second
-                }),
-            )
+            .respond_with(ResponseTemplate::new(status).set_body_json(second))
             .expect(1)
             .mount(&mock)
             .await;
