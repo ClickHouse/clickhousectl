@@ -68,13 +68,13 @@ CONTEXT FOR AGENTS:
     /// Request a scoped API key via browser approval
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
-  Approval URL and progress go to stderr, including with --json.
-  A human must approve; waits up to 15 minutes.
-  On approval the issued key id + secret are saved to the credentials file; the secret is never printed.
-  Discover proposal IDs with `cloud access roles`; proposals do not grant access.
-  Uses the login environment unless --url is provided.
-  Select --org/--org-id or exact --org-name when your user belongs to multiple organizations.")]
+  Requires OAuth from `cloud auth login`, even with a saved API key; roles are per organization: pass --org-id.
+  Each command's `--help` declares `API key permission:` needs; take conditionals only if their condition holds.
+  `Authorization:` needs have no granting role.
+  `cloud access roles --json` lists roles (empty: stop); policies `ALLOW`/`DENY` permissions on `*` or named resources.
+  Choose roles covering every need with `ALLOW`, none denied by chosen roles, and the fewest extras.
+  Propose with `--perms` and `--purpose`; a human approves the stderr URL within 15 minutes; check `grantedRoleIds`.
+  The approved key becomes the active credential; changing permissions means a new flow (API keys cannot read roles).")]
     Request(AccessRequestArgs),
 }
 
