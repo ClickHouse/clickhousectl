@@ -9046,6 +9046,21 @@ fn bigquery_cdc_fields_round_trip_and_write_back() {
         request
     );
 
+    // `syncCron` replaces `syncIntervalSeconds`; the API rejects both together.
+    let scheduled = serde_json::json!({
+        "replicationMode": "cdc_only", "replicationMethod": "events_based",
+        "syncCron": "CRON_TZ=Europe/Berlin 0 * * * *"
+    });
+    let response: ClickPipeBigQueryPipeSettingsResponse =
+        serde_json::from_value(scheduled.clone()).unwrap();
+    assert_eq!(
+        response.sync_cron.as_deref(),
+        Some("CRON_TZ=Europe/Berlin 0 * * * *")
+    );
+    let request = ClickPipeBigQueryPipeSettings::try_from(response).unwrap();
+    assert_eq!(request.sync_interval_seconds, None);
+    assert_eq!(serde_json::to_value(&request).unwrap(), scheduled);
+
     let mapping = serde_json::json!({
         "sourceDatasetName": "sales", "sourceTable": "orders", "targetTable": "orders_raw",
         "queryCdcWatermarkColumn": "updated_at", "eventsFunction": "future_function"
@@ -9067,7 +9082,7 @@ fn bigquery_cdc_response_fields_tolerate_absence_and_null() {
         serde_json::json!({}),
         serde_json::json!({
             "replicationMode": null, "replicationMethod": null, "syncIntervalSeconds": null,
-            "queryCdcPullSyncParallelism": null, "syncDelaySeconds": null, "pullWindowSizeSeconds": null
+            "syncCron": null, "queryCdcPullSyncParallelism": null, "syncDelaySeconds": null, "pullWindowSizeSeconds": null
         }),
     ] {
         let response: ClickPipeBigQueryPipeSettingsResponse =

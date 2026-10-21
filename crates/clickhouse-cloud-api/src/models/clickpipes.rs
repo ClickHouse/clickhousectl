@@ -2030,6 +2030,10 @@ pub struct ClickPipeBigQueryPipeSettings {
     pub query_cdc_pull_sync_parallelism: Option<i64>,
     #[serde(rename = "replicationMethod", skip_serializing_if = "Option::is_none")]
     pub replication_method: Option<String>,
+    /// Cron schedule for CDC syncs, evaluated in UTC unless prefixed with
+    /// `CRON_TZ=<zone>`. Mutually exclusive with `sync_interval_seconds`.
+    #[serde(rename = "syncCron", skip_serializing_if = "Option::is_none")]
+    pub sync_cron: Option<String>,
     #[serde(rename = "syncDelaySeconds", skip_serializing_if = "Option::is_none")]
     pub sync_delay_seconds: Option<i64>,
     #[serde(
@@ -2081,6 +2085,8 @@ pub struct ClickPipeBigQueryPipeSettingsResponse {
     pub query_cdc_pull_sync_parallelism: Option<i64>,
     #[serde(rename = "replicationMethod", skip_serializing_if = "Option::is_none")]
     pub replication_method: Option<String>,
+    #[serde(rename = "syncCron", skip_serializing_if = "Option::is_none")]
+    pub sync_cron: Option<String>,
     #[serde(rename = "syncDelaySeconds", skip_serializing_if = "Option::is_none")]
     pub sync_delay_seconds: Option<i64>,
     #[serde(
