@@ -75,7 +75,10 @@ pub(super) const PERMISSIONS: &[Permission] = &[
         .when(&[Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST])]),
     Permission::api("postgres update", &[&op::POSTGRES_SERVICE_PATCH]).when(&[
         Conditional::flag("name", &[&op::POSTGRES_SERVICE_GET_LIST]),
-        Conditional::new("Without --clear-tags", &[&op::POSTGRES_SERVICE_GET]),
+        Conditional::new(
+            "Without --clear-tags, or with --remove-ip-allow",
+            &[&op::POSTGRES_SERVICE_GET],
+        ),
     ]),
 ];
 
@@ -90,15 +93,17 @@ use clap::builder::TypedValueParser;
 use clap::{ArgGroup, Subcommand};
 use clickhouse_cloud_api::RunPostgresQueryRequest;
 use clickhouse_cloud_api::models::{
-    ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultTransactionIsolation,
-    PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType, PgIdProperty, PgProvider,
-    PgSize, PgVersion, PostgresBackup, PostgresInstanceConfig, PostgresLogEntry,
-    PostgresLogsGetListSortorder, PostgresMetrics, PostgresService, PostgresServiceListItem,
-    PostgresServicePatchRequest, PostgresServicePostRequest, PostgresServiceReadReplicaRequest,
-    PostgresServiceRestoreRequest, PostgresServiceSetPassword, PostgresServiceSetState,
-    PostgresServiceSetStateCommand, PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail,
-    ResourceTagsV1, ResourceTagsV1Response, SlowQueryPatternsGetListSortby,
-    SlowQueryPatternsGetListSortorder,
+    ApiResponse, PgBouncerConfig, PgConfig, PgConfigDefaultToastCompression,
+    PgConfigDefaultTransactionIsolation, PgConfigEnableParallelHash, PgConfigIoMethod,
+    PgConfigLogLockWaits, PgConfigSslMinProtocolVersion, PgConfigWalCompression, PgHaType,
+    PgIdProperty, PgProvider, PgSize, PgVersion, PostgresBackup, PostgresInstanceConfig,
+    PostgresIpAccessListEntry, PostgresIpAccessListEntryResponse, PostgresIpAccessListPatch,
+    PostgresIpAccessListRuleReference, PostgresLogEntry, PostgresLogsGetListSortorder,
+    PostgresMetrics, PostgresService, PostgresServiceListItem, PostgresServicePatchRequest,
+    PostgresServicePostRequest, PostgresServiceReadReplicaRequest, PostgresServiceRestoreRequest,
+    PostgresServiceSetPassword, PostgresServiceSetState, PostgresServiceSetStateCommand,
+    PostgresSlowQueryPattern, PostgresSlowQueryPatternDetail, ResourceTagsV1,
+    ResourceTagsV1Response, SlowQueryPatternsGetListSortby, SlowQueryPatternsGetListSortorder,
 };
 use futures_util::StreamExt;
 use serde::de::DeserializeOwned;
@@ -191,7 +196,9 @@ CONTEXT FOR AGENTS:
 CONTEXT FOR AGENTS:
   The password and connection string are returned once, here — save them.
   Treat `get` as never returning credentials; `reset-password` is the only way back.
-  Not usable until `cloud postgres get <id>` reports state=running.")]
+  Not usable until `cloud postgres get <id>` reports state=running.
+  Without --ip-allow, every IPv4 and IPv6 address can connect on 5432 and 6432.
+  With --ip-allow, only the listed IPv4 rules can connect; add one rule per port.")]
     Create {
         /// Service name
         #[arg(long)]
@@ -224,12 +231,25 @@ CONTEXT FOR AGENTS:
         /// JSON file of PgBouncer parameters with string values
         #[arg(long)]
         pg_bouncer_config_file: Option<PathBuf>,
+        /// Allow an IPv4 address or CIDR on a port or range (repeatable)
+        ///
+        /// PORTS is 5432 (Postgres), 6432 (PgBouncer) or a range like 5432..6432.
+        #[arg(
+            long = "ip-allow",
+            value_name = "IP_OR_CIDR:PORTS[=DESCRIPTION]",
+            value_parser = parse_postgres_ip_rule
+        )]
+        ip_allow: Vec<PostgresIpAccessListEntry>,
+        /// Create with no IP access rules, blocking all public access
+        #[arg(long, conflicts_with = "ip_allow")]
+        block_public_access: bool,
     },
 
-    /// Update a Postgres service's name, size, HA type or tags
+    /// Update a Postgres service's name, size, HA, tags or IP rules
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
-  --new-name changes the service hostname; re-read `cloud postgres get` and update connection strings.")]
+  --new-name changes the service hostname; re-read `cloud postgres get` and update connection strings.
+  IP rule removals apply before additions and can partially succeed; re-read `get` before retrying.")]
     Update {
         /// Postgres service ID (from `cloud postgres list`)
         #[command(flatten)]
@@ -252,6 +272,16 @@ CONTEXT FOR AGENTS:
         /// Remove all tags; conflicts with --add-tag and --remove-tag
         #[arg(long, conflicts_with_all = ["add_tag", "remove_tag"])]
         clear_tags: bool,
+        /// Allow an IPv4 address or CIDR on a port or range (repeatable)
+        #[arg(
+            long = "add-ip-allow",
+            value_name = "IP_OR_CIDR:PORTS[=DESCRIPTION]",
+            value_parser = parse_postgres_ip_rule
+        )]
+        add_ip_allow: Vec<PostgresIpAccessListEntry>,
+        /// Remove IP rules by rule ID, or every rule for a source (repeatable)
+        #[arg(long = "remove-ip-allow", value_name = "RULE_ID_OR_SOURCE")]
+        remove_ip_allow: Vec<String>,
     },
 
     /// Delete a Postgres service
@@ -688,6 +718,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             tag,
             pg_config_file,
             pg_bouncer_config_file,
+            ip_allow,
+            block_public_access,
         } => {
             let opts = PostgresCreateOptions {
                 name: &name,
@@ -699,6 +731,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 tags: &tag,
                 pg_config_file: pg_config_file.as_deref(),
                 pg_bouncer_config_file: pg_bouncer_config_file.as_deref(),
+                ip_allow: &ip_allow,
+                block_public_access,
             };
             postgres_create(client, opts, json).await
         }
@@ -710,6 +744,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
             add_tag,
             remove_tag,
             clear_tags,
+            add_ip_allow,
+            remove_ip_allow,
         } => {
             let opts = PostgresUpdateOptions {
                 name: name.as_deref(),
@@ -718,6 +754,8 @@ pub async fn run(client: &CloudClient, command: PostgresCommands, json: bool) ->
                 add_tag: &add_tag,
                 remove_tag: &remove_tag,
                 clear_tags,
+                add_ip_allow: &add_ip_allow,
+                remove_ip_allow: &remove_ip_allow,
             };
             postgres_update(
                 client,
@@ -958,7 +996,7 @@ fn load_json_file<T: DeserializeOwned>(path: &Path) -> CloudResult<T> {
 /// The closed set of Postgres GUCs accepted by the Cloud API's `pgConfig`
 /// schema. The library stays tolerant when reading responses, so write inputs
 /// are checked here before serde can discard a misspelled field.
-const PG_CONFIG_KEYS: [&str; 38] = [
+const PG_CONFIG_KEYS: [&str; 60] = [
     "autovacuum_analyze_scale_factor",
     "autovacuum_analyze_threshold",
     "autovacuum_freeze_max_age",
@@ -971,19 +1009,38 @@ const PG_CONFIG_KEYS: [&str; 38] = [
     "autovacuum_vacuum_scale_factor",
     "autovacuum_vacuum_threshold",
     "autovacuum_work_mem",
+    "bgwriter_delay",
+    "bgwriter_flush_after",
+    "bgwriter_lru_maxpages",
+    "bgwriter_lru_multiplier",
     "checkpoint_timeout",
+    "default_toast_compression",
     "default_transaction_isolation",
     "effective_cache_size",
     "effective_io_concurrency",
+    "enable_parallel_hash",
+    "hash_mem_multiplier",
     "idle_in_transaction_session_timeout",
     "idle_session_timeout",
+    "io_method",
+    "io_workers",
     "lock_timeout",
+    "log_lock_waits",
+    "log_min_duration_statement",
+    "log_parameter_max_length",
+    "log_temp_files",
+    "logical_decoding_work_mem",
+    "maintenance_io_concurrency",
     "maintenance_work_mem",
     "max_connections",
+    "max_logical_replication_workers",
     "max_parallel_maintenance_workers",
     "max_parallel_workers",
     "max_parallel_workers_per_gather",
+    "max_replication_slots",
     "max_slot_wal_keep_size",
+    "max_sync_workers_per_subscription",
+    "max_wal_senders",
     "max_wal_size",
     "max_worker_processes",
     "min_wal_size",
@@ -991,7 +1048,10 @@ const PG_CONFIG_KEYS: [&str; 38] = [
     "shared_memory_percent",
     "ssl_min_protocol_version",
     "statement_timeout",
+    "temp_buffers",
+    "track_activity_query_size",
     "transaction_timeout",
+    "vacuum_cost_delay",
     "wal_buffers",
     "wal_compression",
     "wal_keep_size",
@@ -1019,7 +1079,11 @@ fn validate_pg_config(doc: &serde_json::Value) -> CloudResult<()> {
         }
 
         let allowed = match key.as_str() {
+            "default_toast_compression" => Some(PgConfigDefaultToastCompression::VALUES),
             "default_transaction_isolation" => Some(PgConfigDefaultTransactionIsolation::VALUES),
+            "enable_parallel_hash" => Some(PgConfigEnableParallelHash::VALUES),
+            "io_method" => Some(PgConfigIoMethod::VALUES),
+            "log_lock_waits" => Some(PgConfigLogLockWaits::VALUES),
             "ssl_min_protocol_version" => Some(PgConfigSslMinProtocolVersion::VALUES),
             "wal_compression" => Some(PgConfigWalCompression::VALUES),
             _ => None,
@@ -1311,6 +1375,26 @@ fn render_postgres_service(svc: &PostgresService) {
             .collect();
         print_line(format!("  Tags: {}", tags.join(", ")));
     }
+    // Omitted unless the API returned the list; an empty list blocks public access.
+    match svc.ip_access_list.as_deref() {
+        Some([]) => print_line("  IP access: none (public access blocked)"),
+        Some(rules) => {
+            print_line("  IP access:");
+            for rule in rules {
+                let mut line = format!(
+                    "    {}  {}:{}",
+                    or_absent(rule.id.as_deref()),
+                    or_absent(rule.source.as_deref()),
+                    or_absent(rule.port_range.as_deref())
+                );
+                if let Some(description) = rule.description.as_deref() {
+                    line.push_str(&format!("  {description}"));
+                }
+                print_line(line);
+            }
+        }
+        None => {}
+    }
 }
 
 /// Print a short connection handoff without putting a password in argv or a URI.
@@ -1406,6 +1490,8 @@ pub struct PostgresCreateOptions<'a> {
     pub tags: &'a [String],
     pub pg_config_file: Option<&'a Path>,
     pub pg_bouncer_config_file: Option<&'a Path>,
+    pub ip_allow: &'a [PostgresIpAccessListEntry],
+    pub block_public_access: bool,
 }
 
 pub struct PostgresUpdateOptions<'a> {
@@ -1415,6 +1501,8 @@ pub struct PostgresUpdateOptions<'a> {
     pub add_tag: &'a [String],
     pub remove_tag: &'a [String],
     pub clear_tags: bool,
+    pub add_ip_allow: &'a [PostgresIpAccessListEntry],
+    pub remove_ip_allow: &'a [String],
 }
 
 pub struct PostgresReadReplicaOptions<'a> {
@@ -1996,7 +2084,7 @@ pub async fn postgres_create(
         tags,
         pg_config,
         pg_bouncer_config,
-        ip_access_list: None,
+        ip_access_list: postgres_create_ip_access_list(opts.ip_allow, opts.block_public_access),
     };
 
     let org_id = resolve_org_id(client).await?;
@@ -2042,14 +2130,120 @@ fn build_postgres_update_request(
     size: Option<PgSize>,
     ha_type: Option<PgHaType>,
     tags: Option<Vec<ResourceTagsV1>>,
+    ip_access_list: Option<PostgresIpAccessListPatch>,
 ) -> PostgresServicePatchRequest {
     PostgresServicePatchRequest {
         name: name.map(str::to_string),
         size,
         ha_type,
         tags,
-        ip_access_list: None,
+        ip_access_list,
     }
+}
+
+/// `None` keeps the API's allow-all default; an empty list blocks public access.
+fn postgres_create_ip_access_list(
+    ip_allow: &[PostgresIpAccessListEntry],
+    block_public_access: bool,
+) -> Option<Vec<PostgresIpAccessListEntry>> {
+    if block_public_access || !ip_allow.is_empty() {
+        Some(ip_allow.to_vec())
+    } else {
+        None
+    }
+}
+
+/// Parses `IP_OR_CIDR:PORTS[=DESCRIPTION]` into a new IPv4 access rule.
+fn parse_postgres_ip_rule(value: &str) -> Result<PostgresIpAccessListEntry, String> {
+    let (rule, description) = match value.split_once('=') {
+        Some((rule, description)) => (rule, Some(description)),
+        None => (value, None),
+    };
+    let (source, ports) = rule
+        .split_once(':')
+        .ok_or_else(|| format!("expected IP_OR_CIDR:PORTS[=DESCRIPTION], got '{value}'"))?;
+    let (address, prefix) = match source.split_once('/') {
+        Some((address, prefix)) => (address, Some(prefix)),
+        None => (source, None),
+    };
+    address
+        .parse::<std::net::Ipv4Addr>()
+        .map_err(|_| format!("'{source}' is not an IPv4 address or CIDR"))?;
+    if let Some(prefix) = prefix
+        && !prefix.parse::<u8>().is_ok_and(|bits| bits <= 32)
+    {
+        return Err(format!("'{source}' has an invalid CIDR prefix"));
+    }
+    let port = |text: &str| {
+        text.parse::<u16>()
+            .ok()
+            .filter(|port| *port >= 1)
+            .ok_or_else(|| format!("'{ports}' is not a port or range between 1 and 65535"))
+    };
+    match ports.split_once("..") {
+        Some((start, end)) if port(start)? > port(end)? => {
+            return Err(format!("port range '{ports}' starts after it ends"));
+        }
+        Some(_) => {}
+        None => {
+            port(ports)?;
+        }
+    }
+    if description.is_some_and(str::is_empty) {
+        return Err("the description after '=' cannot be empty".to_string());
+    }
+    Ok(PostgresIpAccessListEntry {
+        description: description.map(str::to_string),
+        id: None,
+        port_range: ports.to_string(),
+        source: source.to_string(),
+    })
+}
+
+/// Matches each `--remove-ip-allow` value to rule IDs, either the rule's own ID
+/// or every rule whose source is that address (a bare IP means its /32).
+fn resolve_ip_rule_removals(
+    current: Option<&[PostgresIpAccessListEntryResponse]>,
+    values: &[String],
+) -> CloudResult<Vec<PostgresIpAccessListRuleReference>> {
+    if values.is_empty() {
+        return Ok(Vec::new());
+    }
+    let current = current.ok_or_else(|| {
+        CloudError::new(
+            "the API response omitted ipAccessList, so --remove-ip-allow cannot be matched to rules",
+        )
+    })?;
+    let mut ids: Vec<String> = Vec::new();
+    for value in values {
+        let source = if value.contains('/') {
+            value.clone()
+        } else {
+            format!("{value}/32")
+        };
+        let matched: Vec<&str> = current
+            .iter()
+            .filter(|rule| {
+                rule.id.as_deref() == Some(value.as_str())
+                    || rule.source.as_deref() == Some(source.as_str())
+            })
+            .filter_map(|rule| rule.id.as_deref())
+            .collect();
+        if matched.is_empty() {
+            return Err(CloudError::usage(format!(
+                "--remove-ip-allow {value} did not match any rule ID or source in the service's IP access list; no rule was removed"
+            )));
+        }
+        for id in matched {
+            if !ids.iter().any(|known| known == id) {
+                ids.push(id.to_string());
+            }
+        }
+    }
+    Ok(ids
+        .into_iter()
+        .map(|id| PostgresIpAccessListRuleReference { id })
+        .collect())
 }
 
 pub async fn postgres_update(
@@ -2066,23 +2260,39 @@ pub async fn postgres_update(
         .map(|v| parse_serde_enum::<PgHaType>(v, "ha-type", PgHaType::VALUES))
         .transpose()?;
 
-    // Clearing is already a complete replacement, so it never needs a GET.
+    // Clearing is already a complete replacement, so tags alone never need a GET.
     // The API clears tags when PATCH omits them, even for a rename or resize.
-    // Every other update must preserve a complete current tag snapshot.
-    let tags = if opts.clear_tags {
-        Some(Vec::new())
-    } else {
+    // Every other update must preserve a complete current tag snapshot, and
+    // IP rule removals by source need the current rule IDs.
+    let current = if !opts.clear_tags || !opts.remove_ip_allow.is_empty() {
         let current = client
             .api()
             .postgres_service_get(&org_id, postgres_id)
             .await
             .map_err(|e| client.convert_error_for_organization(e, &org_id))?;
-        let current = unwrap_api(current)?;
-        let add = parse_tags(opts.add_tag)?.unwrap_or_default();
-        Some(merge_response_tags(current.tags, &add, opts.remove_tag)?)
+        Some(unwrap_api(current)?)
+    } else {
+        None
     };
+    let (tags, current_ip_access_list) = match current {
+        Some(current) if !opts.clear_tags => {
+            let add = parse_tags(opts.add_tag)?.unwrap_or_default();
+            (
+                merge_response_tags(current.tags, &add, opts.remove_tag)?,
+                current.ip_access_list,
+            )
+        }
+        Some(current) => (Vec::new(), current.ip_access_list),
+        None => (Vec::new(), None),
+    };
+    let remove = resolve_ip_rule_removals(current_ip_access_list.as_deref(), opts.remove_ip_allow)?;
+    let ip_access_list =
+        (!opts.add_ip_allow.is_empty() || !remove.is_empty()).then(|| PostgresIpAccessListPatch {
+            add: opts.add_ip_allow.to_vec(),
+            remove,
+        });
 
-    let req = build_postgres_update_request(opts.name, size, ha_type, tags);
+    let req = build_postgres_update_request(opts.name, size, ha_type, Some(tags), ip_access_list);
 
     let resp = client
         .api()
@@ -5253,6 +5463,10 @@ mod tests {
             "default_transaction_isolation=read uncommitted",
             "ssl_min_protocol_version=SSLv3",
             "wal_compression=gzip",
+            "default_toast_compression=zstd",
+            "enable_parallel_hash=yes",
+            "io_method=posix_aio",
+            "log_lock_waits=true",
         ] {
             let err = parse_pg_config_overrides(&[entry.into()])
                 .unwrap_err()
@@ -5343,7 +5557,7 @@ mod tests {
 
     #[test]
     fn build_postgres_update_request_omits_name_when_not_given() {
-        let req = build_postgres_update_request(None, None, None, None);
+        let req = build_postgres_update_request(None, None, None, None, None);
         assert!(req.name.is_none());
         assert!(req.size.is_none());
         assert!(req.ha_type.is_none());
@@ -5352,7 +5566,7 @@ mod tests {
 
     #[test]
     fn build_postgres_update_request_clears_tags_explicitly() {
-        let req = build_postgres_update_request(None, None, None, Some(Vec::new()));
+        let req = build_postgres_update_request(None, None, None, Some(Vec::new()), None);
 
         assert_eq!(req.tags, Some(Vec::new()));
         assert_eq!(
@@ -5371,11 +5585,204 @@ mod tests {
                 key: "env".into(),
                 value: Some("prod".into()),
             }]),
+            Some(PostgresIpAccessListPatch {
+                add: vec![PostgresIpAccessListEntry {
+                    source: "203.0.113.0/24".into(),
+                    port_range: "5432".into(),
+                    ..Default::default()
+                }],
+                remove: vec![PostgresIpAccessListRuleReference {
+                    id: "rule-1".into(),
+                }],
+            }),
+        );
+        assert_eq!(
+            serde_json::to_value(&req).unwrap()["ipAccessList"],
+            serde_json::json!({
+                "add": [{"source": "203.0.113.0/24", "portRange": "5432"}],
+                "remove": [{"id": "rule-1"}]
+            })
         );
         assert_eq!(req.name.as_deref(), Some("renamed-pg"));
         assert!(req.size.is_some());
         assert_eq!(req.ha_type, Some(PgHaType::Sync));
         assert_eq!(req.tags.unwrap().len(), 1);
+    }
+
+    #[test]
+    fn postgres_ip_rule_flags_parse_repeat_and_conflict() {
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "c6gd.large",
+            "--ip-allow",
+            "203.0.113.0/24:5432=office",
+            "--ip-allow",
+            "198.51.100.7:5432..6432",
+        ]);
+        let PostgresCommands::Create {
+            ip_allow,
+            block_public_access,
+            ..
+        } = cmd
+        else {
+            panic!("expected create");
+        };
+        assert_eq!(ip_allow.len(), 2);
+        assert_eq!(ip_allow[0].description.as_deref(), Some("office"));
+        assert_eq!(ip_allow[1].port_range, "5432..6432");
+        assert!(!block_public_access);
+
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "c6gd.large",
+            "--block-public-access",
+        ]);
+        let PostgresCommands::Create {
+            ip_allow,
+            block_public_access,
+            ..
+        } = cmd
+        else {
+            panic!("expected create");
+        };
+        assert!(ip_allow.is_empty());
+        assert!(block_public_access);
+
+        let conflict = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "create",
+            "--name",
+            "pg1",
+            "--region",
+            "us-east-1",
+            "--size",
+            "c6gd.large",
+            "--block-public-access",
+            "--ip-allow",
+            "203.0.113.0/24:5432",
+        ]);
+        assert_eq!(
+            conflict.err().unwrap().kind(),
+            clap::error::ErrorKind::ArgumentConflict
+        );
+
+        let cmd = parse_postgres(&[
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "update",
+            "pg-1",
+            "--add-ip-allow",
+            "203.0.113.0/24:6432",
+            "--remove-ip-allow",
+            "rule-1",
+            "--remove-ip-allow",
+            "198.51.100.7",
+        ]);
+        let PostgresCommands::Update {
+            add_ip_allow,
+            remove_ip_allow,
+            ..
+        } = cmd
+        else {
+            panic!("expected update");
+        };
+        assert_eq!(add_ip_allow[0].port_range, "6432");
+        assert_eq!(remove_ip_allow, vec!["rule-1", "198.51.100.7"]);
+
+        let invalid = Cli::try_parse_from([
+            "clickhousectl",
+            "cloud",
+            "postgres",
+            "update",
+            "pg-1",
+            "--add-ip-allow",
+            "203.0.113.0/24",
+        ]);
+        assert_eq!(
+            invalid.err().unwrap().kind(),
+            clap::error::ErrorKind::ValueValidation
+        );
+    }
+
+    #[test]
+    fn parse_postgres_ip_rule_validates_source_ports_and_description() {
+        let rule = parse_postgres_ip_rule("10.0.0.0/8:5432=VPN = office").unwrap();
+        assert_eq!(rule.source, "10.0.0.0/8");
+        assert_eq!(rule.port_range, "5432");
+        assert_eq!(rule.description.as_deref(), Some("VPN = office"));
+        assert_eq!(rule.id, None);
+        assert!(parse_postgres_ip_rule("1.2.3.4:1..65535").is_ok());
+
+        for (value, expected) in [
+            ("1.2.3.4", "IP_OR_CIDR:PORTS"),
+            ("2001:db8::1:5432", "not an IPv4"),
+            ("1.2.3.4/33:5432", "CIDR prefix"),
+            ("1.2.3.4:0", "between 1 and 65535"),
+            ("1.2.3.4:70000", "between 1 and 65535"),
+            ("1.2.3.4:6432..5432", "starts after it ends"),
+            ("1.2.3.4:5432=", "cannot be empty"),
+        ] {
+            let error = parse_postgres_ip_rule(value).unwrap_err();
+            assert!(error.contains(expected), "{value}: {error}");
+        }
+    }
+
+    #[test]
+    fn postgres_create_ip_access_list_distinguishes_open_blocked_and_listed() {
+        let rule = parse_postgres_ip_rule("1.2.3.4:5432").unwrap();
+        assert_eq!(postgres_create_ip_access_list(&[], false), None);
+        assert_eq!(postgres_create_ip_access_list(&[], true), Some(Vec::new()));
+        assert_eq!(
+            postgres_create_ip_access_list(std::slice::from_ref(&rule), false),
+            Some(vec![rule])
+        );
+    }
+
+    #[test]
+    fn resolve_ip_rule_removals_matches_ids_and_sources() {
+        let rule = |id: &str, source: &str, ports: &str| PostgresIpAccessListEntryResponse {
+            id: Some(id.into()),
+            source: Some(source.into()),
+            port_range: Some(ports.into()),
+            description: None,
+        };
+        let current = vec![
+            rule("rule-1", "203.0.113.0/24", "5432"),
+            rule("rule-2", "198.51.100.7/32", "5432"),
+            rule("rule-3", "198.51.100.7/32", "6432"),
+        ];
+        let removed = resolve_ip_rule_removals(
+            Some(&current),
+            &["rule-1".into(), "198.51.100.7".into(), "rule-2".into()],
+        )
+        .unwrap();
+        let ids: Vec<_> = removed.iter().map(|rule| rule.id.as_str()).collect();
+        assert_eq!(ids, ["rule-1", "rule-2", "rule-3"]);
+
+        let error = resolve_ip_rule_removals(Some(&current), &["192.0.2.1".into()]).unwrap_err();
+        assert_eq!(error.kind, crate::cloud::client::CloudErrorKind::Usage);
+        assert!(error.message.contains("did not match"), "{error}");
+        assert!(resolve_ip_rule_removals(None, &["rule-1".into()]).is_err());
+        assert!(resolve_ip_rule_removals(None, &[]).unwrap().is_empty());
     }
 
     #[test]
@@ -5593,6 +6000,9 @@ mod tests {
                 "default_transaction_isolation" => serde_json::json!("repeatable read"),
                 "ssl_min_protocol_version" => serde_json::json!("TLSv1.3"),
                 "wal_compression" => serde_json::json!("zstd"),
+                "default_toast_compression" => serde_json::json!("lz4"),
+                "enable_parallel_hash" | "log_lock_waits" => serde_json::json!("off"),
+                "io_method" => serde_json::json!("io_uring"),
                 "autovacuum_analyze_scale_factor" => serde_json::json!(false),
                 _ => serde_json::json!(0),
             };
