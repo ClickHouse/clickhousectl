@@ -70,10 +70,13 @@ async fn main() {
             let cli = Cli::from_arg_matches(&matches)
                 .expect("Cli::from_arg_matches must accept matches from Cli::command()");
             let read_only_telemetry_status = is_read_only_telemetry_status(&cli.command);
+            #[cfg(feature = "experimental-access-negotiation")]
             let access_validation = match &cli.command {
                 Commands::Cloud(args) => args.validate_access_selectors(&argv),
                 _ => Ok(()),
             };
+            #[cfg(not(feature = "experimental-access-negotiation"))]
+            let access_validation = Ok::<(), clap::Error>(());
             let run_result =
                 match access_validation.and_then(|()| validate_post_parse(&cli, &mut cmd)) {
                     Ok(()) => run_parsed(cli, read_only_telemetry_status).await,
@@ -210,6 +213,7 @@ fn validate_post_parse(cli: &Cli, cmd: &mut clap::Command) -> std::result::Resul
         ));
     }
 
+    #[cfg(feature = "experimental-access-negotiation")]
     if let cloud::cli::CloudCommands::Access {
         command: cloud::cli::AccessCommands::Request(request),
         ..
