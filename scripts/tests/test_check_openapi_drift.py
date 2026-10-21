@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -182,11 +183,14 @@ class DriftScriptTests(unittest.TestCase):
         with (
             mock.patch.object(drift, "open_drift_issues", return_value=[]),
             mock.patch.object(drift, "ensure_label_exists") as ensure_label,
-            mock.patch.object(drift, "create_issue") as create_issue,
+            mock.patch.object(
+                drift, "create_issue", return_value="https://github.com/o/r/issues/7"
+            ) as create_issue,
         ):
-            action = drift.sync_drift_issue("new title", "new body")
+            action, issue_url = drift.sync_drift_issue("new title", "new body")
 
         self.assertEqual(action, "created")
+        self.assertEqual(issue_url, "https://github.com/o/r/issues/7")
         ensure_label.assert_called_once_with()
         create_issue.assert_called_once_with("new title", generated_issue_body("new body"))
 
@@ -245,9 +249,10 @@ class DriftScriptTests(unittest.TestCase):
             mock.patch.object(drift, "delete_comment") as delete_comment,
             mock.patch.object(drift, "post_continuation_comment") as post_comment,
         ):
-            action = drift.sync_drift_issue("new title", "rendered body")
+            action, issue_url = drift.sync_drift_issue("new title", "rendered body")
 
         self.assertEqual(action, "updated")
+        self.assertEqual(issue_url, issue["url"])
         edit_issue.assert_called_once_with(
             issue["url"], "new title", generated_issue_body("new body")
         )
@@ -281,9 +286,10 @@ class DriftScriptTests(unittest.TestCase):
             mock.patch.object(drift, "edit_issue") as edit_issue,
             mock.patch.object(drift, "post_continuation_comment") as post_comment,
         ):
-            action = drift.sync_drift_issue("current title", "rendered body")
+            action, issue_url = drift.sync_drift_issue("current title", "rendered body")
 
         self.assertEqual(action, "updated")
+        self.assertEqual(issue_url, issue["url"])
         edit_issue.assert_not_called()
         post_comment.assert_called_once_with(issue["url"], desired)
 
@@ -321,9 +327,10 @@ class DriftScriptTests(unittest.TestCase):
             mock.patch.object(drift, "post_continuation_comment") as post_comment,
             mock.patch.object(drift, "close_issue") as close_issue,
         ):
-            action = drift.sync_drift_issue("current title", "rendered body")
+            action, issue_url = drift.sync_drift_issue("current title", "rendered body")
 
         self.assertEqual(action, "unchanged")
+        self.assertEqual(issue_url, issue["url"])
         edit_issue.assert_not_called()
         edit_comment.assert_not_called()
         delete_comment.assert_not_called()
@@ -342,9 +349,10 @@ class DriftScriptTests(unittest.TestCase):
             mock.patch.object(drift, "issue_comments") as issue_comments,
             mock.patch.object(drift, "close_issue") as close_issue,
         ):
-            action = drift.sync_drift_issue(None, None)
+            action, issue_url = drift.sync_drift_issue(None, None)
 
         self.assertEqual(action, "closed")
+        self.assertEqual(issue_url, issue["url"])
         close_issue.assert_called_once_with(issue["url"])
         issue_comments.assert_not_called()
 
@@ -353,9 +361,10 @@ class DriftScriptTests(unittest.TestCase):
             mock.patch.object(drift, "open_drift_issues", return_value=[]),
             mock.patch.object(drift, "close_issue") as close_issue,
         ):
-            action = drift.sync_drift_issue(None, None)
+            action, issue_url = drift.sync_drift_issue(None, None)
 
         self.assertEqual(action, "clean")
+        self.assertIsNone(issue_url)
         close_issue.assert_not_called()
 
     def test_sync_refuses_to_modify_manually_created_labeled_issue(self):
@@ -394,9 +403,10 @@ class DriftScriptTests(unittest.TestCase):
             mock.patch.object(drift, "issue_comments", return_value=[]),
             mock.patch.object(drift, "edit_issue") as edit_issue,
         ):
-            action = drift.sync_drift_issue("new title", "new body")
+            action, issue_url = drift.sync_drift_issue("new title", "new body")
 
         self.assertEqual(action, "updated")
+        self.assertEqual(issue_url, issue["url"])
         edit_issue.assert_called_once_with(
             issue["url"], "new title", generated_issue_body("new body")
         )
@@ -520,6 +530,60 @@ class DriftScriptTests(unittest.TestCase):
 
         self.assertEqual(raised.exception.code, 1)
 
+    def test_main_writes_sync_result_to_github_outputs(self):
+        cases = [
+            ("created", "https://github.com/o/r/issues/7", "issue_url=https://github.com/o/r/issues/7\n"),
+            ("clean", None, "issue_url=\n"),
+        ]
+        for action, issue_url, url_line in cases:
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "github_output"
+                output.write_text("existing=1\n")
+                with (
+                    mock.patch.object(sys, "argv", [str(SCRIPT)]),
+                    mock.patch.dict(drift.os.environ, {"GITHUB_OUTPUT": str(output)}),
+                    mock.patch.object(drift, "fetch_live_spec", return_value={}),
+                    mock.patch.object(
+                        drift, "run_analyzer", return_value={"schema_version": 11, "findings": []}
+                    ),
+                    mock.patch.object(
+                        drift, "sync_drift_issue", return_value=(action, issue_url)
+                    ),
+                    mock.patch("builtins.print"),
+                ):
+                    drift.main()
+
+                self.assertEqual(
+                    output.read_text(), f"existing=1\naction={action}\n{url_line}"
+                )
+
+    def test_dry_run_and_unreachable_spec_write_no_github_outputs(self):
+        report = {"schema_version": 11, "findings": [{"kind": "missing_struct_field"}]}
+        for argv, spec in (([str(SCRIPT), "--dry-run"], {}), ([str(SCRIPT)], None)):
+            with self.subTest(argv=argv, spec=spec), tempfile.TemporaryDirectory() as tmp:
+                output = Path(tmp) / "github_output"
+                with (
+                    mock.patch.object(sys, "argv", argv),
+                    mock.patch.dict(drift.os.environ, {"GITHUB_OUTPUT": str(output)}),
+                    mock.patch.object(drift, "fetch_live_spec", return_value=spec),
+                    mock.patch.object(drift, "run_analyzer", return_value=report),
+                    mock.patch.object(drift, "build_issue_body", return_value="body"),
+                    mock.patch.object(drift, "sync_drift_issue") as sync_issue,
+                    mock.patch("builtins.print"),
+                ):
+                    drift.main()
+
+                sync_issue.assert_not_called()
+                self.assertFalse(output.exists())
+
+    def test_github_outputs_reject_multiline_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "github_output"
+            with mock.patch.dict(drift.os.environ, {"GITHUB_OUTPUT": str(output)}):
+                with self.assertRaises(ValueError):
+                    drift.write_github_outputs({"action": "created", "issue_url": "a\nb=c"})
+            self.assertFalse(output.exists())
+
     @mock.patch.object(drift.subprocess, "run")
     def test_close_issue_marks_report_completed(self, run):
         run.return_value = SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -616,8 +680,9 @@ class DriftScriptTests(unittest.TestCase):
         )
         body = "\n".join("line %d" % i for i in range(20_000))
         self.assertGreater(len(body), drift.MAX_ISSUE_BODY_CHARS)
-        drift.create_issue("title", body)
+        issue_url = drift.create_issue("title", body)
 
+        self.assertEqual(issue_url, "https://github.com/ClickHouse/clickhousectl/issues/999")
         self.assertGreater(run.call_count, 1)
         create_args, create_kwargs = run.call_args_list[0]
         self.assertEqual(create_args[0][:3], ["gh", "issue", "create"])

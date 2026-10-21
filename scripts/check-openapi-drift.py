@@ -388,7 +388,7 @@ def post_continuation_comment(issue_url: str, body: str):
             raise
 
 
-def create_issue(title: str, body: str):
+def create_issue(title: str, body: str) -> str:
     chunks = split_issue_body(body)
     # The body can exceed the kernel's per-argument size limit; feed it via stdin.
     result = subprocess.run(
@@ -402,10 +402,15 @@ def create_issue(title: str, body: str):
     print(issue_url, file=sys.stderr)
     for chunk in chunks[1:]:
         post_continuation_comment(issue_url, chunk)
+    return issue_url
 
 
-def sync_drift_issue(title: str | None, body: str | None) -> str:
-    """Synchronize the one open generated drift issue with the latest report."""
+def sync_drift_issue(title: str | None, body: str | None) -> tuple[str, str | None]:
+    """Synchronize the one open generated drift issue with the latest report.
+
+    Returns the action taken (`created`, `updated`, `unchanged`, `closed` or
+    `clean`) and the URL of the issue it acted on, if any.
+    """
     existing = open_drift_issues()
     if len(existing) > 1:
         numbers = ", ".join(f"#{issue.get('number', 'unknown')}" for issue in existing)
@@ -425,18 +430,17 @@ def sync_drift_issue(title: str | None, body: str | None) -> str:
             raise ValueError("title and body must either both be set or both be None")
         if issue is None:
             print("No open drift issue to close.", file=sys.stderr)
-            return "clean"
+            return "clean", None
         print(f"Closing clean drift issue #{issue['number']}.", file=sys.stderr)
         close_issue(issue["url"])
-        return "closed"
+        return "closed", issue["url"]
 
     generated_body = f"{GENERATED_ISSUE_MARKER}\n\n{body}"
     chunks = split_issue_body(generated_body)
     if issue is None:
         ensure_label_exists()
         print(f"Creating issue: {title}", file=sys.stderr)
-        create_issue(title, generated_body)
-        return "created"
+        return "created", create_issue(title, generated_body)
 
     comments = issue_comments(issue["number"])
     managed = [comment for comment in comments if is_bot_generated_comment(comment)]
@@ -463,7 +467,7 @@ def sync_drift_issue(title: str | None, body: str | None) -> str:
     )
     if unchanged:
         print(f"Open drift issue #{issue['number']} is already current.", file=sys.stderr)
-        return "unchanged"
+        return "unchanged", issue["url"]
 
     print(f"Updating drift issue #{issue['number']}: {title}", file=sys.stderr)
     if issue.get("title") != title or issue.get("body") != chunks[0]:
@@ -479,7 +483,7 @@ def sync_drift_issue(title: str | None, body: str | None) -> str:
         delete_comment(continuation["id"])
     for notice in incomplete_notices:
         delete_comment(notice["id"])
-    return "updated"
+    return "updated", issue["url"]
 
 
 def build_issue_body(report: dict, live_spec: dict) -> str:
@@ -733,13 +737,27 @@ def main():
             return
 
     try:
-        sync_drift_issue(title, body)
+        action, issue_url = sync_drift_issue(title, body)
     except (RuntimeError, subprocess.CalledProcessError) as error:
         detail = getattr(error, "stderr", None)
         message = detail.strip() if isinstance(detail, str) and detail.strip() else str(error)
         print(f"ERROR: Could not synchronize the OpenAPI drift issue: {message}", file=sys.stderr)
         raise SystemExit(1) from error
+    write_github_outputs({"action": action, "issue_url": issue_url or ""})
     print("Done.", file=sys.stderr)
+
+
+def write_github_outputs(outputs: dict[str, str]):
+    """Expose step outputs to later workflow steps when running in GitHub Actions."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    for key, value in outputs.items():
+        if "\n" in value or "\r" in value:
+            raise ValueError(f"step output {key!r} must be a single line")
+    with open(path, "a", encoding="utf-8") as handle:
+        for key, value in outputs.items():
+            handle.write(f"{key}={value}\n")
 
 
 if __name__ == "__main__":
