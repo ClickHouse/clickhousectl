@@ -804,6 +804,121 @@ impl PgConfigSslMinProtocolVersion {
     pub const VALUES: &'static [&'static str] = &["TLSv1", "TLSv1.1", "TLSv1.2", "TLSv1.3"];
 }
 
+/// Inline enum for `pgConfig.default_toast_compression`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PgConfigDefaultToastCompression {
+    #[serde(rename = "pglz")]
+    #[default]
+    Pglz,
+    #[serde(rename = "lz4")]
+    Lz4,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigDefaultToastCompression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pglz => write!(f, "pglz"),
+            Self::Lz4 => write!(f, "lz4"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PgConfigDefaultToastCompression {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["pglz", "lz4"];
+}
+
+/// Inline enum for `pgConfig.enable_parallel_hash`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PgConfigEnableParallelHash {
+    #[serde(rename = "on")]
+    #[default]
+    On,
+    #[serde(rename = "off")]
+    Off,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigEnableParallelHash {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::On => write!(f, "on"),
+            Self::Off => write!(f, "off"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PgConfigEnableParallelHash {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["on", "off"];
+}
+
+/// Inline enum for `pgConfig.io_method`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PgConfigIoMethod {
+    #[serde(rename = "sync")]
+    #[default]
+    Sync,
+    #[serde(rename = "worker")]
+    Worker,
+    #[serde(rename = "io_uring")]
+    Io_uring,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigIoMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sync => write!(f, "sync"),
+            Self::Worker => write!(f, "worker"),
+            Self::Io_uring => write!(f, "io_uring"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PgConfigIoMethod {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["sync", "worker", "io_uring"];
+}
+
+/// Inline enum for `pgConfig.log_lock_waits`.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub enum PgConfigLogLockWaits {
+    #[serde(rename = "on")]
+    #[default]
+    On,
+    #[serde(rename = "off")]
+    Off,
+    /// Catch-all for unknown or newly-added values.
+    #[serde(untagged)]
+    Unknown(String),
+}
+
+impl std::fmt::Display for PgConfigLogLockWaits {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::On => write!(f, "on"),
+            Self::Off => write!(f, "off"),
+            Self::Unknown(s) => write!(f, "{s}"),
+        }
+    }
+}
+
+impl PgConfigLogLockWaits {
+    /// Wire values accepted by the API, excluding the catch-all.
+    pub const VALUES: &'static [&'static str] = &["on", "off"];
+}
+
 /// Inline enum for `pgConfig.wal_compression`.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub enum PgConfigWalCompression {
@@ -1336,7 +1451,17 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_delay: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_flush_after: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_lru_maxpages: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_lru_multiplier: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_toast_compression: Option<PgConfigDefaultToastCompression>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1344,15 +1469,37 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_io_concurrency: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_parallel_hash: Option<PgConfigEnableParallelHash>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash_mem_multiplier: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_method: Option<PgConfigIoMethod>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_lock_waits: Option<PgConfigLogLockWaits>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_min_duration_statement: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_parameter_max_length: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_temp_files: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_decoding_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_io_concurrency: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maintenance_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_logical_replication_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_maintenance_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1360,7 +1507,13 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers_per_gather: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_replication_slots: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_slot_wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_sync_workers_per_subscription: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_wal_senders: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_wal_size: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1376,7 +1529,13 @@ pub struct PgConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statement_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_buffers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_activity_query_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vacuum_cost_delay: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_buffers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1420,7 +1579,17 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub autovacuum_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_delay: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_flush_after: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_lru_maxpages: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bgwriter_lru_multiplier: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub checkpoint_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_toast_compression: Option<PgConfigDefaultToastCompression>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_transaction_isolation: Option<PgConfigDefaultTransactionIsolation>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1428,15 +1597,37 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effective_io_concurrency: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub enable_parallel_hash: Option<PgConfigEnableParallelHash>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash_mem_multiplier: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_in_transaction_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub idle_session_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_method: Option<PgConfigIoMethod>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub io_workers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub lock_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_lock_waits: Option<PgConfigLogLockWaits>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_min_duration_statement: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_parameter_max_length: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_temp_files: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub logical_decoding_work_mem: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub maintenance_io_concurrency: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maintenance_work_mem: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_connections: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_logical_replication_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_maintenance_workers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1444,7 +1635,13 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_parallel_workers_per_gather: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_replication_slots: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub max_slot_wal_keep_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_sync_workers_per_subscription: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_wal_senders: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_wal_size: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1460,7 +1657,13 @@ pub struct PgConfigResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub statement_timeout: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub temp_buffers: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub track_activity_query_size: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub transaction_timeout: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vacuum_cost_delay: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub wal_buffers: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]

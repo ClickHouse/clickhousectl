@@ -9657,3 +9657,50 @@ fn clickstack_validate_webhook_response_tolerates_absence_and_null() {
     assert_eq!(response.valid, Some(true));
     assert_eq!(response.normalized.unwrap()["service"], "generic");
 }
+
+#[test]
+fn pg_config_background_writer_io_and_replication_settings_round_trip() {
+    let wire = serde_json::json!({
+        "bgwriter_delay": "200ms", "bgwriter_flush_after": "512kB", "bgwriter_lru_maxpages": 100,
+        "bgwriter_lru_multiplier": 2, "default_toast_compression": "lz4",
+        "enable_parallel_hash": "on", "hash_mem_multiplier": 2, "io_method": "io_uring",
+        "io_workers": 3, "log_lock_waits": "off", "log_min_duration_statement": -1,
+        "log_parameter_max_length": "-1", "log_temp_files": 0,
+        "logical_decoding_work_mem": "64MB", "maintenance_io_concurrency": 10,
+        "max_logical_replication_workers": 4, "max_replication_slots": 10,
+        "max_sync_workers_per_subscription": 2, "max_wal_senders": 10, "temp_buffers": "8MB",
+        "track_activity_query_size": 4096, "vacuum_cost_delay": "0"
+    });
+    let response: PgConfigResponse = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(response.io_method, Some(PgConfigIoMethod::Io_uring));
+    let request = PgConfig::from(response);
+    assert_eq!(
+        request.default_toast_compression,
+        Some(PgConfigDefaultToastCompression::Lz4)
+    );
+    assert_eq!(serde_json::to_value(&request).unwrap(), wire);
+
+    for (values, parse) in [
+        (
+            PgConfigDefaultToastCompression::VALUES,
+            (|v| {
+                serde_json::from_value::<PgConfigDefaultToastCompression>(v).map(|e| e.to_string())
+            }) as fn(serde_json::Value) -> serde_json::Result<String>,
+        ),
+        (PgConfigEnableParallelHash::VALUES, |v| {
+            serde_json::from_value::<PgConfigEnableParallelHash>(v).map(|e| e.to_string())
+        }),
+        (PgConfigIoMethod::VALUES, |v| {
+            serde_json::from_value::<PgConfigIoMethod>(v).map(|e| e.to_string())
+        }),
+        (PgConfigLogLockWaits::VALUES, |v| {
+            serde_json::from_value::<PgConfigLogLockWaits>(v).map(|e| e.to_string())
+        }),
+    ] {
+        for value in values {
+            assert_eq!(parse(serde_json::json!(value)).unwrap(), *value);
+        }
+    }
+    let future: PgConfigIoMethod = serde_json::from_value(serde_json::json!("posix_aio")).unwrap();
+    assert_eq!(future, PgConfigIoMethod::Unknown("posix_aio".into()));
+}
