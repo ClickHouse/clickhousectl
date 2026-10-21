@@ -23360,6 +23360,81 @@ async fn clickstack_dashboard_validate_fails_fast_for_oauth() {
     assert!(mock.received_requests().await.unwrap().is_empty());
 }
 
+#[tokio::test]
+async fn clickstack_webhook_validate_posts_the_create_body_and_prints_the_result() {
+    let body = serde_json::json!({
+        "name": "On-call", "service": "generic", "url": "https://example.com/hook",
+        "body": "{\"text\":\"{{title}}\"}", "headers": {"X-Team": "ops"}
+    });
+    for json in [true, false] {
+        let mock = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(
+                "/v1/organizations/org-1/services/svc-1/clickstack/webhooks/validate",
+            ))
+            .and(wiremock::matchers::basic_auth(
+                "fake-key-for-tests",
+                "fake-secret-for-tests",
+            ))
+            .and(body_json(body.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "status": 200,
+                "result": {
+                    "valid": false,
+                    "errors": [{"path": "url", "message": "URL is not allowed"}],
+                    "normalized": null
+                }
+            })))
+            .expect(1)
+            .mount(&mock)
+            .await;
+        let output = invoke_clickstack_cli(
+            &mock,
+            &[
+                "clickstack",
+                "webhook",
+                "validate",
+                "svc-1",
+                "--file",
+                "-",
+                "--org-id",
+                "org-1",
+            ],
+            Some(&body.to_string()),
+            json,
+        );
+        assert_success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if json {
+            let result: Value = serde_json::from_str(stdout.trim()).unwrap();
+            assert_eq!(result["valid"], false);
+            assert_eq!(result["errors"][0]["path"], "url");
+        } else {
+            assert!(stdout.contains("URL is not allowed"), "{stdout}");
+        }
+    }
+
+    // The create-body checks run before any request.
+    let mock = MockServer::start().await;
+    let output = invoke_clickstack_cli(
+        &mock,
+        &[
+            "clickstack",
+            "webhook",
+            "validate",
+            "svc-1",
+            "--file",
+            "-",
+            "--org-id",
+            "org-1",
+        ],
+        Some(r#"{"name":"x","service":"slack","url":"https://hooks.slack.com/x","body":"{}"}"#),
+        true,
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(mock.received_requests().await.unwrap().is_empty());
+}
+
 // ── ClickStack alert and webhook commands (issue #695) ─────────────────────
 
 #[tokio::test]

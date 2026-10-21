@@ -45,6 +45,8 @@ clickhousectl cloud clickstack dashboard get <service-id> <dashboard-id>
 
 Use the returned ID to inspect the saved resource, then open it in ClickStack to verify the chart against your source data. `--file -` accepts stdin. Validation checks a **create body** without saving it; it does not validate the separate update body.
 
+Tiles can also use `stacked_line` charts, and heatmaps accept `"heatmapMode": "series"` with ordinary select items and a `groupBy`. Dashboard filters are `QUERY_EXPRESSION`, `STATIC_LIST`, `PROMETHEUS_LABEL`, or `SOURCE_FILTER`. Set `minSelections` to `1` to make a filter required, and `maxSelections` to `1` to make it single-select.
+
 ## Safely update an existing resource
 
 **Every ClickStack update replaces the complete resource.** Before editing, save the current state:
@@ -76,10 +78,11 @@ Create a webhook first, then reference its ID in an alert. A generic `webhook.js
 ```
 
 ```bash
+clickhousectl cloud clickstack webhook validate <service-id> --file webhook.json
 clickhousectl cloud clickstack webhook create <service-id> --file webhook.json
 ```
 
-Protect JSON files containing authorization headers or other secrets. The current alert contract requires both `channel` and `channels`. A minimal tile alert definition is:
+`webhook validate` checks the body against the create rules without saving it; it does not check that the name is unique. Protect JSON files containing authorization headers or other secrets. An alert needs `channel`, `channels` (1 to 10 entries), or both. A minimal tile alert definition is:
 
 ```json
 {
@@ -101,4 +104,6 @@ clickhousectl cloud clickstack alert create <service-id> --file alert.json
 clickhousectl cloud clickstack alert get <service-id> <alert-id>
 ```
 
-Inspect `state` and `executionErrors`, as well as notification destinations. A `saved_search` alert uses `savedSearchId` instead of dashboard/tile IDs. The `30s` interval requires that feature enabled for the team. Updates must retain both channel fields and every other desired setting.
+Inspect `state` and `executionErrors`, as well as notification destinations. A `saved_search` alert uses `savedSearchId` instead of dashboard/tile IDs. An `inline` alert carries its own query in `chartConfig` (a `line`, `stacked_bar`, `stacked_line`, or `number` chart, plus optional `name`, `where`, and `whereLanguage`) and no dashboard, tile, or saved search IDs. `where` is rejected on raw SQL charts; filter inside `sqlTemplate` instead. `displayName` and `tags` default to the referenced resource's values. The `30s` interval requires that feature enabled for the team. Updates must retain the channel fields and every other desired setting.
+
+Role permissions must set `integration` to `mongodb` or `clickhouse`. ClickHouse permissions scope access with `conditions` that name a connection, a database and table, and a `where` filter.
