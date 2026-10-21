@@ -204,6 +204,32 @@ python3 scripts/check-openapi-drift.py --dry-run
 
 Field optionality is maintained by hand. Edit the owning model domain file when the drift check flags a mismatch, and add new domain types to the private module and facade re-exports in `models.rs`.
 
+#### Automated drift remediation
+
+When the nightly `openapi-drift.yml` run opens a new drift issue, it launches a Cursor Cloud Agent through the
+[Cloud Agents API](https://cursor.com/docs/cloud-agent/api/endpoints.md) to remediate it.
+`scripts/launch-drift-remediation-agent.py` sends the request. The agent follows the `openapi-drift-remediation`
+skill and opens draft pull requests for review. Later runs only edit the open issue, so they never launch another
+agent. Each issue maps to a fixed agent ID, so a retry can't start a second agent for the same issue.
+
+Configure it in the repository settings:
+
+| Setting | Kind | Purpose |
+| --- | --- | --- |
+| `CURSOR_API_KEY` | Secret, required | Cursor user or service-account API key. Without it the step logs a warning and skips. |
+| `CURSOR_DRIFT_AGENT_MODEL` | Variable, optional | Model ID from `GET https://api.cursor.com/v1/models`. When unset, the key owner's default model is used. |
+| `CURSOR_DRIFT_AGENT_MODEL_PARAMS` | Variable, optional | JSON array of model parameters, such as `[{"id": "thinking", "value": "high"}]`. |
+| `CURSOR_DRIFT_AGENT_ENVIRONMENT` | Variable, optional | Name of a saved Cursor cloud environment. When unset, Cursor picks the repository's saved environment. |
+
+To start an agent for a drift issue that is already open, run the workflow manually with **Launch a Cursor
+remediation agent** checked. Preview the request without calling the API:
+
+```bash
+python3 scripts/launch-drift-remediation-agent.py --dry-run \
+  --issue-url https://github.com/ClickHouse/clickhousectl/issues/NUMBER \
+  --repo-url https://github.com/ClickHouse/clickhousectl
+```
+
 ### Testing
 
 ```bash

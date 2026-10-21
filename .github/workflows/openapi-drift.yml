@@ -5,6 +5,11 @@ on:
     # Run daily at 08:00 UTC
     - cron: "0 8 * * *"
   workflow_dispatch:
+    inputs:
+      launch_agent:
+        description: "Launch a Cursor remediation agent for the open drift issue, even if this run did not create it"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -34,6 +39,38 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Check for drift and synchronize issue
+        id: drift
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: python3 scripts/check-openapi-drift.py
+
+      # Only a newly created issue launches an agent; the issue is re-edited every
+      # night while drift remains. The secret is scoped to this step alone.
+      - name: Launch Cursor drift remediation agent
+        if: >-
+          steps.drift.outputs.issue_url != '' &&
+          (steps.drift.outputs.action == 'created' ||
+          (inputs.launch_agent &&
+          (steps.drift.outputs.action == 'updated' || steps.drift.outputs.action == 'unchanged')))
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          ISSUE_URL: ${{ steps.drift.outputs.issue_url }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          STARTING_REF: ${{ github.ref_name }}
+          AGENT_MODEL: ${{ vars.CURSOR_DRIFT_AGENT_MODEL }}
+          AGENT_MODEL_PARAMS: ${{ vars.CURSOR_DRIFT_AGENT_MODEL_PARAMS }}
+          AGENT_ENVIRONMENT: ${{ vars.CURSOR_DRIFT_AGENT_ENVIRONMENT }}
+          REQUIRE_KEY: ${{ inputs.launch_agent && 'true' || 'false' }}
+        run: |
+          args=(
+            --issue-url "$ISSUE_URL"
+            --repo-url "$REPO_URL"
+            --starting-ref "$STARTING_REF"
+            --model "$AGENT_MODEL"
+            --model-params "$AGENT_MODEL_PARAMS"
+            --environment "$AGENT_ENVIRONMENT"
+          )
+          if [ "$REQUIRE_KEY" = "true" ]; then
+            args+=(--require-key)
+          fi
+          python3 scripts/launch-drift-remediation-agent.py "${args[@]}"

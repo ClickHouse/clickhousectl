@@ -100,6 +100,9 @@ Spec: https://api.clickhouse.cloud/v1
 
 - `.github/workflows/openapi-drift.yml` runs `scripts/check-openapi-drift.py` daily.
   `python3 scripts/check-openapi-drift.py --dry-run` reproduces the rendered issue without creating one.
+- A newly created drift issue launches a Cursor Cloud Agent via `scripts/launch-drift-remediation-agent.py`; setup
+  is in this crate's README. Its prompt defers to the remediation skill, so change the workflow there, not in the
+  prompt. Only the launch step may see `CURSOR_API_KEY`.
 - The analyzer is the single implementation of parsing and comparison. Do not duplicate source parsing, exemptions,
   or comparison logic in tests or in Python; Python owns fetching, issue rendering, and GitHub orchestration only.
   Module cfg evaluation uses the analyzer host target, excludes `test`, treats feature-gated API as enabled, and
