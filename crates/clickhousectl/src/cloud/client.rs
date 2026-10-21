@@ -116,8 +116,16 @@ impl From<serde_json::Error> for CloudError {
 pub type Result<T> = std::result::Result<T, CloudError>;
 
 enum AuthMode {
-    Basic { key: String, secret: String },
-    Bearer { token: String },
+    Basic {
+        key: String,
+        secret: String,
+    },
+    // The token is read only by `request_auth` (experimental-access-negotiation),
+    // but both builds keep the same variant shape.
+    #[cfg_attr(not(feature = "experimental-access-negotiation"), allow(dead_code))]
+    Bearer {
+        token: String,
+    },
 }
 
 /// The authentication a bespoke control-plane request (one made with a plain
@@ -125,6 +133,7 @@ enum AuthMode {
 /// [`AuthMode`] but owns its values so callers can build request headers after
 /// the borrow on the client ends. Used by the access-request PKCE flow
 /// (`cloud access request`), which talks to endpoints the library does not model.
+#[cfg(feature = "experimental-access-negotiation")]
 pub(crate) enum RequestAuth {
     Basic { key: String, secret: String },
     Bearer { token: String },
@@ -638,6 +647,7 @@ impl CloudClient {
     }
 
     /// Access negotiation identifies the user, never a previously issued API key.
+    #[cfg(feature = "experimental-access-negotiation")]
     pub(super) async fn for_access(url_override: Option<&str>) -> Result<Self> {
         // Suppress the normal refresh warning's API-key fallback advice: this
         // lane requires OAuth even when other credentials are configured.
@@ -651,6 +661,7 @@ impl CloudClient {
         Self::from_access_tokens(crate::cloud::auth::load_tokens(), url_override)
     }
 
+    #[cfg(feature = "experimental-access-negotiation")]
     fn from_access_tokens(
         tokens: Option<crate::cloud::auth::TokenStore>,
         url_override: Option<&str>,
@@ -762,6 +773,7 @@ impl CloudClient {
     /// The resolved credentials in a form a bespoke `reqwest` request can carry,
     /// for control-plane endpoints the typed library client does not model (the
     /// access-request PKCE flow). Clones so the value outlives the client borrow.
+    #[cfg(feature = "experimental-access-negotiation")]
     pub(crate) fn request_auth(&self) -> RequestAuth {
         match &self.auth_mode {
             AuthMode::Basic { key, secret } => RequestAuth::Basic {
@@ -951,6 +963,7 @@ mod tests {
     const DEFAULT_LIB_BASE_URL: &str = "https://api.clickhouse.cloud";
 
     #[test]
+    #[cfg(feature = "experimental-access-negotiation")]
     fn access_client_uses_explicit_saved_or_legacy_default_api_base() {
         for (saved, explicit, expected) in [
             (

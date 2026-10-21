@@ -26,6 +26,11 @@ telemetry = []
 # fields are present on the response structs and surfaced in CLI output. Off by
 # default so the CLI never shows a field the API has deprecated.
 deprecated-fields = ["clickhouse-cloud-api/deprecated-fields"]
+# Compiles in the experimental `cloud access` flow (assignable-role discovery
+# and the scoped-API-key PKCE approval handshake). Off by default so the
+# published binary carries none of it; opt in locally with
+# `--features experimental-access-negotiation`.
+experimental-access-negotiation = []
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

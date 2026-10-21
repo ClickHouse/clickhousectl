@@ -101,8 +101,13 @@ impl Declaration {
 }
 
 fn declarations() -> impl Iterator<Item = &'static Declaration> {
+    // Feature-gated declarations stay a compile-time constant in both builds
+    // so the iterator's shape is feature-agnostic.
+    #[cfg(feature = "experimental-access-negotiation")]
+    const ACCESS_DECLARATIONS: &[&[Declaration]] = &[super::access::PERMISSIONS];
+    #[cfg(not(feature = "experimental-access-negotiation"))]
+    const ACCESS_DECLARATIONS: &[&[Declaration]] = &[];
     [
-        super::access::PERMISSIONS,
         super::activity::PERMISSIONS,
         super::api_keys::PERMISSIONS,
         super::auth::PERMISSIONS,
@@ -118,6 +123,7 @@ fn declarations() -> impl Iterator<Item = &'static Declaration> {
         super::udfs::PERMISSIONS,
     ]
     .into_iter()
+    .chain(ACCESS_DECLARATIONS.iter().copied())
     .flatten()
 }
 

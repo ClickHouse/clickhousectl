@@ -1,3 +1,4 @@
+#[cfg(feature = "experimental-access-negotiation")]
 pub(crate) use crate::cloud::access::AccessCommands;
 pub(crate) use crate::cloud::activity::ActivityCommands;
 pub(crate) use crate::cloud::api_keys::KeyCommands;
@@ -66,6 +67,7 @@ pub struct CloudArgs {
 impl CloudArgs {
     /// Reparse only access invocations without selector propagation so clap
     /// cannot erase conflicting values supplied at different command depths.
+    #[cfg(feature = "experimental-access-negotiation")]
     pub fn validate_access_selectors(
         &self,
         argv: &[std::ffi::OsString],
@@ -197,6 +199,7 @@ pub enum CloudCommands {
     },
 
     /// Discover roles and request scoped API keys
+    #[cfg(feature = "experimental-access-negotiation")]
     #[command(after_help = "\
 CONTEXT FOR AGENTS:
   Requires user OAuth identity from `cloud auth login`, even when an API key is saved.
@@ -372,6 +375,7 @@ impl CloudCommands {
     pub fn is_write_command(&self) -> bool {
         match self {
             CloudCommands::Auth { command } => command.is_write(),
+            #[cfg(feature = "experimental-access-negotiation")]
             CloudCommands::Access { command, .. } => command.is_write(),
             CloudCommands::Org { command } => command.is_write(),
             CloudCommands::Service { command } => command.is_write(),
