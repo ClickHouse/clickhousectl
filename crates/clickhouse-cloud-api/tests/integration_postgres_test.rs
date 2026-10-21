@@ -497,6 +497,68 @@ async fn cloud_postgres_crud_lifecycle() -> TestResult<()> {
             )
             .await?;
 
+        // ── IP access list ──────────────────────────────────────────
+
+        // Adds a TEST-NET-3 rule next to the default allow-all rules, reads
+        // it back, then removes it by its returned ID. The allow-all rules
+        // stay in place so later connection steps keep working.
+        log_phase("IP access list");
+        let test_source = "203.0.113.0/24";
+        failures
+            .run(
+                &ctx,
+                StepKind::NonBlocking,
+                "add, read back and remove a postgres IP access rule",
+                || {
+                    let client = client.clone();
+                    let org_id = ctx.org_id.clone();
+                    let postgres_id = postgres_id.clone();
+                    async move {
+                        let add = PostgresServicePatchRequest {
+                            ip_access_list: Some(PostgresIpAccessListPatch {
+                                add: vec![PostgresIpAccessListEntry {
+                                    source: test_source.to_string(),
+                                    port_range: "5432".to_string(),
+                                    description: Some("clickhousectl integration".to_string()),
+                                    id: None,
+                                }],
+                                remove: Vec::new(),
+                            }),
+                            ..Default::default()
+                        };
+                        client
+                            .postgres_service_patch(&org_id, &postgres_id, &add)
+                            .await?;
+                        let svc = client
+                            .postgres_service_get(&org_id, &postgres_id)
+                            .await?
+                            .result
+                            .ok_or("postgres get returned no result")?;
+                        let rule_id = svc
+                            .ip_access_list
+                            .iter()
+                            .flatten()
+                            .find(|rule| rule.source.as_deref() == Some(test_source))
+                            .and_then(|rule| rule.id.clone())
+                            .ok_or("added IP access rule not returned with an id by get")?;
+                        let remove = PostgresServicePatchRequest {
+                            ip_access_list: Some(PostgresIpAccessListPatch {
+                                add: Vec::new(),
+                                remove: vec![PostgresIpAccessListRuleReference {
+                                    id: rule_id,
+                                }],
+                            }),
+                            ..Default::default()
+                        };
+                        client
+                            .postgres_service_patch(&org_id, &postgres_id, &remove)
+                            .await?;
+                        Ok(())
+                    }
+                },
+            )
+            .await?;
+
         // ── Password ────────────────────────────────────────────────
 
         // Per OpenAPI spec, PostgresServicePasswordResource.password is only

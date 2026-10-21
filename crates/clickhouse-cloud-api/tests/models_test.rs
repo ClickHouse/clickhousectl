@@ -1056,67 +1056,67 @@ fn postgres_slow_query_sort_values_roundtrip_as_known_variants() {
 #[test]
 fn postgres_gcp_sizes_roundtrip_as_known_variants() {
     let sizes = [
-        "c4a-highmem-4",
-        "c4a-highmem-8",
-        "c4a-highmem-16",
-        "c4a-highmem-32",
-        "c4a-highmem-48",
-        "c4a-highmem-64",
-        "c4a-highmem-72",
-        "c4a-standard-4",
-        "c4a-standard-8",
-        "c4a-standard-16",
-        "c4a-standard-32",
-        "c4a-standard-48",
-        "c4a-standard-64",
-        "c4a-standard-72",
-        "c4-highmem-4",
-        "c4-highmem-8",
-        "c4-highmem-16",
-        "c4-highmem-24",
-        "c4-highmem-32",
-        "c4-highmem-48",
-        "c4-highmem-96",
-        "c4-highmem-144",
-        "c4-highmem-192",
-        "c4-highmem-288",
-        "c4-standard-4",
-        "c4-standard-8",
-        "c4-standard-16",
-        "c4-standard-24",
-        "c4-standard-32",
-        "c4-standard-48",
-        "c4-standard-96",
-        "c4-standard-144",
-        "c4-standard-192",
-        "c4-standard-288",
-        "c4d-highmem-8",
-        "c4d-highmem-16",
-        "c4d-highmem-32",
-        "c4d-highmem-48",
-        "c4d-highmem-64",
-        "c4d-highmem-96",
-        "c4d-highmem-192",
-        "c4d-highmem-384",
-        "c4d-standard-8",
-        "c4d-standard-16",
-        "c4d-standard-32",
-        "c4d-standard-48",
-        "c4d-standard-64",
-        "c4d-standard-96",
-        "c4d-standard-192",
-        "c4d-standard-384",
-        "z3-highlssd-8",
-        "z3-highlssd-16",
-        "z3-highlssd-22",
-        "z3-highlssd-32",
-        "z3-highlssd-44",
-        "z3-highlssd-88",
-        "z3-standardlssd-14",
-        "z3-standardlssd-22",
-        "z3-standardlssd-44",
-        "z3-standardlssd-88",
-        "z3-standardlssd-176",
+        "c4a-highmem-lssd-4",
+        "c4a-highmem-lssd-8",
+        "c4a-highmem-lssd-16",
+        "c4a-highmem-lssd-32",
+        "c4a-highmem-lssd-48",
+        "c4a-highmem-lssd-64",
+        "c4a-highmem-lssd-72",
+        "c4a-standard-lssd-4",
+        "c4a-standard-lssd-8",
+        "c4a-standard-lssd-16",
+        "c4a-standard-lssd-32",
+        "c4a-standard-lssd-48",
+        "c4a-standard-lssd-64",
+        "c4a-standard-lssd-72",
+        "c4-highmem-lssd-4",
+        "c4-highmem-lssd-8",
+        "c4-highmem-lssd-16",
+        "c4-highmem-lssd-24",
+        "c4-highmem-lssd-32",
+        "c4-highmem-lssd-48",
+        "c4-highmem-lssd-96",
+        "c4-highmem-lssd-144",
+        "c4-highmem-lssd-192",
+        "c4-highmem-lssd-288",
+        "c4-standard-lssd-4",
+        "c4-standard-lssd-8",
+        "c4-standard-lssd-16",
+        "c4-standard-lssd-24",
+        "c4-standard-lssd-32",
+        "c4-standard-lssd-48",
+        "c4-standard-lssd-96",
+        "c4-standard-lssd-144",
+        "c4-standard-lssd-192",
+        "c4-standard-lssd-288",
+        "c4d-highmem-lssd-8",
+        "c4d-highmem-lssd-16",
+        "c4d-highmem-lssd-32",
+        "c4d-highmem-lssd-48",
+        "c4d-highmem-lssd-64",
+        "c4d-highmem-lssd-96",
+        "c4d-highmem-lssd-192",
+        "c4d-highmem-lssd-384",
+        "c4d-standard-lssd-8",
+        "c4d-standard-lssd-16",
+        "c4d-standard-lssd-32",
+        "c4d-standard-lssd-48",
+        "c4d-standard-lssd-64",
+        "c4d-standard-lssd-96",
+        "c4d-standard-lssd-192",
+        "c4d-standard-lssd-384",
+        "z3-highmem-highlssd-8",
+        "z3-highmem-highlssd-16",
+        "z3-highmem-highlssd-22",
+        "z3-highmem-highlssd-32",
+        "z3-highmem-highlssd-44",
+        "z3-highmem-highlssd-88",
+        "z3-highmem-standardlssd-14",
+        "z3-highmem-standardlssd-22",
+        "z3-highmem-standardlssd-44",
+        "z3-highmem-standardlssd-88",
+        "z3-highmem-standardlssd-176",
     ];
 
     for wire_value in sizes {
@@ -2477,6 +2477,134 @@ fn postgres_instance_config_response_conversion_reports_missing_required_fields(
         missing_both.to_string(),
         "the API response is missing required field(s): pgBouncerConfig, pgConfig"
     );
+}
+
+#[test]
+fn postgres_ip_access_list_response_tolerates_absence_and_null() {
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"ipAccessList": null}),
+    ] {
+        let service: PostgresService = serde_json::from_value(wire).unwrap();
+        assert_eq!(service.ip_access_list, None);
+    }
+    for wire in [
+        serde_json::json!({}),
+        serde_json::json!({"id": null, "source": null, "portRange": null, "description": null}),
+    ] {
+        let entry: PostgresIpAccessListEntryResponse = serde_json::from_value(wire).unwrap();
+        assert_eq!(entry, PostgresIpAccessListEntryResponse::default());
+        assert_eq!(serde_json::to_value(entry).unwrap(), serde_json::json!({}));
+    }
+
+    let service: PostgresService = serde_json::from_value(serde_json::json!({
+        "ipAccessList": [
+            {"id": "rule-1", "source": "203.0.113.0/24", "portRange": "5432", "description": "office"},
+            {"source": "198.51.100.7/32", "futureField": true}
+        ]
+    }))
+    .unwrap();
+    let rules = service.ip_access_list.unwrap();
+    assert_eq!(rules[0].id.as_deref(), Some("rule-1"));
+    assert_eq!(rules[0].port_range.as_deref(), Some("5432"));
+    assert_eq!(rules[1].source.as_deref(), Some("198.51.100.7/32"));
+    assert_eq!(rules[1].port_range, None);
+}
+
+#[test]
+fn postgres_ip_access_list_requests_are_strict() {
+    let entry: PostgresIpAccessListEntry = serde_json::from_value(
+        serde_json::json!({"source": "203.0.113.0/24", "portRange": "5432"}),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&entry).unwrap(),
+        serde_json::json!({"source": "203.0.113.0/24", "portRange": "5432"})
+    );
+    for required in ["source", "portRange"] {
+        let mut wire = serde_json::json!({"source": "203.0.113.0/24", "portRange": "5432"});
+        wire.as_object_mut().unwrap().remove(required);
+        assert!(
+            serde_json::from_value::<PostgresIpAccessListEntry>(wire).is_err(),
+            "{required} must be required"
+        );
+    }
+    assert!(
+        serde_json::from_value::<PostgresIpAccessListRuleReference>(serde_json::json!({})).is_err()
+    );
+
+    let patch = PostgresServicePatchRequest {
+        ip_access_list: Some(PostgresIpAccessListPatch {
+            add: vec![PostgresIpAccessListEntry {
+                id: Some("rule-1".into()),
+                source: "203.0.113.0/24".into(),
+                port_range: "5432..6432".into(),
+                description: Some("office".into()),
+            }],
+            remove: vec![PostgresIpAccessListRuleReference {
+                id: "rule-2".into(),
+            }],
+        }),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&patch).unwrap(),
+        serde_json::json!({"ipAccessList": {
+            "add": [{"id": "rule-1", "source": "203.0.113.0/24", "portRange": "5432..6432", "description": "office"}],
+            "remove": [{"id": "rule-2"}]
+        }})
+    );
+
+    let blocked = PostgresServicePostRequest {
+        name: "pg".into(),
+        provider: PgProvider::Aws,
+        region: "us-east-1".into(),
+        size: PgSize::C6gd_large,
+        ip_access_list: Some(Vec::new()),
+        ..Default::default()
+    };
+    assert_eq!(
+        serde_json::to_value(&blocked).unwrap()["ipAccessList"],
+        serde_json::json!([])
+    );
+    let open = PostgresServicePostRequest {
+        ip_access_list: None,
+        ..blocked
+    };
+    assert!(
+        serde_json::to_value(&open)
+            .unwrap()
+            .get("ipAccessList")
+            .is_none()
+    );
+}
+
+#[test]
+fn postgres_ip_access_list_entry_response_converts_back_into_an_edit() {
+    let edit = PostgresIpAccessListEntry::try_from(PostgresIpAccessListEntryResponse {
+        id: Some("rule-1".into()),
+        source: Some("203.0.113.0/24".into()),
+        port_range: Some("5432".into()),
+        description: None,
+    })
+    .unwrap();
+    assert_eq!(
+        serde_json::to_value(&edit).unwrap(),
+        serde_json::json!({"id": "rule-1", "source": "203.0.113.0/24", "portRange": "5432"})
+    );
+
+    let missing = PostgresIpAccessListEntry::try_from(PostgresIpAccessListEntryResponse::default())
+        .unwrap_err();
+    assert_eq!(missing.fields(), ["portRange", "source"]);
+}
+
+#[test]
+fn retired_postgres_gcp_size_names_fall_through_to_the_catch_all() {
+    for wire_value in ["c4-highmem-16", "c4a-standard-4", "z3-highlssd-8"] {
+        let size: PgSize = serde_json::from_value(wire_value.into()).unwrap();
+        assert_eq!(size, PgSize::Unknown(wire_value.to_string()));
+        assert_eq!(size.to_string(), wire_value);
+    }
 }
 
 #[test]

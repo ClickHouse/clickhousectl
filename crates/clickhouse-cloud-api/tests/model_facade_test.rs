@@ -267,3 +267,23 @@ fn notification_is_available_through_both_public_paths() {
         api::models::Notification::default(),
     );
 }
+
+#[test]
+fn postgres_ip_access_list_models_are_available_through_both_public_paths() {
+    assert_same_type(
+        api::PostgresIpAccessListEntry::default(),
+        api::models::PostgresIpAccessListEntry::default(),
+    );
+    assert_same_type(
+        api::PostgresIpAccessListEntryResponse::default(),
+        api::models::PostgresIpAccessListEntryResponse::default(),
+    );
+    assert_same_type(
+        api::PostgresIpAccessListPatch::default(),
+        api::models::PostgresIpAccessListPatch::default(),
+    );
+    assert_same_type(
+        api::PostgresIpAccessListRuleReference::default(),
+        api::models::PostgresIpAccessListRuleReference::default(),
+    );
+}

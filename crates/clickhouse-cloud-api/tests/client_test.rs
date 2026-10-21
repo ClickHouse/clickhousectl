@@ -4611,6 +4611,49 @@ async fn update_postgres_service() {
 }
 
 #[tokio::test]
+async fn update_postgres_service_ip_access_list() {
+    let (s, c) = setup().await;
+
+    Mock::given(method("PATCH"))
+        .and(path("/v1/organizations/org-1/postgres/pg-1"))
+        .and(body_json(serde_json::json!({"ipAccessList": {
+            "add": [{"source": "203.0.113.0/24", "portRange": "5432"}],
+            "remove": [{"id": "rule-old"}]
+        }})))
+        .respond_with(ok_json(serde_json::json!({
+            "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+            "ipAccessList": [
+                {"id": "rule-new", "source": "203.0.113.0/24", "portRange": "5432"}
+            ]
+        })))
+        .mount(&s)
+        .await;
+
+    let body = PostgresServicePatchRequest {
+        ip_access_list: Some(PostgresIpAccessListPatch {
+            add: vec![PostgresIpAccessListEntry {
+                source: "203.0.113.0/24".into(),
+                port_range: "5432".into(),
+                ..Default::default()
+            }],
+            remove: vec![PostgresIpAccessListRuleReference {
+                id: "rule-old".into(),
+            }],
+        }),
+        ..Default::default()
+    };
+    let pg = c
+        .postgres_service_patch("org-1", "pg-1", &body)
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    let rules = pg.ip_access_list.unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0].id.as_deref(), Some("rule-new"));
+}
+
+#[tokio::test]
 async fn delete_postgres_service() {
     let (s, c) = setup().await;
 
