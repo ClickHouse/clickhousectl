@@ -36,6 +36,16 @@ pub struct ActiveBalances {
 /// `PrometheusDiscoveryLabels` from the ClickHouse Cloud API.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct PrometheusDiscoveryLabels {
+    #[serde(
+        rename = "__meta_clickhouse_provider",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub meta_clickhouse_provider: Option<String>,
+    #[serde(
+        rename = "__meta_clickhouse_region",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub meta_clickhouse_region: Option<String>,
     #[serde(rename = "__metrics_path__", skip_serializing_if = "Option::is_none")]
     pub metrics_path: Option<String>,
     #[serde(
@@ -57,6 +67,13 @@ pub struct PrometheusDiscoveryLabels {
         skip_serializing_if = "Option::is_none"
     )]
     pub clickhouse_service_id: Option<uuid::Uuid>,
+    /// Labels the spec allows beyond the named ones (`additionalProperties`).
+    #[serde(
+        flatten,
+        deserialize_with = "crate::serde_helpers::deserialize_flattened_string_map",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub additional_labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// `PrometheusDiscoveryTargetGroup` from the ClickHouse Cloud API.

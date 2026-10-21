@@ -8592,3 +8592,78 @@ fn serialize_replica_aware_routing_patch_request() {
         serde_json::json!({"httpEnabled": true, "nativeEnabled": false})
     );
 }
+
+#[test]
+fn prometheus_discovery_labels_keep_named_meta_and_additional_labels() {
+    let json = serde_json::json!({
+        "__scheme__": "https",
+        "__meta_clickhouse_provider": "aws",
+        "__meta_clickhouse_region": "us-east-1",
+        "clickhouse_discovery_service_name": "analytics",
+        "clickhouse_custom_label": "blue"
+    });
+    // An unknown non-string key is ignored rather than failing the response.
+    let mut with_unknown = json.clone();
+    with_unknown["future_flag"] = serde_json::json!(true);
+    let tolerant: PrometheusDiscoveryLabels = serde_json::from_value(with_unknown).unwrap();
+    assert_eq!(serde_json::to_value(&tolerant).unwrap(), json);
+
+    let labels: PrometheusDiscoveryLabels = serde_json::from_value(json.clone()).unwrap();
+
+    assert_eq!(labels.meta_clickhouse_provider.as_deref(), Some("aws"));
+    assert_eq!(labels.meta_clickhouse_region.as_deref(), Some("us-east-1"));
+    assert_eq!(
+        labels.additional_labels,
+        Some(std::collections::BTreeMap::from([(
+            "clickhouse_custom_label".to_string(),
+            "blue".to_string()
+        )]))
+    );
+    // Named labels are not duplicated into the additional map, and the
+    // round trip is lossless.
+    assert_eq!(serde_json::to_value(&labels).unwrap(), json);
+}
+
+#[test]
+fn prometheus_discovery_labels_without_additional_labels_serialize_compactly() {
+    let labels: PrometheusDiscoveryLabels =
+        serde_json::from_str(r#"{"__meta_clickhouse_region":null}"#).unwrap();
+    assert_eq!(labels.meta_clickhouse_region, None);
+    assert_eq!(
+        serde_json::to_value(&labels).unwrap(),
+        serde_json::json!({})
+    );
+}
+
+#[test]
+fn pg_config_carries_new_gucs_through_write_back() {
+    let response: PgConfigResponse = serde_json::from_value(serde_json::json!({
+        "autovacuum_analyze_threshold": 50,
+        "autovacuum_freeze_max_age": 200000000,
+        "autovacuum_vacuum_insert_threshold": -1,
+        "autovacuum_vacuum_threshold": 50,
+        "checkpoint_timeout": "5min",
+        "shared_memory_percent": 25,
+        "wal_buffers": "16MB"
+    }))
+    .unwrap();
+    let missing: PgConfigResponse = serde_json::from_str(
+        r#"{"autovacuum_analyze_threshold":null,"checkpoint_timeout":null,"wal_buffers":null}"#,
+    )
+    .unwrap();
+    assert_eq!(missing, PgConfigResponse::default());
+
+    let request = PgConfig::from(response);
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        serde_json::json!({
+            "autovacuum_analyze_threshold": 50,
+            "autovacuum_freeze_max_age": 200000000,
+            "autovacuum_vacuum_insert_threshold": -1,
+            "autovacuum_vacuum_threshold": 50,
+            "checkpoint_timeout": "5min",
+            "shared_memory_percent": 25,
+            "wal_buffers": "16MB"
+        })
+    );
+}

@@ -1375,7 +1375,7 @@ pub const SNAPSHOT_CONFIGURATION_GET: OperationMetadata = OperationMetadata {
     rust_method: "snapshot_configuration_get",
     method: "GET",
     path: "/v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
-    required_permissions: &["control-plane:service:view-backups"],
+    required_permissions: &["control-plane:service:view-snapshots"],
 };
 
 /// `PATCH /v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration` (`snapshotConfigurationUpdate`).
@@ -1384,7 +1384,7 @@ pub const SNAPSHOT_CONFIGURATION_UPDATE: OperationMetadata = OperationMetadata {
     rust_method: "snapshot_configuration_update",
     method: "PATCH",
     path: "/v1/organizations/{organizationId}/services/{serviceId}/snapshotConfiguration",
-    required_permissions: &["control-plane:service:manage-backups"],
+    required_permissions: &["control-plane:service:manage-snapshots"],
 };
 
 /// `GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}` (`snapshotGet`).
@@ -1393,7 +1393,7 @@ pub const SNAPSHOT_GET: OperationMetadata = OperationMetadata {
     rust_method: "snapshot_get",
     method: "GET",
     path: "/v1/organizations/{organizationId}/services/{serviceId}/snapshots/{snapshotId}",
-    required_permissions: &["control-plane:service:view-backups"],
+    required_permissions: &["control-plane:service:view-snapshots"],
 };
 
 /// `GET /v1/organizations/{organizationId}/services/{serviceId}/snapshots` (`snapshotGetList`).
@@ -1402,7 +1402,7 @@ pub const SNAPSHOT_GET_LIST: OperationMetadata = OperationMetadata {
     rust_method: "snapshot_get_list",
     method: "GET",
     path: "/v1/organizations/{organizationId}/services/{serviceId}/snapshots",
-    required_permissions: &["control-plane:service:view-backups"],
+    required_permissions: &["control-plane:service:view-snapshots"],
 };
 
 /// `PUT /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}` (`udfAttach`).

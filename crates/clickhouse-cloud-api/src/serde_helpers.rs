@@ -34,6 +34,32 @@ where
         .transpose()
 }
 
+/// Deserialize a flattened `additionalProperties` string map, keeping it
+/// tolerant of the rest of the object.
+///
+/// A flattened field receives every key the named fields did not consume, so
+/// an unknown key with a non-string value would otherwise fail the whole
+/// response. Such entries are skipped, as unknown fields are elsewhere. An
+/// object with no additional string entries yields `None`, keeping
+/// "nothing extra was sent" equal to the type's `Default`.
+pub fn deserialize_flattened_string_map<'de, D>(
+    deserializer: D,
+) -> Result<Option<std::collections::BTreeMap<String, String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let entries =
+        std::collections::BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    let map: std::collections::BTreeMap<String, String> = entries
+        .into_iter()
+        .filter_map(|(key, value)| match value {
+            serde_json::Value::String(value) => Some((key, value)),
+            _ => None,
+        })
+        .collect();
+    Ok((!map.is_empty()).then_some(map))
+}
+
 #[derive(Deserialize)]
 pub(crate) struct ServiceEndpointWire {
     host: Option<String>,
