@@ -540,6 +540,8 @@ pub struct AwsBackupBucket {
     pub bucket_provider: Option<AwsBackupBucketBucketprovider>,
     #[serde(rename = "iamRoleArn", skip_serializing_if = "Option::is_none")]
     pub iam_role_arn: Option<String>,
+    #[serde(rename = "iamRoleExternalId", skip_serializing_if = "Option::is_none")]
+    pub iam_role_external_id: Option<String>,
     #[serde(rename = "iamRoleSessionName", skip_serializing_if = "Option::is_none")]
     pub iam_role_session_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -547,7 +549,7 @@ pub struct AwsBackupBucket {
 }
 
 /// `AwsBackupBucketPatchRequestV1` from the ClickHouse Cloud API.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize)]
 pub struct AwsBackupBucketPatchRequestV1 {
     #[serde(rename = "bucketPath")]
     pub bucket_path: String,
@@ -555,8 +557,65 @@ pub struct AwsBackupBucketPatchRequestV1 {
     pub bucket_provider: AwsBackupBucketPatchRequestV1Bucketprovider,
     #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
+    /// Omit to preserve the external ID, set a string to replace it, or send null to clear it.
+    #[serde(rename = "iamRoleExternalId", skip_serializing_if = "Option::is_none")]
+    pub iam_role_external_id: Option<Option<String>>,
     #[serde(rename = "iamRoleSessionName", skip_serializing_if = "Option::is_none")]
     pub iam_role_session_name: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for AwsBackupBucketPatchRequestV1 {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Fields;
+        impl<'de> serde::de::Visitor<'de> for Fields {
+            type Value = AwsBackupBucketPatchRequestV1;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("an AWS backup bucket update")
+            }
+
+            fn visit_map<M>(self, mut map: M) -> Result<Self::Value, M::Error>
+            where
+                M: serde::de::MapAccess<'de>,
+            {
+                let mut bucket_path = None;
+                let mut bucket_provider = None;
+                let mut iam_role_arn = None;
+                let mut iam_role_external_id = None;
+                let mut iam_role_session_name = None;
+                let mut seen = std::collections::HashSet::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    if !seen.insert(key.clone()) {
+                        return Err(serde::de::Error::custom(format!("duplicate field `{key}`")));
+                    }
+                    match key.as_str() {
+                        "bucketPath" => bucket_path = Some(map.next_value()?),
+                        "bucketProvider" => bucket_provider = Some(map.next_value()?),
+                        "iamRoleArn" => iam_role_arn = Some(map.next_value()?),
+                        "iamRoleExternalId" => iam_role_external_id = Some(map.next_value()?),
+                        "iamRoleSessionName" => iam_role_session_name = map.next_value()?,
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(AwsBackupBucketPatchRequestV1 {
+                    bucket_path: bucket_path
+                        .ok_or_else(|| serde::de::Error::missing_field("bucketPath"))?,
+                    bucket_provider: bucket_provider
+                        .ok_or_else(|| serde::de::Error::missing_field("bucketProvider"))?,
+                    iam_role_arn: iam_role_arn
+                        .ok_or_else(|| serde::de::Error::missing_field("iamRoleArn"))?,
+                    iam_role_external_id,
+                    iam_role_session_name,
+                })
+            }
+        }
+        deserializer.deserialize_map(Fields)
+    }
 }
 
 /// `AwsBackupBucketPostRequestV1` from the ClickHouse Cloud API.
@@ -568,6 +627,8 @@ pub struct AwsBackupBucketPostRequestV1 {
     pub bucket_provider: AwsBackupBucketPostRequestV1Bucketprovider,
     #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
+    #[serde(rename = "iamRoleExternalId")]
+    pub iam_role_external_id: String,
     #[serde(rename = "iamRoleSessionName")]
     pub iam_role_session_name: String,
 }
@@ -581,6 +642,8 @@ pub struct AwsBackupBucketProperties {
     pub bucket_provider: AwsBackupBucketPropertiesBucketprovider,
     #[serde(rename = "iamRoleArn")]
     pub iam_role_arn: String,
+    #[serde(rename = "iamRoleExternalId")]
+    pub iam_role_external_id: String,
     #[serde(rename = "iamRoleSessionName")]
     pub iam_role_session_name: String,
 }

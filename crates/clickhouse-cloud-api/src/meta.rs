@@ -90,6 +90,7 @@ pub const BETA_OPERATIONS: &[&str] = &[
     "click_stack_update_webhook",
     "click_stack_validate_dashboard",
     "credit_balances_get",
+    "notification_get_list",
     "notification_types_get_list",
     "organization_byoc_infrastructure_get",
     "organization_byoc_infrastructure_private_endpoint_config_get",
