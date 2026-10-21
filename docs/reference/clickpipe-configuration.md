@@ -101,6 +101,10 @@ The sync interval, table parallelism, and pull window must be at least 1; the
 visibility delay can be 0. A delay that is too short can skip rows that become
 visible late; increase it for batch jobs or Dataflow. The pull window bounds each
 catch-up query when a pipe falls behind. Omitted settings use the service defaults.
+To sync on a schedule instead of an interval, pass `--sync-cron` with a 5-field cron
+expression or a descriptor such as `@hourly`, in place of `--sync-interval-seconds`.
+It runs in UTC unless you prefix it with `CRON_TZ=<zone>` (for example,
+`--sync-cron "CRON_TZ=Europe/Berlin 0 * * * *"`), and must not fire more than once a minute.
 Snapshot mode rejects these CDC settings and both CDC table fields. The same
 controls work with workload identity; BigQuery source updates remain unsupported.
 

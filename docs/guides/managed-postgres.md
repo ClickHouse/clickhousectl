@@ -26,6 +26,27 @@ Use `sslmode=verify-full` for certificate and hostname verification. If you embe
 
 GCP is available in private preview: use `--provider gcp` with GCP region and instance-size names. Inspect `postgres create --help` for the available options.
 
+## Restrict network access
+
+**Without `--ip-allow`, a new service accepts connections from every IPv4 and IPv6 address on ports 5432 (Postgres) and 6432 (PgBouncer).** To allow only specific IPv4 addresses, give one rule per port or a range:
+
+```bash
+clickhousectl cloud postgres create --name app-db \
+  --provider aws --region us-east-1 --size c6gd.xlarge \
+  --ip-allow 203.0.113.0/24:5432=office --ip-allow 203.0.113.0/24:6432=office
+```
+
+Use `--block-public-access` instead to create the service with no rules at all. Access rules apply to IPv4 only; `get` lists the current IPv4 rules and their IDs.
+
+To change rules later, remove them by ID, or remove every rule for a source, and add new ones:
+
+```bash
+clickhousectl cloud postgres update <postgres-id> \
+  --remove-ip-allow 203.0.113.0/24 --add-ip-allow 198.51.100.0/24:5432..6432
+```
+
+Removals apply before additions. An update can partially succeed, so run `get` and check the rules before you retry.
+
 ## Run read-only SQL with OAuth
 
 This route needs no database password or local `psql`, but accepts **only OAuth**. Remove higher-priority key flags, project credentials, environment variables, and `.env` key values before logging in. Review stored Query API key cleanup before clearing the credentials file; see [authentication](../reference/authentication.md).
