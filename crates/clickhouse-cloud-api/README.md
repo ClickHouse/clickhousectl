@@ -59,7 +59,7 @@ BigQuery and Pub/Sub source models now distinguish service-account and workload-
 
 ClickStack models now include alert channel lists, 30-second alert intervals, query-timeout errors, chart formulas and series limits, dashboard variables and broadcast filters, service-version expressions, and typed SQL/variable saved-filter unions. New formula and saved-filter response/request pairs support explicit fallible write-back through `TryFrom`; absent nested required fields return their wire names. UDF responses include `deterministic`. UDF request models preserve `deterministic` and nullable `memoryLimitMib` in both executable variants, including version creation.
 
-The current alert request schemas have no `required` array or optional marker on either `channel` or `channels`, so both fields remain strict in the Rust request models. This mirrors the documented requiredness policy; it does not establish whether the server accepts a channels-only request. Supply the channel list explicitly rather than relying on the empty `Default` value (the API specifies 1–10 channels).
+The alert request schemas now list `threshold`, `interval` and `thresholdType` as their only required fields, so `channel` and `channels` are optional in the Rust request models (see the ClickStack notes below). When you send `channels`, the API accepts 1–10 entries.
 
 Postgres slow-query aggregate durations (`*DurationUs`) and execution `durationUs` use `Option<f64>` to preserve fractional microseconds returned by the API. Counts remain integral. The analyzer tracks the upstream integer-schema discrepancy with response-only, stale-checked exceptions ([#758](https://github.com/ClickHouse/clickhousectl/issues/758)).
 
@@ -112,6 +112,20 @@ The GCP `PgSize` values now carry local-SSD names, matching the spec: `c4-`, `c4
 Postgres services gain an IPv4 access list. `PostgresService.ip_access_list` returns the current rules as `PostgresIpAccessListEntryResponse` (`id`, `source`, `port_range`, `description`); IPv6 rules are not included. `PostgresServicePostRequest.ip_access_list` sets the rules at creation: `None` allows every IPv4 and IPv6 address on 5432 and 6432, `Some(vec![])` blocks public access, and a list allows only those rules, so include one rule per required port. `PostgresServicePatchRequest.ip_access_list` takes `PostgresIpAccessListPatch`, which removes rules by ID (`PostgresIpAccessListRuleReference`) and then adds new rules or edits existing ones (include the returned `id`). Updates can partially succeed, so read the current list before retrying. `TryFrom<PostgresIpAccessListEntryResponse>` turns a fetched rule into an edit. Struct-literal callers of the Postgres create and patch requests need `ip_access_list: None` or `..Default::default()`.
 
 `ClickPipeBigQueryPipeSettings` and its response type gain `sync_cron` (`syncCron`), a standard 5-field cron expression or descriptor such as `@hourly` that schedules CDC syncs. It's evaluated in UTC unless prefixed with `CRON_TZ=<zone>`, and must not fire more than once a minute. It replaces `sync_interval_seconds` (the API rejects both together) and is not allowed in snapshot mode. The `TryFrom` write-back carries it. Struct-literal callers need `sync_cron: None` or `..Default::default()`.
+
+ClickStack gained new and reshaped models. This is a breaking change for Rust callers:
+
+- **Role permissions.** `ClickStackCASLPermission` and `ClickStackCASLPermissionResponse` are now unions selected by `integration`: `ClickStackMongoDBCASLPermission` (`conditions` is `ClickStackMongoDBCASLPermissionConditions`, a map of raw JSON values) and `ClickStackClickHouseCASLPermission` (typed `conditions` with `connection`, `from`, `where` and `where_language`). `action` and `subject` are now `ClickStackCASLPermissionAction` and `ClickStackCASLPermissionSubject` enums, and `integration` is required on write. A permission with another `integration` is kept verbatim in `Unknown`. The free-form `ClickStackCASLPermissionConditions` alias is gone.
+- **Dashboard filters.** `ClickStackFilter`, `ClickStackFilterResponse` and `ClickStackFilterInput` are now unions selected by `type`: query expression, static list, Prometheus label, and source filters. The former struct fields live on `ClickStackQueryExpressionFilter`, `ClickStackQueryExpressionFilterResponse` and `ClickStackQueryExpressionFilterInput`, which keep `ClickStackFilterSourcemetrictype` and `ClickStackFilterWherelanguage`. Every filter variant gains `min_selections` (`ClickStackFilterMinselections`: `Optional`/`Required`), `max_selections` (`ClickStackFilterMaxselections`: `Single`) and `is_global_requirement`. `ClickStackFilterType`, `ClickStackFilterInputType`, `ClickStackFilterInputSourcemetrictype` and `ClickStackFilterInputWherelanguage` are replaced by the per-variant type enums.
+- **Heatmaps.** `ClickStackHeatmapChartConfig` and its response type are unions selected by `heatmapMode`. A missing `heatmapMode` selects `ClickStackHeatmapDistributionChartConfig`, the former shape. `ClickStackHeatmapSeriesChartConfig` groups ordinary select items by `group_by`.
+- **Write-back.** `TryFrom` converts the permission and filter response unions, and their variants, back to request types. Absent required fields are named at the level they are missing from.
+- **Stacked-line tiles.** `ClickStackTileConfig` and its response gain a `stacked_line` arm, `ClickStackStackedLineChartConfig` (builder or raw SQL). `ClickStackTimeChartSeriesDisplaytype` adds `Stacked_line`. Line configs gain `line_interpolation`, and raw-SQL number configs gain `color_rules`.
+- **Alerts.** `ClickStackCreateAlertRequest` and `ClickStackUpdateAlertRequest` now require only `threshold`, `interval` and `threshold_type`. `channel`, `channels` and `source` are `Option`, so wrap existing values in `Some(...)`. Alerts gain `display_name`, `tags`, and `chart_config`, a `ClickStackAlertChartConfig` union of line, stacked-bar, stacked-line and number configs for `source: Inline` alerts. Each config adds the overlay's `name`, `where` and `where_language` to the matching tile config. The alert source enums add `Inline`. The standalone `ClickStackAlertChartConfigOverlay` follows the spec's requiredness, but the composed configs carry these fields as optional.
+- **Select-item `level`.** `ClickStackSelectItem.level` and `ClickStackSelectItemResponse.level` are `Option<f64>`, matching the numeric schema. `ClickStackSelectItemLevel` is removed; send `Some(0.95)` rather than the former string variant.
+- **Sources and tiles.** Log and trace sources add `order_by_expression`. Trace sources add `displayed_timestamp_value_expression`, `sample_rate_expression` and `span_links_value_expression`. Session sources add `resource_attributes_expression`. Tiles add `description`, and variable saved filters add `all`. The source and saved-filter write-backs carry the new fields.
+- **Webhook validation.** The beta `click_stack_validate_webhook` method checks a `ClickStackWebhookInput` without saving it. It returns `ClickStackValidateWebhookResponse` with `valid`, `errors` (`path`, `message`) and `normalized`.
+
+Struct-literal callers of the changed structs need the new fields as `None` or `..Default::default()`.
 
 ### ClickHouse settings models
 
@@ -333,6 +347,11 @@ coverage, and numeric ranges, string patterns, custom deserializers, non-JSON re
 and undocumented backend behavior are not validated by the shape checker. Unsupported
 compositions, unresolved generic bindings, alias cycles, and analysis depth limits are
 reported explicitly rather than counted as successful analysis.
+
+A typed `additionalProperties` map whose value schema is an inline `oneOf` or `anyOf`
+(for example, a string or an object) matches only `serde_json::Value` values, because
+no single Rust value type keeps every branch. Every other value schema still needs a
+typed value.
 
 ### UDF list response migration
 

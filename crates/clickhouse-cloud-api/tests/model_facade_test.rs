@@ -287,3 +287,31 @@ fn postgres_ip_access_list_models_are_available_through_both_public_paths() {
         api::models::PostgresIpAccessListRuleReference::default(),
     );
 }
+
+#[test]
+fn clickstack_union_members_are_available_through_both_public_paths() {
+    assert_same_type(
+        api::ClickStackQueryExpressionFilter::default(),
+        api::models::ClickStackQueryExpressionFilter::default(),
+    );
+    assert_same_type(
+        api::ClickStackMongoDBCASLPermission::default(),
+        api::models::ClickStackMongoDBCASLPermission::default(),
+    );
+    assert_same_type(
+        api::ClickStackHeatmapSeriesChartConfig::default(),
+        api::models::ClickStackHeatmapSeriesChartConfig::default(),
+    );
+    assert_same_type(
+        api::ClickStackAlertLineBuilderChartConfig::default(),
+        api::models::ClickStackAlertLineBuilderChartConfig::default(),
+    );
+    assert_same_type(
+        api::ClickStackStackedLineBuilderChartConfig::default(),
+        api::models::ClickStackStackedLineBuilderChartConfig::default(),
+    );
+    assert_same_type(
+        api::ClickStackValidateWebhookResponse::default(),
+        api::models::ClickStackValidateWebhookResponse::default(),
+    );
+}
